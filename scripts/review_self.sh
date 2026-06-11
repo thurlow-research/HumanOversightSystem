@@ -244,8 +244,8 @@ REVIEW_OUTPUT=$(agy -p "$PROMPT" 2>&1) || {
     printf "Timestamp: %s\n" "$TIMESTAMP"
     printf "Reviewer: agy (Gemini)\n"
     printf "Context: ~%d tokens\n\n" "$CONTEXT_TOKENS"
-    printf "---\n\n"
-    printf "%s\n" "$REVIEW_OUTPUT"
+    printf '%s\n\n' "---"
+    printf '%s\n' "$REVIEW_OUTPUT"
 } > "$OUTFILE"
 
 echo "$REVIEW_OUTPUT"
