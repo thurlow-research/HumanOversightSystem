@@ -1,0 +1,13 @@
+# oversight validator and gate dependencies
+# install: pip install -r scripts/oversight/requirements.txt
+
+radon>=5.1
+bandit>=1.7
+semgrep>=1.50
+detect-secrets>=1.4
+pip-audit>=2.6
+flake8>=7.0
+flake8-bugbear>=24.0
+black>=24.0
+isort>=5.13
+mypy>=1.8

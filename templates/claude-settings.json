@@ -1,0 +1,106 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**/*)",
+
+      "Write(src/**)",
+      "Write(styles/**)",
+      "Write(public/**)",
+      "Write(content/**)",
+      "Write(prompts/**)",
+      "Write(tests/**)",
+      "Write(test/**)",
+      "Write(*.md)",
+      "Write(*.json)",
+      "Write(*.ts)",
+      "Write(*.tsx)",
+      "Write(*.js)",
+      "Write(*.jsx)",
+      "Write(*.astro)",
+      "Write(*.css)",
+      "Write(*.html)",
+      "Write(*.yml)",
+      "Write(*.yaml)",
+
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git status)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git stash *)",
+      "Bash(git fetch *)",
+      "Bash(git merge --no-ff *)",
+      "Bash(git show *)",
+
+      "Bash(gh pr create *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checkout *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh repo view *)",
+
+      "Bash(npm run *)",
+      "Bash(npm install)",
+      "Bash(npm install *)",
+      "Bash(npx *)",
+      "Bash(pnpm *)",
+      "Bash(yarn *)",
+      "Bash(node *)",
+
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(cat *)",
+      "Bash(echo *)",
+      "Bash(pwd)",
+      "Bash(find * -type f*)",
+      "Bash(grep *)",
+      "Bash(mkdir -p *)",
+      "Bash(cp * *)",
+      "Bash(mv * *)",
+      "Bash(chmod +x *)",
+
+      "Bash(python3 *)",
+      "Bash(python *)"
+    ],
+
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean -fd*)",
+      "Bash(git rebase *)",
+
+      "Bash(gh pr merge *)",
+      "Bash(gh repo delete *)",
+
+      "Bash(rm -rf *)",
+      "Bash(rm -f *)",
+      "Bash(rmdir *)",
+
+      "Write(.env*)",
+      "Write(**/.env*)",
+      "Write(**/secrets/*)",
+      "Write(**/credentials/*)",
+      "Write(.github/CODEOWNERS)",
+      "Write(AGENTS.md)",
+
+      "Bash(curl * | bash*)",
+      "Bash(wget * | bash*)",
+      "Bash(curl * | sh*)",
+      "Bash(sudo *)",
+      "Bash(chmod 777 *)",
+
+      "Bash(psql *)",
+      "Bash(mysql *)",
+      "Bash(mongosh *)",
+      "Bash(redis-cli *)",
+      "Bash(sqlite3 * DROP*)",
+      "Bash(sqlite3 * DELETE*)"
+    ]
+  }
+}

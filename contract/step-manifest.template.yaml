@@ -1,0 +1,54 @@
+# step-manifest.yaml — project configuration for the Human Oversight System
+#
+# Copy this file to contract/step-manifest.yaml in your project and fill it in.
+# The oversight-evaluator and orchestrator read this file to know what is
+# required for each build step.
+#
+# contract_version must match OVERSIGHT-CONTRACT.md version.
+
+contract_version: "1"
+project: "[PROJECT NAME]"
+
+# Map oversight role keys → agent names in your project.
+# Role keys are defined in OVERSIGHT-CONTRACT.md §5.
+# Agent names are the 'name:' fields in your .claude/agents/*.md files.
+role_mappings:
+  code-review:    code-reviewer
+  security:       security-reviewer
+  privacy:        privacy-reviewer
+  test-unit:      unit-test
+  test-system:    system-test
+  process:        pm-agent
+  # infra:        infra-reviewer      # uncomment if you have an infra reviewer
+  # ui:           ui-reviewer         # uncomment if you have a UI reviewer
+  # a11y:         a11y-reviewer       # uncomment if you have an a11y reviewer
+
+# Build steps — define one entry per build step in your project.
+# risk_tier: LOW | MEDIUM | HIGH | CRITICAL
+# required_signoffs: list of role keys that must have APPROVED entries
+# system_test_applicable: true if functional spec flows exist for this step
+# human_gate_required: true forces ESCALATE before PR opens (use for CRITICAL)
+steps:
+  - id: 1
+    name: "Scaffold"
+    risk_tier: LOW
+    required_signoffs: [code-review]
+    system_test_applicable: false
+
+  - id: 2
+    name: "[Step 2 name]"
+    risk_tier: HIGH
+    required_signoffs: [code-review, security, test-unit]
+    system_test_applicable: false
+
+  - id: 3
+    name: "[Step 3 name — auth/auth-adjacent]"
+    risk_tier: CRITICAL
+    required_signoffs: [code-review, security, privacy, test-unit, test-system, process]
+    system_test_applicable: true
+    human_gate_required: true
+
+  # Add remaining steps here following the same pattern.
+  # CRITICAL steps: add human_gate_required: true
+  # Steps with templates: add ui, a11y to required_signoffs
+  # Infrastructure steps: add infra to required_signoffs
