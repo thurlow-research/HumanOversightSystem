@@ -48,7 +48,7 @@ Output is written to `.claudetmp/framework/validation-YYYYMMDDTHHMMSS.md`. Read 
 bash scripts/framework/validate_docs.sh
 ```
 
-Output is written to `.claudetmp/framework/doc-validation-YYYYMMDDTHHMMSS.md`. This checks that docs accurately and completely describe agent behavior — catching omissions like "agent file says two modes, doc says only one." Read findings and apply doc fixes directly (you have Write access to docs/ files).
+Output is written to `.claudetmp/framework/doc-validation-YYYYMMDDTHHMMSS.md`. This checks that docs accurately and completely describe agent behavior — catching omissions like "agent file says two modes, doc says only one." Findings go to `doc-validator` agent to triage; doc-validator applies fixes directly (it has Write access to docs/ files). Do not apply doc fixes yourself — delegate to doc-validator to maintain clear ownership.
 
 ### Step 4 — Spec compliance check (agy + codex)
 
@@ -58,17 +58,23 @@ bash scripts/framework/validate_spec_compliance.sh
 
 Output is written to `.claudetmp/framework/spec-compliance-YYYYMMDDTHHMMSS.md`. This checks that the pipeline satisfies governance requirements (METHODOLOGY.md, AGENTS.md root protocol, decisions.md). Invoke `spec-compliance-validator` agent to triage any failures.
 
-### Step 5 — Synthesize and act
+### Step 5 — Handle failures
 
-Read the output file. For each finding:
+**It is never acceptable to skip a validation phase.** If a phase fails due to tooling (e.g. a CLI flag change), fix the tooling and rerun. Do not proceed past a broken phase.
 
-| Priority | Action |
+For each finding, classify then act:
+
+| Finding type | Action |
 |---|---|
-| `blocking` / `critical` in agy | Read the specific files named. Determine if real. If real: fix within your authority or delegate to the right agent. |
-| `blocking` / `critical` in codex | Same. Adversarial findings from codex are usually real — investigate before dismissing. |
-| `warning` from either reviewer | Flag to human with a one-sentence description. Do not block the commit on warnings. |
-| Findings reported by both reviewers | High-confidence — treat as MUST_FIX unless you can prove it's a false positive. |
-| Findings reported by only one reviewer | Investigate before acting. |
+| Real blocking / critical | Fix within your authority OR delegate to the right agent. Rerun the phase that found it. Commit the fix. |
+| Tooling failure (CLI error, timeout) | Fix the script; rerun. If you cannot fix the script, escalate to human immediately — do not skip. |
+| False positive (HOS context, inherent design tension) | Document the reason it is a false positive. Do not dismiss silently — write one sentence explaining why. |
+| Warning (non-blocking) | Flag to human with one sentence. Do not block the commit. |
+| Cross-vendor finding (both agy and codex) | Treat as real unless you can prove otherwise with a written reason. |
+
+**If you fix something:** commit the fix with a clear message, note it in the PR description as "validation-driven fix — needs human review," and rerun the affected phase to confirm clean.
+
+**Loop exit:** After 3 fix-and-rerun cycles without achieving a clean run, stop and escalate to human with: the iteration count, which findings persist, and what was tried each round. Do not attempt a 4th round.
 
 ### Step 6 — Report
 

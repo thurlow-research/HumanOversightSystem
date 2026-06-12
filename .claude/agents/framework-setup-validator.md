@@ -36,7 +36,7 @@ The minimum set of agents required for the pipeline to function:
 REQUIRED="pm-agent architect technical-design ux-designer coder code-reviewer
           security-reviewer privacy-reviewer ui-reviewer a11y-reviewer
           infra-reviewer unit-test system-test deploy-verify
-          risk-assessor risk-historian dep-mapper spec-red-team
+          risk-assessor risk-historian dep-mapper spec-red-team prompt-fidelity
           oversight-evaluator oversight-orchestrator
           framework-validator framework-setup-validator doc-validator
           spec-compliance-validator post-change-sweep"
