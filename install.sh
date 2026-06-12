@@ -235,6 +235,77 @@ for opt_pkg in semgrep detect-secrets; do
   fi
 done
 
+header "2a. IP tooling — ScanCode Toolkit"
+# ScanCode provides full license-text detection (Level 1 IP agent).
+# Without it, ip_check.py falls back to PyPI/npm API lookups (less thorough).
+# ai-gen-code-search (Level 3 regurgitation lens) is listed separately below —
+# it requires building a FOSS code index and is not auto-installed.
+#
+# ScanCode may need system libraries (libmagic) on some platforms.
+
+install_scancode() {
+  if command -v scancode &>/dev/null; then
+    ok "scancode $(scancode --version 2>/dev/null | head -1 | tr -d '\n')"
+    return
+  fi
+
+  info "Installing ScanCode Toolkit (IP/license detection)..."
+
+  # Install system dependencies that ScanCode may need
+  case "$OS-$PKG_MGR" in
+    linux-apt)
+      info "Installing libmagic (ScanCode system dependency)..."
+      run "$SUDO apt-get install -y libmagic-dev libmagic1 2>/dev/null || true"
+      ;;
+    linux-dnf)
+      run "$SUDO dnf install -y file-libs file-devel 2>/dev/null || true"
+      ;;
+    linux-yum)
+      run "$SUDO yum install -y file-libs file-devel 2>/dev/null || true"
+      ;;
+    macos-brew)
+      # libmagic is usually present via brew coreutils; install explicitly if missing
+      command -v file &>/dev/null || run "brew install libmagic 2>/dev/null || true"
+      ;;
+  esac
+
+  # Install ScanCode — try system-wide first, then user install
+  if ! $DRY_RUN; then
+    python3 -m pip install --quiet scancode-toolkit 2>/dev/null || \
+    python3 -m pip install --quiet --user scancode-toolkit 2>/dev/null || {
+      warn "ScanCode install failed — ip_check.py will use PyPI API fallback"
+      warn "Try manually: pip install scancode-toolkit"
+      warn "Docs: https://scancode-toolkit.readthedocs.io/en/stable/getting-started/install.html"
+      return
+    }
+  else
+    dry_run "Would install scancode-toolkit via pip"
+    return
+  fi
+
+  if command -v scancode &>/dev/null; then
+    ok "scancode installed ($(scancode --version 2>/dev/null | head -1 | tr -d '\n'))"
+  else
+    # Might be installed as a user package not yet on PATH
+    SCANCODE_PATH="$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null)/scancode"
+    USER_SCANCODE="$(python3 -m site --user-base 2>/dev/null)/bin/scancode"
+    if [[ -x "$SCANCODE_PATH" ]] || [[ -x "$USER_SCANCODE" ]]; then
+      ok "scancode installed (may need to add $(dirname "${USER_SCANCODE}") to PATH)"
+    else
+      warn "scancode installed but not on PATH — open a new shell and re-run: scancode --version"
+    fi
+  fi
+
+  echo ""
+  skip "ai-gen-code-search (Level 3 regurgitation lens — NOT auto-installed)"
+  echo "       Requires building a FOSS code index (~GB). When ready:"
+  echo "       pip install ai-gen-code-search"
+  echo "       Then set: IP_REGURGITATION_ENABLED=1"
+  echo "       Docs: https://github.com/aboutcode-org/ai-gen-code-search"
+}
+
+install_scancode
+
 header "3. GitHub CLI (gh)"
 
 if command -v gh &>/dev/null; then
