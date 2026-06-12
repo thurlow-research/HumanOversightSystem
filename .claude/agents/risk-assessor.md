@@ -39,7 +39,7 @@ Apply these rules. If any fires, the risk tier is at least that level regardless
 | Condition | Minimum tier |
 |---|---|
 | Any file under `auth/`, `accounts/`, session logic | HIGH |
-| Any migration modifying existing columns or adding non-nullable fields | HIGH |
+| Any database migration modifying existing columns, adding non-nullable fields, or dropping tables/columns | HIGH |
 | Any PII field defined, modified, or accessed | HIGH |
 | Booking/payment/financial gate logic | CRITICAL |
 | Right-to-erasure, audit log | HIGH |
