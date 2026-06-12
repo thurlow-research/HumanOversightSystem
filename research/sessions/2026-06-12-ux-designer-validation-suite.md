@@ -200,3 +200,72 @@ The agent count inconsistency (17/23/25/16 across different files) is a proxy me
 | `AGENTS.md` (root) | Modified | Pull request attribution rule |
 
 All changes committed to branch `build`, PR #11 open for human review.
+
+---
+
+## Part 2 — Peer Feedback, Validation Run, and Tooling Fixes
+
+*Continuation of the same calendar day. Branch: `session/2026-06-12-peer-vibecoding-feedback`.*
+
+### Peer feedback: working-state invariant
+
+A peer practitioner conducting extensive AI-assisted development (vibecoding) provided feedback: the pipeline's CHEAP GATES were placed only in CI (after the PR opens), missing the inner development loop entirely. The peer's observation:
+
+> "If you just prompt N times for incremental changes without reestablishing the working state of the codebase, the agents can easily build a house of cards which eventually leads to increasingly bogus changes that need to be undone."
+
+**Changes made:**
+
+1. `METHODOLOGY.md §6` — split into inner development loop `(Prompt → Change → Verify)ⁿ` and outer merge pipeline. The cheap gates now appear in both: locally as the inner loop's exit condition, and in CI as a safety net.
+2. `templates/AGENTS.md` — added "Working-State Invariant" as a mandatory behavior. Agent must run lint + types + unit tests after every change, report the result, and fix failures in the same response before declaring done.
+3. `research/findings/working-state-invariant.md` — new finding documenting the house-of-cards failure mode.
+
+**New governance rule established:** Skipping any validation step that has been identified as necessary requires explicit human approval. When a validation step fails, always diagnose why and correct if you can. Tooling failures must be fixed and the phase rerun — not skipped.
+
+### First full validation run on HOS itself
+
+With the validation suite complete, it was run against the HOS framework for the first time. Phase 1 (static) passed immediately. Phases 2–4 (AI) revealed two issues:
+
+**Issue 1: codex `--quiet` flag removed in v0.139.0**
+
+All three validate scripts used `codex --quiet < tmpfile`. This flag was removed in the latest codex CLI update, causing all codex invocations to fail silently. The phases appeared to run but codex produced no output, resulting in false "no findings" verdicts from codex.
+
+Diagnosed by running `codex --help`, identified the new `exec` subcommand, replaced `codex --quiet` with `codex exec` across all three scripts.
+
+*Lesson: validation scripts that invoke external CLIs must be treated as maintenance items. CLI API changes can silently disable validation phases. The "always diagnose failures" rule caught this; the "never skip" rule prevented it from being papered over.*
+
+**Issue 2: static checker false positives for HOS's own structure**
+
+Running the static checker on HOS itself produced 31 findings — all because `docs/AGENTS.md` documents consumer-project pipeline agents (coder, architect, etc.) that intentionally don't exist in HOS's `.claude/agents/`. The checker treated every documented agent as a local file requirement.
+
+Fix: added `EXTERNAL_AGENTS` support to `check_agents_static.sh` and created `scripts/framework/config.sh` for HOS declaring the consumer-project agents as known-external. After fix: Phase 1 shows 0 findings.
+
+*Insight: a validation framework needs to be aware of its own deployment context. HOS is the source repository; it documents agents that live in consumer projects. The static checker assumed it was running in a consumer project.*
+
+### Codex findings after fix: false positive characterization
+
+With codex running correctly, Phase 2 produced 33 findings. After triage:
+
+| Category | Count | Disposition |
+|---|---|---|
+| Fixed immediately | 6 | Loop exits in framework validators, ownership conflicts, missing agent in list, decisions.md entry for risk-historian Haiku exception |
+| Genuine design decisions requiring human review | 2 | architect↔technical-design loop exit in docs; spec-red-team → pm-agent confirmation artifact |
+| Inherent design tensions (documented trade-offs) | ~8 | ux-designer boundary, pm-agent additive definition, human authorization file pattern |
+| Consumer-project concerns (outside HOS scope) | ~12 | coder↔reviewer loops, dep-mapper generalization, risk-assessor vs evaluator alignment |
+| Stubs acknowledged as stubs | 5 | prompt-fidelity, risk-historian error suppression |
+
+**Actionable rate: ~40%** (13 of 33 findings led to changes). False positive rate ~60%, consistent with the earlier observation that codex's adversarial approach produces more findings than are actionable but at a manageable ratio.
+
+### Artifacts produced (Part 2)
+
+| Artifact | Type | What changed |
+|---|---|---|
+| `METHODOLOGY.md §6` | Updated | Inner loop / outer pipeline split; working-state invariant |
+| `templates/AGENTS.md` | Updated | Working-State Invariant mandatory behavior |
+| `research/findings/working-state-invariant.md` | New finding | House-of-cards failure mode |
+| `scripts/framework/validate_agents.sh` + `validate_docs.sh` + `validate_spec_compliance.sh` | Bug fix | `codex --quiet` → `codex exec` |
+| `scripts/framework/check_agents_static.sh` | Enhancement | EXTERNAL_AGENTS support |
+| `scripts/framework/config.sh` | New (HOS config) | HOS project identity + EXTERNAL_AGENTS declaration |
+| `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md` | Updated | Inner loop in pipeline overview and runbook |
+| `framework-validator.md`, `doc-validator.md`, `spec-compliance-validator.md` | Fixed | Loop exits + "never skip validation" rules |
+| `framework-setup-validator.md` | Fixed | prompt-fidelity added to REQUIRED agent list |
+| `scripts/framework/decisions.md` (DEC-009) | New decision | risk-historian Haiku model intentional exception to REQ-004 |

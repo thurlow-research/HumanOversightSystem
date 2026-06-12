@@ -37,9 +37,20 @@ DESIGN
   4. technical-design ↔ architect  — iterate until design approved
                      (reads confirmed requirements + ADR + design readiness doc)
 
-PER FEATURE
-  5. coder
+SPEC REVIEW (before coding starts)
+  spec-red-team    — adversarial spec review (using agy) to find gaps
+
+PER FEATURE — INNER DEVELOPMENT LOOP (repeats per incremental change)
+  (Prompt → coder makes change → VERIFY locally → next prompt)
+  Rule: never issue the next prompt on a broken working tree.
+  Verify after every change: lint · type-check · unit tests in scope
+  Only when inner loop produces clean working state → move to outer pipeline
+
+PER FEATURE — OUTER PIPELINE (once per logical change set)
+  5. coder  [commit only after inner loop is clean]
        ↓  (design pack gap? → ux-designer fills it; then coder continues)
+  risk-assessor    — score risk, validate tier, generate inspection brief
+       ↓             (invokes prompt-fidelity, dep-mapper, risk-historian)
   6. code-reviewer
        ↓ approved
   7. security-reviewer  ─┐
@@ -51,6 +62,14 @@ PER FEATURE
  12. unit-test      — 80% coverage + 75% mutant score
        ↓ targets met
  13. system-test    — spec functional validation
+       ↓
+  oversight-evaluator    — check compliance & quality; recommend proceed/escalate
+       ↓
+  oversight-orchestrator — open PR with AI attribution, write panel context
+       ↓
+  cross-vendor panel     — independent adversarial review (agy, codex, etc.)
+       ↓
+  human gate             — resolve panel threads; merge PR
 
 DEPLOY
  14. deploy-verify  — infra checks + browser smoke tests against live prod
@@ -460,7 +479,133 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 15. `framework-validator` — Framework Validation
+### 15. `spec-red-team` — Spec Red-Team
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** Before coding begins on a build step (after the technical design is approved).
+
+**Role:** Adversarially reviews spec sections before coding. Finds gaming vectors, contradictions, implicit assumptions, and missing edge cases.
+
+**Process:**
+1. Formulates 5–10 adversarial questions based on the spec section and technical design.
+2. Invokes `agy` (Gemini) with an adversarial prompt to ensure vendor-independent analysis.
+3. Reviews findings and creates `spec-gap` GitHub issues for genuine problems.
+
+**Escalation out:** `pm-agent` (to resolve spec gaps).
+**Escalation in:** None.
+
+---
+
+### 16. `risk-assessor` — Risk Assessor
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** After the coder completes a build step, before the internal review chain starts.
+
+**Role:** Evaluates code changes to establish a validated risk tier and produce a ranked inspection brief for reviewers.
+
+**Constraints:**
+- Can only raise the coder's self-declared risk tier, never lower it (unless a human tier override exists).
+- Must produce a ranked inspection brief.
+
+**Process:**
+1. Applies deterministic floor rules (e.g. auth/PII changes force HIGH tier, booking gate forces CRITICAL).
+2. Runs static and IP validators (`run_validators.sh`, `prompt_audit_risk.py`, `ip_check.py`).
+3. For MEDIUM+ steps, invokes the `prompt-fidelity` subagent. For HIGH+ steps, invokes the `dep-mapper` and `risk-historian` subagents.
+4. Synthesizes risk scores to determine the final validated tier.
+5. Produces a ranked inspection brief.
+
+**Escalation out:** None (writes output to `.claudetmp/oversight/validators/risk-assessment.md`).
+**Escalation in:** None.
+
+---
+
+### 17. `risk-historian` — Historical Risk Analyst
+
+**Model:** `claude-haiku-4-5-20251001`
+**Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
+
+**Role:** Queries GitHub issues and git logs to build a historical risk profile of changed files.
+
+**Process:**
+1. Queries GitHub issues matching specific risk labels (e.g., bug, security-finding, design-concern, spec-gap).
+2. Analyzes git log churn (commits in the last 90 days) and fix commit density (commits matching fix/bug/error in the last 180 days).
+3. Classifies historical risk (LOW/MEDIUM/HIGH) based on the results.
+
+**Escalation out:** `risk-assessor` (reports findings).
+**Escalation in:** `risk-assessor`.
+
+---
+
+### 18. `dep-mapper` — Dependency Mapper
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
+
+**Role:** Maps the project's dependency graph for changed files (imports, references, and framework wiring) to assess the blast radius.
+
+**Process:**
+1. Checks direct imports and references across the codebase.
+2. Identifies framework-level implicit wiring (signals, events, middleware, views, templates).
+3. Classifies the blast radius category and applies risk multipliers.
+
+**Escalation out:** `risk-assessor` (reports findings).
+**Escalation in:** `risk-assessor`.
+
+---
+
+### 19. `prompt-fidelity` — Prompt Fidelity Validator
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** Subagent of `risk-assessor` (runs only at MEDIUM+).
+
+**Role:** Performs semantic comparison of prompt artifacts against generated code to verify faithful implementation.
+**Status:** Designed and stubbed; performs a best-effort manual comparison until full automated comparison logic is implemented.
+
+**Process:**
+1. Verifies positive fidelity (implements all requirements).
+2. Verifies negative fidelity (adheres to negative constraints).
+3. Catches scope creep and prompt-code discrepancies.
+
+**Escalation out:** `risk-assessor` (reports fidelity gaps).
+**Escalation in:** `risk-assessor`.
+
+---
+
+### 20. `oversight-evaluator` — Oversight Evaluator
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** After all internal reviewers approve a build step and system tests pass.
+
+**Role:** Evaluates compliance and quality of the build step review process.
+
+**Process:**
+1. Phase 1 (Compliance): Checks the sign-off register against the step manifest's required list. Confirms prompt-artifact compliance and checks for human authorization on CRITICAL steps.
+2. Phase 2 (Quality): Reviews convergence failures (long reviewer loops, overrides), resolved critical findings, confidence gaps, second review findings.
+3. Produces a final recommendation (`PROCEED`, `CONDITIONAL_PROCEED`, or `ESCALATE`).
+
+**Escalation out:** `oversight-orchestrator` (via recommendation output).
+**Escalation in:** None.
+
+---
+
+### 21. `oversight-orchestrator` — Oversight Orchestrator
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** After `oversight-evaluator` produces its recommendation.
+
+**Role:** Acts on the evaluator's recommendation to open PRs, prepare panel context, or escalate compliance/quality issues to the human.
+
+**Process:**
+1. On `PROCEED`: Writes panel context (excluding internal findings) and full handoff docs, opens the PR with AI-PR attribution, and prints the panel command.
+2. On `CONDITIONAL_PROCEED`: Same as PROCEED, but appends the "Human Review Required Before Merge" section.
+3. On `ESCALATE`: Blocks PR creation and outputs specific escalation details and instructions to the console.
+
+**Escalation out:** Human (on `ESCALATE` or missing human authorization).
+**Escalation in:** None.
+
+---
+
+### 22. `framework-validator` — Framework Validation
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing any change to `.claude/agents/`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, or `scripts/framework/`.
@@ -470,15 +615,17 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Process:**
 1. Runs `scripts/framework/check_agents_static.sh` — structural checks, no AI. Must pass before proceeding.
 2. Runs `scripts/framework/validate_agents.sh` — agy (consistency/completeness) + codex (adversarial gaps). Reads output from `.claudetmp/framework/validation-*.md`.
-3. Synthesizes findings: cross-vendor findings (both reviewers) are treated as MUST_FIX; single-reviewer findings are investigated before acting.
-4. Delegates fixes to domain owners: path errors → coder; escalation chain breaks → human immediately; scope-creep risk → architect.
+3. Runs `scripts/framework/validate_docs.sh` — checks documentation coverage and addresses findings.
+4. Runs `scripts/framework/validate_spec_compliance.sh` — invokes `spec-compliance-validator` to verify governance requirements.
+5. Synthesizes findings: cross-vendor findings (both reviewers) are treated as MUST_FIX; single-reviewer findings are investigated before acting.
+6. Delegates fixes to domain owners: path errors → coder; escalation chain breaks → human immediately; scope-creep risk → architect.
 
 **Escalation out:** Human immediately (broken escalation chain); `architect` (scope-creep or responsibility gaps); domain owner agents for content fixes.
 **Escalation in:** Invoked before committing framework changes; also invoked by `post-change-sweep` when framework files are in the diff.
 
 ---
 
-### 16. `framework-setup-validator` — Framework Installation Check
+### 23. `framework-setup-validator` — Framework Installation Check
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After running `scripts/framework/install.sh` in a new repo; when troubleshooting a framework installation.
@@ -492,7 +639,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 17. `doc-validator` — Documentation Coverage Validator
+### 24. `doc-validator` — Documentation Coverage Validator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing documentation changes; by `framework-validator` when Phase 3 of `run_framework_validation.sh` finds issues.
@@ -510,7 +657,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 18. `spec-compliance-validator` — Governance Requirements Compliance
+### 25. `spec-compliance-validator` — Governance Requirements Compliance
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Periodically as a health check; after significant agent or methodology changes; by `framework-validator` when Phase 4 of `run_framework_validation.sh` finds issues.
@@ -531,12 +678,12 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - REQ-006–007: Five self-flagging behaviors enforced; prompt capture for MEDIUM+
 - REQ-008–009: Each `implemented` decision satisfies its verification criterion
 
-**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification).
+**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification); `technical-design` or agent author (missing loop exit); fix directly (wrong model assignment).
 **Escalation in:** From `framework-validator` (Phase 4 failure); invoked directly by human.
 
 ---
 
-### 19. `post-change-sweep` — Post-Change Orchestrator
+### 26. `post-change-sweep` — Post-Change Orchestrator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After any batch of changes, before committing. The single entry point that triggers all relevant reviews.
@@ -549,13 +696,15 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 |---|---|---|
 | framework | `.claude/agents/*.md`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, `scripts/framework/**` | 1 (independent) |
 | application code | `**/*.py` (excl. tests/migrations/scripts) | 2 (sequential: code-reviewer → parallel reviewers) |
+| migrations | `**/migrations/*.py` | 2 (sequential: code-reviewer → parallel reviewers) |
 | templates | `**/templates/**/*.html` | 2 (parallel with security/privacy after code-reviewer) |
 | infrastructure | `docker-compose.yml`, `Caddyfile`, `*.env.example` | 2 (parallel, independent of code-reviewer) |
 | tests | `tests/**/*.py`, `conftest.py` | 3 (independent) |
 | design pack | `Specs/**/*design*/**` | 4 (independent) |
 | spec | `Specs/*.md` | 5 (independent) |
+| admin audit | `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` | 2 (sequential: code-reviewer → parallel reviewers) |
 
-Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, and `a11y-reviewer` run.
+Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, and `a11y-reviewer` run. `privacy-reviewer` is triggered if changed files touch accounts, parking, PII fields, or erasure logic.
 
 **Shell entrypoint:** `scripts/framework/run_post_change_sweep.sh` — categorizes changed files and prints the routing plan. The agent reads this and invokes the listed agents.
 
@@ -569,7 +718,8 @@ Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `pr
 ```
 Human
   ├── pm-agent          (product decisions, structural spec changes)
-  │     └── receives from: technical-design, unit-test, system-test, ux-designer
+  │     └── receives from: technical-design, unit-test, system-test, ux-designer,
+  │                        spec-red-team
   ├── architect         (technical decisions, final arbiter)
   │     └── receives from: technical-design, coder, code-reviewer,
   │                        security-reviewer, privacy-reviewer,
@@ -604,6 +754,24 @@ deploy-verify
   │                  coder (functional failures),
   │                  human (missing backups, unresolvable)
   └── triggered by:  human (after docker compose up)
+
+spec-red-team
+  └── escalates to:  pm-agent (spec gaps)
+
+risk-assessor
+  ├── invokes:       prompt-fidelity (at MEDIUM+), dep-mapper (at HIGH+),
+  │                  risk-historian (at HIGH+)
+  └── receives from: prompt-fidelity, dep-mapper, risk-historian
+
+prompt-fidelity
+  └── escalates to:  risk-assessor (fidelity gaps), human (missing prompt artifact)
+
+oversight-evaluator
+  └── escalates to:  oversight-orchestrator (compliance/quality recommendation)
+
+oversight-orchestrator
+  ├── escalates to:  human (on ESCALATE or missing human authorization)
+  └── receives from: oversight-evaluator
 ```
 
 ---
@@ -614,13 +782,13 @@ deploy-verify
 
 ### Quick reference — what gets copied
 
-All files from `.claude/agents/` are copied verbatim. Current agent list (25 agents):
+All files from `.claude/agents/` are copied verbatim. Current agent list (26 agents):
 
 **Pipeline agents** (core build pipeline):
 `pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `infra-reviewer`, `unit-test`, `system-test`, `deploy-verify`
 
 **Oversight agents** (risk scoring, second review, cross-vendor panel):
-`risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `oversight-evaluator`, `oversight-orchestrator`
+`risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`
 
 **Framework agents** (pipeline self-validation):
 `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator`, `post-change-sweep`

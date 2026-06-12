@@ -281,7 +281,7 @@ Return JSON:
     tmpfile=$(mktemp .claudetmp/validate_compliance_codex.XXXXXX)
     printf '%s' "$prompt" > "$tmpfile"
     local result
-    result=$(codex --quiet < "$tmpfile" 2>/dev/null) || \
+    result=$(codex exec < "$tmpfile" 2>/dev/null) || \
         result='{"reviewer":"codex","error":"codex invocation failed","bypass_vectors":[],"verdict":"error","summary":"codex failed"}'
     rm -f "$tmpfile"
     echo "$result"

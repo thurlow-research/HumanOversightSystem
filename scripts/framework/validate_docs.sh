@@ -240,7 +240,7 @@ Return JSON:
     tmpfile=$(mktemp /tmp/validate_docs_codex_XXXXXX)
     printf '%s' "$prompt" > "$tmpfile"
     local result
-    result=$(codex --quiet < "$tmpfile" 2>/dev/null) || \
+    result=$(codex exec < "$tmpfile" 2>/dev/null) || \
         result='{"reviewer":"codex","error":"codex invocation failed","attacks":[],"verdict":"error","summary":"codex failed"}'
     rm -f "$tmpfile"
     echo "$result"

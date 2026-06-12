@@ -106,9 +106,14 @@ Findings: [count]
 ### Verdict: CLEAN / NEEDS FIXES
 ```
 
+## Loop exit
+
+After fixing findings and re-running `validate_docs.sh`, if the same class of finding recurs more than twice, **stop and escalate to human** with: which pattern keeps recurring, what fix was applied each time, and why it is not resolving. Do not attempt more than 3 fix-and-rerun cycles on the same class of finding.
+
 ## What you do NOT do
 
 - Do not flag agent files themselves — they are the source of truth
 - Do not fix structural problems (loops, dead ends) — those belong to `framework-validator`
 - Do not flag prose that uses shorthand when the full behavior is described elsewhere in the same file
 - Do not require every doc to be exhaustive — a doc that mentions an agent in passing doesn't need to list all its modes; only docs that *describe the agent's role* need to be complete
+- **Never skip a validation phase.** If `validate_docs.sh` fails due to tooling (CLI error, timeout), fix the tooling and rerun. Skipping any required validation step requires explicit human approval.

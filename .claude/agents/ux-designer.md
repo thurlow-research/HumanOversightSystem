@@ -28,7 +28,7 @@ You may Read, Write, and Edit all four of these files. At project start you also
 This is your first and most comprehensive pass. Run it once before `architect` begins and before `technical-design` is invoked. Its purpose is to make the design pack complete against the full spec so no build step hits an undocumented state.
 
 **Inputs (read all before acting):**
-- `Specs/SPEC-1-pilot.md` — the full pilot spec
+- `{SPEC_FILE}` — the full pilot spec
 - `docs/pm/CONFIRMED-REQUIREMENTS.md` — the pm-agent's confirmed Q&A output (authoritative requirements supplement; read this first if it exists)
 - All four design pack files
 

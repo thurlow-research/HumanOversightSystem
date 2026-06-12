@@ -43,7 +43,7 @@ Map each changed file to one or more domains using these rules:
 | **migrations** | `**/migrations/*.py` |
 | **templates** | `**/templates/**/*.html` |
 | **tests** | `tests/**/*.py`, `**/test_*.py`, `conftest.py` |
-| **infrastructure** | `docker-compose.yml`, `Caddyfile`, `**/*.env.example`, `scripts/backup.sh` |
+| **infrastructure** | `docker-compose.yml`, `Caddyfile`, `**/*.env.example`, `{project}/scripts/backup.sh` |
 | **design-pack** | `Specs/condoparkshare-design-pack/**` |
 | **spec** | `Specs/*.md` (excluding design-pack) |
 | **admin-audit** | `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` |

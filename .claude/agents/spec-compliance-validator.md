@@ -96,5 +96,11 @@ Decisions marked `pending` represent intended-but-not-yet-implemented governance
 - **Cross-vendor constraint violated** → human immediately (governance integrity)
 - **Human gate missing at CRITICAL** → human immediately
 - **Decision marked implemented but failing verification** → human (was the decision overridden without being recorded?)
-- **Loop exit missing** → technical-design (untestable design issue) or the agent's author
+- **Loop exit missing** → fix directly (add loop exit to the agent); if the missing loop exit is in a consumer-project agent (coder, architect, etc.) escalate to the project's technical-design agent
 - **Model assignment wrong** → fix directly (frontmatter change) then re-run static check
+
+## Loop exit
+
+After fixing compliance failures and re-running `validate_spec_compliance.sh`, if the same finding recurs more than twice, **stop and escalate to human** with the iteration count and what was tried. Do not attempt more than 3 fix-and-rerun cycles.
+
+**Never skip a validation phase.** If `validate_spec_compliance.sh` fails due to tooling, fix the tooling and rerun. Skipping any required validation step requires explicit human approval.

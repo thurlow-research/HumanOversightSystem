@@ -28,7 +28,12 @@ On the framework validation run (June 12):
 
 **Decorrelated failure modes.** The bugs caught by agy were not caught by the developer or by Claude during authoring. This is consistent with the "decorrelated error" hypothesis: different AI systems from different vendors, trained on different data with different architectures, have different blind spots. A bug invisible to the authoring model may be visible to the reviewing model.
 
-**False positive rate is manageable.** One confirmed false positive (the `token_tracker.py` signature mismatch that was actually correct) across two sessions suggests the signal-to-noise ratio is high enough for the review outputs to be acted on directly rather than requiring extensive triage.
+**False positive rate is quantifiable and manageable.** Across three review runs, empirical false positive rates were:
+- June 11 (agy, first self-review): ~1 false positive of ~8 findings (~12%)
+- June 12 morning (agy, framework validation): low false positive rate on 13 structural findings
+- June 12 afternoon (codex, after tooling fix): ~20 of 33 findings were design tensions, consumer-project concerns, or stubs acknowledged as stubs (~60%)
+
+The codex adversarial rate (~60% non-actionable) is higher than agy's consistency review rate. This is expected: adversarial probing surfaces more edge-case concerns that turn out to be accepted trade-offs rather than bugs. Both rates are manageable — the triage process (categorize as real, design tension, or context-specific) takes less time than fixing everything codex flags.
 
 **Real bugs at all severity levels.** The findings span critical (logic errors), high (contract violations), medium (design issues), and low (style/documentation) — consistent with what a human code reviewer would surface. The review is not narrowly focused on one class of error.
 
@@ -76,3 +81,4 @@ June 12, Phase 2 validation output (`validation-20260612T115530.md`):
 
 - `self-governance-recursion.md` — the framework-applied-to-itself context in which these findings were made
 - `unenforceable-rules-need-verification-mechanisms.md` — one specific high-severity finding expanded into its own finding
+- `tooling-drift-in-validation-pipelines.md` — a prerequisite condition: the cross-vendor review data above is only meaningful when the tools are actually running correctly
