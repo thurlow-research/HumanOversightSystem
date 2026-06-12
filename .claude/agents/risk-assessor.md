@@ -29,6 +29,11 @@ Before starting, read:
 - The coder's self-declared RISK and CONFIDENCE from the commit message or handoff
 - `contract/step-manifest.yaml` — the baseline risk tier for this build step
 - `docs/design/TECHNICAL-DESIGN.md` (or equivalent) — the implementation contract
+- Prompt artifacts: check git trailers for `Prompt-Artifact:` on recent commits
+  ```bash
+  git log -10 --format="%B" -- [changed files] | grep "Prompt-Artifact:"
+  ```
+  Note all referenced artifact paths — used in Phase 2 and Phase 3.
 
 ---
 
@@ -58,16 +63,41 @@ Run all scoring validators against the changed files:
 bash scripts/oversight/run_validators.sh [changed files...]
 ```
 
-Read `.claudetmp/oversight/validators/summary.json` for the composite score and per-dimension scores. Note which dimensions scored highest.
+Additionally run the prompt-specific validators:
+
+```bash
+# Prompt ambiguity + fidelity surface (structural, deterministic)
+python3 scripts/oversight/validators/prompt_audit_risk.py \
+  --prompts-dir prompts/ --step {N} [changed files...]
+
+# IP/provenance check (license gate + prompt clean-room + regurgitation stub)
+python3 scripts/oversight/validators/ip_check.py \
+  --prompts-dir prompts/ [changed files...]
+```
+
+Read `.claudetmp/oversight/validators/summary.json` for the composite score. Note which dimensions scored highest.
+
+**Prompt-specific signals to note:**
+- `prompt_ambiguity.ambiguity_score > 0.5`: the spec was unclear — the coder made assumptions
+- `prompt_ambiguity.missing_artifacts`: MEDIUM+ files without prompt artifacts (compliance gap)
+- `ip_check.score > 0.3`: dependency license concerns or attribution triggers in prompt
+- `ip_check.raw_value.regurgitation.stub = true`: Level 3 (ai-gen-code-search) not yet active
 
 ---
 
-## Phase 3: Semantic analysis (HIGH+ only)
+## Phase 3: Semantic analysis (MEDIUM+ for prompt; HIGH+ for dep/history)
 
-For steps at HIGH or CRITICAL after phases 1-2, invoke:
+For steps at MEDIUM or above where prompt artifacts exist, invoke:
 
-1. **dep-mapper** subagent — blast radius and fan-in for changed files
-2. **risk-historian** subagent — historical bug density and git churn
+1. **prompt-fidelity** subagent — semantic comparison of prompt vs. generated code.
+   Pass: the prompt artifact path(s) found in Phase 1 inputs + the changed files.
+   Use the output to identify unexplained additions, missing specifications, and
+   loose interpretations. These feed directly into the inspection brief.
+
+For steps at HIGH or CRITICAL, also invoke:
+
+2. **dep-mapper** subagent — blast radius and fan-in for changed files
+3. **risk-historian** subagent — historical bug density and git churn
 
 At CRITICAL, also read:
 - The relevant spec section and check prompt-code fidelity: does the code implement what the spec says, or did the coder interpret loosely?

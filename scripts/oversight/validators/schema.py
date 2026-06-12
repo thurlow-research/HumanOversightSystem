@@ -55,15 +55,17 @@ def normalize(value: float, low: float, high: float) -> float:
 
 # Weights for composite score — tunable as research data accumulates
 WEIGHTS = {
-    "risk_number":          0.20,
-    "cyclomatic":           0.10,
+    "risk_number":          0.18,
+    "cyclomatic":           0.08,
     "cognitive":            0.08,
     "function_metrics":     0.07,
     "n1_queries":           0.08,
     "migration_risk":       0.12,
     "static_analysis":      0.15,
     "historical_density":   0.12,
-    "hallucination_surface": 0.08,
+    "hallucination_surface": 0.06,
+    "ip_check":             0.08,
+    "prompt_ambiguity":     0.07,
 }
 
 # Score thresholds that map to risk tier

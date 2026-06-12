@@ -110,6 +110,16 @@ run_validator "migration_risk"      "$VALIDATORS_DIR/migration_scorer.py"    "${
 # Historical density — uses git + gh, works on any file type
 run_validator "historical_density"  "$VALIDATORS_DIR/issue_query.py"         "${ALL_FILES[@]}"
 
+# IP / provenance — license gate + prompt clean-room (all file types; levels 1-2 active)
+run_validator "ip_check"            "$VALIDATORS_DIR/ip_check.py" \
+    --prompts-dir "prompts"         "${ALL_FILES[@]}"
+
+# Prompt audit — ambiguity score + fidelity surface (Python files + prompt artifacts)
+if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    run_validator "prompt_ambiguity"    "$VALIDATORS_DIR/prompt_audit_risk.py" \
+        --prompts-dir "prompts" --step "${STEP:-}"  "${PY_FILES[@]}"
+fi
+
 echo ""
 
 # Aggregate into summary.json

@@ -134,19 +134,56 @@ call_model() {
 # other reviewers it is not a vendor LLM CLI but a local function we own — so its brain
 # can grow without ever re-wiring the panel around it.
 #
-# STATUS: PLACEHOLDER (IP_STUB=1). It performs NO analysis and always returns a clean,
-# empty verdict — Scott's deliberate "start stupid, says it's ok" v0. A clean result is
-# therefore NOT an IP clearance (the panel summary says so). Growth path — each step
-# keeps this same {"findings":[...]} interface, so only this function changes:
-#   1. deterministic license gate: flag changed dependency manifests + vendored files
-#      whose license is copyleft/unknown (scancode / license-checker) → tier1/tier2.
-#   2. attribution check: permissive-licensed code copied without its notice.
-#   3. regurgitation lens: similarity/LLM pass flagging snippets that look lifted; the
-#      prompt-as-source artifact (D8) is the clean-room counter-evidence.
-# When a step lands, set IP_STUB=0 to drop the placeholder caveat from the summary.
-IP_STUB=1
-ip_agent() {  # $1 = the standard review prompt/diff (ignored while IP_STUB=1)
-  echo '{"findings":[]}'
+# IP/provenance agent — now FUNCTIONAL (IP_STUB=0 is the default).
+#
+# Growth path (DECISIONS.md D19) — what is implemented:
+#   Level 1 ✅: dependency license gate via ip_check.py
+#              Uses ScanCode Toolkit if installed (pip install scancode-toolkit)
+#              Falls back to PyPI/npm API. Flags copyleft/unknown licenses.
+#   Level 2 ✅: prompt clean-room verification via ip_check.py
+#              Reads prompt artifacts (Prompt-Artifact: git trailers → prompts/)
+#              Flags attribution triggers in prompts; notes clean-room signals.
+#   Level 3 🔧: regurgitation lens — STUB
+#              Planned: ai-gen-code-search (AboutCode, LSH snippet matching)
+#              https://github.com/aboutcode-org/ai-gen-code-search
+#              Install: pip install ai-gen-code-search
+#              Activate: set IP_REGURGITATION_ENABLED=1
+#
+# ScanCode install (all platforms): pip install scancode-toolkit
+# On Faberix (Ubuntu long-runner): pip install --user scancode-toolkit
+#
+# Set IP_STUB=1 to revert to empty stub (disables all three levels).
+IP_STUB="${IP_STUB:-0}"
+ip_agent() {  # $1 = the standard review prompt/diff
+  if [[ "$IP_STUB" == "1" ]]; then
+    echo '{"findings":[]}'
+    return
+  fi
+  # Build file list from changed files (global CHANGED_FILES set in preflight)
+  local changed_files_arr=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && changed_files_arr+=("$f")
+  done <<< "${CHANGED_FILES:-}"
+
+  if [[ ${#changed_files_arr[@]} -eq 0 ]]; then
+    echo '{"findings":[],"note":"no changed files detected"}'
+    return
+  fi
+
+  local ip_script
+  ip_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/validators/ip_check.py"
+
+  if [[ ! -f "$ip_script" ]]; then
+    # Try relative to CWD (when run from project root)
+    ip_script="scripts/oversight/validators/ip_check.py"
+  fi
+
+  if [[ -f "$ip_script" ]]; then
+    python3 "$ip_script" --prompts-dir "prompts" "${changed_files_arr[@]}" 2>/dev/null || \
+      echo '{"findings":[],"error":"ip_check.py failed"}'
+  else
+    echo '{"findings":[],"note":"ip_check.py not found — install HOS scripts first"}'
+  fi
 }
 
 # ── Preflight ───────────────────────────────────────────────────────────────---

@@ -45,6 +45,20 @@ Validated tier: {tier}  |  Composite score: {score}
 [Copy ## Panel Context from the evaluator output verbatim — risk scores, probe targets,
 spec sections. Do NOT include internal review findings or how they were resolved.]
 
+## Authoring intent (from prompt artifacts)
+[For each changed file that has a Prompt-Artifact: trailer, include a summary of
+what the prompt specified — what the code was ASKED to do. The panel uses this to
+check whether the code faithfully implements the intent, not just whether it is
+correct in isolation.
+
+Format:
+  {filename}: prompted to implement [X, Y, Z]. Check: does the code do exactly
+  this and no more? Flag anything the code does that the prompt didn't specify.
+
+Source: read the prompt artifacts referenced in git trailers, or the relevant
+sections of docs/design/TECHNICAL-DESIGN.md. Include verbatim spec constraints
+(especially "must NOT" constraints) — these are most commonly violated silently.]
+
 ## Spec sections to verify
 [Relevant spec sections for this step — for independent adherence check]
 ```

@@ -44,7 +44,16 @@ For each required role, check:
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
 - For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
 
-If any compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
+**Prompt artifact compliance (MEDIUM+ steps):**
+- For each commit in this build step, check for a `Prompt-Artifact:` trailer:
+  ```bash
+  git log --format="%H %B" [step commits] | grep "Prompt-Artifact:"
+  ```
+- If any MEDIUM+ commit lacks a `Prompt-Artifact:` trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items list so human can verify intent was captured another way, e.g. as a design doc section reference)
+- If the referenced artifact path does not exist in the repo → **COMPLIANCE FAIL** (the trailer points to a missing file)
+- Note: in multi-agent builds the artifact may be referenced as `docs/design/TECHNICAL-DESIGN.md#section-N` rather than a `prompts/` file — both are valid
+
+If any hard compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
 
 ---
 
