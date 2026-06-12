@@ -48,7 +48,21 @@ steps:
     system_test_applicable: true
     human_gate_required: true
 
-  # Add remaining steps here following the same pattern.
+  # Example: step with UI templates requiring ui + a11y review
+  # - id: 5
+  #   name: "[Step 5 name — templates/UI]"
+  #   risk_tier: MEDIUM
+  #   required_signoffs: [code-review, ui, a11y, test-system, process]
+  #   system_test_applicable: true
+
+  # Example: infrastructure step
+  # - id: 11
+  #   name: "[Step 11 name — deploy config]"
+  #   risk_tier: HIGH
+  #   required_signoffs: [code-review, security, infra, test-unit]
+  #   system_test_applicable: false
+
+  # Add remaining steps following the same pattern.
   # CRITICAL steps: add human_gate_required: true
   # Steps with templates: add ui, a11y to required_signoffs
   # Infrastructure steps: add infra to required_signoffs

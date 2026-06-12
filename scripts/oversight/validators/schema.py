@@ -68,12 +68,16 @@ WEIGHTS = {
     "prompt_ambiguity":     0.07,
 }
 
-# Score thresholds that map to risk tier
+# Score thresholds that map to risk tier.
+# Format: (lo_inclusive, hi_exclusive) — score < hi maps to that tier.
+# score_to_tier() uses exclusive upper bounds; do NOT use lo/hi directly
+# for range checks as the tuples look inclusive but hi is exclusive.
+# Boundary value 0.30 → MEDIUM (not LOW); 0.55 → HIGH; 0.78 → CRITICAL.
 TIER_THRESHOLDS = {
-    "LOW":      (0.00, 0.30),
-    "MEDIUM":   (0.30, 0.55),
-    "HIGH":     (0.55, 0.78),
-    "CRITICAL": (0.78, 1.00),
+    "LOW":      (0.00, 0.30),   # score < 0.30
+    "MEDIUM":   (0.30, 0.55),   # 0.30 ≤ score < 0.55
+    "HIGH":     (0.55, 0.78),   # 0.55 ≤ score < 0.78
+    "CRITICAL": (0.78, 1.00),   # score ≥ 0.78
 }
 
 

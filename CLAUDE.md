@@ -26,20 +26,41 @@ contract/
   step-manifest.template.yaml  Project config template
 .claude/agents/        Oversight layer agents (evaluator, orchestrator, risk-assessor, etc.)
 scripts/
-  install.sh → root-level, also at scripts/
-  run_panel.sh           Outer loop: post-PR cross-vendor panel
-  run_second_review.sh   Transition: pre-PR cross-vendor second review
+  install.sh             Platform-aware installer (macOS/Linux); installs Python,
+                         ScanCode Toolkit, gh, pip packages, and scaffolds target project
+  run_panel.sh           Outer loop: post-PR cross-vendor panel (reads panel-context.md only)
+  run_second_review.sh   Transition: pre-PR cross-vendor second review (machine-readable verdict)
   run_red_team.sh        Checkpoint: system-level adversarial red-team
+  review_self.sh         Self-review: sends HOS to agy or codex (--reviewer flag)
+  reverify_self.sh       Targeted re-review of fixes against original findings
   capture_prompt.sh      Prompt artifact capture
   prompt_audit.sh        Prompt provenance audit
   setup_oversight.sh     Install framework into a target project
   setup_clis.sh          Machine bootstrap (installs agent CLIs)
   oversight/
-    validators/          Risk scoring scripts (Python, deterministic)
+    validators/          Risk scoring scripts (Python, deterministic):
+      rn_calculator.py     Dai et al. Risk Number (nesting calibrated from bug data)
+      complexity_metrics.py  Cyclomatic + cognitive complexity (radon)
+      function_metrics.py    Function length, param count, return paths
+      n1_detector.py         Django N+1 query heuristic
+      migration_scorer.py    Database migration risk classification
+      static_analysis.py     bandit MEDIUM findings as scored risk signal
+      ip_check.py            IP/provenance: license gate (ScanCode) + prompt clean-room
+                             + regurgitation stub (ai-gen-code-search, Level 3)
+      prompt_audit_risk.py   Prompt ambiguity + fidelity surface scoring
+      hallucination_surface.py  Version-sensitive API detection
+      issue_query.py         Historical bug density from GitHub issues + git churn
+      schema.py              Shared output schema, weights, tier thresholds
     gates/               Blocking pre-review checks (bash)
-    run_validators.sh    Orchestrate all validators
-    requirements.txt     Python dependencies
-templates/             Files copied by setup_oversight.sh
+    run_validators.sh    Orchestrate all validators (fail-closed CRITICAL if all fail)
+    token_tracker.py     External CLI token usage tracking + subscription impact report
+    requirements.txt     Python dependencies (ScanCode optional but recommended)
+audit/                 Committed audit trail (oversight-log.jsonl + timestamped .md files)
+contract/
+  OVERSIGHT-CONTRACT.md       What any compliant agent team must produce
+  step-manifest.template.yaml Project config template (includes UI/a11y + infra examples)
+templates/
+  base-agent-register-examples.md  Complete register entry examples for all 6 roles
 ```
 
 ---
@@ -71,12 +92,13 @@ These agents are invoked by the oversight pipeline, not by the base development 
 
 | Agent | Role | When invoked |
 |---|---|---|
-| `risk-assessor` | Scores code, directs reviewers, validates risk tier | After coder produces code, before review chain |
-| `dep-mapper` | Django dependency/blast-radius analysis | Subagent of risk-assessor |
-| `risk-historian` | Historical bug density from issues + git churn | Subagent of risk-assessor |
-| `spec-red-team` | Adversarial spec review before coding | Per build step, pre-coding |
-| `oversight-evaluator` | Compliance + quality check after internal review | After system tests pass |
-| `oversight-orchestrator` | Acts on evaluator recommendation (opens PR, escalates) | After evaluator produces recommendation |
+| `risk-assessor` | Scores code, directs reviewers, validates risk tier. Calls `prompt_audit_risk.py` + `ip_check.py` in Phase 2; calls `prompt-fidelity` at MEDIUM+ | After coder produces code, before review chain |
+| `dep-mapper` | Dependency/blast-radius analysis (generic; projects override with stack-specific version) | Subagent of risk-assessor at HIGH+ |
+| `risk-historian` | Historical bug density from GitHub issues + git churn | Subagent of risk-assessor |
+| `prompt-fidelity` | Semantic prompt-vs-code comparison: unexplained additions, missing specs, loose interpretations | Subagent of risk-assessor at MEDIUM+ when prompt artifact exists |
+| `spec-red-team` | Adversarial spec review before coding (uses agy for independence) | Per build step, pre-coding |
+| `oversight-evaluator` | Phase 1: compliance (sign-off register, §3 required fields, prompt artifacts, human authorization). Phase 2: quality (convergence failures, resolved findings, confidence gaps) | After system tests pass |
+| `oversight-orchestrator` | Acts on evaluator recommendation. Writes two separate files: `panel-context.md` (structural signals only, for panel) and `handoff.md` (full picture, for human/PR) | After evaluator produces recommendation |
 
 ---
 
@@ -84,28 +106,36 @@ These agents are invoked by the oversight pipeline, not by the base development 
 
 ```
 SPEC PHASE
-  spec-red-team agent  →  spec-gap issues
+  spec-red-team agent  →  spec-gap issues (uses agy for independence)
 
 INNER LOOP (per build step)
-  gates/*.sh           →  blocking (lint/type/secret/security-HIGH)
-  run_validators.sh    →  risk scores fed to risk-assessor agent
-  risk-assessor agent  →  composite score + inspection brief
+  gates/*.sh           →  blocking (lint/type/secret/security-HIGH/ScanCode)
+  run_validators.sh    →  9 risk dimensions; fail-closed CRITICAL if all validators fail
+                          includes: rn_calculator, complexity, N+1, migrations,
+                          ip_check (ScanCode license gate + prompt clean-room),
+                          prompt_audit_risk (ambiguity score + fidelity surface)
+  risk-assessor agent  →  composite score + inspection brief;
+                          calls prompt-fidelity subagent at MEDIUM+
   [internal review agents in the base project]
-  sign-off register updated
+  sign-off register updated (all entries must include Status/Agent/Artifact/Iterations)
 
 TRANSITION (post inner loop, pre-PR)
   system tests
-  run_second_review.sh  →  agy (MEDIUM+), codex (HIGH+)
-  oversight-evaluator   →  PROCEED / CONDITIONAL / ESCALATE
-  oversight-orchestrator → opens PR or escalates to human
+  run_second_review.sh  →  agy (MEDIUM+), codex (HIGH+); machine-readable verdict
+                           header; fail-closed when agy unavailable at MEDIUM+
+  oversight-evaluator   →  Phase 1: compliance; Phase 2: quality → PROCEED / CONDITIONAL / ESCALATE
+  oversight-orchestrator → writes panel-context.md (structural signals only)
+                           and handoff.md (full picture for human)
+                           → opens PR or escalates to human
 
 OUTER LOOP (per PR)
-  run_panel.sh          →  agy + codex + IP agent + Copilot
+  run_panel.sh          →  reads panel-context.md only (no internal findings);
+                           agy + codex + IP agent (ip_check.py, Level 1+2 active) + Copilot
   PR thread resolution  →  human gate
-  merge
+  audit/oversight-log.jsonl  ← append-only event log committed on each merge
 
 CHECKPOINT (milestone: after steps 3, 6, 10, 11)
-  run_red_team.sh       →  system-level adversarial + "not exploitable" attestation
+  run_red_team.sh       →  system-level adversarial + "not exploitable" attestations required
 ```
 
 ---

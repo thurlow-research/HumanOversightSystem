@@ -284,7 +284,10 @@ if [[ -f "$TRACKER" ]]; then
 fi
 
 # ── Create issues for HIGH/CRITICAL findings ──────────────────────────────────
-HIGH_COUNT=$(echo "$REVIEW_OUTPUT" | grep -c "\*\*\[CRITICAL\]\*\*\|\*\*\[HIGH\]\*\*" 2>/dev/null || echo "0")
+# grep -c exits 1 on zero matches; || echo "0" would then append a second "0" making
+# HIGH_COUNT="0\n0" which breaks [[ -gt ]]. Use || true and default separately.
+HIGH_COUNT=$(echo "$REVIEW_OUTPUT" | grep -cE '\*\*\[CRITICAL\]\*\*|\*\*\[HIGH\]\*\*' 2>/dev/null || true)
+HIGH_COUNT="${HIGH_COUNT:-0}"
 if [[ "$HIGH_COUNT" -gt 0 ]] && command -v gh &>/dev/null; then
     echo ""
     warn "$HIGH_COUNT HIGH/CRITICAL finding(s) — creating GitHub issue..."

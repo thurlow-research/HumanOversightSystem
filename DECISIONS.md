@@ -120,6 +120,58 @@ Vibe coding carries an **intellectual-property** risk the panel didn't cover: an
 - **The pipeline surfaces IP exposure; it does not adjudicate it.** Like security risk, an ELEVATED finding routes to a human — and specifically to *counsel*. This is not legal advice. The **prompt-as-source artifact (D8) doubles as clean-room counter-evidence**: code regenerable from a spec that never said "copy library X" is documentary provenance.
 
 ### Still open / pending
-- **IP agent — make it functional** 🔧 — implement growth step 1 (license gate) so `ipcheck` does real work; then flip `IP_STUB=0` (D19).
+- **IP agent Level 3** 🔧 — regurgitation lens via ai-gen-code-search (D20); activate once API access obtained.
 - **Raw archive + watermark** 🔧 — the append-only turn log + regenerable summaries (D8).
-- `.antigravitycli/` into `setup_oversight.sh`'s emitted `.gitignore`; Windows support in `setup_clis.sh`.
+- **`risk_tier_resolver.py`** 🔧 — deterministic script that validates final risk tier vs. coder declaration and manifest baseline; enforces "never lowers" invariant mechanically (D22).
+- Windows support in `setup_clis.sh`.
+
+---
+
+## 2026-06-11 — HOS Framework Bootstrap
+
+### D20. IP agent activation — Levels 1 and 2 now functional; Level 3 architecture clarified
+
+`IP_STUB=0` is now the default. `scripts/oversight/validators/ip_check.py` implements:
+- **Level 1 ✅**: dependency license gate. Uses ScanCode Toolkit (full text comparison against license database) when installed; falls back to PyPI/npm API. ScanCode is auto-installed by `install.sh` with platform-aware system deps (libmagic).
+- **Level 2 ✅**: prompt clean-room verification. Reads captured prompt artifacts (`Prompt-Artifact:` git trailers → `prompts/` directory). Flags attribution triggers ("based on", "copy from"); notes clean-room signals (spec-only sourcing).
+- **Level 3 🔧**: regurgitation stub. ai-gen-code-search (AboutCode) is **not** a standalone pip install — it requires deploying PurlDB + MatchCode + ScanCode.io as a service stack. A hosted evaluation system exists; research API access requested via hello@aboutcode.org. The stub is an explicit placeholder with `integration_active: False`.
+
+ScanCode is the right tool for Level 1; ai-gen-code-search is the right tool for Level 3 because it uses LSH to match against a FOSS code index — the open, auditable instantiation of the oversight control point this research studies.
+
+### D21. Prompt artifact integration as a first-class risk dimension
+
+Prompt artifacts (DECISIONS.md D8) are now integrated into the validation pipeline at three points:
+
+1. **Evaluator compliance** (Phase 1): MEDIUM+ commits must have `Prompt-Artifact:` git trailers. Missing trailers → COMPLIANCE WARN; missing referenced file → COMPLIANCE FAIL.
+2. **Panel context / authoring intent** (oversight-orchestrator): `step{N}-panel-context.md` now includes an "Authoring Intent" section — what the code was *asked* to build. Panel reviewers use this to check intent vs. implementation independently.
+3. **Risk-assessor Phase 2**: `prompt_audit_risk.py` scores prompt ambiguity (question density, hedging language, TBDs, process signals) and fidelity surface (code/prompt ratio, unmentioned functions). `prompt-fidelity` subagent (semantic) runs at MEDIUM+.
+
+Rationale: the prompt is the "C source" (D8); the generated code is the compiled artifact. Auditing the prompt for ambiguity and comparing it to the code for fidelity are the two dimensions no existing static analysis tool covers for AI-generated code.
+
+### D22. Panel context / handoff split — independence invariant enforced in code
+
+The oversight-orchestrator now writes two distinct files:
+- `step{N}-panel-context.md` — structural risk signals only (RN scores, probe targets, spec sections, authoring intent). No internal reviewer findings.
+- `step{N}-handoff.md` — full picture for the human/PR: internal review summary, second review findings, human authorization notes.
+
+`run_panel.sh` loads ONLY `panel-context.md`. Falling back to `handoff.md` is explicitly blocked (was previously a warning; now fails closed with a message). The section label in the reviewer prompt is "## Structural Panel Context" — not "handoff" — to prevent psychological anchoring.
+
+Rationale: if cross-vendor reviewers see what the internal team found and resolved, they anchor to it and lose their independence value. The whole point of cross-vendor review is decorrelated judgment.
+
+### D23. Audit trail design — current branch, dual format
+
+The committed audit trail (`audit/`) lives on the **current branch** rather than a separate audit branch. Evidence about code travels with the code through git history. Two complementary formats:
+- `oversight-log.jsonl` — append-only, one JSON event per line, machine-queryable via `jq`. Never too large at project scale (~50KB for a full 11-step build).
+- `YYYY-MM-DD-step-{N}-{name}-{TIER}.md` — timestamped human-readable per-step summaries. Browsable by `ls`; tier in filename for instant visual scan.
+
+Research value: the JSONL is the longitudinal empirical substrate for the dissertation — escaped-defect rate, sign-off patterns, risk tier accuracy, human escalation frequency.
+
+### D24. Self-review tooling — cross-vendor validation of the framework itself
+
+`review_self.sh` and `reverify_self.sh` implement a two-vendor review loop:
+- `review_self.sh --reviewer agy|codex` — sends the full HOS context bundle (~37k tokens) to agy or codex for independent review
+- `reverify_self.sh --reviewer agy|codex` — sends a targeted diff + original findings + rebuttals (~5k tokens) for re-verification
+
+The framework was reviewed by both agy and codex before the initial PR, with findings iterated to resolution. This is the methodology applied to itself: cross-vendor, independent, decorrelated review of the oversight system that performs cross-vendor review.
+
+Token cost for two full rounds: agy ~4% of $20/month; codex ~45% of $20/month reserve. Worth noting the codex reserve is meaningfully consumed by self-review and should be budgeted as a one-time framework cost.
