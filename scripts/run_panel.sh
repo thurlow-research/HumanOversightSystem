@@ -365,10 +365,11 @@ build_review_prompt() {  # $1=lens  $2=diff-chunk-file
   if [[ -n "$HANDOFF_CONTEXT" ]]; then
     handoff_section="$(cat <<HANDOFF
 
-## Handoff from internal review team
-The following context was prepared by the oversight system after the internal review
-chain completed. Use it to focus your review — do NOT let it prevent you from
-finding issues the internal team missed. Your job is to find what they did not.
+## Structural Panel Context
+The following is structural risk signal from the oversight system — composite scores,
+high-risk areas, and spec sections to verify. It contains NO internal reviewer findings.
+Use it to direct your attention. Your job is to find what the structural signals suggest
+may be risky — independently, without anchoring to any prior review conclusions.
 
 ${HANDOFF_CONTEXT}
 HANDOFF

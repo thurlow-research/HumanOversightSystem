@@ -494,22 +494,25 @@ print(d.get('usage',{}).get('output_tokens',d.get('usage',{}).get('completion_to
             --actual-prompt-tokens "$ACTUAL_IN" --actual-output-tokens "$ACTUAL_OUT" 2>/dev/null || true
     fi
 
-    # Record codex usage — also catches fallback mode (output in FALLBACK_OUT, not CODEX_OUT)
-    _CODEX_ACTUAL="${CODEX_OUT:-${FALLBACK_OUT:-}}"
+    # Record codex usage — tag fallback mode separately for telemetry fidelity
+    # Fallback (agy unavailable) uses stage "second-review-fallback" so reports
+    # distinguish a targeted security probe from a combined correctness+security pass.
+    if [[ -n "${FALLBACK_OUT:-}" ]]; then
+        _CODEX_ACTUAL="$FALLBACK_OUT"
+        _CODEX_STAGE="second-review-fallback"
+    elif [[ -n "${CODEX_OUT:-}" ]]; then
+        _CODEX_ACTUAL="$CODEX_OUT"
+        _CODEX_STAGE="second-review"
+    else
+        _CODEX_ACTUAL=""
+        _CODEX_STAGE="second-review"
+    fi
     if $RUN_CODEX && [[ -n "$_CODEX_ACTUAL" ]]; then
         CODEX_PROMPT_CHARS=$(( ${#DIFF_CONTENT} + 600 ))
         CODEX_OUT_CHARS=${#_CODEX_ACTUAL}
-        ACTUAL_IN=$(echo "$_CODEX_ACTUAL" | python3 -c \
-            "import json,sys
-d=json.load(sys.stdin)
-print(d.get('usage',{}).get('prompt_tokens',0))" 2>/dev/null || echo "0")
-        ACTUAL_OUT=$(echo "$_CODEX_ACTUAL" | python3 -c \
-            "import json,sys
-d=json.load(sys.stdin)
-print(d.get('usage',{}).get('completion_tokens',0))" 2>/dev/null || echo "0")
-        python3 "$TRACKER" record --vendor codex --stage second-review \
+        python3 "$TRACKER" record --vendor codex --stage "$_CODEX_STAGE" \
             --step "${STEP:-?}" --prompt-chars "$CODEX_PROMPT_CHARS" --output-chars "$CODEX_OUT_CHARS" \
-            --actual-prompt-tokens "$ACTUAL_IN" --actual-output-tokens "$ACTUAL_OUT" 2>/dev/null || true
+            2>/dev/null || true
     fi
 
     echo ""
