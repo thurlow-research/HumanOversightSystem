@@ -60,7 +60,7 @@ if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
     echo "Usage: $0 file.py [file2.py ...]"
     # Write a durable CRITICAL summary so downstream agents have an artifact to read
     mkdir -p "$OUT_DIR"
-    "$PYTHON" -c "
+    PYTHONSAFEPATH=1 "$PYTHON" -c "
 import json; from pathlib import Path
 summary = {'composite_score': 1.0, 'tier': 'CRITICAL', 'validator_count': 0,
            'successful_validators': 0,
@@ -97,7 +97,7 @@ run_validator() {
 
     if OUTPUT=$("$PYTHON" "$script" "${args[@]}" 2>/dev/null); then
         echo "$OUTPUT" > "$outfile"
-        SCORE=$(echo "$OUTPUT" | "$PYTHON" -c \
+        SCORE=$(echo "$OUTPUT" | PYTHONSAFEPATH=1 "$PYTHON" -c \
             "import json,sys; d=json.load(sys.stdin); print(f\"{d.get('score',0):.2f}\")" 2>/dev/null || echo "?")
         echo "score=$SCORE"
         RESULTS+=("$name")
@@ -127,6 +127,11 @@ run_validator "historical_density"  "$VALIDATORS_DIR/issue_query.py"         "${
 run_validator "ip_check"            "$VALIDATORS_DIR/ip_check.py" \
     --prompts-dir "prompts"         "${ALL_FILES[@]}"
 
+# Portability — hardcoded absolute paths, spec_from_file_location workarounds
+if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    run_validator "portability"         "$VALIDATORS_DIR/portability_check.py"  "${PY_FILES[@]}"
+fi
+
 # Prompt audit — ambiguity score + fidelity surface (Python files + prompt artifacts)
 if [[ ${#PY_FILES[@]} -gt 0 ]]; then
     run_validator "prompt_ambiguity"    "$VALIDATORS_DIR/prompt_audit_risk.py" \
@@ -136,7 +141,7 @@ fi
 echo ""
 
 # Aggregate into summary.json
-"$PYTHON" - <<'EOF'
+PYTHONSAFEPATH=1 "$PYTHON" - <<'EOF'
 import json, os, sys
 from pathlib import Path
 
