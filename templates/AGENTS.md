@@ -117,6 +117,34 @@ Do not proceed with the code until the blast radius is stated.
 
 ---
 
+## Working-State Invariant
+
+**Never prompt for the next incremental change on a broken working tree.**
+
+After every code change — before reporting the change as complete and before the human issues the next prompt — verify the working state:
+
+1. **Run lint** on the changed files (and any files those changes import)
+2. **Run type-checking** if the project has a type system
+3. **Run unit tests** for the changed module and its direct dependents
+4. **Check for broken imports** — confirm nothing that was importing the changed code is now broken
+
+If any check fails: **fix it in the same response**, before indicating the change is done. Do not ask the human to run the checks for you; run them yourself via the available tools.
+
+**Report the result:**
+```
+VERIFY: lint ✓ | types ✓ | tests ✓ (N passed) | working tree clean
+```
+or if something failed and you fixed it:
+```
+VERIFY: lint ✗ → fixed (missing import on line 12) | types ✓ | tests ✓
+```
+
+**Why this matters:** Each prompt you receive has limited context of prior changes. If you produce a change on an already-broken tree, the new change may appear correct in isolation while depending on a broken foundation. By the time CI runs, multiple prompts may have accumulated failures that are difficult to attribute. The verify step is the only reliable mechanism to keep the codebase in a known-good state throughout an incremental development session.
+
+**The house-of-cards failure mode:** When the verify step is skipped, each prompt builds on unverified output from the previous one. A type error introduced in prompt 2 may not manifest visibly until prompt 6 introduces a call site that triggers it. At that point, the apparent failure (prompt 6) is caused by a root cause (prompt 2), and neither the human nor the AI has the context to trace it without reverting work.
+
+---
+
 ## Code Review Assist Mode
 
 When asked to review existing code (human-written or AI-generated), structure your review as:
