@@ -22,11 +22,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$REPO_ROOT/.claudetmp/self-review"
 DRY_RUN=false
 REVIEW_FILE=""
+REVIEWER="agy"   # agy | codex
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)       DRY_RUN=true; shift ;;
         --review)        REVIEW_FILE="$2"; shift 2 ;;
+        --reviewer)      REVIEWER="$2"; shift 2 ;;
         --help|-h)       sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) shift ;;
     esac
@@ -241,24 +243,27 @@ PROMPT_TOKENS=$(( PROMPT_CHARS / 4 ))
 info "Prompt size: ~${PROMPT_CHARS} chars (~${PROMPT_TOKENS} tokens)"
 
 if $DRY_RUN; then
-    warn "DRY RUN — prompt built, agy not called"
+    warn "DRY RUN — prompt built, $REVIEWER not called"
     echo ""
     echo "Original review: $REVIEW_FILE"
-    echo "To run: $0"
+    echo "To run: $0 --reviewer $REVIEWER"
     exit 0
 fi
 
-if ! command -v agy &>/dev/null; then
-    echo "agy not found. Install + auth: ./scripts/setup_clis.sh"
+if ! command -v "$REVIEWER" &>/dev/null; then
+    echo "$REVIEWER not found. Install + auth: ./scripts/setup_clis.sh"
     exit 1
 fi
 
-# ── Call agy ─────────────────────────────────────────────────────────────────
-info "Sending to agy (~${PROMPT_TOKENS} estimated tokens)..."
+# ── Call reviewer ─────────────────────────────────────────────────────────────
+info "Sending to $REVIEWER (~${PROMPT_TOKENS} estimated tokens)..."
 echo ""
 
-REVIEW_OUTPUT=$(agy -p "$PROMPT" 2>&1) || {
-    echo "agy invocation failed (exit $?)" >&2
+case "$REVIEWER" in
+    agy)   REVIEW_OUTPUT=$(agy   -p "$PROMPT"   2>&1) ;;
+    codex) REVIEW_OUTPUT=$(codex exec "$PROMPT"  2>&1) ;;
+esac || {
+    echo "$REVIEWER invocation failed (exit $?)" >&2
     exit 1
 }
 
@@ -266,7 +271,7 @@ REVIEW_OUTPUT=$(agy -p "$PROMPT" 2>&1) || {
 {
     printf "# HumanOversightSystem Re-Verification\n"
     printf "Timestamp: %s\n" "$TIMESTAMP"
-    printf "Reviewer: agy (Gemini)\n"
+    printf "Reviewer: %s\n" "$REVIEWER"
     printf "Based on: %s\n" "$REVIEW_FILE"
     printf '%s\n\n' "---"
     printf '%s\n' "$REVIEW_OUTPUT"
@@ -280,7 +285,7 @@ ok "Report saved: $OUTFILE"
 TRACKER="$REPO_ROOT/scripts/oversight/token_tracker.py"
 if [[ -f "$TRACKER" ]]; then
     python3 "$TRACKER" record \
-        --vendor agy --stage self-review \
+        --vendor "$REVIEWER" --stage self-review \
         --step "meta-reverify" \
         --prompt-chars "$PROMPT_CHARS" \
         --output-chars "${#REVIEW_OUTPUT}" 2>/dev/null || true
