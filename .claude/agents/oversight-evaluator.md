@@ -26,8 +26,9 @@ You have two phases. Phase 1 (compliance) must pass before Phase 2 (quality) run
 Read these before starting:
 1. `contract/step-manifest.yaml` — what is required for this step
 2. `.claudetmp/signoffs/step{N}-register.md` — the sign-off record
-3. `.claudetmp/second-review/step{N}-*.md` — second review output (newest)
+3. `.claudetmp/second-review/step{N}-*.md` — second review output (newest, if present; absence means score was below both thresholds — that is valid, not a compliance failure)
 4. `.claudetmp/oversight/validators/risk-assessment.md` — validated risk tier
+5. `.claudetmp/oversight/step{N}-human-authorization.md` — CRITICAL steps only: human must create this file before the evaluator runs. If the step has `human_gate_required: true` and this file is absent or empty, compliance fails immediately in Phase 1.
 
 ---
 
@@ -41,7 +42,7 @@ For each required role, check:
 - For `test-unit`: is `Thresholds_met: true` present? If not → **COMPLIANCE FAIL**
 - For `test-system` (when `system_test_applicable: true`): is the entry present and `All_passing: true`? If not → **COMPLIANCE FAIL**
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
-- For steps with `human_gate_required: true` (CRITICAL): is there a human authorization on record? If not → **COMPLIANCE FAIL** (escalate immediately)
+- For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
 
 If any compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
 

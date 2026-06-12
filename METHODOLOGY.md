@@ -45,12 +45,12 @@ We deliberately use **multiple vendors and model tiers** — the whole point is 
 | **Claude** (Opus / Sonnet / Haiku) | Claude Max (20×) | `claude` CLI | Author (Opus), triage & cheap review (Haiku), arbiter (Sonnet) |
 | **OpenAI** | ChatGPT Pro | `codex` CLI (`codex exec`) | Independent reviewer / adversary (high risk) |
 | **Google** | Gemini Pro | `agy` (Antigravity CLI) | Independent cross-vendor reviewer; architecture/whole-repo lens |
-| **GitHub Copilot** | Copilot Pro ($10/mo) | GitHub-native PR review | **Baseline reviewer on _every_ PR** (automatic, in CI) |
+| **GitHub Copilot** | Copilot Pro | GitHub-native PR review | **Baseline reviewer on _every_ PR** (automatic, in CI) |
 
 **Key constraints that shape the design:**
 - These are **app/CLI subscriptions, not API keys.** To use the quota you pay for, each reviewer runs through its subscription-authenticated CLI — *not* a metered API. (Why the panel runs **locally**, not in CI — see §6.)
 - **Opus is the author**, so Opus may never review its own output. At the highest risk, the *independent* votes must be **cross-vendor** (Google/OpenAI); same-vendor Claude tiers can assist but don't count as the independent check.
-- **Copilot is the always-on floor, the cross-vendor panel is the escalation.** Copilot runs automatically on **every** PR (GitHub-native, in CI) — including LOW changes the local panel skips — so there is an AI review on everything without spending subscription quota. The cross-vendor panel (`agy`/`codex`) then layers on by risk. (Copilot Pro required; from 2026-06-01 each review is metered at a 13× premium-request multiplier + Actions minutes, ≈ 20+ reviews/mo on Pro — see [`DECISIONS.md` D16](DECISIONS.md).)
+- **Copilot is the always-on floor, the cross-vendor panel is the escalation.** Copilot runs automatically on **every** PR (GitHub-native, in CI) — including LOW changes the local panel skips — so there is an AI review on everything without spending subscription quota. The cross-vendor panel (`agy`/`codex`) then layers on by risk. (Copilot Pro required; see [`DECISIONS.md` D16](DECISIONS.md) for quota and metering details.)
 - **Quota-aware allocation:** spend the abundant Claude Max quota on high-frequency roles (author, triage, arbiter); reserve scarce ChatGPT Pro reasoning for high-risk review and adversarial passes; use Antigravity's large context for breadth.
 - **Why no Claude in the reviewer seat:** Opus is the author, so no Claude model casts an independent review — same-vendor judgement correlates errors. Sonnet is the **arbiter** (synthesis), never an independent reviewer; the independent votes are cross-vendor (`agy`/`codex`).
 

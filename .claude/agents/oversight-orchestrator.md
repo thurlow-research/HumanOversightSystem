@@ -137,6 +137,18 @@ To proceed after resolving:
 
 If there are compliance failures (missing sign-offs), state exactly which role is missing and which agent should produce it.
 
+If the failure is a missing human authorization for a CRITICAL step, print:
+```
+CRITICAL STEP AUTHORIZATION REQUIRED
+Create the file: .claudetmp/oversight/step{N}-human-authorization.md
+Contents: your explicit decision to proceed and the date.
+Example:
+  Authorized: {date}
+  Decision: Proceed to panel. Auth system reviewed by hand; rate-limiting fix verified.
+  Authorized by: {name}
+Re-run oversight-evaluator after creating the file.
+```
+
 ---
 
 ## What you do NOT do

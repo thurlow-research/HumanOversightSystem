@@ -84,7 +84,7 @@ Determine the final validated tier:
 - Take the maximum across all three sources
 - If the coder declared a LOWER tier than your assessment, state that you are raising it and why
 
-The final tier can never be lower than the coder's declaration or the step manifest baseline.
+The final tier can never be lower than the coder's declaration or the step manifest baseline — unless `.claudetmp/oversight/human-tier-override.md` exists and contains an explicit human decision for this step. The override file is the ONLY way to lower a tier; without it, treat all lower bounds as hard floors.
 
 ---
 

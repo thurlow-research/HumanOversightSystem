@@ -10,7 +10,7 @@ contract_version: "1"
 project: "[PROJECT NAME]"
 
 # Map oversight role keys → agent names in your project.
-# Role keys are defined in OVERSIGHT-CONTRACT.md §5.
+# Role keys are defined in OVERSIGHT-CONTRACT.md §3 (sign-off register schema).
 # Agent names are the 'name:' fields in your .claude/agents/*.md files.
 role_mappings:
   code-review:    code-reviewer

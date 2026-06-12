@@ -102,6 +102,17 @@ exit(0 if s >= t else 1)" 2>/dev/null && RUN_CODEX=true || true
 
 if ! $RUN_AGY && ! $RUN_CODEX; then
     echo "run_second_review: score=$SCORE below both thresholds (agy≥$AGY_THRESHOLD, codex≥$CODEX_THRESHOLD) — skip"
+    # Write a sentinel so oversight-evaluator can distinguish "skipped" from "missing"
+    mkdir -p ".claudetmp/second-review"
+    TS=$(date +%Y%m%dT%H%M%S)
+    cat > ".claudetmp/second-review/step${STEP}-${TS}.md" <<EOF
+# Second Review — Step ${STEP}
+Timestamp: ${TS}
+verdict: skipped
+reason: composite score=${SCORE} is below both thresholds (agy≥${AGY_THRESHOLD}, codex≥${CODEX_THRESHOLD})
+agy_threshold: ${AGY_THRESHOLD}
+codex_threshold: ${CODEX_THRESHOLD}
+EOF
     exit 0
 fi
 
@@ -114,15 +125,26 @@ if $RUN_AGY && ! $AGY_AVAILABLE && $CODEX_AVAILABLE && $RUN_CODEX; then
     echo "run_second_review: agy unavailable — codex will cover correctness lens too (degraded: one combined review)"
 fi
 
-# Fail-closed at HIGH+ (score ≥ 0.55): if BOTH vendors are unavailable, do not silently
-# proceed. An unreviewed HIGH+ step cannot go to PR without explicit human override.
+# Fail-closed checks by risk band:
+#   MEDIUM (score ≥ 0.30): agy is required. If agy unavailable and codex can't cover
+#     (score < codex threshold), fail — an unreviewed MEDIUM step cannot proceed silently.
+#   HIGH+ (score ≥ 0.55): both vendors are required. Fail if BOTH unavailable.
+if $RUN_AGY && ! $AGY_AVAILABLE && ! $RUN_CODEX; then
+    echo "ERROR: score=${SCORE} is MEDIUM+ (agy required) but agy is unavailable and" >&2
+    echo "       score is below codex threshold (${CODEX_THRESHOLD}) — no fallback reviewer." >&2
+    echo "Options:" >&2
+    echo "  1. Authenticate agy: ./scripts/setup_clis.sh auth" >&2
+    echo "  2. Human override: create .claudetmp/oversight/human-tier-override.md" >&2
+    exit 1
+fi
+
 python3 -c "
 s=float('${SCORE:-0}'); threshold=0.55
 exit(0 if s < threshold else 1)
 " 2>/dev/null || {
     if ! $AGY_AVAILABLE && ! $CODEX_AVAILABLE; then
         echo "ERROR: score=${SCORE} is HIGH+ (≥0.55) but neither agy nor codex is available." >&2
-        echo "Cross-vendor review is required at this risk level. Options:" >&2
+        echo "Options:" >&2
         echo "  1. Authenticate a reviewer: ./scripts/setup_clis.sh auth" >&2
         echo "  2. Human override: create .claudetmp/oversight/human-tier-override.md" >&2
         exit 1

@@ -2,7 +2,7 @@
 
 A framework for scaling human oversight of AI-generated code — grounded in lean manufacturing principles, statistical quality control, and multi-agent system design.
 
-This is both a working system and active doctoral research (Engineering Management, Purdue University).
+This is both a working system and active doctoral research — Doctor of Technology program, Purdue University. The research sits at the intersection of engineering management, software quality assurance, and AI governance.
 
 ---
 
@@ -146,6 +146,18 @@ The research draws on a systematic literature review of ~1,000 papers on AI code
 - Hancheng Cao (Emory Goizueta) — Computational social science, AI in development teams
 - Kyubyung Kang (Purdue) — Machine learning and AI governance in safety-critical systems
 - David Pistrui (Purdue) — Organizational transformation, Industry 4.0
+
+---
+
+## Architecture
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full agent roster, pipeline diagrams, feedback loops, and sign-off accountability map. It covers:
+
+- The two-layer protection model (self-flagging + independent cross-vendor review)
+- All 6 oversight agents with roles and models
+- Full pipeline flowchart across all 5 phases with per-phase sequence diagrams
+- The feedback loops diagram: how issues feed back into risk scoring over time
+- Risk stratification showing which external reviewers fire at which composite scores
 
 ---
 

@@ -79,11 +79,11 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 ### External Reviewers
 *Run via CLI, never see internal reviewer findings — independence is the value.*
 
-| Reviewer | Subscription | Lens | When fires |
+| Reviewer | Tier | Lens | When fires |
 |---|---|---|---|
-| **Copilot** | GitHub Pro (~$10/mo) | Broad code review | All PRs, automatic |
-| **agy (Gemini)** | $20/mo → $100/mo | Correctness + spec adherence | score ≥ 0.30 (MEDIUM+) |
-| **codex (OpenAI)** | $20/mo (reserve) | Adversarial security probe | score ≥ 0.55 (HIGH+) |
+| **Copilot** | GitHub Pro | Broad code review | All PRs, automatic |
+| **agy (Gemini)** | Gemini Pro (conditional screening — upgradeable) | Correctness + spec adherence | score ≥ 0.30 (MEDIUM+) |
+| **codex (OpenAI)** | ChatGPT Pro (reserve — kept scarce by design) | Adversarial security probe | score ≥ 0.55 (HIGH+) |
 | **Arbiter (Sonnet)** | Claude Max | Synthesis + escaped-defect detection | After each panel run |
 
 ---
@@ -102,19 +102,19 @@ flowchart TD
     subgraph INNER["INNER LOOP — Is this implementation correct?"]
         direction LR
         GATES["Gate Scripts\nlint · type · secret\nbandit HIGH"] --> RA
-        RA["risk-assessor\n+ dep-mapper\n+ risk-historian"] --> CR["code-reviewer"]
-        CR --> PARREV["security-reviewer\n+ privacy-reviewer\n(parallel)"]
-        PARREV --> UT["unit-test\n80% / 75%"]
-        UT <-->|"iterate"| COD["coder"]
-        PARREV -->|"sign-offs"| REG[("Sign-off\nRegister")]
-        UT -->|"test declaration"| REG
+        RA["risk-assessor ✍\nvalidated tier\n+ inspection brief"] --> CR
+        CR["code-reviewer ✍\nSTATUS: APPROVED"] --> PARREV
+        PARREV["security-reviewer ✍\nprivacy-reviewer ✍\n(parallel)"] --> UT
+        UT["unit-test ✍\n80% / 75% gate"] <-->|"iterate"| COD["coder"]
+        PARREV -->|"sign-offs → register"| REG[("Sign-off\nRegister")]
+        UT -->|"test declaration → register"| REG
     end
 
     subgraph TRANS["TRANSITION — Is the step complete?"]
-        ST["system-test\nspec flows"] --> SREV["run_second_review.sh\nagy MEDIUM+ · codex HIGH+"]
-        SREV --> EVAL["oversight-evaluator\ncompliance + quality"]
-        EVAL -->|"PROCEED\nor CONDITIONAL"| ORCH["oversight-orchestrator\nopens PR + handoff doc"]
-        EVAL -->|"ESCALATE"| H1["🧑 Human\nresolves, then re-runs"]
+        ST["system-test ✍\nspec flows pass"] --> SREV["run_second_review.sh\nagy (MEDIUM+) · codex (HIGH+)\nindependent · no internal findings"]
+        SREV --> EVAL["oversight-evaluator\nPhase 1: compliance check\nPhase 2: quality evaluation"]
+        EVAL -->|"PROCEED\nor CONDITIONAL"| ORCH["oversight-orchestrator\nopens PR · panel-context written"]
+        EVAL -->|"ESCALATE"| H1["🧑 Human ✍\ncreates human-authorization.md\nor resolves, then re-runs"]
     end
 
     subgraph OUTER["OUTER LOOP — What did we miss?"]
@@ -138,6 +138,38 @@ flowchart TD
     style OUTER fill:#f0f8e8,stroke:#5a9e4a
     style CHECK fill:#fde8e8,stroke:#d45a5a
 ```
+
+---
+
+## Sign-off Accountability
+
+Every approval in the pipeline is a named sign-off written to the sign-off register. This table shows who approves what, at which phase, and what happens when approval is withheld.
+
+| Phase | Who signs off | What they approve | Withheld → |
+|---|---|---|---|
+| **Spec** | pm-agent | Confirmed requirements | `spec-gap` issue → human |
+| **Spec** | architect | ADR (architecture decisions) | Escalate to human |
+| **Spec** | technical-design | Design approved for implementation | Revise + iterate |
+| **Spec** | pm-agent | System test plan (before tests written) | `spec-gap` issue; coder waits |
+| **Inner loop** | risk-assessor | Risk tier validated (can only raise) | Tier raised; inspection brief re-scoped |
+| **Inner loop** | code-reviewer | Correctness, idioms, design adherence | Coder fixes; up to 5 rounds then architect |
+| **Inner loop** | security-reviewer | Security posture (OWASP, threat model) | Coder fixes; `security-finding` issue if crit/high resolved |
+| **Inner loop** | privacy-reviewer | GDPR / PII handling | Coder fixes; `privacy-finding` issue if blocking |
+| **Inner loop** | ui-reviewer / a11y-reviewer | Template and accessibility conformance | Coder fixes |
+| **Inner loop** | infra-reviewer | Docker/Caddy/env config | Coder fixes |
+| **Inner loop** | unit-test | 80% coverage + 75% mutant score | Coder adds tests; `test-resistance` issue after 5 rounds |
+| **Transition** | system-test | All spec flows passing | Coder fixes; `bug` issue after 5 rounds |
+| **Transition** | agy (second review) | Correctness + spec adherence (independent) | CONDITIONAL_PROCEED or ESCALATE |
+| **Transition** | codex (second review) | Adversarial security probe (independent) | CONDITIONAL_PROCEED or ESCALATE |
+| **Transition** | oversight-evaluator | All required sign-offs present; quality assessment | ESCALATE → human blocks PR |
+| **Transition** | 🧑 Human (CRITICAL only) | Creates `step{N}-human-authorization.md` | evaluator refuses to proceed |
+| **Outer loop** | Copilot | Baseline code review (all PRs, automatic) | PR thread created |
+| **Outer loop** | agy / codex panel | Cross-vendor independent review | PR thread per finding (blocks merge) |
+| **Outer loop** | Sonnet arbiter | Synthesizes findings; files escaped-defect issues | `escaped-defect` issue created |
+| **Outer loop** | 🧑 Human | Resolves every PR thread | Merge blocked until all resolved |
+| **Checkpoint** | codex + agy (red-team) | System-level adversarial attestation | `red-team-finding` issue; human decides |
+
+The sign-off register (`.claudetmp/signoffs/step{N}-register.md`) is the audit trail. The oversight-evaluator reads it in Phase 1 of every step evaluation and fails compliance if required entries are missing.
 
 ---
 
@@ -356,8 +388,8 @@ flowchart LR
     end
 
     L -->|"Copilot only"| RL["Baseline:\nCopilot all-PR\nSQC random sample"]
-    M -->|"+ agy fires"| RM["+ agy\n(correctness + spec)\n$20/mo Gemini"]
-    H -->|"+ codex fires"| RH2["+ codex\n(adversarial probe)\n$20/mo reserve"]
+    M -->|"+ agy fires"| RM["+ agy · Gemini\n(correctness + spec)\nconditional screening"]
+    H -->|"+ codex fires"| RH2["+ codex · OpenAI\n(adversarial probe)\nreserve reviewer"]
     C -->|"+ human gate\nblast radius required"| RC["+ human must\nauthorize before PR\nopens"]
 
     style L fill:#e8f4f8
@@ -368,7 +400,7 @@ flowchart LR
 
 The score can only be **raised**, never lowered: the coder's self-declared tier is a floor. The risk-assessor applies deterministic rules (file path patterns, operation types) and then the composite validator score. The oversight-evaluator can raise further based on what reviewers found. The final tier is the maximum across all three.
 
-The two external vendor subscriptions are allocated by design: agy (Gemini) is the **conditional screening** reviewer that fires often; codex (OpenAI) is the **reserve** that fires only at HIGH+ where adversarial thinking pays off most. Upgrading agy from $20 to $100/month lowers the threshold for conditional screening without touching the reserve allocation.
+The two external vendor subscriptions are allocated by design: agy (Gemini) is the **conditional screening** reviewer that fires often at MEDIUM+ — its subscription tier is intentionally upgradeable to lower the score threshold further. codex (OpenAI) is the **reserve** reviewer, kept deliberately scarce and triggered only at HIGH+ where adversarial thinking pays off most. Lowering the codex threshold would increase cost without proportional value gain — the scarcity is by design, not budget constraint.
 
 ---
 

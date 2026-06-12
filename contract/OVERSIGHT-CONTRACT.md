@@ -25,9 +25,17 @@ All files live relative to the project root. The HOS reads these locations; comp
       summary.json               ← composite risk score (written by run_validators.sh)
       {dimension}.json           ← per-validator output
     step{N}-evaluation-{ts}.md   ← oversight-evaluator output
-    step{N}-handoff.md           ← context for external panel
+    step{N}-panel-context.md     ← external panel context (structural risk signals ONLY —
+                                    no internal findings, no resolved vulnerabilities)
+    step{N}-handoff.md           ← human/PR context (full picture: internal review
+                                    summary, second review findings, human notes)
+    step{N}-human-authorization.md ← CRITICAL steps only: human creates this file
+                                    BEFORE running oversight-evaluator to authorize
+                                    proceeding. Evaluator reads it during Phase 1.
   second-review/
-    step{N}-{ts}.md              ← second review output (run_second_review.sh)
+    step{N}-{ts}.md              ← second review output (run_second_review.sh).
+                                    Always written — contains verdict: skipped when
+                                    score is below thresholds.
   red-team/
     checkpoint-{milestone}-{ts}.md ← red-team report
 ```
@@ -186,7 +194,8 @@ Compliant agents create GitHub issues at defined trigger points. Issue creation 
 The `oversight-evaluator` agent checks compliance before quality evaluation. Compliance fails if:
 
 1. Sign-off register is missing or has no entries for a required role
-2. Any required role shows `Status: ESCALATED` without human resolution on record. Human resolution is recorded in `.claudetmp/oversight/step{N}-handoff.md` under "## Human authorization record" for CRITICAL steps, or as a comment in the sign-off register entry (`Human_resolution: {date} — {decision}`).
+2. Any required role shows `Status: ESCALATED` without human resolution on record. Human resolution is recorded as a `Human_resolution: {date} — {decision}` field in the sign-off register entry.
+3a. For `human_gate_required: true` (CRITICAL) steps: `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs. The human creates this file manually to authorize proceeding. The evaluator reads it in Phase 1 — if missing on a CRITICAL step, compliance fails immediately without proceeding to Phase 2.
 3. `test-unit` declaration is missing `Thresholds_met: true`
 4. `test-system` declaration is missing when `system_test_applicable: true` for this step
 5. `process` sign-off is missing when `system_test_applicable: true` (PM must sign off on test plan)
