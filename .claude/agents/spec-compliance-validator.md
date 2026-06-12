@@ -96,7 +96,7 @@ Decisions marked `pending` represent intended-but-not-yet-implemented governance
 - **Cross-vendor constraint violated** → human immediately (governance integrity)
 - **Human gate missing at CRITICAL** → human immediately
 - **Decision marked implemented but failing verification** → human (was the decision overridden without being recorded?)
-- **Loop exit missing** → fix directly (add loop exit to the agent) then re-run static check
+- **Loop exit missing** → fix directly (add loop exit to the agent); if the missing loop exit is in a consumer-project agent (coder, architect, etc.) escalate to the project's technical-design agent
 - **Model assignment wrong** → fix directly (frontmatter change) then re-run static check
 
 ## Loop exit

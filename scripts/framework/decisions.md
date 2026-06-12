@@ -111,3 +111,14 @@ future validation.
 **Rationale:** Without durable capture, the same class of bug recurs in every new session because validators have no memory of prior sessions.
 **Implemented in:** `scripts/framework/decisions.md`, `scripts/framework/doc-patterns.md`, `scripts/framework/validate_docs.sh`, `scripts/framework/validate_spec_compliance.sh`
 **Verification:** Both files must be sourced by their respective validator scripts. validate_docs.sh must reference doc-patterns.md. validate_spec_compliance.sh must reference decisions.md.
+
+---
+
+## DEC-009: risk-historian Haiku model assignment is an intentional REQ-004 exception
+
+**Date:** 2026-06-12
+**Status:** implemented
+**Decision:** `risk-historian` uses `model: claude-haiku-4-5-20251001`. This is an intentional exception to REQ-004 ("no agent uses Haiku for judgment calls"). risk-historian is a pure data retrieval agent — it queries GitHub issue history and git log for filenames and returns structured counts. It makes no governance judgments; its output is read by risk-assessor which applies the judgment. Haiku is appropriate for this bounded retrieval role.
+**Rationale:** REQ-004 prohibits Haiku for judgment calls. risk-historian makes no judgment calls — it is the pipeline equivalent of a SELECT query. Using Opus or Sonnet here would waste quota on a task that requires no reasoning.
+**Implemented in:** `.claude/agents/risk-historian.md` (frontmatter `model:` field)
+**Verification:** risk-historian.md must declare `model: claude-haiku-4-5-20251001`. Its system prompt must not ask the agent to classify risk or make governance decisions — only to retrieve and return data. Downstream judgment is risk-assessor's responsibility.
