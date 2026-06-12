@@ -67,6 +67,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "$STEP" ]]; then
+    echo "Error: --step <N> is required (used to name output and match oversight-evaluator lookup)" >&2
+    exit 1
+fi
+
 # Read score from validator summary if not provided
 if [[ -z "$SCORE" && -f ".claudetmp/oversight/validators/summary.json" ]]; then
     SCORE=$(python3 -c \
@@ -367,9 +372,9 @@ echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCA
 # ── Token usage report ───────────────────────────────────────────────────────
 TRACKER="$(dirname "$0")/oversight/token_tracker.py"
 if [[ -f "$TRACKER" ]]; then
-    # Record agy usage
+    # Record agy usage — estimate prompt size from source content (AGY_PROMPT is function-local)
     if $RUN_AGY && [[ -n "${AGY_OUT:-}" ]]; then
-        PROMPT_CHARS=${#AGY_PROMPT}
+        PROMPT_CHARS=$(( ${#DIFF_CONTENT} + ${#SPEC_CONTEXT} + ${#VALIDATOR_SUMMARY} + 800 ))
         OUT_CHARS=${#AGY_OUT}
         # Try to extract actual token counts from agy JSON output
         ACTUAL_IN=$(echo "${AGY_OUT:-}" | python3 -c \
@@ -385,15 +390,16 @@ print(d.get('usage',{}).get('output_tokens',d.get('usage',{}).get('completion_to
             --actual-prompt-tokens "$ACTUAL_IN" --actual-output-tokens "$ACTUAL_OUT" 2>/dev/null || true
     fi
 
-    # Record codex usage
-    if $RUN_CODEX && [[ -n "${CODEX_OUT:-}" ]]; then
-        CODEX_PROMPT_CHARS=${#CODEX_PROMPT}
-        CODEX_OUT_CHARS=${#CODEX_OUT}
-        ACTUAL_IN=$(echo "${CODEX_OUT:-}" | python3 -c \
+    # Record codex usage — also catches fallback mode (output in FALLBACK_OUT, not CODEX_OUT)
+    _CODEX_ACTUAL="${CODEX_OUT:-${FALLBACK_OUT:-}}"
+    if $RUN_CODEX && [[ -n "$_CODEX_ACTUAL" ]]; then
+        CODEX_PROMPT_CHARS=$(( ${#DIFF_CONTENT} + 600 ))
+        CODEX_OUT_CHARS=${#_CODEX_ACTUAL}
+        ACTUAL_IN=$(echo "$_CODEX_ACTUAL" | python3 -c \
             "import json,sys
 d=json.load(sys.stdin)
 print(d.get('usage',{}).get('prompt_tokens',0))" 2>/dev/null || echo "0")
-        ACTUAL_OUT=$(echo "${CODEX_OUT:-}" | python3 -c \
+        ACTUAL_OUT=$(echo "$_CODEX_ACTUAL" | python3 -c \
             "import json,sys
 d=json.load(sys.stdin)
 print(d.get('usage',{}).get('completion_tokens',0))" 2>/dev/null || echo "0")

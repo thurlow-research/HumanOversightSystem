@@ -174,6 +174,16 @@ mkdir -p "$RUN_DIR"
 DIFF_FILE="$RUN_DIR/pr.diff"
 gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null || die "could not fetch diff for PR #$PR"
 CHANGED_FILES="$(gh pr diff "$PR" --name-only 2>/dev/null || true)"
+
+# Load handoff document written by oversight-orchestrator (if present).
+# Contains: what was built, internal review summary, panel probe guidance, confidence gaps.
+# The most recent step handoff is used — oversight-orchestrator writes one per step.
+HANDOFF_CONTEXT=""
+HANDOFF_FILE="$(ls .claudetmp/oversight/step*-handoff.md 2>/dev/null | sort | tail -1)"
+if [[ -n "$HANDOFF_FILE" && -f "$HANDOFF_FILE" ]]; then
+    HANDOFF_CONTEXT="$(cat "$HANDOFF_FILE")"
+    info "Loaded handoff context from $HANDOFF_FILE ($(wc -c < "$HANDOFF_FILE") bytes)"
+fi
 ADDED=$(grep -cE '^\+([^+]|$)' "$DIFF_FILE" 2>/dev/null || true); ADDED=${ADDED:-0}  # counts blank added lines; excludes +++ header
 
 info "PR #$PR — $PR_TITLE"
@@ -300,11 +310,26 @@ lens_brief() {
 }
 
 build_review_prompt() {  # $1=lens  $2=diff-chunk-file
+  local handoff_section=""
+  if [[ -n "$HANDOFF_CONTEXT" ]]; then
+    handoff_section="$(cat <<HANDOFF
+
+## Handoff from internal review team
+The following context was prepared by the oversight system after the internal review
+chain completed. Use it to focus your review — do NOT let it prevent you from
+finding issues the internal team missed. Your job is to find what they did not.
+
+${HANDOFF_CONTEXT}
+HANDOFF
+)"
+  fi
+
   cat <<EOF
 You are an INDEPENDENT, cross-vendor code reviewer on a multi-agent oversight panel.
 The author was Claude Opus; you are the independent check — do not assume the author is correct.
 Risk level of this change: $RISK.   Your review LENS: $1.
 Report ONLY issues that fall under your lens: $(lens_brief "$1")
+${handoff_section}
 
 Severity tiers: tier1=must-fix (blocks merge), tier2=should-fix (pre-release),
 tier3=consider (tech debt), tier4=noted (minor). Be precise about file + line.

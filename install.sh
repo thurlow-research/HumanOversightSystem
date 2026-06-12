@@ -271,7 +271,8 @@ if [[ -n "$TARGET_REPO" ]] && ! $SKIP_PROJECT_INSTALL; then
         rsync -a --ignore-existing \
             "$SCRIPT_DIR/scripts/oversight/" \
             "$TARGET_REPO/scripts/oversight/"
-        for script in run_panel.sh run_second_review.sh run_red_team.sh capture_prompt.sh prompt_audit.sh; do
+        # capture_prompt.sh and prompt_audit.sh are already copied by setup_oversight.sh
+        for script in run_panel.sh run_second_review.sh run_red_team.sh; do
             SRC="$SCRIPT_DIR/scripts/$script"
             DST="$TARGET_REPO/scripts/$script"
             if [[ -f "$SRC" && ! -f "$DST" ]]; then

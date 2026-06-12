@@ -89,7 +89,10 @@ def composite_score(results: list[dict]) -> float:
 
 
 def score_to_tier(score: float) -> str:
-    for tier, (lo, hi) in TIER_THRESHOLDS.items():
-        if lo <= score <= hi:
-            return tier
+    # Exclusive upper bounds — consistent with run_validators.sh inline Python.
+    # Boundary value 0.30 → MEDIUM (not LOW), matching the threshold semantics.
+    if score < 0.30: return "LOW"
+    if score < 0.55: return "MEDIUM"
+    if score < 0.78: return "HIGH"
+    return "CRITICAL"  # noqa: unreachable-original-loop kept below for reference
     return "CRITICAL"

@@ -189,12 +189,10 @@ def _collect_functions(tree: ast.Module, filename: str) -> list[dict]:
                 "risk_number": round(visitor.total_rn, 1),
                 "statements": visitor.statements,
             })
-            # still recurse to find nested functions
-            for child in ast.walk(node):
-                if child is node:
-                    continue
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    self._visit_func(child)
+            # Use generic_visit so the NodeVisitor machinery handles recursion.
+            # ast.walk would yield grandchildren before _visit_func returns,
+            # causing depth-3+ nested functions to be appended twice.
+            self.generic_visit(node)
 
         visit_FunctionDef = _visit_func
         visit_AsyncFunctionDef = _visit_func

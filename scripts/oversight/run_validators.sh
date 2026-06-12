@@ -59,6 +59,8 @@ if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+# Clear stale results from prior runs — old JSON files would contaminate the score
+rm -f "$OUT_DIR"/*.json
 
 echo "=== Oversight validators: ${#ALL_FILES[@]} file(s) ==="
 echo "Output: $OUT_DIR/"

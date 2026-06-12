@@ -310,15 +310,18 @@ if [[ -f "$TRACKER" ]] && ! $DRY_RUN; then
     SPEC_CHARS=${#SPEC_CONTENT}
     PROMPT_BASE=$((CODEBASE_CHARS + SPEC_CHARS))
 
-    [[ -n "${CODEX_OUT:-}" ]] && python3 "$TRACKER" record \
-        --vendor codex --stage red-team --step "$MILESTONE" \
-        --prompt-chars $((PROMPT_BASE + 800)) \
-        --output-chars ${#CODEX_OUT} 2>/dev/null || true
+    # Only record if the tool actually ran (not a dry-run placeholder JSON)
+    [[ -n "${CODEX_OUT:-}" ]] && ! echo "${CODEX_OUT}" | grep -q '"skipped":true' && \
+        python3 "$TRACKER" record \
+            --vendor codex --stage red-team --step "$MILESTONE" \
+            --prompt-chars $((PROMPT_BASE + 800)) \
+            --output-chars ${#CODEX_OUT} 2>/dev/null || true
 
-    [[ -n "${AGY_OUT:-}" ]] && python3 "$TRACKER" record \
-        --vendor agy --stage red-team --step "$MILESTONE" \
-        --prompt-chars $((PROMPT_BASE + 600)) \
-        --output-chars ${#AGY_OUT} 2>/dev/null || true
+    [[ -n "${AGY_OUT:-}" ]] && ! echo "${AGY_OUT}" | grep -q '"skipped":true' && \
+        python3 "$TRACKER" record \
+            --vendor agy --stage red-team --step "$MILESTONE" \
+            --prompt-chars $((PROMPT_BASE + 600)) \
+            --output-chars ${#AGY_OUT} 2>/dev/null || true
 
     echo ""
     python3 "$TRACKER" report 2>/dev/null || true

@@ -80,6 +80,10 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 
 **Required fields:** Status, Agent, Artifact, Iterations.
 
+**`Status: CONDITIONAL`** passes Phase 1 compliance but automatically causes the oversight-evaluator to recommend at least `CONDITIONAL_PROCEED` — a human must verify the conditional item before merge.
+
+**Test agents additionally write the §4 test declaration fields** (Coverage_pct, Mutant_score_pct, Thresholds_met, All_passing) inline in their register entry. The oversight-evaluator reads these fields directly from the register; §4 defines the schema those fields must follow.
+
 **Roles** (the HOS checks for these roles, not agent names):
 
 | Role key | Meaning |

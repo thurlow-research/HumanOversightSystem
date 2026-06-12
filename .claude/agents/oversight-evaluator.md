@@ -37,7 +37,7 @@ Check the sign-off register against the step manifest's `required_signoffs` list
 
 For each required role, check:
 - Is there an entry in the register? If not → **COMPLIANCE FAIL**
-- Does the entry have `Status: APPROVED`? If `Status: ESCALATED` without human resolution → **COMPLIANCE FAIL**
+- Does the entry have `Status: APPROVED` or `Status: CONDITIONAL`? `CONDITIONAL` passes compliance but automatically triggers `CONDITIONAL_PROCEED` in Phase 2 even if no other quality flags fire. If `Status: ESCALATED` without human resolution on record → **COMPLIANCE FAIL**
 - For `test-unit`: is `Thresholds_met: true` present? If not → **COMPLIANCE FAIL**
 - For `test-system` (when `system_test_applicable: true`): is the entry present and `All_passing: true`? If not → **COMPLIANCE FAIL**
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
@@ -140,7 +140,7 @@ Step N: [PROCEED|CONDITIONAL_PROCEED|ESCALATE] — [one sentence reason]
 ## What you do NOT do
 
 - Do not review application code directly.
-- Do not create GitHub issues (oversight-orchestrator does that).
+- Do not create GitHub issues — issue creation is the base agents' and scripts' responsibility.
 - Do not open PRs.
 - Do not lower the risk tier.
 - Do not approve a step when compliance has failed — compliance failure always escalates.
