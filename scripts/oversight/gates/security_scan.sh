@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/oversight/ensure_venv.sh
+source "$GATES_DIR/../ensure_venv.sh"
+
 FILES=()
 CHECK_ALL=false
 
@@ -34,17 +38,17 @@ ERRORS=0
 
 # --- bandit: HIGH severity only (blocking) ---
 echo "=== bandit (HIGH severity) ==="
-if command -v bandit &>/dev/null; then
+if [[ -x "$VENV_BIN/bandit" ]]; then
     if [[ ${#FILES[@]} -gt 0 ]]; then
         # -l: LOW, -ll: MEDIUM+, -lll: HIGH only
         # We run HIGH only for the gate; MEDIUM is handled by static_analysis.py
-        BANDIT_OUT=$(bandit -f json -lll "${FILES[@]}" 2>/dev/null || true)
-        HIGH_COUNT=$(echo "$BANDIT_OUT" | python3 -c \
+        BANDIT_OUT=$("$VENV_BIN/bandit" -f json -lll "${FILES[@]}" 2>/dev/null || true)
+        HIGH_COUNT=$(echo "$BANDIT_OUT" | "$OVERSIGHT_PYTHON" -c \
             "import json,sys; d=json.load(sys.stdin); \
              print(len([r for r in d.get('results',[]) if r.get('issue_severity')=='HIGH']))" 2>/dev/null || echo "0")
         if [[ "$HIGH_COUNT" -gt 0 ]]; then
             echo "GATE FAIL: $HIGH_COUNT HIGH severity bandit finding(s)"
-            echo "$BANDIT_OUT" | python3 -c \
+            echo "$BANDIT_OUT" | "$OVERSIGHT_PYTHON" -c \
                 "import json,sys; [print(f\"  {r['filename']}:{r['line_number']} [{r['test_id']}] {r['issue_text']}\") \
                  for r in json.load(sys.stdin).get('results',[]) if r.get('issue_severity')=='HIGH']" 2>/dev/null || true
             ERRORS=$((ERRORS + 1))
@@ -53,21 +57,21 @@ if command -v bandit &>/dev/null; then
         fi
     fi
 else
-    echo "SKIP: bandit not installed (pip install bandit)"
+    echo "SKIP: bandit not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 fi
 
 # --- pip-audit: dependency vulnerabilities ---
 echo ""
 echo "=== pip-audit (dependency vulnerabilities) ==="
-if command -v pip-audit &>/dev/null; then
-    if ! pip-audit --progress-spinner off -q 2>&1; then
+if [[ -x "$VENV_BIN/pip-audit" ]]; then
+    if ! "$VENV_BIN/pip-audit" --progress-spinner off -q 2>&1; then
         echo "GATE FAIL: vulnerable dependencies found — update before proceeding"
         ERRORS=$((ERRORS + 1))
     else
         echo "OK: no known vulnerabilities"
     fi
 else
-    echo "SKIP: pip-audit not installed (pip install pip-audit)"
+    echo "SKIP: pip-audit not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 fi
 
 echo ""

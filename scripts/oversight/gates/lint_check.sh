@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/oversight/ensure_venv.sh
+source "$GATES_DIR/../ensure_venv.sh"
+
 PASS=0
 FAIL=1
 
@@ -39,38 +43,38 @@ fi
 ERRORS=0
 
 echo "=== flake8 ==="
-if command -v flake8 &>/dev/null; then
-    if ! flake8 --max-line-length=120 --extend-ignore=E203,W503 "${FILES[@]}"; then
+if [[ -x "$VENV_BIN/flake8" ]]; then
+    if ! "$VENV_BIN/flake8" --max-line-length=120 --extend-ignore=E203,W503 "${FILES[@]}"; then
         ERRORS=$((ERRORS + 1))
     fi
 else
-    echo "SKIP: flake8 not installed (pip install flake8)"
+    echo "SKIP: flake8 not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 fi
 
 echo ""
 echo "=== black (format check) ==="
-if command -v black &>/dev/null; then
-    if ! black --check --diff --quiet "${FILES[@]}"; then
+if [[ -x "$VENV_BIN/black" ]]; then
+    if ! "$VENV_BIN/black" --check --diff --quiet "${FILES[@]}"; then
         ERRORS=$((ERRORS + 1))
-        echo "Run: black ${FILES[*]}"
+        echo "Run: $VENV_BIN/black ${FILES[*]}"
     else
         echo "OK"
     fi
 else
-    echo "SKIP: black not installed (pip install black)"
+    echo "SKIP: black not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 fi
 
 echo ""
 echo "=== isort (import order check) ==="
-if command -v isort &>/dev/null; then
-    if ! isort --check-only --diff "${FILES[@]}"; then
+if [[ -x "$VENV_BIN/isort" ]]; then
+    if ! "$VENV_BIN/isort" --check-only --diff "${FILES[@]}"; then
         ERRORS=$((ERRORS + 1))
-        echo "Run: isort ${FILES[*]}"
+        echo "Run: $VENV_BIN/isort ${FILES[*]}"
     else
         echo "OK"
     fi
 else
-    echo "SKIP: isort not installed (pip install isort)"
+    echo "SKIP: isort not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 fi
 
 echo ""
