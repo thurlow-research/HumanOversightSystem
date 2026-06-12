@@ -33,6 +33,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Load project config (provides PROJECT_NON_AGENT_TOKENS, EXTERNAL_AGENTS, etc.)
+# EXTERNAL_AGENTS: pipe-separated agent names that are valid but intentionally absent
+# from .claude/agents/ — e.g. consumer-project agents documented in HOS's docs/AGENTS.md
+# but installed only in target projects, not in the framework source itself.
+PROJECT_NON_AGENT_TOKENS=""
+EXTERNAL_AGENTS=""
+[[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh
+
 fail() { echo "  FAIL: $1"; FINDINGS=$(( FINDINGS + 1 )); }
 warn() { $QUIET || echo "  WARN: $1"; }
 ok()   { $QUIET || echo "  OK:   $1"; }
@@ -66,6 +74,11 @@ if [[ -f "$DOCS_AGENTS" ]]; then
     while IFS= read -r line; do
         agent=$(echo "$line" | grep -oE '\`[a-z][a-z0-9_-]+\`' | head -1 | tr -d '`')
         [[ -z "$agent" ]] && continue
+        # Skip agents declared as external (live in consumer projects, not locally)
+        if [[ -n "$EXTERNAL_AGENTS" ]] && echo "$agent" | grep -qE "^($EXTERNAL_AGENTS)$"; then
+            ok "$agent declared as external — exists in consumer projects (skip)"
+            continue
+        fi
         if echo "$KNOWN_AGENTS" | grep -qx "$agent"; then
             ok "$agent referenced in docs and has agent file"
         else
@@ -85,7 +98,9 @@ section "3. File path references in agent files"
 OUTPUT_DOCS="docs/pm/CONFIRMED-REQUIREMENTS.md
 docs/design/UX-DESIGN-READINESS.md
 docs/architecture/ADR-001-pilot.md
-docs/design/TECHNICAL-DESIGN.md"
+docs/design/TECHNICAL-DESIGN.md
+contract/step-manifest.yaml
+scripts/framework/config.sh"
 
 while IFS= read -r -d '' f; do
     agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
@@ -95,6 +110,7 @@ while IFS= read -r -d '' f; do
         [[ "$ref_clean" == http* ]] && continue
         [[ -z "$ref_clean" ]] && continue
         [[ "$ref_clean" != */* ]] && continue   # skip bare filenames
+        [[ "$ref_clean" == \{*\}* ]] && continue  # skip template placeholders like {SPEC_FILE}
         # Exempt project-start output docs — they are written during the build, not beforehand
         if echo "$OUTPUT_DOCS" | grep -qx "$ref_clean"; then
             ok "[$agent_name] $ref_clean (output doc — existence not required)"
@@ -122,8 +138,6 @@ ESCALATION_RE='(escalates?[[:space:]]+to|invoke|receives[[:space:]]+from|invoked
 # Do NOT add project-specific hostnames or service names here — those belong in
 # scripts/framework/config.sh as PROJECT_NON_AGENT_TOKENS.
 NON_AGENT_TOKENS="human|you|main|build|prod|staging|ci|github|pr"
-# Load project-specific overrides if config exists
-[[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh
 NON_AGENT_TOKENS="${NON_AGENT_TOKENS}${PROJECT_NON_AGENT_TOKENS:+|$PROJECT_NON_AGENT_TOKENS}"
 
 while IFS= read -r -d '' f; do
@@ -140,6 +154,11 @@ while IFS= read -r -d '' f; do
         KNOWN_SHORT_AGENTS="architect|coder|human"
         if ! echo "$target" | grep -qE "^($KNOWN_SHORT_AGENTS)$" && \
            ! echo "$target" | grep -q '-'; then
+            continue
+        fi
+        # External agents declared in config.sh are valid targets even without local files
+        if [[ -n "$EXTERNAL_AGENTS" ]] && echo "$target" | grep -qE "^($EXTERNAL_AGENTS)$"; then
+            ok "[$agent_name] → $target (external — lives in consumer projects)"
             continue
         fi
         if echo "$KNOWN_AGENTS" | grep -qx "$target"; then

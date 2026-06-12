@@ -21,7 +21,7 @@ You use agy (Gemini) for the adversarial pass because independence matters: a Cl
 ## Inputs
 
 You will be invoked with a step number and optionally the relevant spec sections. Read:
-- `Specs/SPEC-1-pilot.md` (or equivalent) — the full spec
+- `{SPEC_FILE}` (or equivalent) — the full spec
 - `docs/design/TECHNICAL-DESIGN.md` — the approved technical design for this step
 - Any prior `spec-gap` issues to avoid duplicating them
 
@@ -66,7 +66,7 @@ Be specific. For each finding, state:
 - What the spec should add or clarify to close it
 
 Spec section:
-$(cat Specs/SPEC-1-pilot.md | head -200)
+$(cat {SPEC_FILE} | head -200)
 
 Technical design context:
 $(cat docs/design/TECHNICAL-DESIGN.md | head -100)

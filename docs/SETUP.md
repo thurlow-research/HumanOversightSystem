@@ -47,7 +47,7 @@ bash scripts/framework/install.sh \
 
 The install script will:
 1. Create required directories in the target project
-2. Copy all 25 agent files from `.claude/agents/`
+2. Copy all 26 agent files from `.claude/agents/`
 3. Copy the 6 framework scripts from `scripts/framework/`
 4. **Ask you** for project-specific values (see Step 2)
 5. Write `scripts/framework/config.sh` with your answers
@@ -99,10 +99,12 @@ Invoke framework-setup-validator
 
 It will run through this checklist and report anything missing:
 - All required directories exist
-- All 25 agent files are present
+- All 26 agent files are present
 - Framework scripts are executable
 - `config.sh` has non-placeholder values
 - `agy` and `codex` CLIs are available (warns if not — validation still works without them, but AI review is skipped)
+- The static validator script runs successfully
+- Output directories (such as docs/pm, docs/architecture, docs/design) are writable by the agents
 
 If everything is green: `framework-setup-validator` prints "Framework is correctly installed."
 
@@ -197,7 +199,7 @@ The sweep agent categorizes your diff and drives all relevant reviews (code-revi
 ```
 your-project/
 ├── .claude/
-│   └── agents/                  ← 25 agent definition files
+│   └── agents/                  ← 26 agent definition files
 ├── docs/
 │   ├── AGENTS.md                ← pipeline documentation
 │   ├── OVERSIGHT-RUNBOOK.md     ← operational runbook

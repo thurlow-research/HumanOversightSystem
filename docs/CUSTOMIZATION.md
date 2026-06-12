@@ -99,6 +99,20 @@ These are the most project-specific agents. Replace all deployment details:
 - Backup paths and retention policy
 - Browser smoke test URLs and assertions
 
+### `dep-mapper.md`
+
+This is the generic base dependency mapper. Override this file in your target project with stack-specific grep patterns and framework knowledge.
+
+Replace:
+- Grep patterns for imports and dynamic loading → your stack's equivalents (Step 2)
+- Grep patterns for framework-level implicit wiring (signals, events, middleware, views, templates) → your stack's equivalents (Step 3)
+- Add any framework-specific blast-radius categories
+
+Keep:
+- The same blast radius report output schema (Step 4)
+- The risk amplification multipliers
+- The blast radius categories
+
 ---
 
 ## Changing the design system

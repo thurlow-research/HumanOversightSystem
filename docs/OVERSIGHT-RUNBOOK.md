@@ -61,6 +61,27 @@ Run this once before the first build step begins. These agents produce the docum
 
 ---
 
+## Inner Development Loop (during coding — before the per-step pipeline)
+
+The per-step pipeline below (PHASE 0–11) runs *once per build step*, after coding is complete. But coding itself is an incremental process — N sequential prompts, each building on the previous change. Without local verification between prompts, errors accumulate silently and become expensive to untangle.
+
+**Rule: run cheap gates after every incremental change, before the next prompt.**
+
+```bash
+# After each agent-produced code change, before issuing the next prompt:
+bash scripts/oversight/gates/lint_check.sh [changed files]
+bash scripts/oversight/gates/type_check.sh [changed files]
+python manage.py test [affected test module] --keepdb   # or your stack's equivalent
+```
+
+If any check fails: fix it before issuing the next prompt. Do not accumulate failures across prompts.
+
+> **Why this matters:** AI agents have limited cross-prompt memory of codebase state. An agent asked to "add X" on a tree where Y is already broken produces code that looks correct but depends on a broken foundation. By the time PHASE 1 gates run (after coding is complete), the failure stack may span many prompts and require significant archaeology to untangle. Local verification after each prompt is the only reliable way to keep the codebase in a known-good state throughout development.
+
+The PHASE 1 gate scripts below serve as a **safety net** — if the inner loop ran correctly, PHASE 1 should be green. A PHASE 1 failure on a gate that the inner loop should have caught (lint, type errors) is a signal that the inner loop was skipped.
+
+---
+
 ## Per-Step Pipeline
 
 Run this sequence for each build step (N = step number, e.g. 3).
@@ -148,10 +169,12 @@ Then invoke the `risk-assessor` Claude agent:
 "Run risk-assessor for step N on [changed files]. Score is [composite] (tier: [TIER])."
 ```
 
-The agent reads all validator output, validates the risk tier, and writes:
-- `.claudetmp/oversight/validators/risk-assessment.md` — validated tier + inspection brief
-- At MEDIUM+: invokes `prompt-fidelity` subagent against prompt artifacts
-- At HIGH+: invokes `dep-mapper` and `risk-historian` subagents
+The agent reads all validator output, validates the risk tier (applying deterministic floor rules for auth, DB migrations, PII, booking gates, right-to-erasure, audit log, admin control), and writes `.claudetmp/oversight/validators/risk-assessment.md` containing the validated tier and inspection brief.
+
+**Subagent Invocations based on Risk Tier:**
+- **At MEDIUM+**: risk-assessor invokes `prompt-fidelity` subagent against prompt artifacts to perform semantic prompt-to-code comparison.
+- **At HIGH+**: risk-assessor also invokes `dep-mapper` (to map direct imports and framework implicit wiring) and `risk-historian` (to analyze issue history and git churn).
+- **At CRITICAL**: risk-assessor additionally performs spec-code fidelity checks and flags confidence-complexity mismatches.
 
 ---
 
@@ -299,7 +322,8 @@ Invoke the `oversight-evaluator` agent. It runs Phase 1 (compliance) then Phase 
 Invoke: oversight-evaluator
 Input: contract/step-manifest.yaml, .claudetmp/signoffs/stepN-register.md,
        .claudetmp/second-review/stepN-*.md,
-       .claudetmp/oversight/validators/risk-assessment.md
+       .claudetmp/oversight/validators/risk-assessment.md,
+       .claudetmp/oversight/step{N}-human-authorization.md (if CRITICAL step)
 ```
 
 **For CRITICAL steps (3 and 6) — human authorization required FIRST:**
@@ -332,11 +356,16 @@ Invoke: oversight-orchestrator
 Input: .claudetmp/oversight/stepN-evaluation-{ts}.md
 ```
 
-The orchestrator:
-1. Writes `panel-context.md` — structural risk signals only (no internal findings)
-2. Writes `handoff.md` — full picture for human/PR body
-3. Opens the PR: `gh pr create --title "Step N: [name]" --body "$(cat .claudetmp/oversight/stepN-handoff.md)"`
-4. Prints the panel command
+The orchestrator acts on the evaluator's recommendation:
+- **On `PROCEED`**:
+  1. Writes `panel-context.md` — structural risk signals only (no internal findings).
+  2. Writes `handoff.md` — full picture for human/PR body (with AI-PR attribution).
+  3. Opens the PR: `gh pr create --title "[AI: oversight-orchestrator] Step {N}: {name}" --body "$(cat .claudetmp/oversight/stepN-handoff.md)"`.
+  4. Prints the panel command.
+- **On `CONDITIONAL_PROCEED`**:
+  - Same as PROCEED, but appends a "Human Review Required Before Merge" section listing confidence gaps and resolved critical findings.
+- **On `ESCALATE`**:
+  - PR is NOT opened. Outputs a formatted escalation box to the console listing compliance/quality issues that must be addressed, along with specific remediation instructions.
 
 ---
 
@@ -534,12 +563,14 @@ bash scripts/framework/run_framework_validation.sh --static-only
 | Domain changed | Agents invoked |
 |---|---|
 | `.claude/agents/`, `docs/AGENTS.md`, `scripts/framework/` | `framework-validator` |
-| `*.py` app code | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
-| `templates/*.html` | `ui-reviewer`, `a11y-reviewer` (after `code-reviewer` approves) |
-| `docker-compose.yml`, `Caddyfile` | `infra-reviewer` |
-| `tests/**` | `unit-test` |
-| `Specs/*design*/**` | `ux-designer` → `ui-reviewer` |
-| `Specs/*.md` | `pm-agent` |
+| `*.py` app code (application-code) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
+| `**/migrations/*.py` (migrations) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
+| `templates/*.html` (templates) | `ui-reviewer`, `a11y-reviewer` (after `code-reviewer` approves) |
+| `docker-compose.yml`, `Caddyfile` (infrastructure) | `infra-reviewer` |
+| `tests/**` (tests) | `unit-test` |
+| `Specs/*design*/**` (design-pack) | `ux-designer` → `ui-reviewer` |
+| `Specs/*.md` (spec) | `pm-agent` |
+| `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` (admin-audit) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
 
 > **Note on `ux-designer`:** Has two modes. **At project start** it is invoked proactively (after `pm-agent`, before `architect`) to audit the design pack against the full spec and write `docs/design/UX-DESIGN-READINESS.md` — see the Project Start Sequence above. **During the per-step pipeline** it is reactive: when `ui-reviewer` or `a11y-reviewer` finds a design pack gap, they invoke `ux-designer` rather than escalating to human. `ux-designer` extends the design pack and notifies both reviewers within the existing review iteration, without adding a new phase.
 
