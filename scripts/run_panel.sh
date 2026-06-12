@@ -212,27 +212,28 @@ DIFF_FILE="$RUN_DIR/pr.diff"
 gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null || die "could not fetch diff for PR #$PR"
 CHANGED_FILES="$(gh pr diff "$PR" --name-only 2>/dev/null || true)"
 
-# Load PANEL context written by oversight-orchestrator (if present).
-# Independence principle: use step{N}-panel-context.md (structural risk signals only —
-# no internal findings, no resolved vulnerabilities). Fall back to step{N}-handoff.md
-# only if panel-context doesn't exist. Cross-vendor reviewers must NOT see what the
-# internal team found — anchoring them to internal findings violates decorrelation.
-# Numeric sort: plain `sort` is lexicographic; Python ensures step10 > step2.
+# Load PANEL context written by oversight-orchestrator.
+# Independence principle: ONLY use step{N}-panel-context.md (structural risk signals,
+# no internal findings). Do NOT fall back to step{N}-handoff.md — that file contains
+# internal reviewer findings and would anchor cross-vendor reviewers to what the internal
+# team already found, violating decorrelation. Fail-closed if missing: the orchestrator
+# must produce panel-context.md before the panel runs.
 HANDOFF_CONTEXT=""
 HANDOFF_FILE="$(python3 - <<'PYEOF' 2>/dev/null
 import glob, re
-for pattern in ['step*-panel-context.md', 'step*-handoff.md']:
-    files = glob.glob(f'.claudetmp/oversight/{pattern}')
-    if files:
-        files.sort(key=lambda f: int(m.group(1)) if (m := re.search(r'step(\d+)', f)) else 0)
-        print(files[-1])
-        break
+files = glob.glob('.claudetmp/oversight/step*-panel-context.md')
+if files:
+    files.sort(key=lambda f: int(m.group(1)) if (m := re.search(r'step(\d+)', f)) else 0)
+    print(files[-1])
 PYEOF
 )"
 if [[ -n "$HANDOFF_FILE" && -f "$HANDOFF_FILE" ]]; then
     HANDOFF_CONTEXT="$(cat "$HANDOFF_FILE")"
     info "Panel context: $HANDOFF_FILE ($(wc -c < "$HANDOFF_FILE") bytes)"
-    [[ "$HANDOFF_FILE" == *handoff* ]] && warn "Using full handoff (no panel-context.md found) — may contain internal findings"
+elif [[ $DRY_RUN -eq 0 ]]; then
+    warn "No panel-context.md found in .claudetmp/oversight/ — proceeding without context"
+    warn "Run oversight-orchestrator to generate step{N}-panel-context.md before the panel"
+    warn "(Refusing to use handoff.md — it contains internal findings that violate independence)"
 fi
 ADDED=$(grep -cE '^\+([^+]|$)' "$DIFF_FILE" 2>/dev/null || true); ADDED=${ADDED:-0}  # counts blank added lines; excludes +++ header
 

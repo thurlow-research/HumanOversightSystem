@@ -29,6 +29,8 @@ audit/                               ← COMMITTED to project repo (not gitignor
     validators/
       summary.json               ← composite risk score (written by run_validators.sh)
       {dimension}.json           ← per-validator output
+      risk-assessment.md         ← validated risk tier + inspection brief (written by
+                                    risk-assessor agent, read by oversight-evaluator)
     step{N}-evaluation-{ts}.md   ← oversight-evaluator output
     step{N}-panel-context.md     ← external panel context (structural risk signals ONLY —
                                     no internal findings, no resolved vulnerabilities)

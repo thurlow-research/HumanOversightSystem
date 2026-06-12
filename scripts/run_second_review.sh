@@ -414,7 +414,7 @@ echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCA
 # ── Token usage report ───────────────────────────────────────────────────────
 TRACKER="$(dirname "$0")/oversight/token_tracker.py"
 if [[ -f "$TRACKER" ]]; then
-    # Record agy usage — estimate prompt size from source content (AGY_PROMPT is function-local)
+    # Record agy usage — estimate prompt size from source content (prompt is function-local in run_agy_review)
     if $RUN_AGY && [[ -n "${AGY_OUT:-}" ]]; then
         PROMPT_CHARS=$(( ${#DIFF_CONTENT} + ${#SPEC_CONTEXT} + ${#VALIDATOR_SUMMARY} + 800 ))
         OUT_CHARS=${#AGY_OUT}

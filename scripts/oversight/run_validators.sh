@@ -146,7 +146,27 @@ for r in results:
     weighted_sum += r.get("score", 0.0) * w
     total_w += w
 
-composite = round(weighted_sum / total_w, 4) if total_w > 0 else 0.0
+# Fail-closed: if no validators produced usable output, treat as CRITICAL.
+# Defaulting to LOW on total validator failure would silently pass broken code.
+successful = [r for r in results if not r.get("error")]
+if total_w == 0 or not successful:
+    composite = 1.0
+    tier = "CRITICAL"
+    summary = {
+        "composite_score": composite,
+        "tier": tier,
+        "validator_count": len(results),
+        "successful_validators": 0,
+        "error": "All validators failed or produced no output — defaulting to CRITICAL (fail-closed)",
+        "results": results,
+    }
+    out = out_dir / "summary.json"
+    out.write_text(json.dumps(summary, indent=2))
+    print(f"ERROR: no validators succeeded → tier: CRITICAL (fail-closed)")
+    print(f"Summary: {out}")
+    sys.exit(1)
+
+composite = round(weighted_sum / total_w, 4)
 
 TIERS = [("LOW", 0.30), ("MEDIUM", 0.55), ("HIGH", 0.78), ("CRITICAL", 1.01)]
 tier = next(t for t, hi in TIERS if composite < hi)
@@ -155,6 +175,7 @@ summary = {
     "composite_score": composite,
     "tier": tier,
     "validator_count": len(results),
+    "successful_validators": len(successful),
     "results": results,
 }
 
