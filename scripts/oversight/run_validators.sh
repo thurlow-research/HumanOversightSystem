@@ -23,7 +23,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATORS_DIR="$SCRIPT_DIR/validators"
 OUT_DIR=".claudetmp/oversight/validators"
-PYTHON="${PYTHON:-python3}"
+
+# shellcheck source=scripts/oversight/ensure_venv.sh
+source "$SCRIPT_DIR/ensure_venv.sh"
+PYTHON="${PYTHON:-$OVERSIGHT_PYTHON}"
 
 FILES=()
 STEP=""
@@ -57,7 +60,7 @@ if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
     echo "Usage: $0 file.py [file2.py ...]"
     # Write a durable CRITICAL summary so downstream agents have an artifact to read
     mkdir -p "$OUT_DIR"
-    python3 -c "
+    "$PYTHON" -c "
 import json; from pathlib import Path
 summary = {'composite_score': 1.0, 'tier': 'CRITICAL', 'validator_count': 0,
            'successful_validators': 0,
@@ -94,7 +97,7 @@ run_validator() {
 
     if OUTPUT=$("$PYTHON" "$script" "${args[@]}" 2>/dev/null); then
         echo "$OUTPUT" > "$outfile"
-        SCORE=$(echo "$OUTPUT" | python3 -c \
+        SCORE=$(echo "$OUTPUT" | "$PYTHON" -c \
             "import json,sys; d=json.load(sys.stdin); print(f\"{d.get('score',0):.2f}\")" 2>/dev/null || echo "?")
         echo "score=$SCORE"
         RESULTS+=("$name")

@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/oversight/ensure_venv.sh
+source "$GATES_DIR/../ensure_venv.sh"
+
 FILES=()
 CHECK_ALL=false
 
@@ -28,8 +32,8 @@ if $CHECK_ALL; then
         -not -path "*/migrations/*" -not -path "./.git/*")
 fi
 
-if ! command -v mypy &>/dev/null; then
-    echo "SKIP: mypy not installed (pip install mypy django-stubs)"
+if [[ ! -x "$VENV_BIN/mypy" ]]; then
+    echo "SKIP: mypy not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
     exit 0
 fi
 
@@ -39,7 +43,7 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
 fi
 
 echo "=== mypy ==="
-if mypy --ignore-missing-imports --no-error-summary "${FILES[@]}"; then
+if "$VENV_BIN/mypy" --ignore-missing-imports --no-error-summary "${FILES[@]}"; then
     echo "GATE PASS: no type errors"
     exit 0
 else

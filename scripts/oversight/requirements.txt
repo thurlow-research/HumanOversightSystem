@@ -1,9 +1,11 @@
 # oversight validator and gate dependencies
-# install: pip install -r scripts/oversight/requirements.txt
+# install: ./scripts/oversight/ensure_venv.sh
+#   (auto-creates scripts/oversight/.venv and pip-installs this file)
+#   Ubuntu 24.04+: system pip is blocked by PEP 668 — the venv is required.
 #
 # IP/provenance (optional but strongly recommended):
 #   scancode-toolkit    — full license text detection (Level 1, replaces PyPI API fallback)
-#                         On Faberix (Ubuntu): pip install --user scancode-toolkit
+#     install into the oversight venv: $VENV_BIN/pip install scancode-toolkit
 #   ai-gen-code-search  — LSH snippet matching vs. FOSS index (Level 3, activate when ready)
 #                         https://github.com/aboutcode-org/ai-gen-code-search
 #                         Set IP_REGURGITATION_ENABLED=1 after installing + building index
