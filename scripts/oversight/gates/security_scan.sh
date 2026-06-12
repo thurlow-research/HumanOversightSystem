@@ -43,12 +43,12 @@ if [[ -x "$VENV_BIN/bandit" ]]; then
         # -l: LOW, -ll: MEDIUM+, -lll: HIGH only
         # We run HIGH only for the gate; MEDIUM is handled by static_analysis.py
         BANDIT_OUT=$("$VENV_BIN/bandit" -f json -lll "${FILES[@]}" 2>/dev/null || true)
-        HIGH_COUNT=$(echo "$BANDIT_OUT" | "$OVERSIGHT_PYTHON" -c \
+        HIGH_COUNT=$(echo "$BANDIT_OUT" | PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
             "import json,sys; d=json.load(sys.stdin); \
              print(len([r for r in d.get('results',[]) if r.get('issue_severity')=='HIGH']))" 2>/dev/null || echo "0")
         if [[ "$HIGH_COUNT" -gt 0 ]]; then
             echo "GATE FAIL: $HIGH_COUNT HIGH severity bandit finding(s)"
-            echo "$BANDIT_OUT" | "$OVERSIGHT_PYTHON" -c \
+            echo "$BANDIT_OUT" | PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
                 "import json,sys; [print(f\"  {r['filename']}:{r['line_number']} [{r['test_id']}] {r['issue_text']}\") \
                  for r in json.load(sys.stdin).get('results',[]) if r.get('issue_severity')=='HIGH']" 2>/dev/null || true
             ERRORS=$((ERRORS + 1))

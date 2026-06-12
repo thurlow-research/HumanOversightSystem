@@ -34,12 +34,12 @@ if command -v detect-secrets &>/dev/null; then
     echo "=== detect-secrets ==="
     if [[ ${#FILES[@]} -gt 0 ]]; then
         BASELINE=$(detect-secrets scan "${FILES[@]}" 2>/dev/null)
-        SECRET_COUNT=$(echo "$BASELINE" | python3 -c \
+        SECRET_COUNT=$(echo "$BASELINE" | PYTHONSAFEPATH=1 python3 -c \
             "import json,sys; d=json.load(sys.stdin); \
              total=sum(len(v) for v in d.get('results',{}).values()); print(total)" 2>/dev/null || echo "0")
         if [[ "$SECRET_COUNT" -gt 0 ]]; then
             echo "GATE FAIL: $SECRET_COUNT potential secret(s) detected:"
-            echo "$BASELINE" | python3 -c \
+            echo "$BASELINE" | PYTHONSAFEPATH=1 python3 -c \
                 "import json,sys
 d=json.load(sys.stdin)
 for fpath, findings in d.get('results',{}).items():
