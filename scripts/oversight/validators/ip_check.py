@@ -311,41 +311,41 @@ def check_regurgitation_stub(file_paths: list[str]) -> dict:
     """
     Level 3: snippet-matching against FOSS code index using locality-sensitive hashing.
 
-    Planned implementation: ai-gen-code-search (AboutCode)
-      https://github.com/aboutcode-org/ai-gen-code-search
-      Purpose-built for detecting if AI-generated code reproduces FOSS source fragments.
-      Uses LSH to match against a FOSS code index; surfaces derivative origin, license,
-      and vulnerability chain. Directly relevant to vibe-coding oversight.
+    ARCHITECTURE NOTE: ai-gen-code-search (AboutCode) is NOT a standalone pip package.
+    It requires deploying three backend services:
+      - PurlDB: package metadata database
+      - MatchCode: LSH matching service
+      - ScanCode.io: frontend/API layer
 
-    Install (when ready):
-      pip install ai-gen-code-search   # or via Docker: aboutcode/ai-gen-code-search
-      On Faberix (Ubuntu long-runner): pip install --user ai-gen-code-search
+    There is no downloadable pre-built FOSS index; the index is built against the
+    deployed stack. A hosted evaluation system exists — contact hello@aboutcode.org
+    for research access. This is the planned integration path for this framework.
 
-    Companion: ScanCode Toolkit (also AboutCode) provides the license text database
-      that ai-gen-code-search builds alongside. Install: pip install scancode-toolkit
-      ScanCode is already wired into Level 1 (license gate) above.
+    Reference: https://github.com/aboutcode-org/ai-gen-code-search (v1.0.0, May 2025)
+    Companion: ScanCode Toolkit (already wired into Level 1 above) provides the license
+    text database that MatchCode builds alongside.
 
-    To activate: set IP_REGURGITATION_ENABLED=1 in environment once ai-gen-code-search
-    is installed and the FOSS index is built. This stub will then call it.
+    Integration plan once API access is obtained:
+      1. Receive API endpoint + credentials from AboutCode
+      2. Replace stub below with REST calls to the MatchCode evaluation API
+      3. Remove this stub and set integration_active = True
+
+    IP_REGURGITATION_ENABLED env var is reserved for when the API integration lands.
+    Setting it to 1 currently has no effect — it does not activate any real analysis.
     """
     enabled = __import__("os").environ.get("IP_REGURGITATION_ENABLED", "0") == "1"
-    if enabled:
-        # Future: call ai-gen-code-search CLI here
-        # result = subprocess.run(["ai-gen-code-search", "--json", ...], ...)
-        pass
 
     return {
         "stub": True,
-        "enabled": enabled,
-        "planned_tool": "ai-gen-code-search (AboutCode) — LSH snippet matching against FOSS index",
-        "companion": "ScanCode Toolkit — license text database",
+        "integration_active": False,
+        "planned_tool": "ai-gen-code-search (AboutCode) REST API — LSH snippet matching against FOSS index",
+        "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
         "files_checked": len(file_paths),
+        "ip_regurgitation_enabled_env": enabled,
         "message": (
-            "Regurgitation lens (Level 3) is NOT YET ACTIVE. "
+            "Regurgitation lens (Level 3) is NOT YET ACTIVE — requires AboutCode API access. "
             "A clean result here is NOT evidence against code regurgitation. "
-            f"Install ai-gen-code-search and set IP_REGURGITATION_ENABLED=1 to activate. "
-            f"ScanCode is {'available' if _SCANCODE_AVAILABLE else 'not installed'} "
-            f"(used for Level 1 license detection)."
+            f"ScanCode is {'available (Level 1 active)' if _SCANCODE_AVAILABLE else 'not installed — Level 1 using API fallback'}."
         ),
     }
 

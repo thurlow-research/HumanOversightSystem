@@ -297,10 +297,10 @@ install_scancode() {
   fi
 
   echo ""
-  skip "ai-gen-code-search (Level 3 regurgitation lens — NOT auto-installed)"
-  echo "       Requires building a FOSS code index (~GB). When ready:"
-  echo "       pip install ai-gen-code-search"
-  echo "       Then set: IP_REGURGITATION_ENABLED=1"
+  skip "ai-gen-code-search (Level 3 regurgitation lens — requires backend services)"
+  echo "       NOT a standalone pip install. Requires PurlDB + MatchCode + ScanCode.io"
+  echo "       service stack deployment, OR research API access from AboutCode."
+  echo "       Contact: hello@aboutcode.org for evaluation access."
   echo "       Docs: https://github.com/aboutcode-org/ai-gen-code-search"
 }
 
