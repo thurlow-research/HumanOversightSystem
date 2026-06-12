@@ -39,10 +39,20 @@ audit/                               ← COMMITTED to project repo (not gitignor
     step{N}-human-authorization.md ← CRITICAL steps only: human creates this file
                                     BEFORE running oversight-evaluator to authorize
                                     proceeding. Evaluator reads it during Phase 1.
+                                    Required content: date + decision text.
+    human-tier-override.md       ← created by human to authorize lowering a risk tier
+                                    below the coder's declaration. Risk-assessor reads
+                                    this before accepting a lower tier. Without it the
+                                    declared tier is a hard floor.
   second-review/
     step{N}-{ts}.md              ← second review output (run_second_review.sh).
-                                    Always written — contains verdict: skipped when
-                                    score is below thresholds.
+                                    Always written — for actual runs includes a
+                                    machine-readable header then reviewer JSON blocks;
+                                    contains verdict: skipped when below thresholds or
+                                    when no diff content. Top-level fields:
+                                      verdict: approve|request_changes|error|skipped
+                                      highest_severity: critical|high|medium|low|none
+                                      unresolved_findings: N
   red-team/
     checkpoint-{milestone}-{ts}.md ← red-team report
 ```
@@ -90,10 +100,15 @@ Agent: {agent-name}
 Artifact: {what was reviewed — file paths or description}
 Iterations: {N}
 Critical_findings_resolved: true | false | N/A
+Human_resolution: {ISO date} — {decision text}   ← required when Status: ESCALATED
 Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 ```
 
 **Required fields:** Status, Agent, Artifact, Iterations.
+
+**`Critical_findings_resolved`** is required for `security` and `privacy` roles; optional (N/A) for all others. When `true`, it signals that the evaluator should add the finding to the conditional-items list for human review before merge — it is a Phase 2 quality signal, not a Phase 1 compliance check.
+
+**`Human_resolution`** is required only when `Status: ESCALATED`. Format: `{ISO date} — {decision text}`. The oversight-evaluator reads this field to confirm human resolution is on record before clearing the compliance check. Example: `Human_resolution: 2026-06-11 — Reviewed 5-round loop; architect decision is sound, proceed`.
 
 **`Status: CONDITIONAL`** passes Phase 1 compliance but automatically causes the oversight-evaluator to recommend at least `CONDITIONAL_PROCEED` — a human must verify the conditional item before merge.
 
@@ -201,12 +216,15 @@ Compliant agents create GitHub issues at defined trigger points. Issue creation 
 The `oversight-evaluator` agent checks compliance before quality evaluation. Compliance fails if:
 
 1. Sign-off register is missing or has no entries for a required role
-2. Any required role shows `Status: ESCALATED` without human resolution on record. Human resolution is recorded as a `Human_resolution: {date} — {decision}` field in the sign-off register entry.
-3a. For `human_gate_required: true` (CRITICAL) steps: `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs. The human creates this file manually to authorize proceeding. The evaluator reads it in Phase 1 — if missing on a CRITICAL step, compliance fails immediately without proceeding to Phase 2.
-3. `test-unit` declaration is missing `Thresholds_met: true`
-4. `test-system` declaration is missing when `system_test_applicable: true` for this step
-5. `process` sign-off is missing when `system_test_applicable: true` (PM must sign off on test plan)
-6. `human_gate_required: true` and no human authorization on record (CRITICAL steps)
+2. Any required role entry is missing required §3 fields (`Status`, `Agent`, `Artifact`, `Iterations`)
+3. Any required role shows `Status: ESCALATED` without a `Human_resolution:` field in that entry
+4. `test-unit` declaration is missing `Thresholds_met: true`
+5. `test-system` declaration is missing when `system_test_applicable: true`
+6. `process` sign-off missing when `system_test_applicable: true` (PM must sign off on test plan)
+7. `human_gate_required: true` (CRITICAL steps): `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs; if missing, compliance fails immediately
+8. MEDIUM+ commits missing `Prompt-Artifact:` git trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items; human confirms intent was captured another way). If the trailer references a path that does not exist → **COMPLIANCE FAIL**
+
+**MEDIUM fail-closed (second review):** when composite score ≥ `OVERSIGHT_AGY_THRESHOLD` (default 0.30) but below `OVERSIGHT_CODEX_THRESHOLD` (default 0.55) and `agy` is unavailable, `run_second_review.sh` exits non-zero. This is intentional fail-closed behavior — a MEDIUM+ step cannot proceed without cross-vendor review. If codex is also unavailable at HIGH+, the script also exits non-zero. Document this in project runbooks.
 
 Compliance failure → `ESCALATE` regardless of content evaluation.
 

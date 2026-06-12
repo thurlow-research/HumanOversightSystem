@@ -128,7 +128,9 @@ fi
 # Fail-closed checks by risk band:
 #   MEDIUM (score ≥ 0.30): agy is required. If agy unavailable and codex can't cover
 #     (score < codex threshold), fail — an unreviewed MEDIUM step cannot proceed silently.
-#   HIGH+ (score ≥ 0.55): both vendors are required. Fail if BOTH unavailable.
+#   HIGH+ (score ≥ CODEX_THRESHOLD): agy required + codex required. Codex FALLBACK is
+#     allowed when agy is unavailable (one combined review instead of two targeted ones).
+#     Fail only if BOTH vendors are unavailable. This is documented in contract §7.
 if $RUN_AGY && ! $AGY_AVAILABLE && ! $RUN_CODEX; then
     echo "ERROR: score=${SCORE} is MEDIUM+ (agy required) but agy is unavailable and" >&2
     echo "       score is below codex threshold (${CODEX_THRESHOLD}) — no fallback reviewer." >&2
@@ -139,11 +141,11 @@ if $RUN_AGY && ! $AGY_AVAILABLE && ! $RUN_CODEX; then
 fi
 
 python3 -c "
-s=float('${SCORE:-0}'); threshold=0.55
+s=float('${SCORE:-0}'); threshold=float('${CODEX_THRESHOLD}')
 exit(0 if s < threshold else 1)
 " 2>/dev/null || {
     if ! $AGY_AVAILABLE && ! $CODEX_AVAILABLE; then
-        echo "ERROR: score=${SCORE} is HIGH+ (≥0.55) but neither agy nor codex is available." >&2
+        echo "ERROR: score=${SCORE} is HIGH+ (≥${CODEX_THRESHOLD}) but neither agy nor codex is available." >&2
         echo "Options:" >&2
         echo "  1. Authenticate a reviewer: ./scripts/setup_clis.sh auth" >&2
         echo "  2. Human override: create .claudetmp/oversight/human-tier-override.md" >&2
@@ -165,7 +167,17 @@ else
 fi
 
 if [[ -z "$DIFF_CONTENT" ]]; then
-    echo "run_second_review: no diff content — nothing to review"
+    echo "run_second_review: no diff content — writing skipped sentinel"
+    mkdir -p "$OUT_DIR"
+    TS=$(date +%Y%m%dT%H%M%S)
+    cat > "$OUT_DIR/step${STEP}-${TS}.md" <<EOF
+# Second Review — Step ${STEP}
+Timestamp: ${TS}
+verdict: skipped
+highest_severity: none
+unresolved_findings: 0
+reason: no diff content detected
+EOF
     exit 0
 fi
 
@@ -182,9 +194,15 @@ echo "  codex threshold: $CODEX_THRESHOLD → $($RUN_CODEX && echo "FIRE" || ech
 echo "Output: $OUTFILE"
 echo ""
 
+# Machine-readable header written first; evaluator reads these top-level fields.
+# Individual reviewer JSON blocks follow inside fenced sections.
+# verdict and highest_severity are updated at the end of the script.
 {
     printf "# Second Review — Step %s\n" "$STEP"
     printf "Score: %s | Timestamp: %s\n" "$SCORE" "$TIMESTAMP"
+    printf "verdict: pending\n"
+    printf "highest_severity: none\n"
+    printf "unresolved_findings: 0\n"
     printf "agy_threshold: %s | codex_threshold: %s\n\n" "$AGY_THRESHOLD" "$CODEX_THRESHOLD"
 } > "$OUTFILE"
 
@@ -408,6 +426,50 @@ elif $RUN_CODEX && ! $CODEX_AVAILABLE; then
 fi
 
 echo ""
+
+# ── Finalize machine-readable verdict header ─────────────────────────────────
+# Parse all reviewer JSON blocks to determine aggregate verdict and severity.
+python3 - "$OUTFILE" <<'PYEOF'
+import json, re, sys
+path = sys.argv[1]
+try:
+    content = open(path).read()
+except Exception:
+    sys.exit(0)
+
+# Extract JSON blocks (fenced with ```json ... ```)
+blocks = re.findall(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+severities = ["critical", "high", "medium", "low", "none"]
+highest = "none"
+request_changes = False
+finding_count = 0
+
+for block in blocks:
+    try:
+        data = json.loads(block)
+    except Exception:
+        continue
+    if data.get("verdict") == "request_changes":
+        request_changes = True
+    for f in data.get("findings", []):
+        sev = str(f.get("severity", "low")).lower()
+        if severities.index(sev) < severities.index(highest):
+            highest = sev
+        if sev in ("critical", "high"):
+            finding_count += 1
+
+verdict = "request_changes" if request_changes else "approve"
+if not blocks:
+    verdict = "error"
+
+# Rewrite the top-level verdict fields in the file
+new_content = re.sub(r'^verdict: pending$', f'verdict: {verdict}', content, flags=re.M)
+new_content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', new_content, flags=re.M)
+new_content = re.sub(r'^unresolved_findings: 0$', f'unresolved_findings: {finding_count}', new_content, flags=re.M)
+open(path, 'w').write(new_content)
+print(f"  verdict={verdict} highest_severity={highest} unresolved={finding_count}")
+PYEOF
+
 echo "Second review complete: $OUTFILE"
 echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCALATE."
 

@@ -55,6 +55,16 @@ done
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
     echo "run_validators: no files specified"
     echo "Usage: $0 file.py [file2.py ...]"
+    # Write a durable CRITICAL summary so downstream agents have an artifact to read
+    mkdir -p "$OUT_DIR"
+    python3 -c "
+import json; from pathlib import Path
+summary = {'composite_score': 1.0, 'tier': 'CRITICAL', 'validator_count': 0,
+           'successful_validators': 0,
+           'error': 'No files provided to run_validators.sh — defaulting to CRITICAL (fail-closed)'}
+Path('$OUT_DIR/summary.json').write_text(json.dumps(summary, indent=2))
+print('CRITICAL summary written to $OUT_DIR/summary.json')
+" 2>/dev/null || true
     exit 1
 fi
 
