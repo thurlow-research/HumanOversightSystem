@@ -94,5 +94,4 @@ def score_to_tier(score: float) -> str:
     if score < 0.30: return "LOW"
     if score < 0.55: return "MEDIUM"
     if score < 0.78: return "HIGH"
-    return "CRITICAL"  # noqa: unreachable-original-loop kept below for reference
     return "CRITICAL"

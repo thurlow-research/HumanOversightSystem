@@ -179,7 +179,16 @@ CHANGED_FILES="$(gh pr diff "$PR" --name-only 2>/dev/null || true)"
 # Contains: what was built, internal review summary, panel probe guidance, confidence gaps.
 # The most recent step handoff is used — oversight-orchestrator writes one per step.
 HANDOFF_CONTEXT=""
-HANDOFF_FILE="$(ls .claudetmp/oversight/step*-handoff.md 2>/dev/null | sort | tail -1)"
+# Numeric sort by step number — plain `sort` is lexicographic and would mis-order
+# step10 before step2. Python 3.10+ is required by HOS so this is always available.
+HANDOFF_FILE="$(python3 - <<'PYEOF' 2>/dev/null
+import glob, re
+files = glob.glob('.claudetmp/oversight/step*-handoff.md')
+if files:
+    files.sort(key=lambda f: int(m.group(1)) if (m := re.search(r'step(\d+)', f)) else 0)
+    print(files[-1])
+PYEOF
+)"
 if [[ -n "$HANDOFF_FILE" && -f "$HANDOFF_FILE" ]]; then
     HANDOFF_CONTEXT="$(cat "$HANDOFF_FILE")"
     info "Loaded handoff context from $HANDOFF_FILE ($(wc -c < "$HANDOFF_FILE") bytes)"

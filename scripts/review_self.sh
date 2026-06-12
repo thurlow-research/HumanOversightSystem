@@ -192,7 +192,7 @@ Shell script issues:
 
 Python issues:
 - In rn_calculator.py: does \`_collect_functions\` correctly avoid double-counting nested functions? The inner \`_Collector\` calls \`ast.walk\` on the function node which would re-visit nested functions already visited at the top level.
-- In token_tracker.py: the \`report\` function has a signature mismatch — it expects \`args.all\` but the subparser uses \`store_true\` for \`--all\`. Verify this works.
+- In token_tracker.py: verify that the \`report\` function correctly accesses the \`args.all\` attribute set by the \`--all\` subparser argument (declared with \`action='store_true'\`). The \`getattr(args, 'all', False)\` pattern should work — confirm no AttributeError occurs.
 
 ### 4. Contract compliance
 
