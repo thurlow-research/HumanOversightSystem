@@ -1,0 +1,32 @@
+# oversight runtime state — never commit
+.claudetmp/
+.ai-local/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# secrets
+.env
+.env.*
+!.env.example
+*.salt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+.vscode/
+*.swp
+
+# test artifacts
+.coverage
+htmlcov/
+.mutmut-cache

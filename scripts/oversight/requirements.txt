@@ -1,0 +1,24 @@
+# oversight validator and gate dependencies
+# install: pip install -r scripts/oversight/requirements.txt
+#
+# IP/provenance (optional but strongly recommended):
+#   scancode-toolkit    — full license text detection (Level 1, replaces PyPI API fallback)
+#                         On Faberix (Ubuntu): pip install --user scancode-toolkit
+#   ai-gen-code-search  — LSH snippet matching vs. FOSS index (Level 3, activate when ready)
+#                         https://github.com/aboutcode-org/ai-gen-code-search
+#                         Set IP_REGURGITATION_ENABLED=1 after installing + building index
+
+radon>=5.1
+bandit>=1.7
+semgrep>=1.50
+detect-secrets>=1.4
+pip-audit>=2.6
+flake8>=7.0
+flake8-bugbear>=24.0
+black>=24.0
+isort>=5.13
+mypy>=1.8
+
+# IP tooling (install separately to keep core deps lean)
+# scancode-toolkit>=32.0
+# ai-gen-code-search>=0.1

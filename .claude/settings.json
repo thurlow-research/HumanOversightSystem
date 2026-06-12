@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh repo:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(python3 scripts/oversight/validators/*.py *)",
+      "Bash(bash scripts/oversight/gates/*.sh *)",
+      "Bash(bash scripts/oversight/run_validators.sh *)",
+      "Bash(bash scripts/run_second_review.sh *)",
+      "Bash(bash scripts/run_red_team.sh *)"
+    ]
+  }
+}
