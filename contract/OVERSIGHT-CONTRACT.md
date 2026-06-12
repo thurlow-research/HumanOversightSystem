@@ -9,7 +9,12 @@ This document defines what any compliant agent team must produce for the Human O
 All files live relative to the project root. The HOS reads these locations; compliant teams must write to them.
 
 ```
-.claudetmp/
+audit/                               ← COMMITTED to project repo (not gitignored)
+  oversight-log.jsonl               ← append-only audit trail; one JSON event per line
+  step-{N}-summary.md               ← human-readable per-step report (generated at merge)
+  escaped-defects.md                ← consolidated escaped-defect record
+
+.claudetmp/                          ← ephemeral working state (gitignored)
   signoffs/
     step{N}-register.md          ← sign-off register for build step N
   reviews/

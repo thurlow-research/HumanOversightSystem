@@ -271,6 +271,29 @@ if [[ -n "$TARGET_REPO" ]] && ! $SKIP_PROJECT_INSTALL; then
         rsync -a --ignore-existing \
             "$SCRIPT_DIR/scripts/oversight/" \
             "$TARGET_REPO/scripts/oversight/"
+        # Scaffold the audit trail directory (committed, not gitignored)
+        if [[ ! -d "$TARGET_REPO/audit" ]]; then
+            mkdir -p "$TARGET_REPO/audit/escalations" "$TARGET_REPO/audit/panel-runs"
+            # Seed the JSONL with a header comment
+            cat > "$TARGET_REPO/audit/oversight-log.jsonl" <<'JSONL'
+# oversight-log.jsonl — Human Oversight System audit trail
+# Append-only. One JSON event per line. Do not edit or delete existing lines.
+# Schema: OVERSIGHT-CONTRACT.md §1 (HumanOversightSystem repo)
+# Browsable summaries: audit/YYYY-MM-DD-step-N-name-TIER.md
+JSONL
+            touch "$TARGET_REPO/audit/escalations/.gitkeep"
+            touch "$TARGET_REPO/audit/panel-runs/.gitkeep"
+            ok "Scaffolded audit/ directory (committed, not gitignored)"
+            warn "Add 'audit/' to .gitignore exclusion if it's currently ignored"
+        else
+            skip "audit/ directory already exists in target"
+        fi
+
+        # Ensure audit/ is NOT gitignored in the target repo
+        if [[ -f "$TARGET_REPO/.gitignore" ]] && grep -q "^audit/" "$TARGET_REPO/.gitignore" 2>/dev/null; then
+            warn "audit/ is in .gitignore — audit trail won't be committed. Remove that line."
+        fi
+
         # capture_prompt.sh and prompt_audit.sh are already copied by setup_oversight.sh
         for script in run_panel.sh run_second_review.sh run_red_team.sh; do
             SRC="$SCRIPT_DIR/scripts/$script"
