@@ -30,27 +30,45 @@ Read before acting:
 
 The step is clean. Open the PR and prepare for the panel.
 
-**1. Write the handoff document** to `.claudetmp/oversight/step{N}-handoff.md`:
+**1. Write two documents** — one for the panel (no internal findings), one for the human (full picture):
 
+**Panel context** → `.claudetmp/oversight/step{N}-panel-context.md`
+(This is what `run_panel.sh` injects into reviewer prompts. Contains structural risk signals ONLY — no internal review findings, no resolved vulnerabilities.)
 ```markdown
-# Panel Handoff — Step {N}
-Validated tier: {tier}
-Composite score: {score}
+# Panel Context — Step {N}
+Validated tier: {tier}  |  Composite score: {score}
 
 ## What was built
-[One paragraph from the technical design for this step]
+[One paragraph from the technical design — what this step does]
+
+## High-risk areas (from risk scores — where to probe)
+[Copy ## Panel Context from the evaluator output verbatim — risk scores, probe targets,
+spec sections. Do NOT include internal review findings or how they were resolved.]
+
+## Spec sections to verify
+[Relevant spec sections for this step — for independent adherence check]
+```
+
+**Full handoff** → `.claudetmp/oversight/step{N}-handoff.md`
+(Used as the PR body. Contains everything including internal review summary — for the human only.)
+```markdown
+# Handoff — Step {N}
+Validated tier: {tier}  |  Composite score: {score}
+
+## What was built
+[Same paragraph as panel context]
 
 ## Internal review summary
 [What each reviewer found and how it was resolved — one sentence per reviewer]
 
-## What the panel should probe
-[Copy panel_context from the evaluator output verbatim]
+## Second review summary
+[Findings from run_second_review.sh and whether each was addressed]
 
-## Confidence gaps (low-confidence areas for reviewer attention)
-[From the risk assessment — specific files/functions]
+## Human authorization record
+[If CRITICAL step: record human's explicit authorization to proceed here — date + decision]
 ```
 
-**2. Open the PR:**
+**2. Open the PR using the full handoff:**
 ```bash
 gh pr create \
   --title "Step {N}: {step name}" \

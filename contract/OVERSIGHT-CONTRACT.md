@@ -97,7 +97,7 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `infra` | Infrastructure / deployment config |
 | `ui` | Design system / template conformance |
 | `a11y` | Accessibility (WCAG AA) |
-| `risk-assessment` | Risk tier validation (never lowers) |
+| `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
 ---
 
@@ -165,7 +165,7 @@ steps:
 
 ## 6. Issue creation rules
 
-Compliant agents create GitHub issues at defined trigger points. The HOS evaluator checks for issue existence as part of its compliance evaluation.
+Compliant agents create GitHub issues at defined trigger points. Issue creation is enforced by agent instructions and is auditable via `gh issue list`. The evaluator does NOT query GitHub to verify issue existence — it trusts the sign-off register which agents update after creating issues. The issue trail is a research and audit artifact, not a blocking compliance check.
 
 | Trigger | Label(s) | Who creates |
 |---|---|---|
@@ -186,7 +186,7 @@ Compliant agents create GitHub issues at defined trigger points. The HOS evaluat
 The `oversight-evaluator` agent checks compliance before quality evaluation. Compliance fails if:
 
 1. Sign-off register is missing or has no entries for a required role
-2. Any required role shows `Status: ESCALATED` without human resolution on record
+2. Any required role shows `Status: ESCALATED` without human resolution on record. Human resolution is recorded in `.claudetmp/oversight/step{N}-handoff.md` under "## Human authorization record" for CRITICAL steps, or as a comment in the sign-off register entry (`Human_resolution: {date} — {decision}`).
 3. `test-unit` declaration is missing `Thresholds_met: true`
 4. `test-system` declaration is missing when `system_test_applicable: true` for this step
 5. `process` sign-off is missing when `system_test_applicable: true` (PM must sign off on test plan)

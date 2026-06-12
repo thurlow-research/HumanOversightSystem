@@ -80,7 +80,7 @@ At CRITICAL, also read:
 Determine the final validated tier:
 - Start from the step manifest baseline
 - Apply deterministic floor rules (Phase 1)
-- Apply composite score bands: score ≥0.55 → HIGH, ≥0.78 → CRITICAL
+- Apply composite score bands: score ≥0.30 → MEDIUM, ≥0.55 → HIGH, ≥0.78 → CRITICAL (consistent with schema.py)
 - Take the maximum across all three sources
 - If the coder declared a LOWER tier than your assessment, state that you are raising it and why
 

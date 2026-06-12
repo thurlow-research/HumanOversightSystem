@@ -125,9 +125,13 @@ Reasoning: [one paragraph]
 1. [Specific question or problem — state as a decision the human must make]
 2. ...
 
-## Panel context
-[What the cross-vendor panel should specifically probe, derived from internal
-findings and second review. Used as context preamble in run_panel.sh.]
+## Panel Context
+[Where to focus adversarial attention — derived from RISK SCORES and STRUCTURAL signals
+only. DO NOT include what internal reviewers found or how findings were resolved.
+The cross-vendor panel must be independent; anchoring them to internal findings
+violates decorrelation. Include: high-RN function names and scores, trust boundary
+crossings, confidence gaps by area, spec sections to verify. Exclude: reviewer
+findings, resolved vulnerabilities, security-reviewer conclusions.]
 ```
 
 Then print a one-line summary:

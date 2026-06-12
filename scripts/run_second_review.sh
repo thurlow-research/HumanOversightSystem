@@ -21,7 +21,12 @@
 #     Do NOT upgrade to $100/month; it is a reserve tool, not a high-frequency one.
 #
 #   FALLBACK: if agy is unavailable and score ≥ CODEX_THRESHOLD, codex takes the
-#     correctness lens too, so HIGH+ steps never have zero cross-vendor coverage.
+#     correctness lens too. NOTE: fallback runs ONE combined review (correctness +
+#     security) instead of two separate targeted reviews. This is documented as an
+#     intentional degradation — the alternative would be to require two codex calls
+#     (expensive) or fail-closed (blocks the pipeline when agy is briefly unavailable).
+#     At HIGH+, if BOTH vendors are unavailable, the script exits with a non-zero
+#     status so the pipeline does not silently proceed without cross-vendor review.
 #
 # INDEPENDENCE: Do NOT pass internal reviewer (code-reviewer agent) findings to
 # these reviewers. Independence is the value — decorrelated judgement catches
@@ -36,9 +41,9 @@
 #   OVERSIGHT_CODEX_THRESHOLD=0.55  fire codex when composite score >= this
 #
 # Usage:
-#   ./scripts/oversight/run_second_review.sh --step 3 --score 0.67
-#   ./scripts/oversight/run_second_review.sh --diff HEAD~1 --score 0.45
-#   ./scripts/oversight/run_second_review.sh --files a.py b.py --score 0.71
+#   ./scripts/run_second_review.sh --step 3 --score 0.67
+#   ./scripts/run_second_review.sh --diff HEAD~1 --score 0.45
+#   ./scripts/run_second_review.sh --files a.py b.py --score 0.71
 #
 # Prerequisites: agy authenticated (`agy` login), codex authenticated (`codex` login)
 
@@ -106,8 +111,23 @@ command -v codex &>/dev/null && CODEX_AVAILABLE=true || true
 
 # Fallback: if agy unavailable and codex threshold reached, codex handles both lenses
 if $RUN_AGY && ! $AGY_AVAILABLE && $CODEX_AVAILABLE && $RUN_CODEX; then
-    echo "run_second_review: agy unavailable — codex will cover correctness lens too"
+    echo "run_second_review: agy unavailable — codex will cover correctness lens too (degraded: one combined review)"
 fi
+
+# Fail-closed at HIGH+ (score ≥ 0.55): if BOTH vendors are unavailable, do not silently
+# proceed. An unreviewed HIGH+ step cannot go to PR without explicit human override.
+python3 -c "
+s=float('${SCORE:-0}'); threshold=0.55
+exit(0 if s < threshold else 1)
+" 2>/dev/null || {
+    if ! $AGY_AVAILABLE && ! $CODEX_AVAILABLE; then
+        echo "ERROR: score=${SCORE} is HIGH+ (≥0.55) but neither agy nor codex is available." >&2
+        echo "Cross-vendor review is required at this risk level. Options:" >&2
+        echo "  1. Authenticate a reviewer: ./scripts/setup_clis.sh auth" >&2
+        echo "  2. Human override: create .claudetmp/oversight/human-tier-override.md" >&2
+        exit 1
+    fi
+}
 
 mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
