@@ -127,6 +127,11 @@ run_validator "historical_density"  "$VALIDATORS_DIR/issue_query.py"         "${
 run_validator "ip_check"            "$VALIDATORS_DIR/ip_check.py" \
     --prompts-dir "prompts"         "${ALL_FILES[@]}"
 
+# Portability — hardcoded absolute paths, spec_from_file_location workarounds
+if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    run_validator "portability"         "$VALIDATORS_DIR/portability_check.py"  "${PY_FILES[@]}"
+fi
+
 # Prompt audit — ambiguity score + fidelity surface (Python files + prompt artifacts)
 if [[ ${#PY_FILES[@]} -gt 0 ]]; then
     run_validator "prompt_ambiguity"    "$VALIDATORS_DIR/prompt_audit_risk.py" \
