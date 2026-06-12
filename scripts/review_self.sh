@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# review_self.sh — run agy (Gemini) to review the HumanOversightSystem itself.
+# review_self.sh — run an external reviewer (agy or codex) against the HOS itself.
 #
-# Sends all agent definitions, scripts, and the contract to agy and asks it to
+# Sends all agent definitions, scripts, and the contract to the reviewer and asks it to
 # check for:
 #   1. Internal consistency — do file paths, schema field names, and variable
 #      names match across agents, scripts, and the contract?
@@ -17,11 +17,12 @@
 # Output goes to .claudetmp/self-review/review-{timestamp}.md and stdout.
 #
 # Usage:
-#   ./scripts/review_self.sh             # full review (calls agy)
-#   ./scripts/review_self.sh --dry-run   # show context size, no agy call
-#   ./scripts/review_self.sh --focus consistency  # narrow review scope
+#   ./scripts/review_self.sh                        # full review (agy by default)
+#   ./scripts/review_self.sh --reviewer codex        # use codex instead
+#   ./scripts/review_self.sh --dry-run               # show context size, no call
+#   ./scripts/review_self.sh --focus consistency     # narrow review scope
 #
-# Prerequisites: agy authenticated (./scripts/setup_clis.sh auth)
+# Prerequisites: agy or codex authenticated (./scripts/setup_clis.sh auth)
 
 set -euo pipefail
 
@@ -29,16 +30,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$REPO_ROOT/.claudetmp/self-review"
 DRY_RUN=false
-FOCUS=""  # narrow to a specific check if set
+FOCUS=""
+REVIEWER="agy"   # agy (Gemini) | codex (OpenAI)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run)  DRY_RUN=true; shift ;;
-        --focus)    FOCUS="$2"; shift 2 ;;
-        --help|-h)  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --dry-run)   DRY_RUN=true; shift ;;
+        --focus)     FOCUS="$2"; shift 2 ;;
+        --reviewer)  REVIEWER="$2"; shift 2 ;;
+        --help|-h)   sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) shift ;;
     esac
 done
+
+if [[ "$REVIEWER" != "agy" && "$REVIEWER" != "codex" ]]; then
+    echo "Unknown reviewer '$REVIEWER'. Use: agy | codex" >&2
+    exit 1
+fi
 
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
@@ -226,23 +234,33 @@ End with a brief overall assessment: is the system coherent and likely to work a
 
 ${CONTEXT}"
 
-# ── Run agy ───────────────────────────────────────────────────────────────────
+# ── Invoke reviewer ───────────────────────────────────────────────────────────
 echo ""
-info "Sending to agy (~${CONTEXT_TOKENS} estimated tokens)..."
+info "Sending to $REVIEWER (~${CONTEXT_TOKENS} estimated tokens)..."
 echo ""
 
-REVIEW_OUTPUT=$(agy -p "$PROMPT" 2>&1) || {
-    err "agy invocation failed (exit $?)"
-    err "Check auth:    agy -p 'hello'"
-    err "Check version: agy --version  (need 1.0+)"
+if ! command -v "$REVIEWER" &>/dev/null; then
+    err "$REVIEWER not found. Install + auth: ./scripts/setup_clis.sh"
+    exit 1
+fi
+
+case "$REVIEWER" in
+    agy)   REVIEW_OUTPUT=$(agy   -p "$PROMPT"   2>&1) ;;
+    codex) REVIEW_OUTPUT=$(codex exec "$PROMPT"  2>&1) ;;
+esac || {
+    err "$REVIEWER invocation failed (exit $?)"
     exit 1
 }
 
 # ── Write output ──────────────────────────────────────────────────────────────
+REVIEWER_LABEL="$REVIEWER"
+[[ "$REVIEWER" == "agy"   ]] && REVIEWER_LABEL="agy (Gemini)"
+[[ "$REVIEWER" == "codex" ]] && REVIEWER_LABEL="codex (OpenAI)"
+
 {
     printf "# HumanOversightSystem Self-Review\n"
     printf "Timestamp: %s\n" "$TIMESTAMP"
-    printf "Reviewer: agy (Gemini)\n"
+    printf "Reviewer: %s\n" "$REVIEWER_LABEL"
     printf "Context: ~%d tokens\n\n" "$CONTEXT_TOKENS"
     printf '%s\n\n' "---"
     printf '%s\n' "$REVIEW_OUTPUT"
@@ -256,7 +274,7 @@ ok "Report saved: $OUTFILE"
 TRACKER="$REPO_ROOT/scripts/oversight/token_tracker.py"
 if [[ -f "$TRACKER" ]]; then
     python3 "$TRACKER" record \
-        --vendor agy \
+        --vendor "$REVIEWER" \
         --stage self-review \
         --step "meta" \
         --prompt-chars "${#PROMPT}" \
@@ -271,8 +289,9 @@ if [[ "$HIGH_COUNT" -gt 0 ]] && command -v gh &>/dev/null; then
     echo ""
     warn "$HIGH_COUNT HIGH/CRITICAL finding(s) — creating GitHub issue..."
     gh issue create \
-        --title "Self-review findings: ${HIGH_COUNT} HIGH/CRITICAL (agy, ${TIMESTAMP})" \
-        --body "$(printf '**Reviewer:** agy (Gemini)\n**Report:** %s\n\nSee the full report file for details.\n\n## Summary\n%s' \
+        --title "Self-review findings: ${HIGH_COUNT} HIGH/CRITICAL (${REVIEWER}, ${TIMESTAMP})" \
+        --body "$(printf '**Reviewer:** %s\n**Report:** %s\n\nSee the full report file for details.\n\n## Summary\n%s' \
+            "$REVIEWER_LABEL" \
             "$OUTFILE" \
             "$(echo "$REVIEW_OUTPUT" | head -60)")" \
         --label "design-concern" \
