@@ -102,6 +102,7 @@ docs/design/TECHNICAL-DESIGN.md
 docs/ops/TELEMETRY-SPEC.md
 contract/step-manifest.yaml
 contract/gate-suspension.md
+audit/oversight-log.jsonl
 scripts/framework/config.sh"
 
 while IFS= read -r -d '' f; do

@@ -34,6 +34,26 @@ Read these before starting:
 
 ## Phase 1 — Compliance check
 
+**First, establish the step's commit range and write the register header.**
+The register must record which commits belong to this step so prompt-artifact and provenance checks are unambiguous:
+
+```bash
+# base_sha: previous step's head_sha (from the audit log) or, for step 1,
+# the merge-base of this branch with the default branch.
+PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
+  | tail -1 | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+BASE_SHA="${PREV_HEAD:-$(git merge-base HEAD "$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || echo main)")}"
+HEAD_SHA=$(git rev-parse HEAD)
+```
+
+Write/update the header at the top of `.claudetmp/signoffs/step{N}-register.md`:
+```markdown
+# Sign-off Register — Step {N}
+base_sha: {BASE_SHA}
+head_sha: {HEAD_SHA}
+```
+Also append a `{"event":"step-head","step":N,"head_sha":"{HEAD_SHA}","timestamp":"..."}` line to `audit/oversight-log.jsonl` so the next step can find this step's head as its base.
+
 Check the sign-off register against the step manifest's `required_signoffs` list.
 
 **Before checking sign-offs, check for gate suspension:**
@@ -69,9 +89,9 @@ For each required role that is NOT suspended, check:
 - For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
 
 **Prompt artifact compliance (MEDIUM+ steps):**
-- For each commit in this build step, check for a `Prompt-Artifact:` trailer:
+- Use the commit range from the register header (`base_sha..head_sha`) — this is the definitive set of commits for the step:
   ```bash
-  git log --format="%H %B" [step commits] | grep "Prompt-Artifact:"
+  git log --format="%H %B" "${BASE_SHA}..${HEAD_SHA}" | grep "Prompt-Artifact:"
   ```
 - If any MEDIUM+ commit lacks a `Prompt-Artifact:` trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items list so human can verify intent was captured another way, e.g. as a design doc section reference)
 - If the referenced artifact path does not exist in the repo → **COMPLIANCE FAIL** (the trailer points to a missing file)

@@ -107,7 +107,21 @@ AI-Risk: [LOW|MEDIUM|HIGH|CRITICAL]
 
 ## 3. Sign-off register schema
 
-Every agent that approves or escalates a build step writes one entry to `.claudetmp/signoffs/step{N}-register.md`:
+### Register header (commit range)
+
+The first lines of `.claudetmp/signoffs/step{N}-register.md` record the commit range the step covers, so the oversight-evaluator knows exactly which commits to check (e.g. for prompt-artifact compliance) without guessing:
+
+```markdown
+# Sign-off Register — Step {N}
+base_sha: {SHA the step started from — previous step's head_sha, or merge-base with the default branch}
+head_sha: {current HEAD when the evaluator runs}
+```
+
+The oversight-evaluator writes/updates this header when it runs. `base_sha` is taken from the previous step's recorded `head_sha` (via the audit log) or, for the first step, the merge-base of the current branch with the default branch. The definitive commit range for the step is `git log base_sha..head_sha`. This range also feeds the reactive re-run mechanism so each step's commits are unambiguous.
+
+### Sign-off entries
+
+Every agent that approves or escalates a build step writes one entry below the header:
 
 ```markdown
 ## {role} | {artifact} | {ISO-8601 datetime}
