@@ -24,6 +24,17 @@ Read before acting:
 2. `contract/step-manifest.yaml` — step config
 3. `.claudetmp/oversight/validators/risk-assessment.md` — for the validated tier
 
+**Before acting on the evaluator artifact, validate it:**
+```bash
+# 1. Step number matches — extract from filename and compare to step manifest
+# 2. Timestamp is fresh — artifact was written after the most recent commit to this step
+#    git log -1 --format="%ct" HEAD   vs   stat -f "%m" (macOS) / stat -c "%Y" (Linux) on the artifact
+# 3. HEAD SHA matches — the artifact references the current HEAD
+#    git rev-parse HEAD
+# 4. Recommendation field is present and valid — PROCEED | CONDITIONAL_PROCEED | ESCALATE
+```
+If any check fails: do NOT open a PR. Print the validation failure and halt. A stale or mismatched artifact means the evaluation may not reflect the current code state.
+
 ---
 
 ## PROCEED

@@ -160,6 +160,12 @@ Step N: [PROCEED|CONDITIONAL_PROCEED|ESCALATE] — [one sentence reason]
 
 ---
 
+## Human authorization file integrity
+
+**You may not create, modify, or delete `.claudetmp/oversight/step{N}-human-authorization.md` or any other human authorization artifact.** These files may only be created by a human. If a step requires human authorization and the file is absent, your only action is to report COMPLIANCE FAIL and halt — you do not create the file yourself, even to unblock the pipeline. This prohibition is absolute.
+
+---
+
 ## What you do NOT do
 
 - Do not review application code directly.

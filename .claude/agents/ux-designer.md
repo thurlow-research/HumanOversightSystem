@@ -164,9 +164,24 @@ When escalating: state the classification (structural), what the invoking agent 
 ## After extending the design pack
 
 1. Notify the invoking agent with the exact change: file, section, token/class name, and the rule.
-2. If you added a CSS token or component: notify `a11y-reviewer` with the change summary.
-3. If you added anything that affects existing templates: notify `ui-reviewer` that a design pack extension occurred so they can re-check conformance.
+2. If you added a CSS token or component: write a notification artifact for `a11y-reviewer` at `.claudetmp/notifications/step{N}/ux-designer-to-a11y-reviewer-{ts}.md` with the new token name, contrast ratio, and intended use.
+3. If you added anything that affects existing templates: write a notification artifact for `ui-reviewer` at `.claudetmp/notifications/step{N}/ux-designer-to-ui-reviewer-{ts}.md` noting the design pack extension and which templates may be affected.
 4. Keep a one-line change note in `DESIGN.md` at the bottom under `## Change log` (add the section if absent): date, what was added, and who requested it.
+
+Notification artifacts use the format defined in `contract/OVERSIGHT-CONTRACT.md` §1 (notifications section). This ensures notifications survive session boundaries and are not lost in chat context.
+
+## Startup artifact gap recovery
+
+If a downstream agent (`ui-reviewer`, `a11y-reviewer`, `coder`, or `technical-design`) discovers a UI state or design case that `docs/design/UX-DESIGN-READINESS.md` does not cover — something that should have been caught in the initial audit — that agent should create a `startup-artifact-gap` GitHub issue and send it to you. When you receive such a gap:
+
+1. Treat it as a reactive gap-fill (classify as clarifying, additive, or structural per your normal process)
+2. Fill the gap following the same rules as any reactive extension
+3. Update `docs/design/UX-DESIGN-READINESS.md` to reflect the addition
+4. Note in the issue that the gap is resolved and prior sign-offs remain valid (additive/clarifying) or that downstream agents should re-review the affected area (structural)
+
+A startup artifact gap does not automatically invalidate prior sign-offs unless the omission affected design decisions already made. Use judgment — if a missing error state was never rendered, prior sign-offs stand; if a missing component was used in templates that were already reviewed, flag for re-review.
+
+---
 
 ## What you do NOT do
 

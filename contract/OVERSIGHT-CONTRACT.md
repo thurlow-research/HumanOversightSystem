@@ -44,6 +44,22 @@ audit/                               ← COMMITTED to project repo (not gitignor
                                     below the coder's declaration. Risk-assessor reads
                                     this before accepting a lower tier. Without it the
                                     declared tier is a hard floor.
+  notifications/
+    step{N}/
+      {from}-to-{to}-{ts}.md     ← durable inter-agent notification artifact.
+                                    Required fields:
+                                      Step: N
+                                      From: {agent-name}
+                                      To: {agent-name}
+                                      Changed: [list of files or spec sections changed]
+                                      Reason: [why the receiving agent needs to act]
+                                      Blocking: yes | no
+                                      Required action: [what the receiving agent must do]
+                                      Acknowledged: [left blank; receiving agent fills in]
+                                    Use when: one agent changes a shared artifact
+                                    (design pack, telemetry spec) that another agent
+                                    must re-review. Prevents notifications from being
+                                    lost in chat context.
   second-review/
     step{N}-{ts}.md              ← second review output (run_second_review.sh).
                                     Always written — for actual runs includes a

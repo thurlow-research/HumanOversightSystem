@@ -1,0 +1,5 @@
+# Validation stamp files — always take the current branch's version on merge/rebase.
+# These are updated by running framework validation locally; CI checks currency via
+# git commit timestamps, not file content. Merge conflicts on these files are always
+# safe to resolve by taking the current branch's version (re-run validation after merge).
+scripts/framework/validation-stamps/*.stamp merge=ours

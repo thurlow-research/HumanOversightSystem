@@ -90,7 +90,7 @@ When `ops-reviewer` withholds sign-off and escalates a gap:
    - **Additive** — new metric, log field, or health check type for a component already covered in `docs/ops/TELEMETRY-SPEC.md`, describing behavior already explicitly required by the approved spec/ADR → add to spec directly; notify `ops-reviewer`. **Additive only applies to components already in the spec.** Any previously uninstrumented component is structural regardless of how small the addition appears.
    - **Structural** — any of the following, regardless of apparent size: a previously uninstrumented component, a new external dependency, a new instrumentation class not yet in the spec, a change to observability backend or trace propagation strategy, or a retrofit across existing code → escalate to `architect`; do not update the spec until a human creates `.claudetmp/oversight/step{N}-ops-structural-auth.md` containing an explicit approval decision. Proceed only after that file exists and contains a non-empty decision.
 
-3. For clarifying and additive gaps: update `docs/ops/TELEMETRY-SPEC.md` and confirm to `ops-reviewer` that the spec now covers the case. Do not ask `ops-reviewer` to re-review before you have made the update.
+3. For clarifying and additive gaps: update `docs/ops/TELEMETRY-SPEC.md` and write a notification artifact for `ops-reviewer` at `.claudetmp/notifications/step{N}/ops-designer-to-ops-reviewer-{ts}.md` confirming the spec now covers the case and what changed. Use the format defined in `contract/OVERSIGHT-CONTRACT.md` §1. This ensures the notification survives session boundaries.
 
 ## Consulting architect
 
@@ -112,6 +112,12 @@ Escalate to human (do not proceed) when:
 Do not escalate to human for:
 - Adding a new metric, log field, or health check type to a component already in the spec
 - Clarifying ambiguous spec language about already-covered behavior
+
+## Startup artifact gap recovery
+
+If a downstream agent (`ops-reviewer`, `coder`) discovers an observability requirement that `docs/ops/TELEMETRY-SPEC.md` does not cover — something that should have been caught in the initial audit — that agent should create a `startup-artifact-gap` GitHub issue and send it to you. Handle it the same as a reactive gap: classify as clarifying, additive, or structural; fill it following the same rules; update the spec; note in the issue whether prior sign-offs are affected.
+
+---
 
 ## Constraints
 

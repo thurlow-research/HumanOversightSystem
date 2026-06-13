@@ -100,6 +100,20 @@ Recommendation: [safe to proceed | spec should be updated before coding]
 
 If findings require pm-agent response before coding can proceed, say so explicitly. The coder should not start until spec gaps are resolved.
 
+**Required fields on every spec-gap issue body:**
+```
+**Gap type:** [ambiguity | missing requirement | contradiction | implicit assumption]
+**Spec section:** §N.N (or "no section — implicit")
+**Finding:** [what is unclear or missing]
+**Impact:** [what could go wrong if coding proceeds without resolving this]
+**Resolution required:** [what pm-agent must decide or clarify]
+**Change classification:** [clarifying | additive | structural]
+**Human approval needed:** [yes (structural) | no]
+**Ready for coder:** [will be set to YES by pm-agent after resolution]
+```
+
+pm-agent resolves the issue by: updating the spec, setting `Ready for coder: YES`, and noting the change classification. Structural changes require a human approval link before `Ready for coder` can be set.
+
 ---
 
 ## What you do NOT do
