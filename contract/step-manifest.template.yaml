@@ -22,8 +22,9 @@ role_mappings:
   # infra:        infra-reviewer      # uncomment if you have an infra reviewer
   # ui:           ui-reviewer         # uncomment if you have a UI reviewer
   # a11y:         a11y-reviewer       # uncomment if you have an a11y reviewer
-  # ops:          ops-reviewer        # uncomment for projects with background jobs,
+  # ops:          ops-reviewer         # uncomment for projects with background jobs,
                                       # external integrations, or multi-service arch
+  # reliability:  reliability-reviewer # uncomment for projects with DB, HTTP, or queue calls
 
 # Build steps — define one entry per build step in your project.
 # risk_tier: LOW | MEDIUM | HIGH | CRITICAL

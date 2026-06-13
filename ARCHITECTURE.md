@@ -105,6 +105,7 @@ The agents below are defined in CondoParkShare (and any other HOS-governed proje
 | **a11y-reviewer** | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
 | **ops-designer** | Observability authority — produces `TELEMETRY-SPEC.md` at project start; fills spec gaps reactively when `ops-reviewer` escalates. Escalates structural observability architecture changes to human. | `docs/ops/TELEMETRY-SPEC.md` at project start; spec updates; notifies `ops-reviewer` after additive changes. `architect` signs off on spec. |
 | **ops-reviewer** | Telemetry spec conformance — structured logging, metrics, tracing, health checks, dashboard intent, runbook coverage per `TELEMETRY-SPEC.md`. N/A for projects without operational complexity. | Sign-off register entry; escalates spec gaps to `ops-designer` |
+| **reliability-reviewer** | Resilience review — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. N/A for projects without external dependencies. | Sign-off register entry; escalates structural reliability concerns to `architect` |
 | **infra-reviewer** | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
 | **unit-test** | Coverage % + mutant score, both configurable per project (higher is better; defaults: 80% coverage / 75% mutant score) | PR thread on coverage/mutant failures (inner loop correction); test declaration in register |
 | **system-test** | Spec flow conformance | PR thread for failures fixable in current session; `bug` issue only if failure persists across sessions or affects spec correctness beyond the current branch; sign-off register entry |
@@ -210,6 +211,7 @@ Every approval in the pipeline is a named sign-off written to the sign-off regis
 | **Inner loop** | ui-reviewer | Design pack conformance — tokens, components, copy, voice/tone | Coder fixes; design gaps escalate to ux-designer who fills and notifies |
 | **Inner loop** | a11y-reviewer | WCAG AA — keyboard, contrast, motion, responsiveness | Coder fixes; token contrast failures escalate to ux-designer |
 | **Inner loop** | ops-reviewer | Telemetry spec conformance per `TELEMETRY-SPEC.md`. N/A if ops not configured. | Coder fixes; spec gaps escalate to ops-designer |
+| **Inner loop** | reliability-reviewer | Timeouts, retry, graceful degradation on outbound connections. N/A if no external deps. | Coder fixes; structural concerns escalate to architect |
 | **Inner loop** | infra-reviewer | Docker/Caddy/env config | Coder fixes |
 | **Inner loop** | unit-test | Coverage % + mutant score at configured thresholds (higher is better; defaults: 80% / 75%) | Coder adds tests; `test-resistance` issue after 5 rounds |
 | **Transition** | system-test | All spec flows passing | Coder fixes; `bug` issue after 5 rounds |

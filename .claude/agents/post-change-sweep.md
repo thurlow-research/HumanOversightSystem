@@ -90,6 +90,7 @@ Invoke simultaneously, each with a context bundle — not just changed files:
 - `a11y-reviewer` — if `templates` domain has changes: the changed template files only
 - `infra-reviewer` — if `infrastructure` domain has changes: the changed infra files only
 - `ops-reviewer` — check for ops complexity first: does the diff introduce background jobs, external API calls, async tasks, queue consumers, or new failure paths? If yes AND `docs/ops/TELEMETRY-SPEC.md` exists: invoke `ops-reviewer`. If yes AND `docs/ops/TELEMETRY-SPEC.md` is absent: block and invoke `ops-designer` to produce the spec before review can proceed — do not silently skip. If no ops complexity: skip.
+- `reliability-reviewer` — if the diff introduces or modifies outbound connections (DB queries, HTTP calls, queue operations, cache reads/writes): invoke `reliability-reviewer`. Skip if no external connections in diff.
 
 Collect all Stage 2b results. Report any findings.
 
@@ -130,7 +131,8 @@ privacy-reviewer:  [PASS | N findings | SKIPPED]
 ui-reviewer:       [PASS | N findings | SKIPPED]
 a11y-reviewer:     [PASS | N findings | SKIPPED]
 infra-reviewer:    [PASS | N findings | SKIPPED]
-ops-reviewer:      [PASS | N findings | SKIPPED — no TELEMETRY-SPEC.md]
+ops-reviewer:          [PASS | N findings | SKIPPED — no TELEMETRY-SPEC.md]
+reliability-reviewer:  [PASS | N findings | SKIPPED — no external connections]
 
 ### Track 3 — Tests
 [SKIPPED | PASS | coverage below target]

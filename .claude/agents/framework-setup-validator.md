@@ -47,7 +47,7 @@ for a in $REQUIRED; do
 done
 
 # Optional agents — present if the project has configured them; absence is not an error
-OPTIONAL="ops-designer ops-reviewer"
+OPTIONAL="ops-designer ops-reviewer reliability-reviewer"
 for a in $OPTIONAL; do
     [[ -f ".claude/agents/${a}.md" ]] \
         && echo "OK (optional): $a" \
