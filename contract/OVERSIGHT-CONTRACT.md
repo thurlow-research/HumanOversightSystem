@@ -269,6 +269,25 @@ Both requirements apply to all projects that install this framework.
 
 ---
 
+## 6a. Audit-log event catalog
+
+`audit/oversight-log.jsonl` is an append-only log, one JSON object per line, each with an `"event"` field and an ISO-8601 `"timestamp"`. The catalog below is canonical — every line written to the log uses one of these event types. The log distinguishes the states that an absent register entry otherwise conflates (ran-and-clean vs. never-ran vs. intentionally-skipped vs. failed).
+
+| Event | Meaning | Emitted by | Key fields |
+|---|---|---|---|
+| `step-head` | Records a step's HEAD SHA so the next step finds its base | oversight-evaluator | `step`, `head_sha` |
+| `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
+| `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file` |
+| `gate-na` | An orchestrator determined a reviewer is not applicable to the diff | post-change-sweep | `gate`, `step`, `reason`, `determined_by` |
+| `gate-rerun` | A step was re-run because one of its inputs changed | reactive re-run mechanism | `gate`, `step`, `trigger`, `previous_run` |
+| `gate-auto-reenabled` | A suspended gate was auto-removed after consistent passes | suspension auto-removal | `gate`, `step`, `consecutive_passes` |
+| `suspension-census` | Per-run count of active suspensions (health metric) | oversight-evaluator | `active_suspensions`, `suspended_gates` |
+| `sampling-audit` | A statistical sampling red-team run completed | run_redteam_sample.sh | `pool_size`, `sample_size`, `tier_escapes`, `escape_rate_pct` |
+
+**Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
+
+---
+
 ## 7. Compliance check
 
 The `oversight-evaluator` agent checks compliance before quality evaluation. Compliance fails if:
