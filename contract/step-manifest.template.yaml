@@ -22,6 +22,8 @@ role_mappings:
   # infra:        infra-reviewer      # uncomment if you have an infra reviewer
   # ui:           ui-reviewer         # uncomment if you have a UI reviewer
   # a11y:         a11y-reviewer       # uncomment if you have an a11y reviewer
+  # ops:          ops-reviewer        # uncomment for projects with background jobs,
+                                      # external integrations, or multi-service arch
 
 # Build steps — define one entry per build step in your project.
 # risk_tier: LOW | MEDIUM | HIGH | CRITICAL
@@ -66,3 +68,11 @@ steps:
   # CRITICAL steps: add human_gate_required: true
   # Steps with templates: add ui, a11y to required_signoffs
   # Infrastructure steps: add infra to required_signoffs
+  # Steps with external integrations / background jobs / async work: add ops to required_signoffs
+
+  # Example: step with observability requirements
+  # - id: 4
+  #   name: "[Step 4 name — background jobs / external integrations]"
+  #   risk_tier: MEDIUM
+  #   required_signoffs: [code-review, security, ops, test-unit]
+  #   system_test_applicable: false

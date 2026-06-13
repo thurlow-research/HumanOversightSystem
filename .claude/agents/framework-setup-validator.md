@@ -45,6 +45,14 @@ for a in $REQUIRED; do
         && echo "OK: $a" \
         || echo "MISSING: .claude/agents/${a}.md"
 done
+
+# Optional agents — present if the project has configured them; absence is not an error
+OPTIONAL="ops-designer ops-reviewer"
+for a in $OPTIONAL; do
+    [[ -f ".claude/agents/${a}.md" ]] \
+        && echo "OK (optional): $a" \
+        || echo "INFO (optional): .claude/agents/${a}.md not present — add if project has background jobs, external integrations, or multi-service architecture"
+done
 ```
 
 ### 3. Framework scripts

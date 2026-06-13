@@ -103,6 +103,8 @@ The agents below are defined in CondoParkShare (and any other HOS-governed proje
 | **privacy-reviewer** | GDPR compliance, PII handling | `privacy-finding` issues for blocking findings; sign-off register entry |
 | **ui-reviewer** | Design pack conformance — tokens, components, copy, voice/tone | Sign-off register entry; escalates gaps to ux-designer |
 | **a11y-reviewer** | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
+| **ops-designer** | Observability authority — produces `TELEMETRY-SPEC.md` at project start; fills spec gaps reactively when `ops-reviewer` escalates. Escalates structural observability architecture changes to human. | `docs/ops/TELEMETRY-SPEC.md` at project start; spec updates; notifies `ops-reviewer` after additive changes. `architect` signs off on spec. |
+| **ops-reviewer** | Telemetry spec conformance — structured logging, metrics, tracing, health checks, dashboard intent, runbook coverage per `TELEMETRY-SPEC.md`. N/A for projects without operational complexity. | Sign-off register entry; escalates spec gaps to `ops-designer` |
 | **infra-reviewer** | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
 | **unit-test** | Coverage % + mutant score, both configurable per project (higher is better; defaults: 80% coverage / 75% mutant score) | PR thread on coverage/mutant failures (inner loop correction); test declaration in register |
 | **system-test** | Spec flow conformance | PR thread for failures fixable in current session; `bug` issue only if failure persists across sessions or affects spec correctness beyond the current branch; sign-off register entry |
@@ -196,6 +198,9 @@ Every approval in the pipeline is a named sign-off written to the sign-off regis
 | **Spec** | pm-agent | Confirmed requirements | `spec-gap` issue → human |
 | **Spec** | architect | ADR (architecture decisions) | Escalate to human |
 | **Spec** | ux-designer | Design pack completeness — tokens, components, copy, feedback states (`UX-DESIGN-READINESS.md`) | Design gaps filled before coder starts; structural brand changes escalate to human |
+| **Spec** | pm-agent | Design pack faithfully represents product intent | Spec gap issue; ux-designer revises |
+| **Spec** | ops-designer | Telemetry spec completeness — logging, metrics, tracing, health checks (`TELEMETRY-SPEC.md`). N/A for projects without ops complexity. | Spec gaps filled before build steps begin; structural changes escalate to human |
+| **Spec** | architect | Telemetry spec covers trust boundaries and critical paths | ops-designer revises; iterate |
 | **Spec** | technical-design | Design approved for implementation | Revise + iterate |
 | **Spec** | pm-agent | System test plan (before tests written) | `spec-gap` issue; coder waits |
 | **Inner loop** | risk-assessor | Risk tier validated (can only raise) | Tier raised; inspection brief re-scoped |
@@ -204,6 +209,7 @@ Every approval in the pipeline is a named sign-off written to the sign-off regis
 | **Inner loop** | privacy-reviewer | GDPR / PII handling | Coder fixes; `privacy-finding` issue if blocking |
 | **Inner loop** | ui-reviewer | Design pack conformance — tokens, components, copy, voice/tone | Coder fixes; design gaps escalate to ux-designer who fills and notifies |
 | **Inner loop** | a11y-reviewer | WCAG AA — keyboard, contrast, motion, responsiveness | Coder fixes; token contrast failures escalate to ux-designer |
+| **Inner loop** | ops-reviewer | Telemetry spec conformance per `TELEMETRY-SPEC.md`. N/A if ops not configured. | Coder fixes; spec gaps escalate to ops-designer |
 | **Inner loop** | infra-reviewer | Docker/Caddy/env config | Coder fixes |
 | **Inner loop** | unit-test | Coverage % + mutant score at configured thresholds (higher is better; defaults: 80% / 75%) | Coder adds tests; `test-resistance` issue after 5 rounds |
 | **Transition** | system-test | All spec flows passing | Coder fixes; `bug` issue after 5 rounds |

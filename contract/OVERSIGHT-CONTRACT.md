@@ -127,6 +127,7 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `infra` | Infrastructure / deployment config |
 | `ui` | Design system / template conformance |
 | `a11y` | Accessibility (WCAG AA) |
+| `ops` | Observability / telemetry spec conformance (optional — projects with ops complexity) |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
 ---

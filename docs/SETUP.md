@@ -148,12 +148,20 @@ With the framework installed and agents customized, invoke agents in this order 
 # 2. UX designer — design pack audit
 # "Invoke ux-designer for initial design audit"
 # Wait for ux-designer to fill gaps and write docs/design/UX-DESIGN-READINESS.md
+# pm-agent validates that the design pack faithfully represents product intent
 
 # 3. Architect — technical architecture
 # "Invoke architect for initial architecture review"
 # Answer architect's questions; wait for docs/architecture/ADR-001-pilot.md
 
-# 4. Technical design — detailed spec
+# 4. Ops designer — telemetry spec (SKIP if no ops complexity)
+# "Invoke ops-designer to produce the telemetry spec"
+# ops-designer reads spec + ADR and writes docs/ops/TELEMETRY-SPEC.md
+# architect signs off on the spec
+# Skip for CLI tools, libraries, or projects without background jobs,
+# external integrations, or multi-service architecture
+
+# 5. Technical design — detailed spec
 # "Invoke technical-design to produce the technical design"
 # Iterates with architect until approved; produces docs/design/TECHNICAL-DESIGN.md
 ```

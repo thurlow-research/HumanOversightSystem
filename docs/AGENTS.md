@@ -57,11 +57,12 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
   8. privacy-reviewer   ─┤ parallel
   9. ui-reviewer        ─┤ → ux-designer (design pack gap or ambiguity)
  10. a11y-reviewer      ─┤ → ux-designer (token contrast failure / missing token)
- 11. infra-reviewer     ─┘ (infra files only)
+ 11. ops-reviewer*      ─┤ → ops-designer (telemetry spec gap)   *optional
+ 12. infra-reviewer     ─┘ (infra files only)
        ↓ all approved
- 12. unit-test      — 80% coverage + 75% mutant score
+ 13. unit-test      — configurable coverage + mutant score (default 80% / 75%)
        ↓ targets met
- 13. system-test    — spec functional validation
+ 14. system-test    — spec functional validation
        ↓
   oversight-evaluator    — check compliance & quality; recommend proceed/escalate
        ↓
@@ -370,7 +371,37 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ---
 
-### 11. `infra-reviewer` — Infrastructure Review
+### 11. `ops-designer` — Observability Authority *(optional — projects with ops complexity)*
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** At project start, after `architect` completes the ADR. Reactive during the build when `ops-reviewer` escalates a gap.
+
+**Role:** Authors and maintains `docs/ops/TELEMETRY-SPEC.md` — the observability contract that `ops-reviewer` enforces. Covers structured logging conventions, metric naming, distributed tracing requirements, health check requirements per dependency type, and dashboard/alerting intent. Does not implement instrumentation — records the contract for the build to follow.
+
+**Escalation out:** `architect` (architectural observability decisions); human (structural observability architecture changes — switching telemetry backends, changing trace propagation strategy).
+**Escalation in:** From `ops-reviewer` (spec gaps); `architect` (observability ADR inputs).
+
+**N/A for:** CLI tools, libraries, scripts, or projects without background jobs, external integrations, or multi-service architecture.
+
+---
+
+### 12. `ops-reviewer` — Observability Review *(optional — projects with ops complexity)*
+
+**Model:** `claude-sonnet-4-6`
+**Invoked:** After `code-reviewer` approves, in parallel with `security-reviewer` and `privacy-reviewer`, when changes introduce new operations, external calls, background jobs, async tasks, or failure paths.
+
+**Role:** Reviews code changes for conformance with `docs/ops/TELEMETRY-SPEC.md`. Asks: "Can you tell what's happening and debug it?" Withholds sign-off on silent failures and spec violations. Escalates spec gaps to `ops-designer` (not coder — coder cannot be held to an unspecified requirement). Loop exit: after 2 failed re-reviews for the same gap, escalate to `architect`.
+
+**Scope boundary:** Does NOT cover security audit logging (`security-reviewer`), GDPR/data retention logging (`privacy-reviewer`), or deployment config (`infra-reviewer`).
+
+**Escalation out:** `ops-designer` (spec gap); `architect` (gap unresolvable after 2 cycles).
+**Escalation in:** From `post-change-sweep`, direct invocation.
+
+**N/A for:** Same projects as `ops-designer`. If `docs/ops/TELEMETRY-SPEC.md` is absent on a project with ops complexity, block and invoke `ops-designer` first.
+
+---
+
+### 13. `infra-reviewer` — Infrastructure Review
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves (when infrastructure files are modified: Compose, Caddyfile, backup scripts, `.env.example`).
@@ -393,7 +424,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ---
 
-### 12. `unit-test` — Unit Tests
+### 14. `unit-test` — Unit Tests
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After all reviewers (`code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `infra-reviewer`) have approved.
@@ -418,7 +449,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ---
 
-### 13. `system-test` — System & Functional Tests
+### 15. `system-test` — System & Functional Tests
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After `unit-test` meets both targets.
@@ -447,7 +478,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ---
 
-### 14. `deploy-verify` — Deployment Verification & Production Smoke Tests
+### 16. `deploy-verify` — Deployment Verification & Production Smoke Tests
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After `docker compose up` on `opus.[your-domain]`.
@@ -479,7 +510,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 15. `spec-red-team` — Spec Red-Team
+### 17. `spec-red-team` — Spec Red-Team
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Before coding begins on a build step (after the technical design is approved).
@@ -496,7 +527,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 16. `risk-assessor` — Risk Assessor
+### 18. `risk-assessor` — Risk Assessor
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After the coder completes a build step, before the internal review chain starts.
@@ -519,7 +550,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 17. `risk-historian` — Historical Risk Analyst
+### 19. `risk-historian` — Historical Risk Analyst
 
 **Model:** `claude-haiku-4-5-20251001`
 **Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
@@ -536,7 +567,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 18. `dep-mapper` — Dependency Mapper
+### 20. `dep-mapper` — Dependency Mapper
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
@@ -553,7 +584,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 19. `prompt-fidelity` — Prompt Fidelity Validator
+### 21. `prompt-fidelity` — Prompt Fidelity Validator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at MEDIUM+).
@@ -571,7 +602,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 20. `oversight-evaluator` — Oversight Evaluator
+### 22. `oversight-evaluator` — Oversight Evaluator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After all internal reviewers approve a build step and system tests pass.
@@ -588,7 +619,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 21. `oversight-orchestrator` — Oversight Orchestrator
+### 23. `oversight-orchestrator` — Oversight Orchestrator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After `oversight-evaluator` produces its recommendation.
@@ -605,7 +636,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 22. `framework-validator` — Framework Validation
+### 24. `framework-validator` — Framework Validation
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing any change to `.claude/agents/`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, or `scripts/framework/`.
@@ -625,7 +656,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 23. `framework-setup-validator` — Framework Installation Check
+### 25. `framework-setup-validator` — Framework Installation Check
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After running `scripts/framework/install.sh` in a new repo; when troubleshooting a framework installation.
@@ -639,7 +670,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 24. `doc-validator` — Documentation Coverage Validator
+### 26. `doc-validator` — Documentation Coverage Validator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing documentation changes; by `framework-validator` when Phase 3 of `run_framework_validation.sh` finds issues.
@@ -657,7 +688,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 25. `spec-compliance-validator` — Governance Requirements Compliance
+### 27. `spec-compliance-validator` — Governance Requirements Compliance
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** Periodically as a health check; after significant agent or methodology changes; by `framework-validator` when Phase 4 of `run_framework_validation.sh` finds issues.
@@ -683,7 +714,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ---
 
-### 26. `post-change-sweep` — Post-Change Orchestrator
+### 28. `post-change-sweep` — Post-Change Orchestrator
 
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After any batch of changes, before committing. The single entry point that triggers all relevant reviews.
@@ -738,6 +769,23 @@ ux-designer
   └── notifies after every additive change: invoking agent, a11y-reviewer,
                                             ui-reviewer
 
+ops-designer  *(optional)*
+  ├── at project start: reads spec + ADR →
+  │                     authors docs/ops/TELEMETRY-SPEC.md →
+  │                     architect signs off → build steps may proceed
+  ├── during build: fills spec gaps escalated by ops-reviewer
+  │     ├── additive (already-covered component): update spec directly
+  │     └── structural (new component, new dependency): escalate to architect
+  │                                                     + require human auth file
+  ├── escalates to:  architect (architectural observability decisions; max 2 rounds),
+  │                  human (structural arch change or unresolvable after 2 architect rounds)
+  └── receives from: ops-reviewer (spec gaps)
+
+ops-reviewer  *(optional)*
+  ├── escalates to:  ops-designer (spec gap — do not hold coder accountable),
+  │                  architect (gap unresolvable after 2 ops-designer cycles)
+  └── receives from: post-change-sweep, direct invocation
+
 technical-design
   ├── escalates to:  architect (technical), pm-agent (product)
   └── receives from: coder, unit-test
@@ -782,10 +830,10 @@ oversight-orchestrator
 
 ### Quick reference — what gets copied
 
-All files from `.claude/agents/` are copied verbatim. Current agent list (26 agents):
+All files from `.claude/agents/` are copied verbatim. Current agent list (28 agents):
 
 **Pipeline agents** (core build pipeline):
-`pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `infra-reviewer`, `unit-test`, `system-test`, `deploy-verify`
+`pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `ops-designer` *(optional)*, `ops-reviewer` *(optional)*, `infra-reviewer`, `unit-test`, `system-test`, `deploy-verify`
 
 **Oversight agents** (risk scoring, second review, cross-vendor panel):
 `risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`
