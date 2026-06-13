@@ -302,7 +302,7 @@ See [`AGENTS.md` → Prompts-as-Artifact Discipline](AGENTS.md) for the authorit
 | Tool | Purpose | Status |
 |---|---|---|
 | **`bootstrap/setup_clis.sh`** | Repo-independent **machine** bootstrap: installs Node 22 + `claude`/`codex`/`agy`/`gh`, drives browser sign-in, smoke-tests each (`install`/`auth`/`smoke`/`doctor`). Installs ONLY oversight tooling — never project libraries. | ✅ |
-| **`scripts/setup_oversight.sh`** | Bootstraps the protocol **into a repo**: AGENTS.md, CODEOWNERS, PR template, `.claude/settings.json`, capture/audit scripts, `prompts/`, branch protection. | ✅ |
+| **`scripts/setup_oversight.sh`** | *Legacy* project installer (AGENTS.md, CODEOWNERS, PR template, `.claude/settings.json`, capture/audit scripts, `prompts/`, branch protection). **Superseded by `bootstrap/hos_install.sh`** (release-pinned install); reconciliation tracked in #87. | ✅ |
 | **`scripts/capture_prompt.sh`** | Scaffolds a prompt artifact in `prompts/`, with versioning and a reproducibility check. | ✅ |
 | **`scripts/capture_session.sh`** | Session turn log, summary, and watermark management. `--log FILE MSG` appends a turn entry; `--summarize` generates a session summary via agy/codex covering human comprehension + expedited rerun; `--watermark` marks the last summarized position for incremental re-summarization; `--status` shows current state. Summaries written to `prompts/sessions/`. | ✅ mechanism / 🔧 rerun-fidelity unvalidated |
 | **`scripts/prompt_audit.sh`** | Queries the provenance trail: `--stats`, `--pending`, `--risk LEVEL`. | ✅ |

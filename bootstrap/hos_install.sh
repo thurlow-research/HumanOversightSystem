@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
     --release)       RELEASE_REF="${2:?--release needs a tag, e.g. v0.3.0}"; shift 2 ;;
     --release=*)     RELEASE_REF="${1#*=}"; shift ;;
     --local)         LOCAL_SOURCE=true; shift ;;
-    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h)       sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -83,8 +83,11 @@ err()     { echo -e "  ${RED}✘${RESET}  $*"; }
 header()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
 dry_run() { echo -e "  ${YELLOW}[dry]${RESET} $*"; }
 
+# Execute a command as argv — never `eval` a built string (a target path with a
+# quote or shell metachar would otherwise inject commands). For redirections,
+# inline the dry-run check at the call site instead of using run().
 run() {
-  if $DRY_RUN; then dry_run "$@"; else eval "$@"; fi
+  if $DRY_RUN; then dry_run "$(printf '%q ' "$@")"; else "$@"; fi
 }
 
 ERRORS=0
@@ -133,10 +136,40 @@ HOS_REPO="${HOS_REPO:-$(git -C "$HOS_REPO_ROOT" remote get-url origin 2>/dev/nul
   | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)}"
 [[ -z "${HOS_REPO:-}" ]] && HOS_REPO="ScottThurlow/HumanOversightSystem"
 
+# A staged source is only trustworthy if it contains the ESSENTIAL framework
+# files — not just a sentinel or two. A truncated/partial archive that happened
+# to include AGENTS.md must NOT pass and then silently install an incomplete HOS.
+# Every path here is required for a working install; a miss is fatal upstream.
+REQUIRED_SOURCE_PATHS=(
+  "AGENTS.md"
+  "contract/OVERSIGHT-CONTRACT.md"
+  "contract/step-manifest.template.yaml"
+  ".claude/settings.json"
+  ".claude/agents/risk-assessor.md"
+  ".claude/agents/oversight-evaluator.md"
+  ".claude/agents/oversight-orchestrator.md"
+  "scripts/oversight/run_validators.sh"
+  "scripts/oversight/requirements.txt"
+  "scripts/run_panel.sh"
+  ".github/CODEOWNERS"
+)
+source_looks_valid() {  # dir -> 0 if all required paths present
+  local d="$1" miss=0 p
+  for p in "${REQUIRED_SOURCE_PATHS[@]}"; do
+    [[ -e "$d/$p" ]] || { miss=1; $VERBOSE_SRC_CHECK && warn "  source missing: $p"; }
+  done
+  [[ "$miss" -eq 0 ]]
+}
+VERBOSE_SRC_CHECK=false
+
 fetch_release_tarball() {  # ref dest_dir -> 0 on success
-  local ref="$1" dest="$2" tgz
-  tgz="$(mktemp "${TMPDIR:-/tmp}/hos-src-XXXXXX.tar.gz")"
-  CLEANUP_DIRS+=("$tgz")
+  local ref="$1" dest="$2" tmpd tgz
+  # mktemp -d with the X-run TRAILING (BSD/macOS only substitutes a trailing run;
+  # a "XXXXXX.tar.gz" template would NOT randomize on macOS → fixed predictable
+  # path → collisions and stale/planted-file extraction risk).
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/hos-src.XXXXXX")" || return 1
+  CLEANUP_DIRS+=("$tmpd")
+  tgz="$tmpd/src.tar.gz"
   if command -v gh &>/dev/null; then
     gh api "repos/${HOS_REPO}/tarball/${ref}" > "$tgz" 2>/dev/null || true
   fi
@@ -144,8 +177,19 @@ fetch_release_tarball() {  # ref dest_dir -> 0 on success
     curl -fsSL "https://github.com/${HOS_REPO}/archive/refs/tags/${ref}.tar.gz" -o "$tgz" 2>/dev/null || true
   fi
   [[ -s "$tgz" ]] || return 1
-  tar -xzf "$tgz" -C "$dest" --strip-components=1 2>/dev/null || return 1
-  [[ -n "$(ls -A "$dest" 2>/dev/null)" ]]
+  # Refuse archives with unsafe members before extracting (defence-in-depth even
+  # though GitHub's generated archives are well-formed): absolute paths or `..`.
+  if tar -tzf "$tgz" 2>/dev/null | grep -qE '^/|(^|/)\.\.(/|$)'; then
+    warn "release archive contains unsafe path entries — refusing to extract"
+    return 1
+  fi
+  # Extract into a fresh subdir, validate completeness there, then copy to $dest.
+  local x="$tmpd/x"
+  mkdir -p "$x"
+  tar -xzf "$tgz" -C "$x" --strip-components=1 2>/dev/null || return 1
+  source_looks_valid "$x" || return 1
+  cp -R "$x/." "$dest/" 2>/dev/null || return 1
+  source_looks_valid "$dest"
 }
 
 resolve_hos_source() {
@@ -157,17 +201,33 @@ resolve_hos_source() {
     return
   fi
 
-  local ref="$RELEASE_REF"
-  if [[ -z "$ref" ]]; then            # default: the latest GitHub release
-    ref="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
-    [[ -z "$ref" ]] && ref="$(git -C "$HOS_REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
+  # Release mode needs gh to resolve/verify the release — check it FIRST so the
+  # failure is "gh missing → run the bootstrap", not a misleading "no release".
+  if ! command -v gh &>/dev/null; then
+    err "gh CLI is required to resolve a release (not found)."
+    echo "      Run the machine bootstrap first:  $(dirname "$0")/hos_bootstrap.sh"
+    echo "      …or install a local dev copy:      $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+    exit 1
   fi
 
+  local ref="$RELEASE_REF"
+  if [[ -z "$ref" ]]; then            # default: the latest PUBLISHED GitHub release
+    ref="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
+  fi
   if [[ -z "$ref" ]]; then
-    err "No HOS release found to install."
-    echo "    No GitHub release or git tag exists yet. Either:"
-    echo "      • create a release first (tag a validated commit + publish a GitHub release), or"
-    echo "      • install the unvalidated working copy:  $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+    err "No published HOS release found to install."
+    echo "    Either create a release (tag a validated commit + publish a GitHub release), or"
+    echo "    install the unvalidated working copy:  $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+    exit 1
+  fi
+
+  # GATE: the ref must be a PUBLISHED release, not just any tag. This is what
+  # makes "install from a validated release" real — a bare local/dev tag, or a
+  # tag whose release was deleted because validation failed, must NOT install.
+  # (gh is a required prerequisite, so this check is always available.)
+  if ! gh release view "$ref" --repo "$HOS_REPO" &>/dev/null; then
+    err "'$ref' is not a published GitHub release of $HOS_REPO."
+    echo "    Only published (validated) releases install. Use --release <published-tag>, or --local for dev."
     exit 1
   fi
   HOS_REF="$ref"
@@ -178,24 +238,29 @@ resolve_hos_source() {
     return
   fi
 
-  HOS_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/hos-release-XXXXXX")"
+  HOS_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/hos-release.XXXXXX")"
   CLEANUP_DIRS+=("$HOS_SOURCE")
   info "Fetching HOS release $ref …"
 
-  # Prefer a local git tag export (fast, offline); fall back to the GitHub tarball.
+  # Fast path: export the published release's tag from a local clone (offline-ok).
+  # Only taken because the ref is confirmed published above. No `|| true` masking —
+  # a partial extraction is caught by source_looks_valid and falls through to the
+  # authoritative tarball.
   if git -C "$HOS_REPO_ROOT" rev-parse --git-dir &>/dev/null; then
     git -C "$HOS_REPO_ROOT" fetch --tags --quiet origin 2>/dev/null || true
     if git -C "$HOS_REPO_ROOT" rev-parse -q --verify "refs/tags/${ref}" &>/dev/null; then
-      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
+      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" 2>/dev/null | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
     fi
   fi
-  if [[ -z "$(ls -A "$HOS_SOURCE" 2>/dev/null)" ]]; then
+  if ! source_looks_valid "$HOS_SOURCE"; then
+    rm -rf "${HOS_SOURCE:?}/." 2>/dev/null || true   # clear any partial export
     fetch_release_tarball "$ref" "$HOS_SOURCE" || {
-      err "Could not fetch release $ref from $HOS_REPO (no local tag, gh, or curl succeeded)."
-      echo "    Check the tag exists, or install the working copy with --local."
+      err "Could not fetch a complete release $ref from $HOS_REPO (gh/curl failed, or the archive was incomplete)."
+      echo "    Check the release exists, or install the working copy with --local."
       exit 1
     }
   fi
+  source_looks_valid "$HOS_SOURCE" || { err "Staged release source is incomplete (missing framework sentinels) — refusing to install."; exit 1; }
   ok "Release $ref staged for install"
 }
 
@@ -264,9 +329,10 @@ cp_file() {
     skip "$label (exists — use --force to overwrite)"
     return
   fi
-  run "mkdir -p '$(dirname "$dst")'"
-  run "cp '$src' '$dst'"
-  run "chmod +x '$dst'" 2>/dev/null || true  # only works for shell scripts
+  run mkdir -p "$(dirname "$dst")"
+  run cp "$src" "$dst"
+  # chmod +x only sensible for shell scripts; harmless on others, suppress noise
+  case "$dst" in *.sh) run chmod +x "$dst" 2>/dev/null || true ;; esac
   $FORCE && ok "$label (updated)" || ok "$label"
 }
 
@@ -276,7 +342,8 @@ ensure_line() {
   if [[ -f "$file" ]] && grep -qF "$line" "$file" 2>/dev/null; then
     skip ".gitignore: $label already present"
   else
-    run "echo '$line' >> '$file'"
+    # redirection — inline the dry-run check rather than route through run()
+    if $DRY_RUN; then dry_run "echo $(printf '%q' "$line") >> $file"; else printf '%s\n' "$line" >> "$file"; fi
     ok ".gitignore: added $label"
   fi
 }
@@ -295,7 +362,7 @@ ensure_not_ignored() {
 echo ""
 info ".gitignore"
 GITIGNORE="$TARGET_REPO/.gitignore"
-[[ -f "$GITIGNORE" ]] || run "touch '$GITIGNORE'"
+[[ -f "$GITIGNORE" ]] || run touch "$GITIGNORE"
 
 ensure_line     "$GITIGNORE" ".claudetmp/"   ".claudetmp/ (agent ephemeral state)"
 ensure_line     "$GITIGNORE" ".ai-local/"    ".ai-local/ (SQC salt + panel cache)"
@@ -310,7 +377,7 @@ ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
 # and never be regenerated (regenerating reshuffles the sampling history).
 echo ""
 info ".ai-local/ — per-project runtime (SQC sampling salt)"
-run "mkdir -p '$TARGET_REPO/.ai-local/panel'"
+run mkdir -p "$TARGET_REPO/.ai-local/panel"
 SALT_FILE="$TARGET_REPO/.ai-local/sample.salt"
 if [[ -f "$SALT_FILE" ]]; then
   skip ".ai-local/sample.salt exists (do not regenerate)"
@@ -324,7 +391,7 @@ fi
 # ── .claude/agents/ ────────────────────────────────────────────────────────────
 echo ""
 info ".claude/agents/ — oversight agents"
-run "mkdir -p '$TARGET_REPO/.claude/agents'"
+run mkdir -p "$TARGET_REPO/.claude/agents"
 
 for agent in risk-assessor dep-mapper risk-historian \
              oversight-evaluator oversight-orchestrator spec-red-team; do
@@ -385,7 +452,7 @@ fi
 # ── scripts/ — HOS runner scripts ─────────────────────────────────────────────
 echo ""
 info "scripts/ — HOS runner scripts"
-run "mkdir -p '$TARGET_REPO/scripts'"
+run mkdir -p "$TARGET_REPO/scripts"
 
 # Runner scripts only — NOT the installers/bootstrap. setup_clis.sh is a MACHINE
 # tool (now in bootstrap/, run once per machine); setup_oversight.sh is the
@@ -402,15 +469,23 @@ done
 # ── scripts/oversight/ — validators + gates ───────────────────────────────────
 echo ""
 info "scripts/oversight/ — validators and gates"
-if ! $DRY_RUN; then
-  run "mkdir -p '$TARGET_REPO/scripts/oversight/validators' \
-                '$TARGET_REPO/scripts/oversight/gates'"
-  rsync -a ${FORCE:+--ignore-times} ${FORCE:+--checksum} \
-    $( $FORCE || echo "--ignore-existing" ) \
-    "$HOS_SOURCE/scripts/oversight/" \
-    "$TARGET_REPO/scripts/oversight/" 2>/dev/null || \
-  cp -rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"
-  ok "scripts/oversight/ synced"
+if [[ ! -d "$HOS_SOURCE/scripts/oversight" ]]; then
+  fail "source scripts/oversight/ missing — incomplete HOS source"
+elif ! $DRY_RUN; then
+  run mkdir -p "$TARGET_REPO/scripts/oversight/validators" \
+               "$TARGET_REPO/scripts/oversight/gates"
+  # $FORCE is the string "true"/"false"; ${FORCE:+...} tests emptiness, not
+  # truthiness, so build the flag array by actually evaluating $FORCE.
+  if command -v rsync &>/dev/null; then
+    rsync_flags=(-a)
+    if $FORCE; then rsync_flags+=(--ignore-times --checksum); else rsync_flags+=(--ignore-existing); fi
+    rsync "${rsync_flags[@]}" "$HOS_SOURCE/scripts/oversight/" "$TARGET_REPO/scripts/oversight/"
+  elif $FORCE; then
+    cp -R "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"      # overwrite
+  else
+    cp -Rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/" 2>/dev/null || true  # no-clobber
+  fi
+  if $FORCE; then ok "scripts/oversight/ synced (forced overwrite)"; else ok "scripts/oversight/ synced"; fi
 else
   dry_run "Would sync $HOS_SOURCE/scripts/oversight/ → $TARGET_REPO/scripts/oversight/"
 fi
@@ -423,7 +498,7 @@ cp_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" \
   2>/dev/null || true  # optional
 
 # ── contract/ — step manifest template ────────────────────────────────────────
-run "mkdir -p '$TARGET_REPO/contract'"
+run mkdir -p "$TARGET_REPO/contract"
 if [[ ! -f "$TARGET_REPO/contract/step-manifest.yaml" ]]; then
   cp_file "$HOS_SOURCE/contract/step-manifest.template.yaml" \
           "$TARGET_REPO/contract/step-manifest.yaml" \
@@ -437,7 +512,7 @@ fi
 echo ""
 info "audit/ — committed audit trail"
 if [[ ! -d "$TARGET_REPO/audit" ]]; then
-  run "mkdir -p '$TARGET_REPO/audit/escalations' '$TARGET_REPO/audit/panel-runs'"
+  run mkdir -p "$TARGET_REPO/audit/escalations" "$TARGET_REPO/audit/panel-runs"
   if ! $DRY_RUN; then
     cat > "$TARGET_REPO/audit/oversight-log.jsonl" <<'JSONL'
 # oversight-log.jsonl — Human Oversight System audit trail
@@ -456,8 +531,9 @@ else
   skip "audit/ already exists"
 fi
 
-# Verify audit/ is not accidentally gitignored
-if grep -qF "audit/" "$GITIGNORE" 2>/dev/null; then
+# Verify audit/ is not accidentally gitignored (ignore commented lines, so a
+# "# audit/ ..." comment doesn't trip a false warning).
+if [[ -f "$GITIGNORE" ]] && grep -v '^[[:space:]]*#' "$GITIGNORE" 2>/dev/null | grep -qF "audit/"; then
   warn "audit/ is in .gitignore — the audit trail won't be committed!"
   warn "Remove that line from $TARGET_REPO/.gitignore"
 fi
@@ -465,7 +541,7 @@ fi
 # ── .github/ — CODEOWNERS + PR template ───────────────────────────────────────
 echo ""
 info ".github/ — code owners and PR template"
-run "mkdir -p '$TARGET_REPO/.github'"
+run mkdir -p "$TARGET_REPO/.github"
 cp_file "$HOS_SOURCE/.github/CODEOWNERS"              "$TARGET_REPO/.github/CODEOWNERS"
 cp_file "$HOS_SOURCE/.github/pull_request_template.md" "$TARGET_REPO/.github/pull_request_template.md"
 
@@ -473,7 +549,7 @@ cp_file "$HOS_SOURCE/.github/pull_request_template.md" "$TARGET_REPO/.github/pul
 echo ""
 info "prompts/ — prompt artifact directory"
 if [[ ! -d "$TARGET_REPO/prompts" ]]; then
-  run "mkdir -p '$TARGET_REPO/prompts'"
+  run mkdir -p "$TARGET_REPO/prompts"
   if ! $DRY_RUN; then
     cat > "$TARGET_REPO/prompts/README.md" <<'PROMPTS'
 # prompts/
@@ -526,9 +602,10 @@ echo ""
   echo "  2. Authenticate AI CLIs (if not done):"
   echo "       (machine bootstrap) bash bootstrap/setup_clis.sh auth"
   echo ""
-  echo "  3. Commit the scaffolded files:"
-  echo "       cd $TARGET_REPO && git add .claude/ AGENTS.md audit/ contract/ scripts/ .gitignore"
-  echo "       git commit -m 'Bootstrap Human Oversight System'"
+  echo "  3. Commit the scaffolded files (review with 'git status' first):"
+  echo "       cd $TARGET_REPO && git add .claude/ AGENTS.md METHODOLOGY.md audit/ contract/ \\"
+  echo "         scripts/ .github/ prompts/ .gitignore .hos-release"
+  echo "       git commit -m 'Bootstrap Human Oversight System ($HOS_REF)'"
   echo ""
   echo "  4. Run the pipeline:"
   echo "       Inner loop:  bash scripts/oversight/run_validators.sh [files...]"

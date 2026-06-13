@@ -220,15 +220,33 @@ Several patterns have emerged across the empirical work:
 
 **[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation — a real parking management app for condo communities, built to exercise HOS against genuine complexity (multi-tenant auth, booking logic, admin portals) while delivering something useful to an actual user community. It is the canonical example of what a HOS-governed project looks like end-to-end.
 
-HOS installs into any project repository. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough. Quick start:
+HOS installs into any project repository **from a validated release** — never from an arbitrary working copy. **Fast path: [docs/QUICKSTART.md](docs/QUICKSTART.md)** (three commands). Full walkthrough, customization, and project-start sequence: **[docs/SETUP.md](docs/SETUP.md)**.
+
+**Get the bootstrap scripts** (one small folder; everything else is fetched from the release):
 
 ```bash
-bash scripts/framework/install.sh \
-  --source /path/to/HumanOversightSystem \
-  --target /path/to/your-project
+# Pull the latest release's bootstrap scripts to a fresh machine:
+mkdir -p hos-bootstrap && cd hos-bootstrap
+for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do
+  curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/$f
+done && chmod +x *.sh
+# (optional) verify what you downloaded:
+curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 ```
 
-The install script creates required directories, copies all agent files, and walks you through project-specific configuration. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+**Two steps** — machine once, then per project:
+
+```bash
+./hos_bootstrap.sh                          # once per machine: Python/ScanCode/gh/pip + agent CLIs
+./hos_install.sh /path/to/your-project      # installs the LATEST release into the project
+#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-project
+#   dev install:    ./hos_install.sh --local        /path/to/your-project   (unvalidated)
+```
+
+`hos_install.sh` fetches the validated release, scaffolds the agents/scripts/contract into the target, records the installed tag at the target's `.hos-release`, and never needs sudo (it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing). If you have the repo cloned, you can run the same scripts from `bootstrap/`. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+
+> Releases are cut with `scripts/framework/cut_release.sh`, which gates on the full validation suite before tagging and publishing the bootstrap assets.
 
 **Contributing back.** If your project surfaces a framework gap — a missing feedback path, an agent behavior that doesn't hold for your stack, a contract requirement that conflicts with real usage — open an issue or PR here. Consumer projects are the empirical test of the framework; findings from real deployments improve the contract for everyone.
 
@@ -243,7 +261,8 @@ The install script creates required directories, copies all agent files, and wal
 | **[AGENTS.md](AGENTS.md)** | Self-flagging protocol — the 5 mandatory behaviors every authoring agent must produce |
 | **[docs/AGENTS.md](docs/AGENTS.md)** | Full pipeline agent documentation — all roles, models, escalation paths |
 | **[docs/OVERSIGHT-RUNBOOK.md](docs/OVERSIGHT-RUNBOOK.md)** | Operational runbook — step-by-step commands for running the pipeline on each build step |
-| **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — applying HOS to a new project |
+| **[docs/QUICKSTART.md](docs/QUICKSTART.md)** | Quickstart — three commands to get a project running |
+| **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — full walkthrough, configuration, project-start sequence |
 | **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)** | Customization guide — adapting agents to a different stack or project |
 | **[research/](research/)** | Session logs and findings — the empirical record of what was built, what failed, and what was learned |
 
