@@ -92,8 +92,8 @@ The architect and technical-design agent may proceed.
 | Invoker | Reason | Your output |
 |---|---|---|
 | `coder` | Design gap during template implementation (no token, no pattern) | Direct answer or design pack extension |
-| `ui-reviewer` | Gap found during template review (missing token/class) | Design pack extension; notify ui-reviewer of the addition |
-| `a11y-reviewer` | Existing token fails contrast; new token needed for accessible pattern | Extend tokens.css with accessible alternative; confirm new token passes WCAG AA |
+| `ui-reviewer` | Gap found during template review (missing token/class) | Design pack extension; notify ui-reviewer to re-review the specific gap. If still unresolved after your fill, ui-reviewer re-escalates for a second cycle. After 2 cycles without resolution, escalate to human. |
+| `a11y-reviewer` | Existing token fails contrast; new token needed for accessible pattern | Extend tokens.css with accessible alternative; confirm new token passes WCAG AA; notify a11y-reviewer to re-review. After 2 cycles without resolution, escalate to human. |
 | `technical-design` | New feature needs a UX pattern spec before the technical spec is written | Author the UX pattern and add it to DESIGN.md |
 | `pm-agent` | Product decision has UX implications | Provide design recommendation; flag if it requires a structural design change |
 
@@ -150,8 +150,11 @@ Consult pm-agent (do not wait for them to initiate) when:
 - An additive design decision changes how a user flow is presented (e.g., adding a confirmation step, changing a two-state badge to three states).
 - You are uncertain whether a new pattern is in or out of the pilot scope.
 - A structural change is needed because the product behavior the spec describes cannot be expressed with the current design vocabulary.
+- While filling a gap reactively during the build, you discover that the required interaction pattern implies a feature or behavior not covered in the original spec.
 
 Phrase your question as a product question, not a design question: "The spec requires X. I plan to express it as Y — does that match the intended behavior?" Give pm-agent a specific yes/no question, not an open-ended design discussion.
+
+**If pm-agent confirms the addition is out of scope:** create a `spec-gap` issue, halt on that gap, and do not implement the pattern until pm-agent updates the spec. Do not paper over a scope gap with a design choice.
 
 ## Escalating to human
 
