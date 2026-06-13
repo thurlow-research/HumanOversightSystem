@@ -188,3 +188,24 @@ Key decisions:
 - **Same names as role_mappings** — gate script names (`lint`, `security`, etc.) match the step-manifest `required_signoffs` role keys where applicable, so one suspension entry covers both the script gate and the sign-off gate for the same domain.
 
 Rationale: the mechanism's value is not just that it unblocks brownfield projects — it's that it creates a forcing function for systematic debt elimination. Each re-enable records that a domain is clean. The re-enable log becomes an audit trail of remediation progress.
+
+### D25. Observability review follows the ux-designer / ui-reviewer pattern — separate spec authorship from spec enforcement (2026-06-12)
+
+Two new agents added: `ops-designer` (spec author) and `ops-reviewer` (spec enforcer). This mirrors the ux-designer / ui-reviewer pattern exactly:
+
+| Concern | Spec author | Spec validator | Per-PR enforcer | Spec artifact |
+|---|---|---|---|---|
+| UX / interaction | `ux-designer` | `pm-agent` | `ui-reviewer`, `a11y-reviewer` | `UX-DESIGN-READINESS.md` |
+| Observability | `ops-designer` | `architect` | `ops-reviewer` | `TELEMETRY-SPEC.md` |
+
+Rationale: a human architect confirms observability coverage is adequate at the architectural level — trust boundaries instrumented, critical paths observable — but does not author the granular event taxonomy, metric naming conventions, or dashboard specifications. That level of detail belongs to dedicated observability expertise.
+
+Both agents are optional — N/A for projects without background jobs, external integrations, or multi-service architecture.
+
+### D26. AI disclosure enforcement — from rule-in-prose to template + constraint (2026-06-12)
+
+The AI PR disclosure requirement (`[AI: agent-name]` title prefix + `## 🤖 AI-Submitted Pull Request` block) was defined in `oversight-orchestrator.md` but violated in practice: CondoParkShare's Claude submitted PRs without it. Root cause: the rule existed only in the orchestrator agent file and was invisible to other PR-creation paths.
+
+Fix: three-layer enforcement — PR template (visible at PR creation point), `docs/AGENTS.md` universal rule, `oversight-orchestrator.md` non-negotiable constraint.
+
+Rationale: rules that are not mechanically surfaced to the agents that must follow them will be missed. The template is the mechanism — any agent opening a PR via `gh pr create` will encounter it.
