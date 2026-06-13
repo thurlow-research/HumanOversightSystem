@@ -20,21 +20,48 @@
 # of what is under review (sycophancy / shared-blind-spot risk).
 #
 # Usage:
-#   ./scripts/framework/validate_self.sh
-#   ./scripts/framework/validate_self.sh --changed-only
+#   ./scripts/framework/validate_self.sh                 # one review pass
+#   ./scripts/framework/validate_self.sh --changed-only  # only files changed vs HEAD~1
+#   ./scripts/framework/validate_self.sh --reset         # new change set: clear ledger+counter
+#   ./scripts/framework/validate_self.sh --record FILES CATEGORY DISPOSITION
+#
+# Capped-iterate protocol (why a non-deterministic reviewer still terminates):
+#   1. --reset at the start of a new change set.
+#   2. Run a pass. For each NEW (un-ledgered) blocking finding, either
+#        fix-in-place (inner loop — NO issue), or file an issue if it needs a
+#        human / another agent; then --record it so it won't re-gate next pass.
+#   3. Re-run. The verdict is keyed on NEW findings, so once every finding is
+#        either fixed or dispositioned, the pass APPROVES ("zero non-noise",
+#        not zero findings — the model never returns the same set twice).
+#   4. Hard cap: SELF_REVIEW_MAX_PASSES (default 3). If the cap is hit while NEW
+#        blocking findings still appear, the script ESCALATES (exit 3) — a human
+#        decides; automation never loops past the cap (the ratchet).
 #
 # Model is ALWAYS Opus — not overridable by design.
-# Exit: 0 clean | 1 blocking findings | 2 tooling/CLI error
+# Exit: 0 converged | 1 NEW blocking findings (re-run) | 2 tooling/CLI error
+#       | 3 pass cap hit without converging (escalate to human)
 set -euo pipefail
 
 AGENTS_DIR=".claude/agents"
 DOCS_DIR="docs"
 OUT_DIR=".claudetmp/framework"
+# Dedup ledger: fingerprints of findings already dispositioned (fixed / filed /
+# noise). A finding matching the ledger is "seen" → noise, and does NOT count
+# toward the verdict. This is what lets self-review converge on "zero NEW
+# non-noise findings" (not zero findings — it is non-deterministic) and what
+# prevents re-filing issues that would poison the risk score.
+LEDGER="$OUT_DIR/self-review-ledger.jsonl"
 # Self-review is ALWAYS Opus — not overridable. The whole point is to apply the
 # strongest available model to flush issues before the external pass; allowing a
 # downgrade would defeat that. (Override only the resolved ID if Opus is renamed.)
 MODEL="claude-opus-4-8"
 CHANGED_ONLY=false
+# Hard cap on iterate passes. Self-review is non-deterministic and will keep
+# surfacing low-value findings forever; the cap forces a stop. If the cap is hit
+# while NEW blocking findings are still appearing, the script escalates (exit 3)
+# rather than looping — a human decides, never automation (the ratchet).
+SELF_REVIEW_MAX_PASSES="${SELF_REVIEW_MAX_PASSES:-3}"
+PASS_COUNT_FILE="$OUT_DIR/self-review-pass-count"
 
 PROJECT_NAME="(unnamed project)"
 PROJECT_STACK="(unspecified stack)"
@@ -42,6 +69,28 @@ DESIGN_PACK_PATH=""
 EXTRA_REVIEW_FILES=""
 # shellcheck source=/dev/null
 [[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh
+
+# --record FILES CATEGORY DISPOSITION — append a disposition to the dedup ledger
+# so the finding is treated as "seen" (noise) on subsequent runs. FILES is a
+# comma-separated list. DISPOSITION is e.g. "fixed", "filed:#74", or "noise".
+if [[ "${1:-}" == "--record" ]]; then
+    mkdir -p "$OUT_DIR"
+    _files="${2:?--record needs FILES}"; _cat="${3:?--record needs CATEGORY}"; _disp="${4:?--record needs DISPOSITION}"
+    _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    _json_files=$(printf '%s' "$_files" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"", (i>1?",":""), $i}}')
+    printf '{"files":[%s],"category":"%s","disposition":"%s","ts":"%s"}\n' \
+        "$_json_files" "$_cat" "$_disp" "$_ts" >> "$LEDGER"
+    echo "Recorded to ledger: [$_files] $_cat → $_disp"
+    exit 0
+fi
+
+# --reset — clear the ledger and pass counter when starting review of a NEW
+# change set, so prior dispositions don't mask genuinely new findings.
+if [[ "${1:-}" == "--reset" ]]; then
+    rm -f "$LEDGER" "$PASS_COUNT_FILE"
+    echo "Self-review ledger and pass counter reset."
+    exit 0
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +108,11 @@ fi
 mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 OUTFILE="$OUT_DIR/self-validation-${TIMESTAMP}.md"
+
+# Count this pass. Reset with --reset when starting a new change set.
+PASS_NUM=$(( $(cat "$PASS_COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$PASS_NUM" > "$PASS_COUNT_FILE"
+echo "Self-review pass ${PASS_NUM} of ${SELF_REVIEW_MAX_PASSES} (cap)." >&2
 
 collect_files() {
     local files=() content=""
@@ -93,7 +147,8 @@ REVIEW_PACKAGE=$(collect_files)
     printf "Model: %s\n" "$MODEL"
     printf "verdict: pending\n"
     printf "highest_severity: none\n"
-    printf "blocking_count: 0\n\n"
+    printf "blocking_count: 0\n"
+    printf "new_blocking_count: 0\n\n"
 } > "$OUTFILE"
 
 run_opus() {
@@ -160,51 +215,93 @@ OPUS_OUT=$(run_opus)
 echo "  done"
 echo ""
 
-# ── Finalize verdict ─────────────────────────────────────────────────────────
-python3 - "$OUTFILE" <<'PYEOF'
+# ── Finalize verdict (ledger-aware: verdict keyed on NEW findings) ───────────
+python3 - "$OUTFILE" "$LEDGER" <<'PYEOF'
 import json, re, sys
-path = sys.argv[1]
+path, ledger_path = sys.argv[1], sys.argv[2]
 content = open(path).read()
 blocks = re.findall(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
 order = ["critical", "blocking", "high", "warning", "medium", "low", "none"]
-highest, request_changes, blocking_count = "none", False, 0
+
+# Load dedup ledger: fingerprint = (sorted files, category).
+seen = set()
+try:
+    for line in open(ledger_path):
+        line = line.strip()
+        if not line:
+            continue
+        e = json.loads(line)
+        seen.add((tuple(sorted(e.get("files", []))), e.get("category", "")))
+except FileNotFoundError:
+    pass
+
+
+def fingerprint(f):
+    return (tuple(sorted(f.get("files", []))), f.get("category", ""))
+
+
+highest = "none"
+blocking_count = new_blocking = 0
 for b in blocks:
     try:
         d = json.loads(b)
     except Exception:
         continue
-    if d.get("verdict") in ("request_changes", "error"):
-        request_changes = True
     for f in d.get("findings", []):
         sev = str(f.get("severity", "low")).lower()
         if sev in order and order.index(sev) < order.index(highest):
             highest = sev
         if sev in ("critical", "blocking", "high"):
             blocking_count += 1
-verdict = "request_changes" if request_changes else "approve"
+            if fingerprint(f) not in seen:
+                new_blocking += 1
+
+# Verdict is keyed on NEW (un-ledgered) blocking findings: convergence means
+# "zero non-noise", not zero findings. Seen findings are already dispositioned.
 if not blocks:
     verdict = "error"
+elif new_blocking > 0:
+    verdict = "request_changes"
+else:
+    verdict = "approve"
 content = re.sub(r'^verdict: pending$', f'verdict: {verdict}', content, flags=re.M)
 content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', content, flags=re.M)
 content = re.sub(r'^blocking_count: 0$', f'blocking_count: {blocking_count}', content, flags=re.M)
+content = re.sub(r'^new_blocking_count: 0$', f'new_blocking_count: {new_blocking}', content, flags=re.M)
 open(path, 'w').write(content)
-print(f"  verdict={verdict} highest_severity={highest} blocking={blocking_count}")
+print(f"  verdict={verdict} highest_severity={highest} blocking={blocking_count} new={new_blocking}")
 PYEOF
 
 VERDICT=$(grep '^verdict:' "$OUTFILE" | head -1 | awk '{print $2}')
-BLOCKING=$(grep '^blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')
+BLOCKING=$(grep '^new_blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')
 echo ""
 echo "Output: $OUTFILE"
 if [[ "$VERDICT" == "approve" ]]; then
     echo "════════════════════════════════════════════"
-    echo "  PASS — Opus self-review clean"
+    echo "  PASS — converged (zero NEW blocking findings)"
     echo "════════════════════════════════════════════"
+    echo "  Findings already in the ledger are dispositioned;"
+    echo "  only un-ledgered blocking findings gate the verdict."
+    rm -f "$PASS_COUNT_FILE"   # converged — reset for the next change set
     exit 0
+elif [[ "$PASS_NUM" -ge "$SELF_REVIEW_MAX_PASSES" ]]; then
+    echo "════════════════════════════════════════════"
+    echo "  ESCALATE — pass cap (${SELF_REVIEW_MAX_PASSES}) hit, still ${BLOCKING:-?} NEW blocking"
+    echo "════════════════════════════════════════════"
+    echo "  Self-review did not converge within the cap. Do NOT keep"
+    echo "  looping — a human decides whether to fix, accept, or file."
+    echo "  Review: $OUTFILE"
+    exit 3
 else
     echo "════════════════════════════════════════════"
-    echo "  SELF-REVIEW FAIL — verdict=${VERDICT} blocking=${BLOCKING:-?}"
-    echo "  Fix these before spending external agy/codex budget."
-    echo "  Review: $OUTFILE"
+    echo "  SELF-REVIEW FAIL — verdict=${VERDICT} new_blocking=${BLOCKING:-?} (pass ${PASS_NUM}/${SELF_REVIEW_MAX_PASSES})"
     echo "════════════════════════════════════════════"
+    echo "  Triage the NEW findings in: $OUTFILE"
+    echo "  For each: fix-in-place (inner loop, no issue), or file an"
+    echo "  issue if it needs a human / another agent, then record it:"
+    echo "    $0 --record \"file1.md,file2.md\" <category> <fixed|filed:#NN|noise>"
+    echo "  Re-run. Stop when zero NEW findings, or at the pass cap"
+    echo "  (\$SELF_REVIEW_MAX_PASSES=${SELF_REVIEW_MAX_PASSES}) — then escalate to a human."
+    echo "  Don't spend external agy/codex budget until converged."
     exit 1
 fi
