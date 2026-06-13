@@ -320,6 +320,10 @@ if [[ "$VERDICT" == "approve" ]]; then
     echo "════════════════════════════════════════════"
     echo "  PASS — both reviewers approved"
     echo "════════════════════════════════════════════"
+    STAMP_DIR="scripts/framework/validation-stamps"
+    mkdir -p "$STAMP_DIR"
+    printf "validated: %s\nphase: 2-agents\nresult: pass\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAMP_DIR/phase2.stamp"
     exit 0
 else
     echo "════════════════════════════════════════════"

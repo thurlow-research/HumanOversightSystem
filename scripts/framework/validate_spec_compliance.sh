@@ -378,6 +378,10 @@ if [[ "$VERDICT" == "compliant" ]]; then
     echo "════════════════════════════════════════════"
     echo "  PASS — pipeline compliant with governance spec"
     echo "════════════════════════════════════════════"
+    STAMP_DIR="scripts/framework/validation-stamps"
+    mkdir -p "$STAMP_DIR"
+    printf "validated: %s\nphase: 4-spec-compliance\nresult: pass\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAMP_DIR/phase4.stamp"
     exit 0
 else
     echo "════════════════════════════════════════════"
