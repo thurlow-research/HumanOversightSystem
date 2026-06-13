@@ -126,53 +126,88 @@ ok "release version: ${BOLD}$VERSION${RESET}"
 
 # ── Validation gate ───────────────────────────────────────────────────────────
 hdr "3. Validation gate"
+NOTE_SUFFIX=""
 if $SKIP_VALIDATION; then
-  warn "VALIDATION SKIPPED (--skip-validation) — this release is NOT gated. Use only for emergencies."
+  # An ungated release must be a deliberate, audited act — require an explicit
+  # env opt-in so a stray flag can't ship one, and STAMP the artifact so the
+  # release self-documents that the gate was skipped (the audit trail matters).
+  if [[ "${HOS_ALLOW_UNVALIDATED:-}" != "1" ]]; then
+    err "--skip-validation refused: this would ship an UNVALIDATED release."
+    err "If you truly mean it, re-run with HOS_ALLOW_UNVALIDATED=1 set."
+    exit 1
+  fi
+  warn "VALIDATION SKIPPED (HOS_ALLOW_UNVALIDATED=1) — this release is NOT gated."
+  NOTE_SUFFIX=$'\n\n> \xE2\x9A\xA0 VALIDATION SKIPPED — cut with --skip-validation; NOT gated by the validation suite.'
 else
   info "running full validation suite (static → self → external → docs → compliance)..."
   if $DRY_RUN; then
     info "[dry] would run: scripts/framework/run_framework_validation.sh ${VALIDATION_ARGS[*]:-}"
   else
-    if ! bash scripts/framework/run_framework_validation.sh "${VALIDATION_ARGS[@]:-}"; then
-      err "validation did NOT pass — refusing to cut a release. Fix findings (or converge the"
-      err "external-review ledger), then re-run. Override only with --skip-validation."
+    rc=0
+    if (( ${#VALIDATION_ARGS[@]} )); then
+      bash scripts/framework/run_framework_validation.sh "${VALIDATION_ARGS[@]}" || rc=$?
+    else
+      bash scripts/framework/run_framework_validation.sh || rc=$?
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+      err "validation did NOT pass (exit $rc) — refusing to cut a release. Fix findings (or"
+      err "converge the external-review ledger), then re-run. Override only with --skip-validation."
       exit 1
     fi
     ok "validation passed — clear to release"
   fi
 fi
 
-# ── Release notes ─────────────────────────────────────────────────────────────
+# ── Tag + publish + assets ────────────────────────────────────────────────────
+hdr "4. Publish release + upload bootstrap assets"
+ASSETS=(bootstrap/hos_install.sh bootstrap/hos_bootstrap.sh bootstrap/setup_clis.sh)
+for a in "${ASSETS[@]}"; do [[ -f "$a" ]] || { err "asset missing: $a"; exit 2; }; done
+
+CLEANUP=()
+cleanup() { for f in "${CLEANUP[@]:-}"; do [[ -n "$f" && -e "$f" ]] && rm -rf "$f"; done; }
+trap cleanup EXIT
+
+# Release notes (built directly — no mapfile/bash-4-isms; portable to bash 3.2).
+# A skipped-validation release MUST carry its stamp, so when NOTE_SUFFIX is set we
+# author explicit notes (cannot combine with --generate-notes).
 NOTES_ARG=()
-if [[ -n "$NOTES_FILE" ]]; then
-  [[ -f "$NOTES_FILE" ]] || { err "notes file not found: $NOTES_FILE"; exit 2; }
+if [[ -n "$NOTE_SUFFIX" ]]; then
+  NF="$(mktemp "${TMPDIR:-/tmp}/hos-notes.XXXXXX")"; CLEANUP+=("$NF")
+  if [[ -n "$NOTES_FILE" ]]; then cat "$NOTES_FILE" > "$NF"; else printf 'Release %s.' "$VERSION" > "$NF"; fi
+  printf '%s\n' "$NOTE_SUFFIX" >> "$NF"
+  NOTES_ARG=(--notes-file "$NF")
+elif [[ -n "$NOTES_FILE" ]]; then
   NOTES_ARG=(--notes-file "$NOTES_FILE")
 else
   NOTES_ARG=(--generate-notes)
 fi
 
-# ── Tag + publish + assets ────────────────────────────────────────────────────
-hdr "4. Tag, publish, and upload bootstrap assets"
-ASSETS=(bootstrap/hos_install.sh bootstrap/hos_bootstrap.sh bootstrap/setup_clis.sh)
-for a in "${ASSETS[@]}"; do [[ -f "$a" ]] || { err "asset missing: $a"; exit 2; }; done
+# SHA256SUMS over the assets (basenames), so consumers can verify what they curl.
+sha256() { if command -v sha256sum &>/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+SUMS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hos-sums.XXXXXX")"; CLEANUP+=("$SUMS_DIR")
+SUMS="$SUMS_DIR/SHA256SUMS"
+( cd "$REPO_ROOT/bootstrap" && sha256 hos_install.sh hos_bootstrap.sh setup_clis.sh ) > "$SUMS"
+
+PRE_FLAG=(); $PRERELEASE && PRE_FLAG=(--prerelease)
 
 if $DRY_RUN; then
-  info "[dry] git tag -a $VERSION -m \"HOS $VERSION\""
-  info "[dry] git push origin $VERSION"
-  info "[dry] gh release create $VERSION ${PRERELEASE:+--prerelease} ${NOTES_ARG[*]} <assets>"
-  for a in "${ASSETS[@]}"; do info "[dry]   asset: $a"; done
+  info "[dry] gh release create $VERSION ${PRE_FLAG[*]} ${NOTES_ARG[*]} --target $(git rev-parse HEAD)"
+  for a in "${ASSETS[@]}" "$SUMS"; do info "[dry]   asset: $(basename "$a")"; done
+  info "[dry] (gh creates+pushes the tag atomically — no separate git push that could dangle)"
 else
-  git tag -a "$VERSION" -m "HOS $VERSION"
-  git push origin "$VERSION"
-  ok "tagged + pushed $VERSION"
-
-  PRE_FLAG=(); $PRERELEASE && PRE_FLAG=(--prerelease)
-  gh release create "$VERSION" \
-    --title "HOS $VERSION" \
-    "${PRE_FLAG[@]}" "${NOTES_ARG[@]}" \
-    --target "$(git rev-parse HEAD)" \
-    "${ASSETS[@]}"
-  ok "published GitHub release $VERSION with bootstrap assets"
+  # gh creates the tag, the release, and uploads the assets in ONE call. No
+  # separate `git push <tag>` that could succeed and leave a dangling public tag
+  # if release creation later fails (the M3 fix).
+  if ! gh release create "$VERSION" \
+        --title "HOS $VERSION" \
+        "${PRE_FLAG[@]}" "${NOTES_ARG[@]}" \
+        --target "$(git rev-parse HEAD)" \
+        "${ASSETS[@]}" "$SUMS"; then
+    err "gh release create failed. No release published; no dangling tag left to clean up."
+    err "Fix the cause and re-run (the version is still available)."
+    exit 1
+  fi
+  ok "published GitHub release $VERSION with bootstrap assets + SHA256SUMS"
 fi
 
 # ── Summary — the well-known URLs ─────────────────────────────────────────────
