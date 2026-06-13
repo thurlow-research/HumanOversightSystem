@@ -99,3 +99,24 @@ Second-highest: **privacy-reviewer and security-reviewer on non-sensitive diffs.
 
 - `issue-vs-pr-thread-routing.md` — the routing heuristic also affects what gets logged; silent skips and routing to wrong artifacts both degrade the audit trail
 - `brownfield-governance-adoption.md` — silent skips compound in brownfield contexts where gates are being re-enabled; you can't tell whether a gate was intentionally suspended or accidentally omitted
+
+---
+
+## Related finding: Self-detecting incompleteness as a blocking signal
+
+Discovered during dep-mapper design discussion (2026-06-13).
+
+A tool that can detect its own incomplete or unreliable output should report that incompleteness as a blocking signal — not silently degrade. The principle:
+
+**Known bad analysis is worse than no analysis.** A blast-radius report that looks authoritative but is actually incomplete (because the generic patterns missed framework-level wiring) will be read as reliable by risk-assessor and human reviewers. A report that explicitly says "I detected framework wiring patterns I cannot trace — this analysis is unreliable" forces a human decision rather than allowing silent under-estimation of risk.
+
+Applied to dep-mapper: if the generic dep-mapper detects framework-specific wiring patterns in changed files (Django signals, URL routing, template references, middleware) but cannot find the corresponding connections in its blast-radius output, it self-reports `confidence: LOW` and this triggers a HIGH-severity blocking finding. The human must then either configure a stack-specific override (proper fix) or explicitly suspend dep-mapper via the brownfield mechanism (acknowledged gap).
+
+**The general principle:** when a tool can tell it is likely wrong, it should say so loudly. Silent degradation — a tool that produces output of unknown quality — is an audit trail problem and a safety problem. The suspension mechanism handles "I know this is incomplete, I'm working on it." What it cannot handle is incompleteness the tool itself doesn't report.
+
+This is the self-aware stub pattern: a component that knows it is operating outside its reliable range should flag that boundary explicitly, not produce output that appears complete.
+
+**Implications for research:**
+- Governance tools need self-assessment capabilities, not just correctness checks
+- The value of `confidence` fields (already added to risk-historian) extends to any tool that can reason about the completeness of its own analysis
+- "Known bad state → human involvement" is a design principle: don't let the system silently operate in a degraded mode; surface the degradation and require an explicit decision to continue
