@@ -1,61 +1,69 @@
 #!/usr/bin/env bash
-# install.sh — Human Oversight System — unified installer
+# hos_install.sh — Human Oversight System — PROJECT installer.
 #
-# Installs all prerequisites and scaffolds the HOS framework into a target
-# repository. Detects macOS vs Linux and uses the right package manager.
-# Safe to re-run — idempotent throughout.
+# Installs the HOS framework into a target repository FROM A VALIDATED RELEASE.
+# Does NOT install machine prerequisites or need sudo — run hos_bootstrap.sh
+# (in this same bootstrap/ folder) once per machine first. This script only
+# fetches a release and scaffolds files; it verifies prerequisites are present
+# and points you to hos_bootstrap.sh if they are not.
 #
 # Usage:
-#   ./install.sh                      # prereqs + scaffold current directory
-#   ./install.sh /path/to/project     # prereqs + scaffold given directory
-#   ./install.sh --machine-only       # prereqs only (Python, gh, pip packages)
-#   ./install.sh --project-only [DIR] # scaffold only, skip machine prereqs
-#   ./install.sh --dry-run [DIR]      # show what would be done, no writes
-#   ./install.sh --force [DIR]        # overwrite existing files in target
-#   ./install.sh --skip-clis          # skip agy/codex auth checks
-#   ./install.sh --no-sudo            # skip steps that require sudo
-#   ./install.sh --help
+#   ./hos_install.sh                      # scaffold CWD from the LATEST release
+#   ./hos_install.sh /path/to/project     # scaffold given dir from the latest release
+#   ./hos_install.sh --release v0.3.0 DIR # scaffold a SPECIFIC release into DIR
+#   ./hos_install.sh --local [DIR]        # scaffold from the local working copy
+#                                         #   (dev only; unvalidated — not a release)
+#   ./hos_install.sh --dry-run [DIR]      # show what would be done, no writes
+#   ./hos_install.sh --force [DIR]        # overwrite existing files in target
+#   ./hos_install.sh --skip-clis          # skip the agy/codex presence check
+#   ./hos_install.sh --help
 #
-# What it installs on the machine:
-#   Python 3.10+, pip, gh CLI, Python analysis packages (radon, bandit, etc.)
-#   Then guides you through agy + codex setup (requires ./scripts/setup_clis.sh)
+# Release vs. local source:
+#   By default the framework FILES come from a fetched, validated release (latest
+#   GitHub release, or --release <tag>), NOT from the local working copy — with
+#   batched validation the local copy is not guaranteed shippable, so a release
+#   is the reproducible, known-good artifact. Use --local only for development.
+#   The installed release tag is recorded in the target at .hos-release.
 #
 # What it scaffolds into the target project:
-#   .claude/agents/   — 6 HOS oversight agents
+#   .claude/agents/   — HOS oversight agents
 #   .claude/settings.json — required permissions (merged, not overwritten)
 #   scripts/          — run_panel.sh, run_second_review.sh, run_red_team.sh, etc.
 #   scripts/oversight/ — validators, gates, token_tracker
 #   AGENTS.md         — Layer 1 self-flagging protocol
 #   contract/         — step-manifest.template.yaml
 #   audit/            — committed audit trail directory
+#   .ai-local/        — per-project runtime (SQC sampling salt)
 #   .github/          — CODEOWNERS, PR template
 #   .gitignore        — ensures .claudetmp/ present, audit/ not ignored
 
 set -euo pipefail
 
-# ── Resolve HOS root from script location ─────────────────────────────────────
+# ── Resolve locations ─────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOS_ROOT="$SCRIPT_DIR"   # install.sh lives at the repo root
+# This script lives in bootstrap/. The repo root (used for --local and the
+# git-archive fast path) is its parent — unless run truly standalone, in which
+# case release mode fetches the tarball and the repo root is never needed.
+HOS_REPO_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "$SCRIPT_DIR")"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 TARGET_REPO="$(pwd)"
-MACHINE_ONLY=false
-PROJECT_ONLY=false
 DRY_RUN=false
 FORCE=false
 SKIP_CLIS=false
-NO_SUDO=false
+RELEASE_REF=""        # specific release tag to install (empty = latest release)
+LOCAL_SOURCE=false    # install from the local working copy instead of a release
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --machine-only)  MACHINE_ONLY=true; shift ;;
-    --project-only)  PROJECT_ONLY=true; shift ;;
     --dry-run)       DRY_RUN=true; shift ;;
     --force)         FORCE=true; shift ;;
     --skip-clis)     SKIP_CLIS=true; shift ;;
-    --no-sudo)       NO_SUDO=true; shift ;;
-    --help|-h)       sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --release)       RELEASE_REF="${2:?--release needs a tag, e.g. v0.3.0}"; shift 2 ;;
+    --release=*)     RELEASE_REF="${1#*=}"; shift ;;
+    --local)         LOCAL_SOURCE=true; shift ;;
+    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -85,7 +93,6 @@ fail() { err "$*"; ERRORS=$((ERRORS + 1)); }
 # ── Platform detection ────────────────────────────────────────────────────────
 OS="unknown"
 PKG_MGR="none"
-SUDO=""
 
 detect_platform() {
   case "$(uname -s)" in
@@ -106,300 +113,138 @@ detect_platform() {
       fi
       ;;
   esac
-  if ! $NO_SUDO && command -v sudo &>/dev/null; then
-    SUDO="sudo"
-  fi
 }
 
 detect_platform
+
+# ── Resolve the framework SOURCE (a release by default, not the local copy) ────
+# HOS_SOURCE is where the framework FILES are copied FROM — a fetched, validated
+# release by default, so consumers install a known-good pinned version rather
+# than whatever is on the local working copy (which, with batched validation, is
+# not guaranteed shippable). --local uses the repo working copy (dev only).
+HOS_SOURCE="$HOS_REPO_ROOT"   # overridden below unless --local
+HOS_REF="(local working copy)"
+CLEANUP_DIRS=()
+cleanup() { for d in "${CLEANUP_DIRS[@]:-}"; do [[ -n "$d" && -d "$d" ]] && rm -rf "$d"; done; }
+trap cleanup EXIT
+
+# Resolve the HOS repo slug (owner/name) for release fetching.
+HOS_REPO="${HOS_REPO:-$(git -C "$HOS_REPO_ROOT" remote get-url origin 2>/dev/null \
+  | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)}"
+[[ -z "${HOS_REPO:-}" ]] && HOS_REPO="ScottThurlow/HumanOversightSystem"
+
+fetch_release_tarball() {  # ref dest_dir -> 0 on success
+  local ref="$1" dest="$2" tgz
+  tgz="$(mktemp "${TMPDIR:-/tmp}/hos-src-XXXXXX.tar.gz")"
+  CLEANUP_DIRS+=("$tgz")
+  if command -v gh &>/dev/null; then
+    gh api "repos/${HOS_REPO}/tarball/${ref}" > "$tgz" 2>/dev/null || true
+  fi
+  if [[ ! -s "$tgz" ]] && command -v curl &>/dev/null; then
+    curl -fsSL "https://github.com/${HOS_REPO}/archive/refs/tags/${ref}.tar.gz" -o "$tgz" 2>/dev/null || true
+  fi
+  [[ -s "$tgz" ]] || return 1
+  tar -xzf "$tgz" -C "$dest" --strip-components=1 2>/dev/null || return 1
+  [[ -n "$(ls -A "$dest" 2>/dev/null)" ]]
+}
+
+resolve_hos_source() {
+  if $LOCAL_SOURCE; then
+    HOS_SOURCE="$HOS_REPO_ROOT"
+    HOS_REF="LOCAL (unvalidated working copy)"
+    warn "Installing from the LOCAL working copy — this is NOT a validated release."
+    warn "Omit --local to install the latest validated release instead."
+    return
+  fi
+
+  local ref="$RELEASE_REF"
+  if [[ -z "$ref" ]]; then            # default: the latest GitHub release
+    ref="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
+    [[ -z "$ref" ]] && ref="$(git -C "$HOS_REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$ref" ]]; then
+    err "No HOS release found to install."
+    echo "    No GitHub release or git tag exists yet. Either:"
+    echo "      • create a release first (tag a validated commit + publish a GitHub release), or"
+    echo "      • install the unvalidated working copy:  $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+    exit 1
+  fi
+  HOS_REF="$ref"
+
+  if $DRY_RUN; then
+    HOS_SOURCE="$HOS_REPO_ROOT"   # dry-run shows file ops against the local tree
+    dry_run "Would fetch HOS release $ref from $HOS_REPO and install from it"
+    return
+  fi
+
+  HOS_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/hos-release-XXXXXX")"
+  CLEANUP_DIRS+=("$HOS_SOURCE")
+  info "Fetching HOS release $ref …"
+
+  # Prefer a local git tag export (fast, offline); fall back to the GitHub tarball.
+  if git -C "$HOS_REPO_ROOT" rev-parse --git-dir &>/dev/null; then
+    git -C "$HOS_REPO_ROOT" fetch --tags --quiet origin 2>/dev/null || true
+    if git -C "$HOS_REPO_ROOT" rev-parse -q --verify "refs/tags/${ref}" &>/dev/null; then
+      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
+    fi
+  fi
+  if [[ -z "$(ls -A "$HOS_SOURCE" 2>/dev/null)" ]]; then
+    fetch_release_tarball "$ref" "$HOS_SOURCE" || {
+      err "Could not fetch release $ref from $HOS_REPO (no local tag, gh, or curl succeeded)."
+      echo "    Check the tag exists, or install the working copy with --local."
+      exit 1
+    }
+  fi
+  ok "Release $ref staged for install"
+}
+
+resolve_hos_source
+
 echo ""
-echo -e "${BOLD}Human Oversight System — installer${RESET}"
+echo -e "${BOLD}Human Oversight System — project installer${RESET}"
 echo "  Platform:    $OS  ($PKG_MGR)"
-echo "  HOS root:    $HOS_ROOT"
+echo "  HOS source:  $HOS_REF"
 echo "  Target repo: $TARGET_REPO"
 $DRY_RUN && echo -e "  ${YELLOW}DRY RUN — no changes will be made${RESET}"
 echo ""
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MACHINE SETUP
-# ══════════════════════════════════════════════════════════════════════════════
-
-if ! $PROJECT_ONLY; then
-
-header "1. Python 3.10+"
-
-install_python() {
-  local min_minor=10
-
-  # Check if a suitable python3 is already present
-  if command -v python3 &>/dev/null; then
-    local ver major minor
-    ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-    major=$(echo "$ver" | cut -d. -f1)
-    minor=$(echo "$ver" | cut -d. -f2)
-    if [[ "$major" -ge 3 && "$minor" -ge "$min_minor" ]]; then
-      ok "python3 $ver"
-      return
-    fi
-    warn "python3 $ver found but need 3.${min_minor}+ — upgrading"
-  fi
-
-  case "$OS-$PKG_MGR" in
-    macos-brew)
-      info "Installing Python 3.12 via brew..."
-      run "brew install python@3.12"
-      # brew python may not be on PATH immediately
-      run "brew link --force python@3.12 2>/dev/null || true"
-      ;;
-    linux-apt)
-      info "Installing Python 3 via apt..."
-      run "$SUDO apt-get update -qq"
-      run "$SUDO apt-get install -y python3 python3-pip python3-venv python3-dev"
-      ;;
-    linux-dnf)
-      info "Installing Python 3 via dnf..."
-      run "$SUDO dnf install -y python3 python3-pip python3-devel"
-      ;;
-    linux-yum)
-      info "Installing Python 3 via yum..."
-      run "$SUDO yum install -y python3 python3-pip"
-      ;;
-    linux-pacman)
-      info "Installing Python 3 via pacman..."
-      run "$SUDO pacman -Sy --noconfirm python python-pip"
-      ;;
-    macos-none)
-      fail "brew not found. Install Homebrew first: https://brew.sh"
-      fail "Then re-run this script."
-      ;;
-    *)
-      fail "No supported package manager detected (brew/apt/dnf/yum/pacman)."
-      fail "Install Python 3.10+ manually, then re-run with --project-only."
-      ;;
-  esac
-
-  if command -v python3 &>/dev/null; then
-    ok "python3 $(python3 --version 2>&1 | awk '{print $2}')"
-  else
-    fail "python3 not found after install attempt"
+# ── Prerequisite check (install never installs — it points to the bootstrap) ──
+# This script does not install machine prerequisites (that is hos_bootstrap.sh's
+# job). It verifies they are present and stops with clear guidance if not, so
+# the privilege boundary stays clean: the project install never escalates.
+header "Prerequisites"
+PREREQ_OK=true
+check_prereq() {  # cmd  human-name  fatal(true/false)
+  if command -v "$1" &>/dev/null; then ok "$2 present"; else
+    if $3; then err "$2 missing"; PREREQ_OK=false; else warn "$2 missing (optional)"; fi
   fi
 }
-
-install_python
-
-# ── pip ───────────────────────────────────────────────────────────────────────
-if python3 -m pip --version &>/dev/null 2>&1; then
-  ok "pip $(python3 -m pip --version | awk '{print $2}')"
+# Python 3.10+ specifically
+if command -v python3 &>/dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then
+  ok "python3 $(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")') present"
 else
-  warn "pip not found — attempting to install..."
-  case "$OS-$PKG_MGR" in
-    linux-apt) run "$SUDO apt-get install -y python3-pip" ;;
-    linux-dnf) run "$SUDO dnf install -y python3-pip" ;;
-    linux-yum) run "$SUDO yum install -y python3-pip" ;;
-    *) run "python3 -m ensurepip --upgrade" ;;
-  esac
+  err "python3 3.10+ missing"; PREREQ_OK=false
 fi
-
-header "2. Python analysis packages"
-
-REQUIREMENTS="$HOS_ROOT/scripts/oversight/requirements.txt"
-if [[ -f "$REQUIREMENTS" ]]; then
-  info "Installing from requirements.txt..."
-  # Use --user to avoid permission issues outside a venv
-  if ! $DRY_RUN; then
-    python3 -m pip install --quiet --upgrade pip 2>/dev/null || true
-    python3 -m pip install --quiet -r "$REQUIREMENTS" 2>/dev/null || \
-      python3 -m pip install --quiet --user -r "$REQUIREMENTS" 2>/dev/null || \
-      warn "Some packages failed to install — try manually: pip install -r $REQUIREMENTS"
-  fi
-  for pkg in radon bandit flake8 black isort mypy; do
-    if python3 -c "import $pkg" &>/dev/null 2>&1 || python3 -m "$pkg" --version &>/dev/null 2>&1; then
-      ok "$pkg"
-    else
-      warn "$pkg not importable after install (may still work via CLI)"
-    fi
-  done
-  for tool in radon bandit flake8 black isort mypy; do
-    command -v "$tool" &>/dev/null && ok "$tool (CLI)" || true
-  done
-else
-  warn "requirements.txt not found at $REQUIREMENTS — skipping"
+check_prereq git "git" true
+check_prereq gh  "gh CLI" true
+if ! $SKIP_CLIS; then
+  check_prereq agy   "agy (Gemini reviewer)"  false
+  check_prereq codex "codex (OpenAI reviewer)" false
 fi
-
-# Optional tools
-for opt_pkg in semgrep detect-secrets; do
-  if command -v "$opt_pkg" &>/dev/null; then
-    ok "$opt_pkg (optional)"
-  else
-    skip "$opt_pkg not installed (optional — install: pip install $opt_pkg)"
-  fi
-done
-
-header "2a. IP tooling — ScanCode Toolkit"
-# ScanCode provides full license-text detection (Level 1 IP agent).
-# Without it, ip_check.py falls back to PyPI/npm API lookups (less thorough).
-# ai-gen-code-search (Level 3 regurgitation lens) is listed separately below —
-# it requires building a FOSS code index and is not auto-installed.
-#
-# ScanCode may need system libraries (libmagic) on some platforms.
-
-install_scancode() {
-  if command -v scancode &>/dev/null; then
-    ok "scancode $(scancode --version 2>/dev/null | head -1 | tr -d '\n')"
-    return
-  fi
-
-  info "Installing ScanCode Toolkit (IP/license detection)..."
-
-  # Install system dependencies that ScanCode may need
-  case "$OS-$PKG_MGR" in
-    linux-apt)
-      info "Installing libmagic (ScanCode system dependency)..."
-      run "$SUDO apt-get install -y libmagic-dev libmagic1 2>/dev/null || true"
-      ;;
-    linux-dnf)
-      run "$SUDO dnf install -y file-libs file-devel 2>/dev/null || true"
-      ;;
-    linux-yum)
-      run "$SUDO yum install -y file-libs file-devel 2>/dev/null || true"
-      ;;
-    macos-brew)
-      # libmagic is usually present via brew coreutils; install explicitly if missing
-      command -v file &>/dev/null || run "brew install libmagic 2>/dev/null || true"
-      ;;
-  esac
-
-  # Install ScanCode — try system-wide first, then user install
-  if ! $DRY_RUN; then
-    python3 -m pip install --quiet scancode-toolkit 2>/dev/null || \
-    python3 -m pip install --quiet --user scancode-toolkit 2>/dev/null || {
-      warn "ScanCode install failed — ip_check.py will use PyPI API fallback"
-      warn "Try manually: pip install scancode-toolkit"
-      warn "Docs: https://scancode-toolkit.readthedocs.io/en/stable/getting-started/install.html"
-      return
-    }
-  else
-    dry_run "Would install scancode-toolkit via pip"
-    return
-  fi
-
-  if command -v scancode &>/dev/null; then
-    ok "scancode installed ($(scancode --version 2>/dev/null | head -1 | tr -d '\n'))"
-  else
-    # Might be installed as a user package not yet on PATH
-    SCANCODE_PATH="$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null)/scancode"
-    USER_SCANCODE="$(python3 -m site --user-base 2>/dev/null)/bin/scancode"
-    if [[ -x "$SCANCODE_PATH" ]] || [[ -x "$USER_SCANCODE" ]]; then
-      ok "scancode installed (may need to add $(dirname "${USER_SCANCODE}") to PATH)"
-    else
-      warn "scancode installed but not on PATH — open a new shell and re-run: scancode --version"
-    fi
-  fi
-
+if ! $PREREQ_OK; then
   echo ""
-  skip "ai-gen-code-search (Level 3 regurgitation lens — requires backend services)"
-  echo "       NOT a standalone pip install. Requires PurlDB + MatchCode + ScanCode.io"
-  echo "       service stack deployment, OR research API access from AboutCode."
-  echo "       Contact: hello@aboutcode.org for evaluation access."
-  echo "       Docs: https://github.com/aboutcode-org/ai-gen-code-search"
-}
-
-install_scancode
-
-header "3. GitHub CLI (gh)"
-
-if command -v gh &>/dev/null; then
-  ok "gh $(gh --version | head -1 | awk '{print $3}')"
-  if gh auth status &>/dev/null 2>&1; then
-    ok "gh authenticated"
-  else
-    warn "gh not authenticated — run: gh auth login"
-  fi
-else
-  case "$OS-$PKG_MGR" in
-    macos-brew)
-      info "Installing gh via brew..."
-      run "brew install gh"
-      ok "gh installed"
-      ;;
-    linux-apt)
-      info "Installing gh via apt..."
-      if ! $DRY_RUN; then
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-          | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-          | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-        sudo apt-get update -qq && sudo apt-get install -y gh
-        ok "gh installed"
-      else
-        dry_run "Would install gh via apt"
-      fi
-      ;;
-    linux-dnf|linux-yum)
-      info "Installing gh via dnf/yum..."
-      run "$SUDO $PKG_MGR install -y 'dnf-command(config-manager)' 2>/dev/null || true"
-      run "$SUDO $PKG_MGR config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo 2>/dev/null || true"
-      run "$SUDO $PKG_MGR install -y gh"
-      ;;
-    *)
-      warn "Cannot auto-install gh on $OS/$PKG_MGR"
-      warn "Install from: https://cli.github.com"
-      ;;
-  esac
+  err "Missing required prerequisites. Run the machine bootstrap first:"
+  echo "      bash $(dirname "$0")/hos_bootstrap.sh"
+  echo "    Then re-run this installer."
+  exit 1
 fi
-
-header "4. AI agent CLIs (agy + codex)"
-
-if $SKIP_CLIS; then
-  skip "CLI checks skipped (--skip-clis)"
-else
-  echo "  These require interactive browser authentication."
-  echo "  For full CLI install + auth, run: ./scripts/setup_clis.sh"
-  echo ""
-  if command -v agy &>/dev/null; then
-    ok "agy $(agy --version 2>/dev/null | head -1 | tr -d '\n') — Gemini (conditional screening)"
-  else
-    warn "agy not installed — Gemini reviewer unavailable"
-    echo "       Install: ./scripts/setup_clis.sh install"
-    echo "       Auth:    ./scripts/setup_clis.sh auth"
-  fi
-  if command -v codex &>/dev/null; then
-    ok "codex — OpenAI (reserve adversarial reviewer)"
-  else
-    warn "codex not installed — OpenAI reserve reviewer unavailable"
-    echo "       Install: ./scripts/setup_clis.sh install"
-  fi
-fi
-
-header "5. Local runtime directories"
-
-AI_LOCAL="$HOS_ROOT/.ai-local"
-run "mkdir -p '$AI_LOCAL/panel'"
-ok ".ai-local/panel/"
-
-SALT_FILE="$AI_LOCAL/sample.salt"
-if [[ -f "$SALT_FILE" ]]; then
-  skip ".ai-local/sample.salt exists (SQC sampling key — do not regenerate)"
-else
-  run "python3 -c \"import secrets; print(secrets.token_hex(32))\" > '$SALT_FILE'"
-  ok "Generated .ai-local/sample.salt (SQC random red-team sampling key)"
-fi
-
-# Ensure .ai-local is gitignored in HOS itself
-if ! grep -q "^\.ai-local/" "$HOS_ROOT/.gitignore" 2>/dev/null; then
-  run "echo '.ai-local/' >> '$HOS_ROOT/.gitignore'"
-  ok "Added .ai-local/ to HOS .gitignore"
-fi
-
-fi  # end: if ! $PROJECT_ONLY
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PROJECT SETUP
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ! $MACHINE_ONLY; then
-
-header "6. Project setup: $TARGET_REPO"
+header "Project setup: $TARGET_REPO"
 
 # Validate target is a git repo
 if [[ ! -d "$TARGET_REPO/.git" ]]; then
@@ -459,6 +304,23 @@ ensure_not_ignored "$GITIGNORE" "audit/"     "audit/ (committed audit trail)"
 ensure_not_ignored "$GITIGNORE" "AGENTS.md"  "AGENTS.md (governance protocol)"
 ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
 
+# ── .ai-local/ — per-PROJECT runtime (SQC sampling salt) ──────────────────────
+# The salt is project state: run_redteam_sample.sh uses it to deterministically
+# select which LOW/MEDIUM PRs get a red-team audit. It must persist per project
+# and never be regenerated (regenerating reshuffles the sampling history).
+echo ""
+info ".ai-local/ — per-project runtime (SQC sampling salt)"
+run "mkdir -p '$TARGET_REPO/.ai-local/panel'"
+SALT_FILE="$TARGET_REPO/.ai-local/sample.salt"
+if [[ -f "$SALT_FILE" ]]; then
+  skip ".ai-local/sample.salt exists (do not regenerate)"
+elif $DRY_RUN; then
+  dry_run "Would generate $SALT_FILE"
+else
+  python3 -c "import secrets; print(secrets.token_hex(32))" > "$SALT_FILE"
+  ok "Generated .ai-local/sample.salt (SQC random red-team sampling key)"
+fi
+
 # ── .claude/agents/ ────────────────────────────────────────────────────────────
 echo ""
 info ".claude/agents/ — oversight agents"
@@ -466,7 +328,7 @@ run "mkdir -p '$TARGET_REPO/.claude/agents'"
 
 for agent in risk-assessor dep-mapper risk-historian \
              oversight-evaluator oversight-orchestrator spec-red-team; do
-  src="$HOS_ROOT/.claude/agents/${agent}.md"
+  src="$HOS_SOURCE/.claude/agents/${agent}.md"
   dst="$TARGET_REPO/.claude/agents/${agent}.md"
   if [[ ! -f "$src" ]]; then
     warn "Agent not found in HOS: ${agent}.md — skipping"
@@ -516,7 +378,7 @@ PYEOF
   fi
 else
   # No existing settings — create from HOS template
-  SETTINGS_SRC="$HOS_ROOT/.claude/settings.json"
+  SETTINGS_SRC="$HOS_SOURCE/.claude/settings.json"
   cp_file "$SETTINGS_SRC" "$SETTINGS_DST" ".claude/settings.json"
 fi
 
@@ -525,12 +387,15 @@ echo ""
 info "scripts/ — HOS runner scripts"
 run "mkdir -p '$TARGET_REPO/scripts'"
 
+# Runner scripts only — NOT the installers/bootstrap. setup_clis.sh is a MACHINE
+# tool (now in bootstrap/, run once per machine); setup_oversight.sh is the
+# legacy project installer that hos_install.sh supersedes. Neither belongs in a
+# target project's scripts/.
 for script in run_panel.sh run_second_review.sh run_red_team.sh \
               review_self.sh reverify_self.sh \
-              capture_prompt.sh prompt_audit.sh \
-              setup_clis.sh setup_oversight.sh; do
-  src="$HOS_ROOT/scripts/$script"
-  [[ ! -f "$src" ]] && src="$HOS_ROOT/templates/$script"   # fallback to templates/
+              capture_prompt.sh prompt_audit.sh; do
+  src="$HOS_SOURCE/scripts/$script"
+  [[ ! -f "$src" ]] && src="$HOS_SOURCE/templates/$script"   # fallback to templates/
   cp_file "$src" "$TARGET_REPO/scripts/$script"
 done
 
@@ -542,25 +407,25 @@ if ! $DRY_RUN; then
                 '$TARGET_REPO/scripts/oversight/gates'"
   rsync -a ${FORCE:+--ignore-times} ${FORCE:+--checksum} \
     $( $FORCE || echo "--ignore-existing" ) \
-    "$HOS_ROOT/scripts/oversight/" \
+    "$HOS_SOURCE/scripts/oversight/" \
     "$TARGET_REPO/scripts/oversight/" 2>/dev/null || \
-  cp -rn "$HOS_ROOT/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"
+  cp -rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"
   ok "scripts/oversight/ synced"
 else
-  dry_run "Would sync $HOS_ROOT/scripts/oversight/ → $TARGET_REPO/scripts/oversight/"
+  dry_run "Would sync $HOS_SOURCE/scripts/oversight/ → $TARGET_REPO/scripts/oversight/"
 fi
 
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
 echo ""
 info "Core governance documents"
-cp_file "$HOS_ROOT/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
-cp_file "$HOS_ROOT/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" \
+cp_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
+cp_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" \
   2>/dev/null || true  # optional
 
 # ── contract/ — step manifest template ────────────────────────────────────────
 run "mkdir -p '$TARGET_REPO/contract'"
 if [[ ! -f "$TARGET_REPO/contract/step-manifest.yaml" ]]; then
-  cp_file "$HOS_ROOT/contract/step-manifest.template.yaml" \
+  cp_file "$HOS_SOURCE/contract/step-manifest.template.yaml" \
           "$TARGET_REPO/contract/step-manifest.yaml" \
           "contract/step-manifest.yaml"
   warn "Edit $TARGET_REPO/contract/step-manifest.yaml to define your build steps"
@@ -583,8 +448,8 @@ JSONL
     touch "$TARGET_REPO/audit/escalations/.gitkeep"
     touch "$TARGET_REPO/audit/panel-runs/.gitkeep"
     # Copy README template
-    [[ -f "$HOS_ROOT/audit/README.md" ]] && \
-      cp "$HOS_ROOT/audit/README.md" "$TARGET_REPO/audit/README.md" || true
+    [[ -f "$HOS_SOURCE/audit/README.md" ]] && \
+      cp "$HOS_SOURCE/audit/README.md" "$TARGET_REPO/audit/README.md" || true
   fi
   ok "audit/ scaffolded (committed, not gitignored)"
 else
@@ -601,8 +466,8 @@ fi
 echo ""
 info ".github/ — code owners and PR template"
 run "mkdir -p '$TARGET_REPO/.github'"
-cp_file "$HOS_ROOT/.github/CODEOWNERS"              "$TARGET_REPO/.github/CODEOWNERS"
-cp_file "$HOS_ROOT/.github/pull_request_template.md" "$TARGET_REPO/.github/pull_request_template.md"
+cp_file "$HOS_SOURCE/.github/CODEOWNERS"              "$TARGET_REPO/.github/CODEOWNERS"
+cp_file "$HOS_SOURCE/.github/pull_request_template.md" "$TARGET_REPO/.github/pull_request_template.md"
 
 # ── prompts/ — prompt artifact directory ──────────────────────────────────────
 echo ""
@@ -628,7 +493,16 @@ else
   skip "prompts/ already exists"
 fi
 
-fi  # end: if ! $MACHINE_ONLY
+# ── .hos-release — record the installed framework version ─────────────────────
+echo ""
+info ".hos-release — installed framework version marker"
+if $DRY_RUN; then
+  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
+else
+  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
+  ok ".hos-release = $HOS_REF"
+fi
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SUMMARY
@@ -642,7 +516,6 @@ if [[ $ERRORS -gt 0 ]]; then
 fi
 
 echo ""
-if ! $MACHINE_ONLY; then
   ok "HOS framework installed in: $TARGET_REPO"
   echo ""
   echo -e "  ${BOLD}Next steps:${RESET}"
@@ -651,7 +524,7 @@ if ! $MACHINE_ONLY; then
   echo "       $TARGET_REPO/contract/step-manifest.yaml"
   echo ""
   echo "  2. Authenticate AI CLIs (if not done):"
-  echo "       bash $HOS_ROOT/scripts/setup_clis.sh auth"
+  echo "       (machine bootstrap) bash bootstrap/setup_clis.sh auth"
   echo ""
   echo "  3. Commit the scaffolded files:"
   echo "       cd $TARGET_REPO && git add .claude/ AGENTS.md audit/ contract/ scripts/ .gitignore"
@@ -666,13 +539,6 @@ if ! $MACHINE_ONLY; then
   echo "  5. Review the audit trail:"
   echo "       cat audit/oversight-log.jsonl | jq 'select(.event==\"sign-off\")'"
   echo ""
-else
-  ok "Machine prerequisites installed"
-  echo ""
-  echo "  Install into a project:"
-  echo "    ./install.sh /path/to/your/project"
-  echo ""
-fi
 
 echo "  Docs: CLAUDE.md · ARCHITECTURE.md · contract/OVERSIGHT-CONTRACT.md"
 echo ""
