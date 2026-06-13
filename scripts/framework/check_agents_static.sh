@@ -211,6 +211,36 @@ for canonical in "${DOC_CANONICALS[@]}"; do
     done <<< "$all_refs"
 done
 
+# ── 6. Doc update staleness — agent files changed without doc update ─────────
+section "6. Agent-to-doc staleness check"
+
+# For each agent file changed in the last commit or uncommitted, check whether
+# the key doc files (AGENTS.md, OVERSIGHT-RUNBOOK.md) were also touched.
+# This is a heuristic warning — not all agent changes require doc updates,
+# but a pattern of agent-only changes suggests docs may be falling behind.
+
+CHANGED_AGENTS=()
+while IFS= read -r f; do
+    [[ "$f" == .claude/agents/*.md ]] && CHANGED_AGENTS+=("$f")
+done < <(git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null)
+
+DOC_FILES_CHANGED=false
+while IFS= read -r f; do
+    if [[ "$f" == docs/AGENTS.md || "$f" == docs/OVERSIGHT-RUNBOOK.md ]]; then
+        DOC_FILES_CHANGED=true
+        break
+    fi
+done < <(git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null)
+
+if [[ ${#CHANGED_AGENTS[@]} -gt 0 && "$DOC_FILES_CHANGED" == "false" ]]; then
+    warn "${#CHANGED_AGENTS[@]} agent file(s) changed without corresponding doc update"
+    echo "  Changed agents: ${CHANGED_AGENTS[*]}"
+    echo "  INFO: if agent behavior changed, consider updating docs/AGENTS.md or docs/OVERSIGHT-RUNBOOK.md"
+    echo "  (This is advisory — not a blocking failure. Dismiss if the changes are internal-only.)"
+else
+    ok "Agent-to-doc staleness: OK"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════"
