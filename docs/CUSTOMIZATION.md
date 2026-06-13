@@ -136,6 +136,31 @@ If your project has a different design system (or none):
 
 ---
 
+## Adding observability review (ops-designer + ops-reviewer)
+
+These agents are optional — add them when your project has background jobs, external API integrations, async task queues, or multi-service architecture. Skip for CLI tools, libraries, or simple request/response apps with no external dependencies.
+
+### `ops-designer.md`
+- The template at `templates/TELEMETRY-SPEC.md` shows the expected output structure
+- Update component coverage section with your actual system components
+- Update health check requirements to match your specific external dependency types (e.g. your message queue, your cache layer, your third-party APIs)
+- Keep the additive/structural classification rules unchanged — these enforce the human gate
+
+### `ops-reviewer.md`
+- The review dimensions are intentionally generic — they apply to any stack
+- Update any stack-specific patterns if needed (e.g. if your framework has a specific logging library, add it to the structured logging check)
+- Keep the loop exit (escalate to architect after 2 failed cycles) and the "no spec → invoke ops-designer" behavior unchanged
+
+### `step-manifest.yaml`
+- Uncomment `ops: ops-reviewer` in the `role_mappings` section
+- Add `ops` to `required_signoffs` for steps that introduce background jobs, external integrations, or new failure paths
+- Do not add `ops` to every step — only steps with ops complexity
+
+### Project-start sequence
+When ops is configured, `ops-designer` runs after `architect` completes the ADR and before any build step begins. `architect` signs off on `docs/ops/TELEMETRY-SPEC.md`. This sign-off must appear in the register before `oversight-evaluator` will proceed.
+
+---
+
 ## Adding a new agent
 
 When your project needs a domain not covered by the existing agents (e.g., a data-pipeline reviewer, a mobile-specific reviewer, an ML model reviewer):

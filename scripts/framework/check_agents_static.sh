@@ -99,6 +99,7 @@ OUTPUT_DOCS="docs/pm/CONFIRMED-REQUIREMENTS.md
 docs/design/UX-DESIGN-READINESS.md
 docs/architecture/ADR-001-pilot.md
 docs/design/TECHNICAL-DESIGN.md
+docs/ops/TELEMETRY-SPEC.md
 contract/step-manifest.yaml
 scripts/framework/config.sh"
 
@@ -184,6 +185,7 @@ DOC_CANONICALS=(
     "docs/design/UX-DESIGN-READINESS.md"
     "docs/architecture/ADR-001-pilot.md"
     "docs/design/TECHNICAL-DESIGN.md"
+    "docs/ops/TELEMETRY-SPEC.md"
 )
 
 for canonical in "${DOC_CANONICALS[@]}"; do

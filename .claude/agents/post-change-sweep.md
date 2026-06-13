@@ -86,6 +86,7 @@ Invoke simultaneously, each with only its relevant files:
 - `ui-reviewer` — if `templates` domain has changes: the changed template files only
 - `a11y-reviewer` — if `templates` domain has changes: the changed template files only
 - `infra-reviewer` — if `infrastructure` domain has changes: the changed infra files only
+- `ops-reviewer` — check for ops complexity first: does the diff introduce background jobs, external API calls, async tasks, queue consumers, or new failure paths? If yes AND `docs/ops/TELEMETRY-SPEC.md` exists: invoke `ops-reviewer`. If yes AND `docs/ops/TELEMETRY-SPEC.md` is absent: block and invoke `ops-designer` to produce the spec before review can proceed — do not silently skip. If no ops complexity: skip.
 
 Collect all Stage 2b results. Report any findings.
 
@@ -120,10 +121,11 @@ Domains affected: [list]
 ### Track 2 — Code Review
 code-reviewer:    [PASS | BLOCKED]
 security-reviewer: [PASS | N findings | SKIPPED]
-privacy-reviewer: [PASS | N findings | SKIPPED]
-ui-reviewer:      [PASS | N findings | SKIPPED]
-a11y-reviewer:    [PASS | N findings | SKIPPED]
-infra-reviewer:   [PASS | N findings | SKIPPED]
+privacy-reviewer:  [PASS | N findings | SKIPPED]
+ui-reviewer:       [PASS | N findings | SKIPPED]
+a11y-reviewer:     [PASS | N findings | SKIPPED]
+infra-reviewer:    [PASS | N findings | SKIPPED]
+ops-reviewer:      [PASS | N findings | SKIPPED — no TELEMETRY-SPEC.md]
 
 ### Track 3 — Tests
 [SKIPPED | PASS | coverage below target]

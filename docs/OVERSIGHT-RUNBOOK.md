@@ -27,10 +27,11 @@ bash scripts/oversight/run_validators.sh parking/admin.py 2>/dev/null \
 Run this once before the first build step begins. These agents produce the documents that every subsequent agent reads.
 
 ```
-1. pm-agent      → docs/pm/CONFIRMED-REQUIREMENTS.md
-2. ux-designer   → docs/design/UX-DESIGN-READINESS.md
-3. architect     → docs/architecture/ADR-001-pilot.md
-4. technical-design (iterated with architect) → docs/design/TECHNICAL-DESIGN.md
+1. pm-agent          → docs/pm/CONFIRMED-REQUIREMENTS.md
+2. ux-designer        → docs/design/UX-DESIGN-READINESS.md  (pm-agent validates)
+3. architect          → docs/architecture/ADR-001-pilot.md
+4. ops-designer*      → docs/ops/TELEMETRY-SPEC.md  (architect validates)  *if ops configured
+5. technical-design   → docs/design/TECHNICAL-DESIGN.md  (iterated with architect)
 ```
 
 **Invoke in order:**
@@ -44,6 +45,7 @@ Run this once before the first build step begins. These agents produce the docum
 # "Invoke ux-designer for initial design audit"
 # ux-designer reads the spec + confirmed requirements, fills all design pack gaps,
 # and writes UX-DESIGN-READINESS.md.
+# pm-agent validates the design pack faithfully represents product intent.
 # Answer any structural brand questions it surfaces before proceeding.
 
 # 3. Architect — technical architecture
@@ -51,9 +53,16 @@ Run this once before the first build step begins. These agents produce the docum
 # architect reads confirmed requirements + UX-DESIGN-READINESS.md,
 # asks any technical questions, and writes ADR-001-pilot.md
 
-# 4. Technical design — detailed spec
+# 4. Ops designer — telemetry spec (SKIP if project has no ops complexity)
+# "Invoke ops-designer to produce the telemetry spec"
+# ops-designer reads the spec + ADR, authors docs/ops/TELEMETRY-SPEC.md.
+# architect signs off on the spec before any build step begins.
+# Skip this step for CLI tools, libraries, or projects without background jobs,
+# external integrations, or multi-service architecture.
+
+# 5. Technical design — detailed spec
 # "Invoke technical-design to produce the technical design"
-# technical-design reads all three documents above, iterates with architect,
+# technical-design reads all documents above, iterates with architect,
 # and writes TECHNICAL-DESIGN.md
 ```
 
@@ -210,11 +219,17 @@ Invoke: privacy-reviewer   ← steps with PII: 3, 6, 9, 10, 11
 Invoke: ui-reviewer        ← step 10 (templates)
 Invoke: a11y-reviewer      ← step 10 (templates)
 Invoke: infra-reviewer     ← steps 1, 11 (infrastructure)
+Invoke: ops-reviewer       ← steps with background jobs, external integrations,
+                              or async work (if ops configured for this project)
 ```
 
 > **Note — `ux-designer` has two modes:**
 > - **Project start (proactive):** invoked after `pm-agent` completes Q&A, before `architect`. Audits the design pack against the full spec, fills all gaps, and writes `docs/design/UX-DESIGN-READINESS.md`. The architect and technical-design agent read this document before starting their own work.
 > - **During the build (reactive):** when `ui-reviewer` or `a11y-reviewer` finds a design pack gap (missing token, undocumented component, contrast failure), they invoke `ux-designer` rather than escalating to human. `ux-designer` extends the design pack and notifies both reviewers. This happens within the existing review iteration — it does not add a new pipeline phase.
+
+> **Note — `ops-designer` has two modes (optional — projects with background jobs, external integrations, or multi-service architecture):**
+> - **Project start (proactive):** invoked after `architect` completes the ADR. Authors `docs/ops/TELEMETRY-SPEC.md` — the observability contract covering logging conventions, metric naming, tracing requirements, health checks, and dashboard/alerting intent. `architect` signs off on the spec before any build step begins.
+> - **During the build (reactive):** when `ops-reviewer` finds a gap not covered by the spec, it escalates to `ops-designer` who fills the gap (additive: already-covered component only) or escalates to architect + human (structural: new component, new dependency, new instrumentation class). This happens within the existing review iteration — it does not add a new pipeline phase.
 
 **Unit tests (iterate with coder until 80%/75%):**
 ```
@@ -563,7 +578,7 @@ bash scripts/framework/run_framework_validation.sh --static-only
 | Domain changed | Agents invoked |
 |---|---|
 | `.claude/agents/`, `docs/AGENTS.md`, `scripts/framework/` | `framework-validator` |
-| `*.py` app code (application-code) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
+| `*.py` app code (application-code) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer`, `ops-reviewer`* |
 | `**/migrations/*.py` (migrations) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
 | `templates/*.html` (templates) | `ui-reviewer`, `a11y-reviewer` (after `code-reviewer` approves) |
 | `docker-compose.yml`, `Caddyfile` (infrastructure) | `infra-reviewer` |
@@ -572,7 +587,11 @@ bash scripts/framework/run_framework_validation.sh --static-only
 | `Specs/*.md` (spec) | `pm-agent` |
 | `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` (admin-audit) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
 
+*\* `ops-reviewer` runs when the change introduces background jobs, external API calls, async tasks, or new failure paths AND `docs/ops/TELEMETRY-SPEC.md` exists. If spec is absent but ops complexity is present, `ops-designer` is invoked first.*
+
 > **Note on `ux-designer`:** Has two modes. **At project start** it is invoked proactively (after `pm-agent`, before `architect`) to audit the design pack against the full spec and write `docs/design/UX-DESIGN-READINESS.md` — see the Project Start Sequence above. **During the per-step pipeline** it is reactive: when `ui-reviewer` or `a11y-reviewer` finds a design pack gap, they invoke `ux-designer` rather than escalating to human. `ux-designer` extends the design pack and notifies both reviewers within the existing review iteration, without adding a new phase.
+
+> **Note on `ops-designer` / `ops-reviewer`:** Optional pair for projects with ops complexity. **At project start** `ops-designer` produces `docs/ops/TELEMETRY-SPEC.md` after `architect` completes the ADR; `architect` signs off. **During the per-step pipeline** `ops-reviewer` enforces the spec; gaps escalate to `ops-designer` (additive changes) or `architect` + human (structural changes). N/A for projects without background jobs, external integrations, or multi-service architecture.
 
 ---
 
