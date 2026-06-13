@@ -220,15 +220,33 @@ Several patterns have emerged across the empirical work:
 
 **[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation — a real parking management app for condo communities, built to exercise HOS against genuine complexity (multi-tenant auth, booking logic, admin portals) while delivering something useful to an actual user community. It is the canonical example of what a HOS-governed project looks like end-to-end.
 
-HOS installs into any project repository. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough. Quick start:
+HOS installs into any project repository **from a validated release** — never from an arbitrary working copy. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough.
+
+**Get the bootstrap scripts** (one small folder; everything else is fetched from the release):
 
 ```bash
-bash scripts/framework/install.sh \
-  --source /path/to/HumanOversightSystem \
-  --target /path/to/your-project
+# Pull the latest release's bootstrap scripts to a fresh machine:
+mkdir -p hos-bootstrap && cd hos-bootstrap
+for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do
+  curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/$f
+done && chmod +x *.sh
+# (optional) verify what you downloaded:
+curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 ```
 
-The install script creates required directories, copies all agent files, and walks you through project-specific configuration. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+**Two steps** — machine once, then per project:
+
+```bash
+./hos_bootstrap.sh                          # once per machine: Python/ScanCode/gh/pip + agent CLIs
+./hos_install.sh /path/to/your-project      # installs the LATEST release into the project
+#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-project
+#   dev install:    ./hos_install.sh --local        /path/to/your-project   (unvalidated)
+```
+
+`hos_install.sh` fetches the validated release, scaffolds the agents/scripts/contract into the target, records the installed tag at the target's `.hos-release`, and never needs sudo (it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing). If you have the repo cloned, you can run the same scripts from `bootstrap/`. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+
+> Releases are cut with `scripts/framework/cut_release.sh`, which gates on the full validation suite before tagging and publishing the bootstrap assets.
 
 **Contributing back.** If your project surfaces a framework gap — a missing feedback path, an agent behavior that doesn't hold for your stack, a contract requirement that conflicts with real usage — open an issue or PR here. Consumer projects are the empirical test of the framework; findings from real deployments improve the contract for everyone.
 
