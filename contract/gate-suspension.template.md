@@ -36,7 +36,21 @@ Reason: [Why enforcement is suspended — e.g., "Brownfield onboarding: applying
 <!-- One line per suspended gate/reviewer. Remove a line to re-enable that gate. -->
 <!-- Gate names match the role keys in contract/step-manifest.yaml role_mappings. -->
 <!-- Script gate names: lint, secrets, security, types, template-refs, portability, django -->
-<!-- Sign-off role names: code-review, security, privacy, ui, a11y, infra, ops, test-unit, test-system, process -->
+<!-- Sign-off role names: code-review, security, privacy, ui, a11y, infra, ops, reliability, test-unit, test-system, process -->
+<!--
+  Optional per-line flags:
+    SUSPENDED: lint review-by: 2026-07-01   ← validator warns once this date passes
+    SUSPENDED: types [pinned]               ← never auto-removed; remove manually
+
+  AUTO-REMOVAL (scripts/oversight/suspension_manager.py):
+    Pure SCRIPT gates (lint, secrets, types, template-refs, portability, django)
+    that pass SUSPENSION_AUTO_REMOVE_RUNS consecutive checks are auto-removed
+    (config SUSPENSION_AUTO_REMOVE=true, default) — re-enabling is the safe
+    direction (the RATCHET: automation may tighten, never loosen). Reviewer-role
+    suspensions and `security` (which has a reviewer counterpart) are NEVER
+    auto-removed — they can only be removed by a human. The manager has no code
+    path that adds a SUSPENDED line.
+-->
 
 <!-- Example — remove the comment markers and adjust to your situation:
 SUSPENDED: lint
