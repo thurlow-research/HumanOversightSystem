@@ -82,9 +82,17 @@ fi
 if ! $SKIP_SELF && [[ -f "$SCRIPT_DIR/validate_self.sh" ]]; then
     echo "Phase 1.5 — Opus self-review (pre-external)"
     echo ""
-    if ! bash "$SCRIPT_DIR/validate_self.sh" $CHANGED_ONLY; then
+    self_rc=0
+    bash "$SCRIPT_DIR/validate_self.sh" $CHANGED_ONLY || self_rc=$?
+    if [[ "$self_rc" -eq 3 ]]; then
         echo ""
-        echo "  Opus self-review found blocking issues — fix before the external pass."
+        echo "  Self-review hit the pass cap without converging — a HUMAN must"
+        echo "  decide (fix / accept / file) before the external pass. Not auto-retried."
+        exit 3
+    elif [[ "$self_rc" -ne 0 ]]; then
+        echo ""
+        echo "  Opus self-review found NEW blocking issues — triage them (fix-in-place"
+        echo "  or file an issue), record dispositions, and re-run until converged."
         echo "  (Use --skip-self to bypass, e.g. when claude CLI is unavailable.)"
         exit 1
     fi

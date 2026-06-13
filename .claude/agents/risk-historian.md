@@ -16,12 +16,20 @@ You are a historical data retriever. You query the project's issue history and g
 
 **GitHub issues touching these files:**
 ```bash
-# Query each risk label; paginate past 100 to avoid missed history
+# Query each risk label; paginate past 100 to avoid missed history.
+# EXCLUDE `duplicate` — a re-filed finding is the same risk counted twice and
+# would inflate density (poison the risk score). The self/external review dedup
+# ledger prevents most re-files at creation; the `duplicate` label + this
+# exclusion catch any that slip through (including ones filed by hand).
 for label in bug security-finding privacy-finding design-concern spec-gap test-resistance escaped-defect second-review-finding red-team-finding; do
   gh issue list --label "$label" --state all --limit 500 \
-    --json number,title,labels,body,url 2>/dev/null
+    --json number,title,labels,body,url 2>/dev/null \
+    | jq '[.[] | select((.labels // []) | map(.name) | index("duplicate") | not)]'
 done
 ```
+
+Apply the same `duplicate` filter to the comment search below — a duplicate
+issue mentioning a changed filename must not re-contribute to that file's count.
 
 Cross-reference: does the issue body or comments mention any of the changed filenames? Also search issue comments for filename mentions:
 ```bash
@@ -51,7 +59,7 @@ git log --follow --oneline --grep="fix\|bug\|error\|patch" --since=180.days -- {
 ## Historical Risk Profile
 
 ### {filename}
-Issue counts by label: [raw counts — no risk classification; risk-assessor applies that]
+Issue counts by label: [raw counts, `duplicate`-labeled excluded — no risk classification; risk-assessor applies that]
   bug: N  security-finding: N  design-concern: N  spec-gap: N
   escaped-defect: N  red-team-finding: N
 Commits (90 days): N  [--follow applied]
