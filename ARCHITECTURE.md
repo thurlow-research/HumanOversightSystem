@@ -60,7 +60,12 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 | **prompt-fidelity** | Sonnet | Subagent of risk-assessor at MEDIUM+ when a prompt artifact exists. Semantic comparison of prompt/design-doc to generated code: identifies unexplained additions, missing specifications, loose interpretations. Returns structured fidelity score. |
 | **spec-red-team** | Sonnet | Runs before coding begins on each build step. Uses agy adversarially to find gaming vectors, contradictions, and implicit assumptions in the spec before implementation. Creates `spec-gap` issues. |
 | **oversight-evaluator** | Sonnet | Runs after all internal reviewers have approved and system tests pass. Phase 1: compliance — sign-off register has all required entries with required fields (Status/Agent/Artifact/Iterations), prompt artifacts present on MEDIUM+ commits, human authorization file for CRITICAL steps. Phase 2: quality — convergence failures, resolved critical findings, confidence gaps. Produces: PROCEED / CONDITIONAL\_PROCEED / ESCALATE. |
-| **oversight-orchestrator** | Sonnet | Acts on evaluator's recommendation. Writes two separate files: `step{N}-panel-context.md` (structural risk signals only — no internal findings) for the panel, and `step{N}-handoff.md` (full picture) for the human/PR. ESCALATE → surfaces specific questions, PR does not open. |
+| **oversight-orchestrator** | Sonnet | Acts on evaluator's recommendation. Writes two separate files: `step{N}-panel-context.md` (structural risk signals only — no internal findings) for the panel, and `step{N}-handoff.md` (full picture) for the human/PR. ESCALATE → surfaces specific questions, PR does not open. All AI-submitted PRs include `[AI: oversight-orchestrator]` title prefix and a 🤖 attribution block. |
+| **framework-validator** | Sonnet | Runs the full 4-phase validation suite before any framework file is committed. Delegates fixes to domain owners; escalates to human for broken escalation chains. Loop exit: 3 cycles max. |
+| **framework-setup-validator** | Sonnet | Verifies a framework installation is complete — all 26 agent files present, scripts executable, config populated. Invoked after `install.sh` in a new project. |
+| **doc-validator** | Sonnet | Catches the omission class of documentation bug (agent file says X and Y, doc says only X). Reads `doc-patterns.md` and `decisions.md` for prior-session context. Loop exit: 3 cycles max. |
+| **spec-compliance-validator** | Sonnet | Verifies the pipeline implementation satisfies its governance spec (METHODOLOGY.md, AGENTS.md): cross-vendor independence, risk tiers, human gates, model assignments, loop exits. Checks `decisions.md` verification criteria. |
+| **post-change-sweep** | Sonnet | After any change: reads git diff, categorizes files by domain (framework/code/templates/infra/design/spec), drives all relevant agents in dependency order across parallel tracks. |
 
 ### Base Project Agents
 *Defined in the target project (e.g. CondoParkShare). They implement the HOS contract — the oversight agents consume their outputs without knowing their names.*
@@ -69,13 +74,18 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 |---|---|---|
 | **pm-agent** | Spec clarifications, test plan sign-offs | `spec-gap` issues on escalation; sign-off register entry |
 | **architect** | ADR, design critiques | `design-concern` issues on 5-round loops; sign-off register entry |
+| **ux-designer** | Design pack authority — tokens, components, copy rules, feedback states. Proactive project-start audit + reactive gap-filling. 4th authority tier (peer to architect and pm-agent within design domain). | `docs/design/UX-DESIGN-READINESS.md` at project start; design pack updates; notifies a11y-reviewer and ui-reviewer after additive changes |
 | **technical-design** | Implementation contract (TECHNICAL-DESIGN.md) | Sign-off register entry on approval |
-| **coder** | Application code + self-flags | RISK / CONFIDENCE / BLAST RADIUS in output; git trailers |
+| **coder** | Application code + self-flags | RISK / CONFIDENCE / BLAST RADIUS / VERIFY in output; git trailers |
 | **code-reviewer** | Correctness, idioms, design adherence | Sign-off register entry; iterates with coder |
 | **security-reviewer** | Security vulnerabilities (OWASP, threat-model) | `security-finding` issues for crit/high; sign-off register entry |
 | **privacy-reviewer** | GDPR compliance, PII handling | `privacy-finding` issues for blocking findings; sign-off register entry |
+| **ui-reviewer** | Design pack conformance — tokens, components, copy, voice/tone | Sign-off register entry; escalates gaps to ux-designer |
+| **a11y-reviewer** | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
+| **infra-reviewer** | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
 | **unit-test** | 80% coverage + 75% mutant score | `test-resistance` issues on loop exhaustion; test declaration in register |
 | **system-test** | Spec flow conformance | `bug` issues for persistent failures; sign-off register entry |
+| **deploy-verify** | Production smoke tests — TLS, DNS, services, browser | Escalates to infra-reviewer (infra) or coder (functional) |
 
 ### External Reviewers
 *Run via CLI, never see internal reviewer findings — independence is the value.*

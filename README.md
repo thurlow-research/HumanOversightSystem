@@ -62,6 +62,17 @@ Independent reviewers cover orthogonal risk axes. Cross-vendor decorrelation (Cl
 
 An arbiter synthesizes findings into a structured verdict posted as PR review threads. Threads block merge until resolved — each finding requires a human decision, not just acknowledgment.
 
+**Agent authority tiers** — four domains of delegated authority, each with a defined escalation ceiling:
+
+| Tier | Agent | Decides | Escalates to |
+|---|---|---|---|
+| Human | — | Product vision, policy, unresolvable disputes | — |
+| Architect | `architect` | All technical/architectural decisions | Human |
+| PM | `pm-agent` | All product/requirements decisions | Human |
+| UX Designer | `ux-designer` | All design system decisions — tokens, components, copy, feedback states | Human (structural brand changes only) |
+
+`ux-designer` runs proactively at project start (audits the design pack against the full spec) and reactively during the build (fills gaps for coder, ui-reviewer, a11y-reviewer without requiring human escalation for additive changes).
+
 ### Layer 3 — Risk-Stratified Human Gates
 
 Human attention is allocated by risk tier, not uniformly:
