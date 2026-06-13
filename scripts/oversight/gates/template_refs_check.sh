@@ -44,7 +44,8 @@ fi
 
 if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
     while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
-        -not -path "./.venv/*" -not -path "./.git/*" -not -path "./node_modules/*")
+        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
+        -not -path "./.git/*" -not -path "./node_modules/*")
 fi
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
