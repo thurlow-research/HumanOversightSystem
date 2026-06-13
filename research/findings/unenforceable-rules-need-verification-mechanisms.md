@@ -82,6 +82,28 @@ Rules that cannot be expressed in this form may need to be redesigned or reconsi
 
 ---
 
+## Second instance: AI disclosure requirement (2026-06-12)
+
+A second clear instance of this pattern was observed when CondoParkShare's Claude submitted PRs without the required AI disclosure statement (`[AI: agent-name]` title prefix + `## 🤖 AI-Submitted Pull Request` block). The rule existed in `oversight-orchestrator.md` but was:
+- Invisible to other PR-creation paths (Claude Code sessions, coder agent, direct `gh pr create` calls)
+- Not mechanically checked — no gate, no template field, no artifact to verify
+
+The agent did not maliciously skip the disclosure; it simply did not encounter the rule at the moment it was opening a PR. This is the same failure mode as the risk-tier rule: the rule existed in prose but had no observable check.
+
+**Fix:** Three-layer enforcement — the requirement was added to the PR template (visible to any agent using `gh pr create`), to `docs/AGENTS.md` as a universal rule, and as a non-negotiable constraint in `oversight-orchestrator.md`. The template is the mechanism: it surfaces the requirement at the point of action.
+
+**Updated examples table:**
+
+| Rule | Artifact | Path | Default behavior |
+|---|---|---|---|
+| Human concurrence to lower risk tier | `human-tier-override.md` | `.claudetmp/oversight/step{N}-human-tier-override.md` | Do not lower tier |
+| Human authorization for CRITICAL step | `human-authorization.md` | `.claudetmp/oversight/step{N}-human-authorization.md` | Block PR from opening |
+| AI disclosure on PR submission | PR template + docs/AGENTS.md universal rule | `.github/PULL_REQUEST_TEMPLATE.md` | Rule visible at PR creation point |
+
+The third row is a weaker enforcement mechanism than the first two — the template can be bypassed if an agent constructs a PR body without using it. The stronger form would be a CI check that verifies the disclosure is present. This is tracked as an open improvement.
+
+---
+
 ## Related findings
 
 - `self-governance-recursion.md` — context in which this finding was discovered
