@@ -156,6 +156,8 @@ ${DECISIONS_CONTENT}
 
 5. ROLE BOUNDARY DRIFT: A doc says an agent can/cannot do something that contradicts the agent file (e.g. doc says 'escalates to human' for a decision that the agent file routes to another agent).
 
+6. MISSING DOC UPDATES: An agent file defines new behavior (new mode, new escalation path, new constraint) that is not reflected anywhere in the documentation files. This is the most common failure mode when agent files are updated without corresponding doc updates. Look specifically for: new sections in agent files that have no counterpart in AGENTS.md or OVERSIGHT-RUNBOOK.md.
+
 ## How to report findings
 
 Be specific: name the exact file, the approximate line content (not line number — quote the phrase), and what the agent file says that contradicts or completes it.
@@ -170,7 +172,7 @@ Return JSON only:
   \"findings\": [
     {
       \"severity\": \"blocking|warning\",
-      \"type\": \"mode-omission|pipeline-omission|stale|description-incomplete|role-boundary\",
+      \"type\": \"mode-omission|pipeline-omission|stale|description-incomplete|role-boundary|missing-doc-update\",
       \"doc_file\": \"docs/file.md\",
       \"doc_quote\": \"exact phrase from the doc that is incomplete or wrong\",
       \"agent\": \"agent-name\",
