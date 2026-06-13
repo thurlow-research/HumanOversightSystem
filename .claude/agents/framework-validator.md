@@ -68,7 +68,7 @@ For each finding, classify then act:
 
 | Finding type | Action |
 |---|---|
-| Real blocking / critical | Fix within your authority OR delegate to the right agent. Rerun the phase that found it. Commit the fix. |
+| Real blocking / critical | Fix within your authority (you own `.claude/agents/` paths and escalation targets). For doc findings: you cannot invoke doc-validator directly — instead, report the specific doc file, missing content, and source agent file, then flag for human or a subsequent doc-validator invocation. Rerun the phase after fixes. Commit the fix. |
 | Tooling failure (CLI error, timeout) | Fix the script; rerun. If you cannot fix the script, escalate to human immediately — do not skip. |
 | False positive (HOS context, inherent design tension) | Document the reason it is a false positive. Do not dismiss silently — write one sentence explaining why. |
 | Warning (non-blocking) | Flag to human with one sentence. Do not block the commit. |

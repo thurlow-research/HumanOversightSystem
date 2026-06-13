@@ -203,6 +203,8 @@ All must exit 0 before proceeding. Fix any failures before the review chain.
 
 ### PHASE 2 — Risk Assessment
 
+> **For MEDIUM+ steps: capture the prompt artifact BEFORE running this phase.** risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact does not exist at assessment time, the fidelity check is silently skipped. Run `bash scripts/capture_prompt.sh` and commit with the trailer first, then proceed with Phase 2. (Phase 5 below is a record-keeping step for this artifact, not the trigger.)
+
 Run after gates pass. Scores the code across 9 dimensions and produces an inspection brief for reviewers.
 
 ```bash
@@ -334,9 +336,7 @@ Persistent failures after 5 rounds → `bug` GitHub issue filed → escalate to 
 
 ### PHASE 5 — Prompt Artifact Capture (MEDIUM+ steps)
 
-**Ordering note:** Prompt artifact capture must happen BEFORE risk assessment (PHASE 2), not after. risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact does not exist at assessment time, the fidelity check cannot run and is silently degraded. For MEDIUM+ steps: capture the prompt artifact, commit it with the `Prompt-Artifact:` trailer, then run PHASE 2.
-
-For steps where risk tier is MEDIUM or above, capture the prompt artifact before committing.
+For steps where risk tier is MEDIUM or above, capture the prompt artifact. If you haven't already done so before Phase 2 (see note at Phase 2), do it now and amend the commit with the `Prompt-Artifact:` trailer.
 
 ```bash
 # Capture prompt artifact (mirrors src/ structure into prompts/)

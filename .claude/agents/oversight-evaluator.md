@@ -42,6 +42,8 @@ Read `contract/gate-suspension.md` if it exists. For each required role in `requ
 - Note it in your evaluation output: "Role {role} suspended per contract/gate-suspension.md — authorized by {name}"
 - Do NOT count suspended roles against compliance
 
+**Exception — CRITICAL steps:** Gate suspension may NOT waive roles for steps with `human_gate_required: true`. The human authorization gate on CRITICAL steps cannot be suspended. If a CRITICAL step has a required role listed as suspended, treat it as NOT suspended and require the sign-off anyway. Log a warning: "Suspension of {role} ignored on CRITICAL step — human_gate_required overrides suspension."
+
 If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
 
 For each required role that is NOT suspended, check:
