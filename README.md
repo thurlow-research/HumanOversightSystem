@@ -44,12 +44,13 @@ Every non-trivial AI code generation must produce:
 - **Confidence declaration**: percentage + explicit basis for uncertainty
 - **Hallucination surface warnings**: flagged for any version-sensitive API, undocumented behavior, or library assumption
 - **Blast radius assessment**: for destructive operations — what breaks, and how to undo it
+- **Working-state verification**: after every incremental change, run lint + type-check + unit tests before the next prompt. Never accumulate unverified changes.
 
-This is not optional commentary. It is a structured output contract.
+This is not optional commentary. It is a structured output contract. See [`AGENTS.md`](AGENTS.md) for the full protocol.
 
 ### Layer 2 — Multi-Agent Review Panel
 
-Independent reviewers cover orthogonal risk axes. Cross-vendor decorrelation (e.g., Claude as author, different model families as reviewers) reduces correlated failure modes. Each reviewer holds a specific lens:
+Independent reviewers cover orthogonal risk axes. Cross-vendor decorrelation (Claude as author, agy/Gemini and codex/OpenAI as reviewers) reduces correlated failure modes. Each reviewer holds a specific lens:
 
 | Lens | Concern |
 |---|---|
@@ -94,10 +95,26 @@ This makes the full AI contribution queryable (`git log --grep="Prompt-Artifact:
 
 ## Pipeline
 
+The pipeline has two tiers with different cadences:
+
+### Inner Development Loop (repeats per incremental change)
+
 ```
-PROMPT → AUTHOR + SELF-FLAG → CAPTURE PROMPT ARTIFACT → COMMIT (with trailers)
+PROMPT → AUTHOR + SELF-FLAG → VERIFY LOCALLY (lint · types · unit tests)
+    └──── fix failures in same response ────────────────────────────────┘
+    └──── only proceed to next prompt on a clean working tree ──────────┘
+```
+
+Never prompt for the next incremental change on a broken working tree. Each prompt builds on the output of the last; unverified failures compound into a "house of cards" that is expensive to unwind.
+
+### Outer Merge Pipeline (once per logical change set)
+
+```
+COMMIT (with Prompt-Artifact / AI-Model / AI-Risk trailers)
   ↓
-PR (protected branch: code owner review required)
+PR (protected branch: validation stamp required + code owner review)
+  ↓
+VALIDATION STAMP CHECK (CI — verifies local validation was run before push)
   ↓
 CHEAP GATES (lint, types, build, tests, secret scan)
   ↓
@@ -105,7 +122,7 @@ RISK TRIAGE
   ↓
 EXPENSIVE GATES (gated by risk tier: e2e, coverage, mutation testing)
   ↓
-AI REVIEW PANEL (cross-vendor, role-based lenses)
+AI REVIEW PANEL (cross-vendor: agy + codex, role-based lenses)
   ↓
 ARBITER SYNTHESIS → PR threads
   ↓
@@ -114,7 +131,25 @@ HUMAN GATE (mandatory at HIGH / CRITICAL; threads block merge)
 MERGE → ARCHIVE
 ```
 
-The pipeline is designed *cheap-first*: inexpensive automated gates run before expensive panel reviews. Human attention is the most expensive resource and runs last.
+---
+
+## Framework Validation Suite
+
+The framework validates its own agent definitions, documentation, and governance compliance before any commit. Four phases, run locally:
+
+| Phase | Script | What it checks |
+|---|---|---|
+| 1 — Static | `check_agents_static.sh` | Agent file existence, path references, escalation targets — no AI, fast, CI-safe |
+| 2 — Agents | `validate_agents.sh` | agy: consistency + completeness; codex: adversarial gaps |
+| 3 — Docs | `validate_docs.sh` | Documentation coverage — omissions where agent file says X and Y but docs say only X |
+| 4 — Spec Compliance | `validate_spec_compliance.sh` | Governance requirements vs. implementation: cross-vendor independence, risk tiers, human gates, model assignments |
+
+Run all phases before committing:
+```bash
+bash scripts/framework/run_framework_validation.sh
+```
+
+Each successful run writes a timestamp to `scripts/framework/validation-stamps/`. The PR pipeline checks that the stamp is newer than all changed files — enforcing that validation ran locally without re-running AI models in CI.
 
 ---
 
@@ -132,6 +167,37 @@ Several patterns have emerged across the empirical work:
 
 **Confidence Declarations as Calibration Signals** — Explicit uncertainty from the AI is an input to the human reviewer's prior. A fluent, confident output and a hedged output carry different review weights.
 
+**Decisions as Artifacts** — Design decisions made in chat sessions are recorded in `scripts/framework/decisions.md` with verification criteria. Without this, decisions exist only in the session transcript and are invisible to future validation runs.
+
+---
+
+## Applying to a Project
+
+HOS installs into any project repository. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough. Quick start:
+
+```bash
+bash scripts/framework/install.sh \
+  --source /path/to/HumanOversightSystem \
+  --target /path/to/your-project
+```
+
+The install script creates required directories, copies all agent files, and walks you through project-specific configuration. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+
+---
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| **[METHODOLOGY.md](METHODOLOGY.md)** | Full methodology — theoretical basis, two-layer model, pipeline, risk model, tooling inventory |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | Agent roster, pipeline diagrams, feedback loops, sign-off accountability map |
+| **[AGENTS.md](AGENTS.md)** | Self-flagging protocol — the 5 mandatory behaviors every authoring agent must produce |
+| **[docs/AGENTS.md](docs/AGENTS.md)** | Full pipeline agent documentation — all roles, models, escalation paths |
+| **[docs/OVERSIGHT-RUNBOOK.md](docs/OVERSIGHT-RUNBOOK.md)** | Operational runbook — step-by-step commands for running the pipeline on each build step |
+| **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — applying HOS to a new project |
+| **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)** | Customization guide — adapting agents to a different stack or project |
+| **[research/](research/)** | Session logs and findings — the empirical record of what was built, what failed, and what was learned |
+
 ---
 
 ## Research Context
@@ -139,6 +205,13 @@ Several patterns have emerged across the empirical work:
 This framework is the subject of doctoral research examining how human oversight of AI-generated code can be made both rigorous and scalable. The empirical substrate is real software built under the framework — not a controlled lab setting.
 
 The research draws on a systematic literature review of ~1,000 papers on AI code governance, multi-agent systems, and software quality assurance.
+
+Current research findings are documented in [`research/findings/`](research/findings/), including:
+- Self-governance recursion (a governance system must govern itself)
+- Omission-class documentation bugs (structurally invisible to contradiction checkers)
+- Working-state invariant (inner-loop verification as a necessary property of incremental AI development)
+- Tooling drift in validation pipelines (CLI API changes can silently disable validation)
+- Stamp-based CI enforcement (committed artifacts as a bridge for local-only validation tools)
 
 **Dissertation committee includes:**
 - Paul J. Thomas (Purdue) — IT systems, project management, cybersecurity
@@ -149,27 +222,19 @@ The research draws on a systematic literature review of ~1,000 papers on AI code
 
 ---
 
-## Architecture
-
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full agent roster, pipeline diagrams, feedback loops, and sign-off accountability map. It covers:
-
-- The two-layer protection model (self-flagging + independent cross-vendor review)
-- All 6 oversight agents with roles and models
-- Full pipeline flowchart across all 5 phases with per-phase sequence diagrams
-- The feedback loops diagram: how issues feed back into risk scoring over time
-- Risk stratification showing which external reviewers fire at which composite scores
-
----
-
 ## Status
 
-This system is under active development. Current state is honest:
-
-- Self-flagging layer: implemented and in use
-- Multi-agent panel: prototype (run on a small number of PRs)
-- IP / provenance agent: stub
-- Statistical spot-check sampling: designed, not yet automated
-- Cheap/expensive gate pipeline: partially implemented
+| Component | Status |
+|---|---|
+| Self-flagging layer (Layer 1) | ✅ Implemented and in active use |
+| Inner development loop (working-state invariant) | ✅ Implemented in agent protocol |
+| Framework validation suite (4 phases) | ✅ Implemented — static + agy + codex + spec compliance |
+| Validation stamp CI enforcement | ✅ Implemented — GitHub Actions, git commit timestamps |
+| Cross-vendor review panel (agy + codex) | ✅ Operational — run on multiple PRs |
+| Prompt artifacts and provenance | ✅ Implemented |
+| IP / provenance agent (prompt-fidelity) | 🔧 Stub — semantic comparison not yet fully implemented |
+| Statistical spot-check sampling | 🔧 Designed, sampling not yet automated |
+| Expensive gate pipeline (e2e, coverage, mutation) | 🔧 Per-project; gates exist, automation varies |
 
 Contributions, critique, and collaboration welcome.
 
@@ -180,4 +245,3 @@ Contributions, critique, and collaboration welcome.
 MIT License — see [LICENSE](LICENSE). Copyright Scott Thurlow 2026.
 
 Attribution is required for distributions. The research framing and framework design are Scott Thurlow's original work; collaboration and derivative builds are encouraged.
-
