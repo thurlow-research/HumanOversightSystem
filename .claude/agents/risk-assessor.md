@@ -98,7 +98,10 @@ For steps at MEDIUM or above where prompt artifacts exist, invoke:
 
 For steps at HIGH or CRITICAL, also invoke:
 
-2. **dep-mapper** subagent — blast radius and fan-in for changed files
+2. **dep-mapper** subagent — blast radius and fan-in for changed files.
+   **Check its `Data confidence` field.** If `LOW` (the generic dep-mapper detected framework wiring it could not trace):
+   - If `SUSPENDED: dep-mapper` is in `contract/gate-suspension.md` → treat the blast-radius report as limited-coverage: note in the inspection brief "blast-radius analysis used generic patterns (dep-mapper suspended) — reviewer should manually assess framework-wiring impact." Do not block.
+   - If NOT suspended → this is a **blocking finding**: the blast-radius input is known unreliable at HIGH+. Escalate to human: either install a stack-specific dep-mapper override, or suspend dep-mapper to proceed with acknowledged limited coverage. Do not silently use the incomplete report.
 3. **risk-historian** subagent — historical bug density and git churn
 
 At CRITICAL, also read:

@@ -79,6 +79,20 @@ For each changed file, categorise its impact:
 
 ---
 
+## Step 3.5 — Self-detect coverage gaps (generic version only)
+
+The generic dep-mapper uses plain grep and cannot trace framework-specific implicit wiring (signal receivers, URL routing, template references, middleware chains). A blast-radius report that *looks* authoritative but silently missed framework wiring is worse than no report — it leads risk-assessor to under-estimate blast radius. So this version must detect when it is likely operating outside its reliable range and say so.
+
+Grep the changed files for framework-wiring patterns:
+```bash
+grep -lE '@receiver|\.connect\(|template_name|get_template|render\(|urlpatterns|MIDDLEWARE|hx-(get|post|target|swap)|@app\.(route|task)|signals?\.' {changed files}
+```
+For any pattern found, check whether the corresponding connection appears in your traced blast radius (the receivers, the URL→view mapping, the template→view link). If a framework-wiring pattern is present in the changed files but **not** traced into the blast radius, the analysis is incomplete.
+
+Set the report's `Data confidence`:
+- **HIGH** — no framework-wiring patterns in the changed files (plain imports only), or all detected wiring was traced.
+- **LOW** — framework-wiring patterns detected but not traced. State which patterns and why.
+
 ## Output
 
 Produce a structured report for the risk-assessor to consume:
@@ -86,6 +100,8 @@ Produce a structured report for the risk-assessor to consume:
 ```
 ## Blast Radius Report
 Stack: [language / framework]
+Data confidence: HIGH | LOW
+  (LOW → which framework-wiring patterns were detected but not traced)
 
 ### {filename}
 Fan-in count: N
@@ -102,6 +118,12 @@ Risk amplification:
 ```
 
 Report only what is DIFFERENT from zero. An empty dependency graph ("this file has no dependents — blast radius is contained") is a valid, useful, and common result.
+
+## How risk-assessor treats LOW confidence
+
+`Data confidence: LOW` from the generic dep-mapper at HIGH+ is a **blocking finding** — the blast-radius input to the risk assessment is known to be unreliable, and a known-bad state requires human involvement (`research/findings/explicit-na-audit-entries.md`, self-detecting-incompleteness section). The human resolves it one of two ways:
+1. **Proper fix:** install a stack-specific dep-mapper override (Step "Stack-specific override") that traces the framework wiring → confidence returns to HIGH.
+2. **Acknowledged gap:** suspend it via `SUSPENDED: dep-mapper` in `contract/gate-suspension.md`. While suspended, risk-assessor treats the LOW-confidence report as limited-coverage (noted in the inspection brief, not blocking) — same NYI handling as a missing prompt-fidelity check. The suspension is human-authorized and auditable (`gate-suspended` event), and follows the ratchet: only a human may suspend.
 
 ---
 
