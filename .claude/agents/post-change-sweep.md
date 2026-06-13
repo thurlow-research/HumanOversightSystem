@@ -88,9 +88,10 @@ Invoke simultaneously, each with a context bundle — not just changed files:
 - `privacy-reviewer` — if any changed files touch: `accounts`, PII fields, erasure logic, or data retention paths. Context bundle: same as security-reviewer plus any serializers touching user data.
 - `ui-reviewer` — if `templates` domain has changes: the changed template files only
 - `a11y-reviewer` — if `templates` domain has changes: the changed template files only
-- `infra-reviewer` — if `infrastructure` domain has changes: the changed infra files only
 - `ops-reviewer` — check for ops complexity first: does the diff introduce background jobs, external API calls, async tasks, queue consumers, or new failure paths? If yes AND `docs/ops/TELEMETRY-SPEC.md` exists: invoke `ops-reviewer`. If yes AND `docs/ops/TELEMETRY-SPEC.md` is absent: block and invoke `ops-designer` to produce the spec before review can proceed — do not silently skip. If no ops complexity: skip.
 - `reliability-reviewer` — if the diff introduces or modifies outbound connections (DB queries, HTTP calls, queue operations, cache reads/writes): invoke `reliability-reviewer`. Skip if no external connections in diff.
+
+(`infra-reviewer` is NOT in this stage — it reviews infra config, not the `.py` code, so it has no dependency on code-reviewer. See Track 6.)
 
 Collect all Stage 2b results. Report any findings.
 
@@ -112,6 +113,29 @@ If `design-pack` domain has changes:
 If `spec` domain has changes:
 - Invoke `pm-agent` to review whether the spec changes are classified correctly (clarifying/additive/structural) and whether other agents need notification.
 
+### Track 6: Infrastructure (independent)
+
+If `infrastructure` domain has changes:
+- Invoke `infra-reviewer` with the changed infra files. **This does NOT depend on code-reviewer** — infra config is reviewed independently of application code. An infra-only diff (e.g. only `docker-compose.yml` changed) runs infra-reviewer directly here; `code-reviewer` runs in Track 2 and returns N/A.
+
+## Step 3.5 — Write explicit N/A entries for skipped reviewers
+
+For every reviewer role that is **in the project's roster but had no applicable changes in this diff**, write an explicit N/A entry so the sign-off register tells a complete story (an absent entry is ambiguous between "N/A", "never invoked", and "missed" — see `research/findings/explicit-na-audit-entries.md`).
+
+For each skipped reviewer, append to `.claudetmp/signoffs/step{N}-register.md`:
+```
+## {role} | N/A | {ISO-8601 datetime}
+Status: N/A
+Agent: post-change-sweep (on behalf of {role})
+Artifact: —
+Reason: {why not applicable, e.g. "no template files in diff"}
+Iterations: 0
+```
+and emit a `gate-na` audit event per §6a of the contract:
+`{"event":"gate-na","gate":"{role}","step":N,"reason":"{reason}","determined_by":"post-change-sweep","timestamp":"..."}`
+
+**Exception — `code-reviewer` is never N/A'd by the orchestrator.** It is always invoked (Track 2) and produces its own entry — including `Status: N/A` with "no application code in diff" when an infra-only or docs-only change has nothing for it to review. The reviewer's own judgment that there is nothing to review is more trustworthy than the orchestrator asserting it.
+
 ## Step 4 — Report
 
 After all invoked agents complete, produce a structured summary:
@@ -125,14 +149,13 @@ Domains affected: [list]
 [SKIPPED | PASS | BLOCKED — N findings]
 
 ### Track 2 — Code Review
-code-reviewer:    [PASS | BLOCKED]
-security-reviewer: [PASS | N findings | SKIPPED]
-privacy-reviewer:  [PASS | N findings | SKIPPED]
-ui-reviewer:       [PASS | N findings | SKIPPED]
-a11y-reviewer:     [PASS | N findings | SKIPPED]
-infra-reviewer:    [PASS | N findings | SKIPPED]
-ops-reviewer:          [PASS | N findings | SKIPPED — no TELEMETRY-SPEC.md]
-reliability-reviewer:  [PASS | N findings | SKIPPED — no external connections]
+code-reviewer:         [PASS | BLOCKED | N/A — no application code]
+security-reviewer:     [PASS | N findings | N/A]
+privacy-reviewer:      [PASS | N findings | N/A]
+ui-reviewer:           [PASS | N findings | N/A]
+a11y-reviewer:         [PASS | N findings | N/A]
+ops-reviewer:          [PASS | N findings | N/A — no TELEMETRY-SPEC.md]
+reliability-reviewer:  [PASS | N findings | N/A — no external connections]
 
 ### Track 3 — Tests
 [SKIPPED | PASS | coverage below target]
@@ -142,6 +165,11 @@ reliability-reviewer:  [PASS | N findings | SKIPPED — no external connections]
 
 ### Track 5 — Spec
 [SKIPPED | PASS | requires human decision]
+
+### Track 6 — Infrastructure
+infra-reviewer:        [PASS | N findings | N/A — no infra files]
+
+(Skipped reviewers show N/A here and get an explicit N/A register entry + `gate-na` audit event per Step 3.5.)
 
 ### Sweep result: APPROVED (advisory) / BLOCKED
 [List of any blocking items with agent, file, and description]
