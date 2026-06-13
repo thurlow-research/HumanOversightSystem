@@ -160,9 +160,6 @@ fi
 
 # ── Tag + publish + assets ────────────────────────────────────────────────────
 hdr "4. Publish release + upload bootstrap assets"
-ASSETS=(bootstrap/hos_install.sh bootstrap/hos_bootstrap.sh bootstrap/setup_clis.sh)
-for a in "${ASSETS[@]}"; do [[ -f "$a" ]] || { err "asset missing: $a"; exit 2; }; done
-
 CLEANUP=()
 cleanup() { for f in "${CLEANUP[@]:-}"; do [[ -n "$f" && -e "$f" ]] && rm -rf "$f"; done; }
 trap cleanup EXIT
@@ -182,32 +179,52 @@ else
   NOTES_ARG=(--generate-notes)
 fi
 
-# SHA256SUMS over the assets (basenames), so consumers can verify what they curl.
+# Build the assets from the TAGGED COMMIT (HEAD), not the working tree — so the
+# published scripts always match the release source even under --allow-dirty, and
+# any files validation touched (e.g. stamps) don't leak into the assets.
+HEAD_SHA="$(git rev-parse HEAD)"
 sha256() { if command -v sha256sum &>/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
-SUMS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hos-sums.XXXXXX")"; CLEANUP+=("$SUMS_DIR")
-SUMS="$SUMS_DIR/SHA256SUMS"
-( cd "$REPO_ROOT/bootstrap" && sha256 hos_install.sh hos_bootstrap.sh setup_clis.sh ) > "$SUMS"
+ASSET_NAMES=(hos_install.sh hos_bootstrap.sh setup_clis.sh)
+ASSET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hos-assets.XXXXXX")"; CLEANUP+=("$ASSET_DIR")
+for n in "${ASSET_NAMES[@]}"; do
+  git show "$HEAD_SHA:bootstrap/$n" > "$ASSET_DIR/$n" 2>/dev/null \
+    || { err "asset bootstrap/$n is not in commit ${HEAD_SHA:0:8} — commit it before releasing"; exit 2; }
+done
+( cd "$ASSET_DIR" && sha256 "${ASSET_NAMES[@]}" ) > "$ASSET_DIR/SHA256SUMS"
+UPLOAD=(); for n in "${ASSET_NAMES[@]}" SHA256SUMS; do UPLOAD+=("$ASSET_DIR/$n"); done
 
 PRE_FLAG=(); $PRERELEASE && PRE_FLAG=(--prerelease)
 
 if $DRY_RUN; then
-  info "[dry] gh release create $VERSION ${PRE_FLAG[*]} ${NOTES_ARG[*]} --target $(git rev-parse HEAD)"
-  for a in "${ASSETS[@]}" "$SUMS"; do info "[dry]   asset: $(basename "$a")"; done
-  info "[dry] (gh creates+pushes the tag atomically — no separate git push that could dangle)"
+  info "[dry] gh release create $VERSION --draft ${PRE_FLAG[*]} ${NOTES_ARG[*]} --target ${HEAD_SHA:0:8}"
+  for n in "${ASSET_NAMES[@]}" SHA256SUMS; do info "[dry]   asset (from commit): $n"; done
+  info "[dry] verify assets present, then gh release edit --draft=false (atomic publish)"
 else
-  # gh creates the tag, the release, and uploads the assets in ONE call. No
-  # separate `git push <tag>` that could succeed and leave a dangling public tag
-  # if release creation later fails (the M3 fix).
-  if ! gh release create "$VERSION" \
-        --title "HOS $VERSION" \
-        "${PRE_FLAG[@]}" "${NOTES_ARG[@]}" \
-        --target "$(git rev-parse HEAD)" \
-        "${ASSETS[@]}" "$SUMS"; then
-    err "gh release create failed. No release published; no dangling tag left to clean up."
-    err "Fix the cause and re-run (the version is still available)."
+  # DRAFT first: gh creates the tag + a hidden draft release and uploads assets.
+  # A failed upload never leaves a half-published release — we clean it up and
+  # the version stays available for a clean re-run (fixes the false-atomicity).
+  if ! gh release create "$VERSION" --draft --title "HOS $VERSION" \
+        "${PRE_FLAG[@]}" "${NOTES_ARG[@]}" --target "$HEAD_SHA" "${UPLOAD[@]}"; then
+    gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
+    err "draft release create/upload failed — cleaned up draft + tag. Re-run."
     exit 1
   fi
-  ok "published GitHub release $VERSION with bootstrap assets + SHA256SUMS"
+  # Verify every expected asset actually uploaded before flipping to published.
+  got="$(gh release view "$VERSION" --json assets -q '.assets[].name' 2>/dev/null | tr '\n' ' ')"
+  for n in "${ASSET_NAMES[@]}" SHA256SUMS; do
+    case " $got " in
+      *" $n "*) : ;;
+      *) gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
+         err "asset '$n' missing after upload — cleaned up draft + tag. Re-run."; exit 1 ;;
+    esac
+  done
+  # Atomic-ish publish: all assets verified present, now make it visible.
+  if ! gh release edit "$VERSION" --draft=false; then
+    err "assets uploaded but publishing the draft failed. Finish manually:"
+    err "    gh release edit $VERSION --draft=false"
+    exit 1
+  fi
+  ok "published GitHub release $VERSION (assets from commit ${HEAD_SHA:0:8}) + SHA256SUMS"
 fi
 
 # ── Summary — the well-known URLs ─────────────────────────────────────────────

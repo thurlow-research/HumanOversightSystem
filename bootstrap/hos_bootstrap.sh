@@ -95,12 +95,20 @@ install_python() {
     if [[ "$major" -ge 3 && "$minor" -ge "$min_minor" ]]; then ok "python3 $ver"; return; fi
     warn "python3 $ver found but need 3.${min_minor}+ — upgrading"
   fi
+  # Guard: apt/dnf/yum/pacman need root/sudo. Under --no-sudo (or no sudo) and not
+  # root, skip the attempt with manual guidance rather than aborting under set -e.
+  if [[ "$PKG_MGR" != "brew" && "$PKG_MGR" != "none" && -z "$SUDO" && "$(id -u 2>/dev/null)" != "0" ]]; then
+    fail "Python 3.10+ missing and no root/sudo to install it (--no-sudo?). Install it manually, then re-run."
+    return
+  fi
+  # `|| true` so a failed system install doesn't abort the whole bootstrap — the
+  # presence check below records the real outcome.
   case "$OS-$PKG_MGR" in
-    macos-brew)   info "Installing Python 3.12 via brew...";  run "brew install python@3.12"; run "brew link --force python@3.12 2>/dev/null || true" ;;
-    linux-apt)    info "Installing Python 3 via apt...";      run "$SUDO apt-get update -qq"; run "$SUDO apt-get install -y python3 python3-pip python3-venv python3-dev" ;;
-    linux-dnf)    info "Installing Python 3 via dnf...";      run "$SUDO dnf install -y python3 python3-pip python3-devel" ;;
-    linux-yum)    info "Installing Python 3 via yum...";      run "$SUDO yum install -y python3 python3-pip" ;;
-    linux-pacman) info "Installing Python 3 via pacman...";   run "$SUDO pacman -Sy --noconfirm python python-pip" ;;
+    macos-brew)   info "Installing Python 3.12 via brew...";  run "brew install python@3.12 || true"; run "brew link --force python@3.12 2>/dev/null || true" ;;
+    linux-apt)    info "Installing Python 3 via apt...";      run "$SUDO apt-get update -qq || true"; run "$SUDO apt-get install -y python3 python3-pip python3-venv python3-dev || true" ;;
+    linux-dnf)    info "Installing Python 3 via dnf...";      run "$SUDO dnf install -y python3 python3-pip python3-devel || true" ;;
+    linux-yum)    info "Installing Python 3 via yum...";      run "$SUDO yum install -y python3 python3-pip || true" ;;
+    linux-pacman) info "Installing Python 3 via pacman...";   run "$SUDO pacman -Sy --noconfirm python python-pip || true" ;;
     macos-none)   fail "brew not found. Install Homebrew first: https://brew.sh, then re-run." ;;
     *)            fail "No supported package manager (brew/apt/dnf/yum/pacman). Install Python 3.10+ manually." ;;
   esac
@@ -182,11 +190,18 @@ else
     macos-brew) info "Installing gh via brew..."; run "brew install gh"; ok "gh installed" ;;
     linux-apt)
       info "Installing gh via apt..."
-      if ! $DRY_RUN; then
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | $SUDO tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-        $SUDO apt-get update -qq && $SUDO apt-get install -y gh && ok "gh installed"
-      else dry_run "Would install gh via apt"; fi ;;
+      if $DRY_RUN; then dry_run "Would install gh via apt"
+      elif ! command -v curl &>/dev/null; then
+        warn "curl required for the gh apt install — install gh manually: https://cli.github.com"
+      elif [[ -z "$SUDO" ]]; then
+        warn "gh apt install needs root/sudo (you have neither) — install gh manually: https://cli.github.com"
+      else
+        # Don't let any single step abort the whole bootstrap (set -e); verify gh at the end.
+        { curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null \
+          && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | $SUDO tee /etc/apt/sources.list.d/github-cli.list >/dev/null \
+          && $SUDO apt-get update -qq && $SUDO apt-get install -y gh && ok "gh installed"; } \
+          || warn "gh apt install failed — install manually: https://cli.github.com"
+      fi ;;
     linux-dnf|linux-yum)
       info "Installing gh via $PKG_MGR..."
       run "$SUDO $PKG_MGR install -y 'dnf-command(config-manager)' 2>/dev/null || true"
@@ -214,14 +229,41 @@ else
   for c in agy codex; do command -v "$c" &>/dev/null && ok "$c present" || warn "$c not installed"; done
 fi
 
+# ── 5. Verify required tooling (do NOT claim success on a failed install) ─────
+# Installs above mostly warn on failure; re-verify the REQUIRED tools here and
+# fail closed so the summary can't say "complete" when a prerequisite is missing.
+header "5. Verify"
+if command -v python3 &>/dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then
+  ok "python3 3.10+"
+else
+  fail "python3 3.10+ missing"
+fi
+python3 -m pip --version &>/dev/null 2>&1 && ok "pip" || fail "pip missing"
+command -v gh &>/dev/null && ok "gh" || fail "gh missing"
+# ScanCode is optional (degrades IP checks, not a hard failure).
+DEGRADED=""
+command -v scancode &>/dev/null || DEGRADED="ScanCode (IP/license checks degrade to PyPI/npm API)"
+# Agent CLIs: required for cross-vendor review unless explicitly skipped.
+if ! $SKIP_CLIS; then
+  for c in agy codex; do command -v "$c" &>/dev/null && ok "$c" || warn "$c not installed (cross-vendor review unavailable)"; done
+fi
+if [[ -n "$SUDO" ]]; then : ; elif $NO_SUDO; then
+  warn "ran with --no-sudo — any system package that needed root was skipped; install those manually if missing above"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 header "Done"
 echo ""
 if [[ $ERRORS -gt 0 ]]; then
-  err "$ERRORS error(s) — address the above before installing HOS into a project"
+  hint=""; $NO_SUDO && hint=" (you used --no-sudo — system installs may have been skipped)"
+  err "$ERRORS required prerequisite(s) missing — machine is NOT ready. Address the above${hint} and re-run."
   exit 1
 fi
-ok "Machine bootstrap complete."
+if [[ -n "$DEGRADED" ]]; then
+  warn "Machine bootstrap complete WITH DEGRADED CAPABILITY: $DEGRADED"
+else
+  ok "Machine bootstrap complete."
+fi
 echo ""
 echo -e "  ${BOLD}Next:${RESET} install HOS into a project from a validated release:"
 echo "      ./hos_install.sh /path/to/your/project"
