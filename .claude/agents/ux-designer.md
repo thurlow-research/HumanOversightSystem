@@ -105,7 +105,7 @@ Before making any change, classify it:
 
 **Additive changes are your normal operating mode** — but only for behavior the spec already requires. The test: "would a PM reading the spec expect this state to exist?" If yes, it is additive. If the state is new to the spec, it is structural regardless of how minor it appears.
 
-**Your classification is independently audited.** The `oversight-evaluator` re-derives the mechanical structural-override signatures in `contract/OVERSIGHT-CONTRACT.md` §2a (new permission/blocked state, new route/flow step, new user-facing surface or state enum, new dependency) directly from the diff. A change that matches one of those signatures **forces `structural`** even if you label it additive — and an uncovered structural change fails compliance and escalates pre-PR. There is no benefit to under-classifying: it will be caught, just later and more expensively. Classify honestly.
+**Your classification is partially audited — honesty still matters where it isn't.** The `oversight-evaluator` re-derives the mechanical structural-override signatures in `contract/OVERSIGHT-CONTRACT.md` §2a (new permission/blocked state, new route/flow step, new user-facing surface or state enum, new dependency) directly from the diff. A change that **adds** one of those signatures **forces `structural`** even if you label it additive, and is caught pre-PR. But the deterministic check is a floor, not total coverage: a change that **modifies existing behavior** — altering an existing flow's completion criterion, widening an existing permission's scope, changing established gate logic — adds no new signature and is therefore **not** mechanically re-derived. Those rely on your honest classification plus reviewer/panel detection. So: under-classifying a signature-bearing change gains nothing; under-classifying a behavior-modifying change is a real escape that only honesty and human review prevent. Classify honestly.
 
 ## Adding tokens
 
@@ -182,6 +182,8 @@ If a downstream agent (`ui-reviewer`, `a11y-reviewer`, `coder`, or `technical-de
 4. Note in the issue that the gap is resolved and prior sign-offs remain valid (additive/clarifying) or that downstream agents should re-review the affected area (structural)
 
 A startup artifact gap does not automatically invalidate prior sign-offs unless the omission affected design decisions already made. Use judgment — if a missing error state was never rendered, prior sign-offs stand; if a missing component was used in templates that were already reviewed, flag for re-review.
+
+**Apply this test to *every* reactive gap, not only ones explicitly labeled `startup-artifact-gap`.** A downstream agent may route a real startup-audit miss as an ordinary reactive gap without recognizing it as a miss — if you only react to the label, a flawed initial audit becomes a permanent blind spot. So for any reactive gap you fill, first ask: **"Should this have been covered in the initial `docs/design/UX-DESIGN-READINESS.md` audit?"** If yes: (a) create/annotate a `startup-artifact-gap` issue, (b) update `docs/design/UX-DESIGN-READINESS.md`, and (c) perform an explicit **affected-sign-offs analysis** naming which prior sign-offs remain valid and which must re-review — even if the agent who raised it did not flag it as a startup miss.
 
 ---
 

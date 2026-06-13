@@ -365,22 +365,27 @@ AI-Risk: CRITICAL"
 Run after all internal reviewers have approved and system tests pass.
 
 ```bash
-# Get composite score from validators (or re-run if stale)
+# Get composite score AND validated tier from validators (or re-run if stale)
 SCORE=$(cat .claudetmp/oversight/validators/summary.json | \
   python3 -c "import json,sys; print(json.load(sys.stdin)['composite_score'])")
+TIER=$(grep -i '^tier:' .claudetmp/oversight/validators/risk-assessment.md | head -1 | awk '{print $2}')
 
-echo "Score: $SCORE"
+echo "Score: $SCORE  Tier: $TIER"
 
-# Run second review
+# Run second review. Pass BOTH --tier and --score: the review must fire on the
+# validated tier floor OR the score, because the deterministic risk floor raises
+# tier (auth→HIGH, booking/payment→CRITICAL) without raising the score. Gating on
+# score alone would let a floor-raised MEDIUM+ step silently skip cross-vendor review.
 bash scripts/run_second_review.sh \
   --step N \
+  --tier "$TIER" \
   --score $SCORE \
   --diff HEAD~1
 
-# agy fires at score ≥ 0.30 (MEDIUM+)
-# codex fires at score ≥ 0.55 (HIGH+)
+# Fires when: tier ≥ MEDIUM OR score ≥ 0.30 (agy);  tier ≥ HIGH OR score ≥ 0.55 (codex)
 # Output: .claudetmp/second-review/stepN-{timestamp}.md
-# Top-level fields: verdict, highest_severity, unresolved_findings
+# verdict: skipped on a MEDIUM+ tier is a COMPLIANCE FAIL — the review must actually run.
+# Top-level fields: verdict, highest_severity, unresolved_findings, validated_tier
 ```
 
 Check the verdict:

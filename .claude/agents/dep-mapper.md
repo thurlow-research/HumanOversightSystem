@@ -89,9 +89,16 @@ grep -lE '@receiver|\.connect\(|template_name|get_template|render\(|urlpatterns|
 ```
 For any pattern found, check whether the corresponding connection appears in your traced blast radius (the receivers, the URL→view mapping, the template→view link). If a framework-wiring pattern is present in the changed files but **not** traced into the blast radius, the analysis is incomplete.
 
+**Also search *outward*, not just within the changed files.** A changed plain function may carry no wiring signature itself while being referenced by framework configuration *elsewhere* (a route table, a registry, a settings file, a template). Grep the likely framework-config locations for references to the changed files' symbols — route names, view/handler names, template paths, middleware names, signal/registry keys:
+```bash
+grep -rEl '{changed symbol names / route names / template paths}' \
+  --include='*.py' --include='*.html' --include='*.cfg' --include='*.ini' --include='*.toml' --include='*.yaml' .
+```
+If an outward reference exists that you cannot fully trace, the blast radius is incomplete regardless of whether the changed file itself had a wiring signature.
+
 Set the report's `Data confidence`:
-- **HIGH** — no framework-wiring patterns in the changed files (plain imports only), or all detected wiring was traced.
-- **LOW** — framework-wiring patterns detected but not traced. State which patterns and why.
+- **HIGH** — no framework-wiring patterns in the changed files **and** no untraced outward references (plain imports only), or all detected wiring was traced both ways.
+- **LOW** — framework-wiring patterns detected but not traced, OR an outward reference exists that you could not trace, **OR** the project has stack-specific wiring but no stack-specific dep-mapper override is installed (this generic grep-based mapper cannot reliably trace it). State which patterns/references and why. Never report HIGH confidence on a stack whose wiring this generic mapper is known not to trace.
 
 ## Output
 

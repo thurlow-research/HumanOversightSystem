@@ -118,9 +118,9 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
  12. reliability-reviewer*  ─┤ → architect (structural reliability)  *optional
  13. infra-reviewer         ─┘ (infra files only)
        ↓ all approved
- 13. unit-test      — configurable coverage + mutant score (default 80% / 75%)
+ 14. unit-test      — configurable coverage + mutant score (default 80% / 75%)
        ↓ targets met
- 14. system-test    — spec functional validation
+ 15. system-test    — spec functional validation
        ↓
   oversight-evaluator    — check compliance & quality; recommend proceed/escalate
        ↓
@@ -131,7 +131,7 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
   human gate             — resolve panel threads; merge PR
 
 DEPLOY
- 14. deploy-verify  — infra checks + browser smoke tests against live prod
+ 16. deploy-verify  — infra checks + browser smoke tests against live prod
 
 SUPPORT (available on demand throughout the build)
   ux-designer          — (1) proactive: invoked after pm-agent at project start to
@@ -185,7 +185,7 @@ When build discoveries or human decisions require the spec to be amended, `pm-ag
 Never updates the spec to rationalize code that doesn't meet the original spec — that is a spec falsification.
 
 **Escalation out:** Human (spec silent or structural change required).
-**Escalation in:** `spec-gap` issues from `architect`, `technical-design`, `ux-designer` (routed up the chain — no agent reaches pm-agent directly except through the design chain).
+**Escalation in:** `spec-gap` issues from `architect`, `technical-design`, `ux-designer` (routed up the chain — no *implementation-phase* agent reaches pm-agent directly except through the design chain). **Exception — `spec-red-team`:** it operates in the **spec phase, before any technical-design or code exists**, so it has no implementation-design chain to route through; it creates `spec-gap` issues directly for pm-agent by design. To prevent an architectural/implementation-scope gap from being resolved as a pure product decision, a `spec-red-team` issue that pm-agent judges to be technical or architectural in scope must get `architect` confirmation before pm-agent resolves it (pm-agent does not unilaterally classify a technical gap as clarifying/additive).
 
 ---
 
@@ -428,9 +428,9 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 |---|---|---|
 | Clarifying | Adds precision to an existing rule without changing meaning | Updates design pack directly |
 | Additive | New token, component variant, or copy pattern | Adds to design pack; consults pm-agent if it affects a user flow; notifies a11y-reviewer for new color tokens |
-| Structural | Changes a core color, removes a component, or changes the design brief | Presents to human for approval before writing |
+| Structural | Changes a core color, removes a component, or changes the design brief. **Also structural** (per `ux-designer.md`): any change that introduces a new user decision point, new blocked/permission state, new completion criterion, or new step in a user flow — even if it feels small. When in doubt, treat as structural. | Presents to human for approval before writing |
 
-**Additive is the normal operating mode.** Missing error color palette, a new badge variant, a copy pattern for an empty state — all handled without human involvement.
+**Additive is the normal operating mode.** Missing error color palette, a new badge variant, a copy pattern for an empty state — all handled without human involvement. **But a change that alters a user flow — a new confirmation step, a new blocked state, a new completion criterion — is structural, not additive**, regardless of how small the visual change is; it requires human approval. This doc must not use a narrower structural definition than `.claude/agents/ux-designer.md` (the authoritative source); the `oversight-evaluator` independently re-derives the mechanical structural signatures (contract §2a) so a flow change mislabeled additive is caught.
 
 **After extending the design pack:** Notifies the invoking agent with the exact change; notifies `a11y-reviewer` for new color tokens; notifies `ui-reviewer` so it can re-check template conformance. Appends a one-line entry to the `## Change log` section of `DESIGN.md`.
 
@@ -668,11 +668,11 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Role:** Queries GitHub issues and git logs to build a historical risk profile of changed files.
 
 **Process:**
-1. Queries GitHub issues matching specific risk labels (e.g., bug, security-finding, design-concern, spec-gap).
+1. Queries GitHub issues matching specific risk labels (e.g., bug, security-finding, design-concern, spec-gap), **excluding `duplicate`-labeled issues** (a re-filed finding must not inflate density).
 2. Analyzes git log churn (commits in the last 90 days) and fix commit density (commits matching fix/bug/error in the last 180 days).
-3. Classifies historical risk (LOW/MEDIUM/HIGH) based on the results.
+3. Returns **raw counts and issue references plus a `Data confidence` field** — it does **not** classify risk. `risk-assessor` performs all risk classification from this raw data (per DECISIONS.md D31; a Haiku/Sonnet retriever must not make the judgment call). A future implementation must not add LOW/MEDIUM/HIGH classification here — that would violate the subagent boundary.
 
-**Escalation out:** `risk-assessor` (reports findings).
+**Escalation out:** `risk-assessor` (reports raw findings).
 **Escalation in:** `risk-assessor`.
 
 ---
@@ -759,7 +759,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 3. Runs `scripts/framework/validate_docs.sh` — checks documentation coverage and addresses findings.
 4. Runs `scripts/framework/validate_spec_compliance.sh` (the script) to verify governance requirements; the `spec-compliance-validator` agent triages failures when the human invokes it.
 5. Synthesizes findings: cross-vendor findings (both reviewers) are treated as MUST_FIX; single-reviewer findings are investigated before acting.
-6. Routes fixes to domain owners (it reports them — it has only Read/Bash/Grep/Glob and cannot invoke other agents): path errors it may fix directly; escalation-chain breaks → human immediately; scope-creep risk → architect; agent-content fixes → the owning agent via the human.
+6. Triages fixes per the fixer triage (`contract/OVERSIGHT-CONTRACT.md` §6.0): it has `Write`/`Edit`, so it **fixes mechanical path/escalation-target errors in agent files directly** (it owns those). It **cannot invoke other agents**, so for structural fixes it routes/reports: escalation-chain breaks → human immediately; scope-creep risk → architect; agent system-prompt content/behavior → the owning agent via the human; framework-script logic changes → human approval (mechanical script fixes it may apply).
 
 **Escalation out:** Human immediately (broken escalation chain); `architect` (scope-creep or responsibility gaps); domain owner agents for content fixes.
 **Escalation in:** Invoked before committing framework changes; also invoked by `post-change-sweep` when framework files are in the diff.
@@ -791,9 +791,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 **Knowledge base:** Reads `scripts/framework/doc-patterns.md` (known bug patterns from prior sessions) and `scripts/framework/decisions.md` (verification criteria from design decisions) before running. This is the mechanism that makes prior session context durable — decisions recorded in those files are actively checked, not rediscovered.
 
-**After finding issues:** Applies fixes directly to documentation files (has Write access to docs). Records any new doc-bug pattern discovered to `doc-patterns.md` before closing.
+**After finding issues:** Follows the fixer triage (`contract/OVERSIGHT-CONTRACT.md` §6.0). **Mechanical doc-accuracy gaps** (a missing mode, a stale claim, a wrong path, a numbering error) it fixes directly — it has `Write`/`Edit` and corrects the doc *toward* the authoritative agent file, never the reverse. **Structural findings** (the agent definition is itself inconsistent, two agent files disagree, a documented behavior needs a tool/permission the agent lacks) it does not edit — it files a GitHub issue and escalates. Records any new doc-bug pattern discovered to `doc-patterns.md` before closing.
 
-**Escalation out:** Human (if a stale claim reflects a genuine design change that was not recorded as a decision).
+**Escalation out:** Human / GitHub issue (when a finding is structural rather than a doc-accuracy gap — e.g. a stale claim that reflects a genuine design change not recorded as a decision, or a capability the agent is documented to have but lacks).
 **Escalation in:** From `framework-validator` (Phase 3 failure); invoked directly by human.
 
 ---
@@ -819,7 +819,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - REQ-006–007: Five self-flagging behaviors enforced; prompt capture for MEDIUM+
 - REQ-008–009: Each `implemented` decision satisfies its verification criterion
 
-**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification); `technical-design` or agent author (missing loop exit); fix directly (wrong model assignment).
+**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification; **missing loop exit in a consumer-project agent** — never escalated down-tier). Fixes directly with `Write`/`Edit` (it owns these): missing loop exit in a *framework* agent, wrong model assignment, and mechanical framework-script fixes (logic changes need human approval).
 **Escalation in:** From `framework-validator` (Phase 4 failure); invoked directly by human.
 
 ---

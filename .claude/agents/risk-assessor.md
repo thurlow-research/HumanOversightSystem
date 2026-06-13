@@ -94,7 +94,9 @@ For steps at MEDIUM or above where prompt artifacts exist, invoke:
    Use the output to identify unexplained additions, missing specifications, and
    loose interpretations. These feed directly into the inspection brief.
 
-   **Handling NYI status:** if prompt-fidelity returns `Status: NYI`, do NOT treat this as a finding or escalation. Note it in the inspection brief as a coverage gap: "Prompt-fidelity check was not performed (NYI or missing artifact) — reviewer should manually verify code matches prompt intent." Do not block or raise tier based on NYI alone.
+   **Handling NYI status — distinguish two cases (do not conflate them):**
+   - **Feature not built** (`Status: NYI`, reason "semantic comparison not yet implemented"): non-blocking coverage gap. Note it in the inspection brief — "Prompt-fidelity semantic check not performed (feature NYI) — reviewer should manually verify code matches prompt intent." Do not block or raise tier on this alone.
+   - **Prompt artifact missing** (`Status: NYI`, reason "prompt artifact missing"): on a **MEDIUM+ step this is a compliance gap, not a silent coverage gap.** Surface it in the inspection brief under **Human Review Required**, and rely on the evaluator's prompt-artifact compliance check (contract §7 condition 8: MEDIUM+ commit missing the `Prompt-Artifact:` trailer → WARN, missing referenced file → FAIL). A missing artifact must not inherit the feature-NYI free pass — the absence of the intent record is itself the finding.
 
 For steps at HIGH or CRITICAL, also invoke:
 

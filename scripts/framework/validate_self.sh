@@ -220,8 +220,61 @@ python3 - "$OUTFILE" "$LEDGER" <<'PYEOF'
 import json, re, sys
 path, ledger_path = sys.argv[1], sys.argv[2]
 content = open(path).read()
-blocks = re.findall(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
 order = ["critical", "blocking", "high", "warning", "medium", "low", "none"]
+
+
+def _brace_objects(text):
+    """String-aware extraction of every balanced {...} that parses as JSON.
+
+    Brace counting must ignore braces inside JSON strings — finding
+    descriptions routinely contain literals like "step{N}-...". Naive
+    counting would mis-balance and drop the whole object.
+    """
+    out, n, i = [], len(text), 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, in_str, esc = 0, False, False
+        j = i
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        out.append(json.loads(text[i:j + 1]))
+                    except Exception:
+                        pass
+                    break
+            j += 1
+        i = j + 1
+    return out
+
+
+def extract_objects(text):
+    """Findings objects, tolerant of prose the model emits inside/around the
+    ```json fence (the strict `​```json{...}​``` regex misses those)."""
+    objs = []
+    for m in re.finditer(r"```json(.*?)```", text, re.DOTALL):
+        objs.extend(o for o in _brace_objects(m.group(1)) if "findings" in o or "verdict" in o)
+    if not objs:  # no fenced object parsed — scan the whole document
+        objs.extend(o for o in _brace_objects(text) if "findings" in o or "verdict" in o)
+    return objs
+
+
+blocks = extract_objects(content)
 
 # Load dedup ledger: fingerprint = (sorted files, category).
 seen = set()
@@ -242,11 +295,7 @@ def fingerprint(f):
 
 highest = "none"
 blocking_count = new_blocking = 0
-for b in blocks:
-    try:
-        d = json.loads(b)
-    except Exception:
-        continue
+for d in blocks:
     for f in d.get("findings", []):
         sev = str(f.get("severity", "low")).lower()
         if sev in order and order.index(sev) < order.index(highest):

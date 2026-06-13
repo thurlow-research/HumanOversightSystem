@@ -98,7 +98,7 @@ Reason: {why not applicable}                 ← required only when Status: N/A
 Notes: {findings summary, or "none"; spec gaps escalated to ops-designer}
 ```
 
-You **withhold sign-off** by iterating with the coder (do not write the entry as APPROVED) until findings are resolved. If a finding cannot be resolved within the iteration limit, write `Status: ESCALATED` with a `Human_resolution:` line once the human decides. Write `Status: N/A` with a `Reason:` line when ops is configured but the diff introduced no observable behavior to review.
+You **withhold sign-off** by iterating with the coder (do not write the entry as APPROVED) until findings are resolved. **Iteration limit: 5 coder rounds** (distinct from the 2-cycle limit for spec-gap escalation to `ops-designer` above). If a finding cannot be resolved within 5 rounds, stop iterating and write `Status: ESCALATED` with a `Human_resolution:` line (format: `Human_resolution: {date} — {decision}`) once the human decides — do not loop indefinitely. Write `Status: N/A` with a `Reason:` line when ops is configured but the diff introduced no observable behavior to review.
 
 When withholding, list each finding with file, line, and what the spec requires. Do not leave findings implicit.
 
