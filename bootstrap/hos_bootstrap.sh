@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=true; shift ;;
     --skip-clis) SKIP_CLIS=true; shift ;;
     --no-sudo)   NO_SUDO=true; shift ;;
-    --help|-h)   sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h)   sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)          echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)           echo "Unexpected argument: $1  (try --help)"; exit 1 ;;
   esac
@@ -183,9 +183,9 @@ else
     linux-apt)
       info "Installing gh via apt..."
       if ! $DRY_RUN; then
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-        sudo apt-get update -qq && sudo apt-get install -y gh && ok "gh installed"
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | $SUDO dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | $SUDO tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+        $SUDO apt-get update -qq && $SUDO apt-get install -y gh && ok "gh installed"
       else dry_run "Would install gh via apt"; fi ;;
     linux-dnf|linux-yum)
       info "Installing gh via $PKG_MGR..."

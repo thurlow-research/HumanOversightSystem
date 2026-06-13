@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
     --release)       RELEASE_REF="${2:?--release needs a tag, e.g. v0.3.0}"; shift 2 ;;
     --release=*)     RELEASE_REF="${1#*=}"; shift ;;
     --local)         LOCAL_SOURCE=true; shift ;;
-    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h)       sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -133,10 +133,20 @@ HOS_REPO="${HOS_REPO:-$(git -C "$HOS_REPO_ROOT" remote get-url origin 2>/dev/nul
   | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)}"
 [[ -z "${HOS_REPO:-}" ]] && HOS_REPO="ScottThurlow/HumanOversightSystem"
 
+# A staged source is only trustworthy if it contains framework sentinels — guards
+# against a partial/truncated extraction passing a mere "directory non-empty" check.
+source_looks_valid() {
+  [[ -f "$1/AGENTS.md" && -f "$1/.claude/agents/risk-assessor.md" ]]
+}
+
 fetch_release_tarball() {  # ref dest_dir -> 0 on success
-  local ref="$1" dest="$2" tgz
-  tgz="$(mktemp "${TMPDIR:-/tmp}/hos-src-XXXXXX.tar.gz")"
-  CLEANUP_DIRS+=("$tgz")
+  local ref="$1" dest="$2" tmpd tgz
+  # mktemp -d with the X-run TRAILING (BSD/macOS only substitutes a trailing run;
+  # a "XXXXXX.tar.gz" template would NOT randomize on macOS → fixed predictable
+  # path → collisions and stale/planted-file extraction risk).
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/hos-src.XXXXXX")" || return 1
+  CLEANUP_DIRS+=("$tmpd")
+  tgz="$tmpd/src.tar.gz"
   if command -v gh &>/dev/null; then
     gh api "repos/${HOS_REPO}/tarball/${ref}" > "$tgz" 2>/dev/null || true
   fi
@@ -145,7 +155,7 @@ fetch_release_tarball() {  # ref dest_dir -> 0 on success
   fi
   [[ -s "$tgz" ]] || return 1
   tar -xzf "$tgz" -C "$dest" --strip-components=1 2>/dev/null || return 1
-  [[ -n "$(ls -A "$dest" 2>/dev/null)" ]]
+  source_looks_valid "$dest"
 }
 
 resolve_hos_source() {
@@ -158,16 +168,23 @@ resolve_hos_source() {
   fi
 
   local ref="$RELEASE_REF"
-  if [[ -z "$ref" ]]; then            # default: the latest GitHub release
+  if [[ -z "$ref" ]]; then            # default: the latest PUBLISHED GitHub release
     ref="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
-    [[ -z "$ref" ]] && ref="$(git -C "$HOS_REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
+  fi
+  if [[ -z "$ref" ]]; then
+    err "No published HOS release found to install."
+    echo "    Either create a release (tag a validated commit + publish a GitHub release), or"
+    echo "    install the unvalidated working copy:  $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+    exit 1
   fi
 
-  if [[ -z "$ref" ]]; then
-    err "No HOS release found to install."
-    echo "    No GitHub release or git tag exists yet. Either:"
-    echo "      • create a release first (tag a validated commit + publish a GitHub release), or"
-    echo "      • install the unvalidated working copy:  $0 --local${TARGET_REPO:+ $TARGET_REPO}"
+  # GATE: the ref must be a PUBLISHED release, not just any tag. This is what
+  # makes "install from a validated release" real — a bare local/dev tag, or a
+  # tag whose release was deleted because validation failed, must NOT install.
+  # (gh is a required prerequisite, so this check is always available.)
+  if ! gh release view "$ref" --repo "$HOS_REPO" &>/dev/null; then
+    err "'$ref' is not a published GitHub release of $HOS_REPO."
+    echo "    Only published (validated) releases install. Use --release <published-tag>, or --local for dev."
     exit 1
   fi
   HOS_REF="$ref"
@@ -178,24 +195,29 @@ resolve_hos_source() {
     return
   fi
 
-  HOS_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/hos-release-XXXXXX")"
+  HOS_SOURCE="$(mktemp -d "${TMPDIR:-/tmp}/hos-release.XXXXXX")"
   CLEANUP_DIRS+=("$HOS_SOURCE")
   info "Fetching HOS release $ref …"
 
-  # Prefer a local git tag export (fast, offline); fall back to the GitHub tarball.
+  # Fast path: export the published release's tag from a local clone (offline-ok).
+  # Only taken because the ref is confirmed published above. No `|| true` masking —
+  # a partial extraction is caught by source_looks_valid and falls through to the
+  # authoritative tarball.
   if git -C "$HOS_REPO_ROOT" rev-parse --git-dir &>/dev/null; then
     git -C "$HOS_REPO_ROOT" fetch --tags --quiet origin 2>/dev/null || true
     if git -C "$HOS_REPO_ROOT" rev-parse -q --verify "refs/tags/${ref}" &>/dev/null; then
-      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
+      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" 2>/dev/null | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
     fi
   fi
-  if [[ -z "$(ls -A "$HOS_SOURCE" 2>/dev/null)" ]]; then
+  if ! source_looks_valid "$HOS_SOURCE"; then
+    rm -rf "${HOS_SOURCE:?}/." 2>/dev/null || true   # clear any partial export
     fetch_release_tarball "$ref" "$HOS_SOURCE" || {
-      err "Could not fetch release $ref from $HOS_REPO (no local tag, gh, or curl succeeded)."
-      echo "    Check the tag exists, or install the working copy with --local."
+      err "Could not fetch a complete release $ref from $HOS_REPO (gh/curl failed, or the archive was incomplete)."
+      echo "    Check the release exists, or install the working copy with --local."
       exit 1
     }
   fi
+  source_looks_valid "$HOS_SOURCE" || { err "Staged release source is incomplete (missing framework sentinels) — refusing to install."; exit 1; }
   ok "Release $ref staged for install"
 }
 
@@ -405,8 +427,11 @@ info "scripts/oversight/ — validators and gates"
 if ! $DRY_RUN; then
   run "mkdir -p '$TARGET_REPO/scripts/oversight/validators' \
                 '$TARGET_REPO/scripts/oversight/gates'"
-  rsync -a ${FORCE:+--ignore-times} ${FORCE:+--checksum} \
-    $( $FORCE || echo "--ignore-existing" ) \
+  # $FORCE is the string "true"/"false"; ${FORCE:+...} tests emptiness, not
+  # truthiness, so build the flag array by actually evaluating $FORCE.
+  rsync_flags=(-a)
+  if $FORCE; then rsync_flags+=(--ignore-times --checksum); else rsync_flags+=(--ignore-existing); fi
+  rsync "${rsync_flags[@]}" \
     "$HOS_SOURCE/scripts/oversight/" \
     "$TARGET_REPO/scripts/oversight/" 2>/dev/null || \
   cp -rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"
