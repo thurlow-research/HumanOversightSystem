@@ -21,13 +21,13 @@ Existing approaches treat this as a binary — either review everything, or revi
 The framework draws from three traditions:
 
 **Lean Manufacturing — Jidoka**
-Toyota's principle of "automation with a human touch": machines run autonomously but stop and signal the moment they detect a defect. Applied here, AI agents run autonomously but are required to surface their own uncertainty, flag risk, and halt before destructive operations — not wait to be caught.
+Toyota's principle of "automation with a human touch": machines run autonomously but stop and signal the moment they detect a defect. Applied here, AI agents run autonomously but are required to surface their own uncertainty, flag risk, and halt before destructive operations — not wait to be caught. The critical transfer is that quality responsibility belongs to the *producer*, not the downstream inspector: Ohno's formulation makes the machine an active participant in defect detection rather than a passive output source. For AI agents, this means self-flagging is a first-class output requirement, not a best-effort courtesy (Ohno, *Toyota Production System: Beyond Large-Scale Production*, Productivity Press, 1988).
 
 **Statistical Quality Control**
-Cobb & Mills' Cleanroom method applied to code: not every unit needs 100% inspection. Risk-stratified sampling allocates human attention proportionally — low-risk changes get spot checks, critical changes get exhaustive review. The escaped-defect rate becomes a measurable signal, not just a feeling.
+Cobb & Mills' Cleanroom method applied to code: not every unit needs 100% inspection. Risk-stratified sampling allocates human attention proportionally — low-risk changes get spot checks, critical changes get exhaustive review. The escaped-defect rate becomes a measurable signal, not just a feeling. Cleanroom was the first software methodology to demonstrate that escaped-defect rates can be *predicted* from process signals rather than discovered after deployment — teams that certify their own statistical process can contract against a defect rate, not just hope for one. Risk tier declarations in this framework serve the same function: they are the process signal that determines sampling intensity and makes oversight empirically accountable (Cobb & Mills, "Engineering Software Under Statistical Quality Control," *IEEE Software*, vol. 7, no. 6, 1990).
 
 **Signal Detection Theory**
-Human reviewers have a prior. AI confidence declarations (explicit uncertainty + basis) are an input to that prior, not a replacement for it. The system is designed to calibrate human attention, not eliminate it.
+Human reviewers have a prior. AI confidence declarations (explicit uncertainty + basis) are an input to that prior, not a replacement for it. The system is designed to calibrate human attention, not eliminate it. This matters because unaided human oversight doesn't scale: when a system is mostly correct and defects are rare, human monitoring performance degrades substantially — reviewers miss more, grow complacent, and allocate attention uniformly rather than to risk. Parasuraman et al. formalize this as a structural property of human-automation interaction, not a failure of diligence (Parasuraman, Sheridan & Wickens, "A Model for Types and Levels of Human Interaction with Automation," *IEEE Transactions on Systems, Man, and Cybernetics*, 2000). Risk-stratified review and explicit AI uncertainty signals are a direct response to this limitation.
 
 ---
 
@@ -86,13 +86,25 @@ Human attention is allocated by risk tier, not uniformly:
 
 The statistical spot-check on LOW-tier changes is not theater — it provides an ongoing escaped-defect rate, which is the primary feedback signal for calibrating the tier thresholds over time.
 
+### Pipeline Flow
+
+The three layers are not simultaneous — they operate in a defined sequence across two nested loops.
+
+**Inner loop (per build step):** Blocking gates run first (lint, type-check, secret scan, security-HIGH). If gates pass, nine risk validators score the change across dimensions — complexity, N+1 queries, migration risk, IP/provenance, prompt fidelity, and others. The risk-assessor agent synthesizes a composite score and directs the internal review panel. Each reviewer appends a structured sign-off to a shared register; the register is machine-readable and checked for completeness before the step advances.
+
+**Transition (pre-PR):** Once all build steps pass system tests, a cross-vendor second review runs (agy at MEDIUM+, codex at HIGH+) producing a machine-readable verdict. The oversight-evaluator checks compliance (did all required sign-offs happen?) and quality (convergence failures, unresolved critical findings, confidence gaps), then issues one of three recommendations — PROCEED, CONDITIONAL_PROCEED, or ESCALATE. The oversight-orchestrator acts on that recommendation and writes two separate outputs: `panel-context.md` (structural signals only, no internal findings) and `handoff.md` (full picture for the human). It then opens the PR or surfaces bounded questions to the human.
+
+**Outer loop (per PR):** The cross-vendor panel reads `panel-context.md` only — deliberately isolated from internal review findings to prevent anchoring. The panel posts independent findings as PR review threads. Each thread blocks merge until it receives a human decision, not just an acknowledgment. The resolved audit trail is committed to `audit/oversight-log.jsonl` on merge.
+
+For the full pipeline with script-level detail, see [METHODOLOGY.md](METHODOLOGY.md).
+
 ---
 
 ## Prompts as Artifacts
 
 AI-generated code has a provenance problem: the prompt that produced it is usually invisible.
 
-This framework treats prompts as first-class source artifacts, version-controlled alongside the code they produce. Git commit trailers encode AI provenance:
+This framework treats prompts — and their summaries — as first-class source artifacts, version-controlled alongside the code they produce. Git commit trailers encode AI provenance:
 
 ```
 Prompt-Artifact: prompts/auth/middleware.md
@@ -102,44 +114,66 @@ AI-Risk: HIGH
 
 This makes the full AI contribution queryable (`git log --grep="Prompt-Artifact:"`), auditable, and reproducible — which matters for research, for IP review, and for any future regulatory context.
 
+**Session summaries** are a second artifact class beyond individual prompt files. They serve two purposes. First, human comprehension: a reviewer should be able to read a summary and form a genuine judgment about whether a session did what it was supposed to do — without replaying every turn. Second, reproducibility: a well-formed summary is precise enough to serve as a one-shot prompt that regenerates the session's outputs, making AI-generated work reproducible in the same way source code is. A summary that diverges from the actual generated code is a provenance failure, not a documentation gap.
+
 ---
 
 ## Pipeline
 
-The pipeline has two tiers with different cadences:
+The pipeline has three phases with different cadences:
 
-### Inner Development Loop (repeats per incremental change)
+### Inner Loop (repeats per incremental change)
 
 ```
-PROMPT → AUTHOR + SELF-FLAG → VERIFY LOCALLY (lint · types · unit tests)
-    └──── fix failures in same response ────────────────────────────────┘
-    └──── only proceed to next prompt on a clean working tree ──────────┘
+PROMPT → AUTHOR + SELF-FLAG → BLOCKING GATES (lint · types · secret scan)
+    └──── fix failures before next prompt ──────────────────────────────┘
+         ↓
+    RISK VALIDATORS (9 dimensions: complexity, N+1, migrations, IP, ...)
+         ↓
+    RISK-ASSESSOR AGENT → composite score + inspection brief
+         ↓
+    INTERNAL REVIEW PANEL → sign-off register
+         ↓
+    CAPTURE PROMPT ARTIFACT (MEDIUM+)
+    └──── only proceed to next prompt on a clean, signed-off working tree ┘
 ```
 
 Never prompt for the next incremental change on a broken working tree. Each prompt builds on the output of the last; unverified failures compound into a "house of cards" that is expensive to unwind.
 
-### Outer Merge Pipeline (once per logical change set)
+### Transition Phase (once per feature, pre-PR)
 
 ```
 COMMIT (with Prompt-Artifact / AI-Model / AI-Risk trailers)
   ↓
-PR (protected branch: validation stamp required + code owner review)
+SYSTEM TESTS (gated by risk tier: e2e, coverage, mutation testing)
   ↓
-VALIDATION STAMP CHECK (CI — verifies local validation was run before push)
+SECOND REVIEW (agy at MEDIUM+, codex at HIGH+ — machine-readable verdict)
   ↓
-CHEAP GATES (lint, types, build, tests, secret scan)
+OVERSIGHT-EVALUATOR
+  Phase 1: compliance (sign-offs complete? prompt artifacts captured?)
+  Phase 2: quality (convergence failures? unresolved critical findings?)
+  → PROCEED / CONDITIONAL_PROCEED / ESCALATE
   ↓
-RISK TRIAGE
+OVERSIGHT-ORCHESTRATOR
+  writes panel-context.md  (structural signals only — no internal findings)
+  writes handoff.md        (full picture for human/PR)
+  → opens PR  ·or·  surfaces bounded questions to human
+```
+
+### Outer Loop (once per PR)
+
+```
+PR (protected branch: ≥1 approval + all review threads resolved)
   ↓
-EXPENSIVE GATES (gated by risk tier: e2e, coverage, mutation testing)
+CI CHEAP GATES (lint, types, build, tests, secret scan)
   ↓
-AI REVIEW PANEL (cross-vendor: agy + codex, role-based lenses)
+AI PANEL (reads panel-context.md only — cross-vendor: agy + codex)
   ↓
 ARBITER SYNTHESIS → PR threads
   ↓
 HUMAN GATE (mandatory at HIGH / CRITICAL; threads block merge)
   ↓
-MERGE → ARCHIVE
+MERGE → audit/oversight-log.jsonl (append-only)
 ```
 
 ---
@@ -184,6 +218,8 @@ Several patterns have emerged across the empirical work:
 
 ## Applying to a Project
 
+**[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation — a real parking management app for condo communities, built to exercise HOS against genuine complexity (multi-tenant auth, booking logic, admin portals) while delivering something useful to an actual user community. It is the canonical example of what a HOS-governed project looks like end-to-end.
+
 HOS installs into any project repository. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough. Quick start:
 
 ```bash
@@ -213,18 +249,31 @@ The install script creates required directories, copies all agent files, and wal
 
 ## Research Context
 
-This framework is the subject of doctoral research examining how human oversight of AI-generated code can be made both rigorous and scalable. The empirical substrate is real software built under the framework — not a controlled lab setting.
+This framework is the subject of doctoral research examining how human oversight of AI-generated code can be made both rigorous and scalable. The empirical substrate is real software ([CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)) built under the framework — not a controlled lab setting. The system is simultaneously the tool being studied and the instrument conducting the study.
 
-The research draws on a systematic literature review of ~1,000 papers on AI code governance, multi-agent systems, and software quality assurance.
+The research draws on a systematic literature review of ~1,000 papers on AI code governance, multi-agent systems, and software quality assurance, and is grounded in three theoretical traditions described in the [Theoretical Basis](#theoretical-basis) section above.
 
-Current research findings are documented in [`research/findings/`](research/findings/), including:
+**Core research constructs:**
+
+**Escaped-defect rate** is the primary empirical measure. For any given risk tier, what fraction of changes that passed the full oversight pipeline contained a real defect? A falling escaped-defect rate over time is evidence that oversight calibration is working. A tier whose escaped-defect rate is consistently high indicates the tier thresholds are miscalibrated. This makes the oversight system empirically accountable rather than merely procedurally compliant.
+
+**Risk-stratified attention allocation** is the central design hypothesis: human reviewers are most effective when their attention is routed by risk rather than applied uniformly. The framework operationalizes this through a composite risk score across 12 validator dimensions, deterministic floor rules for high-risk file patterns, and a tier-gated pipeline that escalates scrutiny proportionally. The hypothesis is testable: does stratified allocation produce equivalent or better defect detection than uniform exhaustive review at lower human cost?
+
+**Automation complacency as a structural constraint.** The framework is designed with the assumption that human monitoring performance degrades on low-signal repetitive tasks — a well-documented property of human-automation interaction (Parasuraman et al., 2000) rather than a failure of individual diligence. Risk stratification and explicit AI uncertainty declarations are direct responses to this constraint: they ensure that when a human reviewer's attention is required, it is required for a specific, bounded reason.
+
+**Cross-vendor decorrelation** is the mechanism that makes multi-agent review genuinely independent rather than redundant. Different training distributions produce different failure modes. The empirical question is whether cross-vendor panels find defects that same-vendor review misses at a statistically significant rate — and whether that rate varies by defect type (correctness vs. security vs. spec drift).
+
+**The self-governance property.** A governance framework for AI-generated code must itself be governed by that framework. This creates a recursive structure with practical implications: the framework's own agents, documentation, and pipeline are subject to the same oversight protocol as any other project. Findings from governing the framework feed back into the framework's design — a research instrument that improves itself.
+
+Current empirical findings are documented in [`research/findings/`](research/findings/), including:
 - Self-governance recursion (a governance system must govern itself)
 - Omission-class documentation bugs (structurally invisible to contradiction checkers)
 - Working-state invariant (inner-loop verification as a necessary property of incremental AI development)
 - Tooling drift in validation pipelines (CLI API changes can silently disable validation)
 - Stamp-based CI enforcement (committed artifacts as a bridge for local-only validation tools)
+- Issue vs. PR thread routing (audit trail design as a data pipeline requirement)
 
-**Dissertation committee includes:**
+**Dissertation committee:**
 - Paul J. Thomas (Purdue) — IT systems, project management, cybersecurity
 - Linda Naimi (Purdue) — Technology law, IP, ethics, generative AI legal implications
 - Hancheng Cao (Emory Goizueta) — Computational social science, AI in development teams
