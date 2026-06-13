@@ -224,15 +224,20 @@ steps:
 
 Compliant agents create GitHub issues at defined trigger points. Issue creation is enforced by agent instructions and is auditable via `gh issue list`. The evaluator does NOT query GitHub to verify issue existence — it trusts the sign-off register which agents update after creating issues. The issue trail is a research and audit artifact, not a blocking compliance check.
 
-**AI issue title convention:** Every issue created by an AI agent must begin with `[AI: {agent-name}]` so it is immediately recognisable in the issue list without opening it. Format:
+**AI issue title convention:** Every issue created by an AI agent must begin with `[AI: {agent-name}]`:
 
 ```
 [AI: {agent-name}] {issue-type}: {description}
 ```
 
-Examples: `[AI: spec-red-team] spec-gap: auth flow missing rate limiting` · `[AI: security-reviewer] security-finding: SQL injection in views.py` · `[AI: red-team/codex] red-team-finding: session fixation in invite flow`
+**AI issue footer convention:** Every AI-created issue must include this footer at the end of the body:
 
-This applies to all projects that install this framework.
+```markdown
+---
+*🤖 Created by `{agent-name}` | Step: {N or "session"} | Branch: `{branch}` | {YYYY-MM-DD}*
+```
+
+Both requirements apply to all projects that install this framework.
 
 | Trigger | Label(s) | Who creates | Example title prefix |
 |---|---|---|---|

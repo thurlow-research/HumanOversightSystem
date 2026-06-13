@@ -154,7 +154,8 @@ for f in findings:
         f"**Files involved:** {', '.join(f.get('files', []))}",
         f"**Remediation:** {f.get('remediation', f.get('suggestion', ''))}",
         "",
-        "*Created by run_red_team.sh — system-level checkpoint.*",
+        "---",
+        f"*🤖 Created by `red-team/{reviewer}` | Step: {milestone} | Branch: `{branch}` | PR: {pr}*",
     ])
 
     cmd = ["gh", "issue", "create", "--title", title, "--body", body,
