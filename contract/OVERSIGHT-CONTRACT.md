@@ -125,7 +125,7 @@ Every agent that approves or escalates a build step writes one entry below the h
 
 ```markdown
 ## {role} | {artifact} | {ISO-8601 datetime}
-Status: APPROVED | ESCALATED | CONDITIONAL
+Status: APPROVED | ESCALATED | CONDITIONAL | N/A
 Agent: {agent-name}
 Artifact: {what was reviewed — file paths or description}
 Iterations: {N}
@@ -141,6 +141,8 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 **`Human_resolution`** is required only when `Status: ESCALATED`. Format: `{ISO date} — {decision text}`. The oversight-evaluator reads this field to confirm human resolution is on record before clearing the compliance check. Example: `Human_resolution: 2026-06-11 — Reviewed 5-round loop; architect decision is sound, proceed`.
 
 **`Status: CONDITIONAL`** passes Phase 1 compliance but automatically causes the oversight-evaluator to recommend at least `CONDITIONAL_PROCEED` — a human must verify the conditional item before merge.
+
+**`Status: N/A`** passes Phase 1 compliance and means the role had no applicable changes in this diff (the reviewer's domain was not touched). Written by `post-change-sweep` on behalf of skipped reviewers (with a `Reason:` field), or by `code-reviewer` itself when there is no application code to review. An explicit N/A entry distinguishes "considered, not applicable" from a missing entry — see `research/findings/explicit-na-audit-entries.md`. Each N/A entry corresponds to a `gate-na` audit event (§6a).
 
 **Test agents additionally write the §4 test declaration fields** (Coverage_pct, Mutant_score_pct, Thresholds_met, All_passing) inline in their register entry. The oversight-evaluator reads these fields directly from the register; §4 defines the schema those fields must follow.
 
