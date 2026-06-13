@@ -91,6 +91,26 @@ if [[ -n "$SOURCE_REPO" ]]; then
     done
     echo "  $AGENT_COUNT agent file(s) copied"
 
+    # Substitute placeholders in newly copied agent files
+    # Uses perl for cross-platform in-place substitution (macOS + Linux)
+    SUBST_COUNT=0
+    _spec_file="${NEW_SPEC_FILE:-{SPEC_FILE}}"
+    _design_pack_dir="${NEW_DESIGN_PACK_DIR:-{DESIGN_PACK_DIR}}"
+    _project_name="${NEW_PROJECT_NAME:-{PROJECT_NAME}}"
+    for agent in "$TARGET_REPO"/.claude/agents/*.md; do
+        [[ -f "$agent" ]] || continue
+        # Only process files that contain at least one placeholder
+        if grep -qE '\{SPEC_FILE\}|\{DESIGN_PACK_DIR\}|\{PROJECT_NAME\}' "$agent" 2>/dev/null; then
+            perl -i -p \
+                -e "s|\{SPEC_FILE\}|${_spec_file}|g;" \
+                -e "s|\{DESIGN_PACK_DIR\}|${_design_pack_dir}|g;" \
+                -e "s|\{PROJECT_NAME\}|${_project_name}|g;" \
+                "$agent"
+            SUBST_COUNT=$(( SUBST_COUNT + 1 ))
+        fi
+    done
+    [[ $SUBST_COUNT -gt 0 ]] && echo "  Substituted placeholders in $SUBST_COUNT agent file(s)"
+
     # Copy framework scripts — always update (these are framework infrastructure)
     for script in \
         check_agents_static.sh \
@@ -121,6 +141,8 @@ EXISTING_PROJECT_STACK=""
 EXISTING_PROJECT_NON_AGENT_TOKENS=""
 EXISTING_DESIGN_PACK_PATH=""
 EXISTING_EXTRA_REVIEW_FILES=""
+EXISTING_SPEC_FILE=""
+EXISTING_DESIGN_PACK_DIR=""
 
 if [[ -f "$CONFIG_FILE" ]]; then
     # Source safely by extracting values without executing arbitrary code
@@ -129,6 +151,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
     EXISTING_PROJECT_NON_AGENT_TOKENS=$(grep '^PROJECT_NON_AGENT_TOKENS=' "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_DESIGN_PACK_PATH=$(grep '^DESIGN_PACK_PATH='        "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_EXTRA_REVIEW_FILES=$(grep '^EXTRA_REVIEW_FILES='    "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
+    EXISTING_SPEC_FILE=$(grep '^SPEC_FILE='                      "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
+    EXISTING_DESIGN_PACK_DIR=$(grep '^DESIGN_PACK_DIR='          "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     echo "  Existing config found — will update only missing/changed values"
 else
     echo "  No existing config — will create fresh config.sh"
@@ -202,6 +226,20 @@ NEW_DESIGN_PACK_PATH=$(prompt_value \
     "")
 
 echo ""
+NEW_SPEC_FILE=$(prompt_value \
+    "SPEC_FILE" \
+    "Path to your primary spec file relative to repo root (e.g. 'Specs/SPEC-1-pilot.md'). Used in agent prompts that read the spec directly." \
+    "$EXISTING_SPEC_FILE" \
+    "")
+
+echo ""
+NEW_DESIGN_PACK_DIR=$(prompt_value \
+    "DESIGN_PACK_DIR" \
+    "Path to your design pack directory relative to repo root (e.g. 'Specs/design-pack'). Used by ux-designer to locate design files. Leave blank if no design system." \
+    "$EXISTING_DESIGN_PACK_DIR" \
+    "")
+
+echo ""
 NEW_EXTRA_FILES=$(prompt_value \
     "EXTRA_REVIEW_FILES" \
     "Space-separated extra files to include in AI review. Leave blank if none." \
@@ -236,6 +274,13 @@ PROJECT_NON_AGENT_TOKENS="${NEW_NON_AGENT_TOKENS}"
 # Path to your project's design system doc, relative to the repo root.
 # validate_agents.sh includes this in the AI review package.
 DESIGN_PACK_PATH="${NEW_DESIGN_PACK_PATH}"
+
+# ── Agent placeholder substitution values ────────────────────────────────────
+# These are substituted into copied agent files at install time.
+# {SPEC_FILE} → path to your primary spec file (read by spec-red-team, ux-designer)
+SPEC_FILE="${NEW_SPEC_FILE}"
+# {DESIGN_PACK_DIR} → path to your design pack directory (read by ux-designer)
+DESIGN_PACK_DIR="${NEW_DESIGN_PACK_DIR}"
 
 # ── Extra files for AI review ────────────────────────────────────────────────
 # Space-separated additional files to include in validate_agents.sh reviews.

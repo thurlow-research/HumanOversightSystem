@@ -59,14 +59,18 @@ The install script will:
 
 ## Step 2 — Answer the configuration questions
 
-During the install, you will be prompted for four values. These are saved to `scripts/framework/config.sh` and used by every framework script.
+During the install, you will be prompted for six values. These are saved to `scripts/framework/config.sh` and used by every framework script. The last two are also substituted directly into the copied agent files.
 
 | Value | What it is | Example |
 |---|---|---|
-| `PROJECT_NAME` | Human-readable name shown in AI review prompts | `"MyApp"` |
+| `PROJECT_NAME` | Human-readable name — substituted into agent files | `"MyApp"` |
 | `PROJECT_STACK` | Tech stack description for the reviewers | `"Rails 7 + PostgreSQL"` |
 | `PROJECT_NON_AGENT_TOKENS` | Pipe-separated hostnames/services in your agent files that aren't agent names — the static checker needs these to avoid false positives | `"myserver\|mydb\|staging-host"` |
 | `DESIGN_PACK_PATH` | Path to your design system doc, relative to repo root — included in AI review | `"docs/design-system/DESIGN.md"` or blank if none |
+| `SPEC_FILE` | Path to your primary spec file — substituted into agent files that read the spec directly (`spec-red-team`, `ux-designer`) | `"Specs/SPEC-1.md"` |
+| `DESIGN_PACK_DIR` | Path to your design pack directory — substituted into `ux-designer` | `"Specs/design-pack"` or blank if none |
+
+**Placeholder substitution:** after copying agent files, `install.sh` automatically replaces `{PROJECT_NAME}`, `{SPEC_FILE}`, and `{DESIGN_PACK_DIR}` in every copied agent file with the values you provided. This means agent files work out of the box without manual editing.
 
 Edit `scripts/framework/config.sh` directly at any time, or re-run `install.sh` to update values interactively.
 
