@@ -79,7 +79,7 @@ Focus your review on the following aspects for this build step:
    - Create a GitHub issue:
    ```bash
    gh issue create \
-     --title "Spec gap: [topic] — [one-line description]" \
+     --title "[AI: spec-red-team] spec-gap: [topic] — [one-line description]" \
      --body "**Build step:** [N]\n**Type:** [gaming-vector|contradiction|implicit-assumption|missing-edge-case]\n**Finding:** [specific description]\n**Impact:** [what goes wrong if not addressed]\n**Suggested spec addition:** [draft text or question for PM]" \
      --label "spec-gap"
    ```

@@ -292,7 +292,7 @@ if [[ "$HIGH_COUNT" -gt 0 ]] && command -v gh &>/dev/null; then
     echo ""
     warn "$HIGH_COUNT HIGH/CRITICAL finding(s) — creating GitHub issue..."
     gh issue create \
-        --title "Self-review findings: ${HIGH_COUNT} HIGH/CRITICAL (${REVIEWER}, ${TIMESTAMP})" \
+        --title "[AI: ${REVIEWER}] design-concern: ${HIGH_COUNT} HIGH/CRITICAL self-review findings (${TIMESTAMP})" \
         --body "$(printf '**Reviewer:** %s\n**Report:** %s\n\nSee the full report file for details.\n\n## Summary\n%s' \
             "$REVIEWER_LABEL" \
             "$OUTFILE" \

@@ -141,7 +141,7 @@ for f in findings:
     if sev not in ("critical", "high"):
         continue
 
-    title = f"Red-team [{milestone}/{reviewer}]: {str(f.get('finding','?'))[:80]}"
+    title = f"[AI: red-team/{reviewer}] red-team-finding [{milestone}]: {str(f.get('finding','?'))[:70]}"
     body = "\n".join([
         f"**Milestone:** {milestone}",
         f"**Reviewer:** {reviewer}",
