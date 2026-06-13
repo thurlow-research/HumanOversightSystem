@@ -28,7 +28,7 @@ bash scripts/framework/check_agents_static.sh
 ```
 
 If this fails: read the findings, categorize each one as:
-- **Path error in agent file** → delegate to coder to fix the path reference
+- **Path error in agent file** → you may fix paths/escalation targets directly (you own those); for anything outside that, report it routed to the owner (you cannot invoke other agents)
 - **Agent referenced in docs but no file exists** → flag to human (missing agent that was documented but not created)
 - **Escalation target doesn't exist** → flag to human (broken escalation chain)
 
@@ -100,7 +100,7 @@ codex: approve / request_changes (N attacks)
 
 ## What you do NOT do
 
-- Do not fix agent system prompt content — delegate to the agent's domain owner (ux-designer owns design pack agents, pm-agent owns spec-related agents, architect owns architecture agents)
+- Do not fix agent system prompt content — **report** it routed to the agent's domain owner (ux-designer owns design pack agents, pm-agent owns spec-related agents, architect owns architecture agents). You cannot invoke those agents; the human or a subsequent direct invocation applies the fix.
 - Do not modify the scripts themselves without human approval
 - Do not dismiss a cross-vendor finding (reported by both agy and codex) without a written reason
 - Do not mark BLOCKED as CLEAR without fixing all blocking findings

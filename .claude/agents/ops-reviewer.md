@@ -85,15 +85,20 @@ When a change introduces observability requirements not covered by `docs/ops/TEL
 
 ## Sign-off format
 
-Write to the sign-off register at `.claudetmp/signoffs/step{N}-register.md`:
+Write to the sign-off register at `.claudetmp/signoffs/step{N}-register.md`, using the contract §3 schema (role key is `ops`):
 
 ```
-## ops-reviewer
-Status: APPROVED | WITHHELD
-Findings: [count and summary, or "none"]
-Spec gaps escalated to ops-designer: [list or "none"]
-Iterations: [N]
+## ops | {changed files} | {ISO-8601 datetime}
+Status: APPROVED | ESCALATED | N/A
+Agent: ops-reviewer
+Artifact: {changed files}
+Iterations: {N}
+Human_resolution: {ISO date} — {decision}   ← required only when Status: ESCALATED
+Reason: {why not applicable}                 ← required only when Status: N/A
+Notes: {findings summary, or "none"; spec gaps escalated to ops-designer}
 ```
+
+You **withhold sign-off** by iterating with the coder (do not write the entry as APPROVED) until findings are resolved. If a finding cannot be resolved within the iteration limit, write `Status: ESCALATED` with a `Human_resolution:` line once the human decides. Write `Status: N/A` with a `Reason:` line when ops is configured but the diff introduced no observable behavior to review.
 
 When withholding, list each finding with file, line, and what the spec requires. Do not leave findings implicit.
 
