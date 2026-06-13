@@ -56,7 +56,24 @@ The suspension mechanism that resolves this has five key properties:
 
 ---
 
+## Second instance: validator crashes triggered a new framework agent (2026-06-13)
+
+A second empirical finding from CondoParkShare's brownfield adoption: after applying HOS gates, Python validator scripts began crashing with unhandled exceptions and hanging indefinitely on external tool calls (pip-audit network timeouts, bandit on large file sets). The pipeline stalled with no recovery mechanism — no timeout, no retry, no distinction between transient failures and permanent ones.
+
+This failure mode triggered two framework improvements:
+
+1. **Immediate fix:** timeout and retry logic added to `run_validators.sh` and gate scripts (`run_with_retry.sh`). Optional validators skip gracefully; required validators fail the job. Per-attempt log lines and audit trail on exhaustion.
+
+2. **Derived insight:** the validator crashes were themselves caused by outbound connection failures in CondoParkShare's code — database calls without timeouts, HTTP calls without read timeouts. The framework had no reviewer checking for these patterns. This observation directly motivated the `reliability-reviewer` agent (added separately), which reviews code changes for resilience against external dependency failures: timeouts on outbound connections, retry with backoff, graceful degradation.
+
+**The causal chain:** brownfield codebase → HOS gates applied → validator crashes on production code patterns → no recovery mechanism in framework → fix revealed gap in reviewer coverage → new agent.
+
+This is a specific instance of a general pattern: **consumer project failures in production are the highest-quality empirical signal for framework gaps**. A lab-designed framework can anticipate many failure modes; actual use in a real codebase reveals the ones that weren't anticipated. The research value of CondoParkShare as a reference implementation includes this feedback loop — not just "does the framework work on clean code?" but "what breaks when it meets real-world conditions?"
+
+---
+
 ## Related findings
 
 - `unenforceable-rules-need-verification-mechanisms.md` — the `NOT_APPLICABLE` ad-hoc bypass was an unverifiable rule; the suspension mechanism is the framework-blessed alternative with proper verification
 - `stamp-based-ci-enforcement.md` — related pattern: committed artifacts as enforcement primitives; the suspension file is a committed artifact that proves human authorization
+- `install-time-placeholder-substitution.md` — another CondoParkShare-discovered gap: framework files with project-specific content silently corrupt new installations
