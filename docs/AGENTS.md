@@ -23,6 +23,34 @@ Every other agent operates within the bounds set by these four. `ux-designer` is
 
 ---
 
+## Universal AI disclosure requirement
+
+**Every PR opened by an AI agent — regardless of which agent, which tool, or which pipeline path — must include:**
+
+1. **Title prefix:** `[AI: agent-name]` — e.g. `[AI: oversight-orchestrator]` or `[AI: claude]`
+2. **Disclosure block** as the first section of the PR body:
+
+```markdown
+## 🤖 AI-Submitted Pull Request
+
+This PR was **created and submitted by an AI agent**. A human did not manually write or submit this PR.
+
+| | |
+|---|---|
+| **Agent** | `[agent-name]` |
+| **Model** | `[model-id]` |
+| **Submitted** | [YYYY-MM-DD] |
+| **Step / context** | [build step N or session description] |
+
+Human approval is required before merge.
+```
+
+3. **Commit trailers** on MEDIUM+ changes: `AI-Model:` and `AI-Risk:` in the commit message.
+
+This requirement applies to every agent — `oversight-orchestrator`, `coder`, `Claude Code sessions`, and any other automated PR submission. Omitting it is a protocol violation. The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) includes a reminder and the required format.
+
+---
+
 ## Pipeline overview
 
 ```

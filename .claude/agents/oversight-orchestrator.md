@@ -195,3 +195,4 @@ Re-run oversight-evaluator after creating the file.
 - Do not open a PR when recommendation is ESCALATE.
 - Do not override ESCALATE to PROCEED without explicit human instruction.
 - Do not create GitHub issues (issue creation is the base agents' responsibility).
+- **Do not open a PR without the `[AI: oversight-orchestrator]` title prefix and the `## 🤖 AI-Submitted Pull Request` disclosure block as the first section of the body.** This is non-negotiable. Any PR missing the disclosure is a protocol violation visible to the human reviewer and will be flagged. See `docs/AGENTS.md` — Universal AI disclosure requirement.
