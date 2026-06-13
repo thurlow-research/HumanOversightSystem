@@ -60,8 +60,14 @@ echo ""
 
 if $STATIC_ONLY; then
     echo "  --static-only: skipping AI review"
+    STAMP_DIR="$SCRIPT_DIR/validation-stamps"
+    mkdir -p "$STAMP_DIR"
+    printf "validated: %s\nphases: 1-static\nskipped: 2-agents 3-docs 4-spec-compliance\nresult: pass\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAMP_DIR/all-phases.stamp"
     echo ""
     echo "  PASS — static checks clean"
+    echo "  Stamp written: $STAMP_DIR/all-phases.stamp"
+    echo "  Note: AI phases skipped — stamp records skipped phases."
     exit 0
 fi
 
