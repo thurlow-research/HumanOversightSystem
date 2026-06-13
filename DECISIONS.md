@@ -175,3 +175,16 @@ Research value: the JSONL is the longitudinal empirical substrate for the disser
 The framework was reviewed by both agy and codex before the initial PR, with findings iterated to resolution. This is the methodology applied to itself: cross-vendor, independent, decorrelated review of the oversight system that performs cross-vendor review.
 
 Token cost for two full rounds: agy ~4% of $20/month; codex ~45% of $20/month reserve. Worth noting the codex reserve is meaningfully consumed by self-review and should be budgeted as a one-time framework cost.
+
+### D29. Gate suspension for brownfield onboarding — human-only manifest, per-reviewer granularity (2026-06-12)
+
+When HOS is applied to an existing codebase, all gates fail simultaneously. A blanket bypass would defeat the governance purpose; no bypass would make HOS unusable for brownfield adoption. The resolution: a bounded, human-authorized suspension with a re-enable-one-at-a-time discipline.
+
+Key decisions:
+- **Human-only manifest** (`contract/gate-suspension.md`) — same flag-file pattern as human-authorization files. Agents cannot create or modify it. Creating it without authorization is a protocol violation.
+- **Per-reviewer granularity** — suspend exactly the reviewers that fail, not all reviewers. This matches how remediation actually works: you fix one domain, re-enable that reviewer, move to the next.
+- **Committed to git** — the suspension file is in version control. The git log shows exactly when each gate was suspended, when it was re-enabled, and who authorized it.
+- **Invariant: re-enabled gates stay on** — once a reviewer is re-enabled, it must not be re-suspended. Any failure after re-enablement is a regression that must be fixed, not bypassed.
+- **Same names as role_mappings** — gate script names (`lint`, `security`, etc.) match the step-manifest `required_signoffs` role keys where applicable, so one suspension entry covers both the script gate and the sign-off gate for the same domain.
+
+Rationale: the mechanism's value is not just that it unblocks brownfield projects — it's that it creates a forcing function for systematic debt elimination. Each re-enable records that a domain is clean. The re-enable log becomes an audit trail of remediation progress.
