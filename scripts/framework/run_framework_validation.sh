@@ -108,9 +108,18 @@ AI_ARGS=""
 [[ -n "$SKIP_CODEX"   ]] && AI_ARGS="$AI_ARGS $SKIP_CODEX"
 [[ -n "$SKIP_AGY"     ]] && AI_ARGS="$AI_ARGS $SKIP_AGY"
 
-if ! bash "$SCRIPT_DIR/validate_agents.sh" $AI_ARGS; then
+agents_rc=0
+bash "$SCRIPT_DIR/validate_agents.sh" $AI_ARGS || agents_rc=$?
+if [[ "$agents_rc" -eq 3 ]]; then
     echo ""
-    echo "  Agent semantic review found blocking issues."
+    echo "  External review hit the pass cap without converging — a HUMAN must"
+    echo "  decide (fix / accept / file) on the remaining NEW findings. Not auto-retried."
+    exit 3
+elif [[ "$agents_rc" -ne 0 ]]; then
+    echo ""
+    echo "  Agent semantic review found NEW blocking findings. Triage each (fix-in-place"
+    echo "  mechanical, or file an issue structural), record dispositions with"
+    echo "  validate_agents.sh --record, and re-run until converged (zero NEW)."
     echo "  Invoke framework-validator agent to triage and fix before committing."
     exit 1
 fi
