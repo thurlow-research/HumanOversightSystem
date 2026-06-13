@@ -12,52 +12,63 @@ For the agent roles and pipeline structure, see `docs/AGENTS.md`.
 ### Required
 - **Claude Code** CLI or desktop app (authenticated)
 - A project **git repository** — the framework is applied to a repo root
-- **Python 3.10+** — used by the oversight validators
+- **Python 3.10+**, **git**, **gh** (GitHub CLI) — installed by the machine bootstrap below
+- **agy** (Antigravity/Gemini) + **codex** (OpenAI) CLIs — the cross-vendor reviewers (also installed by the bootstrap)
 
-### For AI-powered validation (optional but recommended)
-- **agy** (Antigravity/Gemini CLI) — cross-vendor consistency reviewer
-- **codex** (OpenAI CLI) — adversarial gap-finder
+### Step 0 — Machine bootstrap (once per machine)
 
-Install both with:
+Get the bootstrap scripts from the latest release and run the machine bootstrap. **You do not clone the repo** — `hos_install.sh` fetches the validated framework from the release.
+
 ```bash
-bash bootstrap/setup_clis.sh auth   # authenticate existing installs
-# or
-bash tools/setup-build-mac.sh     # full machine bootstrap (macOS)
-bash tools/setup-build.sh         # full machine bootstrap (Linux)
+# Pull the bootstrap scripts (the only files you copy to a machine):
+mkdir -p hos-bootstrap && cd hos-bootstrap
+for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do
+  curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/$f
+done && chmod +x *.sh
+
+# (recommended) verify what you downloaded:
+curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS      # or: sha256sum -c SHA256SUMS
+
+# Install prerequisites + agent CLIs (may prompt for sudo and browser auth):
+./hos_bootstrap.sh
 ```
 
-Check availability:
+Check availability when done:
 ```bash
-agy --version    # should return a version number
-codex --version  # should return a version number
+python3 --version && gh --version && agy --version && codex --version
 ```
+
+> Already have the repo cloned? The same scripts live in `bootstrap/` — run `bootstrap/hos_bootstrap.sh`.
 
 ---
 
-## Step 1 — Copy the framework files
+## Step 1 — Install the framework into your project (from a release)
 
-From the [your project] repo, run `install.sh` targeting your new project:
+`hos_install.sh` fetches the **latest validated release** and scaffolds it into your target repo. It needs no sudo — it verifies prerequisites and points back to the bootstrap if any are missing.
 
 ```bash
-# In the [your project] repo:
-bash scripts/framework/install.sh \
-  --source /path/to/[your project] \
-  --target /path/to/your-new-project
+# From the hos-bootstrap folder (or bootstrap/ in a clone):
+./hos_install.sh /path/to/your-new-project
+#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-new-project
+#   dev install:    ./hos_install.sh --local        /path/to/your-new-project   (unvalidated)
 ```
 
-The install script will:
-1. Create required directories in the target project
-2. Copy all 26 agent files from `.claude/agents/`
-3. Copy the 6 framework scripts from `scripts/framework/`
-4. **Ask you** for project-specific values (see Step 2)
-5. Write `scripts/framework/config.sh` with your answers
-6. Run `check_agents_static.sh` to confirm the installation is clean
+It will:
+1. Verify prerequisites (Python 3.10+, git, gh, agy/codex)
+2. Fetch the validated release (gate: refuses anything that isn't a published release)
+3. Scaffold the target: `.claude/agents/`, `scripts/`, `scripts/oversight/`, `AGENTS.md`, `contract/`, `audit/`, `.ai-local/` (SQC salt), `.github/`, `.gitignore`
+4. Record the installed tag at the target's `.hos-release`
 
-> **Re-running:** `install.sh` is idempotent. Run it again to pick up framework updates — it reads your existing `config.sh` values and only prompts for fields that are new or changed. It never overwrites agent files you have already customized.
+> **Re-running / updates:** safe to re-run — it skips files you've customized unless you pass `--force`. To move to a new framework version, re-run with `--release <tag>` (or just re-run for the latest).
 
 ---
 
-## Step 2 — Answer the configuration questions
+## Step 1b — Configure project-specific values
+
+> **Note (transitional):** the release install scaffolds the agent files with `{PROJECT_NAME}`/`{SPEC_FILE}`/`{DESIGN_PACK_DIR}` placeholders. Substituting them + generating `scripts/framework/config.sh` is currently done by the framework config tool (`scripts/framework/install.sh`), which is being folded into `hos_install.sh` — see issue #87. Until then, run that tool against your project to fill in the values below, or edit `config.sh` and the placeholders manually.
+
+## Step 2 — Configuration values
 
 During the install, you will be prompted for six values. These are saved to `scripts/framework/config.sh` and used by every framework script. The last two are also substituted directly into the copied agent files.
 
