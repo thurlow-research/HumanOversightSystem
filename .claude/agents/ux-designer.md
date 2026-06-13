@@ -105,6 +105,8 @@ Before making any change, classify it:
 
 **Additive changes are your normal operating mode** — but only for behavior the spec already requires. The test: "would a PM reading the spec expect this state to exist?" If yes, it is additive. If the state is new to the spec, it is structural regardless of how minor it appears.
 
+**Your classification is independently audited.** The `oversight-evaluator` re-derives the mechanical structural-override signatures in `contract/OVERSIGHT-CONTRACT.md` §2a (new permission/blocked state, new route/flow step, new user-facing surface or state enum, new dependency) directly from the diff. A change that matches one of those signatures **forces `structural`** even if you label it additive — and an uncovered structural change fails compliance and escalates pre-PR. There is no benefit to under-classifying: it will be caught, just later and more expensively. Classify honestly.
+
 ## Adding tokens
 
 When adding a new CSS custom property to `tokens.css`:

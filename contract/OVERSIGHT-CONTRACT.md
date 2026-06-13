@@ -103,6 +103,20 @@ AI-Model: [model id]
 AI-Risk: [LOW|MEDIUM|HIGH|CRITICAL]
 ```
 
+### 2a. Structural-override signatures (force `structural`, independently enforced)
+
+Authoring agents that fill gaps (`ux-designer`, `ops-designer`, `pm-agent`, …) classify each change `clarifying` / `additive` / `structural`. Only `structural` escalates to a human; `clarifying` and `additive` are applied autonomously. Because the actor being governed is also the classifier, the following **mechanical signatures force `structural` regardless of the agent's own assessment** — and the `oversight-evaluator` re-derives them from the diff (`scripts/oversight/change_classifier.py`), so mislabeling cannot bypass the human gate:
+
+| Signature | What it is |
+|---|---|
+| **new-external-dependency** | A new entry in any dependency manifest (`requirements*.txt`, `pyproject.toml`, `package.json`, `go.mod`, `Gemfile`, `Cargo.toml`, …) |
+| **new-permission-or-auth-state** | A new authentication/authorization check (`permission_required`, `login_required`, `IsAuthenticated`, `has_perm`, `PermissionDenied`, role guards, auth mixins, …) |
+| **new-user-facing-surface** | A template/component added as a **new file** (`templates/**/*.html`, `*.jsx/tsx/vue/svelte`) |
+| **new-user-flow-or-route** | A new route/URL (`path(`, `re_path(`, `@app.route`, router registrations, `<Route>`) |
+| **new-user-facing-state** | A new user-visible state enum (`choices=`, `TextChoices`/`IntegerChoices`, state-machine fields/transitions, `STATUS_*` constants) |
+
+An authoring agent must classify a change matching any of these as `structural` and obtain human authorization before applying it. The signature set is a **floor**: it is deliberately biased to over-detect (a false positive merely sends a benign change to a human; a false negative is the only real failure). Projects with a known stack may **extend** the signatures in `change_classifier.py` but must not narrow this base set. Enforcement runs **only in the loosening direction** — see §7; a change the agent already classified `structural` (or a step that cleared a human gate) is not re-checked.
+
 ---
 
 ## 3. Sign-off register schema
@@ -285,6 +299,8 @@ Both requirements apply to all projects that install this framework.
 | `gate-auto-reenabled` | A suspended gate was auto-removed after consistent passes | suspension auto-removal | `gate`, `step`, `consecutive_passes` |
 | `suspension-census` | Per-run count of active suspensions (health metric) | oversight-evaluator | `active_suspensions`, `suspended_gates` |
 | `sampling-audit` | A statistical sampling red-team run completed | run_redteam_sample.sh | `pool_size`, `sample_size`, `tier_escapes`, `escape_rate_pct` |
+| `na-invalidated` | An independent re-derivation rejected a `Status: N/A` waiver because the role's domain was in fact changed | oversight-evaluator | `role`, `step`, `evidence` |
+| `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 
@@ -302,6 +318,10 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 6. `process` sign-off missing when `system_test_applicable: true` (PM must sign off on test plan)
 7. `human_gate_required: true` (CRITICAL steps): `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs; if missing, compliance fails immediately
 8. MEDIUM+ commits missing `Prompt-Artifact:` git trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items; human confirms intent was captured another way). If the trailer references a path that does not exist → **COMPLIANCE FAIL**
+9. A `Status: N/A` entry for a role whose domain the diff actually touched (independent re-derivation via `change_classifier.py`, scoped to the N/A'd roles) → **COMPLIANCE FAIL** (the waiver is not credible; require a real sign-off). See §2a and the evaluator's "Independent diff re-derivation."
+10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the step already cleared a human gate or the change was already classified `structural` with authorization.
+
+Conditions 9–10 are **anti-gaming** checks: they re-derive — independently of the actor that produced the change — the two determinations that can loosen oversight (an N/A waiver, an `additive`/`clarifying` self-label). They never run when upstream asked for *more* review; spending verification cost only in the loosening direction is itself the ratchet.
 
 **MEDIUM fail-closed (second review):** when composite score ≥ `OVERSIGHT_AGY_THRESHOLD` (default 0.30) but below `OVERSIGHT_CODEX_THRESHOLD` (default 0.55) and `agy` is unavailable, `run_second_review.sh` exits non-zero. This is intentional fail-closed behavior — a MEDIUM+ step cannot proceed without cross-vendor review. If codex is also unavailable at HIGH+, the script also exits non-zero. Document this in project runbooks.
 

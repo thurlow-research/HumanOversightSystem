@@ -134,6 +134,8 @@ Iterations: 0
 and emit a `gate-na` audit event per §6a of the contract:
 `{"event":"gate-na","gate":"{role}","step":N,"reason":"{reason}","determined_by":"post-change-sweep","timestamp":"..."}`
 
+**These N/A entries are advisory, not authoritative.** You are an inner-loop tool; you may not waive a formal reviewer by fiat. The `oversight-evaluator` independently re-derives, from the diff, whether each N/A'd role's domain was in fact untouched (`scripts/oversight/change_classifier.py`, contract §7 condition 9). If a domain you marked N/A actually changed, the evaluator rejects the waiver, emits a `na-invalidated` event, and fails compliance. Only write N/A when the domain is **provably untouched** (no files matching that domain in the diff) — never as a judgment call to skip a review.
+
 **Exception — `code-reviewer` is never N/A'd by the orchestrator.** It is always invoked (Track 2) and produces its own entry — including `Status: N/A` with "no application code in diff" when an infra-only or docs-only change has nothing for it to review. The reviewer's own judgment that there is nothing to review is more trustworthy than the orchestrator asserting it.
 
 ## Step 4 — Report

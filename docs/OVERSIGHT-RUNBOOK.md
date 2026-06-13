@@ -403,6 +403,8 @@ python3 scripts/oversight/token_tracker.py report
 
 Invoke the `oversight-evaluator` agent. It runs Phase 1 (compliance) then Phase 2 (quality).
 
+As part of Phase 1, the evaluator independently re-derives — using `scripts/oversight/change_classifier.py` — the two upstream determinations that can *loosen* oversight: a `Status: N/A` reviewer waiver (verified against the diff for the N/A'd roles, contract §7 condition 9) and an authoring agent's `additive`/`clarifying` self-classification of a change that carries a structural-override signature (contract §2a, condition 10). These checks run **only in the loosening direction** — a step that already cleared a human gate, or a change already classified `structural` with authorization, is not re-checked. A rejected waiver or an uncovered structural change fails compliance and escalates; both emit audit events (`na-invalidated`, `structural-override`) so misclassifications are measurable.
+
 ```
 Invoke: oversight-evaluator
 Input: contract/step-manifest.yaml, .claudetmp/signoffs/stepN-register.md,
