@@ -19,7 +19,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from schema import make_result, make_finding, normalize, WEIGHTS
+# self-bootstrap: ensure this file's dir (with schema.py) is importable
+# regardless of caller cwd/PYTHONPATH (run_validators, run_panel, direct).
+import sys as _hos_sys
+import pathlib as _hos_pl
+_hos_sys.path.insert(0, str(_hos_pl.Path(__file__).resolve().parent))
+from schema import make_result, make_finding, normalize, WEIGHTS  # noqa: E402
 
 _RISK_LABELS = [
     "bug",
