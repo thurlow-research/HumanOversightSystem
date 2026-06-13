@@ -185,7 +185,7 @@ When build discoveries or human decisions require the spec to be amended, `pm-ag
 Never updates the spec to rationalize code that doesn't meet the original spec — that is a spec falsification.
 
 **Escalation out:** Human (spec silent or structural change required).
-**Escalation in:** `spec-gap` issues from `architect`, `technical-design`, `ux-designer` (routed up the chain — no agent reaches pm-agent directly except through the design chain).
+**Escalation in:** `spec-gap` issues from `architect`, `technical-design`, `ux-designer` (routed up the chain — no *implementation-phase* agent reaches pm-agent directly except through the design chain). **Exception — `spec-red-team`:** it operates in the **spec phase, before any technical-design or code exists**, so it has no implementation-design chain to route through; it creates `spec-gap` issues directly for pm-agent by design. To prevent an architectural/implementation-scope gap from being resolved as a pure product decision, a `spec-red-team` issue that pm-agent judges to be technical or architectural in scope must get `architect` confirmation before pm-agent resolves it (pm-agent does not unilaterally classify a technical gap as clarifying/additive).
 
 ---
 
@@ -428,9 +428,9 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 |---|---|---|
 | Clarifying | Adds precision to an existing rule without changing meaning | Updates design pack directly |
 | Additive | New token, component variant, or copy pattern | Adds to design pack; consults pm-agent if it affects a user flow; notifies a11y-reviewer for new color tokens |
-| Structural | Changes a core color, removes a component, or changes the design brief | Presents to human for approval before writing |
+| Structural | Changes a core color, removes a component, or changes the design brief. **Also structural** (per `ux-designer.md`): any change that introduces a new user decision point, new blocked/permission state, new completion criterion, or new step in a user flow — even if it feels small. When in doubt, treat as structural. | Presents to human for approval before writing |
 
-**Additive is the normal operating mode.** Missing error color palette, a new badge variant, a copy pattern for an empty state — all handled without human involvement.
+**Additive is the normal operating mode.** Missing error color palette, a new badge variant, a copy pattern for an empty state — all handled without human involvement. **But a change that alters a user flow — a new confirmation step, a new blocked state, a new completion criterion — is structural, not additive**, regardless of how small the visual change is; it requires human approval. This doc must not use a narrower structural definition than `.claude/agents/ux-designer.md` (the authoritative source); the `oversight-evaluator` independently re-derives the mechanical structural signatures (contract §2a) so a flow change mislabeled additive is caught.
 
 **After extending the design pack:** Notifies the invoking agent with the exact change; notifies `a11y-reviewer` for new color tokens; notifies `ui-reviewer` so it can re-check template conformance. Appends a one-line entry to the `## Change log` section of `DESIGN.md`.
 
@@ -668,11 +668,11 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Role:** Queries GitHub issues and git logs to build a historical risk profile of changed files.
 
 **Process:**
-1. Queries GitHub issues matching specific risk labels (e.g., bug, security-finding, design-concern, spec-gap).
+1. Queries GitHub issues matching specific risk labels (e.g., bug, security-finding, design-concern, spec-gap), **excluding `duplicate`-labeled issues** (a re-filed finding must not inflate density).
 2. Analyzes git log churn (commits in the last 90 days) and fix commit density (commits matching fix/bug/error in the last 180 days).
-3. Classifies historical risk (LOW/MEDIUM/HIGH) based on the results.
+3. Returns **raw counts and issue references plus a `Data confidence` field** — it does **not** classify risk. `risk-assessor` performs all risk classification from this raw data (per DECISIONS.md D31; a Haiku/Sonnet retriever must not make the judgment call). A future implementation must not add LOW/MEDIUM/HIGH classification here — that would violate the subagent boundary.
 
-**Escalation out:** `risk-assessor` (reports findings).
+**Escalation out:** `risk-assessor` (reports raw findings).
 **Escalation in:** `risk-assessor`.
 
 ---

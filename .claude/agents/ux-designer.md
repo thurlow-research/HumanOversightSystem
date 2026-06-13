@@ -183,6 +183,8 @@ If a downstream agent (`ui-reviewer`, `a11y-reviewer`, `coder`, or `technical-de
 
 A startup artifact gap does not automatically invalidate prior sign-offs unless the omission affected design decisions already made. Use judgment — if a missing error state was never rendered, prior sign-offs stand; if a missing component was used in templates that were already reviewed, flag for re-review.
 
+**Apply this test to *every* reactive gap, not only ones explicitly labeled `startup-artifact-gap`.** A downstream agent may route a real startup-audit miss as an ordinary reactive gap without recognizing it as a miss — if you only react to the label, a flawed initial audit becomes a permanent blind spot. So for any reactive gap you fill, first ask: **"Should this have been covered in the initial `docs/design/UX-DESIGN-READINESS.md` audit?"** If yes: (a) create/annotate a `startup-artifact-gap` issue, (b) update `docs/design/UX-DESIGN-READINESS.md`, and (c) perform an explicit **affected-sign-offs analysis** naming which prior sign-offs remain valid and which must re-review — even if the agent who raised it did not flag it as a startup miss.
+
 ---
 
 ## What you do NOT do

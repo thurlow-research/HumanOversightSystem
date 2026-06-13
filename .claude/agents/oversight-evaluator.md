@@ -81,8 +81,9 @@ If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
 
 **Establish the validated tier (every tier-gated check depends on it):**
 Read `.claudetmp/oversight/validators/risk-assessment.md` for the validated risk tier. The second-review, prompt-artifact, N/A, and structural-override checks all branch on `validated tier MEDIUM/HIGH/CRITICAL` — if no validated tier is established they would silently no-op, so an agent that skipped risk-assessor would de-fang the entire tier-gated half of this evaluation with no flag raised.
-- If `risk-assessment.md` is **absent**: fall back to the step manifest's `risk_tier` as the validated tier **and** record a **COMPLIANCE WARN** ("risk assessment did not run for step N — using manifest tier as floor"). Never treat an undetermined tier as below-MEDIUM: an undetermined tier defaults to **the manifest tier or MEDIUM, whichever is higher**, so tier-gated checks cannot be silently skipped.
-- The validated tier is a floor like everything else (the ratchet): take `max(manifest risk_tier, risk-assessment.md tier)`.
+- If `risk-assessment.md` is **absent on a per-step build evaluation → COMPLIANCE FAIL** (escalate). `risk-assessor` is responsible for the deterministic tier floor, the required-reviewers set, prompt-fidelity, dep-mapper, and risk-historian; the evaluator cannot substitute for any of those. A missing assessment means those analyses never ran, so a CRITICAL-by-diff change with a MEDIUM manifest would proceed under-scrutinized. Do **not** silently fall back — absence of the validated-risk artifact fails closed (the safe/ratchet direction). The evaluator does not invent a tier to unblock itself.
+- **Narrow exception (brownfield/emergency only):** a fallback to `max(manifest risk_tier, MEDIUM)` is permitted **only** when a human authorization artifact explicitly allows running without risk-assessor for this step (the same human-only artifact class as `human-authorization.md`); without that artifact, absent risk-assessment is a hard fail.
+- When present, the validated tier is a floor like everything else (the ratchet): take `max(manifest risk_tier, risk-assessment.md tier)`.
 
 **Determine the effective required_signoffs list (UNION — never fewer than the manifest):**
 1. Start with the step manifest's `required_signoffs` for this step — this is the floor.
@@ -122,7 +123,8 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
 
 **Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review **fires on the validated tier OR the composite score** (`run_second_review.sh --tier <tier> --score <score>`) — this matters because the deterministic risk floor raises tier (auth→HIGH, booking/payment→CRITICAL) *without* raising the composite score, so a HIGH-by-floor step can have a low score. Therefore:
-- A present file with `verdict: approve`/`request_changes`/`error` → the review actually ran → satisfied (act on the verdict in Phase 2).
+- A present file with `verdict: approve` or `verdict: request_changes` → the review actually ran and produced an independent judgment → satisfied (act on the verdict in Phase 2).
+- A present file with **`verdict: error` on a MEDIUM+ validated-tier step → COMPLIANCE FAIL.** `error` means a fired-and-required reviewer failed at runtime (timeout, rate-limit, crash) — the mandatory independent review produced *no judgment*. Do **not** treat `error` as "the review ran." This is a fail-open the script also guards (it exits non-zero on a runtime reviewer error), but the evaluator must reject it independently: a transient vendor failure may never silently satisfy the cross-vendor requirement. Re-run the second review.
 - A present file with **`verdict: skipped` on a MEDIUM+ validated-tier step → COMPLIANCE FAIL.** `skipped` means neither vendor fired, which on a MEDIUM+ tier means the mandatory cross-vendor review did not happen — gating it on score alone would let a floor-raised tier silently skip the independence requirement. (`skipped` is only acceptable when the validated tier is below MEDIUM.) Cross-check the file's `validated_tier:` field against the tier you established; if the review was invoked without the tier (score-only) and skipped on a MEDIUM+ step, that is the failure this catches. Ensure `run_second_review.sh` is invoked with `--tier`.
 - A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold." This and the `skipped`-on-MEDIUM+ rule together close the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance.
 
@@ -184,6 +186,8 @@ Write your evaluation to `.claudetmp/oversight/step{N}-evaluation-{ts}.md`:
 # Oversight Evaluation — Step {N}
 Timestamp: {ISO-8601}
 Validated tier: {tier}
+base_sha: {BASE_SHA}
+head_sha: {HEAD_SHA}
 
 ## Phase 1: Compliance
 

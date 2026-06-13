@@ -44,7 +44,11 @@ Additions: [list any code behavior not in the prompt]
 Constraint violations: [list any stated constraint not enforced]
 ```
 
-**If Status is NYI:** include only `Status: NYI` and the reason (e.g. "semantic comparison not yet implemented" or "prompt artifact missing — cannot assess"). Do not populate Fidelity, Gaps, or Additions. This signals to risk-assessor that the check was skipped intentionally.
+**If Status is NYI:** include only `Status: NYI` and a **precise reason that distinguishes the two cases** — they are handled differently downstream:
+- `reason: "semantic comparison not yet implemented"` — the feature isn't built. risk-assessor treats this as a non-blocking coverage gap.
+- `reason: "prompt artifact missing"` — there is no artifact to compare against. On a MEDIUM+ step this is **not** a free pass: risk-assessor surfaces it under Human Review Required and the evaluator's prompt-artifact compliance check (contract §7 condition 8) acts on the missing trailer/file. Always state which reason applies so a missing artifact is not silently absorbed into the feature-NYI coverage gap.
+
+Do not populate Fidelity, Gaps, or Additions for either NYI case.
 
 ## Invoked by
 

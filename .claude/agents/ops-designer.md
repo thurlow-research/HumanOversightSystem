@@ -119,6 +119,8 @@ Do not escalate to human for:
 
 If a downstream agent (`ops-reviewer`, `coder`) discovers an observability requirement that `docs/ops/TELEMETRY-SPEC.md` does not cover — something that should have been caught in the initial audit — that agent should create a `startup-artifact-gap` GitHub issue and send it to you. Handle it the same as a reactive gap: classify as clarifying, additive, or structural; fill it following the same rules; update the spec; note in the issue whether prior sign-offs are affected.
 
+**Apply this test to *every* reactive gap, not only ones labeled `startup-artifact-gap`.** A downstream agent may route a real initial-audit miss as an ordinary telemetry gap without recognizing it as a miss; if you only react to the label, a flawed `TELEMETRY-SPEC.md` audit becomes a permanent monitoring blind spot. So for any reactive gap you fill, first ask: **"Should this component/signal have been covered in the initial `docs/ops/TELEMETRY-SPEC.md` audit?"** If yes: create/annotate a `startup-artifact-gap` issue, update the spec, and perform an explicit **affected-sign-offs analysis** naming which prior sign-offs remain valid and which must re-review (already-instrumented components whose coverage was incomplete may have been signed off against a deficient spec).
+
 ---
 
 ## Constraints

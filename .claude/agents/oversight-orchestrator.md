@@ -29,11 +29,14 @@ Read before acting:
 # 1. Step number matches — extract from filename and compare to step manifest
 # 2. Timestamp is fresh — artifact was written after the most recent commit to this step
 #    git log -1 --format="%ct" HEAD   vs   stat -f "%m" (macOS) / stat -c "%Y" (Linux) on the artifact
-# 3. HEAD SHA matches — the artifact references the current HEAD
-#    git rev-parse HEAD
+# 3. HEAD SHA matches — the artifact's `head_sha:` field must equal current HEAD
+#    ART_HEAD=$(grep -m1 '^head_sha:' "$ARTIFACT" | awk '{print $2}')
+#    [ -n "$ART_HEAD" ] && [ "$ART_HEAD" = "$(git rev-parse HEAD)" ]
+#    If `head_sha:` is ABSENT → fail closed (an evaluation that cannot be
+#    staleness-checked is not trustworthy); if present but != HEAD → stale.
 # 4. Recommendation field is present and valid — PROCEED | CONDITIONAL_PROCEED | ESCALATE
 ```
-If any check fails: do NOT open a PR. Print the validation failure and halt. A stale or mismatched artifact means the evaluation may not reflect the current code state.
+If any check fails: do NOT open a PR. Print the validation failure and halt. A stale, mismatched, **or missing-`head_sha`** artifact means the evaluation may not reflect the current code state — the evaluator emits `head_sha:` in its output template, and the orchestrator fails closed without it.
 
 ---
 
