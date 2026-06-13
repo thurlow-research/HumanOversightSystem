@@ -22,18 +22,45 @@ from pathlib import Path
 from schema import make_result, make_finding, normalize, WEIGHTS
 
 # ORM method names that indicate a queryset operation (database hit)
-_ORM_METHODS = frozenset({
-    "all", "filter", "exclude", "get", "first", "last", "count",
-    "exists", "values", "values_list", "annotate", "aggregate",
-    "select_related", "prefetch_related", "order_by", "distinct",
-    "create", "update", "delete", "bulk_create", "bulk_update",
-    "get_or_create", "update_or_create",
-})
+_ORM_METHODS = frozenset(
+    {
+        "all",
+        "filter",
+        "exclude",
+        "get",
+        "first",
+        "last",
+        "count",
+        "exists",
+        "values",
+        "values_list",
+        "annotate",
+        "aggregate",
+        "select_related",
+        "prefetch_related",
+        "order_by",
+        "distinct",
+        "create",
+        "update",
+        "delete",
+        "bulk_create",
+        "bulk_update",
+        "get_or_create",
+        "update_or_create",
+    }
+)
 
 # Attributes that suggest accessing a related manager (common N+1 pattern)
-_RELATED_MANAGER_PATTERNS = frozenset({
-    "objects", "all", "filter", "set", "add", "remove",
-})
+_RELATED_MANAGER_PATTERNS = frozenset(
+    {
+        "objects",
+        "all",
+        "filter",
+        "set",
+        "add",
+        "remove",
+    }
+)
 
 
 class _N1Visitor(ast.NodeVisitor):
@@ -84,12 +111,14 @@ class _N1Visitor(ast.NodeVisitor):
         # Avoid duplicate recording for the same line
         if any(f["line"] == lineno for f in self.findings):
             return
-        self.findings.append({
-            "file": self.filename,
-            "line": lineno,
-            "loop_depth": self._loop_depth,
-            "attr": getattr(node, "attr", "?"),
-        })
+        self.findings.append(
+            {
+                "file": self.filename,
+                "line": lineno,
+                "loop_depth": self._loop_depth,
+                "attr": getattr(node, "attr", "?"),
+            }
+        )
 
 
 def analyse_files(file_paths: list[str]) -> dict:
@@ -109,9 +138,12 @@ def analyse_files(file_paths: list[str]) -> dict:
     score = normalize(count, 0, 8)
 
     evidence = [
-        make_finding(f["file"], f["line"],
-                     f"potential N+1: .{f['attr']}() inside loop (depth={f['loop_depth']})",
-                     severity="medium")
+        make_finding(
+            f["file"],
+            f["line"],
+            f"potential N+1: .{f['attr']}() inside loop (depth={f['loop_depth']})",
+            severity="medium",
+        )
         for f in all_findings[:10]
     ]
 
@@ -140,8 +172,18 @@ def analyse_files(file_paths: list[str]) -> dict:
 def main() -> None:
     files = [f for f in sys.argv[1:] if f.endswith(".py") and Path(f).exists()]
     if not files:
-        print(json.dumps(make_result("n1_queries", 0.0, {"error": "no input"},
-                                     weight=WEIGHTS["n1_queries"], error="no input files"), indent=2))
+        print(
+            json.dumps(
+                make_result(
+                    "n1_queries",
+                    0.0,
+                    {"error": "no input"},
+                    weight=WEIGHTS["n1_queries"],
+                    error="no input files",
+                ),
+                indent=2,
+            )
+        )
         return
     print(json.dumps(analyse_files(files), indent=2))
 

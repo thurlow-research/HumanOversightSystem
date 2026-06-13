@@ -24,7 +24,8 @@ def _run_bandit(files: list[str]) -> list[dict]:
     try:
         result = subprocess.run(
             ["bandit", "-f", "json", "-ll", "-ii"] + files,
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         data = json.loads(result.stdout)
         return data.get("results", [])
@@ -40,7 +41,9 @@ def _run_semgrep(files: list[str]) -> list[dict]:
     try:
         result = subprocess.run(
             ["semgrep", "--config", "p/django", "--json", "--quiet"] + files,
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         data = json.loads(result.stdout)
         return data.get("results", [])
@@ -57,10 +60,7 @@ def analyse_files(file_paths: list[str]) -> dict:
     semgrep_results = _run_semgrep(file_paths)
 
     # Only score MEDIUM severity (HIGH is a gate-level block)
-    medium_findings = [
-        r for r in bandit_results
-        if r.get("issue_severity", "LOW") == "MEDIUM"
-    ]
+    medium_findings = [r for r in bandit_results if r.get("issue_severity", "LOW") == "MEDIUM"]
 
     evidence = [
         make_finding(
@@ -75,12 +75,14 @@ def analyse_files(file_paths: list[str]) -> dict:
 
     for r in semgrep_results[:5]:
         loc = r.get("start", {})
-        evidence.append(make_finding(
-            r.get("path", "?"),
-            loc.get("line", 0),
-            f"[semgrep:{r.get('check_id', '?')}] {r.get('extra', {}).get('message', '')}",
-            severity="medium",
-        ))
+        evidence.append(
+            make_finding(
+                r.get("path", "?"),
+                loc.get("line", 0),
+                f"[semgrep:{r.get('check_id', '?')}] {r.get('extra', {}).get('message', '')}",
+                severity="medium",
+            )
+        )
 
     total_findings = len(medium_findings) + len(semgrep_results)
     score = normalize(total_findings, 0, 10)
@@ -92,7 +94,7 @@ def analyse_files(file_paths: list[str]) -> dict:
         if test_id not in seen_ids:
             seen_ids.add(test_id)
             checklist.append(
-                f"{r.get('filename','?')}:{r.get('line_number',0)} "
+                f"{r.get('filename', '?')}:{r.get('line_number', 0)} "
                 f"[{test_id}] — {r.get('issue_text', '')}"
             )
 
@@ -112,8 +114,18 @@ def analyse_files(file_paths: list[str]) -> dict:
 def main() -> None:
     files = [f for f in sys.argv[1:] if f.endswith(".py") and Path(f).exists()]
     if not files:
-        print(json.dumps(make_result("static_analysis", 0.0, {"error": "no input"},
-                                     weight=WEIGHTS["static_analysis"], error="no input files"), indent=2))
+        print(
+            json.dumps(
+                make_result(
+                    "static_analysis",
+                    0.0,
+                    {"error": "no input"},
+                    weight=WEIGHTS["static_analysis"],
+                    error="no input files",
+                ),
+                indent=2,
+            )
+        )
         return
     print(json.dumps(analyse_files(files), indent=2))
 

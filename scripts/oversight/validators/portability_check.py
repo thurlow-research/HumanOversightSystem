@@ -89,8 +89,10 @@ def main(files: list[str]) -> dict:
     checklist = []
     if all_findings:
         checklist = [
-            "Is every hardcoded absolute path replaceable with a relative path or importlib.resources?",
-            "If spec_from_file_location is used to dodge a naming collision, fix the root name conflict instead.",
+            "Is every hardcoded absolute path replaceable with a relative path "
+            "or importlib.resources?",
+            "If spec_from_file_location is used to dodge a naming collision, "
+            "fix the root name conflict instead.",
             "Will these tests pass on CI, Linux, and a fresh checkout?",
         ]
 
@@ -111,4 +113,5 @@ if __name__ == "__main__":
 
     result = main(sys.argv[1:])
     import json
+
     print(json.dumps(result, indent=2))
