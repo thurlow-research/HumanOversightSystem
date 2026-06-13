@@ -209,3 +209,11 @@ The AI PR disclosure requirement (`[AI: agent-name]` title prefix + `## 🤖 AI-
 Fix: three-layer enforcement — PR template (visible at PR creation point), `docs/AGENTS.md` universal rule, `oversight-orchestrator.md` non-negotiable constraint.
 
 Rationale: rules that are not mechanically surfaced to the agents that must follow them will be missed. The template is the mechanism — any agent opening a PR via `gh pr create` will encounter it.
+
+### D27. Install-time placeholder substitution — perl for cross-platform in-place edit (2026-06-12)
+
+Agent files contain `{SPEC_FILE}`, `{DESIGN_PACK_DIR}`, and `{PROJECT_NAME}` placeholders. `install.sh` now substitutes them after copying agent files using `perl -i`, chosen over `sed -i` because `sed -i` has different syntax on macOS vs. Linux. Substitution only touches files containing at least one placeholder (grep check before perl), making it safe to run idempotently.
+
+### D28. Self-directing agent prompts over static content replication (2026-06-12)
+
+`ux-designer.md` contained a hardcoded CondoParkShare feature audit list. Instead of replacing with a `{FEATURE_AUDIT_LIST}` placeholder, the instruction was changed to "walk every user-visible feature in `{SPEC_FILE}`" — the agent derives the list at runtime. Self-directing instructions are more durable than static content: they track the spec as it evolves, require no substitution, and produce more thorough audits.
