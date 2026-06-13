@@ -279,20 +279,24 @@ PROJECT_NON_AGENT_TOKENS="myserver|mydb|my-service-name"
 
 ## Keeping up with framework updates
 
-When the framework source repo ([your project]) releases updates:
+When HOS publishes a new **release**, update your project by re-running the
+project installer against that release (no clone needed — it fetches the release):
 
 ```bash
-# Pull updates from the source into your project:
-bash scripts/framework/install.sh \
-  --source /path/to/[your project] \
-  --target .
+# From your bootstrap/ folder (or a clone's bootstrap/):
+./hos_install.sh /path/to/your-project              # move to the latest release
+./hos_install.sh --release v0.2.0 /path/to/project  # or pin a specific version
 
-# install.sh will:
-# - Update the framework scripts (always — these are framework infrastructure)
-# - SKIP agent files you have already created (never overwrites customizations)
-# - Preserve your config.sh values
-# - Prompt only for new config fields introduced in the update
+# hos_install.sh will:
+# - Fetch the validated release (refuses anything that isn't a published release)
+# - Update framework scripts/agents; SKIP files you've customized (use --force to overwrite)
+# - Record the new tag at the target's .hos-release
 ```
+
+> Project-specific `config.sh` values and `{PLACEHOLDER}` substitution are
+> currently managed by the legacy `scripts/framework/install.sh` config tool
+> (being folded into `hos_install.sh` — see #87); re-run it if your config needs
+> updating after a framework bump.
 
 After updating, run the full validation to confirm nothing was broken:
 

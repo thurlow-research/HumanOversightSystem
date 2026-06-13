@@ -220,7 +220,7 @@ Several patterns have emerged across the empirical work:
 
 **[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation — a real parking management app for condo communities, built to exercise HOS against genuine complexity (multi-tenant auth, booking logic, admin portals) while delivering something useful to an actual user community. It is the canonical example of what a HOS-governed project looks like end-to-end.
 
-HOS installs into any project repository **from a validated release** — never from an arbitrary working copy. See **[docs/SETUP.md](docs/SETUP.md)** for the full walkthrough.
+HOS installs into any project repository **from a validated release** — never from an arbitrary working copy. **Fast path: [docs/QUICKSTART.md](docs/QUICKSTART.md)** (three commands). Full walkthrough, customization, and project-start sequence: **[docs/SETUP.md](docs/SETUP.md)**.
 
 **Get the bootstrap scripts** (one small folder; everything else is fetched from the release):
 
@@ -261,7 +261,8 @@ shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 | **[AGENTS.md](AGENTS.md)** | Self-flagging protocol — the 5 mandatory behaviors every authoring agent must produce |
 | **[docs/AGENTS.md](docs/AGENTS.md)** | Full pipeline agent documentation — all roles, models, escalation paths |
 | **[docs/OVERSIGHT-RUNBOOK.md](docs/OVERSIGHT-RUNBOOK.md)** | Operational runbook — step-by-step commands for running the pipeline on each build step |
-| **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — applying HOS to a new project |
+| **[docs/QUICKSTART.md](docs/QUICKSTART.md)** | Quickstart — three commands to get a project running |
+| **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — full walkthrough, configuration, project-start sequence |
 | **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)** | Customization guide — adapting agents to a different stack or project |
 | **[research/](research/)** | Session logs and findings — the empirical record of what was built, what failed, and what was learned |
 

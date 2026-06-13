@@ -2,6 +2,8 @@
 
 This guide walks through applying the [your project] agent pipeline framework to a new project repository. The framework is the agent definitions, validation scripts, and oversight tooling — not the application code.
 
+**Just want to get running?** See **[QUICKSTART.md](QUICKSTART.md)** (three commands). This guide is the full walkthrough.
+
 For customization guidance after setup, see `docs/CUSTOMIZATION.md`.
 For the agent roles and pipeline structure, see `docs/AGENTS.md`.
 
