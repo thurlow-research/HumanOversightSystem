@@ -759,7 +759,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 3. Runs `scripts/framework/validate_docs.sh` — checks documentation coverage and addresses findings.
 4. Runs `scripts/framework/validate_spec_compliance.sh` (the script) to verify governance requirements; the `spec-compliance-validator` agent triages failures when the human invokes it.
 5. Synthesizes findings: cross-vendor findings (both reviewers) are treated as MUST_FIX; single-reviewer findings are investigated before acting.
-6. Routes fixes to domain owners (it reports them — it has only Read/Bash/Grep/Glob and cannot invoke other agents): path errors it may fix directly; escalation-chain breaks → human immediately; scope-creep risk → architect; agent-content fixes → the owning agent via the human.
+6. Triages fixes per the fixer triage (`contract/OVERSIGHT-CONTRACT.md` §6.0): it has `Write`/`Edit`, so it **fixes mechanical path/escalation-target errors in agent files directly** (it owns those). It **cannot invoke other agents**, so for structural fixes it routes/reports: escalation-chain breaks → human immediately; scope-creep risk → architect; agent system-prompt content/behavior → the owning agent via the human; framework-script logic changes → human approval (mechanical script fixes it may apply).
 
 **Escalation out:** Human immediately (broken escalation chain); `architect` (scope-creep or responsibility gaps); domain owner agents for content fixes.
 **Escalation in:** Invoked before committing framework changes; also invoked by `post-change-sweep` when framework files are in the diff.
@@ -819,7 +819,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - REQ-006–007: Five self-flagging behaviors enforced; prompt capture for MEDIUM+
 - REQ-008–009: Each `implemented` decision satisfies its verification criterion
 
-**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification); `technical-design` or agent author (missing loop exit); fix directly (wrong model assignment).
+**Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification; **missing loop exit in a consumer-project agent** — never escalated down-tier). Fixes directly with `Write`/`Edit` (it owns these): missing loop exit in a *framework* agent, wrong model assignment, and mechanical framework-script fixes (logic changes need human approval).
 **Escalation in:** From `framework-validator` (Phase 4 failure); invoked directly by human.
 
 ---
