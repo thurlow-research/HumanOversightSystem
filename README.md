@@ -180,3 +180,4 @@ Contributions, critique, and collaboration welcome.
 MIT License — see [LICENSE](LICENSE). Copyright Scott Thurlow 2026.
 
 Attribution is required for distributions. The research framing and framework design are Scott Thurlow's original work; collaboration and derivative builds are encouraged.
+
