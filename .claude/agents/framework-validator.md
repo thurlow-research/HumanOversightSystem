@@ -48,7 +48,9 @@ Output is written to `.claudetmp/framework/validation-YYYYMMDDTHHMMSS.md`. Read 
 bash scripts/framework/validate_docs.sh
 ```
 
-Output is written to `.claudetmp/framework/doc-validation-YYYYMMDDTHHMMSS.md`. This checks that docs accurately and completely describe agent behavior — catching omissions like "agent file says two modes, doc says only one." Findings go to `doc-validator` agent to triage; doc-validator applies fixes directly (it has Write access to docs/ files). Do not apply doc fixes yourself — delegate to doc-validator to maintain clear ownership.
+Output is written to `.claudetmp/framework/doc-validation-YYYYMMDDTHHMMSS.md`. This checks that docs accurately and completely describe agent behavior — catching omissions like "agent file says two modes, doc says only one."
+
+**Important — delegation limitation:** This agent has only Read/Bash/Grep/Glob tools and cannot directly invoke `doc-validator`. After reviewing the doc-validation output, report any MUST_FIX doc findings clearly with: the specific doc file, the missing content, and the source agent file that defines the behavior. The human or a subsequent doc-validator invocation applies the fixes. Do not claim to delegate if you cannot invoke the agent — report what needs fixing and who owns it.
 
 ### Step 4 — Spec compliance check (agy + codex)
 

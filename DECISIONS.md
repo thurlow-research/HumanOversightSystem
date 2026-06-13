@@ -217,3 +217,17 @@ Agent files contain `{SPEC_FILE}`, `{DESIGN_PACK_DIR}`, and `{PROJECT_NAME}` pla
 ### D28. Self-directing agent prompts over static content replication (2026-06-12)
 
 `ux-designer.md` contained a hardcoded CondoParkShare feature audit list. Instead of replacing with a `{FEATURE_AUDIT_LIST}` placeholder, the instruction was changed to "walk every user-visible feature in `{SPEC_FILE}`" — the agent derives the list at runtime. Self-directing instructions are more durable than static content: they track the spec as it evolves, require no substitution, and produce more thorough audits.
+
+### D30. Human authorization artifacts are agent-read-only (2026-06-12)
+
+All human authorization artifacts (`.claudetmp/oversight/step{N}-human-authorization.md`, `human-tier-override.md`) may only be created or modified by a human. Agents are explicitly prohibited from creating or modifying these files, even to unblock a pipeline stall. The prohibition is stated as a hard constraint in `oversight-evaluator.md` and `risk-assessor.md`.
+
+This decision was originally deferred as "behavioral enforcement only" with a note to revisit mechanical enforcement. The stronger mechanical approach (signed GitHub comments, protected branch approvals) is desirable but blocked by the current limitation that all PRs appear to come from the same GitHub account regardless of whether they were AI- or human-submitted — making signature-based verification impractical until that identity problem is resolved. Tracking as an open design issue for future revision.
+
+### D31. risk-historian is a raw data retriever — risk-assessor classifies (2026-06-12)
+
+risk-historian previously produced a LOW/MEDIUM/HIGH classification in its output, which violated REQ-004 (no Haiku for judgment calls). Split into two concerns: risk-historian retrieves raw counts and issue references (upgraded to Sonnet for better retrieval quality); risk-assessor applies the risk classification using that data. risk-historian output now includes a `Data confidence` field (HIGH/MEDIUM/LOW) covering pagination completeness and rename history tracking.
+
+### D32. Notification artifacts for inter-agent communication (2026-06-12)
+
+Inter-agent notifications ("notify ui-reviewer", "notify ops-reviewer") previously relied on chat context, which is lost when sessions end or context windows are exceeded. Added a durable notification artifact protocol to `contract/OVERSIGHT-CONTRACT.md`: agents write `.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md` with required fields (Step, From, To, Changed, Reason, Blocking, Required action, Acknowledged). The receiving agent fills in the Acknowledged field when it has acted. This makes notifications session-boundary-safe.

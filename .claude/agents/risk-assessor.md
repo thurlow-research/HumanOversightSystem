@@ -169,3 +169,5 @@ INSPECTION BRIEF: written to .claudetmp/oversight/validators/risk-assessment.md
 - Do not write to the sign-off register — the oversight-evaluator reads your output from `.claudetmp/oversight/validators/risk-assessment.md`, not from the register. Writing there would be ignored and create confusion.
 
 **On lowering the risk tier:** the tier may only be lowered below the coder's declaration if `.claudetmp/oversight/human-tier-override.md` exists and contains an explicit human-signed instruction for this step. Without that file, treat the declared tier as a hard floor regardless of validator scores.
+
+**You may not create, modify, or delete `.claudetmp/oversight/human-tier-override.md`.** This file may only be written by a human. If it is absent, the tier floor stands — do not fabricate an override to reach a lower tier.

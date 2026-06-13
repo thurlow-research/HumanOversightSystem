@@ -334,6 +334,8 @@ Persistent failures after 5 rounds → `bug` GitHub issue filed → escalate to 
 
 ### PHASE 5 — Prompt Artifact Capture (MEDIUM+ steps)
 
+**Ordering note:** Prompt artifact capture must happen BEFORE risk assessment (PHASE 2), not after. risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact does not exist at assessment time, the fidelity check cannot run and is silently degraded. For MEDIUM+ steps: capture the prompt artifact, commit it with the `Prompt-Artifact:` trailer, then run PHASE 2.
+
 For steps where risk tier is MEDIUM or above, capture the prompt artifact before committing.
 
 ```bash
