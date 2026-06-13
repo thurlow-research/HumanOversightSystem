@@ -20,7 +20,7 @@ from pathlib import Path
 from schema import make_result, make_finding, normalize, WEIGHTS
 
 # Thresholds for score normalization
-_CC_HIGH = 15   # cyclomatic complexity ≥15 → score 1.0
+_CC_HIGH = 15  # cyclomatic complexity ≥15 → score 1.0
 _COGN_HIGH = 20  # cognitive complexity ≥20 → score 1.0
 
 
@@ -40,12 +40,14 @@ def _radon_cc(files: list[str]) -> list[dict]:
     functions = []
     for fpath, entries in data.items():
         for entry in entries:
-            functions.append({
-                "file": fpath,
-                "name": entry.get("name", "?"),
-                "line": entry.get("lineno", 0),
-                "cyclomatic": entry.get("complexity", 0),
-            })
+            functions.append(
+                {
+                    "file": fpath,
+                    "name": entry.get("name", "?"),
+                    "line": entry.get("lineno", 0),
+                    "cyclomatic": entry.get("complexity", 0),
+                }
+            )
     return functions
 
 
@@ -56,8 +58,7 @@ def _radon_mi(files: list[str]) -> dict[str, float]:
         return {}
     try:
         data = json.loads(stdout)
-        return {k: v.get("mi", 100.0) if isinstance(v, dict) else v
-                for k, v in data.items()}
+        return {k: v.get("mi", 100.0) if isinstance(v, dict) else v for k, v in data.items()}
     except (json.JSONDecodeError, AttributeError):
         return {}
 
@@ -67,8 +68,11 @@ def analyse_files(file_paths: list[str]) -> dict:
         subprocess.run(["radon", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return make_result(
-            "complexity", 0.0, {"error": "radon not installed"},
-            weight=WEIGHTS["cyclomatic"], error="radon not installed — run: pip install radon",
+            "complexity",
+            0.0,
+            {"error": "radon not installed"},
+            weight=WEIGHTS["cyclomatic"],
+            error="radon not installed — run: pip install radon",
         )
 
     cc_funcs = _radon_cc(file_paths)
@@ -84,9 +88,12 @@ def analyse_files(file_paths: list[str]) -> dict:
     cc_score = normalize(max_cc, 1, _CC_HIGH)
 
     evidence = [
-        make_finding(f["file"], f["line"],
-                     f"cyclomatic={f['cyclomatic']} — {f['name']}()",
-                     severity="high" if f["cyclomatic"] >= 10 else "medium")
+        make_finding(
+            f["file"],
+            f["line"],
+            f"cyclomatic={f['cyclomatic']} — {f['name']}()",
+            severity="high" if f["cyclomatic"] >= 10 else "medium",
+        )
         for f in sorted(cc_funcs, key=lambda x: x["cyclomatic"], reverse=True)[:5]
     ]
 
@@ -120,8 +127,18 @@ def analyse_files(file_paths: list[str]) -> dict:
 def main() -> None:
     files = [f for f in sys.argv[1:] if f.endswith(".py") and Path(f).exists()]
     if not files:
-        print(json.dumps(make_result("complexity", 0.0, {"error": "no Python files"},
-                                     weight=WEIGHTS["cyclomatic"], error="no input files"), indent=2))
+        print(
+            json.dumps(
+                make_result(
+                    "complexity",
+                    0.0,
+                    {"error": "no Python files"},
+                    weight=WEIGHTS["cyclomatic"],
+                    error="no input files",
+                ),
+                indent=2,
+            )
+        )
         return
     print(json.dumps(analyse_files(files), indent=2))
 
