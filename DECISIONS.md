@@ -243,3 +243,15 @@ Two deliberate design choices:
 - **Bias the detector to over-detect.** The signatures are a floor; a false positive merely sends a benign change to a human (safe), while a false negative is the only real failure. Projects may extend the signatures for their stack but may not narrow the base set.
 
 Escapes are logged as audit events (`na-invalidated`, `structural-override`, the latter even when the human gate caught it) so the misclassification rate becomes measurable research data rather than a silently-blocked event.
+
+### D36. Install from a validated release, and split machine-bootstrap from project-install (2026-06-13)
+
+Two coupled decisions about the installer, driven by the move to batched validation (main is now an integration trunk, not a guaranteed-shippable artifact — see the release-branch/tag discussion).
+
+**1. Install from a release, not the local working copy.** `bootstrap/hos_install.sh` now fetches a **validated release** by default (latest GitHub release, or `--release <tag>`) and scaffolds the target from that, rather than copying whatever happens to be in the local tree. With batched validation the local copy is not guaranteed shippable, so a release is the reproducible, known-good artifact — important because HOS is a research instrument: a CPS experiment must run against a *defined* framework version. Fetch order: local `git archive` of the tag (fast/offline) → GitHub tarball via `gh`/`curl`. `--local` installs the working copy for development (clearly flagged unvalidated). The installed tag is recorded at the target's `.hos-release`. If no release exists yet, the installer refuses (pointing to `--local`) rather than silently installing an unvalidated tree.
+
+**2. Split machine bootstrap from project install, in a `bootstrap/` folder.** The uber `install.sh` did two jobs with different lifecycles (once-per-machine vs once-per-project), privileges (sudo vs none), and frequencies — the `--machine-only`/`--project-only` flags were the tell. Split into:
+- `bootstrap/hos_bootstrap.sh` — machine prerequisites (Python, ScanCode, gh, pip) + agent CLIs (delegates to `bootstrap/setup_clis.sh`). May need sudo. Once per machine.
+- `bootstrap/hos_install.sh` — project install from a release. **No sudo, no system installs**; it *checks* prerequisites and points back to the bootstrap if any are missing, keeping the privilege boundary clean.
+
+`bootstrap/` is the copy-to-machine bundle — the only thing a user copies to a machine; everything else (agents, validators, contract, docs) is fetched from the release. The SQC sampling salt (`.ai-local/sample.salt`) moved from the HOS repo into the *target* project, where it is actually used (fixing a pre-existing quirk). `setup_clis.sh` moved from `scripts/` into `bootstrap/`; references in installed scripts (`reverify_self.sh`, `framework-setup-validator`) were generalized since a target project does not carry the machine bootstrap. The legacy `scripts/setup_oversight.sh` is superseded by `hos_install.sh` (full reconciliation tracked separately).

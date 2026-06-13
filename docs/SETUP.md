@@ -20,7 +20,7 @@ For the agent roles and pipeline structure, see `docs/AGENTS.md`.
 
 Install both with:
 ```bash
-bash scripts/setup_clis.sh auth   # authenticate existing installs
+bash bootstrap/setup_clis.sh auth   # authenticate existing installs
 # or
 bash tools/setup-build-mac.sh     # full machine bootstrap (macOS)
 bash tools/setup-build.sh         # full machine bootstrap (Linux)

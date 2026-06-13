@@ -88,8 +88,8 @@ fi
 ### 5. External CLIs (for AI review)
 
 ```bash
-command -v agy   &>/dev/null && echo "OK: agy available"   || echo "MISSING: agy — see scripts/setup_clis.sh"
-command -v codex &>/dev/null && echo "OK: codex available" || echo "MISSING: codex — see scripts/setup_clis.sh"
+command -v agy   &>/dev/null && echo "OK: agy available"   || echo "MISSING: agy — run the HOS machine bootstrap (bootstrap/setup_clis.sh)"
+command -v codex &>/dev/null && echo "OK: codex available" || echo "MISSING: codex — run the HOS machine bootstrap (bootstrap/setup_clis.sh)"
 ```
 
 ### 6. Run the static checker

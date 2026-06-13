@@ -7,7 +7,7 @@ This repo is the canonical home of the Human Oversight System (HOS): a portable 
 ## What this repo is
 
 The HOS is simultaneously:
-1. A **deployable framework** — install it into any project with `./scripts/setup_oversight.sh`
+1. A **deployable framework** — install it into any project with `./bootstrap/hos_install.sh` (from a validated release)
 2. A **contract specification** — defines what any compliant agent team must produce
 3. A **research instrument** — empirical substrate for studying AI code oversight at scale
 
@@ -24,10 +24,14 @@ METHODOLOGY.md         End-to-end pipeline explainer
 contract/
   OVERSIGHT-CONTRACT.md  What any compliant agent team must produce
   step-manifest.template.yaml  Project config template
+bootstrap/             The copy-to-machine bundle (the only thing you copy to a machine):
+  hos_bootstrap.sh       MACHINE setup: Python/ScanCode/gh/pip; delegates to setup_clis.sh
+  hos_install.sh         PROJECT install: fetches a validated RELEASE and scaffolds it into
+                         a target repo (--release <tag> / --local). No sudo. Records
+                         the installed tag at the target's .hos-release.
+  setup_clis.sh          MACHINE bootstrap of agent CLIs (Node + claude/codex/agy + auth)
 .claude/agents/        Oversight layer agents (evaluator, orchestrator, risk-assessor, etc.)
 scripts/
-  install.sh             Platform-aware installer (macOS/Linux); installs Python,
-                         ScanCode Toolkit, gh, pip packages, and scaffolds target project
   run_panel.sh           Outer loop: post-PR cross-vendor panel (reads panel-context.md only)
   run_second_review.sh   Transition: pre-PR cross-vendor second review (machine-readable verdict)
   run_red_team.sh        Checkpoint: system-level adversarial red-team
@@ -35,8 +39,7 @@ scripts/
   reverify_self.sh       Targeted re-review of fixes against original findings
   capture_prompt.sh      Prompt artifact capture
   prompt_audit.sh        Prompt provenance audit
-  setup_oversight.sh     Install framework into a target project
-  setup_clis.sh          Machine bootstrap (installs agent CLIs)
+  setup_oversight.sh     Legacy project installer (superseded by bootstrap/hos_install.sh)
   oversight/
     validators/          Risk scoring scripts (Python, deterministic):
       rn_calculator.py     Dai et al. Risk Number (nesting calibrated from bug data)
@@ -67,9 +70,11 @@ templates/
 
 ## The two bootstraps
 
-**Machine bootstrap** (`./scripts/setup_clis.sh`): installs agent CLIs (claude, codex, agy, gh) and their Node runtime onto the machine. Run once per machine.
+Both live in `bootstrap/` — the copy-to-machine bundle. Everything else is fetched from a release.
 
-**Project install** (`./install.sh` or `./scripts/setup_oversight.sh <path>`): installs the oversight protocol into a target project — AGENTS.md, scripts, PR template, branch protection. Run once per project.
+**Machine bootstrap** (`./bootstrap/hos_bootstrap.sh`): installs the machine prerequisites (Python 3.10+, ScanCode, gh, pip analysis packages) and — via `bootstrap/setup_clis.sh` — the agent CLIs (claude, codex, agy) + Node runtime. May need sudo. Run once per machine.
+
+**Project install** (`./bootstrap/hos_install.sh [<path>]`): installs the oversight protocol into a target project — AGENTS.md, agents, scripts, contract, PR template. By default it installs from a **fetched, validated release** (not the local working copy); use `--release <tag>` to pin a version or `--local` for a dev install. No sudo — it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing. Records the installed tag at the target's `.hos-release`. Run once per project (and on release bumps). Supersedes the legacy `scripts/setup_oversight.sh`.
 
 ---
 
@@ -142,7 +147,7 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 
 ## Working in this repo
 
-- When writing or editing scripts, follow the conventions in `setup_clis.sh` (colours, idempotency, platform detection).
+- When writing or editing scripts, follow the conventions in `bootstrap/setup_clis.sh` (colours, idempotency, platform detection).
 - Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md` — don't add base-project logic here.
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.
