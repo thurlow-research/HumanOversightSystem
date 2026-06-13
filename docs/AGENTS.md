@@ -25,6 +25,35 @@ Every other agent operates within the bounds set by these four. `ux-designer` is
 
 ## Universal AI disclosure requirement
 
+### Issues
+
+**Every GitHub issue created by an AI agent must have the creating agent identified in the title:**
+
+```
+[AI: {agent-name}] {issue-type}: {description}
+```
+
+Examples:
+- `[AI: spec-red-team] spec-gap: auth flow missing rate limiting`
+- `[AI: security-reviewer] security-finding: SQL injection in parking/views.py`
+- `[AI: red-team/codex] red-team-finding: session fixation in invite flow`
+- `[AI: claude] feat: session summary pipeline`
+
+The agent name is the agent that created the issue (e.g. `spec-red-team`, `security-reviewer`, `oversight-evaluator`, `claude` for a Claude Code session). This makes AI-created issues immediately recognisable in the issue list without having to open them.
+
+**Every AI-created issue must also include a compact footer** at the end of the body:
+
+```markdown
+---
+*🤖 Created by `{agent-name}` | Step: {N or "session"} | Branch: `{branch}` | {YYYY-MM-DD}*
+```
+
+The footer is lighter than the PR disclosure block — no model ID or structured table — because issues are log entries, not merge decisions. The step/branch fields provide the build context needed for triage and to understand whether the issue is still relevant if the branch is abandoned.
+
+This requirement applies to all projects — HOS, CondoParkShare, and any other consumer repo. Omitting the `[AI: ...]` prefix or the footer is a protocol violation.
+
+### Pull Requests
+
 **Every PR opened by an AI agent — regardless of which agent, which tool, or which pipeline path — must include:**
 
 1. **Title prefix:** `[AI: agent-name]` — e.g. `[AI: oversight-orchestrator]` or `[AI: claude]`

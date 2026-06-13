@@ -141,7 +141,7 @@ for f in findings:
     if sev not in ("critical", "high"):
         continue
 
-    title = f"Red-team [{milestone}/{reviewer}]: {str(f.get('finding','?'))[:80]}"
+    title = f"[AI: red-team/{reviewer}] red-team-finding [{milestone}]: {str(f.get('finding','?'))[:70]}"
     body = "\n".join([
         f"**Milestone:** {milestone}",
         f"**Reviewer:** {reviewer}",
@@ -154,7 +154,8 @@ for f in findings:
         f"**Files involved:** {', '.join(f.get('files', []))}",
         f"**Remediation:** {f.get('remediation', f.get('suggestion', ''))}",
         "",
-        "*Created by run_red_team.sh — system-level checkpoint.*",
+        "---",
+        f"*🤖 Created by `red-team/{reviewer}` | Step: {milestone} | Branch: `{branch}` | PR: {pr}*",
     ])
 
     cmd = ["gh", "issue", "create", "--title", title, "--body", body,

@@ -224,17 +224,33 @@ steps:
 
 Compliant agents create GitHub issues at defined trigger points. Issue creation is enforced by agent instructions and is auditable via `gh issue list`. The evaluator does NOT query GitHub to verify issue existence — it trusts the sign-off register which agents update after creating issues. The issue trail is a research and audit artifact, not a blocking compliance check.
 
-| Trigger | Label(s) | Who creates |
-|---|---|---|
-| Spec silent/ambiguous → human escalation | `spec-gap` | pm-agent or equivalent |
-| Design loop → 5-round escalation | `design-concern` | architect or equivalent |
-| Unit test loop exhausted | `test-resistance` | unit-test agent |
-| System test fails after fix iterations | `bug` | system-test agent |
-| Security finding (crit/high) resolved pre-merge | `security-finding`, `resolved-in-review` | security reviewer |
-| Privacy finding (blocking) resolved pre-merge | `privacy-finding`, `resolved-in-review` | privacy reviewer |
-| Second review finds crit/high | `second-review-finding` | run_second_review.sh |
-| Panel finds something internal team missed | `escaped-defect` | panel arbiter |
-| Red-team finds exploitable issue | `red-team-finding` | run_red_team.sh |
+**AI issue title convention:** Every issue created by an AI agent must begin with `[AI: {agent-name}]`:
+
+```
+[AI: {agent-name}] {issue-type}: {description}
+```
+
+**AI issue footer convention:** Every AI-created issue must include this footer at the end of the body:
+
+```markdown
+---
+*🤖 Created by `{agent-name}` | Step: {N or "session"} | Branch: `{branch}` | {YYYY-MM-DD}*
+```
+
+Both requirements apply to all projects that install this framework.
+
+| Trigger | Label(s) | Who creates | Example title prefix |
+|---|---|---|---|
+| Spec silent/ambiguous → human escalation | `spec-gap` | pm-agent or equivalent | `[AI: spec-red-team] spec-gap:` |
+| Design loop → 5-round escalation | `design-concern` | architect or equivalent | `[AI: architect] design-concern:` |
+| Unit test loop exhausted | `test-resistance` | unit-test agent | `[AI: unit-test] test-resistance:` |
+| System test fails after fix iterations | `bug` | system-test agent | `[AI: system-test] bug:` |
+| Security finding (crit/high) resolved pre-merge | `security-finding`, `resolved-in-review` | security reviewer | `[AI: security-reviewer] security-finding:` |
+| Privacy finding (blocking) resolved pre-merge | `privacy-finding`, `resolved-in-review` | privacy reviewer | `[AI: privacy-reviewer] privacy-finding:` |
+| Second review finds crit/high | `second-review-finding` | run_second_review.sh | `[AI: second-review/agy] second-review-finding:` |
+| Panel finds something internal team missed | `escaped-defect` | panel arbiter | `[AI: panel-arbiter] escaped-defect:` |
+| Red-team finds exploitable issue | `red-team-finding` | run_red_team.sh | `[AI: red-team/codex] red-team-finding:` |
+| Startup artifact missing a case | `startup-artifact-gap` | any downstream agent | `[AI: ui-reviewer] startup-artifact-gap:` |
 
 ---
 
