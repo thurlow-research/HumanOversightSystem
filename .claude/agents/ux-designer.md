@@ -100,10 +100,10 @@ Before making any change, classify it:
 | Type | Definition | Process |
 |---|---|---|
 | **Clarifying** | Adds precision to an existing rule or token without changing meaning | Update design pack directly; notify the invoking agent of the clarification |
-| **Additive** | New token, new component variant, new copy pattern not previously covered | Add to design pack; consult pm-agent if the addition affects a user-visible flow; notify a11y-reviewer if adding new color tokens |
-| **Structural** | Changes a core color, removes a component, changes the brief, or changes an established UX paradigm | Present to human for approval before writing; do not apply without explicit sign-off |
+| **Additive** | New token, variant, or copy pattern that expresses behavior **already required by the spec or ADR** — making the implicit explicit, not introducing new behavior | Add to design pack; consult pm-agent if the addition affects a user-visible flow; notify a11y-reviewer if adding new color tokens |
+| **Structural** | Changes a core color, removes a component, changes the brief, or changes an established UX paradigm. **Also structural:** any change that introduces a new user decision point, new blocked/permission state, new completion criterion, or new step in a user flow — even if it feels small. When in doubt, treat as structural. | Present to human for approval before writing; do not apply without explicit sign-off |
 
-**Additive changes are your normal operating mode.** The design pack is a living specification — gaps are expected as new features are built. Fill them.
+**Additive changes are your normal operating mode** — but only for behavior the spec already requires. The test: "would a PM reading the spec expect this state to exist?" If yes, it is additive. If the state is new to the spec, it is structural regardless of how minor it appears.
 
 ## Adding tokens
 

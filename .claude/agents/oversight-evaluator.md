@@ -44,7 +44,20 @@ Read `contract/gate-suspension.md` if it exists. For each required role in `requ
 
 **Exception — CRITICAL steps:** Gate suspension may NOT waive roles for steps with `human_gate_required: true`. The human authorization gate on CRITICAL steps cannot be suspended. If a CRITICAL step has a required role listed as suspended, treat it as NOT suspended and require the sign-off anyway. Log a warning: "Suspension of {role} ignored on CRITICAL step — human_gate_required overrides suspension."
 
+**Warning — HIGH-risk security/privacy suspension:** If `security` or `privacy` is suspended on a HIGH-risk step (validated tier = HIGH or CRITICAL), do NOT fail compliance — suspension is permitted for brownfield remediation — but log a prominent warning and check for explicit acknowledgment:
+
+Look for `security-suspension-acknowledged: yes` in `contract/gate-suspension.md`. If absent:
+- Log: "⚠ WARNING: security reviewer suspended on HIGH-risk step without explicit acknowledgment. Add `security-suspension-acknowledged: yes` to contract/gate-suspension.md to confirm this risk is understood."
+- Trigger CONDITIONAL_PROCEED (not ESCALATE) — the step can proceed but the human must see the warning in the PR body.
+
+If `security-suspension-acknowledged: yes` is present, record as WAIVED (acknowledged) — no additional warning needed.
+
 If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
+
+**Determine the effective required_signoffs list:**
+1. Start with the step manifest's `required_signoffs` for this step
+2. Check for `.claudetmp/oversight/validators/required-reviewers.md` — if it exists AND `step:` matches this step number, use its `required_signoffs` list instead (the risk-assessor's dynamic list takes precedence as it reflects the actual validated tier)
+3. If the file is absent or step number doesn't match, fall back to the step manifest
 
 For each required role that is NOT suspended, check:
 - Is there an entry in the register? If not → **COMPLIANCE FAIL**

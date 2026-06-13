@@ -24,6 +24,8 @@ bash scripts/oversight/run_validators.sh parking/admin.py 2>/dev/null \
 
 ## Brownfield Onboarding — Applying HOS to an Existing Codebase
 
+> **For recommended gate re-enable order and strategic guidance**, see [`docs/BROWNFIELD-ONBOARDING.md`](BROWNFIELD-ONBOARDING.md). This section covers the mechanical steps; that document covers why and in what order.
+
 When adding HOS gates to a codebase that was not built with them, everything will fail at once. The gate suspension mechanism lets you accept the existing technical debt, then eliminate it domain by domain while preventing new debt from accumulating in domains you've already cleaned up.
 
 **Process:**

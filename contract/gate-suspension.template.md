@@ -24,6 +24,11 @@ Authorized by: [Your name]
 Date: [YYYY-MM-DD]
 Reason: [Why enforcement is suspended — e.g., "Brownfield onboarding: applying HOS to existing CondoParkShare codebase. Gates suspended initially; re-enabling reviewer by reviewer as each domain is remediated."]
 
+# Required if suspending security or privacy reviewer on HIGH-risk steps.
+# Confirms you understand that HIGH-risk changes are proceeding without security review.
+# Remove this line when security/privacy are re-enabled.
+# security-suspension-acknowledged: yes
+
 ---
 
 ## Currently suspended

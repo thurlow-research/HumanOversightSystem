@@ -178,9 +178,9 @@ When build discoveries or human decisions require the spec to be amended, `pm-ag
 
 | Change type | Definition | Process |
 |---|---|---|
-| Clarifying | Adds precision without changing behavior | Update spec directly; notify architect and technical-design |
-| Additive | New requirement not previously covered | Update spec; notify architect and technical-design |
-| Structural | Changes existing behavior or scope | Draft the change, present to human for approval **before** writing |
+| Clarifying | Adds precision without changing behavior — makes the implicit explicit within what the spec already requires | Update spec directly; notify architect and technical-design |
+| Additive | Specifies behavior that was **always implied by the spec** but not yet written — filling a gap, not introducing new behavior. A new requirement that did not exist before is structural regardless of size. | Update spec; notify architect and technical-design |
+| Structural | Changes existing behavior, introduces new behavior, changes scope, or introduces a new user obligation, permission, or decision point. **When in doubt, treat as structural.** | Draft the change, present to human for approval **before** writing |
 
 Never updates the spec to rationalize code that doesn't meet the original spec — that is a spec falsification.
 
