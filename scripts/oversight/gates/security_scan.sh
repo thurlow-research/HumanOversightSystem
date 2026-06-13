@@ -47,8 +47,17 @@ echo "=== bandit (HIGH severity) ==="
 if [[ -x "$VENV_BIN/bandit" ]]; then
     if [[ ${#FILES[@]} -gt 0 ]]; then
         BANDIT_TMP=$(mktemp /tmp/bandit_XXXXXX)
-        _run_bandit() { "$VENV_BIN/bandit" -f json -lll "${FILES[@]}" > "$BANDIT_TMP" 2>/dev/null || true; }
-        if run_with_retry "bandit" "$GATE_TIMEOUT" "$GATE_RETRIES" "true" bash -c "$(declare -f _run_bandit); _run_bandit"; then
+        # Unit of work: run bandit under the configured timeout, capture to temp.
+        # bandit exits 1 when it FINDS issues — that is a successful scan for us
+        # (we parse the JSON afterward). Only timeout (124) or a bandit error
+        # (rc >= 2) counts as a failed attempt worth retrying.
+        _run_bandit() {
+            with_timeout "$GATE_TIMEOUT" "$VENV_BIN/bandit" -f json -lll "${FILES[@]}" > "$BANDIT_TMP" 2>/dev/null
+            local brc=$?
+            [[ $brc -eq 0 || $brc -eq 1 ]] && return 0
+            return "$brc"
+        }
+        if run_with_retry "bandit" "$GATE_RETRIES" "true" _run_bandit; then
             BANDIT_OUT=$(cat "$BANDIT_TMP")
             HIGH_COUNT=$(echo "$BANDIT_OUT" | PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
                 "import json,sys; d=json.load(sys.stdin); \
@@ -77,8 +86,8 @@ fi
 echo ""
 echo "=== pip-audit (dependency vulnerabilities) ==="
 if [[ -x "$VENV_BIN/pip-audit" ]]; then
-    if run_with_retry "pip-audit" "$GATE_TIMEOUT" "$GATE_RETRIES" "false" \
-        "$VENV_BIN/pip-audit" --progress-spinner off 2>&1; then
+    _run_pip_audit() { with_timeout "$GATE_TIMEOUT" "$VENV_BIN/pip-audit" --progress-spinner off 2>&1; }
+    if run_with_retry "pip-audit" "$GATE_RETRIES" "false" _run_pip_audit; then
         echo "OK: no known vulnerabilities"
     else
         # pip-audit exhausted retries — required=false so we warn and continue

@@ -112,78 +112,35 @@ run_validator() {
 
     local tmpout
     tmpout=$(mktemp /tmp/validator_XXXXXX)
-    local attempt=0
-    local total_attempts=$(( VALIDATOR_RETRIES + 1 ))
-    local last_error=""
+
+    # Unit of work — one attempt. Sees name/script/args/timeout/tmpout via bash
+    # dynamic scope (it is called from run_with_retry, which we call from here).
+    # PYTHONPATH includes the validators dir so `from schema import` works.
+    # with_timeout (from run_with_retry.sh) returns 124 on timeout.
+    _validator_unit() {
+        PYTHONPATH="$VALIDATORS_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+            with_timeout "$timeout" "$PYTHON" "$script" "${args[@]}" > "$tmpout" 2>/dev/null
+    }
+
     local rc=0
-    local succeeded=false
+    run_with_retry "$name" "$VALIDATOR_RETRIES" "$required" _validator_unit && rc=0 || rc=$?
 
-    printf "  %-30s" "$name"
-
-    while [[ $attempt -lt $total_attempts ]]; do
-        attempt=$(( attempt + 1 ))
-
-        if [[ $attempt -gt 1 ]]; then
-            printf "\n  \033[33m⟳\033[0m  %-28s attempt %d/%d — %s" \
-                "$name" "$attempt" "$total_attempts" "$last_error"
-            sleep 1
-        fi
-
-        # Run with timeout if available; use && || to capture rc safely under set -e
-        # PYTHONPATH includes validators dir so `from schema import` works
-        if [[ -n "$_TIMEOUT_BIN" && "$timeout" -gt 0 ]]; then
-            PYTHONPATH="$VALIDATORS_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-                "$_TIMEOUT_BIN" "$timeout" \
-                "$PYTHON" "$script" "${args[@]}" > "$tmpout" 2>/dev/null \
-                && rc=0 || rc=$?
-        else
-            PYTHONPATH="$VALIDATORS_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-                "$PYTHON" "$script" "${args[@]}" > "$tmpout" 2>/dev/null \
-                && rc=0 || rc=$?
-        fi
-
-        if [[ $rc -eq 0 ]]; then
-            succeeded=true
-            break
-        elif [[ $rc -eq 124 ]]; then
-            last_error="timeout after ${timeout}s"
-        else
-            last_error="exit ${rc}"
-        fi
-    done
-
-    if $succeeded; then
+    if [[ $rc -eq 0 ]]; then
         local OUTPUT
         OUTPUT=$(cat "$tmpout")
         echo "$OUTPUT" > "$outfile"
         local SCORE
         SCORE=$(echo "$OUTPUT" | PYTHONSAFEPATH=1 "$PYTHON" -c \
             "import json,sys; d=json.load(sys.stdin); print(f\"{d.get('score',0):.2f}\")" 2>/dev/null || echo "?")
-        if [[ $attempt -gt 1 ]]; then
-            printf "\n  \033[32m✔\033[0m  %-28s succeeded on attempt %d/%d — score=%s\n" \
-                "$name" "$attempt" "$total_attempts" "$SCORE"
-        else
-            echo "score=$SCORE"
-        fi
+        printf "  %-30s score=%s\n" "$name" "$SCORE"
         RESULTS+=("$name")
         VALIDATOR_SUCCEEDED=$(( VALIDATOR_SUCCEEDED + 1 ))
     else
-        echo '{"dimension":"'"$name"'","score":0,"error":"validator exhausted retries: '"$last_error"'"}' > "$outfile"
-        # Append to audit log
-        local audit_log="audit/oversight-log.jsonl"
-        if [[ -d "audit" ]]; then
-            local ts; ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
-            local outcome; [[ "$required" == "true" ]] && outcome="failed" || outcome="skipped"
-            echo "{\"event\":\"validator-failure\",\"validator\":\"${name}\",\"required\":${required},\"attempts\":${total_attempts},\"final_outcome\":\"${outcome}\",\"last_error\":\"${last_error}\",\"timestamp\":\"${ts}\"}" \
-                >> "$audit_log" 2>/dev/null || true
-        fi
-        if [[ "$required" == "true" ]]; then
-            printf "\n  \033[31m✘\033[0m  %-28s FAILED after %d attempt(s) (required — job fails)\n" \
-                "$name" "$total_attempts"
+        # run_with_retry already printed the ✘/⏸ line and emitted the audit event.
+        echo '{"dimension":"'"$name"'","score":0,"error":"validator exhausted retries"}' > "$outfile"
+        if [[ $rc -eq 1 ]]; then
             VALIDATOR_FAILED=$(( VALIDATOR_FAILED + 1 ))
         else
-            printf "\n  \033[33m⏸\033[0m  %-28s SKIPPED after %d attempt(s) (optional)\n" \
-                "$name" "$total_attempts"
             VALIDATOR_SKIPPED=$(( VALIDATOR_SKIPPED + 1 ))
         fi
     fi

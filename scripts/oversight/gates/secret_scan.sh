@@ -41,14 +41,14 @@ if command -v detect-secrets &>/dev/null; then
     echo "=== detect-secrets ==="
     if [[ ${#FILES[@]} -gt 0 ]]; then
         DS_TMP=$(mktemp /tmp/detect_secrets_XXXXXX)
-        _run_detect_secrets() { detect-secrets scan "${FILES[@]}" > "$DS_TMP" 2>/dev/null; }
-        if ! run_with_retry "detect-secrets" "$GATE_TIMEOUT" "$GATE_RETRIES" "true" \
-            bash -c "$(declare -f _run_detect_secrets); _run_detect_secrets"; then
+        # Unit of work: detect-secrets under the configured timeout, capture to temp.
+        _run_detect_secrets() { with_timeout "$GATE_TIMEOUT" detect-secrets scan "${FILES[@]}" > "$DS_TMP" 2>/dev/null; }
+        if ! run_with_retry "detect-secrets" "$GATE_RETRIES" "true" _run_detect_secrets; then
             echo "GATE FAIL: detect-secrets did not complete after retries"
-            rm -f "$DS_TMP"; unset -f _run_detect_secrets
+            rm -f "$DS_TMP"
             exit 1
         fi
-        BASELINE=$(cat "$DS_TMP"); rm -f "$DS_TMP"; unset -f _run_detect_secrets
+        BASELINE=$(cat "$DS_TMP"); rm -f "$DS_TMP"
         SECRET_COUNT=$(echo "$BASELINE" | PYTHONSAFEPATH=1 python3 -c \
             "import json,sys; d=json.load(sys.stdin); \
              total=sum(len(v) for v in d.get('results',{}).values()); print(total)" 2>/dev/null || echo "0")
