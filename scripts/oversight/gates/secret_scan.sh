@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+_GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/oversight/gates/check_suspension.sh
+source "$_GATES_DIR/check_suspension.sh"
+is_suspended "secrets" && { print_suspended "secrets"; exit 0; }
+
 FILES=()
 CHECK_STAGED=false
 

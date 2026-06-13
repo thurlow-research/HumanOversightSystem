@@ -22,6 +22,69 @@ bash scripts/oversight/run_validators.sh parking/admin.py 2>/dev/null \
 
 ---
 
+## Brownfield Onboarding — Applying HOS to an Existing Codebase
+
+When adding HOS gates to a codebase that was not built with them, everything will fail at once. The gate suspension mechanism lets you accept the existing technical debt, then eliminate it domain by domain while preventing new debt from accumulating in domains you've already cleaned up.
+
+**Process:**
+
+**1. Create the suspension manifest** (human only — agents may not create this):
+```bash
+cp contract/gate-suspension.template.md contract/gate-suspension.md
+# Edit the file: fill in Authorized by, Date, Reason
+# Add one SUSPENDED: line per gate/reviewer you're suspending
+git add contract/gate-suspension.md
+git commit -m "chore: add gate suspension for brownfield HOS onboarding"
+```
+
+**2. Verify gates are suspended:**
+```bash
+bash scripts/oversight/gates/lint_check.sh --all
+# Should print: ⏸ GATE SUSPENDED: lint
+```
+
+**3. Work reviewer by reviewer.** Choose a domain (e.g., lint), fix all existing issues in that domain, verify the gate passes clean, then re-enable it:
+```bash
+# Fix all lint issues, then verify:
+bash scripts/oversight/gates/lint_check.sh --all
+# → GATE PASS: ...
+
+# Re-enable: remove the SUSPENDED: lint line from contract/gate-suspension.md
+# Add an entry to the Re-enable log, then commit:
+git add contract/gate-suspension.md
+git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
+```
+
+**4. Repeat for each domain.** The invariant: once re-enabled, a gate stays on. Do not re-suspend a gate that has already been re-enabled — fix the regression instead.
+
+**Gate name reference:**
+
+| Gate script | Suspension name | Sign-off role name |
+|---|---|---|
+| `lint_check.sh` | `lint` | — |
+| `type_check.sh` | `types` | — |
+| `secret_scan.sh` | `secrets` | — |
+| `security_scan.sh` | `security` | `security` |
+| `template_refs_check.sh` | `template-refs` | — |
+| `portability_check.sh` | `portability` | — |
+| `django_check.sh` | `django` | — |
+| security-reviewer sign-off | `security` | `security` |
+| privacy-reviewer sign-off | — | `privacy` |
+| ui-reviewer sign-off | — | `ui` |
+| a11y-reviewer sign-off | — | `a11y` |
+| infra-reviewer sign-off | — | `infra` |
+| ops-reviewer sign-off | — | `ops` |
+| unit-test sign-off | — | `test-unit` |
+| system-test sign-off | — | `test-system` |
+
+**5. Delete the suspension file when done:**
+```bash
+rm contract/gate-suspension.md
+git add -u && git commit -m "chore: remove gate suspension — all gates active"
+```
+
+---
+
 ## Project Start Sequence
 
 Run this once before the first build step begins. These agents produce the documents that every subsequent agent reads.
