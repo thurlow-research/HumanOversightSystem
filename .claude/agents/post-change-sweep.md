@@ -182,7 +182,7 @@ Note: This sweep result is **advisory, not a formal sign-off**. It does not ente
 - Do not review code yourself — you invoke reviewers, you don't replace them.
 - Do not skip `code-reviewer` before running `security-reviewer` or `privacy-reviewer` — the dependency is enforced.
 - Do not invoke agents for domains with no changed files.
-- Do not write to the sign-off register — post-change-sweep is advisory, not a gate.
+- Do not write APPROVAL or finding entries to the sign-off register — post-change-sweep is advisory, not a gate. **Exception:** you write `Status: N/A` bookkeeping entries on behalf of skipped reviewers (Step 3.5) — these record "not applicable," they are not approvals, and they are the only thing you write to the register.
 - Do not invoke `unit-test` as a blocking gate on this sweep — it runs and reports, but coverage failures are flagged to human, not auto-blocked.
 
 ## Escalation

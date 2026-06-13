@@ -26,7 +26,7 @@ You have two phases. Phase 1 (compliance) must pass before Phase 2 (quality) run
 Read these before starting:
 1. `contract/step-manifest.yaml` — what is required for this step
 2. `.claudetmp/signoffs/step{N}-register.md` — the sign-off record
-3. `.claudetmp/second-review/step{N}-*.md` — second review output (newest, if present; absence means score was below both thresholds — that is valid, not a compliance failure)
+3. `.claudetmp/second-review/step{N}-*.md` — second review output. The file is **always written** when the review runs (it carries `verdict: skipped` when the score was below thresholds). Therefore a *present* file with `verdict: skipped` is valid; a *genuinely absent* file means the review never ran. See the Phase 1 second-review compliance check below.
 4. `.claudetmp/oversight/validators/risk-assessment.md` — validated risk tier
 5. `.claudetmp/oversight/step{N}-human-authorization.md` — CRITICAL steps only: human must create this file before the evaluator runs. If the step has `human_gate_required: true` and this file is absent or empty, compliance fails immediately in Phase 1.
 
@@ -79,10 +79,12 @@ If `security-suspension-acknowledged: yes` is present, record as WAIVED (acknowl
 
 If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
 
-**Determine the effective required_signoffs list:**
-1. Start with the step manifest's `required_signoffs` for this step
-2. Check for `.claudetmp/oversight/validators/required-reviewers.md` — if it exists AND `step:` matches this step number, use its `required_signoffs` list instead (the risk-assessor's dynamic list takes precedence as it reflects the actual validated tier)
-3. If the file is absent or step number doesn't match, fall back to the step manifest
+**Determine the effective required_signoffs list (UNION — never fewer than the manifest):**
+1. Start with the step manifest's `required_signoffs` for this step — this is the floor.
+2. Check for `.claudetmp/oversight/validators/required-reviewers.md` — if it exists AND `step:` matches, take the **union** of its list with the manifest list. The dynamic list may only **add** reviewers (the validated tier demanded more); it may never remove a manifest-required role.
+3. If a dynamic list is missing a role the manifest requires, the manifest still wins — required = `manifest_required ∪ dynamic_required`.
+
+This is the ratchet (`research/findings/ratchet-principle.md`): the dynamic list can tighten (add reviewers) but never loosen (drop below the manifest baseline). A required-reviewers file that omits a manifest role does not waive it.
 
 For each required role that is NOT suspended, check:
 - Is there an entry in the register? If not → **COMPLIANCE FAIL**
@@ -92,6 +94,10 @@ For each required role that is NOT suspended, check:
 - For `test-system` (when `system_test_applicable: true`): is the entry present and `All_passing: true`? If not → **COMPLIANCE FAIL**
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
 - For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
+
+**Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review script **always writes** `.claudetmp/second-review/step{N}-*.md` when it runs — with `verdict: skipped` if the score was below the firing threshold. Therefore:
+- A present file (any verdict, including `skipped`) → satisfied.
+- A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold" (below-threshold still writes the file). This closes the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance, defeating the independence requirement.
 
 **Prompt artifact compliance (MEDIUM+ steps):**
 - Use the commit range from the register header (`base_sha..head_sha`) — this is the definitive set of commits for the step:
@@ -202,7 +208,9 @@ Step N: [PROCEED|CONDITIONAL_PROCEED|ESCALATE] — [one sentence reason]
 
 ## Human authorization file integrity
 
-**You may not create, modify, or delete `.claudetmp/oversight/step{N}-human-authorization.md` or any other human authorization artifact.** These files may only be created by a human. If a step requires human authorization and the file is absent, your only action is to report COMPLIANCE FAIL and halt — you do not create the file yourself, even to unblock the pipeline. This prohibition is absolute.
+**You may not create, modify, or delete any human-authored governance artifact** — `.claudetmp/oversight/step{N}-human-authorization.md`, `.claudetmp/oversight/human-tier-override.md`, or `contract/gate-suspension.md`. These may only be written by a human. If one is absent, your only action is to report the corresponding COMPLIANCE FAIL / unsuspended state and halt — you never create it to unblock the pipeline. This prohibition is absolute.
+
+This is the **ratchet** (`research/findings/ratchet-principle.md`): suspending a gate or lowering a tier *loosens* oversight, and loosening always requires a human. As of now this is enforced behaviorally, not mechanically — the same identity limitation documented in `research/findings/human-gate-enforcement-limits.md` (AI and human commits share one account, so signature-based enforcement isn't yet possible). The prohibition is explicit and auditable (git history shows who created the file); a mechanical guard is an open item.
 
 ---
 

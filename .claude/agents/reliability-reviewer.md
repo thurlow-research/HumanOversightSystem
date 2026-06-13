@@ -92,13 +92,17 @@ For each outbound connection in the changed code, check:
 Write to the sign-off register at `.claudetmp/signoffs/step{N}-register.md`:
 
 ```
-## reliability | {changed files} | {datetime}
-Status: APPROVED | WITHHELD
+## reliability | {changed files} | {ISO-8601 datetime}
+Status: APPROVED | ESCALATED | N/A
 Agent: reliability-reviewer
 Artifact: {changed files}
 Iterations: {N}
-Findings: {count and summary, or "none"}
+Human_resolution: {ISO date} — {decision}   ← required only when Status: ESCALATED
+Reason: {why not applicable}                 ← required only when Status: N/A
+Notes: {findings summary, or "none"}
 ```
+
+You **withhold sign-off** by iterating with the coder (do not write APPROVED) until findings are resolved; if unresolved within the iteration limit, write `Status: ESCALATED` with a `Human_resolution:` line. Write `Status: N/A` with a `Reason:` line when the diff has no outbound connections to review.
 
 When withholding, list each finding with file, line, and what the risk is. Do not leave findings implicit.
 

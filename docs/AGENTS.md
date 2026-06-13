@@ -700,7 +700,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Invoked:** Subagent of `risk-assessor` (runs only at MEDIUM+).
 
 **Role:** Performs semantic comparison of prompt artifacts against generated code to verify faithful implementation.
-**Status:** Designed and stubbed; performs a best-effort manual comparison until full automated comparison logic is implemented.
+**Status:** Designed and stubbed — **NYI (Not Yet Implemented)**. The stub returns `Status: NYI` and does **not** block or escalate; `risk-assessor` records the coverage gap in the inspection brief. It does not perform a best-effort comparison — a stub that returns plausible results would create false confidence (see the agent file's stub-behavior rule).
 
 **Process:**
 1. Verifies positive fidelity (implements all requirements).
@@ -757,9 +757,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 1. Runs `scripts/framework/check_agents_static.sh` — structural checks, no AI. Must pass before proceeding.
 2. Runs `scripts/framework/validate_agents.sh` — agy (consistency/completeness) + codex (adversarial gaps). Reads output from `.claudetmp/framework/validation-*.md`.
 3. Runs `scripts/framework/validate_docs.sh` — checks documentation coverage and addresses findings.
-4. Runs `scripts/framework/validate_spec_compliance.sh` — invokes `spec-compliance-validator` to verify governance requirements.
+4. Runs `scripts/framework/validate_spec_compliance.sh` (the script) to verify governance requirements; the `spec-compliance-validator` agent triages failures when the human invokes it.
 5. Synthesizes findings: cross-vendor findings (both reviewers) are treated as MUST_FIX; single-reviewer findings are investigated before acting.
-6. Delegates fixes to domain owners: path errors → coder; escalation chain breaks → human immediately; scope-creep risk → architect.
+6. Routes fixes to domain owners (it reports them — it has only Read/Bash/Grep/Glob and cannot invoke other agents): path errors it may fix directly; escalation-chain breaks → human immediately; scope-creep risk → architect; agent-content fixes → the owning agent via the human.
 
 **Escalation out:** Human immediately (broken escalation chain); `architect` (scope-creep or responsibility gaps); domain owner agents for content fixes.
 **Escalation in:** Invoked before committing framework changes; also invoked by `post-change-sweep` when framework files are in the diff.
