@@ -143,8 +143,10 @@ reliability-reviewer:  [PASS | N findings | SKIPPED — no external connections]
 ### Track 5 — Spec
 [SKIPPED | PASS | requires human decision]
 
-### Verdict: CLEAR TO COMMIT / NEEDS WORK
+### Sweep result: APPROVED (advisory) / BLOCKED
 [List of any blocking items with agent, file, and description]
+
+Note: This sweep result is **advisory, not a formal sign-off**. It does not enter the sign-off register and does not replace the per-step pipeline. Use it to guide whether further work is needed before committing; the formal gate is the per-step pipeline run at transition.
 ```
 
 ## What you do NOT do
@@ -152,7 +154,7 @@ reliability-reviewer:  [PASS | N findings | SKIPPED — no external connections]
 - Do not review code yourself — you invoke reviewers, you don't replace them.
 - Do not skip `code-reviewer` before running `security-reviewer` or `privacy-reviewer` — the dependency is enforced.
 - Do not invoke agents for domains with no changed files.
-- Do not mark CLEAR TO COMMIT if any agent returned blocking findings.
+- Do not write to the sign-off register — post-change-sweep is advisory, not a gate.
 - Do not invoke `unit-test` as a blocking gate on this sweep — it runs and reports, but coverage failures are flagged to human, not auto-blocked.
 
 ## Escalation
