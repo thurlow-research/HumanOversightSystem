@@ -61,12 +61,12 @@ class _N1Visitor(ast.NodeVisitor):
         self._enter_loop(node, node.body)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if self._in_loop:
+        if self._in_loop():
             self._check_orm_call(node)
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if self._in_loop and node.attr in _ORM_METHODS:
+        if self._in_loop() and node.attr in _ORM_METHODS:
             # Heuristic: attribute access of an ORM method name inside a loop
             # Check if the parent is a Call (actual method call, not just reference)
             self._record_candidate(node)

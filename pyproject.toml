@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["scripts/oversight/validators", "scripts/oversight/token_tracker"]
+omit = ["*/test_*", "*/__init__.py", "*/conftest.py"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+
+[tool.mutmut]
+paths_to_mutate = "scripts/oversight/validators/"
+runner = "python -m pytest tests/ -x -q --no-header"
+tests_dir = "tests/"
+# Exclude __init__.py and files that are primarily subprocess wrappers
+# (those are integration-tested, not unit-tested)
+dict_synonyms = ""
