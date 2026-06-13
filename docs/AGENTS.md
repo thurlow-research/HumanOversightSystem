@@ -616,7 +616,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 19. `risk-historian` — Historical Risk Analyst
 
-**Model:** `claude-haiku-4-5-20251001`
+**Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
 
 **Role:** Queries GitHub issues and git logs to build a historical risk profile of changed files.
