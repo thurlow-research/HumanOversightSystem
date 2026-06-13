@@ -36,7 +36,15 @@ Read these before starting:
 
 Check the sign-off register against the step manifest's `required_signoffs` list.
 
-For each required role, check:
+**Before checking sign-offs, check for gate suspension:**
+Read `contract/gate-suspension.md` if it exists. For each required role in `required_signoffs`, check if the role name appears as `SUSPENDED: {role}` in that file. If suspended:
+- Record the role as **WAIVED (suspended)** — not a compliance fail
+- Note it in your evaluation output: "Role {role} suspended per contract/gate-suspension.md — authorized by {name}"
+- Do NOT count suspended roles against compliance
+
+If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
+
+For each required role that is NOT suspended, check:
 - Is there an entry in the register? If not → **COMPLIANCE FAIL**
 - Does the entry have all required §3 fields: `Status`, `Agent`, `Artifact`, `Iterations`? If any are missing → **COMPLIANCE FAIL** (the register entry is malformed)
 - Does the entry have `Status: APPROVED` or `Status: CONDITIONAL`? `CONDITIONAL` passes compliance but automatically triggers `CONDITIONAL_PROCEED` in Phase 2 even if no other quality flags fire. If `Status: ESCALATED`, look for a `Human_resolution:` field in the same register entry. The field must be on its own line in the format `Human_resolution: {date} — {decision}` (example: `Human_resolution: 2026-06-11 — Reviewed 5-round loop; architect decision is sound, proceed`). If the field is absent or empty → **COMPLIANCE FAIL**

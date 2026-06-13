@@ -130,6 +130,16 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `ops` | Observability / telemetry spec conformance (optional — projects with ops complexity) |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
+**Gate suspension (brownfield remediation):**
+A project may temporarily suspend specific gates/roles during brownfield onboarding by creating `contract/gate-suspension.md` (see `contract/gate-suspension.template.md`). Suspended gates exit 0 instead of blocking; suspended sign-off roles are treated as WAIVED by the oversight-evaluator. The suspension file:
+- Must be created by a human (agents may not create or modify it)
+- Must include `Authorized by:` and `Date:` fields
+- Lists suspended gates as `SUSPENDED: {role-name}` lines
+- Is committed to git — the suspension is auditable
+
+Gate script names for suspension: `lint`, `security`, `secrets`, `types`, `template-refs`, `portability`, `django`
+Sign-off role names match `required_signoffs` in `step-manifest.yaml`
+
 ---
 
 ## 4. Test declaration schema

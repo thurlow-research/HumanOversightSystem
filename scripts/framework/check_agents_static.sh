@@ -101,6 +101,7 @@ docs/architecture/ADR-001-pilot.md
 docs/design/TECHNICAL-DESIGN.md
 docs/ops/TELEMETRY-SPEC.md
 contract/step-manifest.yaml
+contract/gate-suspension.md
 scripts/framework/config.sh"
 
 while IFS= read -r -d '' f; do

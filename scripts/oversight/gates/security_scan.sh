@@ -17,6 +17,9 @@ set -euo pipefail
 GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/ensure_venv.sh
 source "$GATES_DIR/../ensure_venv.sh"
+# shellcheck source=scripts/oversight/gates/check_suspension.sh
+source "$GATES_DIR/check_suspension.sh"
+is_suspended "security" && { print_suspended "security"; exit 0; }
 
 FILES=()
 CHECK_ALL=false
