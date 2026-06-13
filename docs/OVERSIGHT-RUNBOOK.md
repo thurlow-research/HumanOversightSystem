@@ -527,6 +527,62 @@ git push origin build
 
 ---
 
+## Cross-Role Feedback Loops
+
+When work mid-build reveals a gap in the spec, design pack, or telemetry spec, agents route through a defined chain rather than jumping directly to pm-agent or human. The universal principle: **enter at the lowest authority that can resolve it; escalate only if that level cannot.**
+
+### Spec-gap chain (requirements and design gaps)
+
+```
+coder / security-reviewer / privacy-reviewer
+  → technical-design    (can it be resolved at the implementation design level?)
+      → architect        (does it require an architectural decision?)
+          → spec-gap issue for pm-agent   (only if it requires a product decision)
+```
+
+**Rules:**
+- `coder` halts on meaningful behavioral ambiguity → escalates to `technical-design` with both interpretations
+- `security-reviewer` / `privacy-reviewer` with a spec gap → escalate to `technical-design`, not pm-agent directly
+- `technical-design` handles the gap or escalates up; it is the first receiver for all spec-gap routes below it
+- `architect` creates the `spec-gap` issue when it confirms a product decision is needed; it does not route directly to pm-agent for implementation questions
+- `pm-agent` receives `spec-gap` issues, updates the spec, notifies the blocked agent and architect/technical-design of the change
+
+### Design pack loop (UX gaps)
+
+```
+ui-reviewer / a11y-reviewer
+  → ux-designer    (fill the gap)
+      → re-notify invoking reviewer to re-review
+          → if still unresolved after 2 cycles: escalate to human
+```
+
+**Rules:**
+- `ui-reviewer` states the specific missing element when escalating; `ux-designer` fills and notifies back
+- `a11y-reviewer` escalates contrast failures; `ux-designer` adds accessible token and notifies back
+- `ux-designer` consults `pm-agent` when reactive gap-filling reveals a product-scope question not in the original spec; if pm-agent confirms it's out of scope, creates a `spec-gap` issue and halts
+- Maximum 2 cycles before human escalation
+
+### Telemetry spec loop (observability gaps) — projects with ops configured
+
+```
+ops-reviewer
+  → ops-designer    (fill the spec gap)
+      → re-notify ops-reviewer to re-review
+          → if still unresolved after 2 cycles: escalate to architect, then human
+```
+
+See ops-designer and ops-reviewer agent files for additive vs. structural classification rules.
+
+### What pm-agent does when it receives a spec-gap mid-build
+
+1. Read the issue — understand what agent raised it and what it is blocked on
+2. Classify: clarifying / additive / structural
+3. Update the spec (structural changes require human approval first)
+4. Notify the blocked agent (via issue comment) and `architect` + `technical-design` of the change
+5. Close the issue only after the spec is updated and the blocked agent is unblocked
+
+---
+
 ## Checkpoint Red-Teams
 
 Run at steps 3, 6, 10, 11 (after those steps are merged):

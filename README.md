@@ -230,6 +230,8 @@ bash scripts/framework/install.sh \
 
 The install script creates required directories, copies all agent files, and walks you through project-specific configuration. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
 
+**Contributing back.** If your project surfaces a framework gap — a missing feedback path, an agent behavior that doesn't hold for your stack, a contract requirement that conflicts with real usage — open an issue or PR here. Consumer projects are the empirical test of the framework; findings from real deployments improve the contract for everyone.
+
 ---
 
 ## Documentation

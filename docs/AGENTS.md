@@ -103,7 +103,17 @@ FRAMEWORK VALIDATION (run before committing agent/doc changes)
 Reads all five spec files (`SPEC.md`, `SPEC-1-pilot.md`, `SPEC-2-subscriptions.md`, `SPEC-3-exchange-economy.md`, `DESIGN.md`) and surfaces every ambiguity, gap, or underspecified behavior in a single numbered list to the human. Does not proceed until the human has answered. The confirmed answers become a requirements supplement that feeds the architect.
 
 **During build:**
-Answers product questions from `technical-design`, `unit-test`, and `system-test` agents, citing the spec section. If the spec is silent, escalates to the human with a precise single question.
+Answers product questions from `technical-design`, `unit-test`, `system-test`, and `ux-designer` agents, citing the spec section. If the spec is silent, escalates to the human with a precise single question.
+
+**Mid-build `spec-gap` response protocol:**
+When a `spec-gap` issue arrives mid-build (not just pre-coding), pm-agent must:
+1. Read the issue — understand what agent raised it and what decision it is blocked on
+2. Classify the gap (clarifying / additive / structural)
+3. Apply the spec update following the change-type process below
+4. Notify the agent that raised the issue (via the sign-off register or direct invocation) that the spec is updated and it may proceed
+5. Notify `architect` and `technical-design` of any additive or structural change so they can assess downstream impact
+
+Do not close a spec-gap issue without updating the spec and notifying the blocked agent.
 
 **Spec update path:**
 When build discoveries or human decisions require the spec to be amended, `pm-agent` classifies the change and applies it:
@@ -117,7 +127,7 @@ When build discoveries or human decisions require the spec to be amended, `pm-ag
 Never updates the spec to rationalize code that doesn't meet the original spec — that is a spec falsification.
 
 **Escalation out:** Human (spec silent or structural change required).
-**Escalation in:** From `technical-design`, `unit-test`, `system-test`.
+**Escalation in:** `spec-gap` issues from `architect`, `technical-design`, `ux-designer` (routed up the chain — no agent reaches pm-agent directly except through the design chain).
 
 ---
 
@@ -135,10 +145,13 @@ Reads the spec, the PM's confirmed requirements, and the ux-designer's `docs/des
 Reviews every draft of the technical design document. Critiques harshly and specifically — "this is fine" is not acceptable output. Names specific failure modes and what must change. Iterates with `technical-design` until the design is sound.
 
 **Dispute arbitration:**
-When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer`, or `technical-design`: makes a decision, states it clearly, names which agent must change course. If the dispute is actually a product question, redirects to `pm-agent`.
+When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer`, or `technical-design`: makes a decision, states it clearly, names which agent must change course. If the dispute is actually a product question, redirects to `pm-agent` via `spec-gap` issue.
 
-**Escalation out:** Human (unresolvable after architect, or product/policy decisions).
-**Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`.
+**Spec-gap escalation:**
+When `technical-design` or a reviewer escalates a spec-gap that cannot be resolved at the design level (requires a product/requirements decision): create a `spec-gap` issue for `pm-agent`, halt the dependent work, and notify the escalating agent of the issue number. Do not resolve product questions within architectural authority.
+
+**Escalation out:** Human (unresolvable after architect, or product/policy decisions); `pm-agent` via `spec-gap` issue (product/requirements decisions that cannot be resolved architecturally).
+**Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`, `ops-designer`.
 
 ---
 
@@ -167,8 +180,18 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 
 **During build:** Answers coder's design questions. If a question reveals a gap, updates `TECHNICAL-DESIGN.md` and notifies the architect.
 
-**Escalation out:** `architect` (design disputes, architectural questions); `pm-agent` (product questions).
-**Escalation in:** From `coder` (design questions), `unit-test` (untestable designs).
+**Spec-gap routing (first receiver in the chain):**
+When `coder`, `security-reviewer`, or `privacy-reviewer` escalates a spec-related gap, `technical-design` is the first handler:
+- Gap resolvable at the implementation design level → update `TECHNICAL-DESIGN.md`; notify the escalating agent
+- Gap requires an architectural decision → escalate to `architect`
+- Gap requires a product/requirements decision (architect confirms) → create `spec-gap` issue for `pm-agent`; halt the dependent work
+
+Do not bypass this chain — agents below technical-design in the hierarchy do not create `spec-gap` issues directly.
+
+**Loop exit:** Iteration with `architect` has a maximum of 3 rounds. After 3 rounds without approval, escalate to human with a summary of unresolved decisions and competing options.
+
+**Escalation out:** `architect` (design disputes, architectural questions; max 3 rounds then human); `pm-agent` via `spec-gap` issue (product decisions architect confirms cannot be resolved at design level).
+**Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `unit-test` (untestable designs).
 
 ---
 
@@ -191,7 +214,11 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 - Every privileged admin action writes an `AdminAuditLog` entry.
 - No PII in logs. No secrets in source. All hex colors via CSS tokens only.
 
-**Escalation out:** `technical-design` (implementation design questions); `ux-designer` (missing design token, component class, or UX pattern in the design pack); `architect` (disputes with reviewers); `pm-agent` via `technical-design` (product questions).
+**Spec-gap behavior:** When implementation reveals an underdetermined spec — two valid interpretations with different behavioral consequences, or a required behavior the spec leaves implicit:
+- Minor ambiguity with an obvious safer interpretation → proceed with safer choice; note explicitly in self-flag output
+- Meaningful behavioral ambiguity → halt; escalate to `technical-design` with both interpretations and their implications; do not proceed on assumption
+
+**Escalation out:** `technical-design` (implementation design questions, spec ambiguity — first receiver in the chain); `ux-designer` (missing design token, component class, or UX pattern); `architect` (disputes unresolvable at design level).
 **Escalation in:** From `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `unit-test`, `system-test`.
 
 ---
@@ -244,7 +271,12 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 
 **Output:** Each finding includes severity (critical/high/medium/low), CWE class, file/function, attack scenario, and specific remediation.
 
-**Escalation out:** `architect` (architectural security flaws); `pm-agent` (security policy questions); human (unresolvable).
+**Spec-gap routing:** When a finding reveals the spec doesn't cover a required security property (threat model gap, missing auth requirement, unspecified data boundary):
+- Do not route directly to `pm-agent` — the spec gap may be resolvable at the design level
+- Escalate to `technical-design` with the specific gap; technical-design determines if it's an implementation design fix or requires architectural/product decisions
+- Continue up the chain as needed: technical-design → architect → `spec-gap` issue for pm-agent
+
+**Escalation out:** `coder` (code fixes); `technical-design` (spec doesn't cover a threat — first receiver in the chain).
 **Escalation in:** From `coder` (re-review after fixes).
 
 ---
@@ -278,7 +310,9 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 - Any admin view rendering resident PII writes an `AdminAuditLog` entry
 - No PII in log output; `DEBUG = False` in production
 
-**Escalation out:** `pm-agent` (data collection scope); `architect` (encryption architecture); human (retention policy).
+**Spec-gap routing:** Same chain as `security-reviewer` — when a finding reveals the spec doesn't cover a required compliance property (retention policy, PII boundary, consent requirement): escalate to `technical-design` first; do not route directly to pm-agent.
+
+**Escalation out:** `coder` (code fixes); `technical-design` (spec doesn't cover a compliance requirement — first receiver in the chain).
 **Escalation in:** From `coder` (re-review after fixes).
 
 ---
@@ -301,8 +335,9 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 - Error messages explain what to do next ("No spots open then. Try a wider window.")
 - Empty states invite action ("List the first spot in your building.")
 
-**Escalation out:** `ux-designer` (design intent ambiguity or tokens.css gap); `coder` (implementation bugs).
-**Escalation in:** From `coder` (re-review after fixes).
+**Escalation out:** `ux-designer` (design pack gap — missing token, component, copy pattern); `coder` (implementation bugs).
+**Escalation in:** From `coder` (re-review after fixes); from `ux-designer` (re-review notification after design pack extension).
+**Loop protocol:** When escalating a gap to `ux-designer`, state the specific missing element. After ux-designer fills the gap and notifies, re-review against the updated design pack. Maximum 2 cycles; escalate to human if unresolved.
 
 ---
 
@@ -341,8 +376,9 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **After extending the design pack:** Notifies the invoking agent with the exact change; notifies `a11y-reviewer` for new color tokens; notifies `ui-reviewer` so it can re-check template conformance. Appends a one-line entry to the `## Change log` section of `DESIGN.md`.
 
-**Escalation out:** `pm-agent` (design addition affects a user-visible flow); human (structural brand change — modifying core palette tokens, typeface, or design brief).
+**Escalation out:** `pm-agent` (design addition affects a user-visible flow, or reactive gap-filling reveals a spec-scope question not in the original spec); human (structural brand change — modifying core palette tokens, typeface, or design brief).
 **Escalation in:** From `pm-agent` (at project start); from `coder`, `ui-reviewer`, `a11y-reviewer`, `technical-design`, `pm-agent` (during build).
+**Loop exit:** ui-reviewer and a11y-reviewer escalation cycles have a 2-round maximum. After 2 cycles without resolution, escalate to human.
 
 ---
 
