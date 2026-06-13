@@ -140,6 +140,22 @@ If your project has a different design system (or none):
 
 These agents are optional — add them when your project has background jobs, external API integrations, async task queues, or multi-service architecture. Skip for CLI tools, libraries, or simple request/response apps with no external dependencies.
 
+---
+
+## Adding resilience review (reliability-reviewer)
+
+`reliability-reviewer` is optional — add it when your project makes outbound connections to external dependencies (database, HTTP APIs, message queues, caches). It reviews code for resilience: timeouts, retry with backoff, graceful degradation, no unbounded waits. Skip for CLI tools, libraries, or projects with no external connections.
+
+### `reliability-reviewer.md`
+- The review dimensions are universal — they apply to any stack with outbound connections
+- If your stack has specific retry or timeout conventions (e.g. Django's `CONN_MAX_AGE`, requests Session defaults), note them in the agent description
+- Escalation to `architect` for structural reliability decisions (sync vs async, circuit-breaker design) is already wired in
+
+### `step-manifest.yaml`
+- Uncomment `reliability: reliability-reviewer` in the `role_mappings` section
+- Add `reliability` to `required_signoffs` for steps that introduce DB queries, HTTP calls, or queue operations
+- No spec file required — reliability best practices are universal; project-specific contracts come from the technical-design ADR
+
 ### `ops-designer.md`
 - The template at `templates/TELEMETRY-SPEC.md` shows the expected output structure
 - Update component coverage section with your actual system components

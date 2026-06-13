@@ -74,6 +74,7 @@ git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
 | a11y-reviewer sign-off | — | `a11y` |
 | infra-reviewer sign-off | — | `infra` |
 | ops-reviewer sign-off | — | `ops` |
+| reliability-reviewer sign-off | — | `reliability` |
 | unit-test sign-off | — | `test-unit` |
 | system-test sign-off | — | `test-system` |
 
@@ -284,8 +285,10 @@ Invoke: privacy-reviewer   ← steps with PII: 3, 6, 9, 10, 11
 Invoke: ui-reviewer        ← step 10 (templates)
 Invoke: a11y-reviewer      ← step 10 (templates)
 Invoke: infra-reviewer     ← steps 1, 11 (infrastructure)
-Invoke: ops-reviewer       ← steps with background jobs, external integrations,
-                              or async work (if ops configured for this project)
+Invoke: ops-reviewer          ← steps with background jobs, external integrations,
+                                 or async work (if ops configured for this project)
+Invoke: reliability-reviewer  ← steps introducing or modifying outbound connections
+                                 (DB queries, HTTP calls, queue ops, cache reads/writes)
 ```
 
 > **Note — `ux-designer` has two modes:**
