@@ -5,8 +5,10 @@
 # the framework scripts themselves.
 #
 # Sequence:
-#   1. Static check  (check_agents_static.sh) — fast, no AI, blocks on findings
-#   2. AI review     (validate_agents.sh)      — agy + codex, blocks on blocking findings
+#   1.  Static check (check_agents_static.sh) — fast, no AI, blocks on findings
+#   1.5 Self-review  (validate_self.sh)        — Claude/Opus pre-flush before
+#       spending external budget; skipped if absent or via --skip-self
+#   2.  AI review    (validate_agents.sh)      — agy + codex, blocks on findings
 #
 # Usage:
 #   ./scripts/framework/run_framework_validation.sh
@@ -25,6 +27,7 @@ set -euo pipefail
 STATIC_ONLY=false
 SKIP_DOCS=false
 SKIP_COMPLIANCE=false
+SKIP_SELF=false
 CHANGED_ONLY=""
 SKIP_CODEX=""
 SKIP_AGY=""
@@ -34,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --static-only)      STATIC_ONLY=true;             shift ;;
         --skip-docs)        SKIP_DOCS=true;               shift ;;
         --skip-compliance)  SKIP_COMPLIANCE=true;         shift ;;
+        --skip-self)        SKIP_SELF=true;               shift ;;
         --changed-only)     CHANGED_ONLY="--changed-only"; shift ;;
         --skip-codex)       SKIP_CODEX="--skip-codex";    shift ;;
         --skip-agy)         SKIP_AGY="--skip-agy";        shift ;;
@@ -69,6 +73,22 @@ if $STATIC_ONLY; then
     echo "  Stamp written: $STAMP_DIR/all-phases.stamp"
     echo "  Note: AI phases skipped — stamp records skipped phases."
     exit 0
+fi
+
+# ── Phase 1.5: Opus self-review (cheap pre-flush before external budget) ─────
+# Runs Claude/Opus over the framework files to catch obvious problems before
+# spending the metered external agy/codex budget. Skipped gracefully if the
+# script is absent or claude CLI is unavailable. --skip-self to bypass.
+if ! $SKIP_SELF && [[ -f "$SCRIPT_DIR/validate_self.sh" ]]; then
+    echo "Phase 1.5 — Opus self-review (pre-external)"
+    echo ""
+    if ! bash "$SCRIPT_DIR/validate_self.sh" $CHANGED_ONLY; then
+        echo ""
+        echo "  Opus self-review found blocking issues — fix before the external pass."
+        echo "  (Use --skip-self to bypass, e.g. when claude CLI is unavailable.)"
+        exit 1
+    fi
+    echo ""
 fi
 
 # ── Phase 2: Agent semantic review ──────────────────────────────────────────
