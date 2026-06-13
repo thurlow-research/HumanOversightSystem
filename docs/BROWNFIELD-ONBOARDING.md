@@ -88,6 +88,13 @@ Enable when functional tests exist for the primary spec flows. This may require 
 
 **Track progress visibly.** The re-enable log in `contract/gate-suspension.md` is your progress record. Each row represents a domain that is provably clean. This log is also research data — it shows how long brownfield HOS adoption takes in practice.
 
+**Let the manager re-enable for you.** `scripts/oversight/suspension_manager.py` removes the manual bookkeeping burden:
+- `--census` — prints active suspensions, warns on any past their optional `review-by:` date, and logs a `suspension-census` health metric (so "14 suspensions still open after 3 months" is visible, not buried).
+- `--check` — runs each auto-checkable script gate (lint, secrets, types, template-refs, portability, django) and records pass/fail history.
+- `--auto-remove` — when a pure script gate has passed `SUSPENSION_AUTO_REMOVE_RUNS` consecutive checks (default 3) it is removed automatically and logged. This handles the case where a busy human forgets to re-enable a gate that is already clean.
+
+Two safety properties: a suspension marked `[pinned]` is never auto-removed (use it when you want a gate to stay suspended despite passing); and reviewer-role suspensions and `security` (which has a reviewer counterpart) are never auto-removed — a passing script can't stand in for a human review. The manager can only ever *remove* suspensions, never add one — the ratchet (`research/findings/ratchet-principle.md`). Set `SUSPENSION_AUTO_REMOVE=false` in `config.sh` to disable auto-removal and get nudges only.
+
 ---
 
 ## Security-specific note
