@@ -95,6 +95,27 @@ For each required role that is NOT suspended, check:
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
 - For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
 
+**Independent diff re-derivation (anti-gaming — only in the loosening direction):**
+
+Upstream actors self-determine two things that can *loosen* oversight: an authoring agent classifies its own change `clarifying`/`additive`/`structural` (only `structural` reaches the human), and post-change-sweep writes `Status: N/A` to waive a reviewer. Both are trusted determinations by the actor being governed. Independently re-derive them from the diff — but **only when the upstream determination loosens oversight.** If upstream asked for *more* review (a real sign-off, an `ESCALATED` status, a `structural` classification with a human-authorization artifact, or `human_gate_required: true` with the auth file present), there is nothing to guard against — skip the check; do not spend the re-derivation cost. The tool is `scripts/oversight/change_classifier.py` (deterministic; biased to over-detect so it fails toward human review).
+
+- **N/A verification (#74) — runs only if ≥1 register entry has `Status: N/A`.** Collect the N/A'd roles, then run the classifier scoped to exactly those roles:
+  ```bash
+  python3 scripts/oversight/change_classifier.py --base "$BASE_SHA" --head "$HEAD_SHA" \
+    --domains-only --roles "<comma-separated N/A'd roles>"
+  ```
+  For any N/A'd role that appears in `domains_touched` → the domain was in fact changed → the waiver is not credible → **COMPLIANCE FAIL** (require a real sign-off for that role). Roles not returned as touched keep their valid N/A. (`code-review` is never N/A'd by the orchestrator, so it is not in scope here.)
+
+- **Structural-override verification (#75) — skip if this step already cleared a human gate** (i.e. `human_gate_required: true` **and** the human-authorization file is present and non-empty — the human already saw every change). Otherwise run:
+  ```bash
+  python3 scripts/oversight/change_classifier.py --base "$BASE_SHA" --head "$HEAD_SHA" --structural-only
+  ```
+  Each entry in `structural_signals` (new external dependency, new permission/auth state, new user-facing surface/route, new user-facing state) **forces `structural`** regardless of how any authoring agent labeled it. For each signal, a covering human-authorization artifact must exist: `.claudetmp/oversight/step{N}-human-authorization.md`, or a domain structural-auth file written by a human (e.g. `.claudetmp/oversight/step{N}-ops-structural-auth.md`). If any structural signal is **not** covered by such an artifact → the change reached pre-PR without the human gate it requires → **COMPLIANCE FAIL** (escalate, listing each uncovered signal with its file and evidence). This makes the self-classification auditable: mislabeling a structural change as `additive` no longer bypasses the human, because the evaluator re-derives `structural` from the diff itself.
+
+  **Emit audit events** (per §6a) so escapes are measurable research data, not just blocked:
+  - For every detected structural signal, append `{"event":"structural-override","signal":"{name}","step":N,"file":"{file}","covered":{true|false},"timestamp":"..."}` to `audit/oversight-log.jsonl`. Emit it **even when `covered` is true** — a covered signal still means an authoring agent under-classified a change the human happened to catch via another gate; the covered-vs-uncovered ratio is the escaped-misclassification rate (#75).
+  - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
+
 **Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review script **always writes** `.claudetmp/second-review/step{N}-*.md` when it runs — with `verdict: skipped` if the score was below the firing threshold. Therefore:
 - A present file (any verdict, including `skipped`) → satisfied.
 - A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold" (below-threshold still writes the file). This closes the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance, defeating the independence requirement.

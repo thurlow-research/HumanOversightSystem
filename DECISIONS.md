@@ -231,3 +231,15 @@ risk-historian previously produced a LOW/MEDIUM/HIGH classification in its outpu
 ### D32. Notification artifacts for inter-agent communication (2026-06-12)
 
 Inter-agent notifications ("notify ui-reviewer", "notify ops-reviewer") previously relied on chat context, which is lost when sessions end or context windows are exceeded. Added a durable notification artifact protocol to `contract/OVERSIGHT-CONTRACT.md`: agents write `.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md` with required fields (Step, From, To, Changed, Reason, Blocking, Required action, Acknowledged). The receiving agent fills in the Acknowledged field when it has acted. This makes notifications session-boundary-safe.
+
+### D33. Independent re-derivation of loosening determinations — the self-classification gate cannot be policed by the classifier (2026-06-13)
+
+Two upstream determinations could *loosen* oversight without a human: an authoring agent classifying its own change `additive`/`clarifying` (only `structural` escalates), and post-change-sweep writing `Status: N/A` to waive a reviewer. In both cases the actor being governed is also the judge, and nothing audited the judgment (issues #74, #75). Tightening the prose definitions — done repeatedly — treats the symptom; the structural fix is an *independent* re-derivation from the diff.
+
+Added `scripts/oversight/change_classifier.py` (deterministic, stdlib-only): it reports which reviewer domains a diff actually touched (#74) and detects mechanical **structural-override signatures** — new external dependency, new permission/auth state, new user-facing surface/route, new user-facing state enum (#75, contract §2a). The `oversight-evaluator` runs it in Phase 1: an N/A for a domain the diff touched fails compliance; a structural-override signature with no covering human-authorization artifact fails compliance and escalates. Self-classification is now auditable — mislabeling a structural change as additive no longer bypasses the human gate.
+
+Two deliberate design choices:
+- **Verify only in the loosening direction** (the ratchet applied to verification cost). If upstream asked for *more* review — a real sign-off, an `ESCALATED` status, a `structural` label with authorization, a cleared human gate — there is nothing to guard against, so the evaluator skips the re-derivation entirely. We pay the cost only when a determination would reduce scrutiny.
+- **Bias the detector to over-detect.** The signatures are a floor; a false positive merely sends a benign change to a human (safe), while a false negative is the only real failure. Projects may extend the signatures for their stack but may not narrow the base set.
+
+Escapes are logged as audit events (`na-invalidated`, `structural-override`, the latter even when the human gate caught it) so the misclassification rate becomes measurable research data rather than a silently-blocked event.
