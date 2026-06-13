@@ -244,6 +244,30 @@ Two deliberate design choices:
 
 Escapes are logged as audit events (`na-invalidated`, `structural-override`, the latter even when the human gate caught it) so the misclassification rate becomes measurable research data rather than a silently-blocked event.
 
+### D34. Self-review-driven hardening of the re-derivation work, and a parser-robustness fix (2026-06-13)
+
+The Opus self-validator, run on the #74/#75 PR before any external budget was spent, surfaced five findings — proof the pre-external self-review earns its place. Four were acted on in the same PR (the fifth, the shared-identity ratchet limitation, was filed as #82 because it needs the separate-identity work D30 tracks):
+
+- **The CRITICAL human gate was keyed off the mutable manifest flag `human_gate_required`, not re-derived from the validated tier** (blocking). `risk-assessor` ratchets the tier but nothing ratcheted the flag, so a re-derived-CRITICAL step with `human_gate_required: false` would skip the hard human gate. Fixed: the evaluator now fires the gate on `manifest.human_gate_required OR validated_tier == CRITICAL` (contract §7 condition 7). This is the same anti-gaming principle as conditions 9–10 — the most important loosening determination must itself be re-derived, not trusted.
+- **The tier-gated compliance layer silently no-ops if `risk-assessment.md` is absent.** Added a check (§7 condition 7a): a missing assessment falls back to `max(manifest tier, MEDIUM)` and a COMPLIANCE WARN, so an undetermined tier can never downgrade the MEDIUM+ checks to nothing.
+- **The agent prompts over-claimed coverage** ("it will be caught"). The mechanical re-derivation only detects structural changes that *add* a §2a signature; a change that *modifies existing behavior* adds none and is not caught. Scoped the claim honestly in ux-designer, ops-designer, and contract §2a (residual-coverage note) — those changes rely on honest classification plus reviewer/panel detection.
+
+Separately, a **parser-robustness fix in `validate_self.sh`**: the finalize step matched findings with a strict `​```json{...}​```` regex, which failed when the model emitted prose inside the fence (an adversarial-review preamble), misreporting a review-with-findings as `verdict=error`. Replaced with a string-aware balanced-brace extractor that tolerates prose and ignores braces inside JSON strings (finding descriptions contain literals like `step{N}-...`). Without this, every self-review whose model wrapped its JSON in commentary would silently lose its findings.
+
+### D35. doc-validator is a fixer, and the fix-in-place/file-an-issue triage is codified once (2026-06-13)
+
+The Opus self-validator escalated a blocking finding at the 3-pass cap: `doc-validator` was documented as a fixer ("applies fixes directly — you have Write access to doc files") but its frontmatter granted only `Read, Bash, Grep, Glob`. At runtime it could write nothing, and since `framework-validator` "cannot directly invoke doc-validator," a MUST_FIX doc omission had no agent that could both detect and apply the fix — a dead end.
+
+Human decision (the cap escalated to a human by design): make `doc-validator` a real fixer that **iterates and fixes like the coder**, under an explicit triage, rather than a report-only validator. Granted it `Write` + `Edit` (matching `ux-designer`, which edits the docs it owns).
+
+Rather than write the triage into one agent, codified it once as **contract §6.0 — the fixer triage** — the rule every detect-and-correct agent shares:
+- **Mechanical / local / unambiguous → fix in place, file nothing** (issues feed risk scoring; mechanical fixes would be noise). This is the inner loop.
+- **Structural / design / judgment → file an issue and escalate** (design instability is real risk; it must reach a human or owning agent).
+- **Direction guard (ratchet):** a fix may only correct *toward* the authoritative source (doc ← agent definition), never *up* the authority gradient or in a loosening direction — those are structural by definition.
+- **Cap:** bounded fix-and-rerun cycles (default 3); recurrence past the cap escalates to a human.
+
+This is one boundary the system already instantiated in several places (coder inner loop, self-review capped-iterate, doc-validator loop-exit, change-type classification, risk-assessor tier floor); §6.0 names it so a new fixer inherits it instead of approximating it. See `research/findings/fixer-triage-inner-loop-boundary.md`. This was itself a case of the pipeline working: the pre-external self-review caught the contradiction, the cap routed the design choice to a human, and the resolution generalized.
+
 ### D36. Install from a validated release, and split machine-bootstrap from project-install (2026-06-13)
 
 Two coupled decisions about the installer, driven by the move to batched validation (main is now an integration trunk, not a guaranteed-shippable artifact — see the release-branch/tag discussion).

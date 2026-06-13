@@ -118,9 +118,9 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
  12. reliability-reviewer*  ─┤ → architect (structural reliability)  *optional
  13. infra-reviewer         ─┘ (infra files only)
        ↓ all approved
- 13. unit-test      — configurable coverage + mutant score (default 80% / 75%)
+ 14. unit-test      — configurable coverage + mutant score (default 80% / 75%)
        ↓ targets met
- 14. system-test    — spec functional validation
+ 15. system-test    — spec functional validation
        ↓
   oversight-evaluator    — check compliance & quality; recommend proceed/escalate
        ↓
@@ -131,7 +131,7 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
   human gate             — resolve panel threads; merge PR
 
 DEPLOY
- 14. deploy-verify  — infra checks + browser smoke tests against live prod
+ 16. deploy-verify  — infra checks + browser smoke tests against live prod
 
 SUPPORT (available on demand throughout the build)
   ux-designer          — (1) proactive: invoked after pm-agent at project start to
@@ -791,9 +791,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 **Knowledge base:** Reads `scripts/framework/doc-patterns.md` (known bug patterns from prior sessions) and `scripts/framework/decisions.md` (verification criteria from design decisions) before running. This is the mechanism that makes prior session context durable — decisions recorded in those files are actively checked, not rediscovered.
 
-**After finding issues:** Applies fixes directly to documentation files (has Write access to docs). Records any new doc-bug pattern discovered to `doc-patterns.md` before closing.
+**After finding issues:** Follows the fixer triage (`contract/OVERSIGHT-CONTRACT.md` §6.0). **Mechanical doc-accuracy gaps** (a missing mode, a stale claim, a wrong path, a numbering error) it fixes directly — it has `Write`/`Edit` and corrects the doc *toward* the authoritative agent file, never the reverse. **Structural findings** (the agent definition is itself inconsistent, two agent files disagree, a documented behavior needs a tool/permission the agent lacks) it does not edit — it files a GitHub issue and escalates. Records any new doc-bug pattern discovered to `doc-patterns.md` before closing.
 
-**Escalation out:** Human (if a stale claim reflects a genuine design change that was not recorded as a decision).
+**Escalation out:** Human / GitHub issue (when a finding is structural rather than a doc-accuracy gap — e.g. a stale claim that reflects a genuine design change not recorded as a decision, or a capability the agent is documented to have but lacks).
 **Escalation in:** From `framework-validator` (Phase 3 failure); invoked directly by human.
 
 ---

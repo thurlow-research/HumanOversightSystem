@@ -67,9 +67,9 @@ Read `contract/gate-suspension.md` if it exists. For each required role in `requ
 After processing all suspensions, **emit one `suspension-census` event** recording the total active suspensions (the health metric):
 `{"event":"suspension-census","active_suspensions":K,"suspended_gates":["lint","security"],"timestamp":"..."}`
 
-**Exception — CRITICAL steps:** Gate suspension may NOT waive roles for steps with `human_gate_required: true`. The human authorization gate on CRITICAL steps cannot be suspended. If a CRITICAL step has a required role listed as suspended, treat it as NOT suspended and require the sign-off anyway. Log a warning: "Suspension of {role} ignored on CRITICAL step — human_gate_required overrides suspension."
+**Exception — steps behind the effective human gate:** Gate suspension may NOT waive any role on a step where the **effective human gate** fires (`manifest.human_gate_required == true` **OR** validated tier == CRITICAL — re-derived, see below). The human authorization gate on these steps cannot be suspended. If such a step has a required role listed as suspended, treat it as NOT suspended and require the sign-off anyway. Log a warning: "Suspension of {role} ignored — effective human gate (CRITICAL/human_gate_required) overrides suspension."
 
-**Warning — HIGH-risk security/privacy suspension:** If `security` or `privacy` is suspended on a HIGH-risk step (validated tier = HIGH or CRITICAL), do NOT fail compliance — suspension is permitted for brownfield remediation — but log a prominent warning and check for explicit acknowledgment:
+**Warning — HIGH-tier security/privacy suspension:** If `security` or `privacy` is suspended on a step whose validated tier is **exactly HIGH** (not CRITICAL — CRITICAL is covered by the prohibition above, which wins), do NOT fail compliance — suspension is permitted for brownfield remediation — but log a prominent warning and check for explicit acknowledgment:
 
 Look for `security-suspension-acknowledged: yes` in `contract/gate-suspension.md`. If absent:
 - Log: "⚠ WARNING: security reviewer suspended on HIGH-risk step without explicit acknowledgment. Add `security-suspension-acknowledged: yes` to contract/gate-suspension.md to confirm this risk is understood."
@@ -78,6 +78,11 @@ Look for `security-suspension-acknowledged: yes` in `contract/gate-suspension.md
 If `security-suspension-acknowledged: yes` is present, record as WAIVED (acknowledged) — no additional warning needed.
 
 If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
+
+**Establish the validated tier (every tier-gated check depends on it):**
+Read `.claudetmp/oversight/validators/risk-assessment.md` for the validated risk tier. The second-review, prompt-artifact, N/A, and structural-override checks all branch on `validated tier MEDIUM/HIGH/CRITICAL` — if no validated tier is established they would silently no-op, so an agent that skipped risk-assessor would de-fang the entire tier-gated half of this evaluation with no flag raised.
+- If `risk-assessment.md` is **absent**: fall back to the step manifest's `risk_tier` as the validated tier **and** record a **COMPLIANCE WARN** ("risk assessment did not run for step N — using manifest tier as floor"). Never treat an undetermined tier as below-MEDIUM: an undetermined tier defaults to **the manifest tier or MEDIUM, whichever is higher**, so tier-gated checks cannot be silently skipped.
+- The validated tier is a floor like everything else (the ratchet): take `max(manifest risk_tier, risk-assessment.md tier)`.
 
 **Determine the effective required_signoffs list (UNION — never fewer than the manifest):**
 1. Start with the step manifest's `required_signoffs` for this step — this is the floor.
@@ -93,7 +98,7 @@ For each required role that is NOT suspended, check:
 - For `test-unit`: is `Thresholds_met: true` present? If not → **COMPLIANCE FAIL**
 - For `test-system` (when `system_test_applicable: true`): is the entry present and `All_passing: true`? If not → **COMPLIANCE FAIL**
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
-- For steps with `human_gate_required: true` (CRITICAL): does `.claudetmp/oversight/step{N}-human-authorization.md` exist and contain a non-empty human decision? If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed)
+- **Effective human gate (re-derived, not trusted from the manifest flag):** the human-authorization requirement fires when **`manifest.human_gate_required == true` OR `validated tier == CRITICAL`**. The manifest flag lives in a committed file that carries none of the "human-only" protection of `human-authorization.md`, and `risk-assessor` ratchets the *tier* but nothing ratchets the *flag* — so a step whose validated tier is CRITICAL but whose manifest says `human_gate_required: false` (misconfiguration, or a flag never updated when the tier rose) would otherwise skip the hard human gate. Re-derive it: if the effective human gate fires, `.claudetmp/oversight/step{N}-human-authorization.md` must exist and contain a non-empty human decision. If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed). This is the same anti-gaming principle as conditions 9–10: the value that decides whether a human must see the change is re-derived from the diff/tier, never trusted as self-reported.
 
 **Independent diff re-derivation (anti-gaming — only in the loosening direction):**
 
@@ -116,9 +121,10 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - For every detected structural signal, append `{"event":"structural-override","signal":"{name}","step":N,"file":"{file}","covered":{true|false},"timestamp":"..."}` to `audit/oversight-log.jsonl`. Emit it **even when `covered` is true** — a covered signal still means an authoring agent under-classified a change the human happened to catch via another gate; the covered-vs-uncovered ratio is the escaped-misclassification rate (#75).
   - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
 
-**Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review script **always writes** `.claudetmp/second-review/step{N}-*.md` when it runs — with `verdict: skipped` if the score was below the firing threshold. Therefore:
-- A present file (any verdict, including `skipped`) → satisfied.
-- A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold" (below-threshold still writes the file). This closes the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance, defeating the independence requirement.
+**Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review **fires on the validated tier OR the composite score** (`run_second_review.sh --tier <tier> --score <score>`) — this matters because the deterministic risk floor raises tier (auth→HIGH, booking/payment→CRITICAL) *without* raising the composite score, so a HIGH-by-floor step can have a low score. Therefore:
+- A present file with `verdict: approve`/`request_changes`/`error` → the review actually ran → satisfied (act on the verdict in Phase 2).
+- A present file with **`verdict: skipped` on a MEDIUM+ validated-tier step → COMPLIANCE FAIL.** `skipped` means neither vendor fired, which on a MEDIUM+ tier means the mandatory cross-vendor review did not happen — gating it on score alone would let a floor-raised tier silently skip the independence requirement. (`skipped` is only acceptable when the validated tier is below MEDIUM.) Cross-check the file's `validated_tier:` field against the tier you established; if the review was invoked without the tier (score-only) and skipped on a MEDIUM+ step, that is the failure this catches. Ensure `run_second_review.sh` is invoked with `--tier`.
+- A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold." This and the `skipped`-on-MEDIUM+ rule together close the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance.
 
 **Prompt artifact compliance (MEDIUM+ steps):**
 - Use the commit range from the register header (`base_sha..head_sha`) — this is the definitive set of commits for the step:

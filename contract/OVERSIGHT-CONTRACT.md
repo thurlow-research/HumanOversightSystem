@@ -117,6 +117,8 @@ Authoring agents that fill gaps (`ux-designer`, `ops-designer`, `pm-agent`, …)
 
 An authoring agent must classify a change matching any of these as `structural` and obtain human authorization before applying it. The signature set is a **floor**: it is deliberately biased to over-detect (a false positive merely sends a benign change to a human; a false negative is the only real failure). Projects with a known stack may **extend** the signatures in `change_classifier.py` but must not narrow this base set. Enforcement runs **only in the loosening direction** — see §7; a change the agent already classified `structural` (or a step that cleared a human gate) is not re-checked.
 
+**Residual coverage gap (do not over-claim).** These signatures detect structural changes that **add** a new artifact (dependency, auth check, route, surface, state). They do **not** detect a structural change that **modifies existing behavior** without adding a signature — altering an existing flow's completion criterion, widening an existing permission's scope, changing established gate logic. Per the full taxonomy, "changes existing behavior" is structural, but the mechanical re-derivation cannot see it. Those changes rely on honest self-classification plus reviewer/panel detection. Agent prompts must not tell authors "it will always be caught" — only signature-bearing additions are mechanically guaranteed.
+
 ---
 
 ## 3. Sign-off register schema
@@ -255,6 +257,17 @@ steps:
 
 Compliant agents create GitHub issues at defined trigger points. Issue creation is enforced by agent instructions and is auditable via `gh issue list`. The evaluator does NOT query GitHub to verify issue existence — it trusts the sign-off register which agents update after creating issues. The issue trail is a research and audit artifact, not a blocking compliance check.
 
+### 6.0 Fix-in-place vs. file-an-issue (the fixer triage)
+
+Any agent that **both detects and can correct** problems — the `coder` in the inner loop, `doc-validator`, and the framework-validation fixers — applies the same triage when it finds an issue. This is one boundary instantiated in many places (the coder's inner loop, the self-review capped-iterate protocol, `doc-validator`'s loop-exit, the change-type classification):
+
+- **Mechanical / local / unambiguous → fix in place, do not file an issue.** The correct fix is determined by an authoritative source and is a local correction: a typo, a path/reference mismatch, a missing required field, a stale capability claim, a numbering or format error, a doc made faithful to the agent definition it describes. Apply it directly and re-run the check; iterate until clean. **No issue** — issues feed risk scoring (`risk-historian` density), so filing mechanical fixes is noise. This is the inner loop.
+- **Structural / design / judgment → open an issue and escalate, do not paper over it.** The finding reveals a design contradiction, a governance change, an ambiguous decision, a missing capability or permission, or anything whose fix is not a local mechanical correction. File a GitHub issue (design findings are real risk; they must feed risk scoring and reach a human or another agent) and stop. Do not disguise a structural gap with a mechanical edit.
+- **Direction guard (the ratchet).** A fix-in-place may only correct *toward* the authoritative source, and may **never** loosen governance (relax a gate, lower a tier, weaken a control) or edit an authoritative spec/governance artifact to match a downstream doc. Those are structural by definition → issue. (Example: if a doc and an agent definition disagree, the doc is corrected to match the definition — never the reverse, unless a human decides the definition was wrong.)
+- **Cap (don't loop).** Bounded fix-and-rerun cycles, default 3. If the same class of finding recurs past the cap, stop and escalate to a human with what was tried — never loop indefinitely.
+
+See `research/findings/fixer-triage-inner-loop-boundary.md`.
+
 **AI issue title convention:** Every issue created by an AI agent must begin with `[AI: {agent-name}]`:
 
 ```
@@ -316,7 +329,8 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 4. `test-unit` declaration is missing `Thresholds_met: true`
 5. `test-system` declaration is missing when `system_test_applicable: true`
 6. `process` sign-off missing when `system_test_applicable: true` (PM must sign off on test plan)
-7. `human_gate_required: true` (CRITICAL steps): `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs; if missing, compliance fails immediately
+7. **Effective human gate** (`manifest.human_gate_required == true` **OR** validated tier == CRITICAL): `.claudetmp/oversight/step{N}-human-authorization.md` must exist and be non-empty BEFORE the evaluator runs; if missing, compliance fails immediately. The requirement is **re-derived from the validated tier**, not trusted from the manifest flag — `risk-assessor` ratchets the tier but nothing ratchets the flag, so a re-derived-CRITICAL step with `human_gate_required: false` must still hit the gate (same anti-gaming principle as conditions 9–10).
+7a. `.claudetmp/oversight/validators/risk-assessment.md` must exist and establish a validated tier. If absent → **COMPLIANCE WARN** and fall back to `max(manifest risk_tier, MEDIUM)` as the validated tier — an undetermined tier may never silently downgrade the tier-gated checks (second-review, prompt-artifact, conditions 9–10) to no-ops.
 8. MEDIUM+ commits missing `Prompt-Artifact:` git trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items; human confirms intent was captured another way). If the trailer references a path that does not exist → **COMPLIANCE FAIL**
 9. A `Status: N/A` entry for a role whose domain the diff actually touched (independent re-derivation via `change_classifier.py`, scoped to the N/A'd roles) → **COMPLIANCE FAIL** (the waiver is not credible; require a real sign-off). See §2a and the evaluator's "Independent diff re-derivation."
 10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the step already cleared a human gate or the change was already classified `structural` with authorization.

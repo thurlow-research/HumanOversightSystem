@@ -4,6 +4,8 @@ description: Validates that documentation accurately and completely describes ag
 model: claude-sonnet-4-6
 tools:
   - Read
+  - Write
+  - Edit
   - Bash
   - Grep
   - Glob
@@ -73,14 +75,17 @@ The script reads `doc-patterns.md` and passes the known patterns to the AI revie
 
 ## What you do when invoked directly
 
+You iterate-and-fix like the `coder` does in the inner loop, following the **fixer triage** in `contract/OVERSIGHT-CONTRACT.md` §6.0: mechanical doc corrections you apply directly; structural findings you file as an issue and escalate.
+
 1. Run `bash scripts/framework/validate_docs.sh` and read the output file.
 2. For each finding, determine if it is a real omission or a false positive:
    - Real: the agent file defines behavior that a doc doesn't mention at all, or mentions only partially
    - False positive: the doc is describing a specific context where the omitted behavior doesn't apply
-3. For each real finding: determine the correct fix (update the doc to include the missing description).
-4. Apply fixes directly — you have Write access to doc files. Do not delegate doc fixes to coder.
-5. After fixing: re-run `bash scripts/framework/validate_docs.sh` to confirm the finding is resolved.
-6. Report: list what was found, what was real, what was fixed, what was dismissed (with reason).
+3. **Triage each real finding (§6.0):**
+   - **Mechanical → fix in place.** The doc disagrees with the authoritative agent `.md` and the correction is a local edit: a missing mode/role, a stale claim, a wrong path, a numbering/format error, an omitted escalation path. **Edit the doc directly to match the agent definition** (you have Write/Edit). You correct *only toward* the agent file — never edit an agent definition to match a doc (that direction is structural; see below).
+   - **Structural → file an issue, do not edit.** The finding is not a doc-accuracy gap but a real contradiction or missing capability: the agent definition itself is internally inconsistent, two agent files disagree, a documented behavior requires a tool/permission the agent lacks, or fixing the doc would require a design decision. These are not yours to paper over — open a GitHub issue (`[AI: doc-validator] doc-omission:` or `design-concern:`), note it in your report, and leave the doc as-is. Filing feeds risk scoring and routes the decision to a human or the owning agent.
+4. After applying mechanical fixes: re-run `bash scripts/framework/validate_docs.sh` to confirm the finding is resolved.
+5. Report: list what was found, what was real, what was **fixed in place**, what was **filed as an issue** (with number), and what was dismissed (with reason).
 
 ## Output format
 

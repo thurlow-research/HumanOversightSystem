@@ -59,12 +59,14 @@ CODEX_THRESHOLD="${OVERSIGHT_CODEX_THRESHOLD:-0.55}"
 OUT_DIR=".claudetmp/second-review"
 STEP=""
 SCORE=""
+TIER=""
 DIFF_REF=""
 FILES=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --score)   SCORE="$2";    shift 2 ;;
+        --tier)    TIER="$2";     shift 2 ;;
         --step)    STEP="$2";     shift 2 ;;
         --diff)    DIFF_REF="$2"; shift 2 ;;
         --files)   shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
@@ -86,22 +88,34 @@ fi
 
 SCORE="${SCORE:-0}"
 
-# Determine which reviewers fire
+# Determine which reviewers fire.
+# Fire on the validated TIER floor OR the composite score — whichever demands
+# more review. The deterministic risk floor raises tier (auth→HIGH, booking/
+# payment→CRITICAL) WITHOUT raising the composite score, so a HIGH-by-floor step
+# can have a low score; gating on score alone would silently skip the mandatory
+# cross-vendor review the tier requires. Tier is the ratchet floor here too.
 RUN_AGY=false
 RUN_CODEX=false
 AGY_AVAILABLE=false
 CODEX_AVAILABLE=false
 
+# Normalize tier to upper for comparison.
+TIER_UC=$(printf '%s' "$TIER" | tr '[:lower:]' '[:upper:]')
+
+# agy is mandatory at MEDIUM+ (tier) or score ≥ AGY_THRESHOLD.
+case "$TIER_UC" in MEDIUM|HIGH|CRITICAL) RUN_AGY=true ;; esac
 python3 -c "
 s=float('$SCORE'); t=float('$AGY_THRESHOLD')
 exit(0 if s >= t else 1)" 2>/dev/null && RUN_AGY=true || true
 
+# codex is mandatory at HIGH+ (tier) or score ≥ CODEX_THRESHOLD.
+case "$TIER_UC" in HIGH|CRITICAL) RUN_CODEX=true ;; esac
 python3 -c "
 s=float('$SCORE'); t=float('$CODEX_THRESHOLD')
 exit(0 if s >= t else 1)" 2>/dev/null && RUN_CODEX=true || true
 
 if ! $RUN_AGY && ! $RUN_CODEX; then
-    echo "run_second_review: score=$SCORE below both thresholds (agy≥$AGY_THRESHOLD, codex≥$CODEX_THRESHOLD) — skip"
+    echo "run_second_review: score=$SCORE below both thresholds (agy≥$AGY_THRESHOLD, codex≥$CODEX_THRESHOLD) and tier=${TIER:-none} below MEDIUM — skip"
     # Write a sentinel so oversight-evaluator can distinguish "skipped" from "missing"
     mkdir -p ".claudetmp/second-review"
     TS=$(date +%Y%m%dT%H%M%S)
@@ -109,9 +123,10 @@ if ! $RUN_AGY && ! $RUN_CODEX; then
 # Second Review — Step ${STEP}
 Timestamp: ${TS}
 verdict: skipped
-reason: composite score=${SCORE} is below both thresholds (agy≥${AGY_THRESHOLD}, codex≥${CODEX_THRESHOLD})
+reason: composite score=${SCORE} below both thresholds (agy≥${AGY_THRESHOLD}, codex≥${CODEX_THRESHOLD}) and tier=${TIER:-none} below MEDIUM
 agy_threshold: ${AGY_THRESHOLD}
 codex_threshold: ${CODEX_THRESHOLD}
+validated_tier: ${TIER:-none}
 EOF
     exit 0
 fi
