@@ -214,6 +214,11 @@ echo "════════════════════════�
 if [[ $FINDINGS -eq 0 ]]; then
     echo "  PASS — agent static checks clean (0 findings)"
     echo "═══════════════════════════════════════════════════════"
+    # Write validation stamp
+    STAMP_DIR="scripts/framework/validation-stamps"
+    mkdir -p "$STAMP_DIR"
+    printf "validated: %s\nphase: 1-static\nresult: pass\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAMP_DIR/phase1.stamp"
     exit 0
 else
     echo "  FAIL — $FINDINGS finding(s) require attention"

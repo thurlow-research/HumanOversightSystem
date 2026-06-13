@@ -205,6 +205,10 @@ All changes committed to branch `build`, PR #11 open for human review.
 
 ## Part 2 — Peer Feedback, Validation Run, and Tooling Fixes
 
+---
+
+## Part 2 — Peer Feedback, Validation Run, and Tooling Fixes
+
 *Continuation of the same calendar day. Branch: `session/2026-06-12-peer-vibecoding-feedback`.*
 
 ### Peer feedback: working-state invariant
@@ -269,3 +273,63 @@ With codex running correctly, Phase 2 produced 33 findings. After triage:
 | `framework-validator.md`, `doc-validator.md`, `spec-compliance-validator.md` | Fixed | Loop exits + "never skip validation" rules |
 | `framework-setup-validator.md` | Fixed | prompt-fidelity added to REQUIRED agent list |
 | `scripts/framework/decisions.md` (DEC-009) | New decision | risk-historian Haiku model intentional exception to REQ-004 |
+
+---
+
+## Part 3 — PR Pipeline Enforcement via Validation Stamps
+
+*Branch: `session/2026-06-12-git-pipeline-updates`*
+
+### Problem
+
+The validation suite (phases 2–4) calls agy and codex via subscription CLI authentication that only works on the developer's local machine. These phases cannot run in CI. The question was how to enforce that validation was run locally without re-running the expensive AI phases in the PR pipeline.
+
+### Solution: committed timestamp files checked against git history
+
+Each validation script now writes a timestamped file to `scripts/framework/validation-stamps/` on success. `run_framework_validation.sh` writes `all-phases.stamp` when all enabled phases pass. These files are committed to git alongside the code changes.
+
+The PR pipeline (`check_validation_current.sh`, invoked by GitHub Actions `validation-check.yml`) checks: for every non-excluded file changed in the PR diff, is its git commit timestamp ≤ the stamp's git commit timestamp? If any changed file postdates the stamp, the PR fails.
+
+**Key design choice: git commit timestamps, not filesystem mtime.** Filesystem mtime is reset on `git clone` and `git checkout`, making it useless in CI. Git commit timestamps are part of the repository history and stable across machines.
+
+**Excluded from the check:** `audit/`, `research/`, `.claudetmp/`, `scripts/framework/validation-stamps/` — changes to these do not invalidate the stamp.
+
+### Tested in PR #13
+
+Three pushes to the same PR confirmed the mechanism works:
+
+| Push | Changed | CI result |
+|---|---|---|
+| Stamp + all framework code | stamp ≥ all files | ✅ pass |
+| `echo "" >> README.md` (no revalidation) | README newer than stamp | ❌ fail |
+| Revalidated, stamp updated, committed | stamp ≥ all files | ✅ pass |
+
+The test commits are preserved in the branch history as a live record of the enforcement working.
+
+### Workflow the stamp enforces
+
+```bash
+# Make changes
+# Run validation
+bash scripts/framework/run_framework_validation.sh   # writes all-phases.stamp
+# Commit everything together — stamp and changes share the same commit timestamp
+git add .
+git commit
+git push
+# CI check: stamp_time >= all changed file commit times → PASS
+```
+
+If more changes are made after the stamp commit without rerunning, those changes postdate the stamp and CI fails — which is the intended behavior.
+
+### Artifacts produced (Part 3)
+
+| Artifact | Type | What changed |
+|---|---|---|
+| `scripts/framework/validation-stamps/` | New directory | Tracked stamp files written on successful validation passes |
+| `scripts/framework/check_validation_current.sh` | New script | CI check: reads stamp's git commit time, finds stale changed files |
+| `.github/workflows/validation-check.yml` | New workflow | GitHub Actions PR check calling `check_validation_current.sh` |
+| `scripts/framework/check_agents_static.sh` | Modified | Writes `phase1.stamp` on success |
+| `scripts/framework/validate_agents.sh` | Modified | Writes `phase2.stamp` on success |
+| `scripts/framework/validate_docs.sh` | Modified | Writes `phase3.stamp` on success |
+| `scripts/framework/validate_spec_compliance.sh` | Modified | Writes `phase4.stamp` on success |
+| `scripts/framework/run_framework_validation.sh` | Modified | Writes `all-phases.stamp` on full pass; fixed `--static-only` early exit to also write stamp |
