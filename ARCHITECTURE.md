@@ -49,6 +49,24 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 
 ## The Agent Roster
 
+### Findings routing: issues vs. PR threads
+
+The rule is simple: **would a human doing this work in the inner loop file a GitHub issue?**
+
+A developer reviewing a PR does not open issues for "add a test here" or "this function needs a null check." Those are PR comments — they live and die with the PR, and their resolution is visible in the thread. Agents follow the same convention.
+
+**Use a GitHub issue when:**
+- The finding is a project-level concern that survives branch merges — spec gaps, security vulnerabilities, architectural decisions, red-team findings
+- The `risk-historian` needs to see it — historical bug density is computed from issues, not PR threads
+- The finding may affect future branches or sessions, not just the current change
+
+**Use a PR thread when:**
+- The finding is a correction the coder should address in the current inner loop — test coverage, null checks, style, reviewer iteration
+- The work item closes naturally when the PR merges or is abandoned
+- A human reviewer would say it rather than file it
+
+**All issues created by agents must include `Branch:` and `PR:` fields** in the body, so the context is explicit if the branch is later abandoned or the issue outlives its original PR.
+
 ### HOS Oversight Agents
 *These live in `.claude/agents/` in this repo and are installed into target projects. They evaluate the review process itself — not the application code.*
 
@@ -68,7 +86,10 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 | **post-change-sweep** | Sonnet | After any change: reads git diff, categorizes files by domain (framework/code/templates/infra/design/spec), drives all relevant agents in dependency order across parallel tracks. |
 
 ### Base Project Agents
-*Defined in the target project (e.g. CondoParkShare). They implement the HOS contract — the oversight agents consume their outputs without knowing their names.*
+
+**[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation of a HOS-governed project. It is a real parking management application for condo communities — residents book shared parking spaces, HOA admins configure availability, and operators manage multi-building deployments. It was built specifically to exercise the HOS framework against genuine real-world complexity: multi-tenant data isolation, authentication flows, time-based booking logic with business rule gates, and administrative portals. The goal is dual-purpose: stress-test the framework on a domain with meaningful security and correctness requirements while delivering something useful to an actual user community.
+
+The agents below are defined in CondoParkShare (and any other HOS-governed project). They implement the HOS contract — the oversight agents in this repo consume their outputs without knowing their names.
 
 | Role | What it produces | Contract output |
 |---|---|---|
@@ -83,19 +104,33 @@ The two layers compose: author self-flags → independent reviewers scrutinize �
 | **ui-reviewer** | Design pack conformance — tokens, components, copy, voice/tone | Sign-off register entry; escalates gaps to ux-designer |
 | **a11y-reviewer** | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
 | **infra-reviewer** | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
-| **unit-test** | 80% coverage + 75% mutant score | `test-resistance` issues on loop exhaustion; test declaration in register |
-| **system-test** | Spec flow conformance | `bug` issues for persistent failures; sign-off register entry |
+| **unit-test** | Coverage % + mutant score, both configurable per project (higher is better; defaults: 80% coverage / 75% mutant score) | PR thread on coverage/mutant failures (inner loop correction); test declaration in register |
+| **system-test** | Spec flow conformance | PR thread for failures fixable in current session; `bug` issue only if failure persists across sessions or affects spec correctness beyond the current branch; sign-off register entry |
 | **deploy-verify** | Production smoke tests — TLS, DNS, services, browser | Escalates to infra-reviewer (infra) or coder (functional) |
 
 ### External Reviewers
 *Run via CLI, never see internal reviewer findings — independence is the value.*
 
-| Reviewer | Tier | Lens | When fires |
-|---|---|---|---|
-| **Copilot** | GitHub Pro | Broad code review | All PRs, automatic |
-| **agy (Gemini)** | Gemini Pro (conditional screening — upgradeable) | Correctness + spec adherence | score ≥ 0.30 (MEDIUM+) |
-| **codex (OpenAI)** | ChatGPT Pro (reserve — kept scarce by design) | Adversarial security probe | score ≥ 0.55 (HIGH+) |
-| **Arbiter (Sonnet)** | Claude Max | Synthesis + escaped-defect detection | After each panel run |
+| Reviewer | Lens | When fires |
+|---|---|---|
+| **Copilot** | Broad code review | All PRs, automatic |
+| **agy (Gemini)** | Correctness + spec adherence | score ≥ 0.30 (MEDIUM+) |
+| **codex (OpenAI)** | Adversarial security probe | score ≥ 0.55 (HIGH+) |
+| **Arbiter (Sonnet)** | Synthesis + escaped-defect detection | After each panel run |
+
+#### Selection principles
+
+**Decorrelated error spaces — the core rationale.** Different vendors train on different data distributions and optimize for different objectives. This means they fail differently: a subtle bug that one model's training makes it likely to miss is not necessarily invisible to a model trained differently. Cross-vendor review reduces the probability that all reviewers share the same blind spot. A panel of three Claude models would provide less independent signal than one Claude, one Gemini, and one OpenAI model — even if the Claude models were individually more capable.
+
+**Role-capability matching.** Each external reviewer is assigned the lens that best matches its demonstrated strengths:
+- **Copilot** runs on every PR automatically via GitHub's native integration — zero friction, no local invocation needed. It is the always-on floor precisely because it costs nothing incremental and catches a broad class of issues without configuration. Its value is coverage, not depth.
+- **agy (Gemini)** brings a large context window well-suited to spec-adherence review: comparing an implementation against a requirements document benefits from holding both in context simultaneously. It fires at MEDIUM+ as a conditional screening pass — the majority of changes get this lens.
+- **codex (OpenAI)** is reserved for HIGH+ as the adversarial security probe. Adversarial reasoning — constructing attack chains, finding trust boundary violations, probing for exploit combinations — is where a differentiated second opinion has the most value. Keeping it scarce also maintains signal quality: a reviewer that fires on everything becomes noise; one that fires on genuinely high-risk changes carries more weight.
+- **Arbiter (Sonnet)** synthesizes the panel findings rather than adding another independent vote. Synthesis requires holding the full build context — spec, internal findings, panel findings — and producing a coherent verdict. Claude Sonnet is appropriate here because it has built-in context on the HOS pipeline; the author exclusion rule (no Claude as independent reviewer) applies to the independent voting round, not to synthesis.
+
+**Author exclusion.** The authoring vendor (Claude/Anthropic) never casts an independent review vote. Same-family models share training biases and are more likely to ratify each other's mistakes. Sonnet is the arbiter — synthesis, not independent review. The independent votes are always cross-vendor.
+
+**Independence preservation.** External reviewers read `panel-context.md` only — structural signals, no internal findings. They cannot anchor on conclusions the internal reviewers already reached. This is the mechanism that makes their signal genuinely independent rather than a restatement of the internal review with different phrasing.
 
 ---
 
@@ -116,7 +151,7 @@ flowchart TD
         RA["risk-assessor ✍\nvalidated tier\n+ inspection brief"] --> CR
         CR["code-reviewer ✍\nSTATUS: APPROVED"] --> PARREV
         PARREV["security-reviewer ✍\nprivacy-reviewer ✍\n(parallel)"] --> UT
-        UT["unit-test ✍\n80% / 75% gate"] <-->|"iterate"| COD["coder"]
+        UT["unit-test ✍\nconfigurable gate\n(default 80% / 75%)"] <-->|"iterate"| COD["coder"]
         PARREV -->|"sign-offs → register"| REG[("Sign-off\nRegister")]
         UT -->|"test declaration → register"| REG
     end
@@ -160,15 +195,17 @@ Every approval in the pipeline is a named sign-off written to the sign-off regis
 |---|---|---|---|
 | **Spec** | pm-agent | Confirmed requirements | `spec-gap` issue → human |
 | **Spec** | architect | ADR (architecture decisions) | Escalate to human |
+| **Spec** | ux-designer | Design pack completeness — tokens, components, copy, feedback states (`UX-DESIGN-READINESS.md`) | Design gaps filled before coder starts; structural brand changes escalate to human |
 | **Spec** | technical-design | Design approved for implementation | Revise + iterate |
 | **Spec** | pm-agent | System test plan (before tests written) | `spec-gap` issue; coder waits |
 | **Inner loop** | risk-assessor | Risk tier validated (can only raise) | Tier raised; inspection brief re-scoped |
 | **Inner loop** | code-reviewer | Correctness, idioms, design adherence | Coder fixes; up to 5 rounds then architect |
 | **Inner loop** | security-reviewer | Security posture (OWASP, threat model) | Coder fixes; `security-finding` issue if crit/high resolved |
 | **Inner loop** | privacy-reviewer | GDPR / PII handling | Coder fixes; `privacy-finding` issue if blocking |
-| **Inner loop** | ui-reviewer / a11y-reviewer | Template and accessibility conformance | Coder fixes |
+| **Inner loop** | ui-reviewer | Design pack conformance — tokens, components, copy, voice/tone | Coder fixes; design gaps escalate to ux-designer who fills and notifies |
+| **Inner loop** | a11y-reviewer | WCAG AA — keyboard, contrast, motion, responsiveness | Coder fixes; token contrast failures escalate to ux-designer |
 | **Inner loop** | infra-reviewer | Docker/Caddy/env config | Coder fixes |
-| **Inner loop** | unit-test | 80% coverage + 75% mutant score | Coder adds tests; `test-resistance` issue after 5 rounds |
+| **Inner loop** | unit-test | Coverage % + mutant score at configured thresholds (higher is better; defaults: 80% / 75%) | Coder adds tests; `test-resistance` issue after 5 rounds |
 | **Transition** | system-test | All spec flows passing | Coder fixes; `bug` issue after 5 rounds |
 | **Transition** | agy (second review) | Correctness + spec adherence (independent) | CONDITIONAL_PROCEED or ESCALATE |
 | **Transition** | codex (second review) | Adversarial security probe (independent) | CONDITIONAL_PROCEED or ESCALATE |
@@ -222,7 +259,7 @@ sequenceDiagram
     C->>PR: fixes
     SR->>REG: APPROVED (security, critical findings resolved: Y/N)
     PR->>REG: APPROVED (privacy)
-    loop until 80%/75% met
+    loop until configured thresholds met (default 80% coverage / 75% mutant score — higher is better)
         UT->>C: coverage gaps + surviving mutants
         C->>UT: new tests
     end
@@ -313,8 +350,9 @@ flowchart TD
     subgraph EVENTS["Issue-creating events"]
         E1["spec-gap\n(pm-agent)"]
         E2["design-concern\n(architect 5-round)"]
-        E3["bug\n(system-test failure)"]
+        E3["bug\n(system-test — persistent\nor spec-level only)"]
         E4["security-finding\n(resolved crit/high)"]
+        E4B["privacy-finding\n(blocking)"]
         E5["escaped-defect\n(panel found, team missed)"]
         E6["red-team-finding\n(checkpoint)"]
     end
@@ -341,9 +379,13 @@ flowchart TD
     style FUTURE fill:#e8f4f8,stroke:#4a90d9
 ```
 
-**Loop 1 — Historical density:** Every issue created (bug, security-finding, escaped-defect) is tagged with the file it came from. The risk-historian queries these on future steps. A file with three prior `escaped-defect` issues gets a higher historical density score → the composite score rises → more scrutiny is applied → more bugs are found → the loop compounds.
+**Loop 1 — Historical density:** Every issue created (bug, security-finding, privacy-finding, escaped-defect) is tagged with the file it came from. The risk-historian queries these on future steps. A file with three prior `escaped-defect` issues gets a higher historical density score → the composite score rises → more scrutiny is applied → more bugs are found → the loop compounds. Note: session-local system-test failures go to PR threads, not issues — only persistent or spec-level failures become `bug` issues that feed this loop.
 
 **Loop 2 — RN coefficient calibration:** Dai et al.'s Risk Number uses regression-derived nesting increment coefficients calibrated from their lab's data. As the project accumulates bug data (from `bug` and `security-finding` issues), the coefficients can be recalibrated to this specific project, team, and LLM family. Over time, the Risk Number becomes a better predictor of *this codebase's* fault distribution, not a generic one.
+
+**Loop 3 — Tier threshold calibration (🔧 see [issue #20](https://github.com/ScottThurlow/HumanOversightSystem/issues/20)):** The statistical sampling red-team run periodically red-teams a random sample of LOW-tier merged changes and computes an escaped-defect rate for that tier. If the rate exceeds a threshold, it signals the LOW tier is too permissive and thresholds need adjustment. This closes the calibration loop between tier assignment and empirical defect outcomes.
+
+**Loop 4 — Cross-role spec feedback (🔧 see [issue #21](https://github.com/ScottThurlow/HumanOversightSystem/issues/21)):** Agents that discover spec gaps mid-build (architect, technical-design, security-reviewer, coder, ux-designer) feed back to pm-agent via `spec-gap` issues. This loop is partially implemented; full definition of escalation paths and pm-agent's mid-build response protocol is tracked in issue #21.
 
 **The escaped-defect metric** is the headline research instrument: what fraction of HIGH/CRITICAL steps have something that the full internal review chain, second review, AND the panel all missed? As the system matures, that rate should fall — which is empirical evidence that the oversight calibration is working.
 

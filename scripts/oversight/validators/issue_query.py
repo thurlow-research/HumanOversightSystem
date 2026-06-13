@@ -55,7 +55,8 @@ def _gh_issues_for_files(file_paths: list[str]) -> list[dict]:
                         issue["matched_label"] = label
                         all_issues.append(issue)
                         break
-        except (json.JSONDecodeError, subprocess.TimeoutExpired):
+        except (json.JSONDecodeError, subprocess.TimeoutExpired,
+                FileNotFoundError, subprocess.CalledProcessError):
             continue
 
     # Deduplicate by issue number
