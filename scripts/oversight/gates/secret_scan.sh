@@ -34,11 +34,21 @@ if $CHECK_STAGED; then
 fi
 
 ERRORS=0
+GATE_TIMEOUT="${GATE_TIMEOUT:-60}"
+GATE_RETRIES="${GATE_RETRIES:-2}"
 
 if command -v detect-secrets &>/dev/null; then
     echo "=== detect-secrets ==="
     if [[ ${#FILES[@]} -gt 0 ]]; then
-        BASELINE=$(detect-secrets scan "${FILES[@]}" 2>/dev/null)
+        DS_TMP=$(mktemp /tmp/detect_secrets_XXXXXX)
+        _run_detect_secrets() { detect-secrets scan "${FILES[@]}" > "$DS_TMP" 2>/dev/null; }
+        if ! run_with_retry "detect-secrets" "$GATE_TIMEOUT" "$GATE_RETRIES" "true" \
+            bash -c "$(declare -f _run_detect_secrets); _run_detect_secrets"; then
+            echo "GATE FAIL: detect-secrets did not complete after retries"
+            rm -f "$DS_TMP"; unset -f _run_detect_secrets
+            exit 1
+        fi
+        BASELINE=$(cat "$DS_TMP"); rm -f "$DS_TMP"; unset -f _run_detect_secrets
         SECRET_COUNT=$(echo "$BASELINE" | PYTHONSAFEPATH=1 python3 -c \
             "import json,sys; d=json.load(sys.stdin); \
              total=sum(len(v) for v in d.get('results',{}).values()); print(total)" 2>/dev/null || echo "0")

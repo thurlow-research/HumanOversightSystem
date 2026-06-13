@@ -15,6 +15,10 @@
 
 _SUSPENSION_FILE=""
 
+# ── Source retry helper if available ─────────────────────────────────────────
+_RETRY_HELPER="$(dirname "${BASH_SOURCE[0]}")/../run_with_retry.sh"
+[[ -f "$_RETRY_HELPER" ]] && source "$_RETRY_HELPER"
+
 _find_suspension_file() {
     # Locate contract/gate-suspension.md relative to the repo root
     local repo_root
