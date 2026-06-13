@@ -115,6 +115,9 @@ if [[ -n "$SOURCE_REPO" ]]; then
     for script in \
         check_agents_static.sh \
         validate_agents.sh \
+        validate_self.sh \
+        validate_docs.sh \
+        validate_spec_compliance.sh \
         install.sh \
         run_framework_validation.sh
     do
@@ -295,6 +298,9 @@ echo "── Step 6: Ensuring scripts are executable"
 for script in \
     "$TARGET_REPO/scripts/framework/check_agents_static.sh" \
     "$TARGET_REPO/scripts/framework/validate_agents.sh" \
+    "$TARGET_REPO/scripts/framework/validate_self.sh" \
+    "$TARGET_REPO/scripts/framework/validate_docs.sh" \
+    "$TARGET_REPO/scripts/framework/validate_spec_compliance.sh" \
     "$TARGET_REPO/scripts/framework/install.sh" \
     "$TARGET_REPO/scripts/framework/run_framework_validation.sh"
 do
