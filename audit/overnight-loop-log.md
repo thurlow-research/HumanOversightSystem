@@ -20,3 +20,4 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 | 2026-06-14T05:25 PDT | — | no new issues |
 | 2026-06-14T06:25 PDT | — | no new issues |
 | 2026-06-14T07:11 PDT | 7am eval | self+3p eval complete. agy 2/2 real, codex 0/3 survived. Fixed: .venv installer (PR #178 merged), ops-reviewer paths (PR #179 review). Follow-ups: #180. Report: audit/2026-06-14-self-3p-eval.md |
+| 2026-06-14T07:25 PDT | — | no new issues (#180 is own eval follow-up, needs-human) |
