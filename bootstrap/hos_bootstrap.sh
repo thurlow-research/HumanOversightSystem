@@ -136,16 +136,27 @@ header "2. Python analysis packages"
 ANALYSIS_PKGS="radon bandit flake8 black isort mypy"
 if ! $DRY_RUN; then
   python3 -m pip install --quiet --upgrade pip 2>/dev/null || true
+  # Machine-wide install is BEST-EFFORT and optional. On PEP-668 (externally-
+  # managed: Homebrew Python, Ubuntu 24.04+) it is blocked BY DESIGN — and that is
+  # NOT a degradation: hos_install.sh's per-project oversight venv (ensure_venv.sh)
+  # installs these from the release's requirements.txt, PEP-668-immune, on the
+  # first validator run. A failure here is informational, not a warning. (#98)
   # shellcheck disable=SC2086
-  python3 -m pip install --quiet $ANALYSIS_PKGS 2>/dev/null || \
-  # shellcheck disable=SC2086
-  python3 -m pip install --quiet --user $ANALYSIS_PKGS 2>/dev/null || \
-    warn "Some packages failed to install — try: pip install $ANALYSIS_PKGS"
+  if python3 -m pip install --quiet $ANALYSIS_PKGS 2>/dev/null \
+     || python3 -m pip install --quiet --user $ANALYSIS_PKGS 2>/dev/null; then
+    :
+  else
+    info "Machine-wide analysis packages not installed (PEP-668 / externally-managed)."
+    info "  No action needed — they install per-project into scripts/oversight/.venv"
+    info "  via ensure_venv.sh on the first validator run (PEP-668-immune)."
+  fi
 else
-  dry_run "Would pip install: $ANALYSIS_PKGS"
+  dry_run "Would pip install (best-effort): $ANALYSIS_PKGS"
 fi
+# Importability here is best-effort visibility, not a gate — the per-project venv
+# is the source of truth, so a miss is a `skip`, not a `warn`. (#98)
 for pkg in $ANALYSIS_PKGS; do
-  if python3 -c "import $pkg" &>/dev/null 2>&1 || command -v "$pkg" &>/dev/null; then ok "$pkg"; else warn "$pkg not importable (may still work via CLI)"; fi
+  if python3 -c "import $pkg" &>/dev/null 2>&1 || command -v "$pkg" &>/dev/null; then ok "$pkg"; else skip "$pkg — installs per-project via ensure_venv.sh"; fi
 done
 for opt_pkg in semgrep detect-secrets; do
   command -v "$opt_pkg" &>/dev/null && ok "$opt_pkg (optional)" || skip "$opt_pkg not installed (optional: pip install $opt_pkg)"
@@ -165,14 +176,23 @@ install_scancode() {
     macos-brew) command -v file &>/dev/null || run "brew install libmagic 2>/dev/null || true" ;;
   esac
   if ! $DRY_RUN; then
-    python3 -m pip install --quiet scancode-toolkit 2>/dev/null || \
-    python3 -m pip install --quiet --user scancode-toolkit 2>/dev/null || {
-      warn "ScanCode install failed — ip_check.py will use PyPI API fallback"
-      warn "Try manually: pip install scancode-toolkit"
+    # ScanCode is a CLI tool, so pipx is the right installer and is PEP-668-safe
+    # (isolated venv) on Homebrew/Ubuntu 24.04+. Prefer pipx, then pip, then defer
+    # to ip_check.py's PyPI/npm API fallback — which is fully functional, just less
+    # thorough. ScanCode is OPTIONAL; a miss is informational, not a warning. (#98)
+    if command -v pipx &>/dev/null && pipx install scancode-toolkit &>/dev/null; then
+      :
+    elif python3 -m pip install --quiet scancode-toolkit 2>/dev/null \
+      || python3 -m pip install --quiet --user scancode-toolkit 2>/dev/null; then
+      :
+    else
+      info "ScanCode not installed (optional). ip_check.py uses the PyPI/npm API"
+      info "  fallback — license detection still works, just less thorough."
+      info "  For full detection: pipx install scancode-toolkit  (pipx is PEP-668-safe)"
       return
-    }
+    fi
   else
-    dry_run "Would install scancode-toolkit via pip"; return
+    dry_run "Would install scancode-toolkit (pipx → pip)"; return
   fi
   command -v scancode &>/dev/null && ok "scancode installed" || warn "scancode installed but not on PATH — open a new shell and check: scancode --version"
   echo ""
