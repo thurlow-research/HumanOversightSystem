@@ -110,7 +110,7 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   python3 scripts/oversight/change_classifier.py --base "$BASE_SHA" --head "$HEAD_SHA" \
     --domains-only --roles "<comma-separated N/A'd roles>"
   ```
-  For any N/A'd role that appears in `domains_touched` → the domain was in fact changed → the waiver is not credible → **COMPLIANCE FAIL** (require a real sign-off for that role). Roles not returned as touched keep their valid N/A. (`code-review` is never N/A'd by the orchestrator, so it is not in scope here.)
+  For any N/A'd role that appears in `domains_touched` → the domain was in fact changed → the waiver is not credible → **COMPLIANCE FAIL** (require a real sign-off for that role). Roles not returned as touched keep their valid N/A. **`code-review` is explicitly IN scope here** — although the orchestrator never N/A's it, `code-reviewer` may *self-write* `Status: N/A` ("no application code in diff", per `post-change-sweep`), so a self-N/A'd or forged code-review on a diff that does touch application code would otherwise be the one foundational role exempt from this distrust check. Re-derive any `Status: N/A` for `code-review` against the diff exactly as for every other role: if the application-code domain (`**/*.py` etc.) was touched → **COMPLIANCE FAIL**.
 
 - **Structural-override verification (#75) — skip if this step already cleared a human gate** (i.e. `human_gate_required: true` **and** the human-authorization file is present and non-empty — the human already saw every change). Otherwise run:
   ```bash
