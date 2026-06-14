@@ -47,7 +47,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --diff)
             DIFF_REF="$2"; shift 2
-            mapfile -t FILES < <(git diff --name-only "$DIFF_REF" 2>/dev/null | grep '\.py$' || true)
+            # bash 3.2 (macOS default) has no `mapfile` — use a portable read loop.
+            FILES=()
+            while IFS= read -r _f; do
+                [[ -n "$_f" ]] && FILES+=("$_f")
+            done < <(git diff --name-only "$DIFF_REF" 2>/dev/null | grep '\.py$' || true)
             ;;
         *)
             FILES+=("$1"); shift
