@@ -390,8 +390,21 @@ Return JSON only:
   \"summary\": \"one paragraph\"
 }"
 
-    echo "$prompt" | codex --quiet 2>/dev/null || \
+    # codex reads the prompt on stdin and the subcommand is `codex exec` (HOS#199).
+    # The old `codex --quiet` was an invalid invocation that ALWAYS failed; the
+    # `2>/dev/null` then masked it as an empty `verdict:error`, so this path looked
+    # like it ran a review and found nothing when codex was never actually invoked.
+    # Match the working pattern in framework/validate_agents.sh: tmpfile + stdin.
+    local tmpfile result rc=0
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/second_review_codex_XXXXXX")
+    printf '%s' "$prompt" > "$tmpfile"
+    result=$(codex exec < "$tmpfile" 2>/dev/null) || rc=$?
+    rm -f "$tmpfile"
+    if [[ $rc -ne 0 || -z "$result" ]]; then
         echo '{"reviewer":"codex","error":"codex invocation failed","findings":[],"verdict":"error"}'
+    else
+        echo "$result"
+    fi
 }
 
 # ── Execute reviewers ────────────────────────────────────────────────────────
