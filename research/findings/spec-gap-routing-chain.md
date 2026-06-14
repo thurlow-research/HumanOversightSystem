@@ -1,5 +1,7 @@
 # Finding: Spec-Gap Escalation Must Enter at the Lowest Capable Authority
 
+**Role:** oversight-mechanism — escalation routing for spec gaps
+
 **First observed:** 2026-06-12, feedback loop design session (issue #21)
 **Documented in:** `docs/AGENTS.md` — spec-gap routing; `docs/OVERSIGHT-RUNBOOK.md` — Cross-Role Feedback Loops
 

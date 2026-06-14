@@ -1,4 +1,6 @@
-# Finding: Cross-Vendor AI Review Produces Actionable Findings, Not Just Noise
+# Finding: Cross-Vendor Decorrelation Is the Oversight Mechanism — The Bugs It Finds Are the Evidence
+
+**Role:** oversight-mechanism — cross-vendor independence finds what same-vendor review misses
 
 **First observed:** 2026-06-11, session `2026-06-11-hos-bootstrap-pipeline-hardening.md`
 **Confirmed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md`
@@ -7,7 +9,9 @@
 
 ## The Finding
 
-Independent cross-vendor AI review (agy/Gemini and codex/OpenAI reviewing code authored by Claude/Opus) consistently produces genuine, actionable findings — not primarily false positives or trivial style comments. Across two sessions and multiple review passes, the majority of findings required code or documentation changes that improved correctness, and a non-trivial fraction caught bugs that would have produced incorrect behavior in production.
+**The contribution is the mechanism, not the bug count.** The oversight claim under test is *cross-vendor decorrelation*: a reviewer drawn from a different vendor (different training distribution, different architecture) has different blind spots than the author, so it catches defects the author cannot see in its own output. The bugs below are not the finding — they are the **evidence** that the decorrelation mechanism produces real signal rather than noise. A same-vendor reviewer would share the author's blind spots and confirm its mistakes; the value is the independence, and the bug list is how we know the independence is working.
+
+Concretely: independent cross-vendor AI review (agy/Gemini and codex/OpenAI reviewing code authored by Claude/Opus) consistently produces genuine, actionable findings — not primarily false positives or trivial style comments. Across two sessions and multiple review passes, the majority of findings required code or documentation changes that improved correctness, and a non-trivial fraction caught bugs that would have produced incorrect behavior in production.
 
 Specifically, on the first self-review run of the HOS framework (June 11):
 - agy identified a **critical** bug: nested function double-counting in the Risk Number calculator

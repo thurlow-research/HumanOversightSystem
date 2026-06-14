@@ -1,5 +1,7 @@
 # The fixer triage: one inner-loop boundary, instantiated everywhere
 
+**Role:** oversight-mechanism — the inner-loop boundary of the fixer role
+
 ## The finding
 
 A system that scales human oversight needs a single, consistent answer to one question, asked by every agent that can both *detect* and *correct* a problem: **do I fix this myself, or does a human (or another agent) need to see it?** The answer is the same boundary the `coder` already follows in its inner loop, and it should be codified once and reused, not re-invented per agent:

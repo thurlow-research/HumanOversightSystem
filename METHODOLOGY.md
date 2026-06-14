@@ -101,9 +101,16 @@ Risk classification (from [`AGENTS.md`](AGENTS.md)) is the dial that controls ho
 
 This is the research hypothesis in action: **risk-stratified flagging** routes 100% review to CRITICAL and spot-checks LOW — oversight that scales.
 
+**Signals vs. oversight — what the research is actually about.** HOS is a two-layer pipeline, and the distinction matters:
+
+- **Signal layer** — the validators and reviewers *measure or detect* something about the AI-generated code and emit a signal: complexity, N+1, coverage, reliability (quality signals); security, correctness, IP/provenance, prompt-fidelity, hallucination (other signals).
+- **Oversight layer** — *acts* on those signals: aggregates them into the composite score, stratifies into tiers, routes human attention, gates merges, escalates, ratchets, audits.
+
+**The research subject is the oversight layer** — how signals become *scaled human oversight*. The signal generators are inputs. Several of them — cyclomatic/cognitive complexity, N+1, function metrics, portability — are ordinary **software-quality** checks, so running them also makes the product better; that improvement is a **byproduct, a benefit — not the research claim**. The contribution is the *routing of human attention over aggregated signals*, not the individual metrics, which are cheap, replaceable proxies. The signal set is **extensible**: a project can register its own signal generators (see #80) and the oversight layer consumes them unchanged.
+
 ### How the composite score is computed
 
-Each build step runs a set of deterministic validator scripts (`scripts/oversight/run_validators.sh`). Every validator produces a score in [0.0, 1.0] and a weight. The composite is a weighted average across all validators that ran without error — validators that fail to execute are excluded rather than zeroing the score, so a misconfigured tool degrades coverage gracefully rather than suppressing the signal entirely.
+Each build step runs a set of deterministic validator scripts (`scripts/oversight/run_validators.sh`). **Eleven validator scripts produce the twelve scored dimensions** tabulated below — `complexity_metrics.py` emits two (cyclomatic and cognitive); the rest emit one each. Every dimension produces a score in [0.0, 1.0] and a weight. The composite is a weighted average across all validators that ran without error — validators that fail to execute are excluded rather than zeroing the score, so a misconfigured tool degrades coverage gracefully rather than suppressing the signal entirely.
 
 ```
 composite = Σ(score_i × weight_i) / Σ(weight_i)   [over validators without error]
@@ -118,22 +125,24 @@ The composite then maps to a tier via fixed thresholds:
 | 0.55 – 0.77 | HIGH |
 | ≥ 0.78 | CRITICAL |
 
-**The validator dimensions and their weights:**
+**The validator dimensions and their weights.** The **Signal type** column tags *what each generator detects*. The `quality` signals (cyclomatic/cognitive complexity, N+1, function metrics, portability) are ordinary software-quality measures — running them improves the product, which is a benefit, but they are signal *sources*, not the research subject. The `correctness / security / provenance / fidelity / hallucination` signals are the AI-code-specific risk axes; `oversight-loop` is a signal the oversight layer feeds back to itself (escape-rate calibration). All twelve are **inputs** the oversight layer aggregates — the aggregation-and-routing is the contribution, not any individual metric.
 
-| Dimension | Weight | What it measures |
-|---|---|---|
-| **Risk Number** (Dai et al.) | 0.18 | Per-statement nesting increment (empirically calibrated from bug data) + judgment increment (+1 per flow-break, +1 per logical operator). The heaviest weight — the only metric derived from regression on actual bug-nesting relationships. |
-| **Static analysis** | 0.15 | Bandit MEDIUM security findings. HIGH findings are a blocking gate and never reach the composite; MEDIUM findings are scored as risk signal. Optionally augmented with semgrep Django rules. |
-| **Migration risk** | 0.12 | Django migration operation classification: CRITICAL (RunPython, DeleteModel, RemoveField), HIGH (AlterField type/nullability, RenameField), MEDIUM (AddField nullable, RunSQL read-only), LOW (AddIndex, CreateModel). |
-| **Historical density** | 0.12 | Bug density per file from GitHub issues (`bug`, `security-finding`, `escaped-defect` labels) and git churn. Starts empty; accumulates signal as issues are filed — the loop that makes the scorer improve over time. |
-| **Cyclomatic complexity** | 0.08 | McCabe metric: number of independent execution paths. Measures testability — how many test cases are needed for full path coverage. |
-| **Cognitive complexity** | 0.08 | Campbell (2018) metric: how hard the code is to read and understand. Independent of cyclomatic — code can be testable but unreadable, or readable but hard to test. |
-| **N+1 query detection** | 0.08 | Heuristic for Django ORM calls inside loops — a common performance and correctness hazard in AI-generated Django code. |
-| **IP / provenance** | 0.08 | License gate (ScanCode / PyPI / npm API) + prompt clean-room verification. Orthogonal to correctness risk — surfaces legal exposure independently of code quality. |
-| **Function metrics** | 0.07 | Function length, parameter count, return path count. Proxies for review difficulty and likelihood of specification drift. |
-| **Prompt ambiguity** | 0.07 | Ambiguity score of the captured prompt artifact: question density, hedging language, TBDs, implicit assumptions. High ambiguity → higher probability the generated code diverges from intent. |
-| **Hallucination surface** | 0.06 | Version-sensitive API usage: imports and attribute accesses flagged against a known list of renamed, removed, or breaking-changed APIs across major library versions. |
-| **Portability** | 0.06 | Stack-specific portability signals (e.g. hardcoded paths, environment assumptions, platform-specific calls). |
+| Dimension | Weight | Signal type | What it measures |
+|---|---|---|---|
+| **Risk Number** (Dai et al.) | 0.18 | correctness | Per-statement nesting increment (empirically calibrated from bug data) + judgment increment (+1 per flow-break, +1 per logical operator). The heaviest weight — the only metric derived from regression on actual bug-nesting relationships. |
+| **Static analysis** | 0.15 | security | Bandit MEDIUM security findings. HIGH findings are a blocking gate and never reach the composite; MEDIUM findings are scored as risk signal. Optionally augmented with semgrep Django rules. |
+| **Migration risk** | 0.12 | correctness | Django migration operation classification: CRITICAL (RunPython, DeleteModel, RemoveField), HIGH (AlterField type/nullability, RenameField), MEDIUM (AddField nullable, RunSQL read-only), LOW (AddIndex, CreateModel). |
+| **Historical density** | 0.12 | oversight-loop | Bug density per file from GitHub issues (`bug`, `security-finding`, `escaped-defect` labels) and git churn. Starts empty; accumulates signal as issues are filed — the loop that makes the scorer improve over time. |
+| **Cyclomatic complexity** | 0.08 | quality | McCabe metric: number of independent execution paths. Measures testability — how many test cases are needed for full path coverage. |
+| **Cognitive complexity** | 0.08 | quality | Campbell (2018) metric: how hard the code is to read and understand. Independent of cyclomatic — code can be testable but unreadable, or readable but hard to test. |
+| **N+1 query detection** | 0.08 | quality | Heuristic for Django ORM calls inside loops — a common performance and correctness hazard in AI-generated Django code. |
+| **IP / provenance** | 0.08 | provenance | License gate (ScanCode / PyPI / npm API) + prompt clean-room verification. Orthogonal to correctness risk — surfaces legal exposure independently of code quality. |
+| **Function metrics** | 0.07 | quality | Function length, parameter count, return path count. Proxies for review difficulty and likelihood of specification drift. |
+| **Prompt ambiguity** | 0.07 | fidelity | Ambiguity score of the captured prompt artifact: question density, hedging language, TBDs, implicit assumptions. High ambiguity → higher probability the generated code diverges from intent. |
+| **Hallucination surface** | 0.06 | hallucination | Version-sensitive API usage: imports and attribute accesses flagged against a known list of renamed, removed, or breaking-changed APIs across major library versions. |
+| **Portability** | 0.06 | quality | Stack-specific portability signals (e.g. hardcoded paths, environment assumptions, platform-specific calls). |
+
+> **Quality signals are a benefit and a signal source — not the research subject.** Five of the twelve dimensions (`quality`) are conventional software-quality checks. They earn their place by *feeding the oversight layer* a cheap proxy for review difficulty and defect-proneness, and as a side effect they make the generated code better. The research claim does **not** rest on them: swap cyclomatic complexity for any other quality proxy and the oversight contribution — aggregate, stratify, route human attention, gate, ratchet, audit — is unchanged. This is why the signal set is **extensible** (#80): a project registers its own quality (or domain) signals and the oversight layer consumes them without modification.
 
 **The score is a floor, not a ceiling.** The deterministic floor rules (path globs, operation types) can raise the tier independently of the composite score. A migration touching `auth/**` may be forced to HIGH regardless of its composite. The composite can only raise the author's declared tier further — neither the composite nor the floor rules can lower it. The final tier is the maximum across: author declaration, floor rules, and composite score.
 
@@ -170,12 +179,13 @@ Each prompt-to-verify cycle must leave the codebase in a working state before th
 │                     accumulate failures across prompts.     │
 │                     [✅ scripts/oversight/gates/]           │
 │                                                             │
-│  4. RISK SCORING    Nine validators score the change:       │
-│                     complexity, N+1 queries, migration      │
+│  4. RISK SCORING    Twelve signal dimensions score the      │
+│                     change: complexity, N+1, migration      │
 │                     risk, IP/provenance, prompt fidelity,   │
 │                     hallucination surface, and others.      │
-│                     risk-assessor agent synthesizes a       │
-│                     composite score + inspection brief.     │
+│                     The oversight layer (risk-assessor)     │
+│                     aggregates them into a composite        │
+│                     score + inspection brief.               │
 │                     [✅ scripts/oversight/run_validators.sh]│
 │                                                             │
 │  5. INTERNAL REVIEW Review panel runs in parallel; each     │

@@ -279,3 +279,20 @@ Two coupled decisions about the installer, driven by the move to batched validat
 - `bootstrap/hos_install.sh` — project install from a release. **No sudo, no system installs**; it *checks* prerequisites and points back to the bootstrap if any are missing, keeping the privilege boundary clean.
 
 `bootstrap/` is the copy-to-machine bundle — the only thing a user copies to a machine; everything else (agents, validators, contract, docs) is fetched from the release. The SQC sampling salt (`.ai-local/sample.salt`) moved from the HOS repo into the *target* project, where it is actually used (fixing a pre-existing quirk). `setup_clis.sh` moved from `scripts/` into `bootstrap/`; references in installed scripts (`reverify_self.sh`, `framework-setup-validator`) were generalized since a target project does not carry the machine bootstrap. The legacy `scripts/setup_oversight.sh` is superseded by `hos_install.sh` (full reconciliation tracked separately).
+
+### D37. Signal layer vs. oversight layer — the research subject is acting on signals, not generating them (2026-06-13)
+
+Issue #72 surfaced a comingling bug in the conceptual docs: software-quality checks (cyclomatic/cognitive complexity, N+1, function metrics, portability) were presented *alongside* the oversight machinery as if they were the research contribution. They are not. The fix is a framing, applied **in place** across the docs rather than extracted to a new document.
+
+**The model.** HOS is a two-layer pipeline:
+- **Signal layer** — validators and reviewers that *measure or detect* something about the AI-generated code and emit a signal (quality: complexity, N+1, coverage, reliability; plus security, correctness, IP/provenance, prompt-fidelity, hallucination).
+- **Oversight layer** — *acts* on those signals: aggregates them into the composite, stratifies into tiers, routes human attention, gates merges, escalates, ratchets, audits.
+
+**Decision:** the research subject is the **oversight layer** — how aggregated signals become *scaled human oversight*. Consequences locked into the docs:
+
+- **Quality checks are a signal source and a benefit, not the research claim.** Running them makes the product better — a real byproduct — but the contribution is the routing-of-attention over the aggregate. Swap any quality proxy for another and the oversight contribution is unchanged. (METHODOLOGY §5 carries a `Signal type` column tagging all twelve dimensions; five are `quality`.)
+- **The signal set is extensible (#80).** A project registers its own signal generators and the oversight layer consumes them unmodified. The framing must not hard-code the current twelve as definitional.
+- **Count reconciliation.** The docs said "nine validators" in some places and "twelve" in others. The truth: **eleven validator scripts produce twelve scored dimensions** (`complexity_metrics.py` emits both cyclomatic and cognitive). All mentions standardized.
+- **Findings carry a `Role:` header.** Each `research/findings/*.md` now declares `signal-generation` / `oversight-mechanism` / `both`, so the corpus is self-classifying about what is the research subject vs. an engineering benefit. Two findings (`install-time-placeholder-substitution`, `working-state-invariant`) are explicitly tagged engineering-benefit, not oversight-research.
+
+**Precedent.** This is the same orthogonal-axis move as **D19** (IP/provenance is a first-class axis orthogonal to the risk tier): there we separated a distinct *signal* from the tier it doesn't belong to; here we separate the whole *signal layer* from the oversight layer that acts on it. The principle is consistent — name the axes, don't conflate the thing measured with the thing that acts on the measurement.

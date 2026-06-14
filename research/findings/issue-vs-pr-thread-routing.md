@@ -1,5 +1,7 @@
 # Finding: Human Workflow Intuition as the Routing Heuristic for Agent Artifact Placement
 
+**Role:** oversight-mechanism — routing a finding to the channel that actually blocks
+
 **First observed:** 2026-06-12, documentation session on ARCHITECTURE.md agent contract table  
 **Documented in:** ARCHITECTURE.md — "Findings routing: issues vs. PR threads"
 

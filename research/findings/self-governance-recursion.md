@@ -1,5 +1,7 @@
 # Finding: A Governance System Must Govern Itself
 
+**Role:** oversight-mechanism — the system applies its own oversight to itself
+
 **First observed:** 2026-06-11, session `2026-06-11-hos-bootstrap-pipeline-hardening.md`
 **Confirmed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md`
 

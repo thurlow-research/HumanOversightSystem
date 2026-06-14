@@ -1,5 +1,7 @@
 # A non-deterministic reviewer cannot be a binary gate — it converges on zero-NEW, never zero
 
+**Role:** oversight-mechanism — defining "pass" for a non-deterministic gate
+
 ## The finding
 
 When the validator in a release gate is a large language model, "the gate passed" cannot mean "the reviewer found nothing." Run an LLM reviewer over the same ~20 governance files repeatedly and it returns a *different* set of findings each pass — and on a rich enough corpus it will essentially always surface at least one real, non-trivial issue. Cutting the first `v0.1.0` release made this concrete: the self-review found a genuine governance finding on **every pass** (a self-reported tier floor, a dropped human-review section, a frontmatter/instruction tool mismatch, …) — all real, none a regression, a new one each time. A gate defined as "block until zero findings" would **never** let a release through.

@@ -1,5 +1,7 @@
 # The release gate caught the framework's own missing oversight — and why you ship a re-validated tag, not the trunk
 
+**Role:** oversight-mechanism — re-validate the shipped artifact, don't trust the trunk
+
 ## The finding
 
 A system that scales human oversight must answer "what, exactly, are we shipping, and was *it* overseen?" The naive answer — "whatever is on the main branch right now" — fails in a specific, repeatable way once development is batched: **commits land on a branch after its PR is merged, and silently never reach main.** The merged artifact is missing fixes everyone believed were in it. We hit this **three times in one session** (install fixes, then governance fixes), and the second time the *missing* fixes were the anti-gaming, fail-closed oversight controls themselves.

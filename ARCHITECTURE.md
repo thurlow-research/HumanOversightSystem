@@ -91,6 +91,8 @@ A developer reviewing a PR does not open issues for "add a test here" or "this f
 
 The agents below are defined in CondoParkShare (and any other HOS-governed project). They implement the HOS contract — the oversight agents in this repo consume their outputs without knowing their names.
 
+**These base agents are the signal layer.** Every role below *measures or detects* something and emits a signal — the coder emits self-flags (RISK/CONFIDENCE/BLAST RADIUS), each reviewer emits a sign-off carrying findings, the test agents emit coverage/conformance results. The **oversight layer** — `risk-assessor`, `oversight-evaluator`, `oversight-orchestrator` in *this* repo — does not generate signals; it *acts* on them (aggregates, stratifies, routes, gates, escalates, audits). Several base roles (`unit-test` coverage, `code-reviewer` maintainability, `reliability-reviewer`) double as software-quality signals — a benefit of the pipeline, but the research subject is what the oversight layer does with the aggregate, not any single reviewer's finding. The signal set is extensible: a project adds reviewers/validators (#80) and the oversight layer consumes them unchanged.
+
 | Role | What it produces | Contract output |
 |---|---|---|
 | **pm-agent** | Spec clarifications, test plan sign-offs | `spec-gap` issues on escalation; sign-off register entry |
@@ -194,6 +196,8 @@ flowchart TD
 
 Every approval in the pipeline is a named sign-off written to the sign-off register. This table shows who approves what, at which phase, and what happens when approval is withheld.
 
+Read this table through the signal/oversight split: most rows are **signal generators** — a reviewer or test emitting a sign-off that carries findings. A handful are the **oversight layer acting on those signals**: `risk-assessor` (validates and can only raise the tier), `oversight-evaluator` (gates on whether the required signals are present and acceptable), the `arbiter` (synthesizes panel findings), and the `🧑 Human` gate (the decision the whole apparatus routes attention to). The research subject is that second set — the acting-on-signals — not the count or content of any single sign-off.
+
 | Phase | Who signs off | What they approve | Withheld → |
 |---|---|---|---|
 | **Spec** | pm-agent | Confirmed requirements | `spec-gap` issue → human |
@@ -251,7 +255,7 @@ sequenceDiagram
 
     C->>C: writes code + self-flags RISK/CONFIDENCE
     C->>RA: submits for scoring
-    RA->>RA: runs 9 validators + dep-mapper + risk-historian
+    RA->>RA: runs 11 validators (12 signal dims) + dep-mapper + risk-historian
     RA->>RA: validates risk tier (can only raise)
     RA->>CR: inspection brief with ranked high-risk areas
     CR->>C: correctness findings

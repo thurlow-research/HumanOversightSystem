@@ -52,15 +52,15 @@ This is not optional commentary. It is a structured output contract. See [`AGENT
 
 Independent reviewers cover orthogonal risk axes. Cross-vendor decorrelation (Claude as author, agy/Gemini and codex/OpenAI as reviewers) reduces correlated failure modes. Each reviewer holds a specific lens:
 
-| Lens | Concern |
-|---|---|
-| Correctness | Logic errors, spec conformance, test coverage |
-| Security | Injection, auth, multi-tenant isolation, credential handling |
-| Privacy | PII handling, GDPR obligations, data minimization |
-| IP / Provenance | License exposure, attribution, regurgitation risk |
-| Maintainability | Coupling, abstraction altitude, future-reader clarity |
+| Lens | Concern | Signal type |
+|---|---|---|
+| Correctness | Logic errors, spec conformance, test coverage | correctness |
+| Security | Injection, auth, multi-tenant isolation, credential handling | security |
+| Privacy | PII handling, GDPR obligations, data minimization | privacy |
+| IP / Provenance | License exposure, attribution, regurgitation risk | provenance |
+| Maintainability | Coupling, abstraction altitude, future-reader clarity | quality |
 
-An arbiter synthesizes findings into a structured verdict posted as PR review threads. Threads block merge until resolved — each finding requires a human decision, not just acknowledgment.
+Each lens is a **signal generator** for the oversight layer; *Maintainability* is a software-quality lens (a benefit and a signal source), the others are AI-code risk axes. An arbiter — the oversight layer acting on those signals — synthesizes findings into a structured verdict posted as PR review threads. Threads block merge until resolved — each finding requires a human decision, not just acknowledgment.
 
 **Agent authority tiers** — four domains of delegated authority, each with a defined escalation ceiling:
 
@@ -90,7 +90,7 @@ The statistical spot-check on LOW-tier changes is not theater — it provides an
 
 The three layers are not simultaneous — they operate in a defined sequence across two nested loops.
 
-**Inner loop (per build step):** Blocking gates run first (lint, type-check, secret scan, security-HIGH). If gates pass, nine risk validators score the change across dimensions — complexity, N+1 queries, migration risk, IP/provenance, prompt fidelity, and others. The risk-assessor agent synthesizes a composite score and directs the internal review panel. Each reviewer appends a structured sign-off to a shared register; the register is machine-readable and checked for completeness before the step advances.
+**Inner loop (per build step):** Blocking gates run first (lint, type-check, secret scan, security-HIGH). If gates pass, twelve **signal dimensions** score the change — complexity, N+1 queries, migration risk, IP/provenance, prompt fidelity, and others (some are software-quality proxies, some are AI-code-specific risk signals; the set is extensible — #80). The risk-assessor agent — the first stage of the oversight layer — aggregates these signals into a composite score and directs the internal review panel. Each reviewer appends a structured sign-off to a shared register; the register is machine-readable and checked for completeness before the step advances.
 
 **Transition (pre-PR):** Once all build steps pass system tests, a cross-vendor second review runs (agy at MEDIUM+, codex at HIGH+) producing a machine-readable verdict. The oversight-evaluator checks compliance (did all required sign-offs happen?) and quality (convergence failures, unresolved critical findings, confidence gaps), then issues one of three recommendations — PROCEED, CONDITIONAL_PROCEED, or ESCALATE. The oversight-orchestrator acts on that recommendation and writes two separate outputs: `panel-context.md` (structural signals only, no internal findings) and `handoff.md` (full picture for the human). It then opens the PR or surfaces bounded questions to the human.
 
@@ -278,7 +278,7 @@ The research draws on a systematic literature review of ~1,000 papers on AI code
 
 **Escaped-defect rate** is the primary empirical measure. For any given risk tier, what fraction of changes that passed the full oversight pipeline contained a real defect? A falling escaped-defect rate over time is evidence that oversight calibration is working. A tier whose escaped-defect rate is consistently high indicates the tier thresholds are miscalibrated. This makes the oversight system empirically accountable rather than merely procedurally compliant.
 
-**Risk-stratified attention allocation** is the central design hypothesis: human reviewers are most effective when their attention is routed by risk rather than applied uniformly. The framework operationalizes this through a composite risk score across 12 validator dimensions, deterministic floor rules for high-risk file patterns, and a tier-gated pipeline that escalates scrutiny proportionally. The hypothesis is testable: does stratified allocation produce equivalent or better defect detection than uniform exhaustive review at lower human cost?
+**Risk-stratified attention allocation** is the central design hypothesis: human reviewers are most effective when their attention is routed by risk rather than applied uniformly. The research construct is the **allocation mechanism**, not the metrics that feed it — the framework operationalizes it by *aggregating* twelve signal dimensions into a composite risk score, applying deterministic floor rules for high-risk file patterns, and gating a tiered pipeline that escalates scrutiny proportionally. The signal dimensions themselves are replaceable inputs (several are ordinary software-quality proxies; the set is extensible — #80); the contribution is what the oversight layer *does* with them. The hypothesis is testable: does stratified allocation produce equivalent or better defect detection than uniform exhaustive review at lower human cost?
 
 **Automation complacency as a structural constraint.** The framework is designed with the assumption that human monitoring performance degrades on low-signal repetitive tasks — a well-documented property of human-automation interaction (Parasuraman et al., 2000) rather than a failure of individual diligence. Risk stratification and explicit AI uncertainty declarations are direct responses to this constraint: they ensure that when a human reviewer's attention is required, it is required for a specific, bounded reason.
 

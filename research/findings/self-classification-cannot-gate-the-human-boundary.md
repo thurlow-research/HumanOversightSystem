@@ -1,5 +1,7 @@
 # Self-classification cannot gate the human-approval boundary
 
+**Role:** oversight-mechanism — re-derive a gating value, never trust the self-report
+
 ## The finding
 
 In a pipeline that scales human oversight by letting agents act autonomously on low-stakes changes and escalating only high-stakes ones, **the classification that decides "does a human see this?" cannot be performed solely by the actor whose work is being classified.** When the authoring agent both makes the change and labels its risk, the label is not an oversight control — it is the governed party self-reporting. Tightening the *definition* of the label (what counts as `structural` vs `additive`) does not fix this; it improves an honest classifier's accuracy but does nothing against a mistaken or motivated one. The control only becomes real when the label is **independently re-derived** from an artifact the agent cannot rewrite — here, the diff itself.

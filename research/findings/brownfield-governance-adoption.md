@@ -1,5 +1,7 @@
 # Finding: Governance Frameworks Applied to Existing Codebases Require a Bounded Suspension Mechanism
 
+**Role:** oversight-mechanism — adopting governance onto pre-existing code
+
 **First observed:** 2026-06-12, issue #22 (raised by CondoParkShare brownfield experience)
 **Documented in:** `contract/gate-suspension.template.md`, `docs/OVERSIGHT-RUNBOOK.md` — Brownfield Onboarding
 

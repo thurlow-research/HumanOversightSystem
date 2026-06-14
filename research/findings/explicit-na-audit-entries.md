@@ -1,5 +1,7 @@
 # Finding: Skipped Reviewers Leave No Audit Trail — N/A Entries Must Be Explicit
 
+**Role:** oversight-mechanism — "not applicable" must be an explicit, audited entry
+
 **First observed:** 2026-06-13, discussion of infra-reviewer dependency on code-reviewer  
 **Trigger:** Question of whether code-reviewer should run on infra-only diffs and say "nothing to review"
 
