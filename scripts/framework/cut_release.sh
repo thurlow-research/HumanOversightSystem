@@ -207,15 +207,17 @@ if $PRERELEASE; then
 fi
 
 if $DRY_RUN; then
-  info "[dry] gh release create $VERSION --draft ${PRE_FLAG[*]} ${NOTES_ARG[*]} --target ${HEAD_SHA:0:8}"
+  # ${arr[*]:-} / ${arr[@]+...} keep empty arrays safe under `set -u` on bash 3.2
+  # (a non-prerelease cut has an EMPTY PRE_FLAG; a prerelease has an empty LATEST_FLAG).
+  info "[dry] gh release create $VERSION --draft ${PRE_FLAG[*]:-} ${NOTES_ARG[*]:-} --target ${HEAD_SHA:0:8}"
   for n in "${ASSET_NAMES[@]}" SHA256SUMS; do info "[dry]   asset (from commit): $n"; done
-  info "[dry] verify assets present, then gh release edit --draft=false ${LATEST_FLAG[*]} (atomic publish)"
+  info "[dry] verify assets present, then gh release edit --draft=false ${LATEST_FLAG[*]:-} (atomic publish)"
 else
   # DRAFT first: gh creates the tag + a hidden draft release and uploads assets.
   # A failed upload never leaves a half-published release — we clean it up and
   # the version stays available for a clean re-run (fixes the false-atomicity).
   if ! gh release create "$VERSION" --draft --title "HOS $VERSION" \
-        "${PRE_FLAG[@]}" "${NOTES_ARG[@]}" --target "$HEAD_SHA" "${UPLOAD[@]}"; then
+        ${PRE_FLAG[@]+"${PRE_FLAG[@]}"} "${NOTES_ARG[@]}" --target "$HEAD_SHA" "${UPLOAD[@]}"; then
     gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
     err "draft release create/upload failed — cleaned up draft + tag. Re-run."
     exit 1
@@ -232,7 +234,7 @@ else
   # Atomic-ish publish: all assets verified present, now make it visible.
   # --latest (for a non-prerelease) ensures /releases/latest/ resolves to it, so
   # the docs' /latest/download/ install URLs work immediately. (#97)
-  if ! gh release edit "$VERSION" --draft=false "${LATEST_FLAG[@]}"; then
+  if ! gh release edit "$VERSION" --draft=false ${LATEST_FLAG[@]+"${LATEST_FLAG[@]}"}; then
     err "assets uploaded but publishing the draft failed. Finish manually:"
     err "    gh release edit $VERSION --draft=false"
     exit 1
