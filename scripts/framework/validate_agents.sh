@@ -115,6 +115,43 @@ if (! $AGY_AVAILABLE || $SKIP_AGY) && (! $CODEX_AVAILABLE || $SKIP_CODEX); then
     exit 2
 fi
 
+# ── External-reviewer timeout (agy/codex can hang; the gate must NOT) ──────────
+# A hung agy/codex once stalled the entire release gate indefinitely — there was
+# no cap on the external CLI call. Wrap every reviewer invocation in a hard
+# timeout. macOS ships no `timeout` by default, so prefer timeout/gtimeout when
+# present and otherwise fall back to a portable background-poll-and-kill.
+# Override per-call budget with AI_REVIEW_TIMEOUT (seconds).
+AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
+_TIMEOUT_BIN=""
+if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
+elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"; fi
+
+# run_capped <secs> <outfile> <cmd...> → 0 ok | 124 timeout | other = cmd's rc.
+# stdout of the command is written to <outfile> (stderr discarded, as before).
+run_capped() {
+    local secs="$1" out="$2"; shift 2
+    if [[ -n "$_TIMEOUT_BIN" ]]; then
+        "$_TIMEOUT_BIN" "$secs" "$@" > "$out" 2>/dev/null
+        return $?
+    fi
+    # Portable fallback: background the call, poll, escalate TERM→KILL at the cap.
+    "$@" > "$out" 2>/dev/null &
+    local pid=$! waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( waited >= secs )); then
+            kill -TERM "$pid" 2>/dev/null
+            sleep 2
+            kill -KILL "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 124
+        fi
+        sleep 3
+        waited=$(( waited + 3 ))
+    done
+    wait "$pid"
+    return $?
+}
+
 mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 OUTFILE="$OUT_DIR/validation-${TIMESTAMP}.md"
@@ -204,13 +241,21 @@ Return JSON only — no prose outside the JSON block:
   \"summary\": \"one paragraph overall assessment\"
 }"
 
-    local tmpfile
+    local tmpfile outfile
     tmpfile=$(mktemp /tmp/validate_agents_agy_XXXXXX)
+    outfile=$(mktemp /tmp/validate_agents_agy_out_XXXXXX)
     echo "$prompt" > "$tmpfile"
-    local result
-    result=$(agy -p "$(cat "$tmpfile")" 2>/dev/null) || \
+    local result rc=0
+    run_capped "$AI_REVIEW_TIMEOUT" "$outfile" agy -p "$(cat "$tmpfile")" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        result=$(cat "$outfile")
+    elif [[ $rc -eq 124 ]]; then
+        echo "  WARN: agy timed out after ${AI_REVIEW_TIMEOUT}s — recorded as error, continuing" >&2
+        result='{"reviewer":"agy","error":"agy timed out after '"$AI_REVIEW_TIMEOUT"'s","findings":[],"verdict":"error","summary":"agy exceeded the '"$AI_REVIEW_TIMEOUT"'s timeout (hang guard)"}'
+    else
         result='{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error","summary":"agy failed"}'
-    rm -f "$tmpfile"
+    fi
+    rm -f "$tmpfile" "$outfile"
     echo "$result"
 }
 
@@ -251,13 +296,22 @@ Return JSON only:
   \"summary\": \"one paragraph overall assessment\"
 }"
 
-    local tmpfile
+    local tmpfile outfile
     tmpfile=$(mktemp /tmp/validate_agents_codex_XXXXXX)
+    outfile=$(mktemp /tmp/validate_agents_codex_out_XXXXXX)
     echo "$prompt" > "$tmpfile"
-    local result
-    result=$(codex exec < "$tmpfile" 2>/dev/null) || \
+    local result rc=0
+    # codex reads the prompt on stdin; run_capped runs codex with stdin redirected.
+    run_capped "$AI_REVIEW_TIMEOUT" "$outfile" sh -c 'exec codex exec < "$1"' _ "$tmpfile" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        result=$(cat "$outfile")
+    elif [[ $rc -eq 124 ]]; then
+        echo "  WARN: codex timed out after ${AI_REVIEW_TIMEOUT}s — recorded as error, continuing" >&2
+        result='{"reviewer":"codex","error":"codex timed out after '"$AI_REVIEW_TIMEOUT"'s","attacks":[],"verdict":"error","summary":"codex exceeded the '"$AI_REVIEW_TIMEOUT"'s timeout (hang guard)"}'
+    else
         result='{"reviewer":"codex","error":"codex invocation failed","attacks":[],"verdict":"error","summary":"codex failed"}'
-    rm -f "$tmpfile"
+    fi
+    rm -f "$tmpfile" "$outfile"
     echo "$result"
 }
 
