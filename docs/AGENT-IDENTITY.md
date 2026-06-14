@@ -1,6 +1,6 @@
 # AGENT-IDENTITY.md — Agent actor identity via machine accounts (#152)
 
-**Status:** spec for review. Once approved, the human creates the account(s) and the agent builds the tooling (task split in §10).
+**Status:** spec for review. Once approved, the human creates the account(s) and the agent builds the tooling (task split in §10). **Release sizing:** machine accounts are a **significant release (minor bump, e.g. v0.2.0 — not a patch)** — they change the identity, authorization, and merge model, and require consumer action (creating accounts), so they ship as a deliberate version step, not a silent point fix.
 
 ---
 
@@ -84,8 +84,8 @@ A per-agent account proliferation (tens of accounts to manage) is unwanted *and*
 | Account | Class | Members (examples) | May approve PRs? |
 |---|---|---|---|
 | **`hos-worker`** | agents that **do work** | coder, technical-design, architect, dep-mapper | **No** — opens PRs, never approves |
-| **`hos-overseer`** | agents that **oversee & approve** | code/security/privacy/reliability/ops reviewers, risk-assessor, oversight-evaluator/orchestrator, Faberix | **Yes, up to its risk ceiling** (LOW to start) |
-| *(human — personal account)* | the escalation ceiling | — | **HIGH/CRITICAL**, and anything above the overseer's ceiling |
+| **`hos-overseer`** | agents that **oversee & approve** | code/security/privacy/reliability/ops reviewers, risk-assessor, oversight-evaluator/orchestrator, Faberix | **Approves AND merges** safe (LOW) PRs end-to-end; **recommends-only** above (escalates to human) |
+| *(human — personal account)* | the escalation ceiling | — | **Approves** HIGH/CRITICAL (and anything above the overseer's ceiling) before it can merge |
 
 Within each class, every agent still **self-identifies which agent + mode it is** (`[AI: {agent-name}]`, the Layer-2 attribution) on commits/issues/PRs — so "exactly who did what" is preserved without an account per agent.
 
@@ -112,10 +112,19 @@ On the protected branch (`main`):
   - **Normal/LOW paths:** the approval may come from **`hos-overseer`** (or a human) — **never from `hos-worker`** (the author class). Since `hos-worker` opens the PR, GitHub's own "no self-approval" rule plus the worker-can't-approve restriction means a worker PR needs an *overseer or human* review.
   - **HIGH/CRITICAL paths or above the overseer's ceiling:** the approval must come from a **human**. Enforce via (a) **CODEOWNERS** on the statically sensitive paths (require a human reviewer), and (b) a **required status check** that computes the PR's validated risk tier and *fails* if the tier exceeds the overseer's current ceiling — so a re-derived-CRITICAL change can't be overseer-approved. (The risk-tier→approver mapping is not natively dynamic in branch protection; the status check is what makes it server-side.)
 - **Dismiss stale approvals** on new commits.
-- **Restrict who can push to `main`** — neither bot pushes to `main` directly; merge goes through the gate.
-- The current admin-bypass merge protocol (`--admin`) must be **disabled for both bot tokens** — the whole point is no bot can bypass the human gate. (The human retains admin.)
+- **The `hos-overseer` is the merge actor for SAFE (LOW) PRs — it approves *and* merges them end-to-end, no human in the loop.** On higher-risk PRs it can neither approve nor merge: branch protection requires a human approval first, and the overseer escalates (it does not wait-and-merge on its own).
+- `hos-worker` never approves and never merges — it opens PRs only.
+- The admin-bypass (`--admin`) of the **human-required** gate is **disabled for both bot tokens** — so on a HIGH/CRITICAL (or above-ceiling) PR no bot can merge until a human has approved. (The overseer merging a *safe* PR is not a bypass; it's the gate being satisfied by an overseer approval, which the rules permit for that tier. The human retains admin.)
 
-I can apply these via `gh api` once the accounts exist.
+### 9.1 Escalation must be legible to a context-free human
+
+When the overseer escalates a PR or decision to the human, **assume the human has no prior context** — they did not follow the thread, the agent reasoning, or the build step. So every escalation must be **self-contained**:
+- the **PR description** states what changed, why, the validated risk tier, the blast radius, and the specific question/decision the human must make;
+- the linked **`needs-human` issue** restates the decision, the options, the recommendation, and the consequence of each — not "see above" or "as discussed."
+
+A handoff the human can act on **without reconstructing context** is the difference between the gate scaling and the gate becoming the bottleneck (relates to #156, human-gate ergonomics). This is a hard requirement on the overseer/orchestrator, not a nicety.
+
+I can apply the branch-protection rules via `gh api` once the accounts exist.
 
 ## 10. Build plan — human vs. agent task split
 
