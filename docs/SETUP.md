@@ -68,7 +68,7 @@ It will:
 
 ## Step 1b — Configure project-specific values
 
-> **Note (transitional):** the release install scaffolds the agent files with `{PROJECT_NAME}`/`{SPEC_FILE}`/`{DESIGN_PACK_DIR}` placeholders. Substituting them + generating `scripts/framework/config.sh` is currently done by the framework config tool (`scripts/framework/install.sh`), which is being folded into `hos_install.sh` — see issue #87. Until then, run that tool against your project to fill in the values below, or edit `config.sh` and the placeholders manually.
+> **How configuration works:** `hos_install.sh` scaffolds the agent files with `{PROJECT_NAME}`/`{SPEC_FILE}`/`{DESIGN_PACK_DIR}` placeholders and substitutes any values already in `scripts/framework/config.sh`. On an **interactive** install it then runs the config tool (`scripts/framework/install.sh`) for you to generate/fill `config.sh` and substitute the rest — so one `hos_install.sh` run yields a fully-configured project (#87). In **non-interactive/CI** runs it skips that step (set values via env or `config.sh`, then re-run `--force`); pass `HOS_NO_CONFIG=1` to opt out of the config step. Re-run `scripts/framework/install.sh` any time to update values.
 
 ## Step 2 — Configuration values
 

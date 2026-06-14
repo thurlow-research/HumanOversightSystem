@@ -39,7 +39,6 @@ scripts/
   reverify_self.sh       Targeted re-review of fixes against original findings
   capture_prompt.sh      Prompt artifact capture
   prompt_audit.sh        Prompt provenance audit
-  setup_oversight.sh     Legacy project installer (superseded by bootstrap/hos_install.sh)
   oversight/
     validators/          Risk scoring scripts (Python, deterministic):
       rn_calculator.py     Dai et al. Risk Number (nesting calibrated from bug data)
@@ -74,7 +73,7 @@ Both live in `bootstrap/` — the copy-to-machine bundle. Everything else is fet
 
 **Machine bootstrap** (`./bootstrap/hos_bootstrap.sh`): installs the machine prerequisites (Python 3.10+, ScanCode, gh, pip analysis packages) and — via `bootstrap/setup_clis.sh` — the agent CLIs (claude, codex, agy) + Node runtime. May need sudo. Run once per machine.
 
-**Project install** (`./bootstrap/hos_install.sh [<path>]`): installs the oversight protocol into a target project — AGENTS.md, agents, scripts, contract, PR template. By default it installs from a **fetched, validated release** (not the local working copy); use `--release <tag>` to pin a version or `--local` for a dev install. No sudo — it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing. Records the installed tag at the target's `.hos-release`. Run once per project (and on release bumps). Supersedes the legacy `scripts/setup_oversight.sh`.
+**Project install** (`./bootstrap/hos_install.sh [<path>]`): installs the oversight protocol into a target project — AGENTS.md, agents, scripts, contract, PR template. By default it installs from a **fetched, validated release** (not the local working copy); use `--release <tag>` to pin a version or `--local` for a dev install. No sudo — it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing. Records the installed tag at the target's `.hos-release`. Run once per project (and on release bumps). On an interactive install it delegates project configuration to `scripts/framework/install.sh` (the `config.sh` generator), so one run produces a fully-configured project (#87).
 
 ---
 

@@ -496,8 +496,30 @@ else
     grep -rqE "\{${_n}\}" "$TARGET_REPO/.claude/agents" 2>/dev/null && _remaining+=("$_n")
   done
   if [[ ${#_remaining[@]} -gt 0 ]]; then
-    warn "Placeholders still present as raw tokens in scaffolded agents: ${_remaining[*]}"
-    warn "Set them in $_subst_config (or run scripts/framework/install.sh), then re-run --force."
+    # Delegate the interactive config-gen to scripts/framework/install.sh so one
+    # `hos_install.sh` run produces a fully-configured project (#87, option A).
+    # install.sh is the config engine (prompts for values, writes config.sh, and
+    # substitutes); we invoke it only when interactive — non-interactive/CI keeps
+    # the previous behavior (warn + let the operator run it). HOS_NO_CONFIG=1 opts
+    # out entirely.
+    _install_tool="$TARGET_REPO/scripts/framework/install.sh"
+    if $DRY_RUN; then
+      dry_run "Would run scripts/framework/install.sh --target $TARGET_REPO to fill: ${_remaining[*]}"
+    elif [[ "${HOS_NO_CONFIG:-}" == "1" ]]; then
+      warn "Unset placeholders (${_remaining[*]}); HOS_NO_CONFIG=1 → skipping config."
+      warn "Run later: bash $_install_tool --target $TARGET_REPO"
+    elif [[ -f "$_install_tool" && -t 0 ]]; then
+      echo ""
+      info "Configuring project values via scripts/framework/install.sh (${_remaining[*]}) …"
+      if bash "$_install_tool" --target "$TARGET_REPO"; then
+        ok "Project configured"
+      else
+        warn "Config tool exited non-zero — set values in $_subst_config and re-run --force."
+      fi
+    else
+      warn "Placeholders still present as raw tokens in scaffolded agents: ${_remaining[*]}"
+      warn "Set them in $_subst_config (or run: bash $_install_tool --target $TARGET_REPO), then re-run --force."
+    fi
   fi
 fi
 
