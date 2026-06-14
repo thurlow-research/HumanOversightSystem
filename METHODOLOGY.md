@@ -258,9 +258,13 @@ Once the inner loop produces a complete verified working state, a transition pha
                      HIGH/CRITICAL. Findings posted as PR review
                      threads. Runs locally via authenticated CLIs.     [🔧 run_panel.sh]
 
-15. HUMAN GATE       Each PR thread requires a human decision, not
-                     just acknowledgment. Mandatory review at
-                     HIGH/CRITICAL.                                     [✅ gate / 🔧 panel]
+15. HUMAN GATE       Risk-stratified, NOT every PR (Jidoka): the
+                     human is pulled in only where needed —
+                     HIGH/CRITICAL get mandatory human review;
+                     LOW/MEDIUM auto-pass (SQC spot-check audit).
+                     WHERE a panel raises a review thread, that
+                     thread needs a human decision to resolve —
+                     not just an acknowledgment.                       [✅ gate / 🔧 panel]
 
 16. MERGE → AUDIT    Resolved trail committed to
                      audit/oversight-log.jsonl (append-only).          [✅]
