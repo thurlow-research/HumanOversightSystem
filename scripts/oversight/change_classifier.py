@@ -123,6 +123,16 @@ DEP_LINE = re.compile(r"^[A-Za-z0-9_.\-\"']")
 # Templates added as NEW files are a new user-facing surface.
 TEMPLATE_FILE = re.compile(r"(templates/.*\.html$|\.(jsx|tsx|vue|svelte)$)")
 
+# The HOS framework tooling tree. The added-line signatures below describe
+# APPLICATION behavior (auth state, routes, user-facing state); the oversight
+# tooling's own source contains those very patterns as literal regex/string
+# definitions, so scanning it makes the classifier match ITSELF — phantom
+# structural signals whenever a framework file is in the diff (HOS#117).
+# Exempt the tooling tree from application-domain signature scanning only;
+# dependency-manifest and new-template signals still apply everywhere (a real
+# dep added to oversight requirements.txt IS structural).
+FRAMEWORK_TOOLING = re.compile(r"(^|/)scripts/(oversight|framework)/.*\.py$")
+
 
 def _git(args: list[str]) -> str:
     try:
@@ -230,9 +240,14 @@ def detect_structural(name_status, added) -> list[dict]:
             )
 
     # Added-line signatures — permission/auth, route/flow, state enums.
+    # Skip the framework tooling tree: these application-domain patterns appear
+    # there only as the classifier's own literal definitions, not as real app
+    # behavior, so scanning it self-matches (HOS#117).
     for name, rx in ADDED_LINE_SIGNATURES:
         crx = re.compile(rx)
         for f, lines in added.items():
+            if FRAMEWORK_TOOLING.search(f):
+                continue
             for ln in lines:
                 if crx.search(ln):
                     signals.append({"signal": name, "file": f, "evidence": ln.strip()[:120]})
