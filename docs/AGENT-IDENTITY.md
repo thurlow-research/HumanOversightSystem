@@ -45,6 +45,20 @@ This is forge-proofing **by construction** (separate identities), not by cryptog
 
 `#127`'s committed content-hash record stays as the accountability layer underneath; `#151` is reframed (see §12).
 
+### 5.1 Two guarantees, not one — actor identity vs. determination honesty
+
+This is the conceptually load-bearing part, and the part easiest to under-document because it feels obvious once stated. The machine-accounts move delivers **actor identity** — *who authenticated an operation* — but the property the human gate actually needs is **determination honesty**: that a recorded human *determination* (the approval decision itself) genuinely happened, by the human, and **cannot be manufactured by the agent**. These are **two distinct guarantees, routinely conflated, and machine accounts close only the first.**
+
+Actor identity is **necessary but not sufficient** for determination honesty. The second is closed only when the approval check is enforced in a place **the agent's environment does not control** — i.e. **server-side** (GitHub branch protection requiring a review from a human-identity reviewer), *not* by a **local** check the agent's own session runs (an HOS script reading a committed authorization artifact). The two **compose**, and neither alone suffices:
+
+- **Machine accounts (actor identity)** ensure the required reviewer is a *different identity* than the agent.
+- **Server-side enforcement** ensures the agent *cannot bypass or self-satisfy* the gate.
+- A **local** gate is self-satisfiable even with separate identities (the agent runs the check). A **server-side** gate is forgeable if the agent can authenticate as the human (no identity split). You need **both**.
+
+Mapping to existing work: **#127's committed content-hashed record is the *local* form → accountability** (auditable, but the agent could in principle produce it). **Branch protection requiring a human review is the *server-side* form → forge-proof.** The identity split is what makes the server-side gate *mean* something (the required reviewer is provably not the bot).
+
+**Build-time obligation (don't leave it implicit in the diff):** when this ships, record **one explicit line** stating whether the human-approval check is enforced **server-side (GitHub branch protection)** or **by a local HOS script** — because that single fact is what determines whether the determination-honesty gap is *actually closed* (server-side) or merely made *auditable* (local). The mechanics of "we moved to machine accounts" will be obvious from the diff; this distinction will not be, and it is the one that matters.
+
 ## 6. The "reports-to" relationship (no first-class GitHub field — conventional schema)
 
 | Dimension | Mechanism |
