@@ -38,11 +38,13 @@ If stage 1 finds nothing, Faberix **exits before any model call**. This is a har
 **Cadence:** once per day.
 **Stage-1 trigger:** the open validator-debt queue is non-empty (issues labeled `validator-debt`/`scanner-fp`, or entries in a debt ledger). Empty → exit, no model spend.
 
+**Authority bound (decided 2026-06-13):** Faberix may **fix or won't-fix only SAFE (LOW-risk) items.** Anything HIGH-risk — security, privacy, license, or a fix whose blast radius isn't clearly contained — is **escalated for a human ruling**; the bot never auto-fixes it and never auto-suppresses it. This follows the project's core principle: the bot acts autonomously only where a mistake is cheap and reversible.
+
 For each debt item, exactly **one of three dispositions** (this mirrors how a human engineer triages a debt backlog, and implements **#133**):
 
-- **Fix** — clear, safe, and *worth it* → fix via the merge protocol, **verifying reproduction first** (`HANDLING-FINDINGS.md`; tonight 3 of 4 field reports didn't reproduce — see `[[project-cps-test-false-field-reports]]`).
-- **Won't-fix** — *not worth fixing*: fix-risk > finding-severity, cosmetic, or the validator is simply over-sensitive here. Record a **won't-fix ruling with rationale** AND write a **suppression entry** (§6) so the validator stops re-reporting it. This is the queue-cleaning move the user called out — following human practice, not everything gets fixed.
-- **Escalate** — needs a human decision (policy, design, a security/privacy finding Faberix may not wave off) → `needs-human`, don't guess.
+- **Fix** — clear, **safe (LOW-risk)**, and *worth it* → fix via the merge protocol, **verifying reproduction first** (`HANDLING-FINDINGS.md`; on 2026-06-13, 3 of 4 field reports didn't reproduce — see `research/findings/reviewer-agents-file-confident-non-reproducing-reports.md`).
+- **Won't-fix** — *not worth fixing* AND **safe**: fix-risk > finding-severity, cosmetic, or the validator is over-sensitive here. Record a **won't-fix ruling with rationale** AND write a **suppression entry** (§6) so the validator stops re-reporting it. Following human practice, not everything gets fixed. (HIGH-risk findings are never won't-fixed by the bot — they escalate.)
+- **Escalate** — needs a human decision (policy, design, **any HIGH-risk finding**) → `needs-human`, don't guess.
 
 **Convergence:** *fix* + *won't-fix-with-suppression* together drive the debt queue toward zero. A debt item is **never** left to silently re-appear next run — it's either gone (fixed) or suppressed-with-reason (won't-fix) or owned by a human (escalated). This is the non-deterministic-gate convergence architecture (METHODOLOGY.md) applied to validator debt.
 
@@ -58,17 +60,21 @@ For each debt item, exactly **one of three dispositions** (this mirrors how a hu
 **Cadence:** event-driven (on PR open/update).
 **Stage-1 trigger:** open PRs awaiting review. None → exit.
 
-Faberix reviews PRs from others and either:
-- **Approves** what it can — LOW risk-tier, within policy, tests green, **no** governance/contract/gate/security/privacy surface. The approval is a **bot** approval (attributable, audit-trailed).
-- **Escalates** what it can't — HIGH/CRITICAL tier, governance/gate/contract/security/privacy changes, or anything ambiguous → request human review (`needs-human`), **do not approve**.
+Faberix's review authority is **graduated by risk tier and earned over time** (decided 2026-06-13):
 
-**Determination-honesty boundary (`AGENT-IDENTITY.md §5.1`):** branch protection requires a **human** approval before merge on protected paths, so even a Faberix "approve" on a risky PR **cannot satisfy the merge gate** — by construction. On those paths Faberix's approval is *necessary-not-sufficient*; the human's is required. This is precisely why R3 is gated on #152.
+- **LOW tier → auto-approve** (the starting ceiling). Within policy, tests green, **no** governance/contract/gate/security/privacy surface. The approval is a **bot** approval (attributable, audit-trailed).
+- **MEDIUM and HIGH tier → recommend, do NOT approve.** Faberix posts a structured **review recommendation** (approve / request-changes, with rationale) and routes to a human (`needs-human`); the human makes the call. Faberix does not approve these.
+- **Ambiguous / outside competence** → escalate without a recommendation.
+
+**Trust ratchet (graduated autonomy).** Faberix starts auto-approving **LOW only**. Its MEDIUM/HIGH *recommendations* accumulate an auditable track record. If that record earns the human's trust, the auto-approve ceiling **may be raised to MEDIUM** later — a deliberate human decision, never automatic. The ceiling is **unlikely to ever reach HIGH**: high-risk PRs keep a human approver by design. This mirrors how a team grants a new reviewer more authority as they prove themselves.
+
+**Determination-honesty boundary (`AGENT-IDENTITY.md §5.1`):** branch protection requires a **human** approval before merge on protected paths, so even a Faberix "approve" on a risky PR **cannot satisfy the merge gate** — by construction. On those paths Faberix's approval is *necessary-not-sufficient*; the human's is required. This is precisely why R3 is gated on #152, and why HIGH stays human-approved regardless of the trust ratchet.
 
 ## 6. The won't-fix → validator suppression mechanism (closing the loop)
 
 The user's key point: *a won't-fix must stop the validator re-reporting it, or the queue never stays clean.* So won't-fix is not just an issue label — it writes back to the validators.
 
-- **Suppression ledger:** `scripts/oversight/validators/suppressions.yaml` — append-only, each entry keyed by `{dimension, file, locator (line|symbol|pattern), rationale, ruled_by, date, source_issue}`.
+- **Suppression ledger:** `scripts/oversight/validators/suppressions.yaml` — **per-repo** (each project owns its own suppressions; not shared across consumers, since "not worth fixing here" is a project-local judgment). Append-only, each entry keyed by `{dimension, file, locator (line|symbol|pattern), rationale, ruled_by, date, source_issue}`.
 - **Validators consult it:** `run_validators.sh` (or each validator) filters findings that match a suppression — they are recorded as **`suppressed`** (with the rationale carried through), **not scored**. This is **not a silent gag**: suppressed findings stay visible-but-excluded, with who/why/when attached.
 - **Accountability:** a suppression entry *is* a determination (who ruled won't-fix). Under #152 it carries the bot-or-human identity; over-broad suppressions are reviewable because the ledger is committed and diffed. A human can require that security/privacy suppressions be human-ruled only.
 - **Scope discipline:** suppress the **narrowest** thing that kills the false report (a specific `file:pattern`, not a whole dimension). A recurring *category* false-positive is a **`scanner-fp`** → fix the heuristic upstream, don't blanket-suppress (`HANDLING-FINDINGS.md §3`). Suppression is for *this instance isn't worth it*; scanner-fp is for *the detector is wrong*.
@@ -96,4 +102,12 @@ The user's key point: *a won't-fix must stop the validator re-reporting it, or t
 Each role ships **behind its stage-1 cost gate** and **under the bot identity**. None ships before #152.
 
 ---
-*Spec drafted by the HOS agent for human review. Open questions for the review: (a) is the suppression ledger per-repo or shared across consumers? (b) which finding classes are **human-ruled-only** for won't-fix (security/privacy/license)? (c) what risk-tier ceiling may Faberix auto-approve at in R3 (proposed: LOW only)?*
+## Resolved decisions (2026-06-13)
+
+- **(a) Suppression ledger scope → per-repo.** Each project owns its own `suppressions.yaml`; "not worth fixing here" is a project-local judgment, not a framework-wide one.
+- **(b) Won't-fix / fix authority → safe (LOW-risk) only.** The bot fixes and won't-fixes only safe items; **HIGH-risk always escalates** for a human ruling. The bot never auto-suppresses a high-risk finding.
+- **(c) R3 auto-approve ceiling → LOW to start, with a trust ratchet.** On MEDIUM/HIGH the bot **recommends** but does not approve; the human decides. If the recommendations earn trust, the ceiling **may later be raised to MEDIUM** (a deliberate human decision). **Unlikely to ever reach HIGH** — high-risk PRs keep a human approver by design.
+
+These follow the project's governing principle: **autonomous action only where a mistake is cheap and reversible; everything else is a recommendation to a human.** Autonomy is *earned and graduated*, not granted up front.
+
+*Spec drafted by the HOS agent; open questions resolved by the human 2026-06-13. Build still gated on #152.*
