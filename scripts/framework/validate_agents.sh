@@ -66,8 +66,17 @@ EXTRA_REVIEW_FILES=""
 [[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh
 
 # --record FILES CLASS DISPOSITION — append a disposition to the dedup ledger so
-# the finding is treated as "seen" on subsequent runs (CLASS = agy category or
-# codex type; DISPOSITION = fixed / filed:#NN / noise / residual).
+# the finding is treated as "seen" on subsequent runs. Convergence = every finding
+# DISPOSITIONED (not every finding fixed); a dispositioned finding is deduped and
+# never re-gates. Triage rubric (#133):
+#   fix       — clear, safe, low-churn fix AND the finding is non-trivial
+#   filed:#NN — real design/foundational issue → tracked as an issue, no churn now
+#   residual  — minor in practice AND fix-churn-risk > finding-severity → accept + move on
+#   noise     — false positive / non-reproducing
+# GUARDRAIL: `residual` ACCEPTS a real-but-not-worth-fixing finding — a human (or an
+# explicit confidence/severity threshold) decides residual-vs-fix. The AI must NOT
+# silently downgrade a real finding to `residual` to unblock itself (the anti-gaming
+# line: the agent cannot mark its own homework done). CLASS = agy category / codex type.
 if [[ "${1:-}" == "--record" ]]; then
     mkdir -p "$OUT_DIR"
     _files="${2:?--record needs FILES}"; _cls="${3:?--record needs CLASS}"; _disp="${4:?--record needs DISPOSITION}"

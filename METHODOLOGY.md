@@ -250,6 +250,19 @@ Once the inner loop produces a complete verified working state, a transition pha
 
 **Why `panel-context.md` withholds internal findings:** if the outer panel could read the internal reviewers' conclusions, it would tend to converge on the same findings rather than produce a genuinely independent signal. The isolation is an anchoring-prevention mechanism — the same principle as blind peer review. The panel sees structural signals (risk tier, blast radius, provenance) but forms its own judgments.
 
+### Convergence by disposition — triage/accept, not fix-everything (#133)
+
+An adversarial self-review on a rich governance corpus **never says "nothing left."** Treating every `blocking` finding as fix-or-file has two costs: **churn-induced regressions** (editing a dense governance file to fix a minor finding re-enters it into the changed set, the reviewer surfaces the *next* subtlety, and the edit itself can introduce a worse problem — fixing can cost more than the finding) and **non-termination** (each fix spawns new findings). So convergence is defined by **disposition, not repair**: every finding is routed to exactly one of —
+
+| Disposition | When |
+|---|---|
+| **fix** | clear, safe, low-churn fix AND the finding is non-trivial |
+| **filed** | real design/foundational issue → tracked as an issue, no churn now |
+| **residual (accept)** | minor in practice AND fix-churn-risk > finding-severity → record + move on |
+| **noise** | false positive / non-reproducing |
+
+**Stopping rule:** once dispositioned (any of the four), a finding is deduped in the convergence ledger and never re-gates. **Convergence = "every finding dispositioned," not "every finding fixed."** **Anti-gaming guardrail:** `residual` accepts a *real* finding as not-worth-fixing — a **human** (or an explicit confidence/severity threshold) decides residual-vs-fix; the AI must **not** silently downgrade a real finding to `residual` to unblock itself (the agent cannot mark its own homework done). The ledger is `scripts/framework/validate_agents.sh --record FILES CLASS DISPOSITION`. This is the same triage discipline the consumer-facing `docs/HANDLING-FINDINGS.md` teaches (fix / accept-with-rationale / scanner-fp) and that Faberix R1 applies to validator debt (#167).
+
 ### Outer loop (runs once per PR)
 
 ```
