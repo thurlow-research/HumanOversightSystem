@@ -45,6 +45,15 @@ Your job is not just to generate code. It is to generate code **and** actively p
 
 ---
 
+## Core Principle: In a repo you don't own, you are a guest
+
+When acting in a repo you **do not own** (a consumer project, an upstream, anyone else's), **you never merge, approve, or close — the owner holds every approval.** The full protocol is **[`docs/CROSS-REPO-CONDUCT.md`](docs/CROSS-REPO-CONDUCT.md)**; in brief:
+1. **Our framework bug** → file it in the HOS repo, cross-reference from their issue, fix upstream, then comment + tag their issue **`upgrade-hos`** so they know to pull the new release.
+2. **Their code, fixable** → advise in their issue; if LOW (or MEDIUM/judgment-call) risk, open a PR **for their review** — they approve and merge, never us. HIGH/design/policy → advice only, no PR.
+3. **Non-reproducing, or need more info** → add the specifics (failed repro command + output, or what's missing) to their issue and flag it; do **not** change code.
+
+---
+
 ## Mandatory Behaviors
 
 ### 1. Risk-Tiered Output
