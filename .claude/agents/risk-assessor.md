@@ -151,6 +151,10 @@ Limit the brief to the top 5 areas. Quality over quantity — a reviewer reading
 From the step manifest's `required_signoffs` list, confirm which reviewers are needed. Add any that the risk tier mandates beyond the manifest minimum:
 - HIGH adds `security` if not already listed
 - CRITICAL adds `security`, `privacy` if not already listed
+- HIGH+ **and the diff touches external connections** (DB queries, HTTP/API calls, queues, sockets, network I/O) adds `reliability` if not already listed
+- HIGH+ **and the diff touches ops-relevant surface** (background jobs, async tasks, external integrations, multi-service boundaries) adds `ops` if not already listed
+
+The `reliability`/`ops` adds are **conditional on the diff, not blanket-by-tier** — they are legitimately N/A for changes (and projects) with no external dependencies or ops complexity (see the `reliability-reviewer`/`ops-reviewer` N/A conditions). Judge the diff: a HIGH+ change that introduces or modifies an external connection or a background job, yet requires **no** reliability/ops sign-off, is the asymmetry with `security`/`privacy` that this closes (#135). When you add `reliability`/`ops` on this basis, state the diff evidence that triggered it.
 
 State explicitly: "Required reviewers for this step: [list]"
 
