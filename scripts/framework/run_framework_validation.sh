@@ -29,6 +29,7 @@ SKIP_DOCS=false
 SKIP_COMPLIANCE=false
 SKIP_SELF=false
 CHANGED_ONLY=""
+BASE_ARG=""
 SKIP_CODEX=""
 SKIP_AGY=""
 
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --skip-compliance)  SKIP_COMPLIANCE=true;         shift ;;
         --skip-self)        SKIP_SELF=true;               shift ;;
         --changed-only)     CHANGED_ONLY="--changed-only"; shift ;;
+        --base)             BASE_ARG="--base $2";          shift 2 ;;
         --skip-codex)       SKIP_CODEX="--skip-codex";    shift ;;
         --skip-agy)         SKIP_AGY="--skip-agy";        shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -83,7 +85,7 @@ if ! $SKIP_SELF && [[ -f "$SCRIPT_DIR/validate_self.sh" ]]; then
     echo "Phase 1.5 — Opus self-review (pre-external)"
     echo ""
     self_rc=0
-    bash "$SCRIPT_DIR/validate_self.sh" $CHANGED_ONLY || self_rc=$?
+    bash "$SCRIPT_DIR/validate_self.sh" $CHANGED_ONLY $BASE_ARG || self_rc=$?
     if [[ "$self_rc" -eq 3 ]]; then
         echo ""
         echo "  Self-review hit the pass cap without converging — a HUMAN must"
@@ -105,6 +107,7 @@ echo ""
 
 AI_ARGS=""
 [[ -n "$CHANGED_ONLY" ]] && AI_ARGS="$AI_ARGS $CHANGED_ONLY"
+[[ -n "$BASE_ARG" ]] && AI_ARGS="$AI_ARGS $BASE_ARG"
 [[ -n "$SKIP_CODEX"   ]] && AI_ARGS="$AI_ARGS $SKIP_CODEX"
 [[ -n "$SKIP_AGY"     ]] && AI_ARGS="$AI_ARGS $SKIP_AGY"
 

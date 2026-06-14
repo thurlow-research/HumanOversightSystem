@@ -56,6 +56,10 @@ LEDGER="$OUT_DIR/self-review-ledger.jsonl"
 # downgrade would defeat that. (Override only the resolved ID if Opus is renamed.)
 MODEL="claude-opus-4-8"
 CHANGED_ONLY=false
+# Base ref for --changed-only. Defaults to HEAD~1 (single commit), but a release
+# scopes to the last release tag so a patch/minor reviews ITS diff, not the whole
+# corpus (#130). Override with --base <ref>.
+BASE_REF="HEAD~1"
 # Hard cap on iterate passes. Self-review is non-deterministic and will keep
 # surfacing low-value findings forever; the cap forces a stop. If the cap is hit
 # while NEW blocking findings are still appearing, the script escalates (exit 3)
@@ -96,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --agents-dir)   AGENTS_DIR="$2"; shift 2 ;;
         --changed-only) CHANGED_ONLY=true; shift ;;
+        --base)         BASE_REF="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -118,7 +123,7 @@ collect_files() {
     local files=() content=""
     if $CHANGED_ONLY; then
         while IFS= read -r f; do [[ -f "$f" ]] && files+=("$f"); done \
-            < <(git diff --name-only HEAD~1 -- "$AGENTS_DIR" "$DOCS_DIR" 2>/dev/null || true)
+            < <(git diff --name-only "$BASE_REF" -- "$AGENTS_DIR" "$DOCS_DIR" 2>/dev/null || true)
         [[ ${#files[@]} -eq 0 ]] && CHANGED_ONLY=false
     fi
     if ! $CHANGED_ONLY; then

@@ -38,6 +38,7 @@ AGENTS_DIR=".claude/agents"
 DOCS_DIR="docs"
 OUT_DIR=".claudetmp/framework"
 CHANGED_ONLY=false
+BASE_REF="HEAD~1"   # base for --changed-only; a release passes --base <last tag> (#130)
 SKIP_AGY=false
 SKIP_CODEX=false
 
@@ -90,6 +91,7 @@ while [[ $# -gt 0 ]]; do
         --agents-dir)   AGENTS_DIR="$2"; shift 2 ;;
         --docs-dir)     DOCS_DIR="$2";   shift 2 ;;
         --changed-only) CHANGED_ONLY=true; shift ;;
+        --base)         BASE_REF="$2"; shift 2 ;;
         --skip-codex)   SKIP_CODEX=true;  shift ;;
         --skip-agy)     SKIP_AGY=true;    shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -174,9 +176,9 @@ collect_files() {
     if $CHANGED_ONLY; then
         while IFS= read -r f; do
             [[ -f "$f" ]] && files+=("$f")
-        done < <(git diff --name-only HEAD~1 -- "$AGENTS_DIR" "$DOCS_DIR" 2>/dev/null || true)
+        done < <(git diff --name-only "$BASE_REF" -- "$AGENTS_DIR" "$DOCS_DIR" 2>/dev/null || true)
         if [[ ${#files[@]} -eq 0 ]]; then
-            echo "WARN: --changed-only specified but no changed agent/doc files vs HEAD~1 — using all files" >&2
+            echo "WARN: --changed-only specified but no changed agent/doc files vs $BASE_REF — using all files" >&2
             CHANGED_ONLY=false
         fi
     fi

@@ -307,3 +307,13 @@ The CPS real-world run showed the gates failing on a real operator machine while
 - **A real-world install test is a first-class oversight checkpoint**, not an integration nicety — it is the only place this class of oversight-instrument failure is observable. See `research/findings/ci-is-blind-to-consumer-environment-failures.md`.
 
 This is the same re-derive-don't-trust principle (D33/D37) applied to the gates' runtime: don't trust "green in CI" as evidence the instrument runs where the human runs it — prove it in the field.
+
+### D39. Release-type-scoped self-validation — full corpus for major, incremental for minor/patch (2026-06-13)
+
+The framework's release-gate self-review (`validate_self` + cross-vendor `validate_agents`) reviews the **entire governance corpus** adversarially. On a rich corpus an adversarial reviewer **converges on zero-NEW but never zero** (`research/findings/nondeterministic-review-gate-converges-on-zero-new.md`): it keeps surfacing *real, pre-existing* holes. Cutting v0.1.1 demonstrated this — ~14 genuine findings surfaced during the cut, **none of them regressions of the release's own diff**; several had shipped undetected through prior releases. Gating a **patch** on "zero findings across the whole corpus" therefore never passes.
+
+**Decision:** scope the release-gate review by version bump.
+- **MAJOR (X.0.0)** → full-corpus self-review + cross-vendor. A major release is the point to re-validate everything.
+- **MINOR / PATCH** → incremental: `--changed-only --base <last release tag>`, so the gate reviews only the files the release changed. The correct convergence bar for a patch is **"zero-NEW since the release diff,"** not "zero in the corpus."
+
+Implemented via a `--base <ref>` option threaded through `validate_self.sh`, `validate_agents.sh`, and `run_framework_validation.sh`; `cut_release.sh` selects the scope from `$BUMP`. The full-corpus sweep does not disappear — it moves **off the release critical path** to a continuous async backlog job (#131) that files NEW findings as tracked issues (ledger-deduped so the same finding is never re-filed). Trade-off (stated explicitly): incremental can miss a finding arising from an interaction with an *unchanged* file; the daily full sweep is the safety net. See #130/#131. This is the ratchet applied to validation cost — pay full re-validation when the blast radius is largest (major), pay incremental otherwise.
