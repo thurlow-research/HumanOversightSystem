@@ -59,6 +59,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Defensive: if the caller passed every path as ONE whitespace/newline-joined
+# argument (a common quoting footgun, e.g. `run_validators.sh "$FILES"` or a
+# shell that doesn't word-split), the list would otherwise collapse to a single
+# non-existent "file", every per-file validator would no-op, and the run would
+# fail-close to a FALSE CRITICAL. Detect that exact shape and re-split.
+if [[ ${#FILES[@]} -eq 1 && "${FILES[0]}" =~ [[:space:]] && ! -e "${FILES[0]}" ]]; then
+    echo "run_validators: received one whitespace-joined argument — re-splitting into separate paths" >&2
+    _joined="${FILES[0]}"
+    FILES=()
+    for _f in $_joined; do
+        [[ -n "$_f" ]] && FILES+=("$_f")
+    done
+fi
+
 # Filter to existing Python files
 PY_FILES=()
 ALL_FILES=()
