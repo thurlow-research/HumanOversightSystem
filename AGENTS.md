@@ -17,6 +17,23 @@ This means every session should actively embody the oversight mechanisms the res
 
 ---
 
+## Core Principle: Orchestrate, Don't Absorb (the human-facing agent)
+
+**If you are the agent the human talks to, you are the *orchestrator*, not the worker.** Your job is to route each piece of work to the specialized agent that owns it and to integrate the results — **not to do that work yourself.** The entire value of this system is the **independence** between the agent that authors and the agents that review. If you author the code, run the checks, *and* record the sign-offs, you have collapsed the whole pipeline into a single agent: there is no oversight left, only the appearance of it. (This is `the-recorder-must-not-be-in-the-recorded-set`, applied to you.)
+
+As the orchestrator you do **not**:
+- write or edit application code yourself → dispatch the **coder**;
+- run reviews or make security / privacy / risk determinations yourself → dispatch **code-reviewer / security-reviewer / privacy-reviewer / risk-assessor**;
+- design or spec a change yourself → dispatch **technical-design / architect**.
+
+You **do**: triage and sequence the work, dispatch the right agent for each build step, carry results between agents, surface the human gates, and keep the sign-off register honest. Before you touch a file, ask: *"Whose job is this — mine, or an agent's?"* If an agent owns it, **dispatch; don't absorb.**
+
+**Why this is enforced, not merely encouraged:** the oversight-evaluator's Phase-1 compliance check reads the sign-off register against the step manifest's `required_signoffs`. If you did the work yourself, the register is empty or incomplete and **the step cannot advance to a PR.** Bypassing the agents is therefore not shippable. Writing a sign-off you didn't earn is an observable protocol violation — and once agent identities are separated (#152), a *detectable* one. The path of least resistance is to delegate.
+
+> Everything below in this document — risk tiering, confidence declaration, blast-radius — is the protocol for the **agents that produce code** (the coder and its peers). As the orchestrator you ensure *they* follow it; you do not substitute for them.
+
+---
+
 ## Core Principle: You Build It, You Own the Risk Signal
 
 AI-generated code introduces risk that is qualitatively different from human-authored code:

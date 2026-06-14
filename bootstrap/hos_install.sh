@@ -589,6 +589,47 @@ cp_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
 cp_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" \
   2>/dev/null || true  # optional
 
+# ── CLAUDE.md — wire the orchestrator role into the auto-loaded context ────────
+# AGENTS.md holds the protocol, but the main interactive agent only auto-loads
+# CLAUDE.md. Without a pointer there, the orchestrator never reads the protocol
+# and defaults to doing the work itself (pipeline bypass — the agents go unused).
+# Inject an idempotent, marker-delimited managed block: create CLAUDE.md if
+# absent, append if our markers aren't present, refresh in place if they are.
+# We never touch the consumer's own CLAUDE.md content outside the markers.
+_CLAUDE_MD="$TARGET_REPO/CLAUDE.md"
+_HOS_BS="<!-- HOS:ORCHESTRATOR start -->"
+_HOS_BE="<!-- HOS:ORCHESTRATOR end -->"
+read -r -d '' _HOS_BLOCK <<'BLOCK' || true
+<!-- HOS:ORCHESTRATOR start -->
+## Oversight: you are the orchestrator
+
+This project uses the Human Oversight System (HOS). **Read `AGENTS.md` before any build task.**
+
+**You are the orchestrator, not the worker.** Route each piece of work to the specialized agent that owns it and integrate the results — do **not** author code, run reviews, or make security / privacy / risk determinations yourself. Dispatch the **coder** to write code; **code-reviewer / security-reviewer / privacy-reviewer / risk-assessor** to review; **technical-design / architect** to spec. You triage, sequence, dispatch, carry results between agents, surface the human gates, and keep the sign-off register honest. Before you touch a file, ask *"whose job is this — mine, or an agent's?"* — if an agent owns it, **dispatch, don't absorb.** Doing the work yourself collapses the author≠reviewer independence that is the whole point, and the oversight-evaluator's Phase-1 compliance check will block the step (empty sign-off register). Full protocol: `AGENTS.md` §"Orchestrate, Don't Absorb".
+<!-- HOS:ORCHESTRATOR end -->
+BLOCK
+
+if $DRY_RUN; then
+  dry_run "ensure HOS orchestrator block in CLAUDE.md"
+elif [[ ! -f "$_CLAUDE_MD" ]]; then
+  printf '%s\n' "$_HOS_BLOCK" > "$_CLAUDE_MD"
+  info "CLAUDE.md created with HOS orchestrator block"
+elif ! grep -qF "$_HOS_BS" "$_CLAUDE_MD"; then
+  printf '\n%s\n' "$_HOS_BLOCK" >> "$_CLAUDE_MD"
+  info "CLAUDE.md — HOS orchestrator block appended (your existing content untouched)"
+else
+  _bf="$(mktemp)"; _tmp="$(mktemp)"
+  printf '%s\n' "$_HOS_BLOCK" > "$_bf"
+  awk -v s="$_HOS_BS" -v e="$_HOS_BE" -v bf="$_bf" '
+    BEGIN { while ((getline line < bf) > 0) block = block line "\n" }
+    $0==s { printf "%s", block; skip=1; next }
+    $0==e { skip=0; next }
+    !skip { print }
+  ' "$_CLAUDE_MD" > "$_tmp" && mv "$_tmp" "$_CLAUDE_MD"
+  rm -f "$_bf"
+  skip "CLAUDE.md — HOS orchestrator block refreshed in place"
+fi
+
 # ── contract/ — step manifest template ────────────────────────────────────────
 run mkdir -p "$TARGET_REPO/contract"
 if [[ ! -f "$TARGET_REPO/contract/step-manifest.yaml" ]]; then
