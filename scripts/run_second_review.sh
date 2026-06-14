@@ -286,6 +286,8 @@ run_agy_review() {
 
     local prompt="You are an independent code reviewer. Your lens is CORRECTNESS and SPEC ADHERENCE.
 
+IMPORTANT — this is a READ-ONLY review. Base your review ONLY on the diff and context provided below. Do NOT run shell commands, execute tests, or create/modify any files. Output your review directly; do not narrate tool use.
+
 ## Application context
 Django (Python) + HTMX application — CondoParkShare, a parking spot sharing system for condo residents. Multi-tenant (one Django instance, multiple buildings). Uses PostgreSQL with tstzrange GiST exclusion constraints for booking overlap safety.
 
@@ -333,7 +335,10 @@ Return JSON only:
   \"summary\": \"one paragraph\"
 }"
 
-    agy -p "$prompt" 2>/dev/null || \
+    # --sandbox: terminal restrictions so the review cannot mutate the working
+    # tree. agy is an AGENTIC CLI — without this it has run pytest and created
+    # files mid-review (HOS#113). A review step must never write to the tree.
+    agy --sandbox -p "$prompt" 2>/dev/null || \
         echo '{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error"}'
 }
 
@@ -452,53 +457,107 @@ try:
 except Exception:
     sys.exit(0)
 
-# Extract JSON blocks (fenced with ```json ... ```)
-blocks = re.findall(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
 severities = ["critical", "high", "medium", "low", "none"]
-highest = "none"
-request_changes = False
-had_error = False
-finding_count = 0
+SEV_RANK = {s: i for i, s in enumerate(severities)}
 
-for block in blocks:
+# Parse by REVIEWER SECTION (## header), not by a bare ```json regex. agy is an
+# agentic CLI: it returns a narrated transcript + a markdown report, not the
+# strict JSON the prompt requested (HOS#113). The old parser required a fenced
+# block starting with `{`, found none, and fail-closed every prose review as
+# `error` — throwing away a genuine independent review. Section parsing also
+# survives the reviewer emitting its own ``` code fences.
+sections = re.split(r'(?m)^## ', content)[1:]   # each starts after "## "
+
+def fenced_body(text):
+    """Content inside the outer ```json ... ``` if present, else the whole text."""
+    m = re.search(r'```(?:json)?\s*\n(.*)\n```', text, re.DOTALL)
+    return (m.group(1) if m else text).strip()
+
+def classify_prose(text):
+    """Best-effort verdict/severity from a non-JSON markdown review report.
+    Returns (verdict, severity): verdict in approve|request_changes|unparseable."""
+    low = text.lower()
+    risk = re.search(r'\brisk:\s*(critical|high|medium|low|none)\b', low)
+    blocking = re.search(r'must[ -]?fix|tier\s*1\b|request[_ ]changes|\bblocking\b|\bcritical\b', low)
+    approve = re.search(r'\bverdict:\s*approve\b|no (issues|findings|problems)|lgtm|looks good|\bapprove\b', low)
+    if risk and risk.group(1) in ("critical", "high"):
+        return "request_changes", risk.group(1)
+    if blocking:
+        sev = "critical" if "critical" in low else "high"
+        return "request_changes", sev
+    if approve or (risk and risk.group(1) in ("low", "none")):
+        return "approve", (risk.group(1) if risk else "none")
+    return "unparseable", (risk.group(1) if risk else "none")
+
+reviewers = []   # (name, verdict, severity, finding_count, parsed_from)
+for sec in sections:
+    head = sec.splitlines()[0] if sec.splitlines() else ""
+    hl = head.lower()
+    name = "agy" if hl.startswith("agy") else ("codex" if hl.startswith("codex") else None)
+    if name is None:
+        continue                      # not a reviewer section (verdict header etc.)
+    if "skipped" in hl:
+        continue                      # a skipped reviewer is handled by the pre-check
+    body = fenced_body(sec[len(head):])
+    if not body:
+        reviewers.append((name, "error", "none", 0, "empty"))   # true crash / no output
+        continue
+    # Structured path: the body is valid JSON exactly as the prompt asked.
     try:
-        data = json.loads(block)
+        data = json.loads(body)
     except Exception:
-        # An unparseable reviewer block is itself a review failure — fail closed.
-        had_error = True
+        v, sev = classify_prose(body)
+        fc = len(re.findall(r'(?m)^\s*#{1,4}\s', body)) if v == "request_changes" else 0
+        reviewers.append((name, v, sev, fc, "prose"))
         continue
     if data.get("verdict") == "error" or data.get("error"):
-        had_error = True
-    if data.get("verdict") == "request_changes":
-        request_changes = True
+        reviewers.append((name, "error", "none", 0, "json"))
+        continue
+    v = "request_changes" if data.get("verdict") == "request_changes" else "approve"
+    sev, fc = "none", 0
     for f in data.get("findings", []):
-        sev = str(f.get("severity", "low")).lower()
-        if severities.index(sev) < severities.index(highest):
-            highest = sev
-        if sev in ("critical", "high"):
-            finding_count += 1
+        s = str(f.get("severity", "low")).lower()
+        if SEV_RANK.get(s, 4) < SEV_RANK[sev]:
+            sev = s
+        if s in ("critical", "high"):
+            fc += 1
+    reviewers.append((name, v, sev, fc, "json"))
 
-# Precedence: error > request_changes > approve. A runtime reviewer error
-# (timeout, rate-limit, crash after the CLI passed pre-check) must NOT collapse
-# into `approve` — that would silently convert the mandatory independent review
-# into a PASS. The error-block is swallowed into `approve` only if we let it;
-# instead a fired reviewer that errored makes the aggregate `error`, and the
-# script exits non-zero so the pipeline fails closed (symmetric with the
-# unavailable-at-pre-check guard above). The oversight-evaluator also treats a
-# MEDIUM+ second-review file with verdict:error as COMPLIANCE FAIL.
-if not blocks or had_error:
-    verdict = "error"
-elif request_changes:
-    verdict = "request_changes"
+# Aggregate. Precedence: error > request_changes > unparseable > approve.
+#   error        — a fired reviewer genuinely crashed / produced no output.
+#                  Fails closed (must not silently become a PASS).
+#   request_changes — at least one reviewer flagged blocking issues.
+#   unparseable  — a reviewer produced a review we could not structure. This is
+#                  DISTINCT from error: the review content exists and is preserved
+#                  in this file for a human to read. It must NOT silently pass and
+#                  must NOT be misread as the reviewer crashing.
+#   approve      — all fired reviewers approved.
+if not reviewers:
+    verdict, highest, finding_count = "error", "none", 0
 else:
-    verdict = "approve"
+    highest = "none"
+    finding_count = 0
+    for _, _, sev, fc, _ in reviewers:
+        if SEV_RANK.get(sev, 4) < SEV_RANK[highest]:
+            highest = sev
+        finding_count += fc
+    verds = [v for _, v, _, _, _ in reviewers]
+    if "error" in verds:
+        verdict = "error"
+    elif "request_changes" in verds:
+        verdict = "request_changes"
+    elif "unparseable" in verds:
+        verdict = "unparseable"
+    else:
+        verdict = "approve"
 
-# Rewrite the top-level verdict fields in the file
 new_content = re.sub(r'^verdict: pending$', f'verdict: {verdict}', content, flags=re.M)
 new_content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', new_content, flags=re.M)
 new_content = re.sub(r'^unresolved_findings: 0$', f'unresolved_findings: {finding_count}', new_content, flags=re.M)
 open(path, 'w').write(new_content)
-print(f"  verdict={verdict} highest_severity={highest} unresolved={finding_count}")
+prose_note = " (parsed from prose — agy returned a markdown report, not JSON)" \
+    if any(pf == "prose" for *_ , pf in reviewers) else ""
+print(f"  verdict={verdict} highest_severity={highest} unresolved={finding_count}{prose_note}")
 PYEOF
 
 echo "Second review complete: $OUTFILE"
@@ -563,4 +622,17 @@ if [[ "$FINAL_VERDICT" == "error" ]]; then
     echo "run_second_review: FAIL-CLOSED — a required reviewer errored at runtime (verdict=error)." >&2
     echo "  The mandatory cross-vendor review did not produce an independent judgment. Re-run." >&2
     exit 1
+fi
+if [[ "$FINAL_VERDICT" == "unparseable" ]]; then
+    # The reviewer produced a real review we could not auto-structure (agy returned
+    # a markdown report, not JSON — HOS#113). This is NOT a crash: the content is
+    # in $OUTFILE. Do not silently fail-closed-as-error, and do not silently pass —
+    # surface it for a human to read and disposition.
+    echo "run_second_review: ⚠ UNPARSEABLE — a reviewer returned prose, not structured JSON." >&2
+    echo "  The independent review DID run and its content is preserved in:" >&2
+    echo "    $OUTFILE" >&2
+    echo "  A human must read it and decide. (This is distinct from verdict=error/crash.)" >&2
+    # Exit 0: the review exists and is recorded. The oversight-evaluator routes an
+    # 'unparseable' second-review to human review (CONDITIONAL/ESCALATE), not a
+    # silent PASS and not a COMPLIANCE FAIL.
 fi
