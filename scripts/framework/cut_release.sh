@@ -124,6 +124,21 @@ fi
 if git rev-parse "$VERSION" &>/dev/null; then err "tag $VERSION already exists"; exit 1; fi
 ok "release version: ${BOLD}$VERSION${RESET}"
 
+# ── Authored release notes required for minor/major ───────────────────────────
+# A minor/major release must ship a HUMAN-AUTHORED changelog (docs/releases/<ver>.md),
+# not just GitHub's auto-generated PR list. Patch releases may use auto-notes. (#190)
+_notes_path="docs/releases/${VERSION}.md"
+if [[ "$BUMP" == "minor" || "$BUMP" == "major" || "$VERSION" =~ \.0$ ]]; then
+  if [[ ! -s "$_notes_path" ]] || [[ "$(grep -cv '^[[:space:]]*$' "$_notes_path" 2>/dev/null)" -lt 5 ]]; then
+    err "minor/major release ${VERSION} requires AUTHORED release notes at ${_notes_path}"
+    err "  (it is missing or too short). Write them, commit, and re-run."
+    err "  Patch releases may use GitHub auto-generated notes."
+    exit 1
+  fi
+  ok "authored release notes present: ${_notes_path}"
+  [[ -z "${NOTES_FILE:-}" ]] && NOTES_FILE="$_notes_path"
+fi
+
 # ── Validation gate ───────────────────────────────────────────────────────────
 hdr "3. Validation gate"
 NOTE_SUFFIX=""
