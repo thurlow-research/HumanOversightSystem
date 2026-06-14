@@ -112,4 +112,4 @@ codex: approve / request_changes (N attacks)
 - **Broken escalation chain (A → B, B doesn't exist)** → human immediately — this is a build-blocking gap
 - **Scope creep risk (additive/structural boundary unclear)** → architect
 - **Agent responsibility gap** → pm-agent if product-behavior-related; architect if architectural
-- **Script bugs** → human (you don't own the scripts)
+- **Script bugs** → mechanical defects (a wrong path, missing flag, typo) you may fix directly (§6.0); logic/scoring/check-semantics changes require human approval

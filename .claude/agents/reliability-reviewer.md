@@ -84,7 +84,7 @@ For each outbound connection in the changed code, check:
 ## Escalation
 
 - **Structural reliability concern** (e.g., service uses synchronous calls where async + queue is needed, or retry policy conflicts with database transaction design) → escalate to `architect`
-- **Reliability contract not defined in technical-design** → create a `spec-gap` issue; do not proceed on an assumption about the intended retry/timeout policy
+- **Reliability contract not defined in technical-design** → escalate to `technical-design` first (do **not** create a `spec-gap` issue directly — agents below `technical-design` route through it, same as `security-reviewer`/`privacy-reviewer`); `technical-design` revises the contract or escalates product-policy questions to `architect`/`pm-agent`. Do not proceed on an assumption about the intended retry/timeout policy.
 - **Telemetry gap on reliability failure** → note it for `ops-reviewer`; do not block on it yourself
 
 ## Sign-off format
