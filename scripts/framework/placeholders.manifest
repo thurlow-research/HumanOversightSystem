@@ -1,0 +1,21 @@
+# placeholders.manifest — the DECLARED set of install-time placeholders.
+#
+# The installer (bootstrap/hos_install.sh) substitutes {NAME} in
+# .claude/agents/*.md from the matching NAME in scripts/framework/config.sh
+# (env override wins). This file is the single source of truth for WHICH tokens
+# are install-time placeholders — it must be declared, not guessed, because
+# agent prompts also contain runtime tokens ({N}, {HEAD_SHA}, {BASE_SHA}, JSON
+# examples like {role}) that must NOT be substituted.
+#
+# When you introduce a new {PLACEHOLDER} into an agent template, add ONE line
+# here. On the next install/upgrade the installer will:
+#   - append the new key to each project's config.sh (empty, non-destructive —
+#     existing values are never touched), and
+#   - leave the {NAME} token in place (not blanked) until a value is set,
+#     with a warning naming the unset keys.
+#
+# Format:  NAME<TAB>description / example
+PROJECT_NAME	Human-readable project name used in agent prompts (e.g. CondoParkShare)
+SPEC_FILE	Path to the primary spec file, repo-relative (e.g. Specs/SPEC-1-pilot.md)
+DESIGN_PACK_DIR	Directory holding the design pack (e.g. docs/design)
+ADR_FILE	Path to the architect's ADR — architectural decisions / boundaries (e.g. docs/adr/ADR-001.md)
