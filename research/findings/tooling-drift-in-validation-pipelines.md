@@ -79,7 +79,22 @@ From `research/sessions/2026-06-12-ux-designer-validation-suite.md` (Part 2):
 
 ---
 
+## Update (2026-06-14) — the drift recurred from a *missed call site*, and a second, non-API drift class
+
+Two months of additional evidence sharpened this finding in two ways — and both surfaced because the **v0.2.0 release gate's final pass returned zero findings that turned out to be a non-review** (HOS#201, the keystone of the v0.2.1 tooling fixes).
+
+**1. The 2026-06-12 fix was incomplete — a fourth call site survived (HOS#199).** The original fix patched the three `validate_*.sh` scripts. But the codex invocation existed at a **fourth** site — `scripts/run_second_review.sh` — which still ran `echo "$prompt" | codex --quiet 2>/dev/null`. That site kept silently failing-open for two months: every MEDIUM+ pre-PR second review *looked* run and produced an empty `verdict:error`. The "always diagnose" norm did not catch it because the norm fires when a human *notices* a failure — and a fail-open failure produces no failure to notice. **The structural lesson the original finding only hinted at is now load-bearing: there must be ONE invocation site, not four.** A shared `run_review_cli()` helper (or the proposed startup canary) would have made the drift a one-line fix in one place instead of a four-places-find-them-all hunt where the fourth is invisible because it fails silently. *Decentralized external-tool invocation turns one API change into N independent silent-failure sites.*
+
+**2. A second drift class: non-determinism, not API removal (HOS#113).** The `agy` half of the same gate failure was not an interface change — agy *has no JSON-output mode at all* and **intermittently returns prose narration instead of the requested JSON**. Same fail-open signature (empty `verdict:error` read as "clean"), different root cause: the tool is an *agentic, non-deterministic* CLI whose output format is not contractual. You cannot pin your way out of this (generalization #1 doesn't apply — there's no good version). The fix has to be **defensive parsing**: salvage the first balanced JSON object out of any prose wrapper, **retry once** with a hard JSON-only reinforcement, and — critically — on unrecoverable failure emit a **distinct, honest error** (`review NOT performed`) so a non-review can never again read as a clean pass.
+
+**The crystallized principle — oversight tooling fails OPEN by default.** Across both halves, a *broken reviewer produced output indistinguishable from a reviewer that ran and found nothing.* This is the most dangerous possible failure mode for an oversight instrument: the whole point is to catch problems, and the failure silently reports "no problems." The two structural defenses, now both implemented:
+- **Honest degradation** — a non-review must be a *distinct, loud* signal, never a silent empty pass. (The old `|| echo '{…error…}'` pattern was dishonest precisely because its "error" was downstream-indistinguishable from "no findings.")
+- **Centralize + canary** — one invocation site per external tool, plus a startup smoke test, so drift fails *fast and visibly* instead of *slow and invisibly*.
+
+This connects the finding to `reviewer-agents-file-confident-non-reproducing-reports.md` (the reviewer is *wrong*) and `orchestrator-absorbs-roles-pipeline-bypassed-by-default.md` (the pipeline is *unused*): this is a third way an oversight system silently provides no oversight — the reviewer is *never actually invoked*, and nothing in the output reveals it. All three share the signature **"looks reviewed, wasn't."**
+
 ## Related findings
 
 - `cross-vendor-review-finds-real-bugs.md` — tooling reliability is a prerequisite for the findings in that document
 - `unenforceable-rules-need-verification-mechanisms.md` — the "always diagnose" rule is itself an example of a governance rule requiring an enforcement mechanism
+- `reviewer-agents-file-confident-non-reproducing-reports.md` and `orchestrator-absorbs-roles-pipeline-bypassed-by-default.md` — the other two "looks reviewed, wasn't" failure modes (reviewer wrong / pipeline unused); this is the third (reviewer never invoked)

@@ -321,3 +321,18 @@ Implemented via a `--base <ref>` option threaded through `validate_self.sh`, `va
 ### D40. Missing risk-assessment is a hard COMPLIANCE FAIL, not WARN + auto-fallback (2026-06-14)
 
 Corrects a stale entry earlier in this log (the §7 condition 7a description stating a missing `risk-assessment.md` "falls back to `max(manifest tier, MEDIUM)` and a COMPLIANCE WARN"). That auto-fallback was later hardened and the log was not updated. Per `contract/OVERSIGHT-CONTRACT.md §7a` and `.claude/agents/oversight-evaluator.md`: **absence of `risk-assessment.md` on a per-step build evaluation is a COMPLIANCE FAIL** — the evaluator cannot substitute for risk-assessor's deterministic floor, required-reviewers set, prompt-fidelity, dep-mapper, and risk-historian, so it **fails closed** (the safe/ratchet direction). The `max(manifest, MEDIUM)` fallback is permitted **only** under an explicit human-authorization artifact (brownfield/emergency — the same human-only class as `human-authorization.md`); without it, absence is a hard fail. Surfaced by the 2026-06-14 self/3p eval (agy), which caught the stale WARN+fallback wording contradicting the hardened contract (#180). Append-only log corrected here, not by editing the prior entry.
+
+### D41. Oversight tooling must fail honestly and through one invocation site (2026-06-14)
+
+The v0.2.0 release gate's final pass returned **zero findings that were a non-review** — both cross-vendor reviewers were silently non-functional (HOS#201). Two root causes, one shared failure signature:
+
+- **codex (#199):** `run_second_review.sh` still called the long-removed `codex --quiet` (the CLI moved to `codex exec` months earlier, HOS#0612 fix). The call always failed; `2>/dev/null || echo '{…error…}'` masked it as an empty `verdict:error`.
+- **agy (#113):** agy has no JSON-output mode and intermittently returns **prose narration** instead of JSON. Same masked-empty result.
+
+In both cases **a broken reviewer produced output indistinguishable from a reviewer that ran and found nothing** — the worst failure mode for an oversight instrument (it silently reports "all clear"). Standard going forward:
+
+1. **Honest degradation.** A reviewer that did not actually review must emit a **distinct, loud error** (`review NOT performed`), never a silent empty pass. The `|| echo '{"error":…,"findings":[]}'` idiom is banned where the "error" object is downstream-indistinguishable from "no findings." Implemented in `run_second_review.sh`: salvage the first balanced JSON object from any prose wrapper, retry agy once with a hard JSON-only reinforcement, then fail with a distinct error.
+2. **Defensive parsing for non-deterministic CLIs.** Agentic CLIs (agy) have no contractual output format; you cannot pin your way out. Salvage + bounded retry is mandatory, not optional.
+3. **One invocation site per external tool (the durable fix).** The drift recurred because `codex --quiet` lived at *many* call sites and each fix patched only the ones in front of it (the 2026-06-12 fix hit three `validate_*.sh`; #199 hit a fourth; an audit then found four more — `run_red_team.sh`, `run_redteam_sample.sh`, `capture_session.sh`, `framework/validate_scripts.sh`). Decentralized invocation turns one upstream API change into N independent *silent* failure sites. Target state: a shared `run_review_cli()` helper + a startup canary smoke test, so drift is a one-line fix in one place and fails fast and visibly. Tracked as the #201 follow-up.
+
+See `research/findings/tooling-drift-in-validation-pipelines.md` (2026-06-14 update). This is the third member of the "looks reviewed, wasn't" family, alongside *reviewer is wrong* and *pipeline is unused*.
