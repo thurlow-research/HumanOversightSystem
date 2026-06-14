@@ -81,7 +81,7 @@ This PR was **created and submitted by an AI agent**. A human did not manually w
 | **Submitted** | [YYYY-MM-DD] |
 | **Step / context** | [build step N or session description] |
 
-Human approval is required before merge.
+Human approval is required before merge for **MEDIUM+ risk or any protected surface** (`AGENT-IDENTITY.md §9.0`); a **LOW-risk, non-protected** change may be approved by the overseer per the branch-protection rules. Either way the merge gate decides — this PR never self-merges.
 ```
 
 3. **Commit trailers** on MEDIUM+ changes: `AI-Model:` and `AI-Risk:` in the commit message.
