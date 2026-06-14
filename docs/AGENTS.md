@@ -514,7 +514,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 ### 14. `infra-reviewer` — Infrastructure Review
 
 **Model:** `claude-sonnet-4-6`
-**Invoked:** After `code-reviewer` approves (when infrastructure files are modified: Compose, Caddyfile, backup scripts, `.env.example`).
+**Invoked:** Independently of `code-reviewer` (it reviews infra config, not application code) when infrastructure files are modified: Compose, Caddyfile, backup scripts, `.env.example`. An infra-only diff runs `infra-reviewer` directly; `code-reviewer` returns N/A.
 
 **Role:** Reviews deployment configuration against the spec's §2 deployment requirements. Does not review application code.
 
@@ -845,7 +845,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 | spec | `Specs/*.md` | 5 (independent) |
 | admin audit | `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` | 2 (sequential: code-reviewer → parallel reviewers) |
 
-Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, and `a11y-reviewer` run. `privacy-reviewer` is triggered if changed files touch accounts, parking, PII fields, or erasure logic.
+Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, and `a11y-reviewer` run. `privacy-reviewer` is triggered if changed files touch accounts, PII fields, erasure logic, or data retention paths.
 
 **Shell entrypoint:** `scripts/framework/run_post_change_sweep.sh` — categorizes changed files and prints the routing plan. The agent reads this and invokes the listed agents.
 
