@@ -1,0 +1,48 @@
+name: Require human approval (protected surfaces)
+
+# Server-side enforcement of AGENT-IDENTITY.md §9 (the determination-honesty gate,
+# §5.1): a PR whose diff touches a protected surface MUST have a human approval —
+# no bot (worker/overseer) may approve or merge it. This runs in GitHub Actions,
+# OUTSIDE the agent's environment, so a bot session cannot satisfy it locally.
+#
+# To make it BLOCKING: add "require-human-approval" to the branch-protection
+# "Require status checks to pass" list (see docs/MACHINE-ACCOUNTS-SETUP.md).
+# Re-runs on review submit/dismiss so adding/removing an approval re-evaluates.
+
+on:
+  pull_request:
+    branches: [main]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-human-approval:
+    name: Protected-surface human-approval gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Protected-surface human-approval gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Bot identity set (used to tell a bot approval from a human one).
+          if [[ -f scripts/framework/machine-accounts.env ]]; then
+            # shellcheck disable=SC1091
+            source scripts/framework/machine-accounts.env
+          fi
+          export BOT_ACCOUNTS="${BOT_ACCOUNTS:-}"
+
+          # Changed files via gh (robust across pull_request + review events).
+          gh pr diff "$PR_NUMBER" --name-only > /tmp/changed.txt
+
+          python3 scripts/framework/require_human_approval.py \
+            --changed-files-file /tmp/changed.txt \
+            --pr "$PR_NUMBER"

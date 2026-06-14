@@ -1,0 +1,30 @@
+# Canonical protected-surface globs (single source of truth) — AGENT-IDENTITY.md §9.
+#
+# Any PR whose diff touches one of these requires a HUMAN approval, regardless of
+# computed risk tier — no bot (worker or overseer) may approve or merge it. These
+# are the surfaces that DEFINE the controls; they can never be loosened on the
+# controls' own say-so.
+#
+# Consumed by:
+#   - scripts/framework/require_human_approval.py  (the server-side status check)
+#   - scripts/framework/gen_codeowners.sh          (generates .github/CODEOWNERS)
+# Keep this list, AGENT-IDENTITY.md §9, and the generated CODEOWNERS in sync.
+#
+# Glob syntax: `dir/**` = that directory and everything under it; `*` = one path
+# segment; a plain path = that exact file. Blank lines and `#` comments ignored.
+
+.claude/agents/**
+contract/**
+AGENTS.md
+docs/AGENTS.md
+docs/AGENT-IDENTITY.md
+docs/METHODOLOGY.md
+docs/FABERIX-ROLES.md
+docs/CROSS-REPO-CONDUCT.md
+bootstrap/**
+scripts/framework/**
+scripts/oversight/gates/**
+scripts/oversight/run_validators.sh
+scripts/oversight/validators/schema.py
+.github/CODEOWNERS
+.github/workflows/**
