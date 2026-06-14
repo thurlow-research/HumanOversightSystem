@@ -816,7 +816,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - REQ-003: Human gate mandatory at CRITICAL steps
 - REQ-004: Opus for high-judgment agents (architect, technical-design); Sonnet for reviewers
 - REQ-005: All iterative loops have defined exit conditions
-- REQ-006–007: Five self-flagging behaviors enforced; prompt capture for MEDIUM+
+- REQ-006–007: Five self-flagging behaviors enforced; prompt capture expected for **AI-authored** MEDIUM+ changes — required (hard) at CRITICAL/high-risk, conditional (human-verified) otherwise, N/A for human-authored changes (#122)
 - REQ-008–009: Each `implemented` decision satisfies its verification criterion
 
 **Escalation out:** Human immediately (cross-vendor constraint violated; human gate missing; decision marked implemented but failing verification; **missing loop exit in a consumer-project agent** — never escalated down-tier). Fixes directly with `Write`/`Edit` (it owns these): missing loop exit in a *framework* agent, wrong model assignment, and mechanical framework-script fixes (logic changes need human approval).
