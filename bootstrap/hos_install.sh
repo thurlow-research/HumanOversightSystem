@@ -16,6 +16,9 @@
 #   ./hos_install.sh --dry-run [DIR]      # show what would be done, no writes
 #   ./hos_install.sh --force [DIR]        # overwrite existing files in target
 #   ./hos_install.sh --skip-clis          # skip the agy/codex presence check
+#   ./hos_install.sh --pr | --no-pr [DIR] # apply on a branch + open a PR (auditable,
+#                                         #   reversible) / force in-place. Default: auto
+#                                         #   (PR when a clean git repo w/ remote + gh).
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -53,6 +56,7 @@ FORCE=false
 SKIP_CLIS=false
 RELEASE_REF=""        # specific release tag to install (empty = latest release)
 LOCAL_SOURCE=false    # install from the local working copy instead of a release
+PR_MODE="auto"        # auto | on | off — apply the upgrade on a branch + open a PR (#193)
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -63,6 +67,8 @@ while [[ $# -gt 0 ]]; do
     --release)       RELEASE_REF="${2:?--release needs a tag, e.g. v0.3.0}"; shift 2 ;;
     --release=*)     RELEASE_REF="${1#*=}"; shift ;;
     --local)         LOCAL_SOURCE=true; shift ;;
+    --pr)            PR_MODE="on"; shift ;;
+    --no-pr)         PR_MODE="off"; shift ;;
     --help|-h)       sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
@@ -366,6 +372,42 @@ ensure_not_ignored() {
     warn "Remove that line from $file"
   fi
 }
+
+# ── Install-via-PR: apply the upgrade on a branch for an auditable, reversible artifact (#193) ──
+# When eligible (a clean git repo with an 'origin' remote + gh), create a branch
+# BEFORE scaffolding so all changes land there; we commit + open a PR after, and
+# return the consumer to their original branch. Degrades gracefully to in-place
+# when not eligible (fresh repo, no remote, dirty tree). --pr requires it; --no-pr
+# forces in-place.
+PR_ACTIVE=false
+PR_ORIG_BRANCH=""
+PR_BRANCH=""
+if [[ "$PR_MODE" != "off" ]] && ! $DRY_RUN; then
+  _pr_ok=true; _pr_why=""
+  git -C "$TARGET_REPO" rev-parse --git-dir >/dev/null 2>&1 || { _pr_ok=false; _pr_why="not a git repo"; }
+  $_pr_ok && [[ -n "$(git -C "$TARGET_REPO" status --porcelain 2>/dev/null)" ]] && { _pr_ok=false; _pr_why="working tree not clean (commit or stash first)"; }
+  $_pr_ok && ! git -C "$TARGET_REPO" remote get-url origin >/dev/null 2>&1 && { _pr_ok=false; _pr_why="no 'origin' remote"; }
+  $_pr_ok && ! command -v gh >/dev/null 2>&1 && { _pr_ok=false; _pr_why="gh not available"; }
+  if $_pr_ok; then
+    PR_ORIG_BRANCH="$(git -C "$TARGET_REPO" symbolic-ref --short HEAD 2>/dev/null || true)"
+    [[ -z "$PR_ORIG_BRANCH" ]] && { _pr_ok=false; _pr_why="detached HEAD"; }
+  fi
+  if $_pr_ok; then
+    _slug="$(printf '%s' "$HOS_REF" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
+    PR_BRANCH="hos-upgrade/${_slug:-update}"
+    if git -C "$TARGET_REPO" checkout -b "$PR_BRANCH" >/dev/null 2>&1; then
+      PR_ACTIVE=true
+      header "Install-via-PR"
+      info "Applying the upgrade on branch '$PR_BRANCH' (was on '$PR_ORIG_BRANCH') — it'll become a PR you review."
+    else
+      warn "Could not create branch '$PR_BRANCH' — applying in place."
+    fi
+  elif [[ "$PR_MODE" == "on" ]]; then
+    fail "--pr requested but not possible: $_pr_why. Resolve it, or use --no-pr."
+  else
+    info "Install-via-PR not used ($_pr_why) — applying in place. (Pass --pr to require it.)"
+  fi
+fi
 
 # ── .gitignore ─────────────────────────────────────────────────────────────────
 echo ""
@@ -792,6 +834,31 @@ else
   fi
   printf '%s\n' "$_new_manifest" > "$_manifest_file"
   ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -c . ) framework files tracked)"
+fi
+
+# ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──
+if $PR_ACTIVE; then
+  header "Install-via-PR — opening the upgrade PR"
+  if [[ -z "$(git -C "$TARGET_REPO" status --porcelain 2>/dev/null)" ]]; then
+    info "No changes from this upgrade — removing the branch, nothing to review."
+    git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1 || true
+    git -C "$TARGET_REPO" branch -D "$PR_BRANCH" >/dev/null 2>&1 || true
+  else
+    git -C "$TARGET_REPO" add -A
+    git -C "$TARGET_REPO" commit -q -m "chore(hos): upgrade framework to ${HOS_REF}" || true
+    if git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
+      _pr_body="Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
+      _pr_url="$( cd "$TARGET_REPO" && gh pr create \
+        --title "chore(hos): upgrade framework to ${HOS_REF}" \
+        --body "$_pr_body" --head "$PR_BRANCH" 2>/dev/null || true )"
+      if [[ -n "$_pr_url" ]]; then ok "Opened upgrade PR: $_pr_url"
+      else warn "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --head $PR_BRANCH"; fi
+    else
+      warn "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually."
+    fi
+    git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1 \
+      && info "Back on '$PR_ORIG_BRANCH' — your working state is undisturbed; the upgrade lives in the PR."
+  fi
 fi
 
 
