@@ -568,14 +568,23 @@ elif ! $DRY_RUN; then
                "$TARGET_REPO/scripts/oversight/gates"
   # $FORCE is the string "true"/"false"; ${FORCE:+...} tests emptiness, not
   # truthiness, so build the flag array by actually evaluating $FORCE.
+  # NEVER copy the source's Python virtualenv or bytecode caches: a .venv is
+  # absolute-path-bound to the HOS source tree and would be broken (and huge) in
+  # the target — the target builds its own via ensure_venv.sh. (HOS #self-review)
   if command -v rsync &>/dev/null; then
-    rsync_flags=(-a)
+    rsync_flags=(-a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc')
     if $FORCE; then rsync_flags+=(--ignore-times --checksum); else rsync_flags+=(--ignore-existing); fi
     rsync "${rsync_flags[@]}" "$HOS_SOURCE/scripts/oversight/" "$TARGET_REPO/scripts/oversight/"
-  elif $FORCE; then
-    cp -R "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"      # overwrite
   else
-    cp -Rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/" 2>/dev/null || true  # no-clobber
+    if $FORCE; then
+      cp -R "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"      # overwrite
+    else
+      cp -Rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/" 2>/dev/null || true  # no-clobber
+    fi
+    # cp cannot --exclude; strip any source venv/bytecode that came along so the
+    # target rebuilds a clean env (the copied .venv would be path-broken anyway).
+    rm -rf "$TARGET_REPO/scripts/oversight/.venv"
+    find "$TARGET_REPO/scripts/oversight" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
   fi
   if $FORCE; then ok "scripts/oversight/ synced (forced overwrite)"; else ok "scripts/oversight/ synced"; fi
 else
