@@ -409,6 +409,61 @@ for agent in risk-assessor dep-mapper risk-historian \
   cp_file "$src" "$dst" ".claude/agents/${agent}.md"
 done
 
+# ── Substitute project placeholders in scaffolded agents (#87 / #99) ──────────
+# Agent templates ship with {SPEC_FILE} / {PROJECT_NAME} / {DESIGN_PACK_DIR}
+# tokens. Scaffolding alone leaves them raw (#87), and --force RE-introduces raw
+# tokens over files a prior config run already substituted (#99). Re-apply
+# substitution on EVERY install, sourcing values from env overrides or the
+# project's persisted config (scripts/framework/config.sh). A value we don't
+# have is left as its literal token — never blanked — so a partial config can't
+# corrupt an agent file. (perl: cross-platform in-place edit, per D27.)
+echo ""
+info ".claude/agents/ — applying project placeholders"
+_subst_config="$TARGET_REPO/scripts/framework/config.sh"
+_pn="${PROJECT_NAME:-}"; _sf="${SPEC_FILE:-}"; _dpd="${DESIGN_PACK_DIR:-}"
+if [[ -f "$_subst_config" ]]; then
+  [[ -z "$_pn" ]]  && _pn=$(grep  '^PROJECT_NAME='    "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+  [[ -z "$_sf" ]]  && _sf=$(grep  '^SPEC_FILE='       "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+  [[ -z "$_dpd" ]] && _dpd=$(grep '^DESIGN_PACK_DIR=' "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+fi
+if [[ -z "${_pn}${_sf}${_dpd}" ]]; then
+  # No values available anywhere. Warn only if a placeholder actually remains,
+  # so a fully-substituted tree (or one with no placeholder agents) stays quiet.
+  if grep -rlE '\{SPEC_FILE\}|\{DESIGN_PACK_DIR\}|\{PROJECT_NAME\}' "$TARGET_REPO/.claude/agents" >/dev/null 2>&1; then
+    warn "Agent files still contain placeholders and no scripts/framework/config.sh was found."
+    warn "Provide values and re-run, e.g.:"
+    warn "  PROJECT_NAME=.. SPEC_FILE=.. DESIGN_PACK_DIR=.. $0 --force \"$TARGET_REPO\""
+    warn "  (or run the interactive config tool: scripts/framework/install.sh)"
+  else
+    skip "no placeholders to substitute"
+  fi
+else
+  # Leave any individually-missing value as its literal token, never blank.
+  # NOTE: do NOT use ${_sf:-{SPEC_FILE}} — bash closes the ${...} at the first
+  # '}', yielding "<value>}" with a stray brace. Use explicit assignments.
+  [[ -z "$_sf" ]]  && _sf='{SPEC_FILE}'
+  [[ -z "$_dpd" ]] && _dpd='{DESIGN_PACK_DIR}'
+  [[ -z "$_pn" ]]  && _pn='{PROJECT_NAME}'
+  if $DRY_RUN; then
+    dry_run "Would substitute {SPEC_FILE}->$_sf {PROJECT_NAME}->$_pn {DESIGN_PACK_DIR}->$_dpd in .claude/agents/*.md"
+  elif ! command -v perl >/dev/null 2>&1; then
+    warn "perl not found — cannot substitute placeholders; agent files left with raw tokens"
+  else
+    _subst=0
+    while IFS= read -r _agent; do
+      if grep -qE '\{SPEC_FILE\}|\{DESIGN_PACK_DIR\}|\{PROJECT_NAME\}' "$_agent" 2>/dev/null; then
+        perl -i -p \
+          -e "s|\{SPEC_FILE\}|${_sf}|g;" \
+          -e "s|\{DESIGN_PACK_DIR\}|${_dpd}|g;" \
+          -e "s|\{PROJECT_NAME\}|${_pn}|g;" \
+          "$_agent"
+        _subst=$((_subst + 1))
+      fi
+    done < <(find "$TARGET_REPO/.claude/agents" -name '*.md' 2>/dev/null)
+    if [[ $_subst -gt 0 ]]; then ok "Substituted placeholders in $_subst agent file(s) (from ${PROJECT_NAME:+env}${PROJECT_NAME:-config.sh})"; else skip "no placeholders to substitute"; fi
+  fi
+fi
+
 # ── .claude/settings.json — merge, never overwrite ────────────────────────────
 echo ""
 info ".claude/settings.json — merging permissions"

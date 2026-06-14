@@ -78,6 +78,21 @@ This generalizes: **agent prompts that replicate spec or design content statical
 
 ---
 
+## Update (2026-06-13): the regression, and why substitution must be idempotent
+
+The CPS real-world run (HOS#99, and the user's design sketch in #110) re-surfaced this from a new angle. By then the installer had been split: `bootstrap/hos_install.sh` scaffolds from a validated release, while the *substitution* still lived only in the legacy `scripts/framework/install.sh`. The consequence:
+
+1. **A fresh `hos_install.sh` install never substituted at all (#87)** — it copied the templates with raw `{SPEC_FILE}` tokens and stopped. The substitution step was stranded in a different installer.
+2. **`--force` *re-introduced* raw tokens over already-substituted files (#99).** CPS had `spec-red-team.md` correctly substituted to `Specs/SPEC-1-pilot.md`; a `--force` framework update copied the raw template back over it, re-breaking the live `$(cat {SPEC_FILE} …)` command. A human caught it only because the placeholder grep fired.
+
+The fix is the rule this finding already implies, made operational: **substitution is not a one-time install step, it is an invariant the installer must re-establish on every run.** `hos_install.sh` now re-substitutes after every scaffold — fresh or `--force` — sourcing values from env overrides or the project's persisted `scripts/framework/config.sh`, leaving any value it doesn't have as the literal token (never blanking it).
+
+**Sub-lesson — verify the generated artifact, not just that the generator ran.** The first cut of the fix had a bug that *only* surfaced by inspecting the output: a bash default `${_sf:-{SPEC_FILE}}` closes the `${…}` at the first `}`, so a set value became `Specs/SPEC-1-pilot.md}` — a stray brace that would have silently broken the very `$(cat {SPEC_FILE} …)` command it was meant to fix. Every "did the installer run?" check passed; only diffing the *produced file* caught it. A code-generation / substitution step must be tested on its output, because its failure mode is a plausible-looking corruption, not an error — the same silent-failure thesis this finding is about, applied one level up to the fix itself.
+
+**Design direction (#110):** the persisted config file is the single source of truth; an update must *extract/keep* existing values, not overwrite them, and should *append* newly-introduced framework variables without disturbing the ones already set. `hos_install.sh` re-substituting from `config.sh` delivers the "don't lose values on update" half; a non-destructive "append new vars, keep existing" config step is the tracked next increment.
+
+---
+
 ## Related findings
 
 - `unenforceable-rules-need-verification-mechanisms.md` — similar pattern: rules that appear correct but silently fail because the mechanism isn't there
