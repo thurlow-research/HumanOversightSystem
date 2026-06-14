@@ -80,6 +80,25 @@ This requirement applies to every agent — `oversight-orchestrator`, `coder`, `
 
 ---
 
+## Human handoff protocol — `needs-human` ⇄ `needs-ai`
+
+Human review is **routed through labeled GitHub issues**, not by anyone watching the change stream. Every agent uses this two-state handoff so neither side has to guess whose court the ball is in:
+
+**When YOU (an AI agent) need a human decision** — a spec/design/policy question outside your authority, a structural or CRITICAL authorization, a loosening request, anything you cannot resolve in your domain:
+1. **File a GitHub issue** (with the AI-disclosure title prefix above) and apply the **`needs-human`** label. The label *is* the human's inbox.
+2. State the decision needed precisely — ideally as a small set of options — so the human can answer in one pass. Then **halt the dependent work** and record the issue number where the escalating step expects it.
+
+**When picking work back up** — at the start of an agentic session, and continuously in the standing daily job (#131):
+1. **Scan open issues labeled [`needs-ai`](../../labels)** — these are issues a human has decided and handed back to HOS.
+2. Read the human's decision from the comment opener **`Decision: <choice>`** (also honor `Action:` / `Disposition:` if present). Act on exactly that decision — do not re-litigate it.
+3. When done, **close the issue** (referencing the commit/PR that implemented the decision). If you genuinely need more input, swap it back to `needs-human` with a specific follow-up question — never leave it ambiguous.
+
+**The human's side of the contract** (documented for completeness): to respond, remove `needs-human`, add `needs-ai`, and comment `Decision: …`. The human's job is to keep the `needs-human` queue empty; HOS's job is to keep the `needs-ai` queue empty.
+
+> Do **not** treat a bare comment as a resume signal — only the `needs-ai` label means "a human has decided, proceed." A `needs-human` issue with new comments but no label change is still waiting on the human. This keeps the resume condition unambiguous and prevents an agent from acting on a half-finished human thought.
+
+---
+
 ## Pipeline overview
 
 ```
