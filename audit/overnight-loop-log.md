@@ -23,3 +23,5 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 | 2026-06-14T07:25 PDT | — | no new issues (#180 is own eval follow-up, needs-human) |
 | 2026-06-14T08:25 PDT | — | no new issues (#180 own; PRs #164/#177/#179 still awaiting human review) |
 | 2026-06-14T09:25 PDT | — | no new issues (window = my own needs-ai processing this session: #87/#133/#135/#150/#152/#182) |
+| 2026-06-14T10:27 PDT | HOS #186 | needs-ai handoff: codified the issue-clarity standard (zero-context: What/Impact/Options-pros+cons/Recommendation) in AGENTS.md → PR #195 (governance → review). needs-ai cleared. |
+| 2026-06-14T10:27 PDT | — | Reviewed: #190/#182/#167/#152 (own/needs-human), #171 (needs-human), CPS #87 (CPS-managed needs_human, audit-logging monitoring — their infra decision). Left for human. |
