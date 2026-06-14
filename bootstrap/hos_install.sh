@@ -19,6 +19,9 @@
 #   ./hos_install.sh --pr | --no-pr [DIR] # apply on a branch + open a PR (auditable,
 #                                         #   reversible) / force in-place. Default: auto
 #                                         #   (PR when a clean git repo w/ remote + gh).
+#   ./hos_install.sh --prune [DIR]        # archive framework files removed across
+#                                         #   versions (move → committed .hos-archive/;
+#                                         #   only unmodified files; recoverable).
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -57,6 +60,7 @@ SKIP_CLIS=false
 RELEASE_REF=""        # specific release tag to install (empty = latest release)
 LOCAL_SOURCE=false    # install from the local working copy instead of a release
 PR_MODE="auto"        # auto | on | off — apply the upgrade on a branch + open a PR (#193)
+PRUNE=false           # --prune: archive framework files removed across versions (#182)
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -69,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --local)         LOCAL_SOURCE=true; shift ;;
     --pr)            PR_MODE="on"; shift ;;
     --no-pr)         PR_MODE="off"; shift ;;
+    --prune)         PRUNE=true; shift ;;
     --help|-h)       sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
@@ -785,42 +790,52 @@ else
   ok ".hos-release = $HOS_REF"
 fi
 
-# ── .hos-manifest — framework file inventory + obsolete-file detection (#182) ──
-# Records the framework-OWNED files this release ships. On a later update, files
-# present in the PRIOR manifest but absent from this one are files the framework
-# REMOVED — they may now be stale in the target (a leftover agent definition is
-# the real AI-confusion risk). This step only DETECTS and warns (non-destructive);
-# moving obsolete files to .hos-archive/ is opt-in (--prune, see #182).
-#
-# Enumerate framework-owned relative paths in a source tree. Only files the
-# framework actually ships (not consumer files that happen to share a dir), so a
-# later prune can never target the consumer's own work. venv/bytecode excluded.
+# ── .hos-manifest — framework inventory, obsolete-file detection + opt-in prune (#182) ──
+# Records the framework-OWNED files this release ships, each with its sha256 (so a
+# prune can tell a pristine framework file from a consumer-edited one). On an update,
+# paths in the PRIOR manifest but absent from this one were REMOVED by the framework —
+# a leftover .claude/agents/*.md is the real AI-confusion risk. Detection is always on
+# (non-destructive). --prune ARCHIVES them (MOVE, not delete) to a committed,
+# quarantined .hos-archive/, and only when the file is unmodified since install.
+
+# Portable sha256 of one file.
+_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  else shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; fi
+}
+
+# Enumerate framework-owned paths in a source tree as "<path>\t<sha256>". Only files
+# the framework actually ships (not consumer files in shared dirs), so a prune can
+# never target the consumer's own work. venv/bytecode excluded.
 enumerate_framework_files() {
-  local src="$1"
-  {
-    [[ -d "$src/.claude/agents" ]] && ( cd "$src" && find .claude/agents -name '*.md' 2>/dev/null )
-    [[ -d "$src/scripts/oversight" ]] && ( cd "$src" && find scripts/oversight -type f \
-        ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null )
-    ( cd "$src" && for f in AGENTS.md METHODOLOGY.md \
-        scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
-        scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
-        scripts/prompt_audit.sh; do [[ -f "$f" ]] && echo "$f"; done )
-  } | LC_ALL=C sort -u
+  local src="$1" _f
+  ( cd "$src" && {
+      [[ -d .claude/agents ]] && find .claude/agents -name '*.md' 2>/dev/null
+      [[ -d scripts/oversight ]] && find scripts/oversight -type f \
+          ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
+      for _f in AGENTS.md METHODOLOGY.md \
+          scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
+          scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
+          scripts/prompt_audit.sh; do [[ -f "$_f" ]] && echo "$_f"; done
+    } | LC_ALL=C sort -u | while IFS= read -r _f; do printf '%s\t%s\n' "$_f" "$(_sha256 "$_f")"; done )
 }
 
 echo ""
 info ".hos-manifest — framework file inventory"
 _manifest_file="$TARGET_REPO/.hos-manifest"
 if $DRY_RUN; then
-  dry_run "Would write $_manifest_file and check for framework files removed since the last install"
+  dry_run "Would write $_manifest_file; check for removed framework files; --prune would archive them"
 else
   _new_manifest="$(enumerate_framework_files "$HOS_SOURCE")"
   if [[ -f "$_manifest_file" ]]; then
-    # Files in the prior manifest but not this one = removed by this release.
+    # Orphans = paths in the prior manifest but not this one, that still exist.
+    # Compare the PATH column only (cut -f1) so a legacy path-only manifest still works.
     _orphans=()
     while IFS= read -r _p; do
       [[ -n "$_p" && -e "$TARGET_REPO/$_p" ]] && _orphans+=("$_p")
-    done < <(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$_manifest_file") <(printf '%s\n' "$_new_manifest"))
+    done < <(LC_ALL=C comm -23 \
+        <(cut -f1 "$_manifest_file" | LC_ALL=C sort -u) \
+        <(printf '%s\n' "$_new_manifest" | cut -f1 | LC_ALL=C sort -u))
     if [[ ${#_orphans[@]} -gt 0 ]]; then
       warn "${#_orphans[@]} framework file(s) were removed in this release but remain in your repo (possibly obsolete):"
       for _p in "${_orphans[@]}"; do
@@ -829,7 +844,48 @@ else
           *)                echo "      $_p" ;;
         esac
       done
-      warn "Review and remove if unused (a safe, archived '--prune' is tracked in #182)."
+      if $PRUNE; then
+        # Opt-in archive-prune (destructive → cautious): MOVE each orphan to a committed,
+        # quarantined .hos-archive/, but only if it is UNMODIFIED since install (sha256
+        # matches the prior manifest). Consumer-edited files are left in place + flagged.
+        _ref_slug="$(printf '%s' "$HOS_REF" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
+        _arch_root="$TARGET_REPO/.hos-archive"; _arch_dir="$_arch_root/removed-in-${_ref_slug:-update}"
+        _pruned=0; _skipped=0
+        for _p in "${_orphans[@]}"; do
+          _prior_sha="$(awk -F '\t' -v p="$_p" '$1==p{print $2; exit}' "$_manifest_file")"
+          _cur_sha="$(_sha256 "$TARGET_REPO/$_p")"
+          if [[ -z "$_prior_sha" ]]; then
+            warn "  keep $_p — can't verify it's unmodified (legacy manifest); review/remove manually."; _skipped=$((_skipped+1)); continue
+          fi
+          if [[ "$_prior_sha" != "$_cur_sha" ]]; then
+            warn "  keep $_p — modified since install; left in place (remove manually if intended)."; _skipped=$((_skipped+1)); continue
+          fi
+          mkdir -p "$_arch_dir/$(dirname "$_p")"
+          if mv "$TARGET_REPO/$_p" "$_arch_dir/$_p" 2>/dev/null; then
+            _pruned=$((_pruned+1))
+            printf '{"event":"hos-prune","file":"%s","archived_to":".hos-archive/removed-in-%s/%s","release":"%s","sha256":"%s","timestamp":"%s"}\n' \
+              "$_p" "${_ref_slug:-update}" "$_p" "$HOS_REF" "$_cur_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              >> "$TARGET_REPO/audit/oversight-log.jsonl" 2>/dev/null || true
+          fi
+        done
+        if [[ $_pruned -gt 0 ]]; then
+          # Quarantine marker so agents/tools never treat archived files as live.
+          [[ -f "$_arch_root/DO-NOT-USE.md" ]] || cat > "$_arch_root/DO-NOT-USE.md" <<'ARCH'
+# .hos-archive/ — quarantined obsolete framework files
+
+Files here were REMOVED from the HOS framework and archived by `hos_install.sh --prune`,
+kept only for recovery. **Agents and tools MUST NOT read, load, or act on anything in
+this directory** (it is outside the scanned agent/validator trees by design). To recover
+one, move it back — it is also in git history and the prior release tag.
+ARCH
+          ok "Pruned $_pruned obsolete file(s) → .hos-archive/removed-in-${_ref_slug:-update}/ (archived, recoverable)"
+          [[ $_skipped -gt 0 ]] && warn "$_skipped left in place (modified/unverifiable — see above)."
+          # Retention: keep the 2 most recent archive sets.
+          ls -dt "$_arch_root"/removed-in-* 2>/dev/null | tail -n +3 | while IFS= read -r _old; do rm -rf "$_old"; done
+        fi
+      else
+        warn "Review and remove if unused, or re-run with --prune to archive them safely to .hos-archive/ (#182)."
+      fi
     fi
   fi
   printf '%s\n' "$_new_manifest" > "$_manifest_file"
