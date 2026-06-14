@@ -162,7 +162,7 @@ ${JSON_SCHEMA/REVIEWER/$name}"
     case "$kind" in
         opus)  printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" claude -p --model "$MODEL" || rc=$? ;;
         agy)   run_capped "$AI_REVIEW_TIMEOUT" "$out" agy --sandbox -p "$prompt" || rc=$? ;;
-        codex) printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" codex --quiet || rc=$? ;;
+        codex) printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" codex exec || rc=$? ;;
     esac
     { echo "## ${name} — scripts lens"; echo '```json'; cat "$out" 2>/dev/null; echo '```'; echo ""; } >> "$OUTFILE"
     rm -f "$out"

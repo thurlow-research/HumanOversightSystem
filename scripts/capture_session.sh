@@ -169,7 +169,7 @@ Keep the summary factual and specific. Avoid filler. The Rerun prompt section is
     if command -v agy &>/dev/null; then
         SUMMARY=$(agy -p "$PROMPT" 2>/dev/null || echo "")
     elif command -v codex &>/dev/null; then
-        SUMMARY=$(echo "$PROMPT" | codex --quiet 2>/dev/null || echo "")
+        SUMMARY=$(codex exec "$PROMPT" 2>/dev/null || echo "")
     else
         warn "Neither agy nor codex available — cannot generate summary"
         exit 1

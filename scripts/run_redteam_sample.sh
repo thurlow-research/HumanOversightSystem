@@ -158,7 +158,7 @@ Respond with JSON only:
 }"
 
     if ! $DRY_RUN; then
-        CODEX_OUT=$(echo "$CODEX_PROMPT" | codex --quiet 2>/dev/null || \
+        CODEX_OUT=$(codex exec "$CODEX_PROMPT" 2>/dev/null || \
             echo "{\"sha\":\"${sha:0:8}\",\"reviewer\":\"codex\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"error\"}")
         AGY_OUT=$(agy -p "$AGY_PROMPT" 2>/dev/null || \
             echo "{\"sha\":\"${sha:0:8}\",\"reviewer\":\"agy\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"error\"}")
