@@ -16,9 +16,9 @@
 #   ./hos_install.sh --dry-run [DIR]      # show what would be done, no writes
 #   ./hos_install.sh --force [DIR]        # overwrite existing files in target
 #   ./hos_install.sh --skip-clis          # skip the agy/codex presence check
-#   ./hos_install.sh --pr | --no-pr [DIR] # apply on a branch + open a PR (auditable,
-#                                         #   reversible) / force in-place. Default: auto
-#                                         #   (PR when a clean git repo w/ remote + gh).
+#   ./hos_install.sh --pr [DIR]           # apply the upgrade on a branch + open a PR
+#                                         #   (auditable, reversible). Opt-in for now;
+#                                         #   default is in-place. --no-pr forces in-place.
 #   ./hos_install.sh --prune [DIR]        # archive framework files removed across
 #                                         #   versions (move → committed .hos-archive/;
 #                                         #   only unmodified files; recoverable).
@@ -59,7 +59,8 @@ FORCE=false
 SKIP_CLIS=false
 RELEASE_REF=""        # specific release tag to install (empty = latest release)
 LOCAL_SOURCE=false    # install from the local working copy instead of a release
-PR_MODE="auto"        # auto | on | off — apply the upgrade on a branch + open a PR (#193)
+PR_MODE="off"         # off (default — opt-in) | on (--pr) — branch+PR the upgrade (#193).
+                      # Opt-in until the live push/PR path is proven on a real upgrade.
 PRUNE=false           # --prune: archive framework files removed across versions (#182)
 
 # ── Args ──────────────────────────────────────────────────────────────────────
