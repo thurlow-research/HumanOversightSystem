@@ -403,9 +403,18 @@ CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object a
     if [[ -n "$clean" ]]; then
         echo "$clean"
     elif [[ -z "$raw" ]]; then
+        # Empty output = a genuine invocation failure (crash/auth) → error → FAIL.
         echo '{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error"}'
     else
-        echo '{"reviewer":"agy","error":"agy returned non-JSON prose after retry — review NOT performed","findings":[],"verdict":"error"}'
+        # agy responded but salvage + retry could not extract JSON: it returned a
+        # PROSE review. Do NOT manufacture an `error` here — that would discard a
+        # genuine independent review and force a fail/re-run. Emit the raw prose so
+        # the aggregator's parse_prose() classifies it `unparseable` (review exists
+        # but isn't machine-structured), which oversight-evaluator routes to
+        # CONDITIONAL_PROCEED — a human reads the preserved report. `unparseable`
+        # (preserve) is the honest signal for "responded, not in JSON", not `error`
+        # (crashed). Salvage + retry above still recover JSON whenever possible.
+        printf '%s\n' "$raw"
     fi
 }
 
@@ -476,7 +485,10 @@ Return JSON only:
     if [[ -n "$clean" ]]; then
         echo "$clean"
     else
-        echo '{"reviewer":"codex","error":"codex returned non-JSON prose — review NOT performed","attacks":[],"findings":[],"verdict":"error"}'
+        # codex responded but salvage failed → prose. Emit the raw prose so the
+        # aggregator's parse_prose() classifies it `unparseable` (preserved for a
+        # human), not `error`. Same reconciliation as the agy path above.
+        printf '%s\n' "$result"
     fi
 }
 
