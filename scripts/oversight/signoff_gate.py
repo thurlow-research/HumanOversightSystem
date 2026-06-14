@@ -72,6 +72,18 @@ except ImportError:  # pragma: no cover - surfaced as an env error
     sys.exit(2)
 
 SIGNOFFS_DIR = "signoffs"
+# Oversight-generated, append-only artifacts. The system writes these *about* a
+# step — sign-off stamps, the committed audit trail, ephemeral agent state — and
+# often does so AFTER reviewers have signed (suspension-census, second-review,
+# and the orchestrator all append to audit/oversight-log.jsonl). They are not
+# source changes, so a stamp need not be newer than them. Excluding them is what
+# stops the oversight tooling's own bookkeeping from perpetually invalidating the
+# sign-offs it records. (HOS#112)
+OVERSIGHT_ARTIFACT_PREFIXES = (
+    f"{SIGNOFFS_DIR}/",
+    "audit/",
+    ".claudetmp/",
+)
 # A stamp records a *satisfied* role: APPROVED, CONDITIONAL (human verifies the
 # conditional item before merge), or NOT_APPLICABLE (role explicitly out of
 # scope for the change — the stamp-level equivalent of the N/A register entry,
@@ -163,11 +175,12 @@ def all_tracked_files(root: Path) -> list[str]:
 
 
 def dirty_non_signoff_paths(root: Path) -> list[str]:
-    """Working-tree changes (modified/staged/untracked) outside signoffs/.
+    """Working-tree changes (modified/staged/untracked) outside oversight artifacts.
 
     An unsigned working-tree change means files exist that no stamp can be newer
-    than, so the gate must fail. Stamp edits under signoffs/ are exempt — they
-    are the act of signing.
+    than, so the gate must fail. Oversight-generated artifacts (sign-off stamps,
+    the audit trail, ephemeral agent state) are exempt — signing and the system's
+    own bookkeeping are not source changes. (HOS#112)
     """
     out = run_git(["status", "--porcelain"], root)
     dirty: list[str] = []
@@ -178,14 +191,20 @@ def dirty_non_signoff_paths(root: Path) -> list[str]:
         # Handle rename "old -> new"
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        if path.startswith(f"{SIGNOFFS_DIR}/"):
+        if is_oversight_artifact(path):
             continue
         dirty.append(path)
     return dirty
 
 
-def is_signoff_path(path: str) -> bool:
-    return path.startswith(f"{SIGNOFFS_DIR}/")
+def is_oversight_artifact(path: str) -> bool:
+    """True for oversight-generated artifacts excluded from the changed-file set.
+
+    Covers sign-off stamps plus the audit trail and ephemeral agent state — all
+    written by the oversight tooling itself, not source the stamps must beat.
+    (HOS#112)
+    """
+    return path.startswith(OVERSIGHT_ARTIFACT_PREFIXES)
 
 
 def main() -> int:
@@ -252,7 +271,7 @@ def main() -> int:
         files = all_tracked_files(root)
     else:
         files = changed_files(root, args.base)
-    files = [f for f in files if not is_signoff_path(f)]
+    files = [f for f in files if not is_oversight_artifact(f)]
 
     newest_file = ""
     newest_file_time = 0
