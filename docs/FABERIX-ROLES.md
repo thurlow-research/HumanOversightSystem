@@ -20,7 +20,7 @@ Faberix **must not go autonomous until #152 ships.** Every role produces *attrib
 - **distinguishable from human actions** (actor identity), and
 - **bounded so Faberix cannot forge a human determination** (determination honesty — see `AGENT-IDENTITY.md §5.1`).
 
-Concretely: Faberix authenticates as the `hos-agent` bot; its PR approvals are *bot* approvals; branch protection requires a **human** approval on HIGH/CRITICAL paths, so Faberix **structurally cannot self-approve** a risky change or a won't-fix on a security finding. Running Faberix under the shared human identity would make its audit trail meaningless and its approvals forgeable — which is the whole reason #152 exists. **→ This is a gate, not a nice-to-have.**
+Concretely: Faberix authenticates as the **`hos-overseer`** bot for its R1/R2/R3 oversight work (and any code-authoring sub-work is split to `hos-worker`) — the two-account model of `AGENT-IDENTITY.md §7`, not a single `hos-agent`; its PR approvals are *bot* approvals; branch protection requires a **human** approval on HIGH/CRITICAL paths, so Faberix **structurally cannot self-approve** a risky change or a won't-fix on a security finding. Running Faberix under the shared human identity would make its audit trail meaningless and its approvals forgeable — which is the whole reason #152 exists. **→ This is a gate, not a nice-to-have.**
 
 ## 2. Cross-cutting principle — cost-gating (no model spend without work)
 

@@ -101,7 +101,7 @@ Human review is **routed through labeled GitHub issues**, not by anyone watching
 **When picking work back up** — at the start of an agentic session, and continuously in the standing daily job (#131):
 1. **Scan open issues labeled [`needs-ai`](../../labels)** — these are issues a human has decided and handed back to HOS.
 2. Read the human's decision from the comment opener **`Decision: <choice>`** (also honor `Action:` / `Disposition:` if present). Act on exactly that decision — do not re-litigate it.
-3. When done, **close the issue** (referencing the commit/PR that implemented the decision). If you genuinely need more input, swap it back to `needs-human` with a specific follow-up question — never leave it ambiguous.
+3. When done, **close the issue** (referencing the commit/PR that implemented the decision) — **EXCEPT in a repo you don't own**: per `docs/CROSS-REPO-CONDUCT.md`, you never close in someone else's repo; comment with completion evidence and return the label/state to the owner, who disposes. If you genuinely need more input, swap it back to `needs-human` with a specific follow-up question — never leave it ambiguous.
 
 **The human's side of the contract** (documented for completeness): to respond, remove `needs-human`, add `needs-ai`, and comment `Decision: …`. The human's job is to keep the `needs-human` queue empty; HOS's job is to keep the `needs-ai` queue empty.
 

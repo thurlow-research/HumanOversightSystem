@@ -116,6 +116,15 @@ On the protected branch (`main`):
 - `hos-worker` never approves and never merges — it opens PRs only.
 - The admin-bypass (`--admin`) of the **human-required** gate is **disabled for both bot tokens** — so on a HIGH/CRITICAL (or above-ceiling) PR no bot can merge until a human has approved. (The overseer merging a *safe* PR is not a bypass; it's the gate being satisfied by an overseer approval, which the rules permit for that tier. The human retains admin.)
 
+### 9.0 Protected surfaces — governance always needs a human, regardless of computed risk tier
+
+The overseer's "approve/merge safe (LOW)" authority is gated on a **content-risk** score — but a change can be **mechanically LOW-risk and still touch a governance surface** (rewriting agent routing text, *weakening a reviewer obligation*, editing branch-protection or gate logic). Letting that auto-merge would let the system quietly loosen its own controls. So, overriding the risk tier:
+
+**Any change to a protected surface requires a *human* approval, regardless of computed risk tier — no bot may approve or merge it:**
+`.claude/agents/**` · `contract/**` · `docs/AGENTS.md` · `docs/AGENT-IDENTITY.md` · `docs/METHODOLOGY.md` · branch-protection / install / release scripts · gate logic (`scripts/oversight/gates/**`, `run_validators.sh`) · `oversight-evaluator` / `risk-assessor` logic.
+
+This is the global backstop behind the overseer ceiling and the operator's risk-tiered merge grant: **the surfaces that define the controls can never be loosened on the controls' own say-so.** Enforce it server-side via CODEOWNERS on those paths (require a human reviewer) **plus** a required status check that fails any PR touching a protected surface without a human approval. (Surfaced by the v0.2.0 release gate; it tightens the LOW/MED auto-merge authority, not just the bots.)
+
 ### 9.1 Escalation must be legible to a context-free human
 
 When the overseer escalates a PR or decision to the human, **assume the human has no prior context** — they did not follow the thread, the agent reasoning, or the build step. So every escalation must be **self-contained**:
