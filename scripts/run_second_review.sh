@@ -279,6 +279,51 @@ for f in findings:
 PYEOF
 }
 
+# ── JSON salvage (HOS#113) ──────────────────────────────────────────────────
+# Agentic review CLIs (agy especially) sometimes wrap the requested JSON in
+# markdown fences or prose, or narrate instead of emitting JSON at all. This
+# reads a CLI's raw response on stdin and prints the first balanced, parseable
+# {...} object that looks like a review (has verdict / findings / attacks). It is
+# STRING-AWARE so a brace inside a JSON string value can't fool the scan. Prints
+# nothing and exits 1 when there is no review JSON to salvage (true prose).
+salvage_review_json() {
+    # Data comes via env (REVIEW_RAW), NOT stdin: the heredoc already occupies
+    # stdin as the python program, so piping the data in would be discarded.
+    REVIEW_RAW="$1" python3 - <<'PYEOF'
+import json, os, sys
+
+raw = os.environ.get("REVIEW_RAW", "")
+
+def objects(s):
+    depth = 0; start = None; in_str = False; esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:            esc = False
+            elif ch == '\\':   esc = True
+            elif ch == '"':    in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            if depth == 0: start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0:
+                yield s[start:i + 1]
+
+for cand in objects(raw):
+    try:
+        obj = json.loads(cand)
+    except Exception:
+        continue
+    if isinstance(obj, dict) and ("verdict" in obj or "findings" in obj or "attacks" in obj):
+        print(json.dumps(obj))
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
 # ── agy: correctness + spec adherence ───────────────────────────────────────
 run_agy_review() {
     local lens="$1"
@@ -338,8 +383,30 @@ Return JSON only:
     # --sandbox: terminal restrictions so the review cannot mutate the working
     # tree. agy is an AGENTIC CLI — without this it has run pytest and created
     # files mid-review (HOS#113). A review step must never write to the tree.
-    agy --sandbox -p "$prompt" 2>/dev/null || \
+    #
+    # agy has no JSON-output mode and intermittently returns prose narration
+    # instead of the requested JSON (HOS#113), which previously degraded to a
+    # SILENT zero-findings "pass" and let the release gate through. Salvage the
+    # JSON from any prose wrapper; if the first response is pure narration, retry
+    # ONCE with a hard JSON-only reinforcement; only then fail — and fail with a
+    # DISTINCT, honest error so the gate sees "review NOT performed", not "clean".
+    local raw clean
+    raw=$(agy --sandbox -p "$prompt" 2>/dev/null) || raw=""
+    clean=$(salvage_review_json "$raw") || clean=""
+    if [[ -z "$clean" ]]; then
+        local reinforce="$prompt
+
+CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object and nothing else — no prose, no explanation, no markdown code fences. Start with { and end with }. Do not narrate tool use or your reasoning."
+        raw=$(agy --sandbox -p "$reinforce" 2>/dev/null) || raw=""
+        clean=$(salvage_review_json "$raw") || clean=""
+    fi
+    if [[ -n "$clean" ]]; then
+        echo "$clean"
+    elif [[ -z "$raw" ]]; then
         echo '{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error"}'
+    else
+        echo '{"reviewer":"agy","error":"agy returned non-JSON prose after retry — review NOT performed","findings":[],"verdict":"error"}'
+    fi
 }
 
 # ── codex: adversarial security probe ───────────────────────────────────────
@@ -395,15 +462,21 @@ Return JSON only:
     # `2>/dev/null` then masked it as an empty `verdict:error`, so this path looked
     # like it ran a review and found nothing when codex was never actually invoked.
     # Match the working pattern in framework/validate_agents.sh: tmpfile + stdin.
-    local tmpfile result rc=0
+    local tmpfile result clean rc=0
     tmpfile=$(mktemp "${TMPDIR:-/tmp}/second_review_codex_XXXXXX")
     printf '%s' "$prompt" > "$tmpfile"
     result=$(codex exec < "$tmpfile" 2>/dev/null) || rc=$?
     rm -f "$tmpfile"
     if [[ $rc -ne 0 || -z "$result" ]]; then
         echo '{"reviewer":"codex","error":"codex invocation failed","findings":[],"verdict":"error"}'
+        return
+    fi
+    # Salvage the JSON in case codex wrapped it in prose/fences (HOS#113).
+    clean=$(salvage_review_json "$result") || clean=""
+    if [[ -n "$clean" ]]; then
+        echo "$clean"
     else
-        echo "$result"
+        echo '{"reviewer":"codex","error":"codex returned non-JSON prose — review NOT performed","attacks":[],"findings":[],"verdict":"error"}'
     fi
 }
 
