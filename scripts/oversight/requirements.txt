@@ -10,6 +10,12 @@
 #                         https://github.com/aboutcode-org/ai-gen-code-search
 #                         Set IP_REGURGITATION_ENABLED=1 after installing + building index
 
+# Directly imported by sign_off.sh and signoff_gate.py to parse the step
+# manifest. PyYAML also arrives transitively via bandit/detect-secrets, but the
+# gate must not depend on that luck — if a transitive provider drops it the
+# oversight gate fails silently. Declare what we import. (CPS#73/#74, HOS#48/#49)
+PyYAML>=6.0
+
 radon>=5.1
 bandit>=1.7
 semgrep>=1.50

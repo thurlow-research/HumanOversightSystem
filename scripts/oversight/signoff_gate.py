@@ -45,18 +45,29 @@ try:
 except ImportError:  # pragma: no cover - surfaced as an env error
     # Auto-detect the oversight venv before giving up.  On macOS Homebrew Python
     # 3.14+ and Ubuntu 24.04+ (PEP 668), the system Python has no user packages,
-    # so bare `python3 signoff_gate.py` fails.  The oversight venv always has
-    # PyYAML; os.execv replaces this process with the venv Python running the
-    # same script — argv, cwd, and exit code all propagate naturally.
+    # so bare `python3 signoff_gate.py` fails.  The oversight venv has PyYAML
+    # (a declared dependency in requirements.txt); os.execv replaces this process
+    # with the venv Python running the same script — argv, cwd, and exit code all
+    # propagate naturally.
     import os
 
-    _venv_py = Path(__file__).parent / ".venv" / "bin" / "python3"
-    if _venv_py.exists():
+    _venv_py = (Path(__file__).parent / ".venv" / "bin" / "python3").resolve()
+    # Loop guard: only re-exec if we are NOT already running as the venv Python.
+    # If we are (venv exists but somehow lacks PyYAML — a partial install), a
+    # naive `if _venv_py.exists(): execv` would re-exec into ourselves forever.
+    # Fall through to the explicit error instead of spinning.
+    _already_venv = False
+    try:
+        _already_venv = _venv_py.exists() and _venv_py.samefile(sys.executable)
+    except OSError:
+        _already_venv = False
+    if _venv_py.exists() and not _already_venv:
         os.execv(str(_venv_py), [str(_venv_py)] + sys.argv)
     sys.stderr.write(
-        "signoff_gate: PyYAML is required.\n"
-        "  Install:     pip install pyyaml\n"
-        f"  Or run via:  {_venv_py} {__file__}\n"
+        "signoff_gate: PyYAML is required but missing from the oversight venv.\n"
+        "  Repair the venv:  ./scripts/oversight/ensure_venv.sh\n"
+        "  Or install:       pip install pyyaml\n"
+        f"  Or run via:       {_venv_py} {__file__}\n"
     )
     sys.exit(2)
 
