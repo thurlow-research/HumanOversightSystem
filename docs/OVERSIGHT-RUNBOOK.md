@@ -211,8 +211,18 @@ All must exit 0 before proceeding. Fix any failures before the review chain.
 Run after gates pass. Scores the code across 12 signal dimensions (across 11 validator scripts) and produces an inspection brief for reviewers.
 
 ```bash
-# Collect changed files (adjust pattern as needed)
-CHANGED=$(git diff --name-only HEAD~1 -- '*.py' | tr '\n' ' ')
+# Establish the step's commit range — the SAME range risk-assessor and the
+# evaluator use (#204). A build step is normally several sequential commits, so
+# HEAD~1 would score only the LAST commit; the validator composite score (which
+# drives tier + reviewer-set) must cover the whole step, and must match
+# risk-assessor's files_assessed or the evaluator's §7 7b scope check will fail.
+PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
+  | tail -1 | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+BASE_SHA="${PREV_HEAD:-$(git merge-base HEAD "$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || echo main)")}"
+HEAD_SHA=$(git rev-parse HEAD)
+
+# Collect changed files over the whole step range (adjust pattern as needed)
+CHANGED=$(git diff --name-only "${BASE_SHA}..${HEAD_SHA}" -- '*.py' | tr '\n' ' ')
 
 # Run all validators (includes ip_check, prompt_audit_risk, rn_calculator, etc.)
 bash scripts/oversight/run_validators.sh $CHANGED
@@ -376,11 +386,15 @@ echo "Score: $SCORE  Tier: $TIER"
 # validated tier floor OR the score, because the deterministic risk floor raises
 # tier (auth→HIGH, booking/payment→CRITICAL) without raising the score. Gating on
 # score alone would let a floor-raised MEDIUM+ step silently skip cross-vendor review.
+# Use the SAME step commit range as the validators / risk-assessor (#204), not
+# HEAD~1 — otherwise the mandatory MEDIUM+ cross-vendor review silently covers
+# only the last commit of a multi-commit step. (BASE_SHA/HEAD_SHA computed as in
+# the risk-validators step above; run_second_review's --diff accepts a range.)
 bash scripts/run_second_review.sh \
   --step N \
   --tier "$TIER" \
   --score $SCORE \
-  --diff HEAD~1
+  --diff "${BASE_SHA}..${HEAD_SHA}"
 
 # Fires when: tier ≥ MEDIUM OR score ≥ 0.30 (agy);  tier ≥ HIGH OR score ≥ 0.55 (codex)
 # Output: .claudetmp/second-review/stepN-{timestamp}.md
