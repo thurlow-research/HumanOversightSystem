@@ -61,6 +61,7 @@ contract, and the audit trail. The installed version is recorded at
 1. Fill in `contract/step-manifest.yaml` (your build steps + risk tiers).
 2. Configure project values — see [SETUP.md Step 1b/2](SETUP.md) (and [CUSTOMIZATION.md](CUSTOMIZATION.md)).
 3. Run the project-start sequence — see [SETUP.md Step 6](SETUP.md).
+4. **Before your first review cycle, read [HANDLING-FINDINGS.md](HANDLING-FINDINGS.md)** — how to tell a blocking gate from a signal validator, and how to triage false positives instead of chasing them. This is the single biggest source of wasted effort if skipped.
 
 ## Notes
 
