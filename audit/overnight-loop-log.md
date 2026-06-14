@@ -11,3 +11,5 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 | 2026-06-13T23:30 PDT | HOS #155 | n1 half = #150 (debunked); complexity half unverifiable (no radon). needs-human. No code change. |
 | 2026-06-13T23:30 PDT | HOS #157 | REAL gap (orphaned-import suite breakage). Built collection_integrity gate → PR #164 held for human review (governance gate set). |
 | 2026-06-13T23:30 PDT | — | docs(#152) §5.1 actor-identity vs determination-honesty (merged). 7am self+3p eval one-shot scheduled. Hourly loop refreshed → 98204cb6 (verify-first). |
+| 2026-06-14T00:29 PDT | HOS #161/#162 | Reproduced (oversight Python fails own isort+black gates). PR #177 opened for review (15 files reformatted), not auto-merged. ai-triaged. |
+| 2026-06-14T00:29 PDT | — | Reviewed: #176/#174/#171/#168/#167 (needs-human/[Human] — Scott's); CPS #86/#84/#83/#78 (all already needs_human, CPS-managed). Left for human. |
