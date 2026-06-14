@@ -59,6 +59,15 @@ Mapping to existing work: **#127's committed content-hashed record is the *local
 
 **Build-time obligation (don't leave it implicit in the diff):** when this ships, record **one explicit line** stating whether the human-approval check is enforced **server-side (GitHub branch protection)** or **by a local HOS script** — because that single fact is what determines whether the determination-honesty gap is *actually closed* (server-side) or merely made *auditable* (local). The mechanics of "we moved to machine accounts" will be obvious from the diff; this distinction will not be, and it is the one that matters.
 
+### 5.2 Two boundaries, two enforcement strengths (under the two-account model, §7)
+
+The worker/overseer/human structure creates **two** approval boundaries, and they are not equally strong:
+
+- **overseer ↔ human** (HIGH/CRITICAL → human): forge-proof **server-side** — branch protection requires a human-identity approval on those paths, and the human's credentials are absent from the agent's environment. This is the determination-honesty gate above; it holds regardless of how the bots run.
+- **worker ↔ overseer** (the worker class cannot approve): forge-proof **only if the two classes run in credentially-isolated contexts** — separate sessions/environments, each holding *only* its class's token. If a single orchestrator session holds *both* bot tokens, the worker/overseer split is *attributed but self-enforceable* (that session controls which token signs which action) — i.e. **accountability, not forge-proofing**, the same local-vs-server-side distinction one level down.
+
+So: **pilot** = two accounts + the server-side human gate (a real win, and "who did what" is unambiguous via the distinct authors). **Hardened** = run the worker and overseer classes in separate credential contexts, so the worker truly cannot wield the overseer token. Record which one shipped (per the obligation above), for the worker/overseer boundary too.
+
 ## 6. The "reports-to" relationship (no first-class GitHub field — conventional schema)
 
 | Dimension | Mechanism |
@@ -68,12 +77,25 @@ Mapping to existing work: **#127's committed content-hashed record is the *local
 | **Accountability** | CODEOWNERS + branch protection requiring a **human** approval on HIGH/CRITICAL paths (this is the Layer-3 gate, now mechanically enforced) |
 | **Traceability** | commit trailers — keep `AI-Model:`/`AI-Risk:`, add **`Supervised-by: <human>`** linking the bot's work to its responsible human |
 
-## 7. Account structure — pilot then full
+## 7. Account structure — two classes, not N accounts (decided 2026-06-14)
 
-- **Phase 0 (pilot): a single `hos-agent` machine user.** Buys the *entire* forge-proofing win (attribution + a real human gate) with one account. Recommended starting point.
-- **Phase 2 (full): one machine user per authoring agent** (`hos-architect`, `hos-coder`, `hos-reviewer`, …) so the audit log shows *which* agent acted. A refinement, not a prerequisite.
+A per-agent account proliferation (tens of accounts to manage) is unwanted *and* unnecessary. The system already has exactly **two classes of agent**, so use **two machine accounts**, one per class:
 
-Naming: `hos-<role>` (or `hos-agent` for the pilot). All owned/recovered by the human.
+| Account | Class | Members (examples) | May approve PRs? |
+|---|---|---|---|
+| **`hos-worker`** | agents that **do work** | coder, technical-design, architect, dep-mapper | **No** — opens PRs, never approves |
+| **`hos-overseer`** | agents that **oversee & approve** | code/security/privacy/reliability/ops reviewers, risk-assessor, oversight-evaluator/orchestrator, Faberix | **Yes, up to its risk ceiling** (LOW to start) |
+| *(human — personal account)* | the escalation ceiling | — | **HIGH/CRITICAL**, and anything above the overseer's ceiling |
+
+Within each class, every agent still **self-identifies which agent + mode it is** (`[AI: {agent-name}]`, the Layer-2 attribution) on commits/issues/PRs — so "exactly who did what" is preserved without an account per agent.
+
+**Why two accounts beat both alternatives:**
+- **vs. a single bot:** a single bot would *author **and** approve* — collapsing the **author ≠ reviewer independence** that is the entire point of HOS (the same role-absorption failure as #173). Two accounts restore that separation **at the identity layer**: the worker account literally cannot approve its own (or any) PR.
+- **vs. per-agent (N accounts):** two accounts are manageable; per-agent is an *optional later refinement only* — Layer-2 attribution already records which agent acted, so a distinct account per agent is rarely worth the management cost.
+
+**The three identity tiers map onto the three oversight layers:** worker (signal/build) → overseer (oversight/approve-within-risk) → human (the gate). The overseer's **risk-tiered approval ceiling *is* the Faberix R3 trust-ratchet (#167)**: overseer auto-approves LOW, *recommends* on MED/HIGH, human approves HIGH/CRITICAL — and the ceiling may ratchet up as trust is earned, never to HIGH.
+
+Naming: `hos-worker` / `hos-overseer` (per repo/owner). Both owned/recovered by the human.
 
 ## 8. git/gh configuration (per agent environment)
 
@@ -86,20 +108,21 @@ The agent's checkout/session is configured to operate as the bot:
 ## 9. Branch protection (the merge gate as forge-proofing) — settable as code
 
 On the protected branch (`main`):
-- **Require a pull request before merging**, with **≥1 approving review from a human reviewer** (CODEOWNERS or required-reviewers = the human, not any bot).
+- **Require a pull request before merging**, with **≥1 approving review**, where the approver depends on risk tier:
+  - **Normal/LOW paths:** the approval may come from **`hos-overseer`** (or a human) — **never from `hos-worker`** (the author class). Since `hos-worker` opens the PR, GitHub's own "no self-approval" rule plus the worker-can't-approve restriction means a worker PR needs an *overseer or human* review.
+  - **HIGH/CRITICAL paths or above the overseer's ceiling:** the approval must come from a **human**. Enforce via (a) **CODEOWNERS** on the statically sensitive paths (require a human reviewer), and (b) a **required status check** that computes the PR's validated risk tier and *fails* if the tier exceeds the overseer's current ceiling — so a re-derived-CRITICAL change can't be overseer-approved. (The risk-tier→approver mapping is not natively dynamic in branch protection; the status check is what makes it server-side.)
 - **Dismiss stale approvals** on new commits.
-- **Block author self-approval** (GitHub already prevents approving your own PR; with separate identities the bot's PR *needs* the human's approval).
-- **Restrict who can push to `main`** to humans (the bot opens PRs; it does not push to main).
-- The current admin-bypass merge protocol (`--admin`) must be **disabled for the agent's bot token** — the whole point is the agent can't bypass the human gate. (The human retains admin.)
+- **Restrict who can push to `main`** — neither bot pushes to `main` directly; merge goes through the gate.
+- The current admin-bypass merge protocol (`--admin`) must be **disabled for both bot tokens** — the whole point is no bot can bypass the human gate. (The human retains admin.)
 
 I can apply these via `gh api` once the accounts exist.
 
 ## 10. Build plan — human vs. agent task split
 
 **You (human) do — these need github.com and cannot be automated by the agent:**
-1. Create the machine-user account(s): Phase 0 = one `hos-agent` (distinct email). Verify current GitHub ToS allows it (§11).
-2. Generate a repo-scoped PAT for each bot; add the bot as a collaborator (or to the `hos-agents` team).
-3. Decide: **single bot (pilot) vs per-agent (full)**.
+1. Create the **two** machine-user accounts — `hos-worker` and `hos-overseer` (distinct email each). Verify current GitHub ToS allows them (§11).
+2. Generate a repo-scoped PAT for each bot; add `hos-worker` (write, no approve) and `hos-overseer` (write + review) as collaborators / to the respective teams.
+3. *(decided — §7: two accounts by class; per-agent is a later option, not now.)* Confirm the overseer's starting approval ceiling = **LOW** (ratchets per #167).
 4. Confirm the operational rule: the agent runs under bot creds; **you approve from your personal account in a separate context**.
 5. Authorize me to configure branch protection (or do it yourself per §9).
 
@@ -109,6 +132,15 @@ I can apply these via `gh api` once the accounts exist.
 3. The `Supervised-by:` trailer convention, wired into the commit/PR templates and AGENTS.md disclosure.
 4. Reframe **#151** → "achieved via the #152 identity split"; update the METHODOLOGY threat-model note (the human gate is now forge-proof via identity separation, with the residual being repo-config tampering — a loud, auditable act).
 5. Update AGENTS.md to document the actor-identity layer alongside the existing attribution layer.
+
+## 10a. This is for building HOS **and** for HOS consumers
+
+The two-account identity model is needed in **both** contexts: HOS's own development *and* every project that installs HOS. So the deliverables are **framework-level, consumer-facing, and parameterized per repo/owner** — not one-off HOS-internal scripts:
+- `provision_agent_account.sh` takes the class (`worker`/`overseer`), the bot's creds, and the target repo — so a consumer runs the same tool to wire up *their* two bots.
+- A **setup guide** ("Create your two machine accounts and configure HOS"): the click-path to create `hos-worker`/`hos-overseer` on github.com, generate the PATs, set branch protection, and point each agent context at the right account. This ships in `docs/` and is referenced from QUICKSTART/SETUP, because account creation is the one manual step every consumer hits.
+- The branch-protection-as-code script applies the §9 rules to *any* repo, so consumers get the tiered-approval gate without hand-configuring it.
+
+Net: account *creation* stays manual (human, per §10), but everything downstream — config, branch protection, the tiered gate — is one tool + one doc that works the same for HOS and for consumers.
 
 ## 11. Open questions to resolve before Phase 0
 
