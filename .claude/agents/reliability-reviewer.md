@@ -1,6 +1,6 @@
 ---
 name: reliability-reviewer
-description: Reviews code changes for resilience against external dependency failures — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. Inner loop, parallel with security-reviewer and ops-reviewer. N/A for projects without external dependencies (no DB, no API calls, no queues).
+description: Reviews code changes for resilience against external dependency failures — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. Inner loop, runs in parallel with the other inner-loop reviewers (security, privacy, ops, ui, a11y). N/A for projects without external dependencies (no DB, no API calls, no queues).
 model: claude-sonnet-4-6
 tools:
   - Read
