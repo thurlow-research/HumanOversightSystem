@@ -296,3 +296,14 @@ Issue #72 surfaced a comingling bug in the conceptual docs: software-quality che
 - **Findings carry a `Role:` header.** Each `research/findings/*.md` now declares `signal-generation` / `oversight-mechanism` / `both`, so the corpus is self-classifying about what is the research subject vs. an engineering benefit. Two findings (`install-time-placeholder-substitution`, `working-state-invariant`) are explicitly tagged engineering-benefit, not oversight-research.
 
 **Precedent.** This is the same orthogonal-axis move as **D19** (IP/provenance is a first-class axis orthogonal to the risk tier): there we separated a distinct *signal* from the tier it doesn't belong to; here we separate the whole *signal layer* from the oversight layer that acts on it. The principle is consistent — name the axes, don't conflate the thing measured with the thing that acts on the measurement.
+
+### D38. Oversight gates target the operator's environment: bash 3.2 floor + venv-resolved tools (2026-06-13)
+
+The CPS real-world run showed the gates failing on a real operator machine while CI stayed green (HOS#101/#102, and the dep case #73/#74). CI runs a generous superset of the operator's environment (newer bash, all tools global), so it is structurally blind to absence-dependent failures. Standard for every gate/validator script going forward:
+
+- **bash 3.2 portability floor.** macOS ships bash 3.2; the gates must run there. No `mapfile` or other bash-4-isms — use portable `while IFS= read -r` loops. The framework's own `portability_check.sh` is pointed at its own scripts.
+- **Resolve tools through the oversight venv, never bare `PATH`.** Use `$VENV_BIN/<tool>` and `$OVERSIGHT_PYTHON` (source `ensure_venv.sh`). `command -v <tool>` finds CI's global install but not the operator's venv, silently downgrading the gate (e.g. `secret_scan.sh` fell back to a weak grep and reported a pass).
+- **Declare every imported dependency** (D-adjacent to #73/#74): a transitively-present dep is an undeclared invariant.
+- **A real-world install test is a first-class oversight checkpoint**, not an integration nicety — it is the only place this class of oversight-instrument failure is observable. See `research/findings/ci-is-blind-to-consumer-environment-failures.md`.
+
+This is the same re-derive-don't-trust principle (D33/D37) applied to the gates' runtime: don't trust "green in CI" as evidence the instrument runs where the human runs it — prove it in the field.
