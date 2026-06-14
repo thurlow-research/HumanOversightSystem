@@ -132,8 +132,17 @@ cleanup() { for d in "${CLEANUP_DIRS[@]:-}"; do [[ -n "$d" && -d "$d" ]] && rm -
 trap cleanup EXIT
 
 # Resolve the HOS repo slug (owner/name) for release fetching.
-HOS_REPO="${HOS_REPO:-$(git -C "$HOS_REPO_ROOT" remote get-url origin 2>/dev/null \
-  | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)}"
+# The bootstrap scripts normally live INSIDE the TARGET project's git tree (e.g.
+# CondoParkShare/hos-bootstrap), so the local `origin` remote is the TARGET's, not
+# HOS's. Deriving HOS_REPO from it queried the wrong repo for releases and reported
+# "No published HOS release found." Only trust the local remote when it is actually
+# the HOS repo or a fork of it (repo name == HumanOversightSystem, any owner);
+# otherwise fall back to the canonical repo. Override anytime with HOS_REPO=.
+if [[ -z "${HOS_REPO:-}" ]]; then
+  _derived="$(git -C "$HOS_REPO_ROOT" remote get-url origin 2>/dev/null \
+    | sed -E 's#.*github\.com[:/]([^/]+/[^/.]+)(\.git)?$#\1#' || true)"
+  [[ "$_derived" == */HumanOversightSystem ]] && HOS_REPO="$_derived"
+fi
 [[ -z "${HOS_REPO:-}" ]] && HOS_REPO="ScottThurlow/HumanOversightSystem"
 
 # A staged source is only trustworthy if it contains the ESSENTIAL framework
