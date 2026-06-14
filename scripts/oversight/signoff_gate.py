@@ -33,6 +33,7 @@ never silently fall behind.
 
 Exit 0 = gate passes. Exit 1 = gate fails. Exit 2 = usage / environment error.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -285,10 +286,7 @@ def main() -> int:
 
     if files:
         if newest_file_time:
-            log(
-                f"newest changed file: {newest_file} "
-                f"@ commit {newest_file_time}"
-            )
+            log(f"newest changed file: {newest_file} " f"@ commit {newest_file_time}")
         else:
             log("changed files have no committed history yet.")
     else:
@@ -312,8 +310,7 @@ def main() -> int:
         if status not in VALID_STATUSES:
             log(f"  ✗ {agent_label}: invalid status {status!r}")
             failures.append(
-                f"{agent_label}: status must be one of "
-                f"{sorted(VALID_STATUSES)}, got {status!r}"
+                f"{agent_label}: status must be one of " f"{sorted(VALID_STATUSES)}, got {status!r}"
             )
             continue
 
@@ -328,10 +325,7 @@ def main() -> int:
 
         if stamp_time < newest_file_time:
             delta = newest_file_time - stamp_time
-            log(
-                f"  ✗ {agent_label}: STALE — signed {delta}s before "
-                f"{newest_file} changed"
-            )
+            log(f"  ✗ {agent_label}: STALE — signed {delta}s before " f"{newest_file} changed")
             failures.append(
                 f"{agent_label}: stamp ({stamp_time}) is older than changed file "
                 f"{newest_file} ({newest_file_time}) — re-sign after changes"
