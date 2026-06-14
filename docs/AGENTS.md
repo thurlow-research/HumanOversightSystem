@@ -238,7 +238,7 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 When `technical-design` or a reviewer escalates a spec-gap that cannot be resolved at the design level (requires a product/requirements decision): create a `spec-gap` issue for `pm-agent`, halt the dependent work, and notify the escalating agent of the issue number. Do not resolve product questions within architectural authority.
 
 **Escalation out:** Human (unresolvable after architect, or product/policy decisions); `pm-agent` via `spec-gap` issue (product/requirements decisions that cannot be resolved architecturally).
-**Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`, `ops-designer`.
+**Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`, `ops-designer`, `ops-reviewer` (spec gap unresolved after 2 cycles), `reliability-reviewer` (structural reliability issue), `unit-test` (coder refuses a testability refactor).
 
 ---
 
@@ -278,7 +278,7 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 **Loop exit:** Iteration with `architect` has a maximum of 3 rounds. After 3 rounds without approval, escalate to human with a summary of unresolved decisions and competing options.
 
 **Escalation out:** `architect` (design disputes, architectural questions; max 3 rounds then human); `pm-agent` via `spec-gap` issue (product decisions architect confirms cannot be resolved at design level).
-**Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `unit-test` (untestable designs).
+**Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `reliability-reviewer` (undefined reliability contract), `unit-test` (untestable designs, spec ambiguities), `system-test` (spec interpretation a test surfaces — routed here, not to pm-agent directly).
 
 ---
 
@@ -583,7 +583,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Tooling:** `pytest-django`, `coverage`, `mutmut`, `factory_boy`, `freezegun` (for time-dependent tests).
 
-**Escalation out:** `technical-design` (untestable designs); `pm-agent` (spec ambiguities); `architect` (coder refuses testability refactor).
+**Escalation out:** `technical-design` (untestable designs, **and spec ambiguities — via the design chain, not `pm-agent` directly**); `architect` (coder refuses testability refactor).
 **Escalation in:** From `coder` (fixes that re-run tests).
 
 ---
@@ -610,9 +610,9 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **When a test fails:**
 - Code bug (code doesn't match design) → report to `coder` with test name, expected vs. actual, spec citation
-- Spec gap → escalate to `pm-agent` with the two possible interpretations and which the test assumes
+- Spec gap → escalate to `technical-design` (the design chain — **not** `pm-agent` directly, per the no-bypass rule) with the two possible interpretations and which the test assumes; `technical-design` routes it to `architect`/`pm-agent` as the gap requires
 
-**Escalation out:** `pm-agent` (spec interpretation) → human (if unresolvable); `coder` (code bugs).
+**Escalation out:** `technical-design` (spec interpretation, via the design chain) → `architect`/`pm-agent` as needed; `coder` (code bugs).
 **Escalation in:** From `coder` (fixes).
 
 ---
