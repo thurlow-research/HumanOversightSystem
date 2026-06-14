@@ -207,6 +207,21 @@ $(cat "$f")
 
 REVIEW_PACKAGE=$(collect_files)
 
+# Known-issues context: feed the cross-vendor reviewers the open GitHub issues so
+# they SKIP already-tracked findings instead of re-surfacing them (root-cause fix
+# for convergence churn; complements the dedup ledger).
+KNOWN_ISSUES=""
+if [[ "${HOS_FEED_KNOWN_ISSUES:-1}" == "1" ]] && command -v gh >/dev/null 2>&1; then
+    KNOWN_ISSUES=$(gh issue list --state open --limit 100 \
+        --json number,title -q '.[] | "- #\(.number): \(.title)"' 2>/dev/null || true)
+fi
+[[ -z "$KNOWN_ISSUES" ]] && KNOWN_ISSUES="(none available)"
+KNOWN_ISSUES_BLOCK="=== KNOWN, ALREADY-TRACKED ISSUES — do NOT re-report these ===
+The findings below are already filed as GitHub issues and tracked. Do NOT report a
+finding already covered by one of these; only surface issues NOT represented below.
+${KNOWN_ISSUES}
+"
+
 # ── agy: consistency and completeness ───────────────────────────────────────
 run_agy() {
     local prompt
@@ -223,6 +238,7 @@ Check for:
 
 For each finding, name the exact files and lines affected. Be specific enough that a developer can fix the problem without additional investigation.
 
+${KNOWN_ISSUES_BLOCK}
 === AGENT FILES AND DOCS ===
 ${REVIEW_PACKAGE}
 
@@ -277,6 +293,7 @@ Attack vectors to probe:
 
 For each attack, describe the specific scenario that causes failure, not just the category.
 
+${KNOWN_ISSUES_BLOCK}
 === FILES TO ATTACK ===
 ${REVIEW_PACKAGE}
 

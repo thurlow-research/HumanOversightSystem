@@ -146,6 +146,17 @@ $(cat "$f")
 
 REVIEW_PACKAGE=$(collect_files)
 
+# Known-issues context: feed the reviewer the open GitHub issues so it SKIPS
+# already-tracked findings instead of re-surfacing them every run. This is the
+# root-cause fix for convergence churn (the reviewer never reports what's already
+# filed), complementing the post-hoc dedup ledger. (#133-adjacent)
+KNOWN_ISSUES=""
+if [[ "${HOS_FEED_KNOWN_ISSUES:-1}" == "1" ]] && command -v gh >/dev/null 2>&1; then
+    KNOWN_ISSUES=$(gh issue list --state open --limit 100 \
+        --json number,title -q '.[] | "- #\(.number): \(.title)"' 2>/dev/null || true)
+fi
+[[ -z "$KNOWN_ISSUES" ]] && KNOWN_ISSUES="(none available)"
+
 {
     printf "# Framework Self-Validation (Opus)\n"
     printf "Timestamp: %s\n" "$TIMESTAMP"
@@ -172,6 +183,14 @@ Review the agent definitions, docs, and contract below for:
 7. SCOPE / OWNERSHIP CONFUSION — two agents that could both (or neither) own a decision.
 
 Be specific: name exact files and quote the offending text. Prefer a few real, high-confidence findings over many speculative ones. If genuinely clean, say so plainly — do not invent findings to seem thorough.
+
+=== KNOWN, ALREADY-TRACKED ISSUES — do NOT re-report these ===
+The findings below are ALREADY filed as GitHub issues and are being tracked. Do
+NOT report a finding that is already covered by one of these — re-surfacing a
+known, filed issue is noise. Only report findings NOT represented below. (E.g.
+the human-gate forgeability / shared-git-identity weakness, and the
+mechanical-vs-prose 'structural' gap, are tracked — do not re-report them.)
+${KNOWN_ISSUES}
 
 === FRAMEWORK FILES ===
 ${REVIEW_PACKAGE}

@@ -783,7 +783,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 ### 27. `doc-validator` — Documentation Coverage Validator
 
 **Model:** `claude-sonnet-4-6`
-**Invoked:** Before committing documentation changes; by `framework-validator` when Phase 3 of `run_framework_validation.sh` finds issues.
+**Invoked:** Before committing documentation changes; by the human or orchestrating session when `framework-validator`'s Phase 3 (`run_framework_validation.sh`) **reports** doc issues (`framework-validator` has no Agent/Task tool — it reports, it does not invoke this agent itself).
 
 **Role:** Catches the omission class of documentation bug — where a doc describes an agent correctly as far as it goes, but silently omits a mode, role, or escalation path the agent file defines. The authoritative source for each agent's behavior is its agent file; every doc reference is checked against that source.
 
@@ -801,7 +801,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 ### 28. `spec-compliance-validator` — Governance Requirements Compliance
 
 **Model:** `claude-sonnet-4-6`
-**Invoked:** Periodically as a health check; after significant agent or methodology changes; by `framework-validator` when Phase 4 of `run_framework_validation.sh` finds issues.
+**Invoked:** Periodically as a health check; after significant agent or methodology changes; by the human or orchestrating session when `framework-validator`'s Phase 4 (`run_framework_validation.sh`) **reports** compliance issues (`framework-validator` has no Agent/Task tool — it reports, it does not invoke this agent itself).
 
 **Role:** The system-test equivalent for the agent pipeline — verifies the pipeline implementation satisfies its own governance requirements. Not "are the files consistent?" but "does the pipeline actually do what its governance spec mandates?"
 
