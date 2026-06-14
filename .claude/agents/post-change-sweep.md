@@ -72,9 +72,8 @@ Agents to invoke: [list]
 ### Track 1: Framework (independent)
 
 If `framework` domain has changes:
-- Invoke `framework-validator` with the list of changed framework files.
-- framework-validator runs `check_agents_static.sh` and `validate_agents.sh`, then reports findings.
-- If framework-validator blocks: report to human immediately. Do not proceed with other tracks until resolved.
+- **If `framework-validator` is installed** (`.claude/agents/framework-validator.md` present — it ships with the `hos-dev-pack`, not the base consumer install): invoke it with the list of changed framework files. It runs `check_agents_static.sh` and `validate_agents.sh`, then reports findings. If it blocks: report to human immediately; do not proceed with other tracks until resolved.
+- **If `framework-validator` is NOT installed** (the normal consumer case — framework files are protected surfaces a consumer should not be editing un-reviewed): do **not** hard-fail. **Flag to the human**: "framework files changed (`<files>`) but `framework-validator` is not installed — a human must review these framework-file changes before merge." Continue the other tracks. This graceful degradation is the seam where `hos-dev-pack` plugs in (it makes the framework-review track fully automatic when HOS is dogfooding itself); without the pack, a missing dev-only agent must never block a consumer's build (#225-class: a shipped agent must not hard-dispatch an unshipped one).
 
 ### Track 2: Code review chain (sequential within track)
 

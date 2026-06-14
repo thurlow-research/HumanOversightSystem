@@ -103,6 +103,13 @@ These agents are invoked by the oversight pipeline, not by the base development 
 | `spec-red-team` | Adversarial spec review before coding (uses agy for independence) | Per build step, pre-coding |
 | `oversight-evaluator` | Phase 1: compliance (sign-off register, §3 required fields, prompt artifacts, human authorization). Phase 2: quality (convergence failures, resolved findings, confidence gaps) | After system tests pass |
 | `oversight-orchestrator` | Acts on evaluator recommendation. Writes two separate files: `panel-context.md` (structural signals only, for panel) and `handoff.md` (full picture, for human/PR) | After evaluator produces recommendation |
+| `ops-designer` | Observability/telemetry authority; produces `TELEMETRY-SPEC.md` (the contract ops-reviewer enforces) | Project start (after architect ADR); reactive on ops gaps |
+| `ops-reviewer` | Reviews code for telemetry-spec conformance — does it emit the signals to monitor/diagnose it in prod? | Inner loop, parallel with security/privacy/reliability |
+| `reliability-reviewer` | Reviews resilience to external-dependency failures (timeouts, retry/backoff, graceful degradation, no unbounded waits) | Inner loop, parallel reviewers |
+| `post-change-sweep` | Orchestrates the full review suite after a change set — categorizes the diff, dispatches the right agents in dependency order | After any batch of changes, before commit |
+| `ux-designer` | UX design authority; audits/completes the design pack against the spec; produces `UX-DESIGN-READINESS.md` | Project start (after pm-agent Q&A); reactive during build |
+
+> The canonical set of agents shipped to consumers is `scripts/framework/consumer_agents.txt` (the single source of truth for the installer + `.hos-manifest`, #225). Keep this table in sync with it. The framework-dev validators (`framework-validator`, `doc-validator`, `spec-compliance-validator`, `framework-setup-validator`) are **not** shipped to consumers — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding).
 
 ---
 
