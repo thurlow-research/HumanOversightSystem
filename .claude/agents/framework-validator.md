@@ -60,7 +60,7 @@ Output is written to `.claudetmp/framework/doc-validation-YYYYMMDDTHHMMSS.md`. T
 bash scripts/framework/validate_spec_compliance.sh
 ```
 
-Output is written to `.claudetmp/framework/spec-compliance-YYYYMMDDTHHMMSS.md`. This checks that the pipeline satisfies governance requirements (METHODOLOGY.md, AGENTS.md root protocol, decisions.md). Invoke `spec-compliance-validator` agent to triage any failures.
+Output is written to `.claudetmp/framework/spec-compliance-YYYYMMDDTHHMMSS.md`. This checks that the pipeline satisfies governance requirements (METHODOLOGY.md, AGENTS.md root protocol, decisions.md). You **cannot invoke other agents** (no Agent/Task tool — see Step 3); if this check fails, **report** that `spec-compliance-validator` should be invoked separately (by the human or a subsequent invocation) to triage the failures — do not phrase it as invoking the agent yourself.
 
 ### Step 5 — Handle failures
 

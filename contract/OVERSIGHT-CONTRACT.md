@@ -66,7 +66,7 @@ audit/                               ← COMMITTED to project repo (not gitignor
                                     machine-readable header then reviewer JSON blocks;
                                     contains verdict: skipped when below thresholds or
                                     when no diff content. Top-level fields:
-                                      verdict: approve|request_changes|error|skipped
+                                      verdict: approve|request_changes|error|skipped|unparseable
                                       highest_severity: critical|high|medium|low|none
                                       unresolved_findings: N
   red-team/
@@ -341,7 +341,9 @@ Conditions 9–10 are **anti-gaming** checks: they re-derive — independently o
 - a fired vendor is **unavailable at pre-check** (agy at MEDIUM+, or both vendors at HIGH+) — the original guard;
 - a fired-and-required vendor **errors at runtime** (timeout, rate-limit, crash after the CLI passed pre-check) → aggregate `verdict: error`, exit non-zero. A runtime error must not collapse into `approve`; that would silently convert the mandatory independent review into a PASS (a fail-open).
 
-The `oversight-evaluator` enforces the same property independently (condition: a MEDIUM+ second-review file with `verdict: error` or `verdict: skipped` → COMPLIANCE FAIL), so the guarantee holds even if the script is bypassed. Document this in project runbooks.
+A fifth verdict, **`unparseable`**, is distinct from `error`: the reviewer *ran and produced a real review* the harness could not auto-structure (e.g. an agentic CLI returned a narrated markdown report instead of strict JSON — HOS#113). The review content exists and is preserved in the output file. `unparseable` must **NOT** be collapsed into `error` (fail-closed — throws away a real independent review) or `approve` (silent pass). `run_second_review.sh` exits 0 on `unparseable` with a loud "a human must read this" notice rather than fail-closed.
+
+The `oversight-evaluator` enforces these independently (a MEDIUM+ second-review file with `verdict: error` or `verdict: skipped` → COMPLIANCE FAIL; `verdict: unparseable` → CONDITIONAL_PROCEED, with a conditional item requiring a human to read the preserved report and confirm its verdict — never COMPLIANCE FAIL and never silent PASS), so the guarantee holds even if the script is bypassed. Document this in project runbooks.
 
 Compliance failure → `ESCALATE` regardless of content evaluation.
 

@@ -504,7 +504,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Review dimensions:** timeouts on all outbound connections, retry with exponential backoff and limit, no tight retry loops, non-idempotent operations protected from accidental retry, graceful degradation / fallback, no unbounded waits (thread pools, connection pools, queue consumers).
 
-**Escalation out:** `architect` (structural reliability design — sync vs async, circuit-breaker architecture); `spec-gap` issue if retry/timeout policy not specified in technical-design.
+**Escalation out:** `technical-design` (retry/timeout policy not specified in technical-design — first receiver; does **NOT** create a `spec-gap` issue directly, same as `security-reviewer`/`privacy-reviewer`); `architect` (structural reliability design — sync vs async, circuit-breaker architecture). `technical-design` revises the contract or routes product-policy questions onward.
 **Escalation in:** From `coder` (re-review after fixes).
 
 **N/A for:** CLI tools, libraries, or any project without outbound connections to external dependencies.

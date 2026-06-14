@@ -87,7 +87,9 @@ Read `.claudetmp/oversight/validators/summary.json` for the composite score. Not
 
 ## Phase 3: Semantic analysis (MEDIUM+ for prompt; HIGH+ for dep/history)
 
-For steps at MEDIUM or above where prompt artifacts exist, invoke:
+> **How "invoke" works here.** This agent has no Agent/Task tool, so it does not self-call subagents (the framework's tool-less-agents-cannot-invoke rule applies). "Invoke X subagent" below means **request the orchestrating session to run X** and consume its output — the session performs the subagent run, this agent specifies which to run, with what inputs, and how to fold the result into the brief. (Same caveat `framework-validator` carries for `spec-compliance-validator`.)
+
+For steps at MEDIUM or above where prompt artifacts exist, request the session invoke:
 
 1. **prompt-fidelity** subagent — semantic comparison of prompt vs. generated code.
    Pass: the prompt artifact path(s) found in Phase 1 inputs + the changed files.

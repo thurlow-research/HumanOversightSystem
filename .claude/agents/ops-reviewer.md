@@ -1,6 +1,6 @@
 ---
 name: ops-reviewer
-description: Reviews code changes for conformance with docs/ops/TELEMETRY-SPEC.md — does the implementation produce the signals needed to monitor it in production, diagnose failures, and support incident response? Inner loop, parallel with security-reviewer and privacy-reviewer. Escalates spec gaps to ops-designer. N/A for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture).
+description: Reviews code changes for conformance with docs/ops/TELEMETRY-SPEC.md — does the implementation produce the signals needed to monitor it in production, diagnose failures, and support incident response? Inner loop, runs in parallel with the other inner-loop reviewers (security, privacy, reliability, ui, a11y). Escalates spec gaps to ops-designer. N/A for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture).
 model: claude-sonnet-4-6
 tools:
   - Read

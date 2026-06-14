@@ -46,6 +46,8 @@ The spot-check on LOW-tier changes is not theater — it provides an ongoing esc
 
 The three layers compose: the author self-flags (Layer 1), independent reviewers scrutinize (Layer 2), and risk-stratified gates ensure human attention lands where it matters most (Layer 3).
 
+> **⚠ Threat-model limitation — the human gate is currently *behavioral*, not *mechanical*.** Every artifact that *loosens* oversight — `human-authorization.md`, `gate-suspension.md`, `human-tier-override.md` — is "human only," and the evaluator robustly re-derives whether a *covering* artifact must exist (anti-gaming, conditions 9–10). But AI and human commits share one git identity, so the OS/git layer cannot tell an agent-authored authorization from a human one — **the agent can fabricate the very artifact it is forbidden to create.** The anti-gaming check verifies a file *exists*, not that a *human* wrote it. So today the human-authority guarantee reduces to "the agent chose to obey": the prohibition is explicit and auditable (git history shows who created the file), but it is not yet mechanically enforced. Closing it requires forge-proof provenance — a verified commit signature, an out-of-band token, or a write-restricted path the agent's tooling cannot reach (tracked: #127; see [`research/findings/human-gate-enforcement-limits.md`](research/findings/human-gate-enforcement-limits.md)). This is the framework's most significant un-mitigated bypass and is stated here rather than buried, because it bounds every claim the system makes about human authority.
+
 ---
 
 ## 3. The AIs
