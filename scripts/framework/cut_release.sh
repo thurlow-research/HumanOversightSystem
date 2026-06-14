@@ -127,6 +127,24 @@ ok "release version: ${BOLD}$VERSION${RESET}"
 # ── Validation gate ───────────────────────────────────────────────────────────
 hdr "3. Validation gate"
 NOTE_SUFFIX=""
+
+# Release-type scoping (#130): a MAJOR release re-validates the FULL corpus; a
+# MINOR/PATCH scopes the self + cross-vendor review to the diff SINCE THE LAST
+# RELEASE TAG. The full-corpus adversarial review converges on zero-NEW but never
+# zero (it keeps surfacing real pre-existing holes), so gating a patch on the
+# whole corpus never passes; the correct bar for a patch is "zero-new since the
+# release diff." The full sweep still runs off the release path (daily backlog, #131).
+SCOPE_ARGS=()
+case "$BUMP" in
+  major) info "validation scope: FULL corpus (major release)" ;;
+  patch|minor)
+    if [[ -n "$LATEST_TAG" ]] && git rev-parse -q --verify "$LATEST_TAG" >/dev/null 2>&1; then
+      SCOPE_ARGS=(--changed-only --base "$LATEST_TAG")
+      info "validation scope: INCREMENTAL — files changed since $LATEST_TAG ($BUMP release, #130)"
+    else
+      info "validation scope: FULL corpus (no prior release tag to diff against)"
+    fi ;;
+esac
 if $SKIP_VALIDATION; then
   # An ungated release must be a deliberate, audited act — require an explicit
   # env opt-in so a stray flag can't ship one, and STAMP the artifact so the
@@ -139,16 +157,13 @@ if $SKIP_VALIDATION; then
   warn "VALIDATION SKIPPED (HOS_ALLOW_UNVALIDATED=1) — this release is NOT gated."
   NOTE_SUFFIX=$'\n\n> \xE2\x9A\xA0 VALIDATION SKIPPED — cut with --skip-validation; NOT gated by the validation suite.'
 else
-  info "running full validation suite (static → self → external → docs → compliance)..."
+  info "running validation suite (static → self → external → docs → compliance)..."
   if $DRY_RUN; then
-    info "[dry] would run: scripts/framework/run_framework_validation.sh ${VALIDATION_ARGS[*]:-}"
+    info "[dry] would run: scripts/framework/run_framework_validation.sh ${SCOPE_ARGS[*]:-} ${VALIDATION_ARGS[*]:-}"
   else
     rc=0
-    if (( ${#VALIDATION_ARGS[@]} )); then
-      bash scripts/framework/run_framework_validation.sh "${VALIDATION_ARGS[@]}" || rc=$?
-    else
-      bash scripts/framework/run_framework_validation.sh || rc=$?
-    fi
+    bash scripts/framework/run_framework_validation.sh \
+      ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} ${VALIDATION_ARGS[@]+"${VALIDATION_ARGS[@]}"} || rc=$?
     if [[ "$rc" -ne 0 ]]; then
       err "validation did NOT pass (exit $rc) — refusing to cut a release. Fix findings (or"
       err "converge the external-review ledger), then re-run. Override only with --skip-validation."
