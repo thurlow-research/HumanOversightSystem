@@ -785,6 +785,57 @@ else
   ok ".hos-release = $HOS_REF"
 fi
 
+# ── .hos-manifest — framework file inventory + obsolete-file detection (#182) ──
+# Records the framework-OWNED files this release ships. On a later update, files
+# present in the PRIOR manifest but absent from this one are files the framework
+# REMOVED — they may now be stale in the target (a leftover agent definition is
+# the real AI-confusion risk). This step only DETECTS and warns (non-destructive);
+# moving obsolete files to .hos-archive/ is opt-in (--prune, see #182).
+#
+# Enumerate framework-owned relative paths in a source tree. Only files the
+# framework actually ships (not consumer files that happen to share a dir), so a
+# later prune can never target the consumer's own work. venv/bytecode excluded.
+enumerate_framework_files() {
+  local src="$1"
+  {
+    [[ -d "$src/.claude/agents" ]] && ( cd "$src" && find .claude/agents -name '*.md' 2>/dev/null )
+    [[ -d "$src/scripts/oversight" ]] && ( cd "$src" && find scripts/oversight -type f \
+        ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null )
+    ( cd "$src" && for f in AGENTS.md METHODOLOGY.md \
+        scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
+        scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
+        scripts/prompt_audit.sh; do [[ -f "$f" ]] && echo "$f"; done )
+  } | LC_ALL=C sort -u
+}
+
+echo ""
+info ".hos-manifest — framework file inventory"
+_manifest_file="$TARGET_REPO/.hos-manifest"
+if $DRY_RUN; then
+  dry_run "Would write $_manifest_file and check for framework files removed since the last install"
+else
+  _new_manifest="$(enumerate_framework_files "$HOS_SOURCE")"
+  if [[ -f "$_manifest_file" ]]; then
+    # Files in the prior manifest but not this one = removed by this release.
+    _orphans=()
+    while IFS= read -r _p; do
+      [[ -n "$_p" && -e "$TARGET_REPO/$_p" ]] && _orphans+=("$_p")
+    done < <(LC_ALL=C comm -23 <(LC_ALL=C sort -u "$_manifest_file") <(printf '%s\n' "$_new_manifest"))
+    if [[ ${#_orphans[@]} -gt 0 ]]; then
+      warn "${#_orphans[@]} framework file(s) were removed in this release but remain in your repo (possibly obsolete):"
+      for _p in "${_orphans[@]}"; do
+        case "$_p" in
+          .claude/agents/*) echo -e "      ${YELLOW}$_p${RESET}  ← stale AGENT definition (the AI may load it — review first)" ;;
+          *)                echo "      $_p" ;;
+        esac
+      done
+      warn "Review and remove if unused (a safe, archived '--prune' is tracked in #182)."
+    fi
+  fi
+  printf '%s\n' "$_new_manifest" > "$_manifest_file"
+  ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -c . ) framework files tracked)"
+fi
+
 # ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──
 if $PR_ACTIVE; then
   header "Install-via-PR — opening the upgrade PR"
