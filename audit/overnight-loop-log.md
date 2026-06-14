@@ -6,3 +6,8 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 | When (ISO) | Issue | Action |
 |---|---|---|
 | 2026-06-13T22:46 PDT | — | loop armed; tonight's manual pass: closed CPS #73/#74 (v0.1.2 PyYAML fix), posted 6 decision briefs (#20/#38/#47/#63/#65/#66) + needs-human, dup-pointed #48/#67, filed CPS #82 (usage guidance), shipped HOS docs/HANDLING-FINDINGS.md (#158) |
+| 2026-06-13T23:30 PDT | HOS #150 | VERIFIED NON-REPRODUCING (detector loop-guards; CPS code scores 0.0). Diagnostic posted + needs-human. No code change. |
+| 2026-06-13T23:30 PDT | HOS #149 | Described bug non-reproducing (caller-side arg collapse). Shipped defensive re-split (PR merged), closed. |
+| 2026-06-13T23:30 PDT | HOS #155 | n1 half = #150 (debunked); complexity half unverifiable (no radon). needs-human. No code change. |
+| 2026-06-13T23:30 PDT | HOS #157 | REAL gap (orphaned-import suite breakage). Built collection_integrity gate → PR #164 held for human review (governance gate set). |
+| 2026-06-13T23:30 PDT | — | docs(#152) §5.1 actor-identity vs determination-honesty (merged). 7am self+3p eval one-shot scheduled. Hourly loop refreshed → 98204cb6 (verify-first). |
