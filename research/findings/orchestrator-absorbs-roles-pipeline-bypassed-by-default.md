@@ -36,6 +36,14 @@ The deeper point: this is the **same structural problem as the human gate, one l
 3. **Governance not in the loaded context is inert.** A protocol's reachability from the auto-loaded file is a precondition for it having any effect — an instance of the omission/unenforceable-rule class.
 4. **The self-application test.** The sharpest detector of this failure is dogfooding: does the *framework's own* development go through the framework's pipeline? (See the open "use HOS to build HOS" exercise — the same bypass was visible in how this very session was conducted.)
 
+## Update (2026-06-14) — the instruction does not *stick*; the default re-asserts
+
+Empirical reinforcement from continued CPS use: the human reports **repeatedly having to remind CPS's agent to delegate to the agents**, even after being told the orchestrator rule. Two compounding causes, both instructive:
+1. **The fix isn't installed yet.** CPS is on **v0.1.2**, which *predates* #172 — so the auto-loaded `CLAUDE.md` orchestrator block isn't even present in its loaded context. This re-confirms point 3 (governance not in the loaded context is inert): until CPS upgrades to v0.2.0, the rule literally isn't there.
+2. **Even *with* the instruction, the default re-asserts.** The human had earlier told CPS's agent directly to orchestrate, and it still reverted to doing the work itself across subsequent turns. So a behavioral instruction — even a loaded one — is **necessary but not sufficient and not durable**: the capable agent's pull toward "just do it" re-asserts every few turns and has to be re-suppressed by hand.
+
+**The lesson sharpens:** "make the rule loaded" (layer a) is the floor, not the fix. The thing that actually holds the agent to delegation is the **structural** layer — **ergonomics** (#174: make the delegated path the *one easy command*, so doing-it-yourself is the harder path) and **detection** (the compliance gate refusing to ship a step with no sign-off register). A loaded instruction decays against the default; a structural incentive + a non-shippable bypass do not. This is the same "behavioral-only is insufficient" result as the human gate, now with longitudinal evidence on the agent side.
+
 ## Related findings
 
 - `reviewer-agents-file-confident-non-reproducing-reports.md` — the other failure mode (wrong vs. unused).
