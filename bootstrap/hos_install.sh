@@ -450,8 +450,25 @@ echo ""
 info ".claude/agents/ — oversight agents"
 run mkdir -p "$TARGET_REPO/.claude/agents"
 
-for agent in risk-assessor dep-mapper risk-historian \
-             oversight-evaluator oversight-orchestrator spec-red-team; do
+# Canonical consumer agent set — the SINGLE SOURCE OF TRUTH shared with the
+# .hos-manifest enumeration below, so the install and the manifest can never
+# drift (HOS#225: the old hardcoded 6-agent loop fell behind as agents were added,
+# while the manifest `find`-ed all of them, declaring agents that were never
+# installed). Falls back to the full set if the list isn't in this release.
+_agents_list="$HOS_SOURCE/scripts/framework/consumer_agents.txt"
+_consumer_agents=()
+if [[ -f "$_agents_list" ]]; then
+  while IFS= read -r _a; do
+    _a="${_a%%#*}"; _a="$(echo "$_a" | xargs || true)"
+    [[ -n "$_a" ]] && _consumer_agents+=("$_a")
+  done < "$_agents_list"
+else
+  warn "consumer_agents.txt not in release — using built-in core agent set"
+  _consumer_agents=(risk-assessor dep-mapper risk-historian oversight-evaluator \
+    oversight-orchestrator spec-red-team prompt-fidelity ops-designer ops-reviewer \
+    reliability-reviewer post-change-sweep ux-designer)
+fi
+for agent in "${_consumer_agents[@]}"; do
   src="$HOS_SOURCE/.claude/agents/${agent}.md"
   dst="$TARGET_REPO/.claude/agents/${agent}.md"
   if [[ ! -f "$src" ]]; then
@@ -811,7 +828,15 @@ _sha256() {
 enumerate_framework_files() {
   local src="$1" _f
   ( cd "$src" && {
-      [[ -d .claude/agents ]] && find .claude/agents -name '*.md' 2>/dev/null
+      # Agents: the CANONICAL consumer set only — NOT `find` (which would list
+      # every agent in the source, declaring agents the copy-loop never installs;
+      # that drift was HOS#225). Same list the copy-loop reads → manifest == install.
+      if [[ -f scripts/framework/consumer_agents.txt ]]; then
+        while IFS= read -r _a; do
+          _a="${_a%%#*}"; _a="$(echo "$_a" | xargs || true)"; [[ -z "$_a" ]] && continue
+          [[ -f ".claude/agents/${_a}.md" ]] && echo ".claude/agents/${_a}.md"
+        done < scripts/framework/consumer_agents.txt
+      fi
       [[ -d scripts/oversight ]] && find scripts/oversight -type f \
           ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
       for _f in AGENTS.md METHODOLOGY.md \

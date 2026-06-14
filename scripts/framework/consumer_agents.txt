@@ -1,0 +1,29 @@
+# Canonical set of HOS oversight agents installed into a CONSUMER project.
+#
+# Single source of truth for BOTH the install copy-loop AND the .hos-manifest
+# enumeration in bootstrap/hos_install.sh — so the manifest can never declare an
+# agent the install did not ship, and the install can never omit an agent the
+# manifest tracks (HOS#225). Edit here once; both sides follow.
+#
+# NOT listed here (deliberately):
+#   - Base-team agents (coder, code/security/privacy/ui/a11y/infra-reviewer,
+#     architect, pm-agent, technical-design, unit/system-test, …) are
+#     CONSUMER-OWNED — the consumer's own dev team — never shipped or tracked.
+#   - Framework-dev validators (framework-validator, framework-setup-validator,
+#     doc-validator, spec-compliance-validator) validate HOS *itself*, not a
+#     consumer's app — HOS-internal, not shipped to consumers (decided #225).
+#
+# One agent slug per line (no .md). Blank lines and `#` comments ignored.
+
+risk-assessor
+dep-mapper
+risk-historian
+oversight-evaluator
+oversight-orchestrator
+spec-red-team
+prompt-fidelity
+ops-designer
+ops-reviewer
+reliability-reviewer
+post-change-sweep
+ux-designer
