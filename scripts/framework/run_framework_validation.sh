@@ -101,6 +101,31 @@ if ! $SKIP_SELF && [[ -f "$SCRIPT_DIR/validate_self.sh" ]]; then
     echo ""
 fi
 
+# ── Phase 1.6: Scripts review (the gate now covers what it ships) ────────────
+# validate_self/validate_agents cover agents+docs+contract; this covers the
+# framework's SCRIPTS (installers, gates, validators, cut_release) with a script
+# lens (bash correctness, portability, fetch-execute security, fail-open). Same
+# convergence machinery (ledger, known-issues, --base). --skip-self bypasses it
+# too (it needs the claude CLI). (#89)
+if ! $SKIP_SELF && [[ -f "$SCRIPT_DIR/validate_scripts.sh" ]]; then
+    echo "Phase 1.6 — Scripts review (bash/portability/fail-open lens)"
+    echo ""
+    scripts_rc=0
+    bash "$SCRIPT_DIR/validate_scripts.sh" $CHANGED_ONLY $BASE_ARG $SKIP_CODEX $SKIP_AGY || scripts_rc=$?
+    if [[ "$scripts_rc" -eq 3 ]]; then
+        echo ""
+        echo "  Scripts review hit the pass cap without converging — a HUMAN decides"
+        echo "  (fix / accept / file). Not auto-retried."
+        exit 3
+    elif [[ "$scripts_rc" -ne 0 ]]; then
+        echo ""
+        echo "  Scripts review found NEW blocking issues — triage (fix/file), record"
+        echo "  via validate_scripts.sh --record, and re-run until converged."
+        exit 1
+    fi
+    echo ""
+fi
+
 # ── Phase 2: Agent semantic review ──────────────────────────────────────────
 echo "Phase 2 — Agent semantic review (agy + codex)"
 echo ""
