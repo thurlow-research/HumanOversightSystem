@@ -134,7 +134,10 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   ```bash
   git log --format="%H %B" "${BASE_SHA}..${HEAD_SHA}" | grep "Prompt-Artifact:"
   ```
-- If any MEDIUM+ commit lacks a `Prompt-Artifact:` trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items list so human can verify intent was captured another way, e.g. as a design doc section reference)
+- The `Prompt-Artifact:` trailer is evaluated **only for AI-authored commits** — those carrying an `[AI: ...]` disclosure (see the Universal AI-disclosure requirement). A **human-authored** MEDIUM+ change (an install, a manual edit, a config change) is **N/A**: the human's decision *is* the captured intent, and there is no AI-generated code for `prompt-fidelity` to verify against. Do not flag a human-authored commit for a missing trailer.
+- For an **AI-authored** MEDIUM+ commit that lacks a `Prompt-Artifact:` trailer, the disposition scales with blast radius — unverified AI intent is least acceptable exactly where the damage is largest (#122, third path):
+  - **High-risk slice → COMPLIANCE FAIL:** validated tier **CRITICAL**, OR the diff touches auth / payments / permission / destructive paths (e.g. `auth/**`, `**/migrations/**` destructive ops, billing/payment paths). Re-run with the prompt captured so the `prompt-fidelity` check can run where it matters most — do not let unverified AI intent through the highest-risk gate.
+  - **Otherwise (MEDIUM / HIGH, non-high-risk files) → COMPLIANCE WARN:** add to the conditional items list so a human verifies intent was captured another way (e.g. a design-doc section reference). Not a hard fail.
 - If the referenced artifact path does not exist in the repo → **COMPLIANCE FAIL** (the trailer points to a missing file)
 - Note: in multi-agent builds the artifact may be referenced as `docs/design/TECHNICAL-DESIGN.md#section-N` rather than a `prompts/` file — both are valid
 
