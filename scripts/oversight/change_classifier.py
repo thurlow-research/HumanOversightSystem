@@ -108,6 +108,18 @@ ADDED_LINE_SIGNATURES: list[tuple[str, str]] = [
         r"(choices\s*=|TextChoices|IntegerChoices|models\.TextChoices|StateField|FSMField|"
         r"@transition|STATUS_[A-Z]|_STATES\b|enum\.Enum|new\s+state\b)",
     ),
+    (
+        # A telemetry retrofit instruments a previously-uninstrumented component
+        # without adding any other §2a signature, so ops-designer could under-
+        # classify it as additive (#84). High-confidence telemetry primitives only
+        # — deliberately NOT routine `logger.info(...)` or `collections.Counter(`,
+        # which would force spurious human gates (the #117 false-match lesson).
+        "new-observability-instrumentation",
+        r"(get_tracer|start_as_current_span|add_span_processor|TracerProvider|"
+        r"\.set_attribute\(|SpanKind|get_current_span|propagat|TraceContext|"
+        r"opentelemetry|\bOTLP\b|prometheus|statsd|push_to_gateway|"
+        r"structlog\.(get_logger|configure)|logging\.config|dictConfig|\bLOGGING\s*=)",
+    ),
 ]
 
 # Dependency manifests — an ADDED line here is a new external dependency.

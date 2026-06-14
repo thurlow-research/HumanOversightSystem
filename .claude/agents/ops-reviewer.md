@@ -78,7 +78,14 @@ For each changed file, assess against `docs/ops/TELEMETRY-SPEC.md`:
 When a change introduces observability requirements not covered by `docs/ops/TELEMETRY-SPEC.md`:
 
 1. Do not withhold sign-off against the coder for a gap the spec doesn't address — the coder cannot be held to an unspecified requirement.
-2. Escalate the gap to `ops-designer` with a specific description: what the change introduces, what observability requirement it implies, and what you expected to find in the spec.
+2. Escalate the gap to `ops-designer` with **at minimum** these fields (a local schema so the handoff is never under-specified — do not rely solely on `contract/OVERSIGHT-CONTRACT.md §1`):
+   - `step` · `sender: ops-reviewer` · `receiver: ops-designer` · `gap_id` (stable, for the loop-exit counter)
+   - `files_changed` — the change that triggered the gap
+   - `spec_section_changed` — the `TELEMETRY-SPEC.md` section that is missing/ambiguous (or "none — uninstrumented component")
+   - `what_introduced` — what the change adds and what observability requirement it implies
+   - `classification` — clarifying / additive / **structural** (a previously uninstrumented component is structural)
+   - `human_or_architect_auth_link` — path to the auth artifact if the classification requires one (else "n/a")
+   - `required_re_review_scope` — what `ops-reviewer` must re-check after the spec is updated
 3. Once `ops-designer` updates the spec, re-review the change against the updated spec.
 
 **Loop exit:** If the same gap requires more than 2 escalation/re-review cycles with `ops-designer` and remains unresolved, escalate to `architect` with a summary of what was attempted and why the spec cannot be completed. If `architect` cannot resolve it, escalate to human. Do not continue bouncing.
