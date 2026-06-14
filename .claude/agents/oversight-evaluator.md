@@ -100,6 +100,14 @@ For each required role that is NOT suspended, check:
 - For `test-system` (when `system_test_applicable: true`): is the entry present and `All_passing: true`? If not → **COMPLIANCE FAIL**
 - For `process` (when `system_test_applicable: true`): PM must have signed off on the test plan → if missing → **COMPLIANCE FAIL**
 - **Effective human gate (re-derived, not trusted from the manifest flag):** the human-authorization requirement fires when **`manifest.human_gate_required == true` OR `validated tier == CRITICAL`**. The manifest flag lives in a committed file that carries none of the "human-only" protection of `human-authorization.md`, and `risk-assessor` ratchets the *tier* but nothing ratchets the *flag* — so a step whose validated tier is CRITICAL but whose manifest says `human_gate_required: false` (misconfiguration, or a flag never updated when the tier rose) would otherwise skip the hard human gate. Re-derive it: if the effective human gate fires, `.claudetmp/oversight/step{N}-human-authorization.md` must exist and contain a non-empty human decision. If not → **COMPLIANCE FAIL** (escalate immediately — the human must create this file before evaluation can proceed). This is the same anti-gaming principle as conditions 9–10: the value that decides whether a human must see the change is re-derived from the diff/tier, never trusted as self-reported.
+  - **Pilot accountability — commit a content-hashed record (#127).** When the authorization is present and accepted, append a **committed, tamper-evident** record to the append-only `audit/oversight-log.jsonl` so the gate leaves a permanent trail (the artifact itself lives in untracked `.claudetmp/` and would otherwise vanish with no record):
+    ```bash
+    H=$(shasum -a 256 .claudetmp/oversight/step{N}-human-authorization.md | awk '{print $1}')
+    A=$(grep -m1 -i '^authorized[ _]by:' .claudetmp/oversight/step{N}-human-authorization.md | cut -d: -f2- | xargs)
+    printf '{"event":"human-authorization","step":%s,"artifact":"step{N}-human-authorization.md","content_sha256":"%s","authorized_by":"%s","decision":%s,"timestamp":"%s"}\n' \
+      "$N" "$H" "${A:-unknown}" "$(jq -Rs . < .claudetmp/oversight/step{N}-human-authorization.md)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> audit/oversight-log.jsonl
+    ```
+    This pins *what* was authorized (the content hash + decision text), *when*, and the claimed authorizer into committed history — so an authorization cannot be silently altered or denied after the fact. It is **accountability + tamper-evidence, not cryptographic forge-proofing**: it does not prevent an agent-on-the-human's-account from writing the file, which requires out-of-band human proof verified outside the agent's reach (tracked as the bulletproof backfill — see METHODOLOGY threat-model note).
 
 **Independent diff re-derivation (anti-gaming — only in the loosening direction):**
 

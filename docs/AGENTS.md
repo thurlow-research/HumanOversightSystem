@@ -52,6 +52,16 @@ The footer is lighter than the PR disclosure block — no model ID or structured
 
 This requirement applies to all projects — HOS, CondoParkShare, and any other consumer repo. Omitting the `[AI: ...]` prefix or the footer is a protocol violation.
 
+### Comments (PR + issue)
+
+**Every comment an AI agent posts on a PR or issue — including review-thread replies — must open with an agent marker:**
+
+```markdown
+🤖 [AI: {agent-name}] …comment…
+```
+
+Agents run on a human's GitHub account (e.g. the HOS agent uses `ScottThurlow`), so without this marker an agent comment is *attributed to the human* and is indistinguishable from a human decision. This matters most for the **`needs-human` ⇄ `needs-ai` handoff**: a human's `Decision:` resolving a `needs-ai` issue must be visibly *not* agent text. The rule is therefore directional — the agent marks its own comments; a human comment (including a `Decision:`) is never prefixed by the agent. Omitting the marker is a disclosure violation, the same class as an unmarked AI-created issue or PR.
+
 ### Pull Requests
 
 **Every PR opened by an AI agent — regardless of which agent, which tool, or which pipeline path — must include:**
