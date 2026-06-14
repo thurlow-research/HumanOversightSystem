@@ -97,6 +97,17 @@ Review for security: Key is read from environment variable correctly, but verify
 logged (check logging middleware) and confirm the .env file is in .gitignore.
 ```
 
+#### When you file an ISSUE for human review — assume zero reader context (#186)
+
+A `needs-human` issue, a PR escalation, or a decision brief must be **legible to a human who did not see the code, the thread, or the build step.** Do not write "see above" or assume the reader followed along. Every such issue states, in plain language:
+
+1. **What it is** — the problem, from zero context.
+2. **Impact** — what actually goes wrong, and who/what it affects.
+3. **Options — each with explicit pros AND cons** (not just a list of paths; every candidate gets both sides).
+4. **Recommendation** — clearly labeled *as* a recommendation, kept **separate from the facts** above it.
+
+This is the difference between the human gate scaling and the gate becoming the bottleneck — a handoff the human can act on without reconstructing context. It applies to every agent that escalates (reviewers, the oversight loop, Faberix). See also `AGENT-IDENTITY.md §9.1` (the overseer's escalations) and `docs/CROSS-REPO-CONDUCT.md` (advice in repos you don't own).
+
 ### 3. Confidence Declaration
 
 At the end of each substantive code response, include:
