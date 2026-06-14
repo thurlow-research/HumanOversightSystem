@@ -137,7 +137,7 @@ The step has items the human must verify before merge, but is otherwise ready.
 
 **1. Write the handoff document** (same as PROCEED).
 
-**2. Open the PR** with the AI attribution notice first (same format as PROCEED), the handoff document, and a "Human Review Required Before Merge" section appended last:
+**2. Append the "Human Review Required Before Merge" section TO `handoff.md`** — it must live in the file that becomes the PR body, not float as standalone text, or the human-review items vanish when the PR is opened. Append this block to the end of `.claudetmp/oversight/step{N}-handoff.md`:
 
 ```markdown
 ## ⚠ Human Review Required Before Merge
@@ -151,8 +151,11 @@ a resolved finding or confidence gap that automated review cannot fully clear.
 *These are in addition to panel findings, which will be posted as review threads.*
 ```
 
-**3. Title and open the PR:**
+**3. Title and open the PR** (the body now includes the section appended in step 2):
 ```bash
+# Assert the section made it into the body before opening (CONDITIONAL_PROCEED only):
+grep -q "Human Review Required Before Merge" .claudetmp/oversight/step{N}-handoff.md \
+  || { echo "ERROR: CONDITIONAL_PROCEED handoff is missing the Human Review section — do not open the PR"; exit 1; }
 gh pr create \
   --title "[AI: oversight-orchestrator] Step {N}: {step name}" \
   --body "$(cat .claudetmp/oversight/step{N}-handoff.md)"
