@@ -246,7 +246,7 @@ Then invoke the `risk-assessor` Claude agent:
 "Run risk-assessor for step N on [changed files]. Score is [composite] (tier: [TIER])."
 ```
 
-The agent reads all validator output, validates the risk tier (applying deterministic floor rules for auth, DB migrations, PII, booking gates, right-to-erasure, audit log, admin control), and writes `.claudetmp/oversight/validators/risk-assessment.md` containing the validated tier and inspection brief.
+The agent reads all validator output, validates the risk tier (applying deterministic floor rules for auth, DB migrations, PII, booking gates, right-to-erasure, audit log, admin control), and writes `.claudetmp/oversight/validators/risk-assessment.md` containing the validated tier and inspection brief. It scopes its analysis to the step's commit range `base_sha..head_sha` — **not** `git diff HEAD`, which is empty after the coder commits — and records `base_sha`/`head_sha`/`files_assessed` plus a machine-readable `blocking_findings:` list in the artifact header so the evaluator can verify the assessment covered the real diff and act on any blocking finding (#204).
 
 **Subagent Invocations based on Risk Tier:**
 - **At MEDIUM+**: risk-assessor invokes `prompt-fidelity` subagent against prompt artifacts to perform semantic prompt-to-code comparison.
@@ -409,6 +409,8 @@ python3 scripts/oversight/token_tracker.py report
 Invoke the `oversight-evaluator` agent. It runs Phase 1 (compliance) then Phase 2 (quality).
 
 As part of Phase 1, the evaluator independently re-derives — using `scripts/oversight/change_classifier.py` — the two upstream determinations that can *loosen* oversight: a `Status: N/A` reviewer waiver (verified against the diff for the N/A'd roles, contract §7 condition 9) and an authoring agent's `additive`/`clarifying` self-classification of a change that carries a structural-override signature (contract §2a, condition 10). These checks run **only in the loosening direction** — a step that already cleared a human gate, or a change already classified `structural` with authorization, is not re-checked. A rejected waiver or an uncovered structural change fails compliance and escalates; both emit audit events (`na-invalidated`, `structural-override`) so misclassifications are measurable.
+
+The evaluator also verifies the **risk-assessment scope** (contract §7 condition 7b, #204): `risk-assessment.md`'s recorded `base_sha..head_sha` must match the register's commit range and its `files_assessed` must cover the step diff — otherwise the assessment was scoped to a different (possibly empty) file set and compliance fails. Any `blocking_findings` entry left `resolution: unresolved` (e.g. a non-suspended dep-mapper `Data confidence: LOW` at HIGH+) is itself a **COMPLIANCE FAIL** — this is the consumer that makes a blocking finding actually stop the PR.
 
 ```
 Invoke: oversight-evaluator

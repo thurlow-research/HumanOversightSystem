@@ -85,6 +85,16 @@ Read `.claudetmp/oversight/validators/risk-assessment.md` for the validated risk
 - **Narrow exception (brownfield/emergency only):** a fallback to `max(manifest risk_tier, MEDIUM)` is permitted **only** when a human authorization artifact explicitly allows running without risk-assessor for this step (the same human-only artifact class as `human-authorization.md`); without that artifact, absent risk-assessment is a hard fail.
 - When present, the validated tier is a floor like everything else (the ratchet): take `max(manifest risk_tier, risk-assessment.md tier)`.
 
+**Risk-assessment scope + blocking findings (#204) — runs whenever `risk-assessment.md` is present:**
+A valid-looking `risk-assessment.md` can be produced for an **empty or partial** file set (the coder has committed, so a risk-assessor that diffed `git diff HEAD` saw nothing). Re-derive nothing here — instead **verify the assessment was scoped to this step's actual commit range, and that no blocking finding is left unresolved.** Both values are self-reported by risk-assessor in the artifact header; the evaluator is their only consumer.
+
+1. **Scope match.** Read `base_sha:` and `head_sha:` from the `risk-assessment.md` header and compare to the `BASE_SHA`/`HEAD_SHA` you wrote to the register header above.
+   - If either is **absent**, or `risk-assessment.md`'s range does **not equal** the register's `base_sha..head_sha` → **COMPLIANCE FAIL**: the assessment covered a different (possibly empty) file set than the step's diff, so the validated tier, required-reviewers set, and blocking findings are untrustworthy. Re-run risk-assessor scoped to `BASE_SHA..HEAD_SHA`.
+   - As a cross-check, confirm `files_assessed:` is non-empty on a build step and is consistent with `git diff --name-only "$BASE_SHA..$HEAD_SHA"` (a `files_assessed` that omits files the diff changed is the same scope hole → **COMPLIANCE FAIL**).
+2. **Unresolved blocking findings.** Parse the `blocking_findings:` list. For **any** entry whose `resolution:` is `unresolved` (not `resolved: …` and not `escalated: …` with the named artifact present) → **COMPLIANCE FAIL** (list each blocking id, source, and description). This is the consumer the blocking finding previously lacked: e.g. a non-suspended dep-mapper `Data confidence: LOW` on a HIGH+ step now actually stops the PR instead of being recorded nowhere. An `escalated:` resolution must name a human-authored artifact (same human-only class as `human-authorization.md`); if that artifact is absent or empty, treat the finding as still unresolved → **COMPLIANCE FAIL**.
+
+This is the same anti-gaming shape as the diff re-derivation below — a self-reported value that *gates oversight* (here: "what did I assess, and is anything blocking?") is verified against the diff/register, never trusted blind.
+
 **Determine the effective required_signoffs list (UNION — never fewer than the manifest):**
 1. Start with the step manifest's `required_signoffs` for this step — this is the floor.
 2. Check for `.claudetmp/oversight/validators/required-reviewers.md` — if it exists AND `step:` matches, take the **union** of its list with the manifest list. The dynamic list may only **add** reviewers (the validated tier demanded more); it may never remove a manifest-required role.
