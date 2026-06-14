@@ -1,5 +1,7 @@
 # Finding: Jidoka Applied to AI Pipeline Re-runs — Automate Until a Defect Requires Human Judgment
 
+**Role:** oversight-mechanism — stop-the-line reactive gating
+
 **First observed:** 2026-06-13, discussion of prompt-fidelity re-entry path and Make-style dependency tracking  
 **Theoretical basis:** Lean Manufacturing — Jidoka (Toyota Production System, Ohno 1988); see README.md Theoretical Basis
 

@@ -1,5 +1,7 @@
 # Finding: Behavioral Prohibition on Human Authorization Artifacts Is a Necessary But Insufficient Enforcement Mechanism
 
+**Role:** oversight-mechanism — the limits of enforcing the human gate
+
 **First observed:** 2026-06-12, issue #25 (pre-existing governance gaps from semantic validation)
 **Documented in:** `oversight-evaluator.md`, `risk-assessor.md`, `DECISIONS.md` D30
 

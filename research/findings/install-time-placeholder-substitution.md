@@ -1,5 +1,7 @@
 # Finding: Framework Files With Project-Specific Content Silently Corrupt New Installations
 
+**Role:** signal-generation (engineering) — install-correctness, a benefit, not the oversight research subject
+
 **First observed:** 2026-06-12, issues #17 and #18 (reported by CondoParkShare)
 **Documented in:** `scripts/framework/install.sh`, `DECISIONS.md` D27/D28
 

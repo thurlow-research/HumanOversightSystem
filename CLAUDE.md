@@ -115,7 +115,7 @@ SPEC PHASE
 
 INNER LOOP (per build step)
   gates/*.sh           →  blocking (lint/type/secret/security-HIGH/ScanCode)
-  run_validators.sh    →  9 risk dimensions; fail-closed CRITICAL if all validators fail
+  run_validators.sh    →  12 signal dimensions (11 scripts); fail-closed CRITICAL if all validators fail
                           includes: rn_calculator, complexity, N+1, migrations,
                           ip_check (ScanCode license gate + prompt clean-room),
                           prompt_audit_risk (ambiguity score + fidelity surface)

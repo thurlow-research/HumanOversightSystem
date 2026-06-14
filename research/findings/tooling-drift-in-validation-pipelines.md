@@ -1,5 +1,7 @@
 # Finding: Validation Pipelines Are Vulnerable to Silent Failure from Tooling Drift
 
+**Role:** both — integrity of the signal tooling that feeds oversight
+
 **First observed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md` (Part 2)
 
 ---

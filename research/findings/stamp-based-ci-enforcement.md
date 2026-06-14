@@ -1,5 +1,7 @@
 # Finding: Committed Timestamp Files Bridge Local-Only Validation Tools and CI
 
+**Role:** oversight-mechanism — a CI stamp makes the gate non-bypassable
+
 **First observed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md` (Part 3)
 **Demonstrated:** PR #13 on HumanOversightSystem, three consecutive pushes
 

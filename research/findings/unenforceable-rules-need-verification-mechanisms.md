@@ -1,5 +1,7 @@
 # Finding: Governance Rules Without Verification Mechanisms Are Unenforceable
 
+**Role:** oversight-mechanism — a rule without a verification mechanism is advisory
+
 **First observed:** 2026-06-11, session `2026-06-11-hos-bootstrap-pipeline-hardening.md`
 
 ---

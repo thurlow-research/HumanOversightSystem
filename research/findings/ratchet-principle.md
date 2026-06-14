@@ -1,5 +1,7 @@
 # Finding: The Ratchet Principle — Automation May Only Tighten Oversight, Never Loosen It
 
+**Role:** oversight-mechanism — automation may tighten, only a human may loosen
+
 **First observed:** 2026-06-13, naming the invariant behind suspension auto-removal  
 **Status:** cornerstone principle — enshrine in the principles document
 

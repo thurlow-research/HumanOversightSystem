@@ -1,5 +1,7 @@
 # Finding: Incremental AI-Assisted Development Requires a Working-State Invariant
 
+**Role:** signal-generation (engineering) — a software-quality invariant, a benefit, not the oversight research subject
+
 **Source:** Peer feedback from a practitioner conducting extensive AI-assisted development, 2026-06-12
 **Incorporated:** `METHODOLOGY.md` §6, `templates/AGENTS.md` Working-State Invariant section
 

@@ -1,5 +1,7 @@
 # Finding: Session Chat History Is an Unreliable Governance Artifact
 
+**Role:** oversight-mechanism — provenance of the authorization artifact
+
 **First observed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md`
 
 ---

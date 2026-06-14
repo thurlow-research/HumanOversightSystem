@@ -1,5 +1,7 @@
 # Finding: Omission-Class Documentation Bugs Are Structurally Invisible to Contradiction Checkers
 
+**Role:** both — a doc-quality signal (doc-validator) feeding the oversight gate
+
 **First observed:** 2026-06-12, session `2026-06-12-ux-designer-validation-suite.md`
 
 ---

@@ -34,7 +34,7 @@ One file per working session, written at the end of each session before closing.
 
 ## `findings/`
 
-Durable learnings extracted from one or more sessions and written in a form suitable for citing in research papers. Each finding is a standalone document that:
+Durable learnings extracted from one or more sessions and written in a form suitable for citing in research papers. Each finding opens with a **`**Role:**` header** classifying it on the signal/oversight axis (see `DECISIONS.md` D37): `oversight-mechanism` (the finding is about *acting on* signals — the research subject), `signal-generation` (about *producing/measuring* a signal, often a software-quality benefit rather than the oversight contribution), or `both`. The header keeps the corpus honest about which findings are the research claim and which are engineering benefits. Each finding is a standalone document that:
 - States the finding precisely
 - Gives the evidence (session logs, commit history, review outputs that support it)
 - Explains the implication for research
