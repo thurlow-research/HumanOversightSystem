@@ -120,8 +120,19 @@ On the protected branch (`main`):
 
 The overseer's "approve/merge safe (LOW)" authority is gated on a **content-risk** score — but a change can be **mechanically LOW-risk and still touch a governance surface** (rewriting agent routing text, *weakening a reviewer obligation*, editing branch-protection or gate logic). Letting that auto-merge would let the system quietly loosen its own controls. So, overriding the risk tier:
 
-**Any change to a protected surface requires a *human* approval, regardless of computed risk tier — no bot may approve or merge it:**
-`.claude/agents/**` · `contract/**` · `docs/AGENTS.md` · `docs/AGENT-IDENTITY.md` · `docs/METHODOLOGY.md` · branch-protection / install / release scripts · gate logic (`scripts/oversight/gates/**`, `run_validators.sh`) · `oversight-evaluator` / `risk-assessor` logic.
+**Any change matching a protected-surface path requires a *human* approval, regardless of computed risk tier — no bot may approve or merge it.** The list is **canonical glob paths** (so CODEOWNERS and the status check can match it precisely, not prose):
+
+```
+.claude/agents/**          AGENTS.md
+contract/**                docs/AGENTS.md
+docs/AGENT-IDENTITY.md     docs/METHODOLOGY.md
+docs/FABERIX-ROLES.md      docs/CROSS-REPO-CONDUCT.md
+bootstrap/**               scripts/framework/**        (install, release, validation tooling)
+scripts/oversight/gates/** scripts/oversight/run_validators.sh
+scripts/oversight/validators/schema.py                 (weights / tier thresholds)
+.github/CODEOWNERS         .github/workflows/**
+```
+(Anything that defines an agent's behavior, the contract, a gate/validator, the installer/release path, or the identity/authority model itself.)
 
 This is the global backstop behind the overseer ceiling and the operator's risk-tiered merge grant: **the surfaces that define the controls can never be loosened on the controls' own say-so.** Enforce it server-side via CODEOWNERS on those paths (require a human reviewer) **plus** a required status check that fails any PR touching a protected surface without a human approval. (Surfaced by the v0.2.0 release gate; it tightens the LOW/MED auto-merge authority, not just the bots.)
 

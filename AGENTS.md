@@ -254,7 +254,7 @@ This PR was **created and submitted by AI**. A human did not manually write or s
 | **Submitted** | {YYYY-MM-DD} |
 | **Human review required** | {yes — and why} |
 
-Human approval is required before merge — see branch protection rules.
+Human approval is required before merge for **MEDIUM+ risk or any protected surface** (`docs/AGENT-IDENTITY.md §9.0`); a **LOW-risk, non-protected** change may be approved by the overseer (`hos-overseer`) per the branch-protection rules. Either way the merge gate decides — this PR never self-merges.
 ```
 
 This section must appear before all other content. Never omit or abbreviate it.
