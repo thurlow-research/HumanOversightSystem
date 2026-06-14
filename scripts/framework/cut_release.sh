@@ -193,12 +193,23 @@ done
 ( cd "$ASSET_DIR" && sha256 "${ASSET_NAMES[@]}" ) > "$ASSET_DIR/SHA256SUMS"
 UPLOAD=(); for n in "${ASSET_NAMES[@]}" SHA256SUMS; do UPLOAD+=("$ASSET_DIR/$n"); done
 
-PRE_FLAG=(); $PRERELEASE && PRE_FLAG=(--prerelease)
+# A pre-release is EXCLUDED from GitHub's /releases/latest/, which is exactly
+# what the install command and the docs' /latest/download/ URLs resolve against
+# — so a pre-release silently 404s every consumer. Publish a real release as
+# --latest; warn loudly when --prerelease is requested. (#97)
+PRE_FLAG=(); LATEST_FLAG=(--latest)
+if $PRERELEASE; then
+  PRE_FLAG=(--prerelease)
+  LATEST_FLAG=()
+  info "⚠  --prerelease: GitHub excludes pre-releases from /releases/latest/."
+  info "⚠  The install command and docs' /latest/download/ URLs will 404 until you promote:"
+  info "⚠      gh release edit $VERSION --prerelease=false --latest"
+fi
 
 if $DRY_RUN; then
   info "[dry] gh release create $VERSION --draft ${PRE_FLAG[*]} ${NOTES_ARG[*]} --target ${HEAD_SHA:0:8}"
   for n in "${ASSET_NAMES[@]}" SHA256SUMS; do info "[dry]   asset (from commit): $n"; done
-  info "[dry] verify assets present, then gh release edit --draft=false (atomic publish)"
+  info "[dry] verify assets present, then gh release edit --draft=false ${LATEST_FLAG[*]} (atomic publish)"
 else
   # DRAFT first: gh creates the tag + a hidden draft release and uploads assets.
   # A failed upload never leaves a half-published release — we clean it up and
@@ -219,7 +230,9 @@ else
     esac
   done
   # Atomic-ish publish: all assets verified present, now make it visible.
-  if ! gh release edit "$VERSION" --draft=false; then
+  # --latest (for a non-prerelease) ensures /releases/latest/ resolves to it, so
+  # the docs' /latest/download/ install URLs work immediately. (#97)
+  if ! gh release edit "$VERSION" --draft=false "${LATEST_FLAG[@]}"; then
     err "assets uploaded but publishing the draft failed. Finish manually:"
     err "    gh release edit $VERSION --draft=false"
     exit 1
