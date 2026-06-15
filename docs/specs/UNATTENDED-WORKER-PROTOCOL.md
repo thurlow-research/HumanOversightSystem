@@ -16,6 +16,7 @@
 | **Adaptive polling — v1 or v2?** | **Adaptive in v1**, probe floor **15 min**, ceiling **daily** | The cron **probe** is GitHub API calls with **no model invocation** — cheap enough to fire every 15 min, and **the model sleeps unless the probe finds work** (#254 consideration #11). What we throttle is *model spend* (gated by work-found **and** the §8 budget), not the probe. Adaptive back-off (toward daily) exists only to spare **API quota** on dormant repos when one HOS watches many. |
 | **Merge-gate dependency on #152** | **Hard prerequisite, per-repo.** Auto-merge enabled only where server-side branch protection is **detected** active; otherwise that repo runs **PROPOSE_ONLY**. | Auto-merge-≤MEDIUM is only a *boundary* if a bot can't bypass it. "Detected, not assumed" applies the fail-closed / re-derive-don't-trust principle (DECISIONS D33/D37/D41) to the merge gate. Lets CPS join in PROPOSE_ONLY day one and graduate when *its own* gate flips. |
 | **Multi-customer scope** | **v1.** Per-customer budgets, round-robin, isolation, protocol versioning are in scope from the start. | CPS is the first real participant; retrofitting fairness/isolation onto a single-tenant loop is the expensive path. |
+| **Fold in #131** (scheduled self-review backlog job) | **Subsumed** as a **scheduled self-review work source** (§3.2), not a standalone cron. | #131's "daily full self-review → file NEW ledger-deduped findings as issues" is the same shape as the unattended loop (cron, no-model-unless-work, budget-gated, ledger-deduped). Folding it in lets it inherit this loop's budget gate, observability, and kill switch instead of re-implementing them. **#131 closed as a duplicate of #254.** |
 
 ---
 
@@ -51,6 +52,7 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 - **M3** — 100% of autonomous merges are ≤MEDIUM, non-security-relevant, full-PROCEED, in a server-side-gated repo (audit the ledger; any exception is a P0 bug).
 - **M4** — Every autonomous action is reconstructable from GitHub alone after an instance is destroyed mid-run (cold-start drill passes).
 - **M5** — Mean human-approval-request quality: each significance-gated request carries a token estimate, a blast-radius summary, and a default-deny deadline.
+- **M6** — **Self-review finding burndown** (#131): the count of open model-produced findings trends *down* over time. A rising open-finding count is itself an alert signal, not just a number.
 
 ---
 
@@ -105,6 +107,23 @@ An autonomous bug fix is exactly: **claim → branch → reproducing test (red) 
 
 - **R3.1.1** — **No fix without a reproducing test first.** The loop must produce a test that *fails* against the bug before any fix, and *passes* after. A fix branch without a red→green test artifact is a hard reject (the loop reopens the issue with a `needs_human` note rather than merging).
 - **R3.1.2** — The loop never calls a gate with relaxed parameters. It uses the same `run_validators.sh`, `run_second_review.sh`, and `oversight-evaluator` invocations a human would.
+
+### 3.2 Work sources — inbound *and* scheduled self-review **[subsumes #131]**
+
+The PROBE finds two kinds of work, both feeding the same triage + gate machinery:
+
+1. **Inbound** — new/updated issues, PR comments, and coordination envelopes on the watched repos (the main flow above). This is *consuming* work others filed.
+
+2. **Scheduled self-review** — HOS runs its own **full-corpus adversarial self-review** (`validate_self`, optionally cross-vendor) on a cadence and **files each NEW finding as a tracked issue**, which then re-enters triage like any other inbound work. This is *producing* work — continuous governance improvement decoupled from the release gate. **This work source is the whole of #131**, generalized into the unattended loop rather than a standalone cron.
+
+   **Goal: burn the model-produced finding backlog toward zero.** The models keep surfacing real governance holes; the point of this source is to *drive that open set down*, not to generate noise. Two consequences: (a) self-review runs **sparingly** — it is expensive *and* noisy, so a tight cadence is counterproductive (see R3.2.2); and (b) the loop tracks the **open-findings count as a burndown metric** (M6) so progress toward zero is visible and a *rising* count is itself a signal.
+
+- **R3.2.1 — Finding-fingerprint dedup is non-negotiable.** A self-review finding is filed **only if its fingerprint is not already in the ledger**. Reuse the existing disposition ledger keyed on `(sorted files, finding-class)` with a `filed:#N | fixed | noise` disposition; a finding whose fingerprint is already present is **never re-filed**. Without this the job files duplicates every run (the #131 critical requirement). The auto-file path records `filed:#N` the moment it files, so the same finding never re-surfaces.
+- **R3.2.2 — Budget-gated, configurable cadence, default weekly.** Self-review is expensive *and* noisy, so its cadence is a **configurable knob (`self_review_cadence`) defaulting to weekly** — deliberately far slower than the token-free inbound probe (§10). It is **budget-gated like all model work (§8)**. The inbound-probe cadence and the self-review cadence are independent knobs. (Daily was considered and rejected as too expensive/noisy for the burndown goal; weekly is the v1 default, tunable per repo.)
+- **R3.2.3 — Findings flow through normal triage.** A filed finding is triaged (`bug` / `spec-gap` / …) and handled by the same rules — including "no fix without a reproducing test" (R3.1.1) and the merge-authority matrix (§9.1). Self-review does not get a privileged fast path.
+- **R3.2.4 — Governance issues are human-to-close.** The loop **files** findings autonomously but does **not auto-close** a filed governance finding when it stops reproducing — close is human-only (a finding can vanish from a fuzzed re-run without being genuinely resolved; see O6).
+
+This is the §0 "fold #131 in" decision: #131's standalone-cron design becomes one work source of the unattended worker, inheriting the loop's budget gate, ledger, observability, and kill switch instead of re-implementing them.
 
 ---
 
@@ -166,6 +185,15 @@ The **first** action on any found work. Misclassifying a feature as a bug and au
 
 - **R5.2.1** — Triage emits a confidence score. **Below the floor (default 0.75) → route to human.** A low-confidence classification is never actioned autonomously.
 - **R5.2.2** — `security-report` detection is **asymmetric**: any signal of a vulnerability (even low-confidence) forces the embargo path. False-positive embargo (a human glances and waves it through) is cheap; false-negative public auto-fix is catastrophic.
+
+### 5.3 Severity triage & the benefit-≫-risk gate
+
+Every actionable work item is severity-triaged, and every proposed change must clear a value/risk bar before the loop acts autonomously.
+
+- **R5.3.1 — Severity on *every* actionable item.** Triage assigns a severity (`P0`–`P3`) to **every** bug, **feature request**, *and* self-review finding (#131) — not just bugs. Severity is recorded on the issue (label + envelope `priority`).
+- **R5.3.2 — Priority-ordered handling.** Work is handled **highest-severity-first** within each customer. Bug fixing, the #131 burndown (M6), and feature queuing all draw from the same severity ordering. Severity also feeds the cadence priority-pin (§10.4): an open `P0` pins the probe to the floor.
+- **R5.3.3 — Benefit-≫-risk gate.** The loop acts autonomously on a change **only when its expected benefit substantially outweighs the risk of the change** (benefit ≫ risk). "Risk of change" is the risk-assessor tier + blast radius + security-relevance (§9.1); "benefit" is severity + scope of what it fixes/adds. A high-severity fix with a small, low-risk diff clears easily; a low-severity / cosmetic change touching a high-risk or security-relevant surface does **not** — the risk of *making the change* can exceed the benefit of the change itself.
+- **R5.3.4 — A benefit-≫-risk *rejection* goes to a human to finalize.** When the gate **rejects** a change (benefit does not clearly exceed risk), the loop does **not** silently drop or auto-close it. It routes the item to **human review to finalize** the rejection — labeled `needs_human`, carrying the full §8.2 escalation contract (problem + risk + background, the benefit-vs-risk analysis, options, and the loop's recommendation to *not* proceed). The human makes the final call; the loop never unilaterally buries valid work under a "not worth it" judgment.
 
 ---
 
@@ -313,6 +341,8 @@ thresholds:
   approval-timeout: 12h
   triage-confidence-floor: 0.75
 cadence: { floor: 15m, ceiling: 24h }    # probe cadence; model-gated by work + §8 budget
+self-review: { cadence: weekly, cross-vendor: true }   # #131 burndown source (§3.2); expensive+noisy → sparing
+severity-triage: { scheme: P0-P3, fix-order: highest-first }   # §5.3
 claim: { timeout: 45m, heartbeat: 15m }
 breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25 }, dead-man: 6h }
 ```
@@ -325,7 +355,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 
 | Phase | Contents | Gate to ship |
 |---|---|---|
-| **v1.0** | Probe + adaptive cadence (15m/24h), triage w/ confidence floor + allowlist, envelope v1.0, GitHub-as-DB + cold-start recovery, claim-then-verify + heartbeat, budget gates + default-deny, merge-authority matrix (PROPOSE_ONLY default; auto-merge where detected), embargo *routing*, circuit breakers, run ledger + shadow mode, multi-customer fairness. | Cold-start drill (M4) + a shadow-mode run on HOS's own repo + #152 server-side gate live on at least HOS. |
+| **v1.0** | Probe + adaptive cadence (15m/24h), triage w/ confidence floor + allowlist, envelope v1.0, GitHub-as-DB + cold-start recovery, claim-then-verify + heartbeat, budget gates + default-deny, merge-authority matrix (PROPOSE_ONLY default; auto-merge where detected), embargo *routing*, circuit breakers, run ledger + shadow mode, multi-customer fairness, **scheduled self-review work source (#131)** — exact-key ledger dedup, auto-file findings, **weekly (configurable)**, human-only close; **severity triage + priority-ordered fix (§5.3)**. | Cold-start drill (M4) + a shadow-mode run on HOS's own repo + #152 server-side gate live on at least HOS. |
 | **v2** | Cryptographic envelope signing, embargo-fix *automation*, external lock primitive (if claim-then-verify proves insufficient), non-GitHub transports, finer adaptive cadence (sub-hour where a customer opts in). | — |
 
 ---
@@ -337,6 +367,9 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 - **O3** — Exact server-side-gate detection probe (§9.1.1): protection-API read vs an active no-op-rejection canary. The canary is stronger (proves enforcement, not just configuration) but noisier.
 - **O4** — Where the run ledger lives relative to `audit/oversight-log.jsonl`: same file, sibling file, or per-customer.
 - **O5** — *(direction set, #254 feedback)* Token-estimation method (R8.1): a **cheap heuristic** from issue/diff size, changed-file count, blast radius, and historical cost of similar tasks — **no model pre-pass**, must itself be ~free. **Estimation error is acceptable** (err high; R8.6 re-asks on mid-flight overrun). Remaining design work is only *which* signals and the calibration constants, not whether to use a model.
+- **O6** — *(from #131)* **Fingerprint fuzz** on self-review findings (R3.2.1): the same logical finding can return with a slightly different file set / class wording → fingerprint miss → duplicate issue. Need a fuzzy-match step or a periodic human de-dup pass (relates to #78 cross-vendor fingerprint reconciliation). The exact-key ledger is the v1 floor; fuzzy-match is the hardening.
+- **O7** — *(from #131)* **Auto-close policy** for filed governance findings: a finding whose underlying file changed such that it no longer reproduces — does its issue auto-close? v1 answer is **no** (R3.2.4, human-only close); O7 is whether a *suggested*-close signal (not an actual close) is worth adding later.
+- **O8** — **Execution model** (flagged in review): is an "instance" a long-running process that heartbeats while working (§7.2), or a short-lived cron invocation that exits between polls? The 45m claim-timeout / 15m heartbeat assumes the former; the weekly self-review (§3.2) is naturally the latter. The loop likely needs **both** — a short-lived probe-and-dispatch invocation plus longer-lived per-task workers that heartbeat — which the §7 locking model must accommodate.
 
 ---
 
@@ -347,9 +380,11 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | Periodic check, model only on work | G1, §3, §10 |
 | Token-burn estimation + significance gate | §8 (estimate-then-gate), O5 |
 | Human-escalation context contract (#257) | §8.2 |
+| Scheduled self-review → file findings, ledger-dedup (#131, subsumed) | §3.2, R3.2.1, O6, O7 |
 | Bidirectional comms protocol | G3, §4 |
 | Issue triage {bug, feature, communication} | §5 |
-| Bug handling (prioritize, fix in order) | §5.1, §7 |
+| Bug handling (prioritize, fix in order) | §5.1, §5.3, §7 |
+| Severity triage on all classes + benefit-≫-risk gate + reject→human | §5.3 |
 | Locking + claim timeout | §7 |
 | PR authorization by risk level | §9.1 |
 | Decision #1 (≤MEDIUM auto-merge; security orthogonal) | §9.1 |
