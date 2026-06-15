@@ -70,11 +70,18 @@ months and back-dated:
   The PHP attempt matters twice over: it is evidence the app is non-trivial (a prior
   hand-built attempt existed), and it is itself a prior *failure* worth counting
   honestly (see §7).
-- **Acceleration:** HOS commit velocity rose across the four days —
-  **33 → 62 → 92 → 96 commits/day** — consistent with the framework bootstrapping
-  itself (each day's better agents and tooling accelerating the next). This is
-  suggestive, not proof; commit count is a coarse and gameable velocity proxy, so
-  read it as one weak signal, not a growth law.
+- **Velocity — and why commit count alone misleads.** Commit *count* per day rose
+  for HOS (33 → 62 → 92 → 98) but *fell* for CPS (25 → 16 → 16 → 8). Both moved from
+  a few **large** early commits to many **small** later ones, so commit *size* fell
+  sharply (HOS ~339 → ~119 lines/commit; CPS ~1,604 → ~565). Factoring size in
+  **inverts the naïve "it accelerated" read**: by *lines changed per day*, HOS was
+  roughly **steady** (~11k · 12k · 7k · 12k) and CPS was **front-loaded** (~40k · 19k
+  · 7k · 5k — most of the app landed in the first two days as one large initial
+  scaffold, then tapered to refinement). Neither project sped up by *output volume*;
+  what changed was **commit granularity** — a workflow shift as the codebase and
+  tooling matured, not a growth law. (Per-day line counts are churn-inclusive — a
+  rewritten line recounts — so they overstate net-new code and are themselves only a
+  coarse proxy. The honest summary: there is no clean velocity curve here.)
 
 ---
 
@@ -200,7 +207,7 @@ one of the two artifacts built in the four days, and it **oversaw — and caught
 in — its own construction.** The instrument and the experiment were built together.
 This is methodologically double-edged: it is strong evidence the oversight is real
 (it bites even on its authors), and it is a confound for any clean productivity
-measurement (the tooling improved mid-build, §2's acceleration).
+measurement (the tooling improved mid-build — see §2's velocity discussion).
 
 **The dissertation claim, stated precisely:** *AI compresses the labor; a structured
 oversight system is the enabling condition that makes the compressed labor
