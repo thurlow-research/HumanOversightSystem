@@ -42,6 +42,7 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 - **NG1** — Near-real-time response. The 15-min probe floor + claim/budget-gate cycle makes this a sweeper, not a live responder; sub-15-minute SLAs are out of scope.
 - **NG2** — Fully-automated security disclosure. Security reports are *routed to the embargo path* (a human + private channel), not auto-fixed in public. Embargo *automation* is a later release.
 - **NG3** — Autonomous **feature** delivery. Features are triaged and **queued for human review**, never auto-built.
+- **NG3b** — Autonomous **releases**. Cutting/tagging/publishing a release is always human-approved (R9.4.1); the loop may prepare and escalate one, never cut it.
 - **NG4** — Non-GitHub backends (GitLab/ADO). The protocol is GitHub-shaped in v1; the envelope is portable, the transport is not.
 - **NG5** — Cross-instance leader election beyond claim-then-verify (no external lock service).
 
@@ -130,6 +131,7 @@ The PROBE finds two kinds of work, both feeding the same triage + gate machinery
 - **R3.2.3 — Findings flow through normal triage.** A filed finding is triaged (`bug` / `spec-gap` / …) and handled by the same rules — including "no fix without a reproducing test" (R3.1.1) and the merge-authority matrix (§9.1). Self-review does not get a privileged fast path.
 - **R3.2.4 — Governance issues are human-to-close.** The loop **files** findings autonomously but does **not auto-close** a filed governance finding when it stops reproducing — close is human-only (a finding can vanish from a fuzzed re-run without being genuinely resolved; see O6).
 - **R3.2.5 — Three dispositions, and won't-fix → suppression ledger** *(Faberix R1, implements #133, subsumes #167)*. Every validator/self-review finding resolves to exactly one of **fix · won't-fix+suppress · escalate**. A **won't-fix** ruling writes a **scoped, accountable entry to a suppression ledger** so the validator/self-review **stops re-reporting it** — keyed like the dedup fingerprint `(sorted files, finding-class)`, with author + rationale + timestamp. This is what makes the M6 burndown actually *converge*: without suppression, won't-fix findings resurface every run and the open set never reaches zero. Suppression is **distinct from `scanner-fp`** (which fixes the heuristic) and from `noise` — it is an accountable *accepted-risk* record. **Won't-fix on certain classes is human-only** (security / privacy / license — see O10); the loop may suppress only the classes it is permitted to rule on, and escalates the rest.
+- **R3.2.6 — Suppressions are time-bounded, not permanent** *(subsumes #168 suspension lifecycle)*. A suppression entry carries an **explicit approver + timestamp + a review/removal target date**, and is subject to an **active nag** as that date approaches and a **date-triggered auto-removal or escalation** when it passes — at which point the finding **re-surfaces** for a fresh ruling. This keeps the suppression set convergent (accepted-risk decisions expire and get re-examined rather than silently becoming permanent debt). The same lifecycle governs any validator *suspension* the loop relies on: explicit merge-approval, timestamp, target-removal, nag, and date-triggered auto-removal/escalation.
 
 This is the §0 "fold #131 in" decision: #131's standalone-cron design becomes one work source of the unattended worker, inheriting the loop's budget gate, ledger, observability, and kill switch instead of re-implementing them. **#167 (Faberix maintainer roles) folds in the same way** — its R1/R2/R3 are the §3.2 / §5 / §9.1 machinery, and its won't-fix→suppression mechanism is R3.2.5.
 
@@ -291,6 +293,20 @@ A publicly-filed vulnerability must **never** get a public auto-fix — a public
 - **R9.2.1** — `security-report` triage → **acknowledge** (envelope, no detail) → **route to a human + private channel** → fix under **embargo** with coordinated disclosure. No public branch, no public PR, no public test that reveals the vector.
 - **R9.2.2** — The loop's *only* autonomous action on a security report is the ack + route + `hos-embargo` label. Everything else is human-driven in v1.
 
+### 9.3 Human-review queue convention — **[subsumes #156, #203]**
+
+When a change needs human sign-off (PROPOSE_ONLY mode, above-ceiling tier, security-relevant, or a benefit-≫-risk rejection), the loop does not leave **bare commits on a branch** — it presents a reviewable queue:
+
+- **R9.3.1 — Draft PR + `needs_human` tracking issue (the queue).** The loop opens a **draft PR** (reviewable diff + inline threads, not mergeable) and a **`needs_human` tracking issue** referencing it, carrying the §8.2 escalation contract plus an explicit **disposition menu** (approve / request change X / reject). The set of open `needs_human` issues *is* the human review queue. *(#156)*
+- **R9.3.2 — `draft` has one meaning: "awaiting human."** Draft status = AI work done and self-validated, awaiting the human. *(Resolves #203 ambiguity #1 — option (b); **flagged for your ratification**, see O12.)*
+- **R9.3.3 — `needs_ai` is the human's "go" signal.** The human responds by adding **`needs_ai`** to the linked issue with a disposition (and/or GitHub Approve). `needs_human` = AI→human; `needs_ai` = human→AI. The loop never marks a PR ready or merges until `needs_ai` is present. Both labels defined in every participating repo. *(#203)*
+- **R9.3.4 — Who merges is governed by §9.1, not by the queue.** On `needs_ai` approval: in **AUTONOMOUS** mode for a change the matrix permits (≤MEDIUM, non-security, server-side-gated), the loop marks ready **and merges**; otherwise (**PROPOSE_ONLY**, above ceiling, or security-relevant) it marks ready and **leaves the merge to the human**. *(Resolves #203 question 2 via the existing merge-authority matrix.)*
+- **R9.3.5 — No "(DRAFT)" in PR titles.** Rely on GitHub's draft badge; a "(DRAFT)" title string goes stale when the PR is readied. *(#203)*
+
+### 9.4 No autonomous releases
+
+- **R9.4.1 — Automation never creates a release without human approval.** Cutting, tagging, or publishing a **release** is **always** human-gated — independent of risk tier, merge mode, or server-side-gate status. Even in full AUTONOMOUS mode with ≤MEDIUM auto-merge, the loop may open/merge change PRs but **must not** run the release-cut path, push a release tag, or publish release notes without explicit human approval. A release bundles many changes and is the highest-blast-radius, hardest-to-reverse, outward-facing action in the system; it sits above the auto-merge ceiling by definition. The loop may *prepare* a release (draft notes, open a release PR) and **escalate it for human approval** (§8.2 contract), but the cut itself is a human act.
+
 ---
 
 ## 10. Adaptive polling — **[#254 consideration #11]**
@@ -393,6 +409,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 - **O9** — *(from #167(a))* **Suppression ledger scope** (R3.2.5): per-repo or shared across consumers? A shared ledger lets HOS suppress a known framework-level false positive once for everyone; a per-repo ledger keeps consumer accepted-risk decisions local. Likely both: a HOS-shipped baseline + a per-repo overlay.
 - **O10** — *(from #167(b))* **Won't-fix human-only classes** (R3.2.5): which finding classes may the loop *never* autonomously won't-fix? Proposed floor: **security / privacy / license** are human-ruled-only (the loop escalates, never self-suppresses them). Confirm the list.
 - **O11** — *(from #167(c))* **R3 auto-approve ceiling reconciliation.** #167 proposed Faberix R3 auto-approve at **LOW only**; #254 decision #1 locked the auto-merge ceiling at **≤MEDIUM** (§9.1). The PRD treats **§9.1 (≤MEDIUM, non-security, server-side-gated, benefit-≫-risk) as the governing answer**, superseding the more conservative #167 LOW-only proposal — but this is flagged for explicit human confirmation, since #167(c) was an open question pending review.
+- **O12** — *(from #203, needs ratification)* **Draft-PR semantics.** R9.3.2 adopts **draft = "awaiting human"** (option (b)). #203 offered an alternative (draft = "AI still working", ready = "done, awaiting merge"). The PRD picks (b) because it makes draft status a one-bit human-gate signal; **confirm or override**. (Decisions 2 and 3 from #203 — who merges, and `needs_ai` as the go-signal — are resolved by R9.3.4 / R9.3.3 respectively.)
 
 ---
 
@@ -413,6 +430,9 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | PR authorization by risk level | §9.1 |
 | Decision #1 (≤MEDIUM auto-merge; security orthogonal) | §9.1 |
 | Decision #2 (security embargo path) | §9.2 |
+| Human-review queue: draft-PR + needs_human/needs_ai (#156, #203, subsumed) | §9.3, O12 |
+| Suppression/suspension lifecycle: nag + date-triggered removal (#168, subsumed) | R3.2.6 |
+| No autonomous releases (human-approved always) | §9.4, NG3b |
 | Open Q: adaptive polling | §0, §10 |
 | Open Q: spec home/format | §0 |
 | Open Q: concrete defaults | §8.3 |
@@ -438,7 +458,7 @@ The work breakdown for building v1. Tracks the §14 phasing into concrete delive
 - [ ] **T7 — State model & idempotent recovery (§6)** — GitHub-as-DB, labels/assignees/ledger; cold-start drill (M4).
 - [ ] **T8 — Locking (§7)** — claim-then-verify, heartbeat, claim timeout, terminal-state release. *(Resolve O8 execution model first.)*
 - [ ] **T9 — Budget & significance gates (§8)** — estimate-then-gate, per-task + per-window, default-deny, mid-flight overrun re-ask; wire to existing pager (R8.5).
-- [ ] **T10 — Merge authority (§9.1)** — server-side-gate detection ("detected, not assumed"), the orthogonal tier × security matrix, PROPOSE_ONLY default.
+- [ ] **T10 — Merge authority (§9)** — server-side-gate detection ("detected, not assumed"), the orthogonal tier × security matrix, PROPOSE_ONLY default; **human-review queue convention (§9.3:** draft-PR + `needs_human`/`needs_ai`, disposition menu, no "(DRAFT)" titles); **no-autonomous-release guard (R9.4.1).**
 - [ ] **T11 — Security embargo routing (§9.2)** — ack + route + `hos-embargo`; no public branch/PR/test.
 
 ### 17.3 Work sources & safety
