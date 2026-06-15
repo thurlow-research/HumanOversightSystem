@@ -64,21 +64,6 @@ Every framework has wiring that doesn't appear in import statements. Read the pr
 
 ---
 
-## Step 4 — Classify the blast radius
-
-For each changed file, categorise its impact:
-
-| Category | Meaning | Risk multiplier |
-|---|---|---|
-| **No dependents** | Nothing imports or references this | 1× (contained) |
-| **Few direct importers** (1–5) | Limited spread | 1.5× |
-| **Many direct importers** (5–15) | Wide spread | 2× |
-| **Core utility / base class** | Every subclass is affected | 3× |
-| **Middleware / request pipeline** | Every request is affected | 4× |
-| **Framework configuration** | Startup / entire app behaviour | 4× |
-
----
-
 ## Step 3.5 — Self-detect coverage gaps (generic version only)
 
 The generic dep-mapper uses plain grep and cannot trace framework-specific implicit wiring (signal receivers, URL routing, template references, middleware chains). A blast-radius report that *looks* authoritative but silently missed framework wiring is worse than no report — it leads risk-assessor to under-estimate blast radius. So this version must detect when it is likely operating outside its reliable range and say so.
@@ -99,6 +84,23 @@ If an outward reference exists that you cannot fully trace, the blast radius is 
 Set the report's `Data confidence`:
 - **HIGH** — no framework-wiring patterns in the changed files **and** no untraced outward references (plain imports only), or all detected wiring was traced both ways.
 - **LOW** — framework-wiring patterns detected but not traced, OR an outward reference exists that you could not trace, **OR** the project has stack-specific wiring but no stack-specific dep-mapper override is installed (this generic grep-based mapper cannot reliably trace it). State which patterns/references and why. Never report HIGH confidence on a stack whose wiring this generic mapper is known not to trace.
+
+---
+
+## Step 4 — Classify the blast radius
+
+For each changed file, categorise its impact:
+
+| Category | Meaning | Risk multiplier |
+|---|---|---|
+| **No dependents** | Nothing imports or references this | 1× (contained) |
+| **Few direct importers** (1–5) | Limited spread | 1.5× |
+| **Many direct importers** (5–15) | Wide spread | 2× |
+| **Core utility / base class** | Every subclass is affected | 3× |
+| **Middleware / request pipeline** | Every request is affected | 4× |
+| **Framework configuration** | Startup / entire app behaviour | 4× |
+
+---
 
 ## Output
 

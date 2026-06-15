@@ -104,9 +104,9 @@ write or submit this PR. All supporting review artifacts are automated.
 | **Agent** | `oversight-orchestrator` |
 | **Model** | `claude-sonnet-4-6` |
 | **Submitted** | {YYYY-MM-DD} |
-| **Oversight** | Internal review chain approved (code/security/privacy/ui/a11y); second review complete; panel review required before merge. |
+| **Step / context** | Step {N} — internal review chain approved (code/security/privacy/ui/a11y); second review complete; panel review required before merge. |
 
-Human approval is required before merge — branch protection enforces this.
+Human approval is required before merge for **MEDIUM+ risk or any protected surface** (`AGENT-IDENTITY.md §9.0`); a **LOW-risk, non-protected** change may be approved by the overseer per the branch-protection rules. Either way the merge gate decides — this PR never self-merges.
 
 ---
 

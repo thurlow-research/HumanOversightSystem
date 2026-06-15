@@ -305,6 +305,7 @@ Both requirements apply to all projects that install this framework.
 | Event | Meaning | Emitted by | Key fields |
 |---|---|---|---|
 | `step-head` | Records a step's HEAD SHA so the next step finds its base | oversight-evaluator | `step`, `head_sha` |
+| `human-authorization` | A human authorization gate was satisfied — pins the content hash, decision, and claimed authorizer into committed history | oversight-evaluator | `step`, `artifact`, `content_sha256`, `authorized_by`, `decision` |
 | `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
 | `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file` |
 | `gate-na` | An orchestrator determined a reviewer is not applicable to the diff | post-change-sweep | `gate`, `step`, `reason`, `determined_by` |
@@ -314,6 +315,7 @@ Both requirements apply to all projects that install this framework.
 | `sampling-audit` | A statistical sampling red-team run completed | run_redteam_sample.sh | `pool_size`, `sample_size`, `tier_escapes`, `escape_rate_pct` |
 | `na-invalidated` | An independent re-derivation rejected a `Status: N/A` waiver because the role's domain was in fact changed | oversight-evaluator | `role`, `step`, `evidence` |
 | `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
+| `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 
