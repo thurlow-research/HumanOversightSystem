@@ -1,0 +1,4 @@
+name = "django"
+description = "Django-stack security, coding, and review depth for HOS base agents — reusable across any Django project."
+version = "0.1.0"
+requires = []
