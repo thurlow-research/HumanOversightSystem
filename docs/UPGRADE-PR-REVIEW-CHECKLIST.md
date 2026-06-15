@@ -1,0 +1,75 @@
+# Upgrade PR review checklist
+
+Use this when reviewing the PR produced by `hos_install.sh --pr` — especially a
+**`--squash` adoption** (taking HOS's canonical CORE/PACK wholesale, e.g. a
+consumer moving onto the v0.3.x layered base team). Ordered by risk. A squash
+upgrade is **safe for everything the framework now ships and lossy for anything
+project-specific it doesn't** — so the *deletions* in the diff, not the
+additions, are the real review surface.
+
+> Replace "your project's domain terms" below with your own model names, role
+> names, and business-rule identifiers before you start.
+
+---
+
+## A. The installer behaved safely (30-second sanity)
+- [ ] **PR exists; the base branch is untouched** — the upgrade is on the
+  `hos-upgrade/<ref>` branch only; the base branch has no framework commits.
+  *(Red flag: any framework change on the base branch — the `--pr` guard failed.
+  Fixed in v0.3.1; on ≥ v0.3.1 this cannot silently happen.)*
+- [ ] **`.hos-release`** records the expected tag, and **`config.sh`** has the
+  expected `PACK=` value.
+
+## B. Data-loss review — read the *deletions* (the critical pass)
+- [ ] **Every deleted agent block is framework-absorbed, not project-unique.**
+  The removed lines are your old (often flat, marker-less) agent bodies. For
+  each, ask: *is this check / instruction now present in the new `CORE` or
+  `PACK:<name>` region?* If yes → fine. If it is genuinely project-specific and
+  **not** reproduced anywhere → it is a real loss; lift it into that agent's
+  `PROJECT` region before merging.
+- [ ] **Domain-specific content didn't vanish silently** — search the deletions
+  for your project's domain terms (model/entity names, role names, business-rule
+  identifiers, account/identity values). Anything still operationally needed
+  belongs in a `PROJECT` region.
+- [ ] **`dep-mapper` (only replaced under `--force`):** confirm the generic
+  `dep-mapper` + the pack's blast-radius depth covers what your version did.
+  *(Red flag: your `dep-mapper` had stack-specific tracing — signals, middleware,
+  templates — the generic one lacks. Drop `--force` for that file, or re-add the
+  depth to PROJECT.)*
+
+## C. Prune / orphans
+- [ ] **`.hos-archive/` contains only expected removals** — framework files the
+  new version folded or dropped (e.g. an agent merged into another).
+  *(Red flag: a project-authored custom agent in the archive that HOS does not
+  replace — that's a capability drop; restore it.)*
+
+## D. Layering correctness
+- [ ] **Agent count and regions are right** — packed agents carry
+  `CORE` + `PACK:<name>` + `PROJECT`; CORE-only agents carry `CORE` + `PROJECT`;
+  the oversight-layer agents are present.
+- [ ] **`PROJECT` regions exist (even if empty)** — that is the seam your
+  project-specific guidance goes into, and it survives every future upgrade.
+
+## E. Project-owned files must be untouched
+- [ ] **No changes to your project's own files** — design pack / design tokens,
+  spec, application code, and the committed **audit log**. The upgrade should
+  touch *only* framework files (`.claude/agents/`, `scripts/framework/`,
+  `AGENTS.md`, `contract/`, `.github/`). *(Red flag: any app / design / spec file
+  in the diff.)*
+- [ ] **`.claude/settings.json` was *merged*, not overwritten** — your existing
+  permissions are still present, with HOS's added.
+
+## F. The equivalence bet — spot-check
+- [ ] On the 2–3 deepest agents (e.g. `security-reviewer`, `unit-test`,
+  `coder`), confirm the composed `CORE + PACK:<name>` reads as **richer than or
+  equal to** what you had. This is the adoption acceptance bar — functional
+  equivalence, not byte-identical — verified in practice on the diff.
+
+---
+
+### The one asymmetry to keep in mind
+`--squash --force` is **safe for everything the framework absorbed** and **lossy
+for everything it didn't**. Section B is where that line gets drawn, and the PR
+diff is the only place it's visible — once merged, deleted project content is
+gone from the working tree (recoverable from git history, but nobody goes
+looking). Review the deletions.
