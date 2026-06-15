@@ -55,3 +55,4 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 2026-06-15T13:25:20Z — no new issues; v0.3.0 still gated on #248 (Scott's). No autonomous action.
 2026-06-15T14:25:20Z — no new issues; v0.3.0 still gated on #248 (Scott's). No autonomous action.
 2026-06-15T15:24:32Z #248 — diagnosed cut-stuck: blocking ops-reviewer N/A gaming-hole still in code (lines 3/26/100). Filed PR#251 (the fix, all 3 instances; agent-contract → PR not auto-merge). Commented #248 with the unstick path (merge #251 → fix warning4 → decide warnings2/3 → re-cut).
+2026-06-15T15:39:00Z — v0.3.0 cut re-attempted (post-#248-merge): self-review+scripts converged; EXTERNAL review (codex) found 3 NEW high-severity human-gate-boundary gaps in base agents → ESCALATE (pass cap). #248 now CLOSED. Filed the 3 findings durably as a needs-human issue (per #252); awaiting Scott's fix/accept/file decision. Did NOT auto-decide the cut (release-governance call).
