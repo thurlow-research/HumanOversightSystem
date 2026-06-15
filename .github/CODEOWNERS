@@ -23,3 +23,5 @@
 /scripts/oversight/validators/schema.py    @ScottThurlow
 /.github/CODEOWNERS                        @ScottThurlow
 /.github/workflows/                        @ScottThurlow
+/PROJECT/hos-coordination.yaml             @ScottThurlow
+/PROJECT/hos-halt                          @ScottThurlow
