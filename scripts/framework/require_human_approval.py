@@ -23,6 +23,7 @@ Exit: 0 = pass (no protected surface, or a human approval present)
       1 = FAIL (protected surface touched, no human approval)
       2 = usage/tooling error
 """
+
 from __future__ import annotations
 
 import argparse
@@ -60,12 +61,12 @@ def glob_to_regex(glob: str) -> re.Pattern:
     while i < n:
         c = glob[i]
         if glob.startswith("**", i):
-            out.append(".*")          # cross-segment: any chars incl. '/'
+            out.append(".*")  # cross-segment: any chars incl. '/'
             i += 2
             if i < n and glob[i] == "/":
-                i += 1                 # `**/` already consumed the slash role
+                i += 1  # `**/` already consumed the slash role
         elif c == "*":
-            out.append("[^/]*")       # one segment
+            out.append("[^/]*")  # one segment
             i += 1
         else:
             out.append(re.escape(c))
@@ -93,23 +94,30 @@ def changed_from_git(base: str, head: str) -> list[str]:
     try:
         out = subprocess.run(
             ["git", "diff", "--name-only", f"{base}..{head}"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     except subprocess.CalledProcessError as e:
         print(f"require_human_approval: git diff failed: {e.stderr}", file=sys.stderr)
         sys.exit(2)
-    return [l for l in out.splitlines() if l.strip()]
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def reviews_from_gh(pr: str) -> list[dict]:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not repo:
-        print("require_human_approval: GITHUB_REPOSITORY unset (need it to fetch reviews)", file=sys.stderr)
+        print(
+            "require_human_approval: GITHUB_REPOSITORY unset (need it to fetch reviews)",
+            file=sys.stderr,
+        )
         sys.exit(2)
     try:
         out = subprocess.run(
             ["gh", "api", "--paginate", f"repos/{repo}/pulls/{pr}/reviews"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     except subprocess.CalledProcessError as e:
         print(f"require_human_approval: gh api reviews failed: {e.stderr}", file=sys.stderr)
@@ -122,8 +130,10 @@ def reviews_from_gh(pr: str) -> list[dict]:
         data = json.loads(out)
         return data if isinstance(data, list) else [data]
     except json.JSONDecodeError:
-        # concatenated arrays: ][  → ,
-        return json.loads(out.replace("][", ","))
+        # gh --paginate concatenates page arrays with arbitrary whitespace
+        # between them ("]\n[", "] ["), not a literal "][" — normalize any
+        # close-bracket / open-bracket boundary to a comma.
+        return json.loads(re.sub(r"\]\s*\[", ",", out))
 
 
 def human_approval_present(reviews: list[dict], bot_accounts: set[str]) -> list[str]:
@@ -150,7 +160,9 @@ def main() -> int:
     globs = load_globs(SURFACES_FILE)
 
     if args.changed_files_file:
-        changed = [l for l in Path(args.changed_files_file).read_text().splitlines() if l.strip()]
+        changed = [
+            line for line in Path(args.changed_files_file).read_text().splitlines() if line.strip()
+        ]
     elif args.base:
         changed = changed_from_git(args.base, args.head)
     else:
@@ -163,7 +175,6 @@ def main() -> int:
         return 0
 
     surfaces = sorted({g for _, g in hits})
-    files = sorted({f for f, _ in hits})
     print("Protected surface(s) touched (AGENT-IDENTITY.md §9):")
     for f, g in hits:
         print(f"    {f}   (matches {g})")
@@ -175,20 +186,33 @@ def main() -> int:
     elif args.pr:
         reviews = reviews_from_gh(args.pr)
     else:
-        print("require_human_approval: need --reviews-file or --pr to check approvals", file=sys.stderr)
+        print(
+            "require_human_approval: need --reviews-file or --pr to check approvals",
+            file=sys.stderr,
+        )
         return 2
 
     humans = human_approval_present(reviews, bot_accounts)
     if humans:
-        print(f"✔ require-human-approval: human approval present from {', '.join(humans)} — gate satisfied.")
+        print(
+            f"✔ require-human-approval: human approval present from {', '.join(humans)} — gate satisfied."
+        )
         return 0
 
     print("", file=sys.stderr)
-    print("✘ require-human-approval: FAIL — this PR touches a protected surface and has", file=sys.stderr)
-    print(f"  NO human approval. A bot (worker/overseer) may not approve or merge it.", file=sys.stderr)
+    print(
+        "✘ require-human-approval: FAIL — this PR touches a protected surface and has",
+        file=sys.stderr,
+    )
+    print(
+        "  NO human approval. A bot (worker/overseer) may not approve or merge it.", file=sys.stderr
+    )
     print(f"  Protected surfaces: {', '.join(surfaces)}", file=sys.stderr)
     if not bot_accounts:
-        print("  (BOT_ACCOUNTS unset — any human-collaborator approval will satisfy this gate.)", file=sys.stderr)
+        print(
+            "  (BOT_ACCOUNTS unset — any human-collaborator approval will satisfy this gate.)",
+            file=sys.stderr,
+        )
     print("  A human with repo access must review and approve before merge.", file=sys.stderr)
     return 1
 

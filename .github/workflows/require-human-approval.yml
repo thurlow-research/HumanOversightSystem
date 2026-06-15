@@ -9,8 +9,17 @@ name: Require human approval (protected surfaces)
 # "Require status checks to pass" list (see docs/MACHINE-ACCOUNTS-SETUP.md).
 # Re-runs on review submit/dismiss so adding/removing an approval re-evaluates.
 
+# SECURITY: uses pull_request_TARGET, not pull_request. Under pull_request_target
+# the workflow definition, the gate script (require_human_approval.py), the
+# protected-surfaces list, and machine-accounts.env all run from the TRUSTED BASE
+# branch — NOT the PR's version. So a PR cannot edit the gate (or the surfaces
+# list, or this workflow) to neuter the very check that gates it. This is the SAFE
+# use of pull_request_target: we execute NO PR-authored code — the PR's changed
+# files and reviews are read as DATA via the `gh` API below, never checked out
+# and run. (Copilot finding on PR #224: plain `pull_request` + checkout ran the
+# PR's own copy of the gate, making it self-bypassable.)
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
   pull_request_review:
     types: [submitted, dismissed]
@@ -24,7 +33,11 @@ jobs:
     name: Protected-surface human-approval gate
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout (TRUSTED base — never the PR head)
+        # Under pull_request_target the default ref is the base branch, so this
+        # checks out the trusted gate script + surfaces list. Do NOT add
+        # `ref: ${{ github.event.pull_request.head.sha }}` here — that would run
+        # the PR's version of the gate and reintroduce the self-bypass.
         uses: actions/checkout@v4
 
       - name: Protected-surface human-approval gate
