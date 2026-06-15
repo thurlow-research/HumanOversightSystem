@@ -331,6 +331,7 @@ A per-customer profile (home TBD in design — likely `config.sh` keys or a `hos
 
 ```yaml
 customer: cps
+enabled: false                          # OPT-IN, OFF BY DEFAULT — customer must explicitly turn it on (R13.2)
 protocol-version: "1.0"
 mode: autonomous | propose-only        # auto-detected from server-side gate, overridable downward only
 requester-allowlist: [cps-worker, cps-overseer, ScottThurlow]
@@ -348,6 +349,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 ```
 
 - **R13.1 — `mode` can only be narrowed by config, never widened.** Config may force `propose-only` on a server-side-gated repo, but config **cannot** force `autonomous` on a repo where the gate isn't detected.
+- **R13.2 — Opt-in, disabled by default.** The unattended worker and the customer↔HOS coordination protocol are **off by default** for every repo, including HOS's own. `enabled: false` is the shipped default; a **customer must explicitly opt in** (set `enabled: true`) before any autonomous probe, triage, claim, or coordination action runs against their repo. Absence/ambiguity of the flag is read as **disabled** (fail-closed). Disable is always immediate (it composes with the §8.4 kill switch: kill-switch is the emergency stop, `enabled: false` is the steady-state default).
 
 ---
 
@@ -393,3 +395,35 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | Open Q: spec home/format | §0 |
 | Open Q: concrete defaults | §8.3 |
 | Considerations #1–#11 | §3.1, §9.2, §6, §7, §8, §4, §5, §11, §11.2, §12, §10 (mapped inline) |
+
+---
+
+## 17. Implementation task list
+
+The work breakdown for building v1. Tracks the §14 phasing into concrete deliverables. **Opt-in / disabled-by-default (R13.2) is a cross-cutting constraint on every item below — nothing runs against a customer repo until they explicitly enable it.**
+
+### 17.1 Documentation & control (the enable/disable surface)
+
+- [ ] **T1 — Agent instructions for the customer↔HOS communication protocol.** Author the agent-facing spec (in `AGENTS.md` and/or the relevant `.claude/agents/` files) describing how agents participate in the protocol: the envelope format (§4), how to read/write `correlation-id`/`in-reply-to`, the triage classes (§5), claim-then-verify + heartbeat (§7), the escalation contract (§8.2), and the merge-authority boundaries (§9.1). This is the contract any compliant agent team implements to speak the protocol.
+- [ ] **T2 — Control mechanism (enable/disable).** Implement the opt-in switch (R13.2): the `enabled` flag + its fail-closed default, the per-customer config home (O1), and the §8.4 kill switch. Disable must be immediate and unambiguous; absence of the flag = disabled.
+- [ ] **T3 — Human-facing doc in `docs/`.** A new doc in the human docs section (e.g. `docs/UNATTENDED-WORKER.md` / `docs/COORDINATION-PROTOCOL.md`) so a human knows the subsystem exists, understands what it does autonomously, and can **enable/disable** it. **Must state plainly: off by default; the customer opts in; here is how to turn it on, how to turn it off, and how to hit the kill switch.** Cross-link from `docs/SETUP.md` and the runbook.
+
+### 17.2 Core loop
+
+- [ ] **T4 — Probe + adaptive cadence (§10)** — token-free GitHub poll, 15m/24h bounds, back-off, priority-pin; per-customer round-robin (§12).
+- [ ] **T5 — Coordination envelope (§4)** — parse/emit, threading DAG, at-least-once idempotency, protocol-version negotiation, requester allowlist.
+- [ ] **T6 — Triage (§5)** — classifier with confidence floor + asymmetric security detection; **severity triage P0–P3 (§5.3)**; benefit-≫-risk gate with reject→human.
+- [ ] **T7 — State model & idempotent recovery (§6)** — GitHub-as-DB, labels/assignees/ledger; cold-start drill (M4).
+- [ ] **T8 — Locking (§7)** — claim-then-verify, heartbeat, claim timeout, terminal-state release. *(Resolve O8 execution model first.)*
+- [ ] **T9 — Budget & significance gates (§8)** — estimate-then-gate, per-task + per-window, default-deny, mid-flight overrun re-ask; wire to existing pager (R8.5).
+- [ ] **T10 — Merge authority (§9.1)** — server-side-gate detection ("detected, not assumed"), the orthogonal tier × security matrix, PROPOSE_ONLY default.
+- [ ] **T11 — Security embargo routing (§9.2)** — ack + route + `hos-embargo`; no public branch/PR/test.
+
+### 17.3 Work sources & safety
+
+- [ ] **T12 — Scheduled self-review source (§3.2, #131)** — `validate_self` auto-file mode, exact-key ledger dedup, weekly default cadence, human-only close, burndown metric (M6).
+- [ ] **T13 — Circuit breakers (§11.1)** — per-issue failure cap, blast-radius caps, rate-limit backoff, max runtime, dead-man's-switch.
+- [ ] **T14 — Observability (§11.2)** — run ledger (who/what/when/why/cost) + dry-run/shadow mode (default for a newly-opted-in customer).
+- [ ] **T15 — Multi-customer fairness (§12)** — per-customer budgets, round-robin, isolation, global + per-repo kill switch.
+
+> **Ship gate (§14):** the cold-start drill (M4) passes, a shadow-mode run on HOS's own repo looks correct, and #152 server-side enforcement is live on at least HOS — all before any repo flips `enabled: true` out of shadow mode.
