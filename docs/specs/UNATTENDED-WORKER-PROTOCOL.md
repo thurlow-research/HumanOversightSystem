@@ -22,7 +22,7 @@
 
 ## 1. Problem & motivation
 
-During the CPS field test we hand-rolled a session-only cron (every 20 min) that: polled `hos-coordination`-labelled issues → answered unanswered ones → watched the `feat/audit-healthcheck` review chain → on completion ran the oversight chain and either auto-merged-if-safe or opened a draft PR + `needs_human`. **It worked** — but everything was ad-hoc: NL-scraping to detect "already answered," no locking, no budget gate, no formal envelope, no observability, instance-local state that didn't survive a cold start.
+During the CPS field test we hand-rolled a session-only cron (every 20 min) that: polled `hos-coordination`-labelled issues → answered unanswered ones → watched the `feat/audit-healthcheck` review chain → on completion ran the oversight chain and either auto-merged-if-safe or opened a draft PR + `needs-human`. **It worked** — but everything was ad-hoc: NL-scraping to detect "already answered," no locking, no budget gate, no formal envelope, no observability, instance-local state that didn't survive a cold start.
 
 This PRD generalizes that proven behaviour into a first-class, configurable HOS subsystem with the safety properties the hand-rolled version lacked.
 
@@ -113,7 +113,7 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 
 An autonomous bug fix is exactly: **claim → branch → reproducing test (red) → coder → risk-assessor → review chain → oversight-evaluator → merge-authority decision**. Identical to a human-initiated change. The loop adds *initiation and shepherding*; it removes nothing.
 
-- **R3.1.1** — **No fix without a reproducing test first.** The loop must produce a test that *fails* against the bug before any fix, and *passes* after. A fix branch without a red→green test artifact is a hard reject (the loop reopens the issue with a `needs_human` note rather than merging).
+- **R3.1.1** — **No fix without a reproducing test first.** The loop must produce a test that *fails* against the bug before any fix, and *passes* after. A fix branch without a red→green test artifact is a hard reject (the loop reopens the issue with a `needs-human` note rather than merging).
 - **R3.1.2** — The loop never calls a gate with relaxed parameters. It uses the same `run_validators.sh`, `run_second_review.sh`, and `oversight-evaluator` invocations a human would.
 
 ### 3.2 Work sources — inbound *and* scheduled self-review **[subsumes #131]**
@@ -160,6 +160,7 @@ signature: "<marker — see §4.3>"
 - **R4.1.1** — Every autonomous message HOS posts carries an envelope. A human-authored message *may* omit it; the loop treats envelope-less inbound as `from: human, type: question` by default and routes to triage.
 - **R4.1.2** — `correlation-id` + `in-reply-to` give a threading DAG. "Already answered?" becomes: *does an `answer` envelope exist whose `in-reply-to` equals this message's `correlation-id`?* — a deterministic lookup, never NL inference.
 - **R4.1.3** — **At-least-once idempotency.** Cron polling *will* double-deliver. Every consumer keys on `correlation-id`; processing the same id twice is a no-op. (GitHub is the dedup store — see §6.)
+- **R4.1.4 — `hos-coordination` label = the cheap probe flag.** Every issue/comment that carries an `hos-envelope` block is also tagged **`hos-coordination`**. This is what keeps the probe **token-free (§10)**: the probe finds agent-to-agent messages with a *label/search query* (`label:hos-coordination` + `updated:>last-poll`) instead of fetching and parsing every body. The label says "there is a message here"; the envelope (body) carries the routing detail (`type`/`from`/`to`/`correlation-id`). A coordination item is fully processed only when its envelope is parsed, but it is *discovered* by the label. The label is created in every participating repo as part of onboarding (T2).
 
 ### 4.2 Protocol versioning — **[#254 consideration #10]**
 
@@ -203,7 +204,7 @@ Every actionable work item is severity-triaged, and every proposed change must c
 - **R5.3.1 — Severity on *every* actionable item.** Triage assigns a severity (`P0`–`P3`) to **every** bug, **feature request**, *and* self-review finding (#131) — not just bugs. Severity is recorded on the issue (label + envelope `priority`).
 - **R5.3.2 — Priority-ordered handling.** Work is handled **highest-severity-first** within each customer. Bug fixing, the #131 burndown (M6), and feature queuing all draw from the same severity ordering. Severity also feeds the cadence priority-pin (§10.4): an open `P0` pins the probe to the floor.
 - **R5.3.3 — Benefit-≫-risk gate.** The loop acts autonomously on a change **only when its expected benefit substantially outweighs the risk of the change** (benefit ≫ risk). "Risk of change" is the risk-assessor tier + blast radius + security-relevance (§9.1); "benefit" is severity + scope of what it fixes/adds. A high-severity fix with a small, low-risk diff clears easily; a low-severity / cosmetic change touching a high-risk or security-relevant surface does **not** — the risk of *making the change* can exceed the benefit of the change itself.
-- **R5.3.4 — A benefit-≫-risk *rejection* goes to a human to finalize.** When the gate **rejects** a change (benefit does not clearly exceed risk), the loop does **not** silently drop or auto-close it. It routes the item to **human review to finalize** the rejection — labeled `needs_human`, carrying the full §8.2 escalation contract (problem + risk + background, the benefit-vs-risk analysis, options, and the loop's recommendation to *not* proceed). The human makes the final call; the loop never unilaterally buries valid work under a "not worth it" judgment.
+- **R5.3.4 — A benefit-≫-risk *rejection* goes to a human to finalize.** When the gate **rejects** a change (benefit does not clearly exceed risk), the loop does **not** silently drop or auto-close it. It routes the item to **human review to finalize** the rejection — labeled `needs-human`, carrying the full §8.2 escalation contract (problem + risk + background, the benefit-vs-risk analysis, options, and the loop's recommendation to *not* proceed). The human makes the final call; the loop never unilaterally buries valid work under a "not worth it" judgment.
 
 ---
 
@@ -212,7 +213,7 @@ Every actionable work item is severity-triaged, and every proposed change must c
 No hidden instance-local state. Claims, the token ledger, conversation threads, and done/not-done all live in issues/labels/PRs, so any instance reconstructs from a cold start.
 
 - **R6.1** — **Idempotent recovery.** Before doing work, an instance checks "does a branch / draft-PR / answer-envelope already exist for this `correlation-id`?" If yes, it resumes/skips rather than redoing. This is what makes a reaped-mid-work claim safe to re-pick-up.
-- **R6.2** — **No external datastore in v1.** Labels (`hos-claimed`, `hos-in-progress`, `needs_human`, `hos-budget-gated`, `hos-embargo`), assignees, issue/PR bodies, and a committed run-ledger file are the entire persistence layer.
+- **R6.2** — **No external datastore in v1.** Labels, assignees, issue/PR bodies, and a committed run-ledger file are the entire persistence layer. The canonical label set (all **hyphen-case**, matching the existing repo convention — the human↔AI labels `needs-ai` / `needs-human` are the *already-defined* repo labels, reused, not new): `hos-coordination` (an envelope is present — §4.1.4), `hos-claimed`, `hos-in-progress`, `hos-budget-gated`, `hos-embargo`, `hos-halt`, `needs-human` (AI→human), `needs-ai` (human→AI go-signal). New `hos-*` labels are created per repo at onboarding (T2); `needs-ai`/`needs-human` already exist.
 - **R6.3** — **Cold-start drill (M4)** is a release gate: destroy an instance mid-task; a fresh instance must reach a correct, non-duplicating state from GitHub alone.
 
 ---
@@ -236,14 +237,14 @@ The lock is racy on a polled medium: two instances polling the same window can b
 
 - **R8.1 — Per-task estimate, computed first.** Before invoking *any* significant model work on a unit, the loop estimates token burn from cheap signals (issue/diff size, changed-file count, blast radius, historical cost of similar tasks — itself ~free, no model pre-pass required; see O5). If `estimate > per_task_threshold` → **create a human-permission request** (an issue/comment envelope, `type: question`, the §8.2 escalation-comms contract) and **block that task** until approved. The estimate gate runs *ahead of* the spend, never after.
 - **R8.2 — Per-window budget.** A cumulative ledger per `(customer, window)`. When cumulative spend would exceed `window_budget`, **all further significant work in the window is gated**, even individually-small tasks.
-- **R8.3 — Default-deny on timeout.** Silence ≠ yes. An unanswered permission request past its deadline (default **12h**) is **denied**; the task is left for the human with a `needs_human` label. (Tunable, but never defaults to auto-approve.)
+- **R8.3 — Default-deny on timeout.** Silence ≠ yes. An unanswered permission request past its deadline (default **12h**) is **denied**; the task is left for the human with a `needs-human` label. (Tunable, but never defaults to auto-approve.)
 - **R8.4 — Hard kill switch.** A single human-flippable control (a repo-level label/file, e.g. `hos-halt`, checked at the top of every cycle) stops all autonomous action immediately. Probe may continue; *action* halts.
 - **R8.5 — Wire to existing alerting.** Cost-runaway / budget-exceeded / kill-switch events fire the existing SMS pager / alerting path, not just the ledger.
 - **R8.6 — Mid-flight overrun re-ask.** Because the estimate is deliberately rough (R8.1), a task that exceeds its estimate *while running* is **paused at the next gate boundary** and re-submitted for permission with the revised number — it does not silently run past its approved budget. Erring high on the initial estimate makes this the exception, not the rule.
 
 ### 8.2 Escalation communication contract — **[#257]**
 
-The human reviewing an escalation **often lacks context**. Every escalation, permission request, and `needs_human` hand-off the loop produces — §8 budget asks, §9 PROPOSE_ONLY / HIGH-tier escalations, embargo routing (§9.2), default-deny notifications (R8.3) — **must** carry, in this order:
+The human reviewing an escalation **often lacks context**. Every escalation, permission request, and `needs-human` hand-off the loop produces — §8 budget asks, §9 PROPOSE_ONLY / HIGH-tier escalations, embargo routing (§9.2), default-deny notifications (R8.3) — **must** carry, in this order:
 
 1. **Problem + risk + background.** What the situation is and the risks that need addressing. **Do not assume the human is an expert or has full context** — provide the relevant background to understand the decision cold.
 2. **Options with pros/cons.** The viable ways to resolve it, each with its trade-offs.
@@ -278,7 +279,7 @@ Two **orthogonal** gates. Auto-merge **iff** `(tier ≤ MEDIUM) AND (not securit
 | Risk tier | Security-relevant? | Server-side gate? | Outcome |
 |---|---|---|---|
 | SAFE / LOW / MEDIUM | no | **yes** | **Auto-merge** (overseer) |
-| SAFE / LOW / MEDIUM | no | no | **PROPOSE_ONLY** — draft PR + `needs_human` |
+| SAFE / LOW / MEDIUM | no | no | **PROPOSE_ONLY** — draft PR + `needs-human` |
 | SAFE / LOW / MEDIUM | **yes** | any | **Human** — touches a security subsystem (the audit-healthcheck field-test case) |
 | HIGH / CRITICAL | any | any | **Human** — escalate, never auto-merge |
 | any | any | gate **not detected** | **PROPOSE_ONLY** (capability detected, not assumed) |
@@ -297,10 +298,10 @@ A publicly-filed vulnerability must **never** get a public auto-fix — a public
 
 When a change needs human sign-off (PROPOSE_ONLY mode, above-ceiling tier, security-relevant, or a benefit-≫-risk rejection), the loop does not leave **bare commits on a branch** — it presents a reviewable queue:
 
-- **R9.3.1 — Draft PR + `needs_human` tracking issue (the queue).** The loop opens a **draft PR** (reviewable diff + inline threads, not mergeable) and a **`needs_human` tracking issue** referencing it, carrying the §8.2 escalation contract plus an explicit **disposition menu** (approve / request change X / reject). The set of open `needs_human` issues *is* the human review queue. *(#156)*
+- **R9.3.1 — Draft PR + `needs-human` tracking issue (the queue).** The loop opens a **draft PR** (reviewable diff + inline threads, not mergeable) and a **`needs-human` tracking issue** referencing it, carrying the §8.2 escalation contract plus an explicit **disposition menu** (approve / request change X / reject). The set of open `needs-human` issues *is* the human review queue. *(#156)*
 - **R9.3.2 — `draft` has one meaning: "awaiting human."** Draft status = AI work done and self-validated, awaiting the human. *(Resolves #203 ambiguity #1 — option (b); **flagged for your ratification**, see O12.)*
-- **R9.3.3 — `needs_ai` is the human's "go" signal.** The human responds by adding **`needs_ai`** to the linked issue with a disposition (and/or GitHub Approve). `needs_human` = AI→human; `needs_ai` = human→AI. The loop never marks a PR ready or merges until `needs_ai` is present. Both labels defined in every participating repo. *(#203)*
-- **R9.3.4 — Who merges is governed by §9.1, not by the queue.** On `needs_ai` approval: in **AUTONOMOUS** mode for a change the matrix permits (≤MEDIUM, non-security, server-side-gated), the loop marks ready **and merges**; otherwise (**PROPOSE_ONLY**, above ceiling, or security-relevant) it marks ready and **leaves the merge to the human**. *(Resolves #203 question 2 via the existing merge-authority matrix.)*
+- **R9.3.3 — `needs-ai` is the human's "go" signal.** The human responds by adding **`needs-ai`** to the linked issue with a disposition (and/or GitHub Approve). `needs-human` = AI→human; `needs-ai` = human→AI. The loop never marks a PR ready or merges until `needs-ai` is present. Both labels defined in every participating repo. *(#203)*
+- **R9.3.4 — Who merges is governed by §9.1, not by the queue.** On `needs-ai` approval: in **AUTONOMOUS** mode for a change the matrix permits (≤MEDIUM, non-security, server-side-gated), the loop marks ready **and merges**; otherwise (**PROPOSE_ONLY**, above ceiling, or security-relevant) it marks ready and **leaves the merge to the human**. *(Resolves #203 question 2 via the existing merge-authority matrix.)*
 - **R9.3.5 — No "(DRAFT)" in PR titles.** Rely on GitHub's draft badge; a "(DRAFT)" title string goes stale when the PR is readied. *(#203)*
 
 ### 9.4 No autonomous releases
@@ -314,6 +315,7 @@ When a change needs human sign-off (PROPOSE_ONLY mode, above-ceiling tier, secur
 The probe is a couple of GitHub API calls with **no model invocation** — cadence costs API quota, not tokens. **Cadence governs latency + API spend; the budget gate governs token spend — two independent knobs.** The cron fires the probe at the floor; **the model only wakes when the probe finds work**, so a tight probe cadence is cheap.
 
 - **R10.1 — Bounds.** `floor = 15m`, `ceiling = 24h` (daily). The probe runs as often as every 15 min on an active repo; back-off only stretches the *probe* interval for dormant repos to save API quota — it never delays a model response to found work below the budget gate.
+- **R10.1b — Probe by label/search, never body-scan.** The token-free probe finds work with cheap GitHub queries — `label:hos-coordination`, `label:needs-ai`, open `label:P0`, and `updated:>last-poll` — **not** by fetching and parsing issue/comment bodies. Envelope parsing (model-free but heavier) happens only on the small set the label query returns. This is what keeps the probe genuinely free (R4.1.4).
 - **R10.2 — Back-off.** A repo with no recent issue/PR/comment activity backs off exponentially from floor toward ceiling.
 - **R10.3 — Reset.** **Any inbound event** (new issue/PR/comment, new envelope) resets that repo to the floor, so latency stays low when it matters.
 - **R10.4 — Priority pin.** An open **P0**, an **unanswered coordination** message, or an **embargoed-security** item pins cadence to the floor until resolved (overrides back-off).
@@ -325,10 +327,10 @@ The probe is a couple of GitHub API calls with **no model invocation** — caden
 
 ### 11.1 Circuit breakers
 
-- **R11.1 — Per-issue failure cap.** Default **3**. A poison-pill issue that keeps failing is stopped (labeled `needs_human`) rather than burning tokens forever.
+- **R11.1 — Per-issue failure cap.** Default **3**. A poison-pill issue that keeps failing is stopped (labeled `needs-human`) rather than burning tokens forever.
 - **R11.2 — Per-run blast-radius caps.** Max **5 PRs / 10 issues / 25 files** touched per run; exceeding any cap halts the run and pages.
 - **R11.3 — GitHub rate-limit backoff.** Honor `X-RateLimit-*`; exponential backoff, never hammer.
-- **R11.4 — Max runtime per task.** A task exceeding its wall-clock budget is abandoned (claim released, `needs_human`).
+- **R11.4 — Max runtime per task.** A task exceeding its wall-clock budget is abandoned (claim released, `needs-human`).
 - **R11.5 — Dead-man's-switch.** If no healthy cycle completes in **X** (default 6h), page a human — the loop being silently dead is itself an incident.
 
 ### 11.2 Observability
@@ -409,7 +411,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 - **O9** — *(from #167(a))* **Suppression ledger scope** (R3.2.5): per-repo or shared across consumers? A shared ledger lets HOS suppress a known framework-level false positive once for everyone; a per-repo ledger keeps consumer accepted-risk decisions local. Likely both: a HOS-shipped baseline + a per-repo overlay.
 - **O10** — *(from #167(b))* **Won't-fix human-only classes** (R3.2.5): which finding classes may the loop *never* autonomously won't-fix? Proposed floor: **security / privacy / license** are human-ruled-only (the loop escalates, never self-suppresses them). Confirm the list.
 - **O11** — *(from #167(c))* **R3 auto-approve ceiling reconciliation.** #167 proposed Faberix R3 auto-approve at **LOW only**; #254 decision #1 locked the auto-merge ceiling at **≤MEDIUM** (§9.1). The PRD treats **§9.1 (≤MEDIUM, non-security, server-side-gated, benefit-≫-risk) as the governing answer**, superseding the more conservative #167 LOW-only proposal — but this is flagged for explicit human confirmation, since #167(c) was an open question pending review.
-- **O12** — *(from #203, needs ratification)* **Draft-PR semantics.** R9.3.2 adopts **draft = "awaiting human"** (option (b)). #203 offered an alternative (draft = "AI still working", ready = "done, awaiting merge"). The PRD picks (b) because it makes draft status a one-bit human-gate signal; **confirm or override**. (Decisions 2 and 3 from #203 — who merges, and `needs_ai` as the go-signal — are resolved by R9.3.4 / R9.3.3 respectively.)
+- **O12** — *(from #203, needs ratification)* **Draft-PR semantics.** R9.3.2 adopts **draft = "awaiting human"** (option (b)). #203 offered an alternative (draft = "AI still working", ready = "done, awaiting merge"). The PRD picks (b) because it makes draft status a one-bit human-gate signal; **confirm or override**. (Decisions 2 and 3 from #203 — who merges, and `needs-ai` as the go-signal — are resolved by R9.3.4 / R9.3.3 respectively.)
 
 ---
 
@@ -430,7 +432,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | PR authorization by risk level | §9.1 |
 | Decision #1 (≤MEDIUM auto-merge; security orthogonal) | §9.1 |
 | Decision #2 (security embargo path) | §9.2 |
-| Human-review queue: draft-PR + needs_human/needs_ai (#156, #203, subsumed) | §9.3, O12 |
+| Human-review queue: draft-PR + needs-human/needs-ai (#156, #203, subsumed) | §9.3, O12 |
 | Suppression/suspension lifecycle: nag + date-triggered removal (#168, subsumed) | R3.2.6 |
 | No autonomous releases (human-approved always) | §9.4, NG3b |
 | Open Q: adaptive polling | §0, §10 |
@@ -446,9 +448,12 @@ The work breakdown for building v1. Tracks the §14 phasing into concrete delive
 
 ### 17.1 Documentation & control (the enable/disable surface)
 
+> **Doc strategy: this PRD is the *normative* source; the human/agent docs are *derived* from it later.** The workflow, state machine, labels, and conventions live here as the single source of truth (and are largely already specified across §3 / §5 / §7 / §9). The deliverable docs below (T1 agent instructions, T3 operator doc, T16 issue-handling process) are **generated from the spec** during implementation, so they can be regenerated when the spec changes and cannot silently drift. Don't author them as independent narratives now — author the spec, then derive.
+
 - [ ] **T1 — Agent instructions for the customer↔HOS communication protocol.** Author the agent-facing spec (in `AGENTS.md` and/or the relevant `.claude/agents/` files) describing how agents participate in the protocol: the envelope format (§4), how to read/write `correlation-id`/`in-reply-to`, the triage classes (§5), claim-then-verify + heartbeat (§7), the escalation contract (§8.2), and the merge-authority boundaries (§9.1). This is the contract any compliant agent team implements to speak the protocol.
-- [ ] **T2 — Control mechanism (enable/disable) + layered config.** Implement the opt-in switch (R13.2): the `enabled` flag + its fail-closed default, and the §8.4 kill switch. **Build the layered config resolver (R13.3):** shipped `*.defaults.yaml` (layer 1, unconfigured) overlaid by a per-deployment live config outside the source (layer 2, gitignored `.ai-local/` or consumer PROJECT area). Ensure the framework source stays free of any `enabled: true`; disable is immediate and unambiguous; absence = disabled.
+- [ ] **T2 — Control mechanism (enable/disable) + layered config.** Implement the opt-in switch (R13.2): the `enabled` flag + its fail-closed default, and the §8.4 kill switch. **Build the layered config resolver (R13.3):** shipped `*.defaults.yaml` (layer 1, unconfigured) overlaid by a per-deployment live config outside the source (layer 2, gitignored `.ai-local/` or consumer PROJECT area). Ensure the framework source stays free of any `enabled: true`; disable is immediate and unambiguous; absence = disabled. **Provision the canonical label set per repo (R6.2):** create the `hos-*` labels (incl. `hos-coordination`) on opt-in; reuse the existing `needs-ai` / `needs-human` (hyphen-case — do **not** create underscore variants).
 - [ ] **T3 — Human-facing doc in `docs/`.** A new doc in the human docs section (e.g. `docs/UNATTENDED-WORKER.md` / `docs/COORDINATION-PROTOCOL.md`) so a human knows the subsystem exists, understands what it does autonomously, and can **enable/disable** it. **Must state plainly: off by default; the customer opts in; here is how to turn it on, how to turn it off, and how to hit the kill switch.** Cross-link from `docs/SETUP.md` and the runbook.
+- [ ] **T16 — Issue-handling workflow & process doc (`docs/`).** A derived, human-readable doc describing the **end-to-end issue lifecycle**: how an item is discovered (`hos-coordination` label), triaged (the §5 classes + severity + benefit-≫-risk gate), claimed (§7), worked (the gates), and resolved (merge per §9.1, the draft-PR + `needs-human`/`needs-ai` review queue §9.3, escalation §8.2, embargo §9.2, or won't-fix+suppress §3.2.5). Includes the **label glossary** (R6.2) and the **disposition menu** so a human can drive the queue. Generated from the normative sections above — *not* a separate design surface.
 
 ### 17.2 Core loop
 
@@ -458,7 +463,7 @@ The work breakdown for building v1. Tracks the §14 phasing into concrete delive
 - [ ] **T7 — State model & idempotent recovery (§6)** — GitHub-as-DB, labels/assignees/ledger; cold-start drill (M4).
 - [ ] **T8 — Locking (§7)** — claim-then-verify, heartbeat, claim timeout, terminal-state release. *(Resolve O8 execution model first.)*
 - [ ] **T9 — Budget & significance gates (§8)** — estimate-then-gate, per-task + per-window, default-deny, mid-flight overrun re-ask; wire to existing pager (R8.5).
-- [ ] **T10 — Merge authority (§9)** — server-side-gate detection ("detected, not assumed"), the orthogonal tier × security matrix, PROPOSE_ONLY default; **human-review queue convention (§9.3:** draft-PR + `needs_human`/`needs_ai`, disposition menu, no "(DRAFT)" titles); **no-autonomous-release guard (R9.4.1).**
+- [ ] **T10 — Merge authority (§9)** — server-side-gate detection ("detected, not assumed"), the orthogonal tier × security matrix, PROPOSE_ONLY default; **human-review queue convention (§9.3:** draft-PR + `needs-human`/`needs-ai`, disposition menu, no "(DRAFT)" titles); **no-autonomous-release guard (R9.4.1).**
 - [ ] **T11 — Security embargo routing (§9.2)** — ack + route + `hos-embargo`; no public branch/PR/test.
 
 ### 17.3 Work sources & safety
