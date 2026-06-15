@@ -49,7 +49,7 @@ Send all findings in one pass. For each finding give: **file + line**, **what th
 Name a finding outside your lane, then move on — do not block on another lane's finding:
 - **infra** — deploy/env/proxy config, datastore exposure ("is the deploy/config layer correct?").
 - **deploy-verify** (where present) — production smoke tests (TLS, DNS, services live).
-- **security** — audit logging of "who accessed what" for accountability ("is it secure?").
+- **security** — audit logging of "who accessed what" for accountability ("is it secure?"); **and the neutralization of dynamic content written into logs/metrics (CWE-117).** When telemetry code interpolates an env var, hostname, header, or user input into a **metric label/value or a log line**, hand that off to `security-reviewer` for the injection check — you cover *that* the signal is emitted, not *that* its dynamic content is neutralized against the output format's metacharacters.
 - **privacy** — GDPR/retention logging ("is personal data handled lawfully?").
 - **code-review** — correctness, design adherence.
 - **reliability** — whether the code survives a dependency failure ("what happens when a dependency fails?"); you cover whether that failure is *observable*, not whether it is *handled*.
