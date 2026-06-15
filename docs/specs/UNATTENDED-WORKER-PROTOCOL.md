@@ -13,7 +13,7 @@
 | Question | Resolution | Rationale |
 |---|---|---|
 | **Spec home/format** | **Full PRD** at `docs/specs/UNATTENDED-WORKER-PROTOCOL.md` | A multi-release product line (v1 → adaptive/multi-customer → embargo automation), not a one-shot subsystem. PRD ceremony earns its keep. |
-| **Adaptive polling — v1 or v2?** | **Adaptive in v1**, floor **1 hour**, ceiling **daily** | The "is there work?" probe is GitHub API calls with **no model invocation** — cadence costs quota, not tokens (#254 consideration #11). 1h floor deliberately caps *runs* (each run that finds work spins up model spend) and accepts ~1h worst-case latency: this is an unattended sweeper, not a live responder. |
+| **Adaptive polling — v1 or v2?** | **Adaptive in v1**, probe floor **15 min**, ceiling **daily** | The cron **probe** is GitHub API calls with **no model invocation** — cheap enough to fire every 15 min, and **the model sleeps unless the probe finds work** (#254 consideration #11). What we throttle is *model spend* (gated by work-found **and** the §8 budget), not the probe. Adaptive back-off (toward daily) exists only to spare **API quota** on dormant repos when one HOS watches many. |
 | **Merge-gate dependency on #152** | **Hard prerequisite, per-repo.** Auto-merge enabled only where server-side branch protection is **detected** active; otherwise that repo runs **PROPOSE_ONLY**. | Auto-merge-≤MEDIUM is only a *boundary* if a bot can't bypass it. "Detected, not assumed" applies the fail-closed / re-derive-don't-trust principle (DECISIONS D33/D37/D41) to the merge gate. Lets CPS join in PROPOSE_ONLY day one and graduate when *its own* gate flips. |
 | **Multi-customer scope** | **v1.** Per-customer budgets, round-robin, isolation, protocol versioning are in scope from the start. | CPS is the first real participant; retrofitting fairness/isolation onto a single-tenant loop is the expensive path. |
 
@@ -38,7 +38,7 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 
 ### 1.2 Non-goals (v1)
 
-- **NG1** — Near-real-time response. The 1h floor makes this a sweeper; sub-hour SLAs are out of scope.
+- **NG1** — Near-real-time response. The 15-min probe floor + claim/budget-gate cycle makes this a sweeper, not a live responder; sub-15-minute SLAs are out of scope.
 - **NG2** — Fully-automated security disclosure. Security reports are *routed to the embargo path* (a human + private channel), not auto-fixed in public. Embargo *automation* is a later release.
 - **NG3** — Autonomous **feature** delivery. Features are triaged and **queued for human review**, never auto-built.
 - **NG4** — Non-GitHub backends (GitLab/ADO). The protocol is GitHub-shaped in v1; the envelope is portable, the transport is not.
@@ -71,7 +71,7 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 
 ```
                     ┌─────────────────────────────────────────────────┐
-   cron (1h floor)  │  PROBE  (no model)                              │
+   cron (15m floor) │  PROBE  (no model)                              │
    ───────────────► │  for each customer repo, round-robin:          │
                     │    GitHub API: new/updated issues, PR comments, │
                     │    review-chain state, coordination envelopes    │
@@ -194,20 +194,34 @@ The lock is racy on a polled medium: two instances polling the same window can b
 
 "Significant" is **two-dimensional**: a per-task estimate *and* a cumulative per-window budget (a quiet night of many small tasks adds up). Both gated; plus a hard kill switch.
 
-- **R8.1 — Per-task estimate.** Before invoking model work on a unit, the loop estimates token burn. If `estimate > per_task_threshold` → **create a human-permission request** (an issue/comment envelope, `type: question`, priority by tier) and **block that task** until approved.
+> **Estimate-then-gate, never burn-then-discover.** The failure mode we are designing *out* is: a single task quietly consumes the whole budget, then everything else grinds to a halt with no warning. So the estimate is computed **before** any significant model work and the permission ask happens **up front**. The estimate is a cheap guardrail, **not** precise accounting — **estimation error is acceptable** (we err high and re-ask if a task blows past its estimate mid-flight; see R8.6). A rough-but-early number that prevents a runaway beats a precise one that arrives after the tokens are gone.
+
+- **R8.1 — Per-task estimate, computed first.** Before invoking *any* significant model work on a unit, the loop estimates token burn from cheap signals (issue/diff size, changed-file count, blast radius, historical cost of similar tasks — itself ~free, no model pre-pass required; see O5). If `estimate > per_task_threshold` → **create a human-permission request** (an issue/comment envelope, `type: question`, the §8.2 escalation-comms contract) and **block that task** until approved. The estimate gate runs *ahead of* the spend, never after.
 - **R8.2 — Per-window budget.** A cumulative ledger per `(customer, window)`. When cumulative spend would exceed `window_budget`, **all further significant work in the window is gated**, even individually-small tasks.
 - **R8.3 — Default-deny on timeout.** Silence ≠ yes. An unanswered permission request past its deadline (default **12h**) is **denied**; the task is left for the human with a `needs_human` label. (Tunable, but never defaults to auto-approve.)
 - **R8.4 — Hard kill switch.** A single human-flippable control (a repo-level label/file, e.g. `hos-halt`, checked at the top of every cycle) stops all autonomous action immediately. Probe may continue; *action* halts.
 - **R8.5 — Wire to existing alerting.** Cost-runaway / budget-exceeded / kill-switch events fire the existing SMS pager / alerting path, not just the ledger.
+- **R8.6 — Mid-flight overrun re-ask.** Because the estimate is deliberately rough (R8.1), a task that exceeds its estimate *while running* is **paused at the next gate boundary** and re-submitted for permission with the revised number — it does not silently run past its approved budget. Erring high on the initial estimate makes this the exception, not the rule.
 
-### 8.1 Default thresholds (v1)
+### 8.2 Escalation communication contract — **[#257]**
+
+The human reviewing an escalation **often lacks context**. Every escalation, permission request, and `needs_human` hand-off the loop produces — §8 budget asks, §9 PROPOSE_ONLY / HIGH-tier escalations, embargo routing (§9.2), default-deny notifications (R8.3) — **must** carry, in this order:
+
+1. **Problem + risk + background.** What the situation is and the risks that need addressing. **Do not assume the human is an expert or has full context** — provide the relevant background to understand the decision cold.
+2. **Options with pros/cons.** The viable ways to resolve it, each with its trade-offs.
+3. **Recommendation + justification.** A specific recommended option and *why*.
+
+- **R8.2.1** — An escalation missing any of the three elements is a **malformed escalation** and is itself a bug (the loop self-rejects and emits a complete one). A bare "needs human review" with no problem/options/recommendation is non-compliant.
+- **R8.2.2** — The token estimate (R8.1) and blast-radius summary (§11.2) are part of element 1's risk picture for spend/merge escalations.
+
+### 8.3 Default thresholds (v1)
 
 | Knob | Default | Notes |
 |---|---|---|
 | `per_task_threshold` | **150k tokens** | Above → human permission request. |
 | `window_budget` (per customer/day) | **1.5M tokens** | Cumulative gate; the "quiet night adds up" cap. |
 | `approval_timeout` | **12h** | Default-deny on expiry. |
-| `poll_floor` / `poll_ceiling` | **1h / 24h** | Adaptive cadence bounds (§10). |
+| `poll_floor` / `poll_ceiling` | **15m / 24h** | Probe cadence bounds (§10); probe is token-free. |
 | `claim_timeout` / `heartbeat_interval` | **45m / 15m** | §7. |
 | `triage_confidence_floor` | **0.75** | Below → human. |
 | `per_issue_failure_cap` | **3** | §11. |
@@ -245,9 +259,9 @@ A publicly-filed vulnerability must **never** get a public auto-fix — a public
 
 ## 10. Adaptive polling — **[#254 consideration #11]**
 
-The probe is a couple of GitHub API calls with **no model invocation** — cadence costs API quota, not tokens. **Cadence governs latency + API spend; the budget gate governs token spend — two independent knobs.**
+The probe is a couple of GitHub API calls with **no model invocation** — cadence costs API quota, not tokens. **Cadence governs latency + API spend; the budget gate governs token spend — two independent knobs.** The cron fires the probe at the floor; **the model only wakes when the probe finds work**, so a tight probe cadence is cheap.
 
-- **R10.1 — Bounds.** `floor = 1h`, `ceiling = 24h` (daily). Tight cadence *is* 1h (this caps run frequency deliberately).
+- **R10.1 — Bounds.** `floor = 15m`, `ceiling = 24h` (daily). The probe runs as often as every 15 min on an active repo; back-off only stretches the *probe* interval for dormant repos to save API quota — it never delays a model response to found work below the budget gate.
 - **R10.2 — Back-off.** A repo with no recent issue/PR/comment activity backs off exponentially from floor toward ceiling.
 - **R10.3 — Reset.** **Any inbound event** (new issue/PR/comment, new envelope) resets that repo to the floor, so latency stays low when it matters.
 - **R10.4 — Priority pin.** An open **P0**, an **unanswered coordination** message, or an **embargoed-security** item pins cadence to the floor until resolved (overrides back-off).
@@ -279,7 +293,7 @@ One HOS polls many customer repos.
 - **R12.1 — Per-customer budgets.** §8 budgets are per `(customer, window)`; one customer's spend never draws down another's.
 - **R12.2 — Round-robin.** Probe + work scheduling rotates across customers so a noisy repo can't starve the rest. A single customer's per-run blast-radius cap (§11.2) bounds its share of any cycle.
 - **R12.3 — Isolation.** A failure (poison-pill, rate-limit, kill-switch) in one customer's processing must not halt the others. Kill-switch is per-repo *and* global (a global `hos-halt` stops everything).
-- **R12.4 — Per-customer capability.** Auto-merge, allowlist, thresholds, cadence, and PROPOSE_ONLY/AUTONOMOUS mode are all per-customer (§9.1, §8.1).
+- **R12.4 — Per-customer capability.** Auto-merge, allowlist, thresholds, cadence, and PROPOSE_ONLY/AUTONOMOUS mode are all per-customer (§9.1, §8.3).
 
 ---
 
@@ -298,7 +312,7 @@ thresholds:
   window-budget-tokens: 1500000
   approval-timeout: 12h
   triage-confidence-floor: 0.75
-cadence: { floor: 1h, ceiling: 24h }
+cadence: { floor: 15m, ceiling: 24h }    # probe cadence; model-gated by work + §8 budget
 claim: { timeout: 45m, heartbeat: 15m }
 breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25 }, dead-man: 6h }
 ```
@@ -311,7 +325,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 
 | Phase | Contents | Gate to ship |
 |---|---|---|
-| **v1.0** | Probe + adaptive cadence (1h/24h), triage w/ confidence floor + allowlist, envelope v1.0, GitHub-as-DB + cold-start recovery, claim-then-verify + heartbeat, budget gates + default-deny, merge-authority matrix (PROPOSE_ONLY default; auto-merge where detected), embargo *routing*, circuit breakers, run ledger + shadow mode, multi-customer fairness. | Cold-start drill (M4) + a shadow-mode run on HOS's own repo + #152 server-side gate live on at least HOS. |
+| **v1.0** | Probe + adaptive cadence (15m/24h), triage w/ confidence floor + allowlist, envelope v1.0, GitHub-as-DB + cold-start recovery, claim-then-verify + heartbeat, budget gates + default-deny, merge-authority matrix (PROPOSE_ONLY default; auto-merge where detected), embargo *routing*, circuit breakers, run ledger + shadow mode, multi-customer fairness. | Cold-start drill (M4) + a shadow-mode run on HOS's own repo + #152 server-side gate live on at least HOS. |
 | **v2** | Cryptographic envelope signing, embargo-fix *automation*, external lock primitive (if claim-then-verify proves insufficient), non-GitHub transports, finer adaptive cadence (sub-hour where a customer opts in). | — |
 
 ---
@@ -322,7 +336,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 - **O2** — Instance-id scheme for the claim tiebreak (§7.1): hostname+pid is racy across machines; prefer a per-instance UUID minted at boot and carried in the claim envelope.
 - **O3** — Exact server-side-gate detection probe (§9.1.1): protection-API read vs an active no-op-rejection canary. The canary is stronger (proves enforcement, not just configuration) but noisier.
 - **O4** — Where the run ledger lives relative to `audit/oversight-log.jsonl`: same file, sibling file, or per-customer.
-- **O5** — Token-estimation method for §8.1 (heuristic from diff size / changed files vs a cheap model pre-pass). Must itself be ~free.
+- **O5** — *(direction set, #254 feedback)* Token-estimation method (R8.1): a **cheap heuristic** from issue/diff size, changed-file count, blast radius, and historical cost of similar tasks — **no model pre-pass**, must itself be ~free. **Estimation error is acceptable** (err high; R8.6 re-asks on mid-flight overrun). Remaining design work is only *which* signals and the calibration constants, not whether to use a model.
 
 ---
 
@@ -331,7 +345,8 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | #254 element | Where addressed |
 |---|---|
 | Periodic check, model only on work | G1, §3, §10 |
-| Token-burn estimation + significance gate | §8, O5 |
+| Token-burn estimation + significance gate | §8 (estimate-then-gate), O5 |
+| Human-escalation context contract (#257) | §8.2 |
 | Bidirectional comms protocol | G3, §4 |
 | Issue triage {bug, feature, communication} | §5 |
 | Bug handling (prioritize, fix in order) | §5.1, §7 |
@@ -341,5 +356,5 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | Decision #2 (security embargo path) | §9.2 |
 | Open Q: adaptive polling | §0, §10 |
 | Open Q: spec home/format | §0 |
-| Open Q: concrete defaults | §8.1 |
+| Open Q: concrete defaults | §8.3 |
 | Considerations #1–#11 | §3.1, §9.2, §6, §7, §8, §4, §5, §11, §11.2, §12, §10 (mapped inline) |
