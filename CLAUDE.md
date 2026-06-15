@@ -182,6 +182,7 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 
 ## Working in this repo
 
+- **Top-level Claude is the orchestrator — always delegate.** The main-loop session should route substantive work to the appropriate subagent rather than doing it directly: spec writing → `spec-writer`, spec/requirements review → `pm-agent`, adversarial spec review → `spec-red-team`, architecture/feasibility → `architect`, implementation → `coder`, reviews → the reviewer agents. Reserve the main loop for orchestration, synthesis of agent outputs, quick lookups, and conversation. Delegating produces proper attributable agent artifacts and keeps each role's specialized context — a main-loop agent doing the work itself bypasses the pipeline HOS exists to enforce.
 - When writing or editing scripts, follow the conventions in `bootstrap/setup_clis.sh` (colours, idempotency, platform detection).
 - Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md`. CORE and PACK regions are HOS-owned — consumer project logic belongs only in PROJECT regions. Stack depth belongs in `packs/<name>/`, not in the base agent files.
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
