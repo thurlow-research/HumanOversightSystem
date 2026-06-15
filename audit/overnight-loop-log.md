@@ -40,3 +40,6 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 2026-06-15T03:25:33Z CPS#104 — needs_human, CPS-app at-rest encryption (BitLocker/nexus); triaged not-framework → no HOS issue, stays CPS's
 2026-06-15T03:25:33Z CPS#87 — needs_human, already triaged prior loop (CPS-app audit monitoring); no new actionable content
 2026-06-15T03:25:33Z — STEP 3 grind deferred: engaged in directed v0.3.0 pack build (coder fix-round B1/B2/R-B2 running; design architect-APPROVED)
+2026-06-15T04:27:49Z HOS#241/#242 — own just-filed issues (A4 fix, validator-pack v0.3.5); skipped per "own activity"
+2026-06-15T04:27:49Z CPS#104 — needs_human, CPS-app at-rest encryption; already triaged prior loop; no new action
+2026-06-15T04:27:49Z HOS#218 — STEP 3: VERIFIED reproduction (runbook advertises panel-run/risk-assessment audit queries no code emits; actual events are the 8 step/gate/suspension types). Fix is governance/protected-surface (emit events vs correct doc) → commented repro + 2 options + recommendation (emit), labeled needs-human+ai-triaged. No code changed.
