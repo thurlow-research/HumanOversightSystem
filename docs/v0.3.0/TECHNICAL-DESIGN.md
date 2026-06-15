@@ -262,7 +262,7 @@ Because CORE/PACK carry no `{PLACEHOLDER}` tokens (D1a, rubric §"placeholder ru
 merge_region(region_id: str, base_sha: str|None, disk_sha: str, incoming: str) -> Action
 ```
 
-`Action ∈ { REFRESH, KEEP, HARDSTOP, SKIP_PROJECT }`. Pure function — decides; does not write. The installer acts on the returned action.
+`Action ∈ { REFRESH, KEEP, HARDSTOP, SKIP_PROJECT, DROP }`. Pure function — decides; does not write. The installer acts on the returned action. (`DROP` added per ADR §11a/D9 — a region HOS removed this release.)
 
 ### 4.2 The decision table (EXACTLY — spec §5)
 
@@ -274,6 +274,15 @@ Evaluated per HOS-owned region. `PROJECT` short-circuits before this table (4.4)
 | 2 | `base == disk` (unedited) | `disk != incoming` | **REFRESH** | Region untouched by consumer; HOS has a new version → write `incoming` body, record `base_sha = incoming`. |
 | 3 | `base != disk` (consumer-edited) | `disk == incoming` | **KEEP** | Consumer edited it *to* exactly what HOS now ships (convergent edit). No write needed; record `base_sha = incoming` (re-aligns the manifest; no longer "drifted"). |
 | 4 | `base != disk` (consumer-edited) | `disk != incoming` | **HARDSTOP** (unless `--squash`) | Genuine drift: consumer edited, HOS also differs. Refuse (4.3). With `--squash` → **REFRESH** (take HOS's version). |
+
+**Removed-region rows (ADR §11a/D9) — a `(path, region)` is in the manifest (CORE/PACK) but ABSENT from the new template (HOS retired it).** Detected by a **manifest-side sweep** (4.5), not the template-side loop above (the template can't tell you about a region it no longer has):
+
+| Condition | `base_sha` vs `disk_sha` | Action | Meaning |
+|---|---|---|---|
+| 5 | region removed by HOS, `base == disk` (**unedited**) | **DROP** | Consumer never touched it; remove the region from the file + its manifest row. Required for cumulative-faithfulness (§5a — the upgrade must reflect HOS's *absences* too). |
+| 6 | region removed by HOS, `base != disk` (**edited**) | **HARDSTOP** (unless `--squash`/`--prune`) | Deleting a consumer edit is still a clobber (D2 philosophy). Refuse with the per-region report; `--squash` or `--prune` is the explicit consent to drop → **DROP**. |
+
+`PROJECT` is never in this sweep (HOS never authored it to remove). `DROP` is a write in Phase B (`compose()` omits the region + its manifest row).
 
 - **Row 3 is the "edit matching the new release" case** the spec §5 calls out as the bug in the naïve two-way check. Here it is correctly a KEEP/realign, never a clobber.
 - `base_sha is None` (region present on disk but absent from the manifest — e.g. a freshly-introduced region, or a legacy manifest) is treated as **`base != disk`** (unknown provenance ⇒ assume edited ⇒ conservative). It then falls to row 3 or 4. This makes a newly-introduced CORE over a flat file route through migration (§5) rather than silently refreshing.
@@ -319,15 +328,19 @@ PHASE A (decide — no writes):
        incoming = region_sha(parsed_tmpl[region])
        action   = merge_region(region, base, disk, incoming)
        record (path, region, action)
-  if any action == HARDSTOP and not --squash:
+    # Removed-region sweep (D9): manifest-side, not template-side.
+    for each (path, region) in manifest where region ∈ {CORE, PACK:*} and region NOT in parsed_tmpl:
+       disk = region_sha(parsed_disk[region])           # present on disk, retired by HOS
+       record (path, region, DROP if manifest[base]==disk else HARDSTOP)   # rows 5/6
+  if any action == HARDSTOP and not (--squash or --prune):
      emit drift report; exit EXIT_DRIFT      # nothing written, no stamp (4.3)
 
 PHASE B (act — writes, only if Phase A cleared):
   for each agent file:
      compose new file = CORE/PACK from {REFRESH→template body, KEEP→disk body}
-                        + PROJECT verbatim from disk (or empty stub on first install)
+                        (DROP regions omitted) + PROJECT verbatim from disk (or empty stub on first install)
      write file (respecting $DRY_RUN)
-     update manifest rows: base_sha = incoming for REFRESH/KEEP-realign; PROJECT row informational
+     update manifest rows: base_sha = incoming for REFRESH/KEEP-realign; PROJECT row informational; DROP → remove the row
   write .hos-manifest (v2, schema marker)
   write .hos-release
 ```
@@ -489,4 +502,4 @@ Add to the arg parser (alongside `--prune` at L77): `--squash) SQUASH=true; shif
 
 5. **Lead-in / inter-region prose hashing boundary (§2.2/2.5).** I specified that prose between regions (e.g. the `## Project Extensions` heading) is *not* hashed and travels positionally with the following region. But if a consumer edits *that heading* (outside any region), it's invisible to the three-way merge and `compose()` would rewrite it to canonical. This is a minor data-loss vector for out-of-region prose. **Architect to confirm:** is all non-region prose HOS-canonical (rewritten freely), or must inter-region consumer prose be preserved? The spec's example implies the heading is HOS-authored boilerplate (safe to rewrite), but it isn't stated.
 
-6. **`base_sha is None` semantics for a *removed* region (§4.2).** I defined `base_sha=None` (region on disk, not in manifest) as "assume edited." The inverse — a region **in the manifest but absent from the new template** (HOS removed a PACK region this release) — is not in the §5 table. Likely action: drop the region on REFRESH (it's HOS-owned and HOS removed it), but if the consumer edited it, that's a drift the table doesn't cover. **Architect to specify the "HOS removed a region you edited" cell.**
+6. **RESOLVED (ADR §11a/D9).** A region in the manifest but absent from the new template is now rows 5/6 in §4.2: unedited → **DROP**, edited → **HARDSTOP** unless `--squash`/`--prune`. Detected by the manifest-side sweep in §4.5.
