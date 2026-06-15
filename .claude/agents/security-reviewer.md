@@ -36,6 +36,7 @@ These checks hold on any stack. The stack-specific attack surface (framework aut
 **Injection:**
 - No queries built by string concatenation/formatting from user input (SQL/ORM raw); parameterized/ORM-safe only.
 - No template or command injection — output auto-escaping is on; no shell constructed from user input.
+- **Output neutralization into logs and metrics (CWE-117):** any dynamic value interpolated into a log line or into a metric label/value must be neutralized or validated against that output format's metacharacters. Unvalidated env vars, hostnames, headers, or user input written into a log record, a Prometheus/`.prom` line, or any structured-telemetry emitter is an injection finding — it lets an attacker forge or malform records (log forging, metric-line injection). The sink does not have to be a database for injection to apply: a metrics/log emitter is a sink too. (Telemetry *coverage* is `ops-reviewer`'s lane; the *neutralization of dynamic content* in those sinks is yours — `ops-reviewer` hands dynamic label/value content to you.)
 
 **CSRF / request forgery:**
 - State-changing requests carry CSRF/anti-forgery protection; exemptions are provably safe.
