@@ -28,9 +28,10 @@ Binding decisions honored (docs/specs/v0.3.0-base-agents-spec.md §11/§11a):
        validate() does not reject out-of-region prose.
 
 Scope note (Phase 1): this file implements parse / validate / compose /
-region_sha + the manifest-rows / validate / region-sha / compose CLI. The
-three-way `merge` decision and flat-file `migrate` are later coder passes and
-are intentionally NOT implemented here.
+region_sha + the manifest-rows / validate / region-sha / compose CLI, plus the
+pure three-way `merge_region` decider (TD §4). The flat-file `migrate` writer
+and the installer-facing `merge` CLI subcommand are later coder passes and are
+intentionally NOT implemented here.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
 
 # Manifest schema version this module reads/writes (TD §1.3).
 CURRENT_SCHEMA = 2
@@ -404,6 +406,105 @@ def region_sha(region_body: bytes) -> str:
     raw file bytes — do NOT route whole-file through region_sha.)
     """
     return hashlib.sha256(_normalize_body(region_body)).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# merge_region — the three-way decision (TD §4, spec §5, ADR D2/D9)
+# --------------------------------------------------------------------------- #
+
+class Action(str, Enum):
+    """The per-region merge decision (TD §4.1).
+
+    A `str`-backed enum so each member doubles as its own action token: the
+    installer-facing CLI prints `action.value` (== the bare name) on stdout, and
+    callers can compare against either the member or the string. The set is
+    frozen by TD §4 / spec D9:
+
+      REFRESH       write the incoming template body; re-stamp base_sha=incoming
+      KEEP          no write; re-stamp base_sha=incoming (no-op / convergent edit)
+      HARDSTOP      drifted HOS-owned region — refuse the whole upgrade (4.3)
+      SKIP_PROJECT  PROJECT is never compared/written (4.4)
+      DROP          region retired by HOS — remove region + manifest row (D9)
+    """
+
+    REFRESH = "REFRESH"
+    KEEP = "KEEP"
+    HARDSTOP = "HARDSTOP"
+    SKIP_PROJECT = "SKIP_PROJECT"
+    DROP = "DROP"
+
+    def __str__(self) -> str:  # so f"{action}" prints the bare token, not "Action.KEEP"
+        return self.value
+
+
+def merge_region(
+    region_id: str,
+    base_sha: str | None,
+    disk_sha: str,
+    incoming: str,
+    *,
+    squash: bool = False,
+    removed: bool = False,
+) -> Action:
+    """Decide what to do with one region on an upgrade — the pure three-way
+    decider (TD §4.2, spec §5, ADR D2/D9).
+
+    Pure: no file reads, no writes, never touches PROJECT bytes. Given the three
+    shas it returns an `Action`; the installer's Phase A collects these and
+    Phase B acts on them (TD §4.5).
+
+    Args:
+        region_id:  the region id ("CORE" | "PACK:<name>" | "PROJECT").
+        base_sha:   sha HOS last wrote for this region, or None when the region
+                    is on disk but absent from the manifest (freshly-introduced
+                    region, or a legacy v1 manifest). None is treated as
+                    base != disk — unknown provenance ⇒ assume edited ⇒
+                    conservative (TD §4.2 note), so it routes through row 3/4
+                    (or 5/6 when removed) rather than silently refreshing.
+        disk_sha:   sha of the region currently on disk. For the removed-region
+                    sweep (`removed=True`) this is still the on-disk region sha
+                    (the region is present on disk, retired by the template).
+        incoming:   sha of the region HOS would write this upgrade. Ignored when
+                    `removed=True` (the template no longer carries the region).
+        squash:     opt-in explicit consent (TD §4.3). Converts HARDSTOP→REFRESH
+                    for template-side drift (row 4) and HARDSTOP→DROP for an
+                    edited removed region (row 6). Never affects PROJECT.
+        removed:    True for the manifest-side sweep (rows 5/6) — the region is
+                    in the manifest but ABSENT from the new template (HOS retired
+                    it). Drives the DROP/HARDSTOP rows instead of the template
+                    table.
+
+    Returns:
+        An Action. PROJECT short-circuits to SKIP_PROJECT before any comparison.
+    """
+    # PROJECT is never compared or written — short-circuit before the table
+    # (TD §4.4). Defensive `startswith` mirrors the spec's pseudo-code; the
+    # canonical id is exactly "PROJECT".
+    if region_id == "PROJECT" or region_id.startswith("PROJECT"):
+        return Action.SKIP_PROJECT
+
+    # base_sha is None ⇒ treat as base != disk (assume edited / unknown
+    # provenance) — TD §4.2 note. A real equality only holds when base is a sha.
+    base_eq_disk = base_sha is not None and base_sha == disk_sha
+
+    # Rows 5–6: removed-region sweep (D9). The template no longer carries the
+    # region, so `incoming` is irrelevant; only base-vs-disk decides.
+    if removed:
+        if base_eq_disk:
+            return Action.DROP                      # row 5: unedited → DROP
+        # row 6: edited → HARDSTOP unless --squash/--prune consents to drop.
+        return Action.DROP if squash else Action.HARDSTOP
+
+    # Rows 1–4: template-side three-way.
+    disk_eq_incoming = disk_sha == incoming
+    if base_eq_disk:
+        # Unedited by the consumer.
+        return Action.KEEP if disk_eq_incoming else Action.REFRESH  # rows 1, 2
+    # Consumer-edited (or unknown provenance).
+    if disk_eq_incoming:
+        return Action.KEEP                          # row 3: convergent edit — realign
+    # row 4: genuine drift → HARDSTOP unless --squash takes HOS's version.
+    return Action.REFRESH if squash else Action.HARDSTOP
 
 
 # --------------------------------------------------------------------------- #

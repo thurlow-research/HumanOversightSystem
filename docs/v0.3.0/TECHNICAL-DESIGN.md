@@ -259,7 +259,8 @@ Because CORE/PACK carry no `{PLACEHOLDER}` tokens (D1a, rubric §"placeholder ru
 ### 4.1 Signature
 
 ```
-merge_region(region_id: str, base_sha: str|None, disk_sha: str, incoming: str) -> Action
+merge_region(region_id: str, base_sha: str|None, disk_sha: str, incoming: str,
+             *, squash: bool = False, removed: bool = False) -> Action
 ```
 
 `Action ∈ { REFRESH, KEEP, HARDSTOP, SKIP_PROJECT, DROP }`. Pure function — decides; does not write. The installer acts on the returned action. (`DROP` added per ADR §11a/D9 — a region HOS removed this release.)
