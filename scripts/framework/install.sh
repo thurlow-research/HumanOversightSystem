@@ -30,12 +30,15 @@ set -euo pipefail
 SOURCE_REPO=""
 TARGET_REPO="."
 NON_INTERACTIVE=false
+NEW_PACK=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source)          SOURCE_REPO="$2";       shift 2 ;;
         --target)          TARGET_REPO="$2";       shift 2 ;;
         --non-interactive) NON_INTERACTIVE=true;   shift ;;
+        --pack)            NEW_PACK="$2";          shift 2 ;;
+        --pack=*)          NEW_PACK="${1#*=}";     shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -146,6 +149,7 @@ EXISTING_DESIGN_PACK_PATH=""
 EXISTING_EXTRA_REVIEW_FILES=""
 EXISTING_SPEC_FILE=""
 EXISTING_DESIGN_PACK_DIR=""
+EXISTING_PACK=""
 
 if [[ -f "$CONFIG_FILE" ]]; then
     # Source safely by extracting values without executing arbitrary code
@@ -156,6 +160,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
     EXISTING_EXTRA_REVIEW_FILES=$(grep '^EXTRA_REVIEW_FILES='    "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_SPEC_FILE=$(grep '^SPEC_FILE='                      "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_DESIGN_PACK_DIR=$(grep '^DESIGN_PACK_DIR='          "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
+    EXISTING_PACK=$(grep '^PACK='                                "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     echo "  Existing config found — will update only missing/changed values"
 else
     echo "  No existing config — will create fresh config.sh"
@@ -215,6 +220,16 @@ NEW_PROJECT_STACK=$(prompt_value \
     "")
 
 echo ""
+# If --pack was passed on the command line, skip the prompt (use it directly).
+if [[ -z "$NEW_PACK" ]]; then
+    NEW_PACK=$(prompt_value \
+        "PACK" \
+        "HOS pack to install (e.g. 'django'). Leave blank for core-only (pass --no-pack to hos_install.sh)." \
+        "$EXISTING_PACK" \
+        "")
+fi
+
+echo ""
 NEW_NON_AGENT_TOKENS=$(prompt_value \
     "PROJECT_NON_AGENT_TOKENS" \
     "Pipe-separated hostnames/services that appear in agent files but aren't agent names (e.g. 'myserver|mydb|myapp'). Leave blank if none." \
@@ -267,6 +282,7 @@ cat > "$CONFIG_FILE" <<CONFIGEOF
 # ── Project identity ─────────────────────────────────────────────────────────
 PROJECT_NAME="${NEW_PROJECT_NAME}"
 PROJECT_STACK="${NEW_PROJECT_STACK}"
+PACK="${NEW_PACK}"
 
 # ── Non-agent tokens ─────────────────────────────────────────────────────────
 # Pipe-separated hostnames, service names, or domain terms in your agent files

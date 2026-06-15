@@ -231,3 +231,150 @@ def test_cli_assemble_manifest_from_spec(tmp_path):
     assert "AGENTS.md\tWHOLE\twww" in body
     # body is LC_ALL=C-sorted (codepoint order) — stable diffs.
     assert body == sorted(body)
+
+
+# --------------------------------------------------------------------------- #
+# inject-pack — the one new write verb (TD-pack §1; ADR-031 §3.2)
+# --------------------------------------------------------------------------- #
+
+
+def _core_project_agent(core="core body", project="project body", front=True):
+    """A two-region CORE+PROJECT template (no PACK) — the injection target."""
+    parts = []
+    if front:
+        parts.append("---\nname: security-reviewer\ndispatches: [code-reviewer]\n---")
+    parts.append(f"<!-- HOS:CORE:START -->\n{core}\n<!-- HOS:CORE:END -->")
+    parts.append(f"<!-- HOS:PROJECT:START -->\n{project}\n<!-- HOS:PROJECT:END -->")
+    return ("\n\n".join(parts) + "\n").encode("utf-8")
+
+
+def test_inject_pack_happy_path(tmp_path):
+    """inject-pack --in-place → CORE+PACK:django+PROJECT; sha identity holds."""
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+    body_bytes = b"django depth\n"
+    body_f = _write(tmp_path, "django.md", body_bytes)
+
+    r = _run("inject-pack", staged, "--name", "django", "--body-file", body_f, "--in-place")
+    assert r.returncode == regions.EXIT_OK, r.stderr
+
+    rewritten = Path(staged).read_bytes()
+    parsed = parse(rewritten)
+    ids = [reg.id for reg in parsed.regions]
+    assert ids == ["CORE", "PACK:django", "PROJECT"]
+
+    pack_reg = next(reg for reg in parsed.regions if reg.id == "PACK:django")
+    assert region_sha(pack_reg.body) == region_sha(body_bytes)
+
+
+def test_inject_pack_stdout_default(tmp_path):
+    """Without --in-place, output goes to stdout; the on-disk file is unchanged."""
+    original = _core_project_agent()
+    staged = _write(tmp_path, "staged.md", original)
+    body_f = _write(tmp_path, "body.md", b"pack content\n")
+
+    r = _run("inject-pack", staged, "--name", "mypack", "--body-file", body_f)
+    assert r.returncode == regions.EXIT_OK, r.stderr
+
+    # stdout is the composed result
+    out = r.stdout.encode("utf-8")
+    ids = [reg.id for reg in parse(out).regions]
+    assert ids == ["CORE", "PACK:mypack", "PROJECT"]
+
+    # on-disk file is unchanged
+    assert Path(staged).read_bytes() == original
+
+
+def test_inject_pack_alpha_order_with_existing(tmp_path):
+    """Two successive injections produce alphabetical PACK order regardless of
+    injection order (compose re-sorts)."""
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+    body_f = _write(tmp_path, "body.md", b"pack body\n")
+
+    # inject flask first
+    r = _run("inject-pack", staged, "--name", "flask", "--body-file", body_f, "--in-place")
+    assert r.returncode == regions.EXIT_OK, r.stderr
+
+    # inject apache second
+    r = _run("inject-pack", staged, "--name", "apache", "--body-file", body_f, "--in-place")
+    assert r.returncode == regions.EXIT_OK, r.stderr
+
+    final = Path(staged).read_bytes()
+    ids = [reg.id for reg in parse(final).regions]
+    assert ids == ["CORE", "PACK:apache", "PACK:flask", "PROJECT"]
+
+
+def test_inject_pack_duplicate_rejected(tmp_path):
+    """Injecting the same pack name twice → EXIT_INVALID with E_DUP_PACK in stderr."""
+    # Build a staged file that already has PACK:django
+    staged_bytes = _agent(core="core body", pack="django rules", project="proj")
+    staged = _write(tmp_path, "staged.md", staged_bytes)
+    body_f = _write(tmp_path, "body.md", b"new django depth\n")
+
+    r = _run("inject-pack", staged, "--name", "django", "--body-file", body_f)
+    assert r.returncode == regions.EXIT_INVALID
+    assert "E_DUP_PACK" in r.stderr
+
+
+def test_inject_pack_idempotent_fixedpoint(tmp_path):
+    """compose of the inject-pack result is a fixed point (round-trip stable)."""
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+    body_f = _write(tmp_path, "body.md", b"django depth\n")
+
+    r = _run("inject-pack", staged, "--name", "django", "--body-file", body_f)
+    assert r.returncode == regions.EXIT_OK, r.stderr
+    out1 = r.stdout.encode("utf-8")
+
+    # Write out1 to a file and run compose on it
+    composed_f = _write(tmp_path, "composed.md", out1)
+    r2 = _run("compose", composed_f)
+    assert r2.returncode == regions.EXIT_OK, r2.stderr
+    out2 = r2.stdout.encode("utf-8")
+
+    assert out2 == out1
+
+
+def test_inject_pack_invalid_slug(tmp_path):
+    """An invalid --name slug → EXIT_INVALID; stderr names the slug grammar."""
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+    body_f = _write(tmp_path, "body.md", b"body\n")
+
+    r = _run("inject-pack", staged, "--name", "Django!", "--body-file", body_f)
+    assert r.returncode == regions.EXIT_INVALID
+    assert "[a-z0-9]" in r.stderr
+
+
+def test_inject_pack_missing_body_file(tmp_path):
+    """A non-existent --body-file → EXIT_USAGE; stderr contains 'file not found'."""
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+
+    r = _run(
+        "inject-pack",
+        staged,
+        "--name",
+        "django",
+        "--body-file",
+        str(tmp_path / "nonexistent.md"),
+    )
+    assert r.returncode == regions.EXIT_USAGE
+    assert "file not found" in r.stderr
+
+
+def test_inject_pack_literal_marker_in_body(tmp_path):
+    """A body file containing a balanced literal HOS marker pair → EXIT_INVALID
+    and E_LITERAL_MARKER_IN_BODY from re-validate (D2.2 / §1.3 note).
+
+    The body must be balanced so parse(compose_output) succeeds and validate()
+    can run its raw scan (an unbalanced marker causes ParseError before validate
+    can emit E_LITERAL_MARKER_IN_BODY).  Both paths exit EXIT_INVALID.
+    """
+    staged = _write(tmp_path, "staged.md", _core_project_agent())
+    # Balanced nested CORE pair in the body — parse() tolerates nesting but
+    # validate()'s raw scan catches it as E_LITERAL_MARKER_IN_BODY.
+    bad_body = (
+        b"good line\n" b"<!-- HOS:CORE:START -->\n" b"bad inner line\n" b"<!-- HOS:CORE:END -->\n"
+    )
+    body_f = _write(tmp_path, "bad_body.md", bad_body)
+
+    r = _run("inject-pack", staged, "--name", "django", "--body-file", body_f)
+    assert r.returncode == regions.EXIT_INVALID
+    assert "E_LITERAL_MARKER_IN_BODY" in r.stderr

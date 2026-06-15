@@ -25,6 +25,8 @@
 #   ./hos_install.sh --squash [DIR]       # take HOS's version of any drifted CORE/PACK
 #                                         #   region (explicit consent; never touches
 #                                         #   PROJECT). Resolves a layering drift hard-stop.
+#   ./hos_install.sh --pack <name> [DIR]  # install with a named pack (repeatable for multi-pack)
+#   ./hos_install.sh --no-pack [DIR]      # install bare core only (deliberate; see #237)
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -66,6 +68,8 @@ PR_MODE="off"         # off (default — opt-in) | on (--pr) — branch+PR the u
                       # Opt-in until the live push/PR path is proven on a real upgrade.
 PRUNE=false           # --prune: archive framework files removed across versions (#182)
 SQUASH=false          # --squash: take HOS's version of a drifted CORE/PACK region (TD §4.3)
+NO_PACK=false         # --no-pack: install bare core, no pack (deliberate; #237 WARN)
+_packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -80,7 +84,10 @@ while [[ $# -gt 0 ]]; do
     --no-pr)         PR_MODE="off"; shift ;;
     --prune)         PRUNE=true; shift ;;
     --squash)        SQUASH=true; shift ;;
-    --help|-h)       sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
+    --pack=*)        _packs+=("${1#*=}"); shift ;;
+    --no-pack)       NO_PACK=true; shift ;;
+    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -88,6 +95,11 @@ done
 
 TARGET_REPO="$(cd "$TARGET_REPO" 2>/dev/null && pwd)" || {
   echo "ERROR: target directory not found: $TARGET_REPO"; exit 1; }
+
+# Mutual-exclusion: --no-pack and --pack are contradictory.
+if $NO_PACK && [[ ${#_packs[@]} -gt 0 ]]; then
+  echo "ERROR: --no-pack and --pack are mutually exclusive (try --help)"; exit 1
+fi
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
@@ -538,6 +550,125 @@ _substitute_into() {
   fi
 }
 
+# ── Pack resolution (ADR-031 Decision 1) ─────────────────────────────────────
+_resolved_packs=()
+
+# (R1) Source of truth: flags win; else config.sh PACK= (the upgrade read-path).
+#      CRITICAL: --no-pack must WIN over a recorded config.sh PACK= — gate the
+#      config read on `! $NO_PACK`. Without this gate, a flagless `--no-pack`
+#      install reads the recorded PACK=django into _resolved_packs, R2's
+#      "${#_resolved_packs[@]} -eq 0" guard is then false, the $NO_PACK arm is
+#      never reached, and --no-pack is a SILENT no-op (B1). --no-pack is an
+#      explicit operator opt-out; it must override the recorded choice.
+if [[ ${#_packs[@]} -gt 0 ]]; then
+    _resolved_packs=("${_packs[@]}")               # from --pack (precedence 1)
+elif ! $NO_PACK && [[ -f "$_subst_config" ]]; then   # --no-pack suppresses the config read
+    # grep returns 1 when no PACK= line exists — mask with || true so set -e
+    # does not abort the script on a legitimately absent PACK key.
+    _cfg_pack="$(grep -E '^PACK=' "$_subst_config" 2>/dev/null | head -1 \
+                  | cut -d= -f2- | sed 's/^"//; s/"$//' || true)"
+    [[ -n "$_cfg_pack" ]] && _resolved_packs=("$_cfg_pack")   # precedence 2 (single-value)
+fi
+# NB: v0.3.0 reads config.sh PACK= as a SINGLE value (ADR-031 "open seams"); the
+# space-split multi-value form is a noted-not-built seam. Repeated --pack is the
+# only wired multi-pack path.
+
+# (R2) No pack resolved → the no-pack decision tree (ADR-031 §1.3).
+if [[ ${#_resolved_packs[@]} -eq 0 ]]; then
+    if $NO_PACK; then
+        # explicit opt-out → core only, #237 WARN (bare core IS a real install).
+        warn "installing bare core with no pack — core enforces generic best"
+        warn "practices but is shallow; install a pack before first real use"
+        # (R2a) --no-pack must also CLEAR a recorded config.sh PACK= (B1 follow-on).
+        # Else the NEXT flagless install reads the stale PACK= and silently re-adds
+        # the pack the operator just stripped — a footgun. Remove the row so the
+        # recorded state matches the installed state (bare core). The on-disk PACK
+        # region is then DROPped by the existing removed-region sweep (§4.2).
+        if [[ -f "$_subst_config" ]] && grep -qE '^PACK=' "$_subst_config" 2>/dev/null; then
+            _old_pack="$(grep -E '^PACK=' "$_subst_config" | head -1 | cut -d= -f2- \
+                          | sed 's/^"//; s/"$//' || true)"
+            if $DRY_RUN; then
+                dry_run "Would clear config.sh PACK=\"$_old_pack\" (--no-pack strip)"
+            else
+                perl -i -ne 'print unless /^PACK=/' "$_subst_config"
+            fi
+            warn "config.sh PACK cleared: $_old_pack → (none) — pack stripped (see removed-region sweep)"
+        fi
+    elif [[ -t 0 ]]; then
+        # interactive, no --no-pack → S1 hard default: don't ship core-only by accident.
+        err "no PACK selected — pass --pack <name> (e.g. --pack django), set PACK="
+        err "in scripts/framework/config.sh, or pass --no-pack to install the bare"
+        err "core deliberately"
+        exit 1
+    else
+        # non-interactive / CI, no --no-pack → CI must be explicit (error path).
+        err "no PACK selected and not interactive — CI must pass --pack <name> or"
+        err "--no-pack explicitly"
+        exit 1
+    fi
+fi
+
+# (R2b) Slug-validate every resolved pack name before R3/R5 use it.
+#       A name that does not match [a-z0-9][a-z0-9-]* must never reach the
+#       directory-existence check or the `perl -i -pe "s|^PACK=...|PACK=\"$_pk\"|"`
+#       substitution — a '|' in the name would break the perl delimiter.
+#       Covers both the --pack flag path and the config.sh PACK= read path.
+for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+    if [[ ! "$_p" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        err "invalid pack name '$_p' — must match [a-z0-9][a-z0-9-]* (lowercase, start alnum, then alnum or hyphen)"
+        exit 1
+    fi
+done
+
+# (R3) Validate each resolved pack exists in the HOS source (unknown → hard error,
+#      fail-closed: nothing written, exit non-zero — never fall through to core-only).
+for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+    if [[ ! -d "$HOS_SOURCE/packs/$_p" ]]; then
+        err "unknown pack '$_p' — no packs/$_p/ in the HOS source ($HOS_REF)"
+        err "available: $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+              | tr -d / | tr '\n' ' ' || echo '(none)')"
+        exit 1
+    fi
+    # pack.toml name/dir sanity (ADR-031 §2.4; mismatch → WARN, not hard error —
+    # directory name is authoritative; see TD-pack §6 flag #4).
+    _declared="$(grep -E '^[[:space:]]*name[[:space:]]*=' \
+                   "$HOS_SOURCE/packs/$_p/pack.toml" 2>/dev/null \
+                 | head -1 | cut -d= -f2- \
+                 | sed 's/[[:space:]]*//g; s/^"//; s/"$//; s/^'\''//; s/'\''$//' || true)"
+    if [[ -n "$_declared" && "$_declared" != "$_p" ]]; then
+        warn "packs/$_p/pack.toml declares name=\"$_declared\" but the directory is '$_p' — using '$_p'"
+        warn "  fix: rename the directory to '$_declared', or correct name= in pack.toml to '$_p'"
+    fi
+done
+
+# (R4) Multi-pack → permit, but WARN once (Decision 4 — untested composition).
+if [[ ${#_resolved_packs[@]} -gt 1 ]]; then
+    warn "multiple packs selected (${_resolved_packs[*]}) — multi-pack composition"
+    warn "is UNTESTED in v0.3.0 (alphabetical order, no conflict resolution);"
+    warn "single-pack is the supported path"
+fi
+
+# (R5) Record the choice for upgrade reuse (ADR-031 §1.2). Only when a SINGLE
+#      pack came from --pack (config-as-source needs no rewrite). config.sh is
+#      consumer-owned and append-only here — overwrite ONLY when PACK= differs.
+if [[ ${#_packs[@]} -eq 1 ]]; then
+    _pk="${_packs[0]}"
+    if [[ ! -f "$_subst_config" ]]; then
+        if $DRY_RUN; then dry_run "Would create config.sh with PACK=\"$_pk\""
+        else mkdir -p "$(dirname "$_subst_config")"; printf 'PACK="%s"\n' "$_pk" >> "$_subst_config"; fi
+    elif grep -qE '^PACK=' "$_subst_config" 2>/dev/null; then
+        _cur="$(grep -E '^PACK=' "$_subst_config" | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)"
+        if [[ "$_cur" != "$_pk" ]]; then
+            if $DRY_RUN; then dry_run "Would update config.sh PACK=\"$_cur\" → \"$_pk\""
+            else perl -i -pe "s|^PACK=.*|PACK=\"$_pk\"|" "$_subst_config"; fi
+            warn "config.sh PACK changed: $_cur → $_pk (a pack switch — see removed-region sweep)"
+        fi
+    else
+        if $DRY_RUN; then dry_run "Would append PACK=\"$_pk\" to config.sh"
+        else printf 'PACK="%s"\n' "$_pk" >> "$_subst_config"; fi
+    fi
+fi
+
 # ── .claude/agents/ — Phase A/B layered install (TD §4.5, §7.1–7.3) ───────────
 # Per-agent two-phase flow (decide-all-then-act): for each consumer agent we
 #   (A) stage + substitute the HOS template, migrate a flat disk file if needed,
@@ -568,6 +699,8 @@ if $SQUASH || $PRUNE; then _squash_flag=(--squash); fi
 _planned_agents=()       # slugs that produced a writable plan (Phase B writes these)
 _blocked_report=""       # aggregated per-file drift report (only set when blocked)
 _any_blocked=false
+_any_inject_fail=false   # B2: any inject-pack failure → pre-Phase-B abort (§2.4.1)
+_any_plan_fail=false     # R-B2: any planning failure → pre-Phase-B abort (§2.4.1)
 
 if [[ ! -x "$(command -v python3)" ]]; then
   fail "python3 required for the region install but not found"
@@ -601,6 +734,23 @@ else
         mv "$_stage_wrapped" "$_stage"
       fi
     fi
+
+    # (A1b) Pack injection (ADR-031 §3.1 step 4). For each selected pack that
+    # deepens THIS agent (packs/<pack>/<agent>.md exists), inject its PACK:<pack>
+    # region into the staged CORE template. compose() (inside inject-pack) re-sorts
+    # alphabetically, so injection order is irrelevant. An agent with no pack file
+    # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
+    # are NEVER substituted (D6) — they are injected raw, post-substitution.
+    for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+      _body="$HOS_SOURCE/packs/$_pk/${agent}.md"
+      [[ -f "$_body" ]] || continue
+      if ! python3 "$_REGIONS_PY" inject-pack "$_stage" \
+            --name "$_pk" --body-file "$_body" --in-place 2>/dev/null; then
+        fail "inject-pack $_pk into ${agent} failed — check packs/$_pk/${agent}.md"
+        _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)
+        continue 2              # skip this agent; an unwritable pack region must not ship half-composed
+      fi
+    done
 
     # (A2) prepare the disk file. If a flat (marker-less) file is present, migrate
     # it first (provenance = is the slug HOS-shipped, i.e. in consumer_agents.txt;
@@ -659,6 +809,7 @@ for rid,reason in p.get("hardstops",[]):
       continue
     elif [[ $_plan_rc -ne 0 ]]; then
       fail "planning ${rel} failed (regions.py exit $_plan_rc) — check the file's markers"
+      _any_plan_fail=true   # R-B2: route through the pre-Phase-B abort gate (§2.4.1)
       continue
     fi
 
@@ -667,14 +818,29 @@ for rid,reason in p.get("hardstops",[]):
     _planned_agents+=("$agent")
   done
 
-  # ── Decide-all-then-act gate (§4.3) ─────────────────────────────────────────
-  if $_any_blocked; then
+  # ── Decide-all-then-act gate (§4.3 + B2 + R-B2) ─────────────────────────────
+  # Three sentinel conditions — any one aborts the whole install before Phase B
+  # writes a single file. Distinct err blocks so the operator gets a precise signal.
+  if $_any_blocked || $_any_inject_fail || $_any_plan_fail; then
     echo ""
-    err "Layering drift — refusing the whole upgrade (nothing written, no version stamped):"
-    printf '%s' "$_blocked_report"
-    echo ""
-    err "Re-run with --squash to take HOS's version of the drifted region(s), or move"
-    err "your edits into each file's PROJECT region, then re-run."
+    if $_any_blocked; then
+      err "Layering drift — refusing the whole upgrade (nothing written, no version stamped):"
+      printf '%s' "$_blocked_report"
+      echo ""
+      err "Re-run with --squash to take HOS's version of the drifted region(s), or move"
+      err "your edits into each file's PROJECT region, then re-run."
+    fi
+    if $_any_inject_fail; then
+      err "Pack injection failed for one or more agents (see errors above) — refusing the"
+      err "whole install (nothing written, no manifest, no version stamped). Fix the named"
+      err "packs/<pack>/<agent>.md and re-run."
+    fi
+    if $_any_plan_fail; then
+      err "Planning failed for one or more agents — check region markers (see errors above)."
+      err "Nothing written, no manifest, no version stamped. Fix the file's markers and re-run."
+    fi
+    # exit 4 = the layering/abort hard-stop code (shared with drift). Phase B is
+    # BELOW; nothing in .claude/agents/, .hos-manifest, or .hos-release is written.
     exit 4
   fi
 

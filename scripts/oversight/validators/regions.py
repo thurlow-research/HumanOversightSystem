@@ -1200,6 +1200,62 @@ def _cmd_plan(args) -> int:
     return EXIT_DRIFT if plan.blocked else EXIT_OK
 
 
+def _cmd_inject_pack(args) -> int:
+    """Thin wrapper that appends a PACK:<name> region to a staged template.
+
+    Parses the staged (already-substituted) CORE template, appends a new
+    Region with the supplied pack body, re-composes via compose() (which
+    alpha-orders PACK regions and applies _normalize_body so the on-disk bytes
+    equal the manifest sha), then validates the result.  A duplicate PACK name
+    surfaces here as E_DUP_PACK from validate().  Prints to stdout by default;
+    --in-place rewrites the staged file.
+
+    Mirrors _cmd_migrate exactly for the --in-place / stdout split.
+    (TD-pack §1; ADR-031 §3.2)
+    """
+    # Step 1: validate pack slug before opening any file (fail-fast on bad slug).
+    if not re.fullmatch(_PACK_SLUG, args.name):
+        sys.stderr.write(f"invalid pack name '{args.name}' — must match [a-z0-9][a-z0-9-]*\n")
+        return EXIT_INVALID
+
+    # Step 2: read staged template and body file (FileNotFoundError → main() EXIT_USAGE).
+    data = _read_file(args.file)
+    body = _read_file(args.body_file)
+
+    # Step 3: parse the staged template.
+    try:
+        parsed = parse(data)
+    except ParseError as e:
+        sys.stderr.write(f"{args.file}: parse error {e}\n")
+        return EXIT_INVALID
+
+    # Step 4: append the new PACK region (start_line=0, end_line=0 — not on disk yet).
+    pack_region = Region(
+        id=f"PACK:{args.name}", name=args.name, body=body, start_line=0, end_line=0
+    )
+    regions = list(parsed.regions) + [pack_region]
+    merged = ParsedAgent(front_matter=parsed.front_matter, regions=regions, raw=parsed.raw)
+
+    # Step 5: compose (alpha-orders via _canonical_order_key; normalizes bodies).
+    out = compose(merged)
+
+    # Step 6: re-validate (duplicate pack → E_DUP_PACK; literal marker in body →
+    # E_LITERAL_MARKER_IN_BODY — fail-closed on a malformed body).
+    check = validate(parse(out))
+    if not check.ok:
+        for line, code, msg in check.errors:
+            sys.stderr.write(f"{line}:{code}:{msg}\n")
+        return EXIT_INVALID
+
+    # Step 7: emit.
+    if args.in_place:
+        with open(args.file, "wb") as fh:
+            fh.write(out)
+    else:
+        sys.stdout.buffer.write(out)
+    return EXIT_OK
+
+
 def _cmd_migrate(args) -> int:
     """Thin wrapper over `migrate_flat` (TD §2.7 / §5.2, D3).
 
@@ -1343,6 +1399,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="rewrite the file instead of printing to stdout",
     )
     mi.set_defaults(func=_cmd_migrate)
+
+    ij = sub.add_parser(
+        "inject-pack",
+        help="append a PACK:<name> region (body from --body-file) to a staged "
+        "template and re-compose (TD-pack §1; ADR-031 §3.2)",
+    )
+    ij.add_argument(
+        "file",
+        metavar="staged-template-file",
+        help="the staged (already-substituted) CORE template to inject into",
+    )
+    ij.add_argument(
+        "--name",
+        required=True,
+        help="pack slug ([a-z0-9][a-z0-9-]*) — becomes the PACK:<name> region id",
+    )
+    ij.add_argument(
+        "--body-file",
+        required=True,
+        help="raw region-body bytes for the PACK:<name> region (packs/<name>/<agent>.md)",
+    )
+    ij.add_argument(
+        "--in-place",
+        action="store_true",
+        help="rewrite the staged file instead of printing to stdout",
+    )
+    ij.set_defaults(func=_cmd_inject_pack)
 
     bs = sub.add_parser(
         "base-shas",
