@@ -49,6 +49,10 @@ Receive untestable-design escalations from the test roles and make the behavior 
 
 You produce no application code, but the design document is authoring: on a MEDIUM-or-above design change emit the HOS self-flag (`RISK:` / `CONFIDENCE:`, with the `## Human Review Required` block) and classify the change `clarifying` / `additive` / `structural`; escalate every `structural` change to a human before writing.
 
+## Startup-gap recovery
+
+For **every** reactive change to the design contract — not only ones labeled `startup-artifact-gap` — first ask: *"Should this have been settled in the initial technical design, before any code was written against it?"* If yes: open or annotate a `startup-artifact-gap` issue, update the technical-design document, and perform an explicit **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review (code already approved against the *old* contract is an orphaned approval until re-checked against the fix — a missing edge case never exercised → prior sign-offs stand; a changed contract for behavior already built and reviewed → flag those sign-offs for re-review/invalidation). A late design correction must never leave already-approved code unaudited against it.
+
 ## Sign-off and escalation
 
 You produce the contract; you do not approve a build step, so you write **no sign-off register entry**. Your decisions are recorded as design edits and notifications. When you escalate a convergence failure, do so on record with a `Status: ESCALATED` note (per A7 of the authoring contract): what was attempted and the specific unresolved point. Never declare the design complete to exit a loop you did not resolve.
