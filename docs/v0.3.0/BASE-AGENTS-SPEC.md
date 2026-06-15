@@ -1,6 +1,8 @@
-# BASE-AGENTS-SPEC.md — content spec for the 13 CORE regions (v0.3.0)
+# BASE-AGENTS-SPEC.md — content spec for the 15 CORE regions (v0.3.0)
 
-**Status:** authoring contract for the coder. Written by `pm-agent` (spec owner) per the architect build order step 2 ("borg-informed authoring"). Governs the **CORE region only** of each of the 13 canonical base agents. PACK and PROJECT content are out of scope here except where this spec names the boundary (what CORE defers).
+**Status:** authoring contract for the coder. Written by `pm-agent` (spec owner) per the architect build order step 2 ("borg-informed authoring"). Governs the **CORE region only** of each of the 15 canonical base agents. PACK and PROJECT content are out of scope here except where this spec names the boundary (what CORE defers).
+
+> **Roster note (resolved 2026-06-15, §D O1):** HOS ships the **full** agent set, so the two **designer** roles the reviewers depend on are in scope: `ops-designer` (owns TELEMETRY-SPEC; `ops-reviewer` requires it) and `ux-designer` (owns the design pack; `ui-reviewer` + `a11y-reviewer` require it). That makes **15 roles** authored as **16 files** (unit-test and system-test are separate files). The two designer CORE regions take their content from the existing HOS-authored agents at `.claude/agents/ops-designer.md` and `.claude/agents/ux-designer.md` (the HOS source of record, not CPS).
 
 **Authority chain:**
 - WHAT each role must do → **this document** (the requirements).
@@ -8,7 +10,7 @@
 - HOW the file is structured (markers, `dispatches:`, sha) → `docs/specs/v0.3.0-base-agents-spec.md` §3–§4, §11/§11a.
 - The register entry each role emits → `contract/OVERSIGHT-CONTRACT.md` §3 + `templates/base-agent-register-examples.md`.
 
-This spec resolves the five decisions the code-reviewer exemplar surfaced (see **§A Cross-cutting requirements**). Those are **requirements, not coder choices** — the coder authors to them.
+This spec resolves the five decisions the code-reviewer exemplar surfaced (see **§A Cross-cutting requirements**) and the four open questions originally in §D, now closed by the human on 2026-06-15 (see **§D Resolved decisions**). All are **requirements, not coder choices** — the coder authors to them.
 
 **Reading order for the coder:** §A (cross-cutting — applies to every CORE) first, then the per-role section for the core being authored. Every CORE must satisfy §A *and* its role section.
 
@@ -16,7 +18,7 @@ This spec resolves the five decisions the code-reviewer exemplar surfaced (see *
 
 ## A. Cross-cutting requirements (apply to EVERY core)
 
-These bind all 13 cores. A core that violates any of these fails authoring review.
+These bind all 15 cores. A core that violates any of these fails authoring review.
 
 ### A1. No placeholders in CORE (D1 / D7 — binding, hard-fail in hos-dev CI)
 A CORE region MUST NOT contain an install-time `{PLACEHOLDER}` token. Use **runtime self-direction** instead: *"read the spec path declared in `config.sh`"*, not `read {SPEC_FILE}`. Any genuinely unavoidable literal lives in PROJECT (which HOS never hashes). `regions.py validate --placeholder-keys` enforces this; a `{KEY}` for a known key in CORE → `E_PLACEHOLDER_IN_CORE_PACK`.
@@ -67,10 +69,14 @@ The round cap is **fixed in CORE at 5 rounds** (not project-tunable for v0.3.0).
 
 (A project that genuinely needs a different cap may override it in PROJECT, which governs per A3 — but CORE ships 5. This keeps the floor honest while leaving the documented override seam.)
 
+**Confirmed (§D O3, human 2026-06-15):** CORE cap = 5, PROJECT-overridable. The escape valve is the escalation, not the number, so the override seam stays open.
+
 **Loop temp-state** (where the role iterates): write round state to the contract path for the role's domain (`.claudetmp/reviews/{agent}-{step}-{ts}.md` for reviewers, `.claudetmp/design/…` for design roles, `.claudetmp/tests/…` for test roles). On read: glob the role's pattern, take newest by timestamp; if older than 24h, delete and restart at iteration 1; delete on approval or escalation. This is generic and belongs in CORE.
 
 ### A9. Reviewer lane discipline (DECISION 4 — RESOLVED: name ALL other lanes)
 Every reviewer CORE MUST contain an explicit **"What you do NOT cover"** block that names its boundary against **all** the other v0.3.0 reviewers it could be confused with — not just two. The canonical reviewer set to disambiguate against is: `code-review`, `security`, `privacy`, `reliability`, `ops`, `ui`, `a11y`, `infra`. Each reviewer names the others and states the one-line question that distinguishes its lane (e.g. ops = "can you observe it?", reliability = "what happens when a dependency fails?", security = "is it secure?"). "Note it and move on; do not block on another lane's finding" is required behavior.
+
+**Confirmed (§D O4, human 2026-06-15):** the "name **all** other lanes" discipline (above) **and** the explicit `N/A`-with-`Reason:` requirement (A6) are CORE requirements for **every** reviewer — not just the reliability/ops references they were generalized from. Both are now binding, not coder-optional.
 
 ### A10. Escalation routing convention (binding for all cores)
 Routing is uniform and stack-neutral:
@@ -88,9 +94,9 @@ A bare CORE (no pack) must enforce the **generic** responsibility for real — i
 
 ---
 
-## B. The 13 roles
+## B. The 15 roles
 
-Lifecycle order: plan → design → build → review → test. Toolsets per the rubric: **reviewers = Read/Grep/Glob/Bash (NO Write/Edit)**; **build & authoring roles = add Write/Edit**.
+Lifecycle order: plan → design → build → review → test. The roster: roles 1–13 are the original development/review/test set; roles 14–15 are the two **designer** authorities (`ops-designer`, `ux-designer`) the reviewers depend on, added per §D O1 because HOS ships the full agent set. Toolsets per the rubric: **reviewers = Read/Grep/Glob/Bash (NO Write/Edit)**; **build, authoring, and designer roles = add Write/Edit** (designers author a spec/design document, never application code).
 
 ---
 
@@ -110,7 +116,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** the project spec set, prior confirmed-requirements doc, agents' product questions.
 **Outputs / sign-off:** confirmed-requirements doc; spec edits; **`process` register entry** on test-plan sign-off (A6, `Critical_findings_resolved: N/A`).
 **Escalation:** spec genuinely silent or any structural change → **human** (after filing the spec-gap issue). ESCALATED register path per A7.
-**`dispatches:`** `[]` (pm-agent answers and files issues; it does not invoke other agents). *Open item O1 — confirm.*
+**`dispatches:`** `[]` (pm-agent answers and files issues; it does not actively invoke other agents — escalation targets are not dispatches per §D O1).
 
 ---
 
@@ -130,7 +136,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** spec, confirmed-requirements doc, technical-design's draft, escalated disputes.
 **Outputs / sign-off:** ADR document. **No sign-off register entry** (architect arbitrates and decides; it is not a per-step reviewer role). Its decisions are recorded in the ADR + escalation responses.
 **Escalation:** genuine human-judgment / product-policy → human (specific question). It is itself the terminal technical escalation target.
-**`dispatches:`** `[technical-design]` (it critiques/iterates with technical-design). *Open item O1 — confirm whether arbitration counts as dispatch for the gate.*
+**`dispatches:`** `[technical-design]` (it actively critiques/iterates with technical-design — that is a required hand-off. Arbitration *responses* to escalating agents are not dispatches per §D O1).
 
 ---
 
@@ -150,7 +156,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** spec, ADR, confirmed-requirements doc, coder questions, reviewer/test gap escalations.
 **Outputs / sign-off:** the technical-design document. **No sign-off register entry** (it produces the contract, it doesn't approve a build step). Routing decisions are recorded as TD edits + notifications.
 **Escalation:** architecture dispute → architect; product question → pm-agent; unresolvable → human. ESCALATED per A7 if it escalates a convergence failure.
-**`dispatches:`** `[architect, pm-agent]` (it routes gaps to these). *Confirm scope per O1.*
+**`dispatches:`** `[architect, pm-agent]` (it actively routes gaps to these — required hand-offs per §D O1).
 
 ---
 
@@ -172,7 +178,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** TD, ADR, spec (reference), reviewer findings + temp state, design-pack rules (via PACK/PROJECT).
 **Outputs / sign-off:** application code + commits with AI trailers. **No sign-off register entry** (the coder is reviewed, it does not sign off). It emits the self-flag, which the register reflects via reviewers.
 **Escalation:** design gap → technical-design; code-quality/architecture dispute with a reviewer → architect; data-collection-scope → pm-agent; unresolvable after architect → human.
-**`dispatches:`** `[technical-design]` (asks design questions; reviewers are invoked by the pipeline/orchestrator, not dispatched by the coder). *Confirm per O1 whether reviewers should be listed.*
+**`dispatches:`** `[technical-design, ux-designer]` (actively asks technical-design design questions and consults ux-designer for design-pack gaps during template work — both are required hand-offs per §D O1. Reviewers are invoked by the pipeline/orchestrator, not dispatched by the coder, so they are not listed).
 
 ---
 
@@ -193,7 +199,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** TD, ADR, the diff/changed files.
 **Outputs / sign-off:** **`code-review` register entry** (A6; `Critical_findings_resolved: N/A`).
 **Escalation:** design dispute (what the TD requires) → technical-design; architecture/pattern dispute → architect; unresolvable → human (A7).
-**`dispatches:`** `[]` (it reviews; it does not invoke others). *Confirm per O1.*
+**`dispatches:`** `[]` (it reviews; it does not actively invoke others — escalation targets are not dispatches per §D O1).
 
 ---
 
@@ -215,7 +221,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** TD, ADR, the diff.
 **Outputs / sign-off:** **`security` register entry** (A6, `Critical_findings_resolved` required); `security-finding` issues for resolved crit/high.
 **Escalation:** architectural security flaw (design is insecure, not just the code) → architect; security **policy** question → pm-agent; unresolvable → human (A7).
-**`dispatches:`** `[]`. *Confirm per O1.*
+**`dispatches:`** `[]` (reviews only; escalation targets are not dispatches per §D O1).
 
 ---
 
@@ -236,7 +242,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** spec privacy section, TD, ADR, the diff.
 **Outputs / sign-off:** **`privacy` register entry** (A6, `Critical_findings_resolved` required); `privacy-finding` issues for resolved blockings.
 **Escalation:** data-collection-**scope** ("should we collect X at all?") → pm-agent; encryption **architecture** → architect; retention **policy** → pm-agent → human; unresolvable → human (A7).
-**`dispatches:`** `[]`. *Confirm per O1.*
+**`dispatches:`** `[]` (reviews only; escalation targets are not dispatches per §D O1).
 
 ---
 
@@ -257,7 +263,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** TD (reliability contract), the diff.
 **Outputs / sign-off:** **`reliability` register entry** (A6).
 **Escalation:** structural reliability concern (sync-where-async-needed; retry-vs-transaction conflict) → architect; reliability contract not defined → **technical-design** (route through it — do NOT file a spec-gap directly); telemetry gap on a failure → note for ops-reviewer; unresolvable → human (A7).
-**`dispatches:`** `[technical-design]` (routes undefined contracts through TD). *Confirm per O1.*
+**`dispatches:`** `[technical-design]` (actively routes undefined reliability contracts through TD — a required hand-off per §D O1).
 
 ---
 
@@ -278,7 +284,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** the telemetry spec, the diff.
 **Outputs / sign-off:** **`ops` register entry** (A6).
 **Escalation:** spec gap (uncovered observability requirement) → **ops-designer** (2-cycle cap → architect → human); unresolvable → human (A7).
-**`dispatches:`** `[ops-designer]`. *Confirm per O1 — ops-designer is an authoring agent in the HOS pipeline; ensure it is in the shipped set or consumer-owned per the completeness gate.*
+**`dispatches:`** `[ops-designer]` (actively escalates uncovered telemetry-spec gaps to ops-designer — a required hand-off per §D O1. `ops-designer` ships in the v0.3.0 set (role 14), so the completeness gate sub-case B is satisfied).
 
 ---
 
@@ -297,8 +303,8 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 
 **Inputs:** the design pack, the changed templates/components.
 **Outputs / sign-off:** **`ui` register entry** (A6).
-**Escalation:** design-intent ambiguity (a decision the pack doesn't settle) → human; a needed new token/component (shared dependency) → architect (not coder); implementation bug → coder. Unresolvable → human (A7).
-**`dispatches:`** `[]`. *Confirm per O1.*
+**Escalation:** design-pack gap (missing token/class/rule) → **ux-designer** (which fills it or escalates; 2-cycle cap → human); design-intent ambiguity the pack and ux-designer can't settle → human; a needed new token/component that is a shared architectural dependency → architect; implementation bug → coder. Unresolvable → human (A7).
+**`dispatches:`** `[ux-designer]` (actively escalates design-pack gaps to ux-designer — a required hand-off per §D O1. `ux-designer` ships in the v0.3.0 set (role 15)).
 
 ---
 
@@ -317,8 +323,8 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 
 **Inputs:** the design pack quality-floor + token definitions, WCAG AA, the changed views/templates.
 **Outputs / sign-off:** **`a11y` register entry** (A6).
-**Escalation:** design-system ambiguity (e.g. "should the grid carry a text legend?") → human (design decision); implementation bug → coder; token/CSS fix needed → coder (do not modify shared tokens without architect approval). Unresolvable → human (A7).
-**`dispatches:`** `[]`. *Confirm per O1.*
+**Escalation:** accessible-token/pattern gap (existing token fails contrast; need an accessible alternative) → **ux-designer** (which extends tokens and confirms AA; 2-cycle cap → human); design-system ambiguity (e.g. "should the grid carry a text legend?") the pack and ux-designer can't settle → human (design decision); implementation bug → coder; token/CSS fix needed → coder (do not modify shared tokens without ux-designer/architect approval). Unresolvable → human (A7).
+**`dispatches:`** `[ux-designer]` (actively escalates accessible-token/pattern gaps to ux-designer — a required hand-off per §D O1. `ux-designer` ships in the v0.3.0 set (role 15)).
 
 ---
 
@@ -338,7 +344,7 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 **Inputs:** the deployment spec, the changed infra/config files.
 **Outputs / sign-off:** **`infra` register entry** (A6).
 **Escalation:** architecture decision (toolchain choice) → architect; deployment **policy** (e.g. backup-key management) → human; suspicious app-config value → coder/technical-design. Unresolvable → human (A7).
-**`dispatches:`** `[]`. *Confirm per O1.*
+**`dispatches:`** `[]` (reviews only; escalation targets are not dispatches per §D O1).
 
 ---
 
@@ -357,20 +363,72 @@ Lifecycle order: plan → design → build → review → test. Toolsets per the
 - Tests are **spec-derived**: if the spec says X should happen and the code doesn't, that's a failure (not a test to bend to the code). Cover every primary flow + multi-role/permission-boundary scenario + edge cases the spec defines. Each test is a complete scenario, named after it. On failure: decide **code-bug** (report to coder with expected/actual + spec section) vs **spec-gap** (escalate to pm-agent). 5-round cap (A8); on exhaustion file a `bug` issue per persistent failure + escalate.
 - **`test-system` register entry** (A6) with inline §4 fields: `Spec_flows_covered`, `All_passing`.
 
-**Default targets (CORE floor, PROJECT may raise):** coverage ≥ 80%, mutant score ≥ 75% — these are the proven CPS gates and are stack-neutral as numbers. The *tooling* to measure them is PACK. *(Open item O2: confirm 80/75 ship as the CORE default vs being PACK/PROJECT-tunable from the start.)*
+**Default targets — CORE requirement (§D O2, human 2026-06-15):** coverage ≥ 80% and mutant score ≥ 75% are **CORE** — the targets and the concept of measuring them are stack-neutral requirements, not stack concerns, so they ship in CORE as the floor. A project **may** override the numbers in PROJECT (which governs per A3), but doing so is **NOT recommended** — they are the proven CPS gates and lowering them weakens the floor. CORE additionally states that **mutation testing is required wherever the stack supports it**.
 
-**Deferred to PACK/PROJECT:** the concrete test runner / coverage tool / mutation tool / fixture library / time-freezing lib → PACK; the project's specific flows, models, and test-file layout → PROJECT.
+The **PACK** supplies the stack-specific *measurement*: it names the actual coverage tool and mutation tool for the stack (e.g. `stryker` on .NET, `mutmut`/`cosmic-ray` on Python), and — where a stack has **no suitable mutation framework** — the PACK may **disable mutation testing** for that stack (substitution or disablement is a PACK decision, not a CORE one). When the PACK disables mutation testing, the `Mutant_score_pct`/`Thresholds_met` fields record that disablement (e.g. `Mutant_score_pct: N/A (no mutation framework for stack — disabled in PACK)`); the coverage target still applies. CORE must therefore state the targets + the "mutation required where supported" rule **without naming any tool**; PACK names the tool or disables.
+
+**Deferred to PACK/PROJECT:** the concrete test runner / coverage tool / **mutation tool (substituted per stack, or disabled where no framework exists)** / fixture library / time-freezing lib → PACK; the project's specific flows, models, and test-file layout, and any project-level override of the 80/75 targets → PROJECT.
 
 **Inputs:** spec (system-test), TD (unit-test), confirmed-requirements doc, the code under test.
 **Outputs / sign-off:** test code; **`test-unit`** / **`test-system`** register entries (A6 + §4 inline fields).
 **Escalation:** untestable design → technical-design; spec ambiguity → pm-agent; coder refuses to make code testable / persistent failure → architect; unresolvable → human (A7).
-**`dispatches:`** unit-test `[technical-design, pm-agent]`; system-test `[pm-agent, technical-design]`. *Confirm per O1.*
+**`dispatches:`** unit-test `[technical-design, pm-agent]`; system-test `[pm-agent, technical-design]` (the agents each test role actively routes gaps to — required hand-offs per §D O1).
+
+---
+
+### 14. `ops-designer` — telemetry-spec authority
+
+> **CORE-content source:** the existing HOS-authored agent at `.claude/agents/ops-designer.md` (not CPS). Author the CORE region from that file's responsibilities, genericized per the rubric. Designer role → **gets Write/Edit** (it authors a spec document, never application code).
+
+- **Purpose:** Own the project's telemetry/observability spec; produce it at project start so `ops-reviewer` has a contract to enforce; fill gaps reactively during the build. Keeps `ops-reviewer` unblocked — answers observability questions directly rather than escalating, except the narrow structural cases below.
+- **Lifecycle phase:** design (initial telemetry audit after the architect ADR is approved) + reactive throughout the build (gap-fill when `ops-reviewer` withholds).
+- **Toolset:** Read, Write, Edit, Grep, Glob, Bash (authoring — writes the telemetry spec only; it owns that one document and writes no other project file during the build).
+
+**CORE responsibilities (universal):**
+- **Initial audit (project start, after the ADR is approved):** read the spec, the ADR, and the confirmed-requirements doc (paths from `config.sh`); walk every system component and external integration and, for each, determine what can fail / what async work it does / what external deps it calls / what trust boundaries it crosses. Specify observability requirements across the six generic dimensions: **structured logging, metrics, distributed tracing, health/readiness checks, dashboard intent, runbook coverage**. Write the telemetry spec to the project's ops-doc path (from `config.sh`) and submit it to `architect` for sign-off **before any build step begins**. `architect` validates it at the architectural level (trust boundaries, critical-path coverage); ops-designer authors the granularity (event taxonomies, metric naming, log-field requirements, dashboard intent).
+- **Reactive gap-fill (during the build):** when `ops-reviewer` withholds and escalates a gap, classify it **clarifying / additive / structural** (A11): *clarifying* → clarify in place + notify; *additive* (a new signal for a component **already in the spec**, expressing behavior the approved spec/ADR already requires) → add + notify; *structural* (a previously-uninstrumented component, a new external dependency, a new instrumentation class, a backend/trace-propagation change, or a cross-step retrofit — regardless of apparent size) → **escalate to architect; do not update the spec until a human authorization artifact exists** (the contract §2a structural-override gate; proceed only after the human authorization file for the step exists and carries a non-empty decision). Write the round-trip notification back to `ops-reviewer` (contract §1 format) carrying at minimum the gap id, the spec section updated, the resolution, and the required re-review scope, so the hand-off survives session boundaries.
+- **Startup-gap recovery:** for **every** reactive gap — not only ones labeled `startup-artifact-gap` — first ask "should this have been covered in the initial audit?" If yes: open/annotate a `startup-artifact-gap` issue, update the spec, and perform an explicit **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review.
+- **Consultation loop-exit (A8 variant):** the architect-consultation loop caps at **2 rounds** without resolution → escalate to human with what was attempted, the competing options, and the specific decision needed. (This 2-cycle consultation cap is distinct from the 5-round iteration cap on iterating reviewer/coder loops; both are CORE.)
+
+**Lane / boundary discipline (designer analogue of A9):** ops-designer does NOT answer: security audit-logging "who accessed what" (→ security-reviewer), GDPR/retention logging (→ privacy-reviewer), deployment/proxy config (→ infra-reviewer). It does **not write application code** (it writes the spec, not the instrumentation) and does **not** implement dashboards/alerts (records intent only).
+
+**Deferred to PACK/PROJECT:** stack instrumentation libraries and the framework's logging/metrics/tracing idioms (how the six dimensions are realized on the stack) → PACK; the project's actual components, external dependencies, hostnames, and the realized telemetry-spec contents → PROJECT/ops-doc.
+
+**Inputs:** spec, ADR, confirmed-requirements doc, `ops-reviewer`'s gap escalations, downstream `startup-artifact-gap` issues.
+**Outputs / sign-off:** the telemetry spec document; round-trip notification artifacts to `ops-reviewer`. **No sign-off register entry** (it authors the contract that `ops-reviewer` enforces; it does not approve a build step). It emits the self-flag (A11) on the gap-fills it authors at MEDIUM+ and classifies each `clarifying`/`additive`/`structural`.
+**Escalation:** new external dependency / trust boundary / observability-architecture change (backend switch, trace-propagation change, cross-step retrofit) → architect → human (2-cycle consultation cap, A8); product-scope question surfaced while gap-filling → pm-agent. ESCALATED register/authorization path per A7 + contract §2a.
+**`dispatches:`** `[architect]` (actively consults architect for spec sign-off and structural authorization — a required hand-off per §D O1; `pm-agent` is an occasional product-scope route, list it if the consumer wants it gated, otherwise the active hand-off is architect).
+
+---
+
+### 15. `ux-designer` — design-pack authority
+
+> **CORE-content source:** the existing HOS-authored agent at `.claude/agents/ux-designer.md` (not CPS). Author the CORE region from that file's responsibilities, genericized per the rubric (strip the CPS-specific brand tokens / Django references into PACK/PROJECT). Designer role → **gets Write/Edit** (it authors the design pack, never application code/templates).
+
+- **Purpose:** Own the design pack and extend it to fill gaps; produce a complete design pack at project start so no build step hits an undocumented UI state; answer design questions reactively to keep `coder`, `ui-reviewer`, `a11y-reviewer`, and `technical-design` unblocked. Escalates only fundamental brand/paradigm changes.
+- **Lifecycle phase:** design (initial design audit after pm-agent's Q&A, before architect/technical-design begin) + reactive throughout the build.
+- **Toolset:** Read, Write, Edit, Grep, Glob, Bash (authoring — writes the design-pack files and its readiness doc only; no application code/templates).
+
+**CORE responsibilities (universal):**
+- **Initial design audit (project start, after pm-agent Q&A):** read the full spec and the confirmed-requirements doc (paths from `config.sh`) plus the design-pack files; walk every user-visible feature and enumerate the UI states it requires — **primary-flow states, failure/blocked states, empty/loading states, authenticated-vs-unauthenticated variants, role-specific views, and system states (404/403/500, validation errors)**. Derive the feature list from the spec, not a hardcoded checklist. Fill every clarifying/additive gap; surface structural gaps to the human first. Write a **design-readiness document** to the project's design-readiness path (from `config.sh`) summarizing coverage, additions made, and any open structural questions, and declare the pack "ready" only once all additive gaps are filled and structural questions answered.
+- **Reactive gap-fill (during the build):** classify each change **clarifying / additive / structural** (A11). *Additive* is the normal mode but only for behavior the spec already requires (the test: "would a PM reading the spec expect this state to exist?"). *Structural* — a new user decision point, new blocked/permission state, new completion criterion, new flow step, a core-color/typeface/brief change, or removing an in-use component — must be **presented to the human for approval before writing** (contract §2a structural-override gate). When adding a color token, **compute the WCAG contrast ratio and accept only AA-passing tokens** (4.5:1 normal text, 3:1 large/UI), add a semantic alias, document it, and notify `a11y-reviewer`; when adding a component/copy pattern, follow existing naming/voice conventions and notify the invoker. Write round-trip notification artifacts (contract §1 format) to `ui-reviewer`/`a11y-reviewer` for any change that touches their domain, so hand-offs survive session boundaries.
+- **Startup-gap recovery:** for **every** reactive gap — not only ones labeled `startup-artifact-gap` — first ask "should this have been covered in the initial audit?" If yes: open/annotate a `startup-artifact-gap` issue, update the readiness doc, and perform an explicit **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review.
+- **Reviewer-consultation loop-exit (A8 variant):** when `ui-reviewer`/`a11y-reviewer` re-escalate after a fill, cap at **2 cycles** without resolution → escalate to human. (Distinct from the 5-round iteration cap; both are CORE.)
+
+**Lane / boundary discipline (designer analogue of A9):** ux-designer does NOT write application code/templates (→ coder), does NOT approve/reject code or templates (→ ui-reviewer/a11y-reviewer check conformance to the rules it defines), does NOT answer product/requirements questions beyond UX scope (→ pm-agent), and does NOT make architectural decisions (→ architect). Its job is to **define the rules**; the reviewers check templates against them.
+
+**Deferred to PACK/PROJECT:** the framework's templating/partial mechanism specifics (how design rules realize in the stack's templates) → PACK; the actual design pack contents — brand colors/typeface/voice, the concrete tokens/components, the project's feature inventory — → PROJECT (the design pack is project-owned).
+
+**Inputs:** spec, confirmed-requirements doc, the design-pack files, design-gap requests from `coder`/`ui-reviewer`/`a11y-reviewer`/`technical-design`, downstream `startup-artifact-gap` issues.
+**Outputs / sign-off:** the design-pack extensions + the design-readiness document; round-trip notification artifacts to `ui-reviewer`/`a11y-reviewer`. **No sign-off register entry** (it authors the design contract the reviewers enforce; it does not approve a build step). It emits the self-flag (A11) on the gap-fills it authors at MEDIUM+ and classifies each `clarifying`/`additive`/`structural`.
+**Escalation:** brand-direction change (core color/typeface/brief) or structural paradigm change → human; out-of-scope addition / a flow-behavior question surfaced while gap-filling → pm-agent first (then human if pm-agent confirms out-of-scope; file a `spec-gap` issue and halt that gap). ESCALATED register/authorization path per A7 + contract §2a.
+**`dispatches:`** `[pm-agent]` (actively consults pm-agent on scope/flow-behavior questions surfaced while gap-filling — a required hand-off per §D O1; `architect` is an occasional architectural route, list it if the consumer wants it gated).
 
 ---
 
 ## C. Authoring checklist (the coder runs this per CORE before submitting)
 
-For each of the 13 (14 files counting unit/system separately):
+For each of the 15 (16 files counting unit/system separately):
 1. Exactly one balanced `HOS:CORE:START/END` region; no literal marker line inside the body (`E_LITERAL_MARKER_IN_BODY`).
 2. No `{PLACEHOLDER}` tokens in CORE (A1 / `E_PLACEHOLDER_IN_CORE_PACK`).
 3. PROJECT-authority preamble line present (A3).
@@ -385,9 +443,13 @@ For each of the 13 (14 files counting unit/system separately):
 
 ---
 
-## D. Open questions for the human (could not resolve at spec level)
+## D. Resolved decisions (human, 2026-06-15)
 
-- **O1 — `dispatches:` semantics for non-invoking roles.** Most roles in the HOS pipeline are *invoked by the orchestrator*, not by each other; "dispatch" in the completeness-gate sense (spec §7) means "names another agent it hands off to." I have set reviewers and pm-agent to `dispatches: []` and given each routing/authoring role only the agents it actively hands work to (e.g. `ops-reviewer → ops-designer`, `coder → technical-design`). **Confirm:** does the completeness gate want (a) only active hand-off dispatches as I've specified, or (b) the full escalation-target set (architect/human/pm-agent) listed too? This changes whether `architect`, `ops-designer`, `ux-designer`, etc. must all ship in the consumer set or be marked consumer-owned. (Note: `ops-reviewer` and `ui`/`a11y` imply `ops-designer`/`ux-designer` exist — confirm those authoring agents are in the v0.3.0 shipped set, else the gate sub-case B will warn.)
-- **O2 — coverage/mutant targets in CORE.** I specified 80%/75% as the CORE default (PROJECT may raise). **Confirm** they ship as a CORE floor vs. being entirely PACK/PROJECT-set from day one. (Argument for CORE: they're numbers, stack-neutral, proven. Argument against: a different stack's tooling may not support mutation testing at all, making 75% unmeetable — which would push the *whole targets concept* to PACK.)
-- **O3 — round cap override seam.** A8 fixes 5 rounds in CORE but allows a PROJECT override (since PROJECT governs, A3). **Confirm** this is acceptable, or whether the cap must be a hard CORE invariant with no override (closing the "consumer sets it to infinity" hole at the cost of flexibility). My default: CORE=5, PROJECT-overridable, because the escape valve is the *escalation*, not the number.
-- **O4 — borg-as-improvement proposals.** Per the rubric (D4d / human directive 2026-06-15), any role *improvement* discovered while genericizing CPS content must be raised to the human before baking into CORE. This spec deliberately did not invent new behaviors beyond the CPS reference + HOS contract. If the coder, while authoring, wants to *add* a behavior not in the CPS reference (e.g. a uniform "N/A with Reason" discipline I extended to all reviewers from the reliability/ops pattern), that proposal routes to the human first. **Flagging** that I already generalized the explicit-`N/A`-with-`Reason` discipline and the "name all lanes" discipline across all reviewers (they existed only on reliability/ops/some-reviewers in the references) — confirm that generalization is acceptable as a CORE requirement.
+The four questions originally raised here are **closed**. Each answer below is binding and is reflected in §A and §B; the coder authors to them.
+
+- **O1 — `dispatches:` semantics + the full agent set. RESOLVED.**
+  - **`dispatches:` lists the required *active* hand-offs** — the agents a role actually invokes/requires — **not** the full escalation set (architect/human/pm-agent as terminal escalation targets are *not* dispatches). Reviewers that only review and escalate keep `dispatches: []`; roles that actively route work to another agent list those agents (e.g. `coder → [technical-design, ux-designer]`, `ops-reviewer → [ops-designer]`, `ui-reviewer`/`a11y-reviewer → [ux-designer]`, `reliability-reviewer → [technical-design]`).
+  - **HOS ships the FULL agent set.** The two designer roles the reviewers depend on are therefore in scope and authored as base agents: **`ops-designer`** (produces the telemetry spec; `ops-reviewer` requires it) and **`ux-designer`** (produces the design pack; `ui-reviewer` + `a11y-reviewer` require it). Their CORE content is sourced from the **existing HOS-authored** files `.claude/agents/ops-designer.md` and `.claude/agents/ux-designer.md` (the HOS source of record — **not** CPS). This makes the roster **15 roles** (16 files), and satisfies completeness-gate sub-case B (no reviewer dispatches to an agent absent from the shipped set). New §B entries 14 and 15 added.
+- **O2 — coverage/mutation targets. RESOLVED.** The **targets and the concept of measuring them are CORE** (stack-neutral requirements): coverage ≥ 80%, mutant score ≥ 75%, plus the rule "**mutation testing is required wherever the stack supports it**." A project **may** override the numbers in PROJECT, **but it is NOT recommended**. The **PACK** supplies the stack-specific measurement: it **substitutes the mutation tool** (e.g. `stryker` on .NET vs `mutmut`/`cosmic-ray` on Python) **or disables mutation testing** entirely where the stack has no suitable framework (in which case `Mutant_score_pct` records the disablement and only the coverage target applies). CORE names **no tool**; PACK names the tool or disables. Reflected in §B role 13 ("Default targets" + "Deferred to PACK/PROJECT").
+- **O3 — round-cap override seam. RESOLVED (as specified):** CORE cap = **5 rounds**, **PROJECT-overridable** (PROJECT governs per A3). The escape valve is the escalation, not the number, so the override seam stays open. Confirmed in §A8.
+- **O4 — generalized reviewer disciplines. RESOLVED (as specified):** the explicit **`N/A`-with-`Reason:`** discipline (A6) and the **"name ALL other lanes"** discipline (A9) are **CORE requirements for every reviewer** — the generalization from the reliability/ops references to the full reviewer set is approved and binding, not coder-optional. Confirmed in §A6 and §A9.
