@@ -51,9 +51,10 @@ python3 --version && gh --version && agy --version && codex --version
 
 ```bash
 # From the hos-bootstrap folder (or bootstrap/ in a clone):
-./hos_install.sh /path/to/your-new-project
-#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-new-project
-#   dev install:    ./hos_install.sh --local        /path/to/your-new-project   (unvalidated)
+./hos_install.sh --pack django /path/to/your-new-project
+#   no stack depth:  ./hos_install.sh --no-pack            /path/to/your-new-project
+#   pin a version:   ./hos_install.sh --release v0.3.0 --pack django /path/to/your-new-project
+#   dev install:     ./hos_install.sh --local --pack django /path/to/your-new-project   (unvalidated)
 ```
 
 It will:
@@ -63,6 +64,16 @@ It will:
 4. Record the installed tag at the target's `.hos-release`
 
 > **Re-running / updates:** safe to re-run — it skips files you've customized unless you pass `--force`. To move to a new framework version, re-run with `--release <tag>` (or just re-run for the latest).
+
+### Pack selection
+
+HOS ships a **canonical base agent team** (16 agents: pm-agent, architect, technical-design, coder, the 8 reviewers, unit-test, system-test, ops-designer, ux-designer). Each agent file is divided into layered regions — the consumer no longer needs to hand-roll the team from scratch.
+
+**`--pack <name>`** installs the base team with stack-specific depth for the named pack. The only shipping pack today is `django`, which adds Django-depth content to 12 of the 16 agents (security-reviewer, unit-test, coder, code-reviewer, system-test, a11y, privacy, architect, technical-design, ui, ux, infra); the remaining 4 (pm-agent, ops-reviewer, ops-designer, reliability-reviewer) are CORE-only in all packs.
+
+**`--no-pack`** installs the bare CORE layer without any stack depth. CORE is intentionally shallow — you will need to add stack idioms yourself in the PROJECT region of each agent. Use this only if no pack fits your stack.
+
+The selected pack is recorded in `scripts/framework/config.sh` as `PACK=django` (or `PACK=none`). For the agent region model (CORE / PACK / PROJECT) and what this means for upgrades and customization, see **[CUSTOMIZATION.md](CUSTOMIZATION.md)**.
 
 ---
 
@@ -116,7 +127,7 @@ Invoke framework-setup-validator
 
 It will run through this checklist and report anything missing:
 - All required directories exist
-- All 26 agent files are present
+- All required agent files are present (including consumer agents and the validator agents: `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator`, and `post-change-sweep`)
 - Framework scripts are executable
 - `config.sh` has non-placeholder values
 - `agy` and `codex` CLIs are available (warns if not — validation still works without them, but AI review is skipped)
@@ -195,9 +206,11 @@ Before committing anything (including the customized agent files), run the full 
 bash scripts/framework/run_framework_validation.sh
 ```
 
-This runs:
+This runs four phases (no phase may be skipped without explicit human approval):
 1. `check_agents_static.sh` — confirms agent file references are valid and escalation paths resolve
 2. `validate_agents.sh` — agy and codex review the agent definitions for consistency and gaps
+3. `validate_docs.sh` — documentation coverage check (omissions, stale claims)
+4. `validate_spec_compliance.sh` — governance requirements compliance check
 
 Fix any blocking findings before committing.
 
@@ -224,7 +237,7 @@ The sweep agent categorizes your diff and drives all relevant reviews (code-revi
 ```
 your-project/
 ├── .claude/
-│   └── agents/                  ← 26 agent definition files
+│   └── agents/                  ← 24 agent definition files (from consumer_agents.txt)
 ├── docs/
 │   ├── AGENTS.md                ← pipeline documentation
 │   ├── OVERSIGHT-RUNBOOK.md     ← operational runbook

@@ -6,21 +6,43 @@ For installation steps, see `docs/SETUP.md`.
 
 ---
 
+## The CORE / PACK / PROJECT model
+
+Every agent file shipped by HOS is divided into three clearly labelled regions:
+
+| Region | Owner | Contents | Upgrade behavior |
+|---|---|---|---|
+| `CORE` | HOS | Stack-neutral best-practice behavior — self-flagging, escalation chains, loop-exit rules, review format. Identical across all packs. | Updated on upgrade. Editing hard-stops the upgrade (exit 4). |
+| `PACK:<name>` | HOS | Stack-specific depth for the selected pack (e.g., Django ORM patterns, migration rules, pytest-django idioms). Present only when a pack was selected at install. | Updated on upgrade. Editing hard-stops the upgrade (exit 4). |
+| `PROJECT` | You | Your project's stack, paths, domain knowledge, design tokens — anything that differs per deployment. Intentionally blank at install; filled by you. | **Never overwritten.** Safe to edit freely. |
+
+**Canonical region order:** CORE → PACK → PROJECT. The PROJECT section governs where regions conflict (recency precedence); your additions take effect without touching HOS-owned regions.
+
+**Where to put your customizations:** always in the PROJECT region. Never edit the CORE or PACK regions directly. If you need to override a CORE or PACK behavior, write the override in PROJECT — the later region wins.
+
+**Upgrade behavior:** when you re-run `hos_install.sh` to pick up a new release:
+- HOS-owned CORE and PACK regions are rewritten.
+- If you have edited a CORE or PACK region, the installer hard-stops (exit 4, nothing written) and tells you exactly which regions were modified. Fix by moving your changes to PROJECT and re-running, or pass `--squash` to discard your edits to HOS-owned regions and accept the new content.
+- PROJECT regions are never touched.
+
+**Pack switching:** passing a different `--pack` on upgrade drops the old pack's regions and writes the new pack's regions. Passing `--no-pack` drops the pack regions entirely, leaving only CORE + PROJECT.
+
+---
+
 ## The rule: change content, not structure
 
 The framework's value is in its **structure** — the escalation chains, the dependency ordering, the change-classification taxonomy (clarifying/additive/structural), the validation suite. These should not change between projects.
 
 What changes per-project is **content**: file paths, tech stack specifics, domain knowledge, design system details.
 
-**Safe to change:**
+**Safe to change (always in the PROJECT region of each agent file):**
 - Spec file paths in agent prompts
 - Tech stack references (Django → Rails, HTMX → React, etc.)
 - Deployment host/URL details
 - Design pack file paths and rules
 - `config.sh` values
-- The project-specific parts of `pm-agent`, `architect`, `coder`, `infra-reviewer`, `deploy-verify`
 
-**Leave alone:**
+**Leave alone (CORE and PACK regions — editing these hard-stops upgrades):**
 - Escalation chains and dependency ordering between agents
 - The clarifying/additive/structural change taxonomy
 - Loop-exit rules (5-round limits, temp-state files)
@@ -138,7 +160,7 @@ If your project has a different design system (or none):
 
 ## Adding observability review (ops-designer + ops-reviewer)
 
-These agents are optional — add them when your project has background jobs, external API integrations, async task queues, or multi-service architecture. Skip for CLI tools, libraries, or simple request/response apps with no external dependencies.
+These agents are not needed for projects without ops complexity. If the project has background jobs, external integrations, async task queues, or multi-service architecture, ops-designer is required at project start and ops-reviewer is required for applicable changes.
 
 ---
 
@@ -173,7 +195,7 @@ These agents are optional — add them when your project has background jobs, ex
 - Do not add `ops` to every step — only steps with ops complexity
 
 ### Project-start sequence
-When ops is configured, `ops-designer` runs after `architect` completes the ADR and before any build step begins. `architect` signs off on `docs/ops/TELEMETRY-SPEC.md`. This sign-off must appear in the register before `oversight-evaluator` will proceed.
+When ops is configured, `ops-designer` runs after `architect` completes the ADR and before any build step begins. `ops-designer` writes `docs/ops/TELEMETRY-SPEC.md`; `architect` validates the spec at the architectural level before build steps begin. `ops-designer` does not write a per-step sign-off register entry.
 
 ---
 
@@ -284,12 +306,13 @@ project installer against that release (no clone needed — it fetches the relea
 
 ```bash
 # From your bootstrap/ folder (or a clone's bootstrap/):
-./hos_install.sh /path/to/your-project              # move to the latest release
-./hos_install.sh --release v0.2.0 /path/to/project  # or pin a specific version
+./hos_install.sh --pack django /path/to/your-project              # move to the latest release
+./hos_install.sh --release v0.3.0 --pack django /path/to/project  # or pin a specific version
 
 # hos_install.sh will:
 # - Fetch the validated release (refuses anything that isn't a published release)
-# - Update framework scripts/agents; SKIP files you've customized (use --force to overwrite)
+# - Rewrite CORE and PACK regions in agent files (hard-stops if you edited them — see above)
+# - Leave PROJECT regions untouched
 # - Record the new tag at the target's .hos-release
 ```
 
