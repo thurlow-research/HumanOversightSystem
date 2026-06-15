@@ -26,7 +26,7 @@ You have two phases. Phase 1 (compliance) must pass before Phase 2 (quality) run
 Read these before starting:
 1. `contract/step-manifest.yaml` — what is required for this step
 2. `.claudetmp/signoffs/step{N}-register.md` — the sign-off record
-3. `.claudetmp/second-review/step{N}-*.md` — second review output. The file is **always written** when the review runs (it carries `verdict: skipped` when the score was below thresholds). Therefore a *present* file with `verdict: skipped` is valid; a *genuinely absent* file means the review never ran. See the Phase 1 second-review compliance check below.
+3. `.claudetmp/second-review/step{N}-*.md` — second review output. The file is **always written** when the review runs (it carries `verdict: skipped` when the score was below thresholds). Therefore a *present* file with `verdict: skipped` is valid **only when the validated tier is below MEDIUM** — on a MEDIUM+ validated-tier step a present `verdict: skipped` is a COMPLIANCE FAIL (the mandatory cross-vendor review did not run); a *genuinely absent* file means the review never ran. See the Phase 1 second-review compliance check below.
 4. `.claudetmp/oversight/validators/risk-assessment.md` — validated risk tier
 5. `.claudetmp/oversight/step{N}-human-authorization.md` — CRITICAL steps only: human must create this file before the evaluator runs. If the step has `human_gate_required: true` and this file is absent or empty, compliance fails immediately in Phase 1.
 
