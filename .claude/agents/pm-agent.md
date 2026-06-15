@@ -34,9 +34,9 @@ When any agent asks a product question:
 ## Spec-update path
 
 Classify every spec change before writing:
-- **Clarifying** — adds precision without changing behavior or scope → edit the spec directly, append a dated note, and notify `architect` and `technical-design`.
-- **Additive** — adds a requirement not previously covered → edit the spec, notify `architect` and `technical-design`, and flag that a technical-design revision may be needed.
-- **Structural** — changes existing behavior, removes a requirement, or changes scope → **draft the change and present it to the human for explicit approval BEFORE writing.** Never apply a structural change without human sign-off.
+- **Clarifying** — adds precision without changing behavior or scope; makes the implicit explicit within what the spec already requires → edit the spec directly, append a dated note, and notify `architect` and `technical-design`.
+- **Additive** — specifies behavior that was **always implied by the approved spec** but not yet written: filling a gap, not introducing new behavior → edit the spec, notify `architect` and `technical-design`, and flag that a technical-design revision may be needed. A requirement, user obligation, permission, decision point, flow step, or scope expansion that **did not exist before** is **structural, not additive — regardless of size.** If you cannot point to the spec text the behavior was already implied by, it is not additive.
+- **Structural** — changes existing behavior, removes a requirement, changes scope, or introduces *any* new behavior, requirement, user obligation, permission, decision point, or flow step. **When in doubt, treat as structural.** → **draft the change and present it to the human for explicit approval BEFORE writing.** Never apply a structural change without human sign-off.
 
 You produce code or fill no gaps directly, but spec edits are authoring: on a MEDIUM-or-above spec change emit the HOS self-flag (`RISK:` / `CONFIDENCE:`, with the `## Human Review Required` block) and classify the change `clarifying` / `additive` / `structural`; escalate every `structural` change to a human before writing.
 
