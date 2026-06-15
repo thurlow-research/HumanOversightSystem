@@ -152,6 +152,20 @@ def _region_name(region_id: str) -> str | None:
     return None
 
 
+def _normalize_body(body: bytes) -> bytes:
+    """Normalize a region body's line endings (TD §2.6).
+
+    The single definition of body normalization, shared by `region_sha` and
+    `compose` so disk bytes and manifest sha never disagree. Steps, in order:
+      1. CRLF -> LF, then bare CR -> LF (so an `autocrlf` checkout or a stray
+         classic-Mac CR does not register as drift — the line-ending analogue
+         of D1(c)),
+      2. strip all trailing newlines,
+      3. append exactly one trailing `\\n`.
+    """
+    return body.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n") + b"\n"
+
+
 def _split_lines_keepends(data: bytes) -> list[bytes]:
     """Split on '\n' preserving the terminator on every line but the last.
 
@@ -286,6 +300,23 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
         if classified is None:
             continue
         region_id, edge = classified
+        # Invariant 7 (B1): a strict marker line that falls *inside another
+        # region's span* is a literal marker in that region's body. parse() stays
+        # tolerant and pairs such a line by stack position (so it never lands in a
+        # `Region.body`), which is why this is detected on the raw scan rather
+        # than by walking `parsed.regions[].body`. This is the DIRECT diagnostic
+        # naming the cause; it may co-occur with the E_NESTED / E_UNBALANCED
+        # symptom the same line also produces.
+        #   - a START while a region is already open is enclosed by that region;
+        #   - an END is enclosed iff an OUTER region remains open after it closes
+        #     the innermost (depth >= 2). The END that closes the sole open region
+        #     (depth 1) is the legitimate close, not a body line.
+        in_body = bool(stack) if edge == "START" else len(stack) >= 2
+        if in_body:
+            errors.append((line_no, "E_LITERAL_MARKER_IN_BODY",
+                           "region bodies may not contain a literal marker line; "
+                           "escape or inline it (render it inside backticks, or "
+                           "break the column-0 `<!-- HOS:...-->` form)"))
         if edge == "START":
             if stack:
                 # A START while a region is already open -> nesting (forbidden).
@@ -295,6 +326,9 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
             stack.append((region_id, line_no))
         else:  # END
             if not stack:
+                # Unreachable via the CLI (parse() raises END_WITHOUT_START on an
+                # empty-stack END before validate runs); retained for direct
+                # validate() callers that build a ParsedAgent without parse().
                 errors.append((line_no, "E_UNBALANCED",
                                f"END marker for {region_id} with no open START"))
             else:
@@ -359,18 +393,17 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
 
 def region_sha(region_body: bytes) -> str:
     """
-    sha256 over the region body with the trailing newline normalized to exactly
-    one '\\n' (TD §2.6). This is the SAME normalization compose() writes between
-    the markers, so disk and manifest never disagree:
-
-        normalized = body.rstrip(b"\\r\\n") + b"\\n"
+    sha256 over the region body with ALL line endings normalized to LF and the
+    trailing newline normalized to exactly one '\\n' (TD §2.6), via the shared
+    `_normalize_body` helper. This is the SAME normalization compose() writes
+    between the markers, so disk and manifest never disagree — a cross-platform
+    (`autocrlf`) checkout does not register as drift.
 
     Lowercase hex. Used for every region row in the manifest and every
     three-way comparison. (Whole-file rows keep the installer's `_sha256` over
     raw file bytes — do NOT route whole-file through region_sha.)
     """
-    normalized = region_body.rstrip(b"\r\n") + b"\n"
-    return hashlib.sha256(normalized).hexdigest()
+    return hashlib.sha256(_normalize_body(region_body)).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -404,11 +437,12 @@ def compose(parsed_or_regions: ParsedAgent | list[Region]) -> bytes:
 
     Each region is emitted as:
         <canonical START marker>\\n
-        <body, trailing newline normalized to exactly one \\n>
+        <body, line endings normalized to LF + exactly one trailing \\n>
         <canonical END marker>\\n
     with a single blank line separating regions. The body emitted is exactly
-    `body.rstrip(b"\\r\\n") + b"\\n"`, the same bytes region_sha hashes — so
-    region_sha(parse(compose(x))) == region_sha(x) for well-formed x.
+    `_normalize_body(body)` (LF-only, single trailing newline), the same bytes
+    region_sha hashes — so region_sha(parse(compose(x))) == region_sha(x) for
+    well-formed x, and compose writes LF-only bodies so D1 holds at write time.
 
     Out-of-region prose is NOT reproduced here (D8 — compose owns canonical
     output; only region bodies travel). Front-matter is reattached verbatim.
@@ -428,7 +462,7 @@ def compose(parsed_or_regions: ParsedAgent | list[Region]) -> bytes:
 
     blocks: list[bytes] = []
     for r in ordered:
-        normalized_body = r.body.rstrip(b"\r\n") + b"\n"
+        normalized_body = _normalize_body(r.body)
         block = (
             _canonical_start(r.id) + b"\n"
             + normalized_body

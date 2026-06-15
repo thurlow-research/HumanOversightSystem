@@ -164,6 +164,7 @@ Structural invariants (all must hold):
 4. **No overlap / proper nesting is *forbidden*** — regions are siblings, never nested. A START encountered while a region is already open → `E_NESTED`.
 5. **Unique PACK names** — no two `PACK:<name>` with the same `<name>` → `E_DUP_PACK`.
 6. **Marker well-formedness** — any line matching the loose pattern `<!--\s*HOS:` but not the strict regex (2.1) → `E_MALFORMED_MARKER` (catches typo'd markers that would otherwise silently become body and unbalance the file).
+7. **No literal marker inside a region body** (B1, spec §4) — marker lines are a reserved whole-line token with **no code-fence exemption**, so a body line matching the strict grammar (2.1) → `E_LITERAL_MARKER_IN_BODY` at the offending line. This is the **direct** diagnostic (names the cause: a marker line inside a body), distinct from the `E_DUP_CORE`/`E_NESTED` symptoms a re-parse of such a body would otherwise produce. Documentation that must show a marker renders it inline in backticks or breaks the column-0 form. `parse()` does **not** change — it stays byte-exact/tolerant; this is a `validate()`-only invariant.
 
 `validate()` does **not** enforce canonical *order* (that's `compose()`'s job — it reorders). It only enforces structural integrity. Order is normalized on write, not rejected on read, so a hand-edited out-of-order file still upgrades cleanly.
 
@@ -174,17 +175,21 @@ Rebuilds the canonical file the installer writes to disk. **This is the only wri
 - Order: front-matter → (preamble/lead-in for CORE) → **CORE** → each **PACK:<name> in alphabetical name order** → **PROJECT** last (spec §4 — recency precedence). If `PROJECT` absent, it is **not** synthesized by compose (callers that need an empty stub create it explicitly — see installer §7.1).
 - Each region is emitted as: canonical START marker line, `\n`, the region body with **trailing newline normalized to exactly one `\n`**, the canonical END marker line, `\n`.
 - A single blank line separates regions (matches the spec §4 example). Lead-in headings (e.g. `## Project Extensions`) are emitted immediately before their region's START marker.
-- Trailing-newline normalization rule (applied to each body before hashing *and* before writing, so the hash matches the on-disk bytes): strip all trailing `\n`/`\r\n`, then the body used for sha is the stripped bytes; the body *written* is stripped bytes + exactly one `\n` inside the markers. **The sha is over the stripped-then-single-`\n`-normalized body** — define it once, use it in both `region_sha` and the writer, so disk and manifest never disagree (the D1 "substitution before sha" guarantee depends on this identity).
+- Line-ending + trailing-newline normalization rule (applied to each body before hashing *and* before writing, so the hash matches the on-disk bytes): first normalize **all** line endings to LF (CRLF→LF, then bare CR→LF), then strip all trailing `\n`, then append exactly one trailing `\n`. The body used for sha and the body *written* between the markers are the SAME normalized bytes. **The sha is over the LF-normalized, single-trailing-`\n` body** — defined **once** in `_normalize_body(body)`, used by both `region_sha` and the writer, so disk and manifest never disagree (the D1 "substitution before sha" guarantee, and its line-ending analogue D1(c), depend on this identity). **`compose` writes LF-only bodies, so D1 holds at write time** — the bytes HOS writes equal the bytes it hashes, and a cross-platform (`autocrlf`) checkout does not register as drift.
 
-> **Normalization decision (load-bearing):** `region_sha` hashes `body.rstrip(b"\r\n") + b"\n"`. `compose` writes exactly those bytes between the markers. Therefore `region_sha(parse(compose(x))) == region_sha(x)` for any well-formed `x` — round-trip stable. This is the testable identity the coder must assert.
+> **Normalization decision (load-bearing):** `_normalize_body(body)` = `body.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n") + b"\n"`. `region_sha` hashes it; `compose` writes exactly those bytes between the markers. Therefore `region_sha(parse(compose(x))) == region_sha(x)` for any well-formed `x`, and the same content authored LF vs CRLF yields equal `region_sha` (the Windows-checkout-upgrade scenario is normalized away, not flagged as drift) — round-trip stable. This is the testable identity the coder must assert.
 
 ### 2.6 `region_sha(region_body: bytes) -> str`
 
 ```
+_normalize_body(body) -> bytes
+  return body.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n") + b"\n"
+
 region_sha(body) -> hexdigest
-  normalized = body.rstrip(b"\r\n") + b"\n"
-  return sha256(normalized).hexdigest()
+  return sha256(_normalize_body(body)).hexdigest()
 ```
+
+`_normalize_body` is the single shared definition (LF-normalize, strip trailing newlines, append exactly one) called by **both** `region_sha` and `compose`'s per-region body emission, so the manifest sha and the on-disk bytes are always the same bytes.
 
 Lowercase hex. Used for every region row in the manifest and every three-way comparison. (Whole-file rows keep using the installer's existing `_sha256` over raw file bytes — do **not** route whole-file through `region_sha`; they are different units.)
 

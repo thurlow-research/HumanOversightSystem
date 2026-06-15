@@ -3,13 +3,17 @@
 Covers the binding invariants from docs/v0.3.0/TECHNICAL-DESIGN.md §2 and the
 spec §4 / §11/§11a decisions the module must honor:
 
-  - round-trip identity: region_sha(parse(compose(x))) == region_sha(x)
+  - round-trip identity: region_sha(parse(compose(x))) == region_sha(x), incl.
+    the full ordered region-id list across a two-pack round-trip (B2)
   - validate() fail-closed cases (no CORE, two CORE, unbalanced, duplicate
-    PACK, nesting, duplicate PROJECT, malformed marker)
+    PACK, nesting, duplicate PROJECT, malformed/indented marker, and
+    E_LITERAL_MARKER_IN_BODY — no literal marker line inside a body, B1)
+  - a dogfood guard: no shipped agent/rubric file trips E_LITERAL_MARKER_IN_BODY
   - flat (marker-less) file -> implicit single CORE
   - D7 placeholder-free CORE/PACK check (--placeholder-keys)
   - compose() canonical re-ordering (CORE -> PACK alpha -> PROJECT)
-  - trailing-newline normalization (D1 substitution-before-sha identity)
+  - line-ending + trailing-newline normalization (LF/CRLF/CR invariant; compose
+    writes LF only; the D1 substitution-before-sha identity)
 
 regions is importable bare because tests/conftest.py puts the validators dir on
 sys.path (same pattern as the other validator tests).
@@ -87,13 +91,20 @@ def test_parse_flat_file_no_regions():
 
 
 def test_parse_end_without_start_raises():
-    with pytest.raises(regions.ParseError):
+    # S6: assert the structured fields, not just the type — the actionable-error
+    # contract is that ParseError carries a precise line + kind.
+    with pytest.raises(regions.ParseError) as exc:
         parse(b"<!-- HOS:CORE:END -->\n")
+    assert exc.value.kind == "END_WITHOUT_START"
+    assert exc.value.line == 1
 
 
 def test_parse_eof_inside_region_raises():
-    with pytest.raises(regions.ParseError):
+    # S6: assert line + kind, not just that something raised.
+    with pytest.raises(regions.ParseError) as exc:
         parse(b"<!-- HOS:CORE:START -->\nbody never closed\n")
+    assert exc.value.kind == "EOF_IN_REGION"
+    assert exc.value.line == 1  # points at the unterminated START
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +203,60 @@ def test_validate_does_not_enforce_order():
     assert validate(parse(text)).ok
 
 
+def test_validate_indented_marker_is_malformed():
+    # S4: an indented marker (leading whitespace) is NOT a strict marker but DOES
+    # match the loose probe -> E_MALFORMED_MARKER. Pins the intentional
+    # fail-closed pairing (a marker that "looks right" but isn't column-0 must
+    # never silently become body text).
+    text = (
+        b"<!-- HOS:CORE:START -->\nbody\n<!-- HOS:CORE:END -->\n"
+        b"  <!-- HOS:CORE:START -->\n"
+    )
+    res = validate(parse(text))
+    assert not res.ok
+    assert any(code == "E_MALFORMED_MARKER" for _, code, _ in res.errors)
+
+
+# --------------------------------------------------------------------------- #
+# B1 — no literal marker line inside a region body (E_LITERAL_MARKER_IN_BODY)
+# --------------------------------------------------------------------------- #
+
+def test_validate_rejects_literal_marker_in_body():
+    # A CORE body containing a fenced example with bare column-0 PACK markers.
+    # PACK:django is used (not CORE/PROJECT) so the literal lines do NOT also
+    # trip E_DUP_CORE / E_NESTED — they are pure body bytes that happen to match
+    # the marker grammar. parse() stays tolerant (treats them as body); validate
+    # rejects them with the direct diagnostic.
+    body = (
+        "Here is an example region:\n"
+        "```\n"
+        "<!-- HOS:PACK:django:START -->\n"
+        "stack rules\n"
+        "<!-- HOS:PACK:django:END -->\n"
+        "```"
+    )
+    parsed = parse(_agent(core=body))
+    res = validate(parsed)
+    assert res.ok is False
+    assert any(code == "E_LITERAL_MARKER_IN_BODY" for _, code, _ in res.errors)
+
+
+def test_dogfood_shipped_files_have_no_literal_marker_in_body():
+    # Every shipped agent .md and the rubric must survive validate() WITHOUT
+    # emitting E_LITERAL_MARKER_IN_BODY (other codes, e.g. E_NO_CORE on a flat
+    # file, are irrelevant to this guard). Docs that show markers must use inline
+    # backtick spans / broken column-0 forms.
+    targets = sorted((ROOT / ".claude" / "agents").glob("*.md"))
+    targets.append(ROOT / "docs" / "v0.3.0" / "CORE-PACK-PROJECT-rubric.md")
+    offenders = []
+    for path in targets:
+        parsed = parse(path.read_bytes())
+        res = validate(parsed)
+        if any(code == "E_LITERAL_MARKER_IN_BODY" for _, code, _ in res.errors):
+            offenders.append(path.name)
+    assert offenders == [], f"literal marker(s) in body of: {offenders}"
+
+
 # --------------------------------------------------------------------------- #
 # D7 — placeholder-free CORE/PACK
 # --------------------------------------------------------------------------- #
@@ -245,6 +310,21 @@ def test_region_sha_marker_whitespace_does_not_churn():
     assert region_sha(tight.regions[0].body) == region_sha(loose.regions[0].body)
 
 
+def test_region_sha_line_ending_invariant():
+    # S1: LF, CRLF, and bare-CR renderings of the same content hash identically.
+    assert (region_sha(b"a\nb\nc\n")
+            == region_sha(b"a\r\nb\r\nc\r\n")
+            == region_sha(b"a\rb\rc\r"))
+
+
+def test_round_trip_stable_across_crlf():
+    # The Windows-checkout-upgrade scenario: the same content authored LF vs
+    # CRLF yields equal region_sha (normalized away, NOT registered as drift).
+    lf = parse(_agent(core="line one\nline two"))
+    crlf = parse(_agent(core="line one\nline two").replace(b"\n", b"\r\n"))
+    assert region_sha(_region(lf, "CORE").body) == region_sha(_region(crlf, "CORE").body)
+
+
 # --------------------------------------------------------------------------- #
 # compose — round-trip identity + canonical reordering
 # --------------------------------------------------------------------------- #
@@ -294,6 +374,30 @@ def test_compose_emits_canonical_marker_form():
     out = compose(parse(src))
     assert b"<!-- HOS:CORE:START -->" in out
     assert b"<!--   HOS:CORE:START   -->" not in out
+
+
+def test_compose_writes_lf_only():
+    # S1: a region authored with internal CRLF is written LF-only (D1 holds at
+    # write time — compose writes the same LF bytes region_sha hashes).
+    src = _agent(core="alpha\nbeta\ngamma").replace(b"\n", b"\r\n")
+    out = compose(parse(src))
+    assert b"\r" not in out
+
+
+def test_round_trip_preserves_full_ordered_region_list():
+    # B2: the FULL ordered region-id list must survive a round-trip, with TWO
+    # packs present, so a compose path that silently drops or reorders a PACK is
+    # caught (a single-region assertion would miss it).
+    text = (
+        b"<!-- HOS:CORE:START -->\nc\n<!-- HOS:CORE:END -->\n\n"
+        b"<!-- HOS:PACK:beta:START -->\nb\n<!-- HOS:PACK:beta:END -->\n\n"
+        b"<!-- HOS:PACK:alpha:START -->\na\n<!-- HOS:PACK:alpha:END -->\n\n"
+        b"<!-- HOS:PROJECT:START -->\np\n<!-- HOS:PROJECT:END -->\n"
+    )
+    out = parse(compose(parse(text)))
+    assert [r.id for r in out.regions] == [
+        "CORE", "PACK:alpha", "PACK:beta", "PROJECT",
+    ]
 
 
 # --------------------------------------------------------------------------- #
