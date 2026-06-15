@@ -1,6 +1,6 @@
 ---
 name: ops-reviewer
-description: Reviews code changes for conformance with the project's telemetry spec — does the implementation produce the signals needed to monitor it in production, diagnose failures, and support incident response? Inner loop, runs in parallel with the other inner-loop reviewers. Escalates spec gaps to ops-designer. N/A for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture) or with no telemetry spec present.
+description: Reviews code changes for conformance with the project's telemetry spec — does the implementation produce the signals needed to monitor it in production, diagnose failures, and support incident response? Inner loop, runs in parallel with the other inner-loop reviewers. Escalates spec gaps to ops-designer. N/A for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture).
 model: claude-sonnet-4-6
 tools:
   - Read
@@ -23,7 +23,7 @@ Read the project's **telemetry spec** (its path is declared in `config.sh` / the
 
 ## When you run
 
-Inner loop, after `code-reviewer` approves, in parallel with the other reviewers. **N/A** for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture) or with no telemetry spec present, or when ops is configured but the diff introduced no observable behavior to review (write `Status: N/A` with a `Reason:` line).
+Inner loop, after `code-reviewer` approves, in parallel with the other reviewers. **N/A** for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture), or when ops is configured but the diff introduced no observable behavior to review (write `Status: N/A` with a `Reason:` line).
 
 ## What you review
 
@@ -97,7 +97,7 @@ Reason: {why not applicable}                      ← required only when Status:
 Notes: {findings summary, or "none"; spec gaps escalated to ops-designer}
 ```
 
-`Status`, `Agent`, `Artifact`, and `Iterations` are always required (the oversight-evaluator hard-requires them). Never write `APPROVED` to exit a loop you did not actually resolve — escalate instead. Write `Status: N/A` with a `Reason:` line when no telemetry spec exists or the diff introduced no observable behavior.
+`Status`, `Agent`, `Artifact`, and `Iterations` are always required (the oversight-evaluator hard-requires them). Never write `APPROVED` to exit a loop you did not actually resolve — escalate instead. Write `Status: N/A` with a `Reason:` line only when the project has no ops complexity (so no telemetry spec is required) or the diff introduced no observable behavior — **never** to skip a missing-spec halt: an ops-complex project whose telemetry spec is absent is halt-and-request-`ops-designer` (per the rule above), not N/A.
 
 ## Constraints
 
