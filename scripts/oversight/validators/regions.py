@@ -33,15 +33,19 @@ manifest-rows / validate / region-sha / compose CLI, the pure three-way
 the bash installer stays a thin caller — `plan_upgrade` (the per-file Phase
 A/B core, TD §4.5), `migrate_flat` / `migrate_flat_introduced_core` (the
 flat-file migration writer, TD §5/D3), and `assemble_manifest` (the full
-`.hos-manifest` writer, TD §1.1/D5.6). The installer-facing `merge` / `migrate`
-CLI subcommands (the thin bash wiring) are the next/final pass and are
-intentionally NOT added to the CLI here.
+`.hos-manifest` writer, TD §1.1/D5.6). The installer-facing `plan` / `migrate`
+CLI subcommands (the THIN bash wiring) are thin wrappers over `plan_upgrade` /
+`migrate_flat`: they parse args, call the existing pure functions, and serialize
+the result (JSON for `plan`, raw composed bytes for `migrate`). They add NO new
+logic — all decisions live in the pure functions above.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -55,6 +59,10 @@ EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_INVALID = 2
 EXIT_REGION_ABSENT = 3
+# A blocked upgrade (any drift HARDSTOP, no --squash) — TD §4.3. Distinct from
+# the usage/invalid codes so the installer can tell "drift, refuse the whole
+# upgrade" apart from a bad invocation; `plan` returns this when blocked.
+EXIT_DRIFT = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -988,6 +996,45 @@ def migrate_flat_introduced_core(disk_bytes: bytes, core_template_bytes: bytes) 
 # --------------------------------------------------------------------------- #
 
 
+def parse_manifest_line(line: str) -> tuple[str, str, str] | None:
+    """Parse one `.hos-manifest` line into `(path, region, sha)` (TD §1.3).
+
+    Pure. Returns None for blank lines and `#` comments (incl. the schema-version
+    marker). A 3-column row is v2 (`<path>\\t<region>\\t<sha>`); a 2-column row is
+    the legacy v1 format and is interpreted as `region = WHOLE` (back-compat read,
+    D5.6). Anything else raises ValueError ("malformed manifest row").
+    """
+    stripped = line.strip("\n")
+    if not stripped.strip() or stripped.lstrip().startswith("#"):
+        return None
+    fields = stripped.split("\t")
+    if len(fields) == 3:
+        return fields[0], fields[1], fields[2]
+    if len(fields) == 2:
+        return fields[0], "WHOLE", fields[1]
+    raise ValueError(f"malformed manifest row: {line!r}")
+
+
+def base_shas_for_path(manifest_text: str, path: str) -> dict[str, str]:
+    """Extract `{region_id: base_sha}` for ONE file's rows from a manifest (§4.5).
+
+    The per-file base-shas `plan_upgrade` needs. WHOLE rows (non-agent / legacy
+    v1) are skipped — they have no region the three-way merge consults; a v1
+    agent row therefore yields an empty dict, so its CORE plans with base_sha=None
+    (unknown provenance ⇒ conservative, §4.2), which is the correct legacy
+    behavior. Pure — the caller reads the manifest file.
+    """
+    out: dict[str, str] = {}
+    for line in manifest_text.splitlines():
+        parsed = parse_manifest_line(line)
+        if parsed is None:
+            continue
+        row_path, region, sha = parsed
+        if row_path == path and region != "WHOLE":
+            out[region] = sha
+    return out
+
+
 def assemble_manifest(rows_by_file: dict[str, list[str]]) -> str:
     """Produce the full `.hos-manifest` text (TD §1.1, ADR D5.6).
 
@@ -1099,6 +1146,130 @@ def _cmd_compose(args) -> int:
     return EXIT_OK
 
 
+def _cmd_plan(args) -> int:
+    """Thin wrapper over `plan_upgrade` (TD §2.7 / §4.5).
+
+    Reads the on-disk file and the ALREADY-SUBSTITUTED template the installer
+    staged (D6 — regions.py never substitutes), takes the prior manifest's
+    per-region base-shas as JSON, and prints the plan as a single JSON object on
+    stdout:
+
+        {"blocked": bool,
+         "actions": [[region_id, action_token], ...],
+         "hardstops": [[region_id, reason], ...],
+         "new_bytes_b64": <base64 of the composed file> | null,
+         "new_manifest_rows": ["<region>\\t<sha>", ...] | null}
+
+    `new_bytes` is base64-encoded so the installer can redirect arbitrary bytes
+    through JSON safely. Exit EXIT_OK (0) when not blocked, EXIT_DRIFT (4) when
+    blocked — so the installer can branch on the exit code alone.
+    """
+    disk_bytes = _read_file(args.disk_file)
+    template_bytes = _read_file(args.template_file)
+    try:
+        base_shas = json.loads(args.base_shas) if args.base_shas else {}
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"--base-shas is not valid JSON: {e}\n")
+        return EXIT_USAGE
+    if not isinstance(base_shas, dict):
+        sys.stderr.write("--base-shas must be a JSON object {region: sha}\n")
+        return EXIT_USAGE
+
+    try:
+        plan = plan_upgrade(
+            disk_bytes,
+            template_bytes,
+            base_shas,
+            squash=args.squash,
+            first_install=args.first_install,
+        )
+    except ParseError as e:
+        sys.stderr.write(f"parse error: {e}\n")
+        return EXIT_INVALID
+
+    payload = {
+        "blocked": plan.blocked,
+        "actions": [[rid, str(action)] for rid, action in plan.actions],
+        "hardstops": [[rid, reason] for rid, reason in plan.hardstops],
+        "new_bytes_b64": (
+            base64.b64encode(plan.new_bytes).decode("ascii") if plan.new_bytes is not None else None
+        ),
+        "new_manifest_rows": plan.new_manifest_rows,
+    }
+    sys.stdout.write(json.dumps(payload) + "\n")
+    return EXIT_DRIFT if plan.blocked else EXIT_OK
+
+
+def _cmd_migrate(args) -> int:
+    """Thin wrapper over `migrate_flat` (TD §2.7 / §5.2, D3).
+
+    Wraps a flat (marker-less) agent file into a single region per the
+    provenance gate: `--ships yes` (HOS ships a same-named agent) → CORE;
+    `--ships no` (unknown provenance) → PROJECT. Prints the wrapped canonical
+    bytes to stdout by default (the installer redirects); `--in-place` rewrites
+    the file. The caller is responsible for only invoking this on a genuinely
+    flat file (parse(...).regions == []) — §5.4.
+    """
+    disk_bytes = _read_file(args.file)
+    try:
+        wrapped = migrate_flat(disk_bytes, hos_ships_agent=(args.ships == "yes"))
+    except ParseError as e:
+        sys.stderr.write(f"parse error: {e}\n")
+        return EXIT_INVALID
+    if args.in_place:
+        with open(args.file, "wb") as fh:
+            fh.write(wrapped)
+    else:
+        sys.stdout.buffer.write(wrapped)
+    return EXIT_OK
+
+
+def _cmd_base_shas(args) -> int:
+    """Thin wrapper over `base_shas_for_path` — print one file's prior base-shas.
+
+    Reads the target's existing `.hos-manifest` and prints the
+    `{region_id: base_sha}` JSON object for `<path>`, ready to feed straight into
+    `plan --base-shas`. A missing manifest (first install) prints `{}` and exits
+    0 — the installer treats an empty object as first_install / unknown
+    provenance.
+    """
+    try:
+        manifest_text = _read_file(args.manifest).decode("utf-8")
+    except FileNotFoundError:
+        sys.stdout.write("{}\n")  # no prior manifest → first install
+        return EXIT_OK
+    try:
+        shas = base_shas_for_path(manifest_text, args.path)
+    except ValueError as e:
+        sys.stderr.write(f"{args.manifest}: {e}\n")
+        return EXIT_INVALID
+    sys.stdout.write(json.dumps(shas) + "\n")
+    return EXIT_OK
+
+
+def _cmd_assemble_manifest(args) -> int:
+    """Thin wrapper over `assemble_manifest` — write the full `.hos-manifest`.
+
+    Reads a JSON object `{path: ["<region>\\t<sha>", ...]}` from `--spec` (a file)
+    or stdin and prints the complete schema-v2 manifest text (schema header +
+    LC_ALL=C-sorted rows). Rows may be path-less or full — both accepted (§1.1).
+    """
+    if args.spec:
+        raw = _read_file(args.spec).decode("utf-8")
+    else:
+        raw = sys.stdin.read()
+    try:
+        rows_by_file = json.loads(raw)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"--spec is not valid JSON: {e}\n")
+        return EXIT_USAGE
+    if not isinstance(rows_by_file, dict):
+        sys.stderr.write("--spec must be a JSON object {path: [rows]}\n")
+        return EXIT_USAGE
+    sys.stdout.write(assemble_manifest(rows_by_file))
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="regions.py",
@@ -1127,6 +1298,70 @@ def build_parser() -> argparse.ArgumentParser:
     co = sub.add_parser("compose", help="print canonical bytes (the only writer's output)")
     co.add_argument("file")
     co.set_defaults(func=_cmd_compose)
+
+    pl = sub.add_parser(
+        "plan",
+        help="plan a one-file upgrade; print JSON, exit 4 if drift-blocked (TD §4.5)",
+    )
+    pl.add_argument("disk_file", metavar="disk-file", help="the agent file currently on disk")
+    pl.add_argument(
+        "template_file",
+        metavar="substituted-template-file",
+        help="the HOS template, ALREADY substituted by the installer (D6)",
+    )
+    pl.add_argument(
+        "--base-shas",
+        default="{}",
+        help="JSON object {region_id: base_sha} from the prior manifest for this file",
+    )
+    pl.add_argument(
+        "--squash",
+        action="store_true",
+        help="explicit consent: convert drift/removed HARDSTOP → REFRESH/DROP (TD §4.3)",
+    )
+    pl.add_argument(
+        "--first-install",
+        action="store_true",
+        help="seed an empty PROJECT stub when none exists on disk (TD §7.1)",
+    )
+    pl.set_defaults(func=_cmd_plan)
+
+    mi = sub.add_parser(
+        "migrate",
+        help="wrap a flat (marker-less) agent into one region by provenance (TD §5.2)",
+    )
+    mi.add_argument("file")
+    mi.add_argument(
+        "--ships",
+        required=True,
+        choices=("yes", "no"),
+        help="yes → HOS ships this slug (wrap as CORE); no → unknown (wrap as PROJECT)",
+    )
+    mi.add_argument(
+        "--in-place",
+        action="store_true",
+        help="rewrite the file instead of printing to stdout",
+    )
+    mi.set_defaults(func=_cmd_migrate)
+
+    bs = sub.add_parser(
+        "base-shas",
+        help="print {region: base_sha} JSON for one path from a prior manifest (TD §4.5)",
+    )
+    bs.add_argument("manifest", help="the target's existing .hos-manifest (missing → {})")
+    bs.add_argument("path", help="the repo-relative agent path to extract rows for")
+    bs.set_defaults(func=_cmd_base_shas)
+
+    am = sub.add_parser(
+        "assemble-manifest",
+        help="emit the full schema-v2 .hos-manifest from a {path: [rows]} JSON spec (TD §1.1)",
+    )
+    am.add_argument(
+        "--spec",
+        default=None,
+        help="JSON file {path: [rows]}; reads stdin if omitted",
+    )
+    am.set_defaults(func=_cmd_assemble_manifest)
 
     return p
 
