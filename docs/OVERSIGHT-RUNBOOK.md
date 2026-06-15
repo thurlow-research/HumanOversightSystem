@@ -118,6 +118,11 @@ Run this once before the first build step begins. These agents produce the docum
 # "Invoke architect for initial architecture review"
 # architect reads confirmed requirements + UX-DESIGN-READINESS.md,
 # asks any technical questions, and writes ADR-001-pilot.md
+# NOTE: architect decisions are final on architecture, but a decision that
+# alters user-visible behavior, the cost model, deployment-topology risk, the
+# data-retention surface, or operational obligations (e.g. sync→async/queue)
+# must clear a human/PM product-boundary checkpoint BEFORE it binds. A change
+# with product consequences is not "pure architecture." (see docs/AGENTS.md §2)
 
 # 4. Ops designer — telemetry spec (SKIP if project has no ops complexity)
 # "Invoke ops-designer to produce the telemetry spec"

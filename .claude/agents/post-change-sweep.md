@@ -48,10 +48,10 @@ Map each changed file to one or more domains using these rules:
 | **migrations** | `**/migrations/*.py` |
 | **templates** | `**/templates/**/*.html` |
 | **tests** | `tests/**/*.py`, `**/test_*.py`, `conftest.py` |
-| **infrastructure** | `docker-compose.yml`, `Caddyfile`, `**/*.env.example`, `{project}/scripts/backup.sh` |
-| **design-pack** | `Specs/**/*design*/**` |
-| **spec** | `Specs/*.md` (excluding design-pack) |
-| **admin-audit** | `**/admin*.py`, `**/audit*.py`, `**/operator_console/**` |
+| **infrastructure** | `docker-compose.yml`, `Caddyfile`, `*.Caddyfile`, `nginx.conf`, `*.nginx`, `**/*.env.example`, `{project}/scripts/backup.sh` |
+| **design-pack** | `**/*design*/**`, `docs/design/**` |
+| **spec** | `docs/spec/**`, `**/SPEC*.md`, `Specs/*.md` (excluding design-pack) |
+| **admin-audit** | `**/admin*.py`, `**/audit*.py`, `**/operator*/**`, `**/console/**` |
 
 A file can belong to multiple domains (e.g. a template change is both `application-code` and `templates`).
 

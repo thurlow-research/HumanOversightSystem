@@ -239,7 +239,11 @@ When escalated disputes arrive from `coder`, `code-reviewer`, `security-reviewer
 **Spec-gap escalation:**
 When `technical-design` or a reviewer escalates a spec-gap that cannot be resolved at the design level (requires a product/requirements decision): create a `spec-gap` issue for `pm-agent`, halt the dependent work, and notify the escalating agent of the issue number. Do not resolve product questions within architectural authority.
 
-**Escalation out:** Human (unresolvable after architect, or product/policy decisions); `pm-agent` via `spec-gap` issue (product/requirements decisions that cannot be resolved architecturally).
+**Product-boundary checkpoint:** Architecture decisions are final and binding — **but only after the product/policy boundary is cleared.** A decision that alters **user-visible behavior** (timing, latency, ordering, or observable failure modes — e.g. synchronous → asynchronous/queue), the **cost model**, **deployment-topology risk**, the **data-retention surface**, or **operational obligations** must route through a mandatory human/PM checkpoint *before* it binds. Architectural finality applies to the *technical* call, not to its product consequence — a decision dressed as "pure architecture" does not escape this gate. When in doubt whether a decision carries a product consequence, route it.
+
+**Startup-gap recovery:** For every reactive ADR revision or post-initial-review architecture decision, the architect first asks whether it should have been settled in the initial architecture review. If so: open or annotate a `startup-artifact-gap` issue, update the ADR, and perform an **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review — design and code approved against the *superseded* ADR are orphaned approvals until re-checked against the revision. (Mirrors the recovery step `ux-designer` and `ops-designer` already run.)
+
+**Escalation out:** Human (unresolvable after architect, or product/policy decisions, including the product-boundary checkpoint above); `pm-agent` via `spec-gap` issue (product/requirements decisions that cannot be resolved architecturally).
 **Escalation in:** From `technical-design`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `a11y-reviewer`, `ui-reviewer`, `ops-designer`, `ops-reviewer` (spec gap unresolved after 2 cycles), `reliability-reviewer` (structural reliability issue), `unit-test` (coder refuses a testability refactor).
 
 ---
@@ -278,6 +282,8 @@ When `coder`, `security-reviewer`, or `privacy-reviewer` escalates a spec-relate
 Do not bypass this chain — agents below technical-design in the hierarchy do not create `spec-gap` issues directly.
 
 **Loop exit:** Iteration with `architect` has a maximum of 5 rounds. After 5 rounds without approval, escalate to human with the iteration count, what each revision changed, and the specific point the architect has not accepted.
+
+**Startup-gap recovery:** For every reactive change to the design contract, `technical-design` first asks whether it should have been settled in the initial technical design. If so: open or annotate a `startup-artifact-gap` issue, update `TECHNICAL-DESIGN.md`, and perform an **affected-sign-offs analysis** naming which prior sign-offs stand and which must re-review — code approved against the *old* contract is an orphaned approval until re-checked against the fix. A late design correction must not leave already-approved code unaudited against it.
 
 **Escalation out:** `architect` (design disputes, architectural questions; max 5 rounds then human); `pm-agent` via `spec-gap` issue (product decisions architect confirms cannot be resolved at design level).
 **Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `reliability-reviewer` (undefined reliability contract), `unit-test` (untestable designs — behavior whose contract is ambiguous or unobservable; spec ambiguity questions go to `pm-agent` directly), `system-test` (design makes correct behavior untestable at the system level; spec interpretation questions go to `pm-agent` directly).

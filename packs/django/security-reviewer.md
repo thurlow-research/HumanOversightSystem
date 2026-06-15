@@ -108,3 +108,13 @@ For any app that implements time-based or one-time-password 2FA:
 ### Shell execution with user input
 
 - `subprocess.run(…)`, `subprocess.Popen(…)`, `os.system(…)`, and `os.popen(…)` must never receive unsanitized user input. If any shell command is constructed dynamically, confirm `shell=False` and a list argument form is used; `shell=True` with any user-derived string is a **critical** command-injection finding (CWE-78).
+
+---
+
+### Metrics / log output neutralization (CWE-117)
+
+Dynamic values written into a Prometheus textfile (`.prom`) exporter, a structured-log record, or any telemetry emitter must be validated against the output format's metacharacters — a metrics/log sink is an injection sink too.
+
+- **Prometheus text format:** a label *value* must not contain an unescaped `"`, `}`, `\`, or newline. Code that interpolates `DJANGO_ENV`, `socket.gethostname()`, a request header, or any user/env-derived string into a label value (e.g. a `_common_labels()` / `_format_labels()` helper that builds `name="{value}"`) without a fail-closed validator is a **CWE-117 label-injection** finding — an attacker controlling that input can forge or malform metric lines in the scraped file. Require an allowlist/regex validator (e.g. `^[A-Za-z0-9_.:-]+$`) that rejects or escapes before emit, not after.
+- **Logging:** values interpolated into log messages (especially anything reaching a file/syslog sink parsed downstream) must have CR/LF stripped or be emitted through structured logging that encodes them — unsanitized newlines enable log forging.
+- This is the seam between lanes: `ops-reviewer` confirms the signal is emitted; **you** confirm its dynamic content is neutralized. (Field instance: CPS#108 — `audit_healthcheck.py:_common_labels`, fixed with a fail-closed `_validate_label` regex.)

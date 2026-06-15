@@ -30,22 +30,22 @@ You will be invoked with a step number and optionally the relevant spec sections
 ## What to probe
 
 **Gaming vectors**: can a user or actor exploit the rules to gain unfair advantage without technically violating them?
-- Example: can a resident list their spot for 1 second every hour to accumulate "listed hours" without actually sharing?
-- Example: can an owner cancel bookings repeatedly just before start time to avoid penalty but still disrupting residents?
+- Example: can an actor repeatedly trigger a tracked action to accumulate a credited metric without performing the underlying work the metric is meant to represent?
+- Example: can an actor cancel-and-retry an operation just before a deadline to avoid a penalty while still causing the harm the penalty exists to deter?
 
 **Contradictions**: do two requirements conflict under some edge case?
-- Example: "bookings must be hour-aligned" AND "residents can cancel at any time" — what happens if they cancel mid-hour?
+- Example: "records must be aligned to a fixed interval" AND "users may edit at any time" — what happens on an edit that lands mid-interval?
 
 **Implicit assumptions**: what does the spec assume that it never states?
-- Example: "all users are in the same timezone" — never stated but assumed in booking displays
-- Example: "the system clock is trusted" — relevant for horizon calculations
+- Example: "all users are in the same timezone" — never stated but assumed in time displays
+- Example: "the system clock is trusted" — relevant for time-window calculations
 
 **Missing edge cases**: what happens at the boundary conditions the spec doesn't address?
-- Example: what happens when a booking's end time is exactly the same as another's start time?
-- Example: what happens when `earned_horizon` is exactly zero?
-- Example: what happens if a user has no listing history AND no cold-start grace period?
+- Example: what happens when two records share an identical boundary value (one's end equals another's start)?
+- Example: what happens when a quota or threshold value is exactly zero?
+- Example: what happens when an actor has no prior history AND no cold-start/grace allowance?
 
-**Scope creep vulnerabilities**: can a resident access features intended only for owners, or vice versa?
+**Scope creep vulnerabilities**: can a lower-privilege actor access features intended only for a higher-privilege role, or vice versa?
 
 ---
 
@@ -58,7 +58,7 @@ You will be invoked with a step number and optionally the relevant spec sections
 3. Run agy with an adversarial prompt:
 
 ```bash
-agy --print "You are an adversarial spec reviewer for a parking spot sharing application called CondoParkShare. Your job is to find gaming vectors, contradictions, implicit assumptions, and missing edge cases in the following spec section.
+agy --print "You are an adversarial spec reviewer for the application described in the spec section below. Your job is to find gaming vectors, contradictions, implicit assumptions, and missing edge cases in the following spec section.
 
 Be specific. For each finding, state:
 - What the issue is

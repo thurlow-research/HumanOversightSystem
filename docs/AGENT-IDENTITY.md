@@ -171,6 +171,19 @@ The two-account identity model is needed in **both** contexts: HOS's own develop
 
 Net: account *creation* stays manual (human, per §10), but everything downstream — config, branch protection, the tiered gate — is one tool + one doc that works the same for HOS and for consumers.
 
+## 10b. Status — foundation built (2026-06-14)
+
+The two HOS machine accounts exist: **worker = `hos_worker@tutelare.ai`**, **overseer = `hos_oversight@tutelare.ai`** (login emails; the GitHub *usernames* — which cannot contain `_` — are configured in `machine-accounts.env`, not assumed). Decisions confirmed by the human: **hosting-agnostic, defaulting to personal-repo + collaborators (no org yet)**; **overseer ceiling = LOW, with a one-line MEDIUM flip**.
+
+Implemented (the load-bearing **server-side** half of §5.1 — the protected-surface human gate):
+- `scripts/framework/protected_surfaces.txt` — the §9 list as a single machine-readable source of truth.
+- `scripts/framework/require_human_approval.py` + `.github/workflows/require-human-approval.yml` — a status check (runs in CI, outside the agents' reach) that **fails any PR touching a protected surface without a human approval** (human = approver not in `BOT_ACCOUNTS`). Unit-tested in `tests/framework/test_require_human_approval.py`.
+- `scripts/framework/gen_codeowners.sh` → `.github/CODEOWNERS` — the static half; protected surfaces → human owner, generated from the same list so the two can't drift. (Replaces the old blanket `* @OWNER`: non-protected paths may now be overseer-approved.)
+- `scripts/framework/machine-accounts.env` — bot handles + `OVERSEER_CEILING`.
+- `docs/MACHINE-ACCOUNTS-SETUP.md` — the §10a consumer-facing setup guide (accounts → PATs → collaborators → config → branch protection).
+
+These ship **inert** — they enforce nothing until the human enables branch protection (setup guide Step 5). Still to build (#152 follow-ups): the **risk-tier-vs-ceiling** status check (the dynamic above-ceiling→human gate), `provision_agent_account.sh`, the branch-protection-as-code script, and the `Supervised-by:` trailer convention.
+
 ## 11. Open questions to resolve before Phase 0
 
 1. **GitHub ToS / limits** — GitHub permits *machine accounts* for automation in addition to a personal account, but the exact rules on *multiple* bots under one owner, and per-account rate limits, should be verified against the current docs before standing up several.

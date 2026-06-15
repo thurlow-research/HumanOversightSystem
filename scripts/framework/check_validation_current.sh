@@ -9,10 +9,15 @@
 # Logic:
 #   1. Read the git commit timestamp of scripts/framework/validation-stamps/all-phases.stamp.
 #      If the stamp does not exist or has never been committed, FAIL.
-#   2. Find all files changed in this branch relative to the merge base with main.
+#   2. Override-expiry check (fail-closed). A human-authorized override may set an
+#      `override_expires:` line (ISO-8601 UTC) on the stamp. If present and now is
+#      past it — or the value is malformed/unparseable — FAIL: time-boxed overrides
+#      are never permanent. If the line is absent, this check is skipped (normal
+#      clean stamp). Any ambiguity is treated as EXPIRED.
+#   3. Find all files changed in this branch relative to the merge base with main.
 #      Exclude: audit/, research/, .claudetmp/, scripts/framework/validation-stamps/
-#   3. For each changed file, get its most recent git commit timestamp.
-#   4. If any file was committed MORE RECENTLY than the stamp → FAIL.
+#   4. For each changed file, get its most recent git commit timestamp.
+#   5. If any file was committed MORE RECENTLY than the stamp → FAIL.
 #      (Same commit timestamp is allowed — stamp and changes can be committed together.)
 #
 # Exit codes:
@@ -76,6 +81,53 @@ ok "Stamp found: $STAMP_DATE"
 ok "Phases run: $STAMP_PHASES"
 [[ -n "$STAMP_SKIPPED" && "$STAMP_SKIPPED" != " " ]] && echo "  WARN: Skipped phases: $STAMP_SKIPPED (skipping requires human approval)"
 echo ""
+
+# ── 1b. Override-expiry check (fail-closed) ──────────────────────────────────
+# A human-authorized validation override (HOS_ALLOW_UNVALIDATED) is time-boxed:
+# the stamp may carry an `override_expires:` line (ISO-8601 UTC). After that
+# instant the override has lapsed and CI MUST fail, forcing the team to resolve
+# the deferred findings or re-authorize. Fail-closed: an absent line means "no
+# override" (skip); a present-but-malformed or unparseable value is treated as
+# EXPIRED. This runs early so an expired override fails fast.
+OVERRIDE_EXPIRES=$(grep "^override_expires:" "$STAMP_FILE" 2>/dev/null \
+    | head -n1 | sed 's/override_expires:[[:space:]]*//' || true)
+
+if [[ -n "$OVERRIDE_EXPIRES" ]]; then
+    # Parse expiry to epoch using a portable method (python3 is a prerequisite).
+    EXPIRY_EPOCH=$(python3 -c "import sys,calendar,time; print(calendar.timegm(time.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ')))" "$OVERRIDE_EXPIRES" 2>/dev/null || true)
+
+    if [[ -z "$EXPIRY_EPOCH" ]] || ! [[ "$EXPIRY_EPOCH" =~ ^[0-9]+$ ]]; then
+        echo "════════════════════════════════════════════"
+        fail "override_expires is malformed: '$OVERRIDE_EXPIRES' — cannot verify expiry; treat as expired"
+        echo ""
+        echo "  A human-authorized validation override must carry a parseable"
+        echo "  ISO-8601 UTC expiry (e.g. 2026-06-22T00:00:00Z). Fix the stamp's"
+        echo "  override_expires value, or resolve the deferred findings and commit"
+        echo "  a fresh (non-override) stamp."
+        echo "════════════════════════════════════════════"
+        exit 1
+    fi
+
+    NOW=$(date -u +%s)
+    NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    if [[ "$NOW" -gt "$EXPIRY_EPOCH" ]]; then
+        echo "════════════════════════════════════════════"
+        echo "  FAIL: Validation override EXPIRED on $OVERRIDE_EXPIRES (now $NOW_ISO)."
+        echo "    A human-authorized validation override is time-boxed and has lapsed."
+        echo "    The deferred findings must now be resolved (or re-authorized):"
+        echo "      - Resolve the tracked findings, re-run scripts/framework/run_framework_validation.sh"
+        echo "        until the gate converges clean, and commit a fresh (non-override) stamp; OR"
+        echo "      - A human re-authorizes a new time-boxed override with a new override_expires."
+        echo "════════════════════════════════════════════"
+        exit 1
+    fi
+
+    # Active override — report and continue to the normal per-file currency check.
+    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW) / 86400 ))
+    ok "Validation override active until $OVERRIDE_EXPIRES ($DAYS_LEFT day(s) remaining)"
+    echo ""
+fi
 
 # ── 2. Find changed files in this PR ─────────────────────────────────────────
 # In CI (GitHub Actions), GITHUB_BASE_REF is the target branch.
