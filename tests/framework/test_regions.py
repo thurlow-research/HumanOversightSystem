@@ -18,15 +18,14 @@ spec §4 / §11/§11a decisions the module must honor:
 regions is importable bare because tests/conftest.py puts the validators dir on
 sys.path (same pattern as the other validator tests).
 """
+
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
 import regions
 from regions import (
-    Region,
     compose,
     manifest_rows,
     parse,
@@ -42,6 +41,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_agent_three_region.md"
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
 
 def _agent(core="core body", packs=None, project=None, front=True):
     """Build a well-formed agent .md as bytes from parts."""
@@ -63,6 +63,7 @@ def _shas(parsed):
 # --------------------------------------------------------------------------- #
 # parse
 # --------------------------------------------------------------------------- #
+
 
 def test_parse_three_regions_in_order():
     parsed = parse(FIXTURE.read_bytes())
@@ -110,6 +111,7 @@ def test_parse_eof_inside_region_raises():
 # --------------------------------------------------------------------------- #
 # validate — happy path + fail-closed cases
 # --------------------------------------------------------------------------- #
+
 
 def test_validate_ok_on_fixture():
     parsed = parse(FIXTURE.read_bytes())
@@ -167,16 +169,19 @@ def test_validate_nested_markers():
 
 
 def test_validate_duplicate_pack():
-    parsed = parse(_agent(packs={"django": "a"}) +
-                   b"<!-- HOS:PACK:django:START -->\nb\n<!-- HOS:PACK:django:END -->\n")
+    parsed = parse(
+        _agent(packs={"django": "a"})
+        + b"<!-- HOS:PACK:django:START -->\nb\n<!-- HOS:PACK:django:END -->\n"
+    )
     res = validate(parsed)
     assert not res.ok
     assert any(code == "E_DUP_PACK" for _, code, _ in res.errors)
 
 
 def test_validate_duplicate_project():
-    parsed = parse(_agent(project="a") +
-                   b"<!-- HOS:PROJECT:START -->\nb\n<!-- HOS:PROJECT:END -->\n")
+    parsed = parse(
+        _agent(project="a") + b"<!-- HOS:PROJECT:START -->\nb\n<!-- HOS:PROJECT:END -->\n"
+    )
     res = validate(parsed)
     assert not res.ok
     assert any(code == "E_DUP_PROJECT" for _, code, _ in res.errors)
@@ -184,10 +189,7 @@ def test_validate_duplicate_project():
 
 def test_validate_malformed_marker():
     # Looks marker-ish (HOS:) but wrong case -> not a strict marker -> flagged.
-    text = (
-        b"<!-- HOS:CORE:START -->\nbody\n<!-- HOS:CORE:END -->\n"
-        b"<!-- hos:project:start -->\n"
-    )
+    text = b"<!-- HOS:CORE:START -->\nbody\n<!-- HOS:CORE:END -->\n" b"<!-- hos:project:start -->\n"
     res = validate(parse(text))
     assert not res.ok
     assert any(code == "E_MALFORMED_MARKER" for _, code, _ in res.errors)
@@ -208,10 +210,7 @@ def test_validate_indented_marker_is_malformed():
     # match the loose probe -> E_MALFORMED_MARKER. Pins the intentional
     # fail-closed pairing (a marker that "looks right" but isn't column-0 must
     # never silently become body text).
-    text = (
-        b"<!-- HOS:CORE:START -->\nbody\n<!-- HOS:CORE:END -->\n"
-        b"  <!-- HOS:CORE:START -->\n"
-    )
+    text = b"<!-- HOS:CORE:START -->\nbody\n<!-- HOS:CORE:END -->\n" b"  <!-- HOS:CORE:START -->\n"
     res = validate(parse(text))
     assert not res.ok
     assert any(code == "E_MALFORMED_MARKER" for _, code, _ in res.errors)
@@ -220,6 +219,7 @@ def test_validate_indented_marker_is_malformed():
 # --------------------------------------------------------------------------- #
 # B1 — no literal marker line inside a region body (E_LITERAL_MARKER_IN_BODY)
 # --------------------------------------------------------------------------- #
+
 
 def test_validate_rejects_literal_marker_in_body():
     # A CORE body containing a fenced example with bare column-0 PACK markers.
@@ -261,6 +261,7 @@ def test_dogfood_shipped_files_have_no_literal_marker_in_body():
 # D7 — placeholder-free CORE/PACK
 # --------------------------------------------------------------------------- #
 
+
 def test_placeholder_in_core_flagged():
     parsed = parse(_agent(core="read {SPEC_FILE} now"))
     res = validate(parsed, placeholder_keys=["SPEC_FILE"])
@@ -292,6 +293,7 @@ def test_placeholder_key_not_passed_not_flagged():
 # region_sha + trailing-newline normalization
 # --------------------------------------------------------------------------- #
 
+
 def test_region_sha_trailing_newline_normalized():
     # Zero, one, and many trailing newlines all hash identically.
     assert region_sha(b"abc") == region_sha(b"abc\n") == region_sha(b"abc\n\n\n")
@@ -305,16 +307,15 @@ def test_region_sha_marker_whitespace_does_not_churn():
     # A reflowed marker (extra spaces) parses; the body sha is unchanged because
     # markers contribute no bytes to the body.
     tight = parse(_agent(core="hello"))
-    loose = parse(_agent(core="hello").replace(
-        b"<!-- HOS:CORE:START -->", b"<!--   HOS:CORE:START   -->"))
+    loose = parse(
+        _agent(core="hello").replace(b"<!-- HOS:CORE:START -->", b"<!--   HOS:CORE:START   -->")
+    )
     assert region_sha(tight.regions[0].body) == region_sha(loose.regions[0].body)
 
 
 def test_region_sha_line_ending_invariant():
     # S1: LF, CRLF, and bare-CR renderings of the same content hash identically.
-    assert (region_sha(b"a\nb\nc\n")
-            == region_sha(b"a\r\nb\r\nc\r\n")
-            == region_sha(b"a\rb\rc\r"))
+    assert region_sha(b"a\nb\nc\n") == region_sha(b"a\r\nb\r\nc\r\n") == region_sha(b"a\rb\rc\r")
 
 
 def test_round_trip_stable_across_crlf():
@@ -328,6 +329,7 @@ def test_round_trip_stable_across_crlf():
 # --------------------------------------------------------------------------- #
 # compose — round-trip identity + canonical reordering
 # --------------------------------------------------------------------------- #
+
 
 def test_roundtrip_identity_on_fixture():
     x = parse(FIXTURE.read_bytes())
@@ -369,8 +371,7 @@ def test_compose_preserves_front_matter():
 
 def test_compose_emits_canonical_marker_form():
     # A reflowed input marker is normalized to single-space canonical on write.
-    src = _agent(core="hi").replace(
-        b"<!-- HOS:CORE:START -->", b"<!--   HOS:CORE:START   -->")
+    src = _agent(core="hi").replace(b"<!-- HOS:CORE:START -->", b"<!--   HOS:CORE:START   -->")
     out = compose(parse(src))
     assert b"<!-- HOS:CORE:START -->" in out
     assert b"<!--   HOS:CORE:START   -->" not in out
@@ -396,13 +397,17 @@ def test_round_trip_preserves_full_ordered_region_list():
     )
     out = parse(compose(parse(text)))
     assert [r.id for r in out.regions] == [
-        "CORE", "PACK:alpha", "PACK:beta", "PROJECT",
+        "CORE",
+        "PACK:alpha",
+        "PACK:beta",
+        "PROJECT",
     ]
 
 
 # --------------------------------------------------------------------------- #
 # manifest_rows — flat file implicit CORE + canonical order
 # --------------------------------------------------------------------------- #
+
 
 def test_manifest_rows_three_regions_canonical_order():
     parsed = parse(FIXTURE.read_bytes())
@@ -427,9 +432,9 @@ def test_manifest_rows_flat_file_implicit_core():
 # CLI surface (TD §2.7)
 # --------------------------------------------------------------------------- #
 
+
 def _run(*args):
-    return subprocess.run([sys.executable, str(REGIONS_PY), *args],
-                          capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(REGIONS_PY), *args], capture_output=True, text=True)
 
 
 def test_cli_validate_ok_exit_zero():
@@ -494,6 +499,7 @@ def test_cli_compose_roundtrips():
 # --------------------------------------------------------------------------- #
 # small util
 # --------------------------------------------------------------------------- #
+
 
 def _region(parsed, rid):
     return [r for r in parsed.regions if r.id == rid][0]

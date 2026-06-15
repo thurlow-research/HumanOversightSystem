@@ -85,20 +85,21 @@ def _canonical_end(region_id: str) -> bytes:
 # Data model (TD §2.2)
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class Region:
-    id: str               # "CORE" | "PACK:<name>" | "PROJECT"
-    name: str | None      # pack name for PACK:*, else None
-    body: bytes           # bytes strictly between markers, BEFORE newline normalization
-    start_line: int       # 1-based line index of the START marker (for error messages)
-    end_line: int         # 1-based line index of the END marker
+    id: str  # "CORE" | "PACK:<name>" | "PROJECT"
+    name: str | None  # pack name for PACK:*, else None
+    body: bytes  # bytes strictly between markers, BEFORE newline normalization
+    start_line: int  # 1-based line index of the START marker (for error messages)
+    end_line: int  # 1-based line index of the END marker
 
 
 @dataclass
 class ParsedAgent:
-    front_matter: bytes = b""        # YAML front-matter block incl. delimiters, or b""
+    front_matter: bytes = b""  # YAML front-matter block incl. delimiters, or b""
     regions: list[Region] = field(default_factory=list)  # in file order as found
-    raw: bytes = b""                 # original file bytes (round-trip / migration)
+    raw: bytes = b""  # original file bytes (round-trip / migration)
 
 
 class ParseError(Exception):
@@ -108,7 +109,10 @@ class ParseError(Exception):
         self.line = line
         self.kind = kind
         self.msg = msg
-        super().__init__(f"{line}:{kind}:{msg}")
+        super().__init__(line, kind, msg)  # forward all args (pickle/copy safe — B042)
+
+    def __str__(self) -> str:
+        return f"{self.line}:{self.kind}:{self.msg}"
 
 
 @dataclass
@@ -120,6 +124,7 @@ class Result:
 # --------------------------------------------------------------------------- #
 # Marker classification
 # --------------------------------------------------------------------------- #
+
 
 def _classify(line: bytes) -> tuple[str, str] | None:
     """
@@ -225,20 +230,25 @@ def parse(text: bytes) -> ParsedAgent:
                 open_stack.append((region_id, _region_name(region_id), line_no, []))
             else:  # END
                 if not open_stack:
-                    raise ParseError(line_no, "END_WITHOUT_START",
-                                     f"END marker for {region_id} with no open region")
+                    raise ParseError(
+                        line_no,
+                        "END_WITHOUT_START",
+                        f"END marker for {region_id} with no open region",
+                    )
                 open_id, open_name, start_line, acc = open_stack.pop()
                 # Note: a mismatched id (END that does not match the innermost
                 # open START) is left for validate() to diagnose precisely as
                 # unbalanced; parse stays tolerant and pairs by stack position.
                 body = b"".join(acc)
-                regions.append(Region(
-                    id=open_id,
-                    name=open_name,
-                    body=body,
-                    start_line=start_line,
-                    end_line=line_no,
-                ))
+                regions.append(
+                    Region(
+                        id=open_id,
+                        name=open_name,
+                        body=body,
+                        start_line=start_line,
+                        end_line=line_no,
+                    )
+                )
         else:
             # Body line — append to the innermost open region's accumulator, if
             # any. Out-of-region lines (preamble / inter-region prose) are not
@@ -249,8 +259,11 @@ def parse(text: bytes) -> ParsedAgent:
 
     if open_stack:
         unterminated = open_stack[-1]
-        raise ParseError(unterminated[2], "EOF_IN_REGION",
-                         f"end of file while region {unterminated[0]} still open")
+        raise ParseError(
+            unterminated[2],
+            "EOF_IN_REGION",
+            f"end of file while region {unterminated[0]} still open",
+        )
 
     # Preserve file order as found. Because regions are emitted on END (pop),
     # nested regions (which validate() rejects) would emit inner-first; for a
@@ -264,6 +277,7 @@ def parse(text: bytes) -> ParsedAgent:
 # --------------------------------------------------------------------------- #
 # validate (TD §2.4, D7)
 # --------------------------------------------------------------------------- #
+
 
 def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> Result:
     """
@@ -290,9 +304,14 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
     for idx, raw_line in enumerate(lines):
         line_no = fm_line_count + idx + 1
         if _classify(raw_line) is None and _is_loose_marker(raw_line):
-            errors.append((line_no, "E_MALFORMED_MARKER",
-                           "line looks like an HOS marker but does not match the "
-                           "strict grammar (check case, ':START'/':END', spacing)"))
+            errors.append(
+                (
+                    line_no,
+                    "E_MALFORMED_MARKER",
+                    "line looks like an HOS marker but does not match the "
+                    "strict grammar (check case, ':START'/':END', spacing)",
+                )
+            )
 
     # --- Invariants 3 & 4: balanced markers + no nesting -------------------- #
     stack: list[tuple[str, int]] = []
@@ -315,33 +334,48 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
         #     (depth 1) is the legitimate close, not a body line.
         in_body = bool(stack) if edge == "START" else len(stack) >= 2
         if in_body:
-            errors.append((line_no, "E_LITERAL_MARKER_IN_BODY",
-                           "region bodies may not contain a literal marker line; "
-                           "escape or inline it (render it inside backticks, or "
-                           "break the column-0 `<!-- HOS:...-->` form)"))
+            errors.append(
+                (
+                    line_no,
+                    "E_LITERAL_MARKER_IN_BODY",
+                    "region bodies may not contain a literal marker line; "
+                    "escape or inline it (render it inside backticks, or "
+                    "break the column-0 `<!-- HOS:...-->` form)",
+                )
+            )
         if edge == "START":
             if stack:
                 # A START while a region is already open -> nesting (forbidden).
-                errors.append((line_no, "E_NESTED",
-                               f"region {region_id} opened inside still-open "
-                               f"region {stack[-1][0]} (regions must be siblings)"))
+                errors.append(
+                    (
+                        line_no,
+                        "E_NESTED",
+                        f"region {region_id} opened inside still-open "
+                        f"region {stack[-1][0]} (regions must be siblings)",
+                    )
+                )
             stack.append((region_id, line_no))
         else:  # END
             if not stack:
                 # Unreachable via the CLI (parse() raises END_WITHOUT_START on an
                 # empty-stack END before validate runs); retained for direct
                 # validate() callers that build a ParsedAgent without parse().
-                errors.append((line_no, "E_UNBALANCED",
-                               f"END marker for {region_id} with no open START"))
+                errors.append(
+                    (line_no, "E_UNBALANCED", f"END marker for {region_id} with no open START")
+                )
             else:
                 open_id, _ = stack.pop()
                 if open_id != region_id:
-                    errors.append((line_no, "E_UNBALANCED",
-                                   f"END marker for {region_id} does not match the "
-                                   f"open region {open_id}"))
+                    errors.append(
+                        (
+                            line_no,
+                            "E_UNBALANCED",
+                            f"END marker for {region_id} does not match the "
+                            f"open region {open_id}",
+                        )
+                    )
     for open_id, start_line in stack:
-        errors.append((start_line, "E_UNBALANCED",
-                       f"region {open_id} opened but never closed"))
+        errors.append((start_line, "E_UNBALANCED", f"region {open_id} opened but never closed"))
 
     # --- Invariants 1, 2, 5: counts + uniqueness --------------------------- #
     core_count = sum(1 for r in parsed.regions if r.id == "CORE")
@@ -351,21 +385,31 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
         errors.append((0, "E_NO_CORE", "no CORE region (exactly one required)"))
     elif core_count > 1:
         dup = [r for r in parsed.regions if r.id == "CORE"][1]
-        errors.append((dup.start_line, "E_DUP_CORE",
-                       f"{core_count} CORE regions (exactly one required)"))
+        errors.append(
+            (dup.start_line, "E_DUP_CORE", f"{core_count} CORE regions (exactly one required)")
+        )
 
     if project_count > 1:
         dup = [r for r in parsed.regions if r.id == "PROJECT"][1]
-        errors.append((dup.start_line, "E_DUP_PROJECT",
-                       f"{project_count} PROJECT regions (at most one allowed)"))
+        errors.append(
+            (
+                dup.start_line,
+                "E_DUP_PROJECT",
+                f"{project_count} PROJECT regions (at most one allowed)",
+            )
+        )
 
     seen_packs: dict[str, int] = {}
     for r in parsed.regions:
-        if r.id.startswith("PACK:"):
+        if r.id.startswith("PACK:") and r.name is not None:
             if r.name in seen_packs:
-                errors.append((r.start_line, "E_DUP_PACK",
-                               f"duplicate PACK region '{r.name}' (also at line "
-                               f"{seen_packs[r.name]})"))
+                errors.append(
+                    (
+                        r.start_line,
+                        "E_DUP_PACK",
+                        f"duplicate PACK region '{r.name}' (also at line " f"{seen_packs[r.name]})",
+                    )
+                )
             else:
                 seen_packs[r.name] = r.start_line
 
@@ -380,10 +424,15 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
                     continue
                 for key in keys:
                     if "{" + key + "}" in body_text:
-                        errors.append((r.start_line, "E_PLACEHOLDER_IN_CORE_PACK",
-                                       f"placeholder '{{{key}}}' found in {r.id} region — "
-                                       f"CORE/PACK must be placeholder-free (D1a/D7); "
-                                       f"move it to PROJECT or use runtime self-direction"))
+                        errors.append(
+                            (
+                                r.start_line,
+                                "E_PLACEHOLDER_IN_CORE_PACK",
+                                f"placeholder '{{{key}}}' found in {r.id} region — "
+                                f"CORE/PACK must be placeholder-free (D1a/D7); "
+                                f"move it to PROJECT or use runtime self-direction",
+                            )
+                        )
 
     errors.sort(key=lambda e: (e[0], e[1]))
     return Result(ok=not errors, errors=errors)
@@ -392,6 +441,7 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
 # --------------------------------------------------------------------------- #
 # region_sha (TD §2.6)
 # --------------------------------------------------------------------------- #
+
 
 def region_sha(region_body: bytes) -> str:
     """
@@ -411,6 +461,7 @@ def region_sha(region_body: bytes) -> str:
 # --------------------------------------------------------------------------- #
 # merge_region — the three-way decision (TD §4, spec §5, ADR D2/D9)
 # --------------------------------------------------------------------------- #
+
 
 class Action(str, Enum):
     """The per-region merge decision (TD §4.1).
@@ -491,7 +542,7 @@ def merge_region(
     # region, so `incoming` is irrelevant; only base-vs-disk decides.
     if removed:
         if base_eq_disk:
-            return Action.DROP                      # row 5: unedited → DROP
+            return Action.DROP  # row 5: unedited → DROP
         # row 6: edited → HARDSTOP unless --squash/--prune consents to drop.
         return Action.DROP if squash else Action.HARDSTOP
 
@@ -502,7 +553,7 @@ def merge_region(
         return Action.KEEP if disk_eq_incoming else Action.REFRESH  # rows 1, 2
     # Consumer-edited (or unknown provenance).
     if disk_eq_incoming:
-        return Action.KEEP                          # row 3: convergent edit — realign
+        return Action.KEEP  # row 3: convergent edit — realign
     # row 4: genuine drift → HARDSTOP unless --squash takes HOS's version.
     return Action.REFRESH if squash else Action.HARDSTOP
 
@@ -510,6 +561,7 @@ def merge_region(
 # --------------------------------------------------------------------------- #
 # compose (TD §2.5) — the ONLY writer
 # --------------------------------------------------------------------------- #
+
 
 def _canonical_order_key(region: Region) -> tuple:
     """Sort key implementing CORE -> PACK(alpha) -> PROJECT."""
@@ -564,11 +616,7 @@ def compose(parsed_or_regions: ParsedAgent | list[Region]) -> bytes:
     blocks: list[bytes] = []
     for r in ordered:
         normalized_body = _normalize_body(r.body)
-        block = (
-            _canonical_start(r.id) + b"\n"
-            + normalized_body
-            + _canonical_end(r.id) + b"\n"
-        )
+        block = _canonical_start(r.id) + b"\n" + normalized_body + _canonical_end(r.id) + b"\n"
         blocks.append(block)
 
     # A single blank line separates region blocks.
@@ -583,13 +631,13 @@ def make_empty_project_region(start_line: int = 0) -> Region:
     compose() never creates this implicitly; the installer calls this to seed a
     consumer's marked place to add content on a first install.
     """
-    return Region(id="PROJECT", name=None, body=b"", start_line=start_line,
-                  end_line=start_line)
+    return Region(id="PROJECT", name=None, body=b"", start_line=start_line, end_line=start_line)
 
 
 # --------------------------------------------------------------------------- #
 # manifest-rows helper (TD §1.4 / §2.7)
 # --------------------------------------------------------------------------- #
+
 
 def manifest_rows(path: str, parsed: ParsedAgent) -> list[str]:
     """
@@ -602,8 +650,9 @@ def manifest_rows(path: str, parsed: ParsedAgent) -> list[str]:
     """
     if not parsed.regions:
         # Implicit single CORE over the whole (marker-less) body.
-        sha = region_sha(parsed.raw[len(parsed.front_matter):]
-                         if parsed.front_matter else parsed.raw)
+        sha = region_sha(
+            parsed.raw[len(parsed.front_matter) :] if parsed.front_matter else parsed.raw
+        )
         return [f"{path}\tCORE\t{sha}"]
 
     ordered = sorted(parsed.regions, key=_canonical_order_key)
@@ -616,6 +665,7 @@ def manifest_rows(path: str, parsed: ParsedAgent) -> list[str]:
 # --------------------------------------------------------------------------- #
 # CLI (TD §2.7)
 # --------------------------------------------------------------------------- #
+
 
 def _read_file(path: str) -> bytes:
     with open(path, "rb") as fh:
@@ -667,7 +717,7 @@ def _cmd_region_sha(args) -> int:
         return EXIT_INVALID
     target = args.region_id
     if not parsed.regions and target == "CORE":
-        body = parsed.raw[len(parsed.front_matter):] if parsed.front_matter else parsed.raw
+        body = parsed.raw[len(parsed.front_matter) :] if parsed.front_matter else parsed.raw
         sys.stdout.write(region_sha(body) + "\n")
         return EXIT_OK
     for r in parsed.regions:
@@ -703,8 +753,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     va = sub.add_parser("validate", help="fail-closed structural validation (exit 2 on invalid)")
     va.add_argument("file")
-    va.add_argument("--placeholder-keys", default=None,
-                    help="comma-separated keys; flag any {KEY} inside CORE/PACK (D7)")
+    va.add_argument(
+        "--placeholder-keys",
+        default=None,
+        help="comma-separated keys; flag any {KEY} inside CORE/PACK (D7)",
+    )
     va.set_defaults(func=_cmd_validate)
 
     rs = sub.add_parser("region-sha", help="print the sha of one region (exit 3 if absent)")

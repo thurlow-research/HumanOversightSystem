@@ -16,9 +16,8 @@ spec docs/specs/v0.3.0-base-agents-spec.md §5 + §11a/D9:
 regions is importable bare because tests/conftest.py puts the validators dir on
 sys.path (same pattern as the other validator tests).
 """
-import pytest
 
-import regions
+import pytest
 from regions import Action, merge_region
 
 # Distinct sentinel shas. Real shas are 64-char lowercase hex; the decider only
@@ -31,6 +30,7 @@ C = "c" * 64  # a third differing value
 # --------------------------------------------------------------------------- #
 # rows 1-4: template-side three-way (non-removed, non-PROJECT)
 # --------------------------------------------------------------------------- #
+
 
 def test_row1_unedited_disk_matches_incoming_keep():
     # base == disk (unedited) & disk == incoming → KEEP (HOS made no change).
@@ -60,15 +60,13 @@ def test_row4_genuine_drift_hardstop():
 
 def test_row4_genuine_drift_squash_refresh():
     # row 4 with --squash → REFRESH (take HOS's complete version).
-    assert (
-        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, squash=True)
-        == Action.REFRESH
-    )
+    assert merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, squash=True) == Action.REFRESH
 
 
 # --------------------------------------------------------------------------- #
 # rows 5-6: removed-region sweep (removed=True) — D9
 # --------------------------------------------------------------------------- #
+
 
 def test_row5_unedited_removed_drop_not_keep():
     # removed & base == disk (unedited) → DROP (cumulative-faithfulness).
@@ -91,8 +89,7 @@ def test_row6_edited_removed_hardstop():
 def test_row6_edited_removed_squash_drop():
     # row 6 with --squash → DROP (explicit consent to drop the edit).
     assert (
-        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C,
-                     removed=True, squash=True)
+        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, removed=True, squash=True)
         == Action.DROP
     )
 
@@ -100,46 +97,52 @@ def test_row6_edited_removed_squash_drop():
 # `incoming` is irrelevant in the removed sweep — only base-vs-disk decides.
 def test_removed_ignores_incoming():
     # Same base/disk, wildly different incoming values → same DROP decision.
-    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=B,
-                        removed=True) == Action.DROP
-    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=C,
-                        removed=True) == Action.DROP
+    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=B, removed=True) == Action.DROP
+    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=C, removed=True) == Action.DROP
     # Non-vacuous guard (review): incoming == disk must NOT leak a row-1/2 read
     # into the removed sweep. unedited → DROP, edited → HARDSTOP, even when
     # disk == incoming.
-    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=A,
-                        removed=True) == Action.DROP            # row 5, disk==incoming
-    assert merge_region("CORE", base_sha=A, disk_sha=B, incoming=B,
-                        removed=True) == Action.HARDSTOP        # row 6, disk==incoming
+    assert (
+        merge_region("CORE", base_sha=A, disk_sha=A, incoming=A, removed=True) == Action.DROP
+    )  # row 5, disk==incoming
+    assert (
+        merge_region("CORE", base_sha=A, disk_sha=B, incoming=B, removed=True) == Action.HARDSTOP
+    )  # row 6, disk==incoming
     # None base + removed + disk==incoming must still HARDSTOP (assume-edited).
-    assert merge_region("CORE", base_sha=None, disk_sha=A, incoming=A,
-                        removed=True) == Action.HARDSTOP
+    assert (
+        merge_region("CORE", base_sha=None, disk_sha=A, incoming=A, removed=True) == Action.HARDSTOP
+    )
 
 
 # --------------------------------------------------------------------------- #
 # PROJECT short-circuit (TD §4.4)
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("base,disk,incoming", [
-    (A, A, A),          # would otherwise be KEEP
-    (A, A, B),          # would otherwise be REFRESH
-    (A, B, C),          # would otherwise be HARDSTOP
-    (None, B, C),       # None base
-])
+
+@pytest.mark.parametrize(
+    "base,disk,incoming",
+    [
+        (A, A, A),  # would otherwise be KEEP
+        (A, A, B),  # would otherwise be REFRESH
+        (A, B, C),  # would otherwise be HARDSTOP
+        (None, B, C),  # None base
+    ],
+)
 def test_project_always_skip(base, disk, incoming):
     # PROJECT is never compared/written regardless of shas, squash, or removed.
     assert merge_region("PROJECT", base, disk, incoming) == Action.SKIP_PROJECT
-    assert merge_region("PROJECT", base, disk, incoming,
-                        squash=True) == Action.SKIP_PROJECT
-    assert merge_region("PROJECT", base, disk, incoming,
-                        removed=True) == Action.SKIP_PROJECT
-    assert merge_region("PROJECT", base, disk, incoming,
-                        squash=True, removed=True) == Action.SKIP_PROJECT
+    assert merge_region("PROJECT", base, disk, incoming, squash=True) == Action.SKIP_PROJECT
+    assert merge_region("PROJECT", base, disk, incoming, removed=True) == Action.SKIP_PROJECT
+    assert (
+        merge_region("PROJECT", base, disk, incoming, squash=True, removed=True)
+        == Action.SKIP_PROJECT
+    )
 
 
 # --------------------------------------------------------------------------- #
 # base_sha is None → treated as base != disk (TD §4.2 note)
 # --------------------------------------------------------------------------- #
+
 
 def test_none_base_disk_equals_incoming_routes_to_keep():
     # None base ⇒ base != disk; disk == incoming → row 3 KEEP (convergent realign).
@@ -162,8 +165,9 @@ def test_none_base_never_keeps_as_row1():
 
 def test_none_base_removed_unedited_path_is_hardstop():
     # removed & None base ⇒ base != disk → row 6 HARDSTOP (not DROP) without squash.
-    assert merge_region("CORE", base_sha=None, disk_sha=A, incoming=B,
-                        removed=True) == Action.HARDSTOP
+    assert (
+        merge_region("CORE", base_sha=None, disk_sha=A, incoming=B, removed=True) == Action.HARDSTOP
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -173,26 +177,26 @@ def test_none_base_removed_unedited_path_is_hardstop():
 # (region_id, base, disk, incoming, squash, removed) -> expected Action
 _MATRIX = [
     # rows 1-4, no squash
-    ("CORE", A, A, A, False, False, Action.KEEP),         # row 1
-    ("CORE", A, A, B, False, False, Action.REFRESH),      # row 2
-    ("CORE", A, B, B, False, False, Action.KEEP),         # row 3 convergent
-    ("CORE", A, B, C, False, False, Action.HARDSTOP),     # row 4 drift
+    ("CORE", A, A, A, False, False, Action.KEEP),  # row 1
+    ("CORE", A, A, B, False, False, Action.REFRESH),  # row 2
+    ("CORE", A, B, B, False, False, Action.KEEP),  # row 3 convergent
+    ("CORE", A, B, C, False, False, Action.HARDSTOP),  # row 4 drift
     # rows 1-4, squash (only row 4 changes)
-    ("CORE", A, A, A, True, False, Action.KEEP),          # row 1 unchanged
-    ("CORE", A, A, B, True, False, Action.REFRESH),       # row 2 unchanged
-    ("CORE", A, B, B, True, False, Action.KEEP),          # row 3 unchanged
-    ("CORE", A, B, C, True, False, Action.REFRESH),       # row 4 → REFRESH
+    ("CORE", A, A, A, True, False, Action.KEEP),  # row 1 unchanged
+    ("CORE", A, A, B, True, False, Action.REFRESH),  # row 2 unchanged
+    ("CORE", A, B, B, True, False, Action.KEEP),  # row 3 unchanged
+    ("CORE", A, B, C, True, False, Action.REFRESH),  # row 4 → REFRESH
     # rows 5-6, no squash
-    ("CORE", A, A, B, False, True, Action.DROP),          # row 5 unedited removed
-    ("CORE", A, B, C, False, True, Action.HARDSTOP),      # row 6 edited removed
+    ("CORE", A, A, B, False, True, Action.DROP),  # row 5 unedited removed
+    ("CORE", A, B, C, False, True, Action.HARDSTOP),  # row 6 edited removed
     # rows 5-6, squash (only row 6 changes)
-    ("CORE", A, A, B, True, True, Action.DROP),           # row 5 unchanged
-    ("CORE", A, B, C, True, True, Action.DROP),           # row 6 → DROP
+    ("CORE", A, A, B, True, True, Action.DROP),  # row 5 unchanged
+    ("CORE", A, B, C, True, True, Action.DROP),  # row 6 → DROP
     # PACK regions take the same template-side path as CORE
     ("PACK:django", A, B, B, False, False, Action.KEEP),  # row 3 on a PACK
     ("PACK:django", A, B, C, False, False, Action.HARDSTOP),
     # None base ⇒ base != disk
-    ("CORE", None, B, B, False, False, Action.KEEP),      # → row 3
+    ("CORE", None, B, B, False, False, Action.KEEP),  # → row 3
     ("CORE", None, B, C, False, False, Action.HARDSTOP),  # → row 4
     # PROJECT short-circuit, any combination
     ("PROJECT", A, B, C, False, False, Action.SKIP_PROJECT),
@@ -202,14 +206,13 @@ _MATRIX = [
 
 @pytest.mark.parametrize("region_id,base,disk,incoming,squash,removed,expected", _MATRIX)
 def test_decision_matrix(region_id, base, disk, incoming, squash, removed, expected):
-    assert merge_region(
-        region_id, base, disk, incoming, squash=squash, removed=removed
-    ) == expected
+    assert merge_region(region_id, base, disk, incoming, squash=squash, removed=removed) == expected
 
 
 # --------------------------------------------------------------------------- #
 # purity — same inputs → same output, no observable side effects
 # --------------------------------------------------------------------------- #
+
 
 def test_pure_deterministic():
     # Same inputs yield the same output every time.
@@ -242,6 +245,4 @@ def test_action_is_str_token():
     assert Action.KEEP == "KEEP"
     assert str(Action.HARDSTOP) == "HARDSTOP"
     assert Action.DROP.value == "DROP"
-    assert {a.value for a in Action} == {
-        "REFRESH", "KEEP", "HARDSTOP", "SKIP_PROJECT", "DROP"
-    }
+    assert {a.value for a in Action} == {"REFRESH", "KEEP", "HARDSTOP", "SKIP_PROJECT", "DROP"}
