@@ -104,6 +104,16 @@ def test_removed_ignores_incoming():
                         removed=True) == Action.DROP
     assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=C,
                         removed=True) == Action.DROP
+    # Non-vacuous guard (review): incoming == disk must NOT leak a row-1/2 read
+    # into the removed sweep. unedited → DROP, edited → HARDSTOP, even when
+    # disk == incoming.
+    assert merge_region("CORE", base_sha=A, disk_sha=A, incoming=A,
+                        removed=True) == Action.DROP            # row 5, disk==incoming
+    assert merge_region("CORE", base_sha=A, disk_sha=B, incoming=B,
+                        removed=True) == Action.HARDSTOP        # row 6, disk==incoming
+    # None base + removed + disk==incoming must still HARDSTOP (assume-edited).
+    assert merge_region("CORE", base_sha=None, disk_sha=A, incoming=A,
+                        removed=True) == Action.HARDSTOP
 
 
 # --------------------------------------------------------------------------- #

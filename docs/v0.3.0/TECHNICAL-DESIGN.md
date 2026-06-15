@@ -348,6 +348,8 @@ PHASE B (act — writes, only if Phase A cleared):
 
 The decide/act split is what makes 4.3's "refuse the whole upgrade, change nothing" achievable — no file is written until every region has cleared.
 
+**Installer→`merge_region` consent mapping (review note).** `merge_region` is a pure decider and takes a single `squash` keyword (= "consent to drop/overwrite"), not flag names. The installer Phase-A loop MUST pass `squash=True` when **either** `--squash` **or** `--prune` is set, for the removed-region (D9 rows 5/6) and drift (row 4) cases — `--prune` is the consent verb for the file-orphan symmetry, `--squash` for the merge path. Do not wire `--prune` to bypass the removed-sweep: it is consent-to-drop, routed through the same `squash=True` argument.
+
 ---
 
 ## 5. Flat-file migration (ADR D3)
