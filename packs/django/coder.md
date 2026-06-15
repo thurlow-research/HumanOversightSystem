@@ -43,6 +43,7 @@ Organize code into one Django app per major domain area (e.g. `accounts`, `core`
 - Use `LoginRequiredMixin` (CBV) or `@login_required` (FBV) on every view that reads or writes user-specific data.
 - Use `PermissionRequiredMixin` / `@permission_required` on every view that performs privileged actions.
 - For CBVs, do not override `dispatch()` in a way that bypasses a mixin's authentication gate — the mixin's `dispatch()` must be the outermost logic path.
+- **2FA/step-up:** for any app with TOTP/2FA, enforce the step-up verification gate at the **view layer on every sensitive action** — not only at login. A view that performs a privileged or irreversible action must verify the second factor is satisfied for the current session, not assume login implies it.
 - Verify tenant / org ownership on every view that fetches or mutates a scoped object: `get_object_or_404(Model, pk=pk, organization=request.user.organization)` is the idiomatic form; a bare `get_object_or_404(Model, pk=pk)` followed by a separate ownership check is also acceptable but must be immediately adjacent.
 
 ---
