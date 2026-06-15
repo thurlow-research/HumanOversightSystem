@@ -477,6 +477,22 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
   - **Non-propagating:** because the file is not synced, activating on one machine has no effect on any other machine; another operator who clones or pulls the repo onto a different machine still needs to create their own activation file.
   - **Cannot substitute for repo authorization:** the local activation file alone cannot enable the worker. The committed `enabled: true` authorization (layer 2a) is still required. This preserves B9's agent-unforgeable anti-forge gate: the committed, CODEOWNERS-gated authorization is the audit record that the repo is sanctioned; the local file is only the per-machine on/off switch layered on top.
 
+#### Operational example — relocating the autonomous instance
+
+The canonical motivating scenario for the activation file is a **machine migration**: an operator runs the autonomous worker on one machine today (e.g. their Mac) and later moves it to another (e.g. a host named `faberix`). Both machines hold the same repo clone and therefore both carry the committed `enabled: true` authorization (layer 2a). The `~/.hos/<repo-id>/ACTIVE` file is what decides which machine is actually running the autonomous worker — relocating the instance means moving that file.
+
+**Single-active is operator-managed** for a deliberate sequential move. No lease or system-enforced exclusion is needed in v1 because the §7 claim-then-verify + correlation-id-keyed artifact naming is the safety net if both activation files briefly coexist: two active instances cannot double-do or collide (§7, R6.1), so a brief overlap during migration is safe rather than catastrophic. (A system-enforced single-active lease — where a forgotten second activation file would be automatically inert — is an explicit v2 option, out of scope for v1.)
+
+**Handoff procedure (preserves single-active, fail-closed):**
+
+1. **Remove `~/.hos/<repo-id>/ACTIVE` on the old machine.** The old instance goes inert at its next cron wake — the activation check (R13.4) is the first gate, so the cron exits immediately with no probe, no API calls, no model invocation.
+2. **Let the old machine's current cycle finish, or let its claim time out.** Either path is safe: completing normally produces a normal outcome; a stopped machine causes the claim's `updated_at` to go stale after `claim_timeout = 45m` (R7.3), at which point any other instance may re-pick up the work.
+3. **Create `~/.hos/<repo-id>/ACTIVE` on the new machine.** It is now the autonomous instance and will pick up work on its next cron wake.
+
+Remove-first guarantees no overlap window; the fail-closed default (an absent activation file = zero activity) makes the brief gap between step 1 and step 3 harmless rather than a service interruption.
+
+**Mid-task safety.** Removing the activation file on the old machine stops it from dispatching NEW tasks immediately (the activation check fires before the probe). Any in-flight per-task worker either completes normally or — if the machine is stopped — its claim ages out (§7 claim timeout, R7.3) and the new machine re-picks up the work via correlation-id-keyed idempotent recovery (§6.1, branch `hos/auto/<correlation-id>`). No work is lost or duplicated across the migration. This is the GitHub-as-DB / cold-start-safe property (§6) applied to a machine-migration event.
+
 ---
 
 ## 14. Phasing
@@ -561,6 +577,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | **A5-R1** — activation check is the first gate on every cron wake: if absent/unreadable/ambiguous → exit immediately, zero activity (no probe, no API calls, no model), at most one log line; "off" means ZERO activity; probe (R10.1b) runs only after activation check passes | R13.4, §13 narrative sidebar, T2 |
 | **A5-R2** — O16 resolved to external operator-home path `~/.hos/<repo-id>/ACTIVE` (B9 principle + doesn't-travel-with-repo); `.ai-local/worker-active` candidate dropped; honest framing: external location is defense-in-depth, not absolute agent-unreachability; committed-authorization remains the anti-forge guarantee | R13.2, R13.4, §13 narrative + YAML comment, layer-2b description, T2, O16 (closed) |
 | **A5-R3** — fail-closed default ironclad: ABSENCE, UNREADABILITY, or AMBIGUITY of the activation file = OFF; never overridable to "on by assumption"; stated explicitly in both R13.2 and R13.4 | R13.2, R13.4 |
+| **A5-R4** — operator-managed instance relocation: remove activation file on old machine → let cycle finish or claim time out → create file on new machine; remove-first guarantees no overlap; brief gap is harmless (fail-closed default); mid-task safety via §6 cold-start recovery + §7 claim timeout; v2 option: system-enforced single-active lease | R13.4 (operational example), §6.1, §7 (R7.3) |
 
 ---
 
