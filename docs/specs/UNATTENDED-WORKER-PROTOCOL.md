@@ -317,8 +317,9 @@ The probe is a couple of GitHub API calls with **no model invocation** — caden
 
 ### 11.2 Observability
 
-- **R11.6 — Run ledger.** Every autonomous action records **who / what / when / why / token-cost** to a committed, append-only ledger (mirrors `audit/oversight-log.jsonl`). Must answer "what did it do at 3am and why."
+- **R11.6 — Run ledger (machine-readable).** Every autonomous action records **who / what / when / why / token-cost** to a committed, append-only **JSONL** ledger (mirrors `audit/oversight-log.jsonl`). This is the structured, queryable forensic record.
 - **R11.7 — Dry-run / shadow mode.** A mode that runs the full loop — triage, claim-eval, build-plan — and **records what it *would* do** without acting. Mandatory for testing the loop on a live repo without risk, and the default for a newly-onboarded customer.
+- **R11.8 — Running activity log (human-readable Markdown).** Alongside the JSONL ledger (R11.6), the loop keeps a **committed, append-only Markdown log** (e.g. `audit/automation-log.md`, per-customer) of **what the automated agent has done, in plain-language summaries** — one dated entry per cycle/task: what it picked up, what it decided and why, what it changed/merged/escalated, and the running token cost. A human must be able to **skim the day's automation in narrative form** without parsing JSON. The JSONL is the queryable record; the MD is the readable story — both written from the same events so they cannot diverge. New entries append (never rewrite history); periodic roll-up summaries (per day/week) sit at the top for at-a-glance review.
 
 ---
 
@@ -444,7 +445,7 @@ The work breakdown for building v1. Tracks the §14 phasing into concrete delive
 
 - [ ] **T12 — Scheduled self-review source (§3.2, #131)** — `validate_self` auto-file mode, exact-key ledger dedup, weekly default cadence, human-only close, burndown metric (M6).
 - [ ] **T13 — Circuit breakers (§11.1)** — per-issue failure cap, blast-radius caps, rate-limit backoff, max runtime, dead-man's-switch.
-- [ ] **T14 — Observability (§11.2)** — run ledger (who/what/when/why/cost) + dry-run/shadow mode (default for a newly-opted-in customer).
+- [ ] **T14 — Observability (§11.2)** — JSONL run ledger (who/what/when/why/cost) **+ human-readable Markdown activity log with plain-language summaries (R11.8, `audit/automation-log.md`)** + dry-run/shadow mode (default for a newly-opted-in customer).
 - [ ] **T15 — Multi-customer fairness (§12)** — per-customer budgets, round-robin, isolation, global + per-repo kill switch.
 
 > **Ship gate (§14):** the cold-start drill (M4) passes, a shadow-mode run on HOS's own repo looks correct, and #152 server-side enforcement is live on at least HOS — all before any repo flips `enabled: true` out of shadow mode.
