@@ -27,11 +27,15 @@ Binding decisions honored (docs/specs/v0.3.0-base-agents-spec.md §11/§11a):
        out-of-region prose; only the PROJECT body is verbatim-from-disk.
        validate() does not reject out-of-region prose.
 
-Scope note (Phase 1): this file implements parse / validate / compose /
-region_sha + the manifest-rows / validate / region-sha / compose CLI, plus the
-pure three-way `merge_region` decider (TD §4). The flat-file `migrate` writer
-and the installer-facing `merge` CLI subcommand are later coder passes and are
-intentionally NOT implemented here.
+Scope note: this file implements parse / validate / compose / region_sha + the
+manifest-rows / validate / region-sha / compose CLI, the pure three-way
+`merge_region` decider (TD §4), and — kept here as TESTABLE pure functions so
+the bash installer stays a thin caller — `plan_upgrade` (the per-file Phase
+A/B core, TD §4.5), `migrate_flat` / `migrate_flat_introduced_core` (the
+flat-file migration writer, TD §5/D3), and `assemble_manifest` (the full
+`.hos-manifest` writer, TD §1.1/D5.6). The installer-facing `merge` / `migrate`
+CLI subcommands (the thin bash wiring) are the next/final pass and are
+intentionally NOT added to the CLI here.
 """
 
 from __future__ import annotations
@@ -660,6 +664,354 @@ def manifest_rows(path: str, parsed: ParsedAgent) -> list[str]:
     for r in ordered:
         rows.append(f"{path}\t{r.id}\t{region_sha(r.body)}")
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# plan_upgrade — the pure Phase-A decider + Phase-B composition (TD §4.5)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Plan:
+    """The result of planning an upgrade for ONE agent file (TD §4.5).
+
+    Pure data: `plan_upgrade` computes it without any file I/O. The bash
+    installer is a thin caller that acts on these fields (Phase B writes).
+
+    Fields:
+        actions:           the per-region decision, in canonical order
+                           (CORE -> PACK(alpha) -> PROJECT). PROJECT is recorded
+                           as SKIP_PROJECT for completeness. DROP entries come
+                           from the manifest-side removed sweep (D9).
+        hardstops:         (region_id, reason) for every region that resolved to
+                           HARDSTOP — the precise per-region drift report (§4.3).
+                           Empty unless `blocked`.
+        blocked:           True iff any HARDSTOP fired and `squash` was not given.
+                           When blocked, `new_bytes` is None and NOTHING is
+                           composed — the installer refuses the whole upgrade
+                           (§4.3) and writes no file, no manifest, no release.
+        new_bytes:         the composed canonical file bytes to write in Phase B,
+                           or None when `blocked`. REFRESH->template body,
+                           KEEP->disk body, DROP->omitted, PROJECT->disk body
+                           verbatim (or an empty stub on first_install). The
+                           PROJECT body in `new_bytes` is byte-identical to disk
+                           (the never-written invariant, §4.4 — assert-able).
+        new_manifest_rows: the manifest rows for the composed file, in canonical
+                           order, with each HOS-owned region's sha re-stamped to
+                           `incoming` for REFRESH/KEEP (base_sha = incoming, the
+                           realign) and the PROJECT row recorded informationally.
+                           DROP regions contribute no row. None when `blocked`.
+    """
+
+    actions: list[tuple[str, Action]] = field(default_factory=list)
+    hardstops: list[tuple[str, str]] = field(default_factory=list)
+    blocked: bool = False
+    new_bytes: bytes | None = None
+    new_manifest_rows: list[str] | None = None
+
+
+def plan_upgrade(
+    disk_bytes: bytes,
+    template_bytes: bytes,
+    base_shas: dict[str, str],
+    *,
+    squash: bool = False,
+    first_install: bool = False,
+) -> Plan:
+    """Plan a single agent file's upgrade — the pure Phase-A/Phase-B core (§4.5).
+
+    NO file I/O, NO substitution (D6 — `template_bytes` is ALREADY substituted by
+    the caller). Given:
+      disk_bytes:    the agent bytes currently on disk in the target.
+      template_bytes: the HOS new-template bytes the caller has already
+                      substituted (D6 — this function never substitutes).
+      base_shas:     {region_id: base_sha} from the prior manifest for THIS file
+                      (the sha HOS last wrote per region). A region absent from
+                      this dict has base_sha=None ⇒ merge_region treats it as
+                      base != disk (assume edited / unknown provenance, §4.2).
+
+    Returns a `Plan`. Two-phase by construction (decide-all-then-act, §4.5): all
+    `merge_region` decisions are collected first; only if none HARDSTOP (or
+    `squash` consents) does it compose `new_bytes`. A single HARDSTOP without
+    `squash` blocks the WHOLE file — `blocked=True`, `new_bytes=None`, drift
+    report in `hardstops` (§4.3: refuse the whole upgrade, change nothing).
+
+    PROJECT short-circuits to SKIP_PROJECT and its disk body is carried verbatim
+    into `new_bytes` (or an empty stub when `first_install`) — never compared,
+    never written from the template (§4.4, the never-written invariant).
+    """
+    parsed_disk = parse(disk_bytes)
+    parsed_tmpl = parse(template_bytes)
+
+    disk_by_id = {r.id: r for r in parsed_disk.regions}
+    tmpl_by_id = {r.id: r for r in parsed_tmpl.regions}
+
+    actions: list[tuple[str, Action]] = []
+    hardstops: list[tuple[str, str]] = []
+    # The region bodies to emit, keyed by region id, for KEEP/REFRESH/PROJECT.
+    # DROP ids are simply never added here, so compose() omits them.
+    emit_body: dict[str, bytes] = {}
+    # The sha to record in the manifest for each emitted HOS-owned region.
+    emit_sha: dict[str, str] = {}
+
+    # --- Template-side loop (rows 1-4 + PROJECT short-circuit) -------------- #
+    # Walk the template's regions in canonical order so `actions` is ordered.
+    for r in sorted(parsed_tmpl.regions, key=_canonical_order_key):
+        region_id = r.id
+
+        if region_id == "PROJECT" or region_id.startswith("PROJECT"):
+            # PROJECT is never compared/written. Its body comes from disk
+            # verbatim (or an empty stub on first install) — never the template.
+            actions.append((region_id, Action.SKIP_PROJECT))
+            continue
+
+        incoming = region_sha(r.body)
+        disk_region = disk_by_id.get(region_id)
+        disk_sha = region_sha(disk_region.body) if disk_region is not None else None
+        base_sha = base_shas.get(region_id)
+
+        if disk_sha is None:
+            # The region is in the template but absent on disk — a freshly
+            # introduced HOS region. It cannot be "drifted" (nothing to drift
+            # from); HOS writes its body. base/disk are not comparable, so this
+            # is a straight REFRESH (write the incoming body, stamp incoming).
+            action = Action.REFRESH
+        else:
+            action = merge_region(region_id, base_sha, disk_sha, incoming, squash=squash)
+
+        actions.append((region_id, action))
+
+        if action == Action.HARDSTOP:
+            hardstops.append((region_id, _drift_reason(region_id, base_sha, disk_sha)))
+        elif action == Action.REFRESH:
+            emit_body[region_id] = r.body
+            emit_sha[region_id] = incoming
+        elif action == Action.KEEP:
+            # Carry the disk body (it already matches incoming up to
+            # normalization); re-stamp base_sha = incoming (the realign, §4.2).
+            emit_body[region_id] = disk_region.body if disk_region is not None else r.body
+            emit_sha[region_id] = incoming
+
+    # --- Removed-region sweep (rows 5-6, D9) — manifest-side, not template -- #
+    # A region in base_shas (HOS wrote it before) but ABSENT from the new
+    # template was retired by HOS. `incoming` is irrelevant in this sweep.
+    for region_id, base_sha in base_shas.items():
+        if region_id == "PROJECT" or region_id.startswith("PROJECT"):
+            continue  # PROJECT is never in the sweep (HOS never authored it).
+        if region_id in tmpl_by_id:
+            continue  # still shipped — handled by the template-side loop.
+        disk_region = disk_by_id.get(region_id)
+        if disk_region is None:
+            # Already gone from disk too — nothing to drop, no row to emit.
+            continue
+        disk_sha = region_sha(disk_region.body)
+        action = merge_region(region_id, base_sha, disk_sha, disk_sha, squash=squash, removed=True)
+        actions.append((region_id, action))
+        if action == Action.HARDSTOP:
+            hardstops.append((region_id, _drop_reason(region_id, base_sha, disk_sha)))
+        # DROP: contribute neither an emit_body nor a manifest row (the region
+        # and its row are both removed — §4.5 Phase B).
+
+    # Re-sort actions into canonical order so DROP sweep entries interleave
+    # correctly with the template-side entries (stable, deterministic output).
+    actions.sort(key=lambda a: _action_order_key(a[0]))
+
+    # --- Block decision (§4.3: any HARDSTOP without squash → refuse whole) -- #
+    if hardstops:
+        return Plan(actions=actions, hardstops=hardstops, blocked=True)
+
+    # --- PROJECT body: verbatim from disk, or empty stub on first install -- #
+    project_disk = disk_by_id.get("PROJECT")
+    if project_disk is not None:
+        emit_body["PROJECT"] = project_disk.body
+    elif first_install:
+        emit_body["PROJECT"] = b""  # empty stub (§7.1)
+    # else: no PROJECT on disk and not first install → no PROJECT region emitted.
+
+    # --- Phase B composition: build the canonical file ---------------------- #
+    out_regions: list[Region] = []
+    for region_id, body in emit_body.items():
+        out_regions.append(
+            Region(id=region_id, name=_region_name(region_id), body=body, start_line=0, end_line=0)
+        )
+    # Front-matter is HOS-canonical and comes from the template (D8); compose()
+    # reattaches it verbatim.
+    composed = ParsedAgent(
+        front_matter=parsed_tmpl.front_matter, regions=out_regions, raw=template_bytes
+    )
+    new_bytes = compose(composed)
+
+    # --- Manifest rows for the composed file -------------------------------- #
+    rows = _plan_manifest_rows(out_regions, emit_sha)
+
+    return Plan(
+        actions=actions,
+        hardstops=[],
+        blocked=False,
+        new_bytes=new_bytes,
+        new_manifest_rows=rows,
+    )
+
+
+def _action_order_key(region_id: str) -> tuple:
+    """Canonical sort key for an action's region id (CORE -> PACK -> PROJECT)."""
+    if region_id == "CORE":
+        return (0, "")
+    if region_id.startswith("PACK:"):
+        return (1, region_id.split(":", 1)[1])
+    if region_id == "PROJECT" or region_id.startswith("PROJECT"):
+        return (2, "")
+    return (3, region_id)  # pragma: no cover - parse never produces other ids
+
+
+def _drift_reason(region_id: str, base_sha: str | None, disk_sha: str | None) -> str:
+    """Per-region drift report line for a template-side HARDSTOP (§4.3 row 4)."""
+    base_repr = base_sha if base_sha is not None else "(absent)"
+    disk_repr = disk_sha if disk_sha is not None else "(absent)"
+    return (
+        f"{region_id} drifted (base_sha={base_repr} disk_sha={disk_repr}): "
+        f"re-run with --squash to take HOS's complete version (your edit is "
+        f"recoverable in the git diff), or move your edit into the PROJECT region "
+        f"of this file, then re-run"
+    )
+
+
+def _drop_reason(region_id: str, base_sha: str | None, disk_sha: str) -> str:
+    """Per-region report for a removed+edited HARDSTOP (§4.3 row 6)."""
+    base_repr = base_sha if base_sha is not None else "(absent)"
+    return (
+        f"{region_id} retired by HOS but edited locally "
+        f"(base_sha={base_repr} disk_sha={disk_sha}): re-run with --squash/--prune "
+        f"to drop it (your edit is recoverable in the git diff), or move your edit "
+        f"into the PROJECT region of this file, then re-run"
+    )
+
+
+def _plan_manifest_rows(out_regions: list[Region], emit_sha: dict[str, str]) -> list[str]:
+    """Manifest rows for a composed Plan, path-less (the caller prepends path).
+
+    Rows are `<region>\\t<sha>` in canonical order. HOS-owned regions use the
+    re-stamped `incoming` sha (base_sha = incoming); PROJECT uses its on-disk
+    body sha (informational only, never compared). DROP regions are absent from
+    `out_regions`, so they contribute no row.
+    """
+    rows: list[str] = []
+    for r in sorted(out_regions, key=_canonical_order_key):
+        sha = emit_sha.get(r.id)
+        if sha is None:
+            sha = region_sha(r.body)  # PROJECT (informational) or KEEP fallback.
+        rows.append(f"{r.id}\t{sha}")
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# migrate_flat — flat-file provenance migration (TD §5, ADR D3)
+# --------------------------------------------------------------------------- #
+
+
+def migrate_flat(disk_bytes: bytes, *, hos_ships_agent: bool) -> bytes:
+    """Wrap a flat (marker-less) agent file into a single region (TD §5.2, D3).
+
+    Pure — no I/O. The provenance gate (D3, the load-bearing rule):
+      hos_ships_agent=True  → HOS ships a same-named agent ⇒ wrap the whole body
+                              as a single CORE region (legible to future
+                              upgrades; the three-way merge can refresh it).
+      hos_ships_agent=False → unknown provenance (a consumer's own agent) ⇒ wrap
+                              the whole body as a single PROJECT region (sacred —
+                              --squash can never destroy it).
+
+    Front-matter (a leading `---\\n ... \\n---\\n` block) is preserved verbatim
+    and reattached by compose(); only the post-front-matter body is wrapped.
+    The result passes validate() (compose emits canonical markers).
+
+    Idempotency note: the CALLER must only invoke this on a genuinely flat file
+    (parse(...).regions == []). A file that already has markers is not flat and
+    must take the §4 three-way path, not this migration (TD §5.4).
+    """
+    parsed = parse(disk_bytes)
+    body = parsed.raw[len(parsed.front_matter) :] if parsed.front_matter else parsed.raw
+    region_id = "CORE" if hos_ships_agent else "PROJECT"
+    wrapped = ParsedAgent(
+        front_matter=parsed.front_matter,
+        regions=[Region(id=region_id, name=None, body=body, start_line=0, end_line=0)],
+        raw=disk_bytes,
+    )
+    return compose(wrapped)
+
+
+def migrate_flat_introduced_core(disk_bytes: bytes, core_template_bytes: bytes) -> bytes:
+    """The newly-introduced-CORE-over-existing-flat case (TD §5.3, D3).
+
+    When THIS release introduces an HOS CORE for a name that already exists as a
+    flat consumer file: take the existing flat body → wrap as PROJECT (consumer
+    keeps it verbatim), then PREPEND the fresh HOS CORE from the template. NEVER
+    a lossy merge — the two bodies are layered, not combined (recency precedence
+    means the consumer's PROJECT body still governs on conflict).
+
+    `core_template_bytes` is the HOS template carrying the new CORE (already
+    substituted by the caller, D6). Its CORE body is extracted and prepended; its
+    front-matter becomes the file's front-matter (HOS-canonical, D8).
+    """
+    parsed_disk = parse(disk_bytes)
+    consumer_body = (
+        parsed_disk.raw[len(parsed_disk.front_matter) :]
+        if parsed_disk.front_matter
+        else parsed_disk.raw
+    )
+
+    parsed_tmpl = parse(core_template_bytes)
+    core_regions = [r for r in parsed_tmpl.regions if r.id == "CORE"]
+    if not core_regions:
+        raise ValueError("core_template_bytes has no CORE region to introduce")
+    core_body = core_regions[0].body
+
+    wrapped = ParsedAgent(
+        front_matter=parsed_tmpl.front_matter,
+        regions=[
+            Region(id="CORE", name=None, body=core_body, start_line=0, end_line=0),
+            Region(id="PROJECT", name=None, body=consumer_body, start_line=0, end_line=0),
+        ],
+        raw=disk_bytes,
+    )
+    return compose(wrapped)
+
+
+# --------------------------------------------------------------------------- #
+# assemble_manifest — the full .hos-manifest writer (TD §1.1, ADR D5.6)
+# --------------------------------------------------------------------------- #
+
+
+def assemble_manifest(rows_by_file: dict[str, list[str]]) -> str:
+    """Produce the full `.hos-manifest` text (TD §1.1, ADR D5.6).
+
+    `rows_by_file` maps `path -> list of "<region>\\t<sha>" rows` (the path-less
+    rows `manifest_rows`/`_plan_manifest_rows` produce, OR full
+    `<path>\\t<region>\\t<sha>` rows — both are accepted; a row already carrying
+    its path is used as-is). The output is:
+
+        # hos-manifest-schema: 2
+        <path>\\t<region>\\t<sha>          (LC_ALL=C-sorted body)
+        ...
+
+    The schema-version comment is written FIRST and is exempt from the sort (TD
+    §1.1); the body rows are sorted deterministically (codepoint order == the
+    `LC_ALL=C sort` the installer uses) for stable diffs. The text ends with a
+    trailing newline.
+    """
+    body_rows: list[str] = []
+    for path, rows in rows_by_file.items():
+        for row in rows:
+            # Accept both path-less ("<region>\t<sha>") and full
+            # ("<path>\t<region>\t<sha>") rows; prepend the path only when absent.
+            if row.count("\t") == 1:
+                body_rows.append(f"{path}\t{row}")
+            else:
+                body_rows.append(row)
+
+    body_rows.sort()  # codepoint order == LC_ALL=C sort (TD §1.1).
+    lines = [f"# hos-manifest-schema: {CURRENT_SCHEMA}"]
+    lines.extend(body_rows)
+    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------- #
