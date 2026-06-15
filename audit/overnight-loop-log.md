@@ -35,3 +35,4 @@ appends one line per issue handled, or a "no new issues" line. Review in the mor
 2026-06-15T02:37:16Z CPS#91 — needs_human (audit-recovery backup to NAS); CPS-owned (guest protocol), not injected
 2026-06-15T02:37:16Z CPS#87 — needs_human (audit-logging monitoring/alerting); CPS-owned, not injected
 2026-06-15T02:37:16Z — no actionable new work; STEP 3 grind deferred (already on directed v0.3.0 build: architect designing pack-selection mechanism)
+2026-06-15T02:43:53Z — CORRECTION (Scott clarified CPS methodology): CPS#87/#91 re-triaged for platform/framework relevance per the single-unambiguous-HOS-list rule → both CPS-APP operational (audit subsystem, backup.sh/NAS, fail-closed CPS#78), NOT framework → no HOS issue, correctly left in CPS's tracker. Proper framing = "triaged, not framework", not "skipped under guest protocol".
