@@ -422,11 +422,25 @@ if [[ "$PR_MODE" != "off" ]] && ! $DRY_RUN; then
       PR_ACTIVE=true
       header "Install-via-PR"
       info "Applying the upgrade on branch '$PR_BRANCH' (was on '$PR_ORIG_BRANCH') — it'll become a PR you review."
+    elif [[ "$PR_MODE" == "on" ]]; then
+      # --pr means PR-or-nothing. A branch-creation failure must NOT silently
+      # degrade to an in-place upgrade of the consumer's tree (#272). Hard-stop
+      # here, BEFORE any scaffolding — nothing is written.
+      err "--pr requested but branch '$PR_BRANCH' could not be created (it may already exist)."
+      err "Refusing to fall back to an in-place upgrade — nothing was changed."
+      err "Delete or rename the existing branch and retry, or use --no-pr to install in place."
+      exit 1
     else
       warn "Could not create branch '$PR_BRANCH' — applying in place."
     fi
   elif [[ "$PR_MODE" == "on" ]]; then
-    fail "--pr requested but not possible: $_pr_why. Resolve it, or use --no-pr."
+    # Eligibility failed under an explicit --pr. fail() does NOT exit — it only
+    # records an error the end-of-run check reports AFTER the in-place scaffolding
+    # has already mutated the tree (#272). Hard-stop here so nothing is written.
+    err "--pr requested but not possible: $_pr_why."
+    err "Refusing to fall back to an in-place upgrade — nothing was changed."
+    err "Resolve the above (commit/stash, add an 'origin' remote, install gh, etc.), or use --no-pr to install in place deliberately."
+    exit 1
   else
     info "Install-via-PR not used ($_pr_why) — applying in place. (Pass --pr to require it.)"
   fi
@@ -1294,9 +1308,9 @@ if $PR_ACTIVE; then
         --title "chore(hos): upgrade framework to ${HOS_REF}" \
         --body "$_pr_body" --head "$PR_BRANCH" 2>/dev/null || true )"
       if [[ -n "$_pr_url" ]]; then ok "Opened upgrade PR: $_pr_url"
-      else warn "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --head $PR_BRANCH"; fi
+      else fail "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --head $PR_BRANCH"; fi
     else
-      warn "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually."
+      fail "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually. (Your base branch is untouched.)"
     fi
     git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1 \
       && info "Back on '$PR_ORIG_BRANCH' — your working state is undisturbed; the upgrade lives in the PR."
