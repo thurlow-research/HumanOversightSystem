@@ -716,6 +716,35 @@ _any_blocked=false
 _any_inject_fail=false   # B2: any inject-pack failure → pre-Phase-B abort (§2.4.1)
 _any_plan_fail=false     # R-B2: any planning failure → pre-Phase-B abort (§2.4.1)
 
+# Run a regions.py subcommand that has NO expected non-zero exit (migrate on a
+# file already confirmed flat; base-shas read). Any non-zero is a CRASH, not a
+# result — surface its stderr and FAIL CLOSED before Phase B writes anything
+# (#276: a swallowed regions.py crash silently degrades a governance install —
+# a region left flat, a raw copy used as the "disk" image, or empty base-shas —
+# and the run still prints "Done"). stdout goes to $1 ("-" inherits). Exits 1 on
+# crash; on success the caller continues normally.
+_regions_strict() {  # _regions_strict <outfile|-> <args...>
+  local _out="$1"; shift
+  local _err _rc
+  _err="$(mktemp "${TMPDIR:-/tmp}/hos-regions.XXXXXX")"
+  if [[ "$_out" == "-" ]]; then
+    python3 "$_REGIONS_PY" "$@" 2>"$_err"; _rc=$?
+  else
+    python3 "$_REGIONS_PY" "$@" >"$_out" 2>"$_err"; _rc=$?
+  fi
+  if [[ $_rc -ne 0 ]]; then
+    echo "" >&2
+    err "regions.py crashed (exit $_rc) — install aborted, nothing written (#276):"
+    err "  call: regions.py $*"
+    [[ -s "$_err" ]] && sed 's/^/    /' "$_err" >&2
+    err "A regions.py failure means the composed agents and manifest cannot be trusted."
+    err "Fix the cause (often a malformed region marker or pack body) and re-run."
+    rm -f "$_err"
+    exit 1
+  fi
+  rm -f "$_err"
+}
+
 if [[ ! -x "$(command -v python3)" ]]; then
   fail "python3 required for the region install but not found"
 elif [[ ! -f "$_REGIONS_PY" ]]; then
@@ -744,9 +773,8 @@ else
     # CORE). Once templates ship markers this is a no-op (the grep skips it).
     if ! grep -q '<!-- HOS:' "$_stage" 2>/dev/null; then
       _stage_wrapped="$_AGENT_STAGE/${agent}.tmpl.wrapped.md"
-      if python3 "$_REGIONS_PY" migrate "$_stage" --ships yes > "$_stage_wrapped" 2>/dev/null; then
-        mv "$_stage_wrapped" "$_stage"
-      fi
+      _regions_strict "$_stage_wrapped" migrate "$_stage" --ships yes   # #276: crash → abort, not a silently-unwrapped region
+      mv "$_stage_wrapped" "$_stage"
     fi
 
     # (A1b) Pack injection (ADR-031 §3.1 step 4). For each selected pack that
@@ -758,9 +786,11 @@ else
     for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
       _body="$HOS_SOURCE/packs/$_pk/${agent}.md"
       [[ -f "$_body" ]] || continue
+      _inj_err="$_AGENT_STAGE/${agent}.inject.err"
       if ! python3 "$_REGIONS_PY" inject-pack "$_stage" \
-            --name "$_pk" --body-file "$_body" --in-place 2>/dev/null; then
+            --name "$_pk" --body-file "$_body" --in-place 2>"$_inj_err"; then
         fail "inject-pack $_pk into ${agent} failed — check packs/$_pk/${agent}.md"
+        [[ -s "$_inj_err" ]] && sed 's/^/    /' "$_inj_err" >&2   # #276: surface why it died, don't just abort blind
         _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)
         continue 2              # skip this agent; an unwritable pack region must not ship half-composed
       fi
@@ -779,8 +809,7 @@ else
         # Flat consumer/Phase-0 file → migrate to a wrapped region. Provenance =
         # is the slug HOS-shipped (in consumer_agents.txt) → here always yes →
         # CORE (legible to future upgrades, §5.2/D3).
-        python3 "$_REGIONS_PY" migrate "$dst" --ships yes > "$_disk" 2>/dev/null \
-          || cp "$dst" "$_disk"
+        _regions_strict "$_disk" migrate "$dst" --ships yes   # #276: crash → abort, not a silent raw-copy as the "disk" image
       fi
     else
       _file_first_install=true
@@ -789,7 +818,9 @@ else
 
     # (A3) prior base-shas for this path (empty on first install / v1 manifest).
     if [[ -f "$_PRIOR_MANIFEST" ]]; then
-      _base_shas="$(python3 "$_REGIONS_PY" base-shas "$_PRIOR_MANIFEST" "$rel" 2>/dev/null || echo '{}')"
+      _bs_out="$_AGENT_STAGE/${agent}.base-shas.json"
+      _regions_strict "$_bs_out" base-shas "$_PRIOR_MANIFEST" "$rel"   # #276: crash → abort, not a silent {} that mis-detects drift
+      _base_shas="$(cat "$_bs_out")"
     else
       _base_shas='{}'
     fi
@@ -803,9 +834,10 @@ else
     if $_file_first_install || $_first_install; then _plan_first=(--first-install); fi
     _plan_json=""
     _plan_rc=0
+    _plan_err="$_AGENT_STAGE/${agent}.plan.err"
     _plan_json="$(python3 "$_REGIONS_PY" plan "$_disk" "$_stage" \
         --base-shas "$_base_shas" \
-        ${_squash_flag[@]+"${_squash_flag[@]}"} ${_plan_first[@]+"${_plan_first[@]}"} 2>/dev/null)" \
+        ${_squash_flag[@]+"${_squash_flag[@]}"} ${_plan_first[@]+"${_plan_first[@]}"} 2>"$_plan_err")" \
       || _plan_rc=$?
 
     if [[ $_plan_rc -eq 4 ]]; then
@@ -823,6 +855,7 @@ for rid,reason in p.get("hardstops",[]):
       continue
     elif [[ $_plan_rc -ne 0 ]]; then
       fail "planning ${rel} failed (regions.py exit $_plan_rc) — check the file's markers"
+      [[ -s "$_plan_err" ]] && sed 's/^/    /' "$_plan_err" >&2   # #276: surface the crash, don't suppress it
       _any_plan_fail=true   # R-B2: route through the pre-Phase-B abort gate (§2.4.1)
       continue
     fi
@@ -1301,8 +1334,12 @@ if $PR_ACTIVE; then
     git -C "$TARGET_REPO" branch -D "$PR_BRANCH" >/dev/null 2>&1 || true
   else
     git -C "$TARGET_REPO" add -A
-    git -C "$TARGET_REPO" commit -q -m "chore(hos): upgrade framework to ${HOS_REF}" || true
-    if git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
+    if ! git -C "$TARGET_REPO" commit -q -m "chore(hos): upgrade framework to ${HOS_REF}"; then
+      # #273: a swallowed commit failure (e.g. a rejecting hook) must NOT fall
+      # through to pushing an un-committed branch under a misleading "Committed…"
+      # message. Fail-closed; the base branch is untouched (work is on PR_BRANCH).
+      fail "Commit failed on '$PR_BRANCH' (e.g. a rejecting hook) — staged changes remain; your base branch is untouched. Resolve and re-run."
+    elif git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
       _pr_body="Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
       _pr_url="$( cd "$TARGET_REPO" && gh pr create \
         --title "chore(hos): upgrade framework to ${HOS_REF}" \
@@ -1312,8 +1349,11 @@ if $PR_ACTIVE; then
     else
       fail "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually. (Your base branch is untouched.)"
     fi
-    git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1 \
-      && info "Back on '$PR_ORIG_BRANCH' — your working state is undisturbed; the upgrade lives in the PR."
+    if git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1; then
+      info "Back on '$PR_ORIG_BRANCH' — your working state is undisturbed; the upgrade lives in the PR."
+    else
+      warn "Could not return to '$PR_ORIG_BRANCH' — you are still on '$PR_BRANCH'. Switch back manually (git checkout $PR_ORIG_BRANCH)."
+    fi
   fi
 fi
 
