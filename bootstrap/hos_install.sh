@@ -927,7 +927,8 @@ open(sys.argv[2],"wb").write(base64.b64decode(data))' "$_pj" "$dst" \
   # Aggregate every planned file's rows into one spec, then write the manifest
   # via assemble-manifest (schema-v2 header + LC_ALL=C-sorted body).
   if ! $DRY_RUN; then
-    python3 -c 'import json,sys
+    _spec_err="$_AGENT_STAGE/manifest-spec.err"
+    if ! python3 -c 'import json,sys
 spec={}
 import os
 stage=sys.argv[1]
@@ -940,7 +941,16 @@ for agent in sys.argv[2:]:
     if rows:
         spec[".claude/agents/%s.md" % agent]=rows
 json.dump(spec, open(os.path.join(stage,"manifest-spec.json"),"w"))' \
-      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>/dev/null || true
+      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>"$_spec_err"; then
+      # #277: the agents are written, but a crashed spec build would leave a
+      # manifest MISSING every agent's region rows — which silently breaks the
+      # NEXT upgrade's drift detection. Refuse to stamp a degraded manifest.
+      echo "" >&2
+      err "manifest-spec assembly crashed — refusing to write a manifest missing agent region rows (#277):"
+      [[ -s "$_spec_err" ]] && sed 's/^/    /' "$_spec_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
 fi
 
@@ -1195,15 +1205,10 @@ else
   skip "prompts/ already exists"
 fi
 
-# ── .hos-release — record the installed framework version ─────────────────────
-echo ""
-info ".hos-release — installed framework version marker"
-if $DRY_RUN; then
-  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
-else
-  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
-  ok ".hos-release = $HOS_REF"
-fi
+# NOTE: .hos-release (the version stamp) is written AFTER the manifest block
+# below — the version is the COMMIT POINT, stamped only once the agents AND the
+# manifest are on disk. So a manifest-assembly failure (#277) can never leave a
+# new .hos-release stamped over a stale or missing .hos-manifest.
 
 # ── .hos-manifest — framework inventory, obsolete-file detection + opt-in prune (#182) ──
 # Records the framework-OWNED files this release ships, each with its sha256 (so a
@@ -1252,6 +1257,8 @@ else
   # them through unchanged.
   _agent_spec="$_AGENT_STAGE/manifest-spec.json"
   [[ -f "$_agent_spec" ]] || echo '{}' > "$_agent_spec"
+  _manifest_err="$_AGENT_STAGE/manifest-assemble.err"
+  _assemble_rc=0
   _new_manifest="$(python3 -c 'import json,sys
 spec=json.load(open(sys.argv[1]))
 # WHOLE rows arrive on stdin as full "<path>\tWHOLE\t<sha>" lines; bucket them
@@ -1262,10 +1269,23 @@ if whole:
 sys.path.insert(0, sys.argv[2])
 import regions
 sys.stdout.write(regions.assemble_manifest(spec))' \
-      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>/dev/null)"
-  if [[ -z "$_new_manifest" ]]; then
-    # Fallback: regions.py unavailable — write at least the WHOLE rows with a v2 header.
-    _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>"$_manifest_err")" || _assemble_rc=$?
+  if [[ $_assemble_rc -ne 0 || -z "$_new_manifest" ]]; then
+    if [[ ! -f "$HOS_SOURCE/scripts/oversight/validators/regions.py" ]]; then
+      # regions.py genuinely absent — WHOLE-only is the best-effort fallback, but
+      # say so: region drift tracking is degraded until a region-aware install.
+      warn ".hos-manifest: regions.py unavailable — writing WHOLE rows only (region drift tracking is degraded until the next region-aware install)."
+      _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+    else
+      # #277: regions.py IS present but assembly crashed — do NOT silently stamp a
+      # degraded (region-row-less) manifest. The agents are written, but a degraded
+      # manifest breaks the next upgrade's drift detection. Refuse to stamp.
+      echo "" >&2
+      err ".hos-manifest assembly crashed (regions.py present, exit $_assemble_rc) — refusing to write a degraded manifest (#277):"
+      [[ -s "$_manifest_err" ]] && sed 's/^/    /' "$_manifest_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
   if [[ -f "$_manifest_file" ]]; then
     # Orphans = paths in the prior manifest but not this one, that still exist.
@@ -1330,6 +1350,18 @@ ARCH
   fi
   printf '%s\n' "$_new_manifest" > "$_manifest_file"
   ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -cvE '^(#|[[:space:]]*$)') region/file rows tracked)"
+fi
+
+# ── .hos-release — record the installed framework version (the COMMIT POINT) ───
+# Written LAST, only after the agents and manifest are on disk — so a failure in
+# the manifest block above (#277) never leaves a new version over a bad manifest.
+echo ""
+info ".hos-release — installed framework version marker"
+if $DRY_RUN; then
+  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
+else
+  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
+  ok ".hos-release = $HOS_REF"
 fi
 
 # ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──

@@ -70,15 +70,26 @@ git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
 | `template_refs_check.sh` | `template-refs` | — |
 | `portability_check.sh` | `portability` | — |
 | `django_check.sh` | `django` | — |
+| code-reviewer sign-off | `code-review` | `code-review` |
 | security-reviewer sign-off | `security` | `security` |
-| privacy-reviewer sign-off | — | `privacy` |
-| ui-reviewer sign-off | — | `ui` |
-| a11y-reviewer sign-off | — | `a11y` |
-| infra-reviewer sign-off | — | `infra` |
-| ops-reviewer sign-off | — | `ops` |
-| reliability-reviewer sign-off | — | `reliability` |
-| unit-test sign-off | — | `test-unit` |
-| system-test sign-off | — | `test-system` |
+| privacy-reviewer sign-off | `privacy` | `privacy` |
+| ui-reviewer sign-off | `ui` | `ui` |
+| a11y-reviewer sign-off | `a11y` | `a11y` |
+| infra-reviewer sign-off | `infra` | `infra` |
+| ops-reviewer sign-off | `ops` | `ops` |
+| reliability-reviewer sign-off | `reliability` | `reliability` |
+| unit-test sign-off | `test-unit` | `test-unit` |
+| system-test sign-off | `test-system` | `test-system` |
+
+> Any required sign-off role can be suspended by adding `SUSPENDED: <role>` to
+> `contract/gate-suspension.md` — the evaluator's suspension check is generic over
+> every role in `required_signoffs`. **Differences in how they re-enable:** pure
+> script gates (lint, types, secrets, template-refs, portability, django) are
+> auto-re-enabled after consecutive clean passes; reviewer-role suspensions —
+> and `security`, which has a reviewer counterpart a passing scan can't satisfy —
+> are removed only by a human. Suspension of any role is additionally **ignored**
+> on a step behind the effective human gate (validated tier == CRITICAL or
+> `human_gate_required`).
 
 **5. Delete the suspension file when done:**
 ```bash
@@ -685,9 +696,9 @@ python3 scripts/oversight/token_tracker.py report
 # Token burn all-time
 python3 scripts/oversight/token_tracker.py report --all
 
-# All escaped defects
-jq 'select(.event=="panel-run") | {step, escaped_defects}' \
-  audit/oversight-log.jsonl
+# Escaped defects surface as PR review threads / filed issues, not an audit event.
+#   (There is no panel-run audit event; the panel posts to the PR.)
+gh issue list --label escaped-defect --state all
 
 # All security findings filed
 gh issue list --label security-finding --state all
@@ -698,8 +709,12 @@ cat .claudetmp/signoffs/stepN-register.md
 # Second review verdict for step N
 head -10 .claudetmp/second-review/stepN-*.md
 
-# Risk tier history
-jq 'select(.event=="risk-assessment") | {step, tier, score}' \
+# Risk tier for the current step — read the risk-assessment artifact
+#   (risk-assessor writes this file; it does not emit an audit-log event)
+head -20 .claudetmp/oversight/validators/risk-assessment.md
+
+# Step head commits recorded in the audit log
+jq 'select(.event=="step-head") | {step, head_sha}' \
   audit/oversight-log.jsonl
 ```
 
