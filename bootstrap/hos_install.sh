@@ -22,6 +22,11 @@
 #   ./hos_install.sh --prune [DIR]        # archive framework files removed across
 #                                         #   versions (move → committed .hos-archive/;
 #                                         #   only unmodified files; recoverable).
+#   ./hos_install.sh --squash [DIR]       # take HOS's version of any drifted CORE/PACK
+#                                         #   region (explicit consent; never touches
+#                                         #   PROJECT). Resolves a layering drift hard-stop.
+#   ./hos_install.sh --pack <name> [DIR]  # install with a named pack (repeatable for multi-pack)
+#   ./hos_install.sh --no-pack [DIR]      # install bare core only (deliberate; see #237)
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -62,6 +67,9 @@ LOCAL_SOURCE=false    # install from the local working copy instead of a release
 PR_MODE="off"         # off (default — opt-in) | on (--pr) — branch+PR the upgrade (#193).
                       # Opt-in until the live push/PR path is proven on a real upgrade.
 PRUNE=false           # --prune: archive framework files removed across versions (#182)
+SQUASH=false          # --squash: take HOS's version of a drifted CORE/PACK region (TD §4.3)
+NO_PACK=false         # --no-pack: install bare core, no pack (deliberate; #237 WARN)
+_packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -75,7 +83,11 @@ while [[ $# -gt 0 ]]; do
     --pr)            PR_MODE="on"; shift ;;
     --no-pr)         PR_MODE="off"; shift ;;
     --prune)         PRUNE=true; shift ;;
-    --help|-h)       sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --squash)        SQUASH=true; shift ;;
+    --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
+    --pack=*)        _packs+=("${1#*=}"); shift ;;
+    --no-pack)       NO_PACK=true; shift ;;
+    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -83,6 +95,11 @@ done
 
 TARGET_REPO="$(cd "$TARGET_REPO" 2>/dev/null && pwd)" || {
   echo "ERROR: target directory not found: $TARGET_REPO"; exit 1; }
+
+# Mutual-exclusion: --no-pack and --pack are contradictory.
+if $NO_PACK && [[ ${#_packs[@]} -gt 0 ]]; then
+  echo "ERROR: --no-pack and --pack are mutually exclusive (try --help)"; exit 1
+fi
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
@@ -468,22 +485,7 @@ else
     oversight-orchestrator spec-red-team prompt-fidelity ops-designer ops-reviewer \
     reliability-reviewer post-change-sweep ux-designer)
 fi
-for agent in "${_consumer_agents[@]}"; do
-  src="$HOS_SOURCE/.claude/agents/${agent}.md"
-  dst="$TARGET_REPO/.claude/agents/${agent}.md"
-  if [[ ! -f "$src" ]]; then
-    warn "Agent not found in HOS: ${agent}.md — skipping"
-    continue
-  fi
-  # dep-mapper: don't overwrite project-specific version
-  if [[ "$agent" == "dep-mapper" && -f "$dst" ]] && ! $FORCE; then
-    skip "dep-mapper.md (project-specific version preserved — use --force to replace with generic)"
-    continue
-  fi
-  cp_file "$src" "$dst" ".claude/agents/${agent}.md"
-done
-
-# ── Substitute project placeholders in scaffolded agents (#87 / #99 / #110) ───
+# ── Placeholder substitution SETUP (#87 / #99 / #110) — runs BEFORE the agent flow ──
 # Install-time placeholders are DECLARED in scripts/framework/placeholders.manifest
 # (NOT guessed — agent prompts also contain runtime tokens like {N}/{HEAD_SHA}
 # and JSON examples like {role} that must NOT be touched). On EVERY install we:
@@ -493,15 +495,20 @@ done
 #   2. substitute every declared placeholder from env override > config.sh; a
 #      value we don't have is left as its literal token, never blanked, so a
 #      partial config can't corrupt an agent (#99). perl: cross-platform (D27).
-echo ""
-info ".claude/agents/ — applying project placeholders"
+#
+# v0.3.0 (TD D6): substitution is the ONLY substitution engine and runs over the
+# STAGED template BEFORE regions.py plans it — regions.py never substitutes. So
+# we build the perl arg array here and apply it per-staged-template inside the
+# Phase-A/B agent flow below, instead of in-place over installed files.
 _manifest="$HOS_SOURCE/scripts/framework/placeholders.manifest"
 _subst_config="$TARGET_REPO/scripts/framework/config.sh"
+_perl_args=()        # populated below; empty ⇒ nothing to substitute
+_names=()
+_appended=()
 if [[ ! -f "$_manifest" ]]; then
   warn "placeholders.manifest not in release — skipping substitution (run scripts/framework/install.sh)"
 else
   # Declared placeholder names (tab-separated NAME<TAB>description; skip # and blanks).
-  _names=()
   while IFS=$'\t' read -r _name _rest; do
     [[ -z "$_name" || "$_name" == \#* ]] && continue
     _names+=("$_name")
@@ -509,7 +516,6 @@ else
 
   # Ensure config.sh exists and carries a key for every declared placeholder.
   # Append missing keys (empty), non-destructively — never rewrite existing lines.
-  _appended=()
   if ! $DRY_RUN; then
     run mkdir -p "$(dirname "$_subst_config")"
     [[ -f "$_subst_config" ]] || printf '# HOS project config — values substituted into .claude/agents/*.md\n' > "$_subst_config"
@@ -521,36 +527,373 @@ else
   done
 
   # Build perl substitutions: env override > config.sh value. Missing → leave token.
-  _missing=()
-  _perl_args=()
   for _n in "${_names[@]}"; do
     _val="${!_n:-}"
     if [[ -z "$_val" && -f "$_subst_config" ]]; then
       _val=$(grep -E "^${_n}=" "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//')
     fi
-    if [[ -z "$_val" ]]; then _missing+=("$_n"); continue; fi
+    if [[ -z "$_val" ]]; then continue; fi
     _val=${_val//|/\\|}              # escape the perl s||| delimiter
     _perl_args+=(-e "s|\{${_n}\}|${_val}|g;")
   done
+fi
 
-  _agent_re="\\{($(IFS='|'; printf '%s' "${_names[*]}"))\\}"
-  if $DRY_RUN; then
-    dry_run "Would substitute ${#_perl_args[@]} declared placeholder(s) in .claude/agents/*.md"
-  elif [[ ${#_perl_args[@]} -eq 0 ]]; then
-    skip "no placeholder values set yet"
-  elif ! command -v perl >/dev/null 2>&1; then
-    warn "perl not found — cannot substitute placeholders; agent files left with raw tokens"
-  else
-    _subst=0
-    while IFS= read -r _agent; do
-      if grep -qE "$_agent_re" "$_agent" 2>/dev/null; then
-        perl -i -p "${_perl_args[@]}" "$_agent"
-        _subst=$((_subst + 1))
+# _substitute_into <src> <dst>: copy the HOS template <src> to <dst>, then apply
+# the declared placeholder substitution IN PLACE on <dst> (the staged template).
+# This is the D6 substitution boundary — regions.py is handed already-substituted
+# bytes and never substitutes itself. No-op copy if perl/args unavailable.
+_substitute_into() {
+  local _src="$1" _dst="$2"
+  cp "$_src" "$_dst"
+  if [[ ${#_perl_args[@]} -gt 0 ]] && command -v perl >/dev/null 2>&1; then
+    perl -i -p "${_perl_args[@]}" "$_dst" 2>/dev/null || true
+  fi
+}
+
+# ── Pack resolution (ADR-031 Decision 1) ─────────────────────────────────────
+_resolved_packs=()
+
+# (R1) Source of truth: flags win; else config.sh PACK= (the upgrade read-path).
+#      CRITICAL: --no-pack must WIN over a recorded config.sh PACK= — gate the
+#      config read on `! $NO_PACK`. Without this gate, a flagless `--no-pack`
+#      install reads the recorded PACK=django into _resolved_packs, R2's
+#      "${#_resolved_packs[@]} -eq 0" guard is then false, the $NO_PACK arm is
+#      never reached, and --no-pack is a SILENT no-op (B1). --no-pack is an
+#      explicit operator opt-out; it must override the recorded choice.
+if [[ ${#_packs[@]} -gt 0 ]]; then
+    _resolved_packs=("${_packs[@]}")               # from --pack (precedence 1)
+elif ! $NO_PACK && [[ -f "$_subst_config" ]]; then   # --no-pack suppresses the config read
+    # grep returns 1 when no PACK= line exists — mask with || true so set -e
+    # does not abort the script on a legitimately absent PACK key.
+    _cfg_pack="$(grep -E '^PACK=' "$_subst_config" 2>/dev/null | head -1 \
+                  | cut -d= -f2- | sed 's/^"//; s/"$//' || true)"
+    [[ -n "$_cfg_pack" ]] && _resolved_packs=("$_cfg_pack")   # precedence 2 (single-value)
+fi
+# NB: v0.3.0 reads config.sh PACK= as a SINGLE value (ADR-031 "open seams"); the
+# space-split multi-value form is a noted-not-built seam. Repeated --pack is the
+# only wired multi-pack path.
+
+# (R2) No pack resolved → the no-pack decision tree (ADR-031 §1.3).
+if [[ ${#_resolved_packs[@]} -eq 0 ]]; then
+    if $NO_PACK; then
+        # explicit opt-out → core only, #237 WARN (bare core IS a real install).
+        warn "installing bare core with no pack — core enforces generic best"
+        warn "practices but is shallow; install a pack before first real use"
+        # (R2a) --no-pack must also CLEAR a recorded config.sh PACK= (B1 follow-on).
+        # Else the NEXT flagless install reads the stale PACK= and silently re-adds
+        # the pack the operator just stripped — a footgun. Remove the row so the
+        # recorded state matches the installed state (bare core). The on-disk PACK
+        # region is then DROPped by the existing removed-region sweep (§4.2).
+        if [[ -f "$_subst_config" ]] && grep -qE '^PACK=' "$_subst_config" 2>/dev/null; then
+            _old_pack="$(grep -E '^PACK=' "$_subst_config" | head -1 | cut -d= -f2- \
+                          | sed 's/^"//; s/"$//' || true)"
+            if $DRY_RUN; then
+                dry_run "Would clear config.sh PACK=\"$_old_pack\" (--no-pack strip)"
+            else
+                perl -i -ne 'print unless /^PACK=/' "$_subst_config"
+            fi
+            warn "config.sh PACK cleared: $_old_pack → (none) — pack stripped (see removed-region sweep)"
+        fi
+    elif [[ -t 0 ]]; then
+        # interactive, no --no-pack → S1 hard default: don't ship core-only by accident.
+        err "no PACK selected — pass --pack <name> (e.g. --pack django), set PACK="
+        err "in scripts/framework/config.sh, or pass --no-pack to install the bare"
+        err "core deliberately"
+        exit 1
+    else
+        # non-interactive / CI, no --no-pack → CI must be explicit (error path).
+        err "no PACK selected and not interactive — CI must pass --pack <name> or"
+        err "--no-pack explicitly"
+        exit 1
+    fi
+fi
+
+# (R2b) Slug-validate every resolved pack name before R3/R5 use it.
+#       A name that does not match [a-z0-9][a-z0-9-]* must never reach the
+#       directory-existence check or the `perl -i -pe "s|^PACK=...|PACK=\"$_pk\"|"`
+#       substitution — a '|' in the name would break the perl delimiter.
+#       Covers both the --pack flag path and the config.sh PACK= read path.
+for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+    if [[ ! "$_p" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        err "invalid pack name '$_p' — must match [a-z0-9][a-z0-9-]* (lowercase, start alnum, then alnum or hyphen)"
+        exit 1
+    fi
+done
+
+# (R3) Validate each resolved pack exists in the HOS source (unknown → hard error,
+#      fail-closed: nothing written, exit non-zero — never fall through to core-only).
+for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+    if [[ ! -d "$HOS_SOURCE/packs/$_p" ]]; then
+        err "unknown pack '$_p' — no packs/$_p/ in the HOS source ($HOS_REF)"
+        err "available: $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+              | tr -d / | tr '\n' ' ' || echo '(none)')"
+        exit 1
+    fi
+    # pack.toml name/dir sanity (ADR-031 §2.4; mismatch → WARN, not hard error —
+    # directory name is authoritative; see TD-pack §6 flag #4).
+    _declared="$(grep -E '^[[:space:]]*name[[:space:]]*=' \
+                   "$HOS_SOURCE/packs/$_p/pack.toml" 2>/dev/null \
+                 | head -1 | cut -d= -f2- \
+                 | sed 's/[[:space:]]*//g; s/^"//; s/"$//; s/^'\''//; s/'\''$//' || true)"
+    if [[ -n "$_declared" && "$_declared" != "$_p" ]]; then
+        warn "packs/$_p/pack.toml declares name=\"$_declared\" but the directory is '$_p' — using '$_p'"
+        warn "  fix: rename the directory to '$_declared', or correct name= in pack.toml to '$_p'"
+    fi
+done
+
+# (R4) Multi-pack → permit, but WARN once (Decision 4 — untested composition).
+if [[ ${#_resolved_packs[@]} -gt 1 ]]; then
+    warn "multiple packs selected (${_resolved_packs[*]}) — multi-pack composition"
+    warn "is UNTESTED in v0.3.0 (alphabetical order, no conflict resolution);"
+    warn "single-pack is the supported path"
+fi
+
+# (R5) Record the choice for upgrade reuse (ADR-031 §1.2). Only when a SINGLE
+#      pack came from --pack (config-as-source needs no rewrite). config.sh is
+#      consumer-owned and append-only here — overwrite ONLY when PACK= differs.
+if [[ ${#_packs[@]} -eq 1 ]]; then
+    _pk="${_packs[0]}"
+    if [[ ! -f "$_subst_config" ]]; then
+        if $DRY_RUN; then dry_run "Would create config.sh with PACK=\"$_pk\""
+        else mkdir -p "$(dirname "$_subst_config")"; printf 'PACK="%s"\n' "$_pk" >> "$_subst_config"; fi
+    elif grep -qE '^PACK=' "$_subst_config" 2>/dev/null; then
+        _cur="$(grep -E '^PACK=' "$_subst_config" | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)"
+        if [[ "$_cur" != "$_pk" ]]; then
+            if $DRY_RUN; then dry_run "Would update config.sh PACK=\"$_cur\" → \"$_pk\""
+            else perl -i -pe "s|^PACK=.*|PACK=\"$_pk\"|" "$_subst_config"; fi
+            warn "config.sh PACK changed: $_cur → $_pk (a pack switch — see removed-region sweep)"
+        fi
+    else
+        if $DRY_RUN; then dry_run "Would append PACK=\"$_pk\" to config.sh"
+        else printf 'PACK="%s"\n' "$_pk" >> "$_subst_config"; fi
+    fi
+fi
+
+# ── .claude/agents/ — Phase A/B layered install (TD §4.5, §7.1–7.3) ───────────
+# Per-agent two-phase flow (decide-all-then-act): for each consumer agent we
+#   (A) stage + substitute the HOS template, migrate a flat disk file if needed,
+#       and call `regions.py plan` (disk vs substituted-template vs prior
+#       base-shas) — collecting each file's plan WITHOUT writing;
+#   (B) only if NO file's plan is drift-blocked (or --squash consents) do we
+#       write each file's composed bytes, then the schema-v2 manifest + release.
+# A single drift hard-stop refuses the WHOLE upgrade and writes nothing (§4.3).
+echo ""
+info ".claude/agents/ — layered install (region merge)"
+
+_REGIONS_PY="$HOS_SOURCE/scripts/oversight/validators/regions.py"
+_PRIOR_MANIFEST="$TARGET_REPO/.hos-manifest"
+# Is this a first install for the region model? No prior manifest at all.
+_first_install=false
+[[ ! -f "$_PRIOR_MANIFEST" ]] && _first_install=true
+
+# Phase-A scratch: a temp dir holding each agent's staged template, composed
+# output bytes, and manifest rows. Survives until Phase B writes from it.
+_AGENT_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/hos-agents.XXXXXX")"
+CLEANUP_DIRS+=("$_AGENT_STAGE")
+
+# squash consent maps from BOTH --squash and --prune (the file-orphan symmetry,
+# TD §4.5 review note: --prune is consent-to-drop for the removed-region sweep).
+_squash_flag=()
+if $SQUASH || $PRUNE; then _squash_flag=(--squash); fi
+
+_planned_agents=()       # slugs that produced a writable plan (Phase B writes these)
+_blocked_report=""       # aggregated per-file drift report (only set when blocked)
+_any_blocked=false
+_any_inject_fail=false   # B2: any inject-pack failure → pre-Phase-B abort (§2.4.1)
+_any_plan_fail=false     # R-B2: any planning failure → pre-Phase-B abort (§2.4.1)
+
+if [[ ! -x "$(command -v python3)" ]]; then
+  fail "python3 required for the region install but not found"
+elif [[ ! -f "$_REGIONS_PY" ]]; then
+  fail "regions.py missing from the HOS source ($_REGIONS_PY) — incomplete release"
+else
+  for agent in "${_consumer_agents[@]}"; do
+    src="$HOS_SOURCE/.claude/agents/${agent}.md"
+    dst="$TARGET_REPO/.claude/agents/${agent}.md"
+    rel=".claude/agents/${agent}.md"
+    if [[ ! -f "$src" ]]; then
+      warn "Agent not found in HOS: ${agent}.md — skipping"
+      continue
+    fi
+    # dep-mapper: don't overwrite a project-specific version unless --force.
+    if [[ "$agent" == "dep-mapper" && -f "$dst" ]] && ! $FORCE; then
+      skip "dep-mapper.md (project-specific version preserved — use --force to replace with generic)"
+      continue
+    fi
+
+    # (A1) stage + substitute the template (D6 — substitute BEFORE plan).
+    _stage="$_AGENT_STAGE/${agent}.tmpl.md"
+    _substitute_into "$src" "$_stage"
+    # Forward-compat: until the base agents are authored with markers (Phase
+    # 0b/2, out of scope here), HOS templates are still FLAT. A flat template
+    # would compose to nothing, so wrap it as CORE first (HOS-owned source →
+    # CORE). Once templates ship markers this is a no-op (the grep skips it).
+    if ! grep -q '<!-- HOS:' "$_stage" 2>/dev/null; then
+      _stage_wrapped="$_AGENT_STAGE/${agent}.tmpl.wrapped.md"
+      if python3 "$_REGIONS_PY" migrate "$_stage" --ships yes > "$_stage_wrapped" 2>/dev/null; then
+        mv "$_stage_wrapped" "$_stage"
       fi
-    done < <(find "$TARGET_REPO/.claude/agents" -name '*.md' 2>/dev/null)
-    [[ $_subst -gt 0 ]] && ok "Substituted placeholders in $_subst agent file(s)" || skip "no placeholders to substitute"
+    fi
+
+    # (A1b) Pack injection (ADR-031 §3.1 step 4). For each selected pack that
+    # deepens THIS agent (packs/<pack>/<agent>.md exists), inject its PACK:<pack>
+    # region into the staged CORE template. compose() (inside inject-pack) re-sorts
+    # alphabetically, so injection order is irrelevant. An agent with no pack file
+    # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
+    # are NEVER substituted (D6) — they are injected raw, post-substitution.
+    for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
+      _body="$HOS_SOURCE/packs/$_pk/${agent}.md"
+      [[ -f "$_body" ]] || continue
+      if ! python3 "$_REGIONS_PY" inject-pack "$_stage" \
+            --name "$_pk" --body-file "$_body" --in-place 2>/dev/null; then
+        fail "inject-pack $_pk into ${agent} failed — check packs/$_pk/${agent}.md"
+        _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)
+        continue 2              # skip this agent; an unwritable pack region must not ship half-composed
+      fi
+    done
+
+    # (A2) prepare the disk file. If a flat (marker-less) file is present, migrate
+    # it first (provenance = is the slug HOS-shipped, i.e. in consumer_agents.txt;
+    # by construction here it always is → CORE). Absent disk file → first install
+    # path for this file (plan with empty base-shas + --first-install).
+    _disk="$_AGENT_STAGE/${agent}.disk.md"
+    _file_first_install=false
+    if [[ -f "$dst" ]]; then
+      if grep -q '<!-- HOS:' "$dst" 2>/dev/null; then
+        cp "$dst" "$_disk"          # already has markers — three-way as-is (§5.4)
+      else
+        # Flat consumer/Phase-0 file → migrate to a wrapped region. Provenance =
+        # is the slug HOS-shipped (in consumer_agents.txt) → here always yes →
+        # CORE (legible to future upgrades, §5.2/D3).
+        python3 "$_REGIONS_PY" migrate "$dst" --ships yes > "$_disk" 2>/dev/null \
+          || cp "$dst" "$_disk"
+      fi
+    else
+      _file_first_install=true
+      : > "$_disk"   # no disk predecessor → every template region is freshly introduced
+    fi
+
+    # (A3) prior base-shas for this path (empty on first install / v1 manifest).
+    if [[ -f "$_PRIOR_MANIFEST" ]]; then
+      _base_shas="$(python3 "$_REGIONS_PY" base-shas "$_PRIOR_MANIFEST" "$rel" 2>/dev/null || echo '{}')"
+    else
+      _base_shas='{}'
+    fi
+
+    # (A4) plan. --first-install when this file has no disk predecessor (seed an
+    # empty PROJECT stub, §7.1). Capture JSON + exit code (4 = drift-blocked).
+    # NOTE: `plan` exits 4 on a drift hard-stop — an EXPECTED non-zero. A plain
+    # `x=$(...)` assignment trips `set -e` on that, so capture without aborting
+    # (|| true) and read the real code from PIPESTATUS-free $? via a guarded run.
+    _plan_first=()
+    if $_file_first_install || $_first_install; then _plan_first=(--first-install); fi
+    _plan_json=""
+    _plan_rc=0
+    _plan_json="$(python3 "$_REGIONS_PY" plan "$_disk" "$_stage" \
+        --base-shas "$_base_shas" \
+        ${_squash_flag[@]+"${_squash_flag[@]}"} ${_plan_first[@]+"${_plan_first[@]}"} 2>/dev/null)" \
+      || _plan_rc=$?
+
+    if [[ $_plan_rc -eq 4 ]]; then
+      # Drift hard-stop for this file — collect the per-region report, keep going
+      # so the aggregated report names EVERY blocked file (§4.3).
+      _any_blocked=true
+      _hs="$(printf '%s' "$_plan_json" | python3 -c 'import json,sys
+try:
+    p=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for rid,reason in p.get("hardstops",[]):
+    print(f"      {rid}: {reason}")' 2>/dev/null)"
+      _blocked_report+="  ${rel}"$'\n'"${_hs}"$'\n'
+      continue
+    elif [[ $_plan_rc -ne 0 ]]; then
+      fail "planning ${rel} failed (regions.py exit $_plan_rc) — check the file's markers"
+      _any_plan_fail=true   # R-B2: route through the pre-Phase-B abort gate (§2.4.1)
+      continue
+    fi
+
+    # (A5) stash the composed bytes + manifest rows for Phase B.
+    printf '%s' "$_plan_json" > "$_AGENT_STAGE/${agent}.plan.json"
+    _planned_agents+=("$agent")
+  done
+
+  # ── Decide-all-then-act gate (§4.3 + B2 + R-B2) ─────────────────────────────
+  # Three sentinel conditions — any one aborts the whole install before Phase B
+  # writes a single file. Distinct err blocks so the operator gets a precise signal.
+  if $_any_blocked || $_any_inject_fail || $_any_plan_fail; then
+    echo ""
+    if $_any_blocked; then
+      err "Layering drift — refusing the whole upgrade (nothing written, no version stamped):"
+      printf '%s' "$_blocked_report"
+      echo ""
+      err "Re-run with --squash to take HOS's version of the drifted region(s), or move"
+      err "your edits into each file's PROJECT region, then re-run."
+    fi
+    if $_any_inject_fail; then
+      err "Pack injection failed for one or more agents (see errors above) — refusing the"
+      err "whole install (nothing written, no manifest, no version stamped). Fix the named"
+      err "packs/<pack>/<agent>.md and re-run."
+    fi
+    if $_any_plan_fail; then
+      err "Planning failed for one or more agents — check region markers (see errors above)."
+      err "Nothing written, no manifest, no version stamped. Fix the file's markers and re-run."
+    fi
+    # exit 4 = the layering/abort hard-stop code (shared with drift). Phase B is
+    # BELOW; nothing in .claude/agents/, .hos-manifest, or .hos-release is written.
+    exit 4
   fi
 
+  # ── Phase B — act (writes only after Phase A cleared) ───────────────────────
+  # Build the manifest spec {path: [rows]} as we write each file's composed bytes.
+  _manifest_spec="$_AGENT_STAGE/manifest-spec.json"
+  : > "$_manifest_spec"
+  for agent in ${_planned_agents[@]+"${_planned_agents[@]}"}; do
+    dst="$TARGET_REPO/.claude/agents/${agent}.md"
+    rel=".claude/agents/${agent}.md"
+    _pj="$_AGENT_STAGE/${agent}.plan.json"
+    if $DRY_RUN; then
+      _act="$(python3 -c 'import json,sys
+p=json.load(open(sys.argv[1]))
+print(", ".join(f"{r}:{a}" for r,a in p["actions"]))' "$_pj" 2>/dev/null)"
+      dry_run "Would write $rel ($_act)"
+    else
+      # Decode new_bytes (base64) → the agent file, and record its manifest rows.
+      python3 -c 'import base64,json,sys
+p=json.load(open(sys.argv[1]))
+data=p.get("new_bytes_b64")
+if data is None:
+    sys.exit(0)
+open(sys.argv[2],"wb").write(base64.b64decode(data))' "$_pj" "$dst" \
+        || { fail "writing $rel failed"; continue; }
+      ok "$rel (layered)"
+    fi
+  done
+
+  # Aggregate every planned file's rows into one spec, then write the manifest
+  # via assemble-manifest (schema-v2 header + LC_ALL=C-sorted body).
+  if ! $DRY_RUN; then
+    python3 -c 'import json,sys
+spec={}
+import os
+stage=sys.argv[1]
+for agent in sys.argv[2:]:
+    pj=os.path.join(stage, agent + ".plan.json")
+    if not os.path.exists(pj):
+        continue
+    p=json.load(open(pj))
+    rows=p.get("new_manifest_rows")
+    if rows:
+        spec[".claude/agents/%s.md" % agent]=rows
+json.dump(spec, open(os.path.join(stage,"manifest-spec.json"),"w"))' \
+      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>/dev/null || true
+  fi
+fi
+
+# ── Project-config follow-up (#87) — unchanged: inspects the installed agents ──
+echo ""
+info ".claude/agents/ — project placeholder check"
+if [[ -f "$_manifest" ]]; then
   # Non-destructive-upgrade signals: newly-added config keys, and any declared
   # placeholder that ACTUALLY remains as a raw token in a scaffolded agent (not
   # merely declared-but-absent — e.g. ADR_FILE only appears in agents this
@@ -822,28 +1165,22 @@ _sha256() {
   else shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; fi
 }
 
-# Enumerate framework-owned paths in a source tree as "<path>\t<sha256>". Only files
-# the framework actually ships (not consumer files in shared dirs), so a prune can
-# never target the consumer's own work. venv/bytecode excluded.
+# Enumerate framework-owned NON-AGENT paths as "<path>\tWHOLE\t<sha256>" (schema
+# v2, TD §1.4). Agent .md files are NOT enumerated here — they contribute per-
+# REGION rows from the Phase-B plan spec (CORE/PACK/PROJECT), assembled into the
+# manifest below. Only files the framework actually ships (not consumer files in
+# shared dirs), so a prune can never target the consumer's own work; venv/
+# bytecode excluded.
 enumerate_framework_files() {
   local src="$1" _f
   ( cd "$src" && {
-      # Agents: the CANONICAL consumer set only — NOT `find` (which would list
-      # every agent in the source, declaring agents the copy-loop never installs;
-      # that drift was HOS#225). Same list the copy-loop reads → manifest == install.
-      if [[ -f scripts/framework/consumer_agents.txt ]]; then
-        while IFS= read -r _a; do
-          _a="${_a%%#*}"; _a="$(echo "$_a" | xargs || true)"; [[ -z "$_a" ]] && continue
-          [[ -f ".claude/agents/${_a}.md" ]] && echo ".claude/agents/${_a}.md"
-        done < scripts/framework/consumer_agents.txt
-      fi
       [[ -d scripts/oversight ]] && find scripts/oversight -type f \
           ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
       for _f in AGENTS.md METHODOLOGY.md \
           scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
           scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
           scripts/prompt_audit.sh; do [[ -f "$_f" ]] && echo "$_f"; done
-    } | LC_ALL=C sort -u | while IFS= read -r _f; do printf '%s\t%s\n' "$_f" "$(_sha256 "$_f")"; done )
+    } | LC_ALL=C sort -u | while IFS= read -r _f; do printf '%s\tWHOLE\t%s\n' "$_f" "$(_sha256 "$_f")"; done )
 }
 
 echo ""
@@ -852,7 +1189,30 @@ _manifest_file="$TARGET_REPO/.hos-manifest"
 if $DRY_RUN; then
   dry_run "Would write $_manifest_file; check for removed framework files; --prune would archive them"
 else
-  _new_manifest="$(enumerate_framework_files "$HOS_SOURCE")"
+  # Non-agent WHOLE rows (3-column, schema v2).
+  _whole_rows="$(enumerate_framework_files "$HOS_SOURCE")"
+  # Combine the non-agent WHOLE rows with the agent REGION rows (from the Phase-B
+  # spec) into the full schema-v2 manifest via assemble-manifest (schema header +
+  # LC_ALL=C-sorted body). The agent spec is keyed by path; the WHOLE rows are
+  # already path-bearing 3-column rows, fed under a "" bucket so assemble passes
+  # them through unchanged.
+  _agent_spec="$_AGENT_STAGE/manifest-spec.json"
+  [[ -f "$_agent_spec" ]] || echo '{}' > "$_agent_spec"
+  _new_manifest="$(python3 -c 'import json,sys
+spec=json.load(open(sys.argv[1]))
+# WHOLE rows arrive on stdin as full "<path>\tWHOLE\t<sha>" lines; bucket them
+# under "" — assemble_manifest passes already-path-bearing rows through as-is.
+whole=[ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+if whole:
+    spec.setdefault("", []).extend(whole)
+sys.path.insert(0, sys.argv[2])
+import regions
+sys.stdout.write(regions.assemble_manifest(spec))' \
+      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>/dev/null)"
+  if [[ -z "$_new_manifest" ]]; then
+    # Fallback: regions.py unavailable — write at least the WHOLE rows with a v2 header.
+    _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+  fi
   if [[ -f "$_manifest_file" ]]; then
     # Orphans = paths in the prior manifest but not this one, that still exist.
     # Compare the PATH column only (cut -f1) so a legacy path-only manifest still works.
@@ -915,7 +1275,7 @@ ARCH
     fi
   fi
   printf '%s\n' "$_new_manifest" > "$_manifest_file"
-  ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -c . ) framework files tracked)"
+  ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -cvE '^(#|[[:space:]]*$)') region/file rows tracked)"
 fi
 
 # ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──

@@ -238,13 +238,14 @@ shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 **Two steps** — machine once, then per project:
 
 ```bash
-./hos_bootstrap.sh                          # once per machine: Python/ScanCode/gh/pip + agent CLIs
-./hos_install.sh /path/to/your-project      # installs the LATEST release into the project
-#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-project
-#   dev install:    ./hos_install.sh --local        /path/to/your-project   (unvalidated)
+./hos_bootstrap.sh                                       # once per machine: Python/ScanCode/gh/pip + agent CLIs
+./hos_install.sh --pack django /path/to/your-project     # installs the LATEST release + django stack pack
+#   no stack depth:  ./hos_install.sh --no-pack          /path/to/your-project
+#   pin a version:   ./hos_install.sh --release v0.3.0 --pack django /path/to/your-project
+#   dev install:     ./hos_install.sh --local --pack django /path/to/your-project   (unvalidated)
 ```
 
-`hos_install.sh` fetches the validated release, scaffolds the agents/scripts/contract into the target, records the installed tag at the target's `.hos-release`, and never needs sudo (it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing). If you have the repo cloned, you can run the same scripts from `bootstrap/`. For customization guidance (what to change for your stack), see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
+`hos_install.sh` fetches the validated release and scaffolds a **full layered base agent team** (16 agents: pm-agent, architect, coder, the 8 reviewers, test, ops, ux) plus the oversight agents, validators, gates, and contract into the target. Each agent file has three regions — CORE (HOS-owned, stack-neutral), PACK (HOS-owned, stack-specific depth), and PROJECT (yours, never overwritten) — so your customizations survive upgrades. The installed version and selected pack are recorded at the target's `.hos-release` and `scripts/framework/config.sh`. If you have the repo cloned, run the same scripts from `bootstrap/`. For the region model and what to put where, see **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)**.
 
 > Releases are cut with `scripts/framework/cut_release.sh`, which gates on the full validation suite before tagging and publishing the bootstrap assets.
 

@@ -1,0 +1,4 @@
+name = "testpack"
+description = "Throwaway fixture pack for test_pack_install.py — do not use in production"
+version = "0.1.0"
+requires = []

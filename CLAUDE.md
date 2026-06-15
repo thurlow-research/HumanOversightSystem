@@ -30,7 +30,16 @@ bootstrap/             The copy-to-machine bundle (the only thing you copy to a 
                          a target repo (--release <tag> / --local). No sudo. Records
                          the installed tag at the target's .hos-release.
   setup_clis.sh          MACHINE bootstrap of agent CLIs (Node + claude/codex/agy + auth)
-.claude/agents/        Oversight layer agents (evaluator, orchestrator, risk-assessor, etc.)
+.claude/agents/        All shipped agents: 8 oversight layer agents (evaluator, orchestrator,
+                       risk-assessor, etc.) + 16-agent base team (pm-agent, architect,
+                       technical-design, coder, 8 reviewers, unit-test, system-test,
+                       ops-designer, ux-designer). Each agent file is layered:
+                       CORE (HOS-owned generic) / PACK:<name> (HOS-owned stack depth) /
+                       PROJECT (consumer-owned). Region order is CORE → PACK → PROJECT.
+packs/                 Stack-depth region bodies (body-only, no full agent files):
+  <name>/              One directory per pack (e.g. packs/django/).
+    <agent>.md         PACK:<name> region bodies for the agents that pack deepens.
+    pack.toml          Pack metadata (name, version, supported agents).
 scripts/
   run_panel.sh           Outer loop: post-PR cross-vendor panel (reads panel-context.md only)
   run_second_review.sh   Transition: pre-PR cross-vendor second review (machine-readable verdict)
@@ -73,7 +82,7 @@ Both live in `bootstrap/` — the copy-to-machine bundle. Everything else is fet
 
 **Machine bootstrap** (`./bootstrap/hos_bootstrap.sh`): installs the machine prerequisites (Python 3.10+, ScanCode, gh, pip analysis packages) and — via `bootstrap/setup_clis.sh` — the agent CLIs (claude, codex, agy) + Node runtime. May need sudo. Run once per machine.
 
-**Project install** (`./bootstrap/hos_install.sh [<path>]`): installs the oversight protocol into a target project — AGENTS.md, agents, scripts, contract, PR template. By default it installs from a **fetched, validated release** (not the local working copy); use `--release <tag>` to pin a version or `--local` for a dev install. No sudo — it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing. Records the installed tag at the target's `.hos-release`. Run once per project (and on release bumps). On an interactive install it delegates project configuration to `scripts/framework/install.sh` (the `config.sh` generator), so one run produces a fully-configured project (#87).
+**Project install** (`./bootstrap/hos_install.sh [<path>]`): installs the full agent pipeline — AGENTS.md, all 24 shipped agents (oversight layer + base team), scripts, contract, PR template — into a target project. By default it installs from a **fetched, validated release** (not the local working copy); use `--release <tag>` to pin a version or `--local` for a dev install. Pass `--pack <name>` (e.g. `--pack django`) to inject stack-depth PACK regions into the relevant agents; `--no-pack` to install bare CORE only. The installed pack is recorded in `config.sh` as `PACK=` and re-applied on upgrades. No sudo — it checks prerequisites and points back to `hos_bootstrap.sh` if any are missing. Records the installed tag at the target's `.hos-release`. Run once per project (and on release bumps). On an interactive install it delegates project configuration to `scripts/framework/install.sh` (the `config.sh` generator), so one run produces a fully-configured project (#87). The install performs a **three-way region merge**: CORE and PACK regions are always taken from HOS (hard-stop on drift unless `--squash`); PROJECT regions are preserved as-is (consumer-owned, never overwritten).
 
 ---
 
@@ -90,9 +99,11 @@ Teams using the framework's own agent templates (see `.claude/agents/`) get cont
 
 ---
 
-## Oversight agents in this repo
+## Agents in this repo
 
-These agents are invoked by the oversight pipeline, not by the base development team:
+`.claude/agents/` contains **24 shipped agents** in two groups — the oversight layer (8 agents) and the base development team (16 agents). As of v0.3.0 HOS ships the canonical base team; the consumer no longer hand-rolls it. The canonical agent list is `scripts/framework/consumer_agents.txt` (single source of truth for the installer + `.hos-manifest`, #225). Every agent file is layered: **CORE** (HOS-owned generic) / **PACK:\<name\>** (HOS-owned stack depth) / **PROJECT** (consumer-owned). Stack depth for a given stack lands in `packs/<name>/` as body-only region files injected during install.
+
+### Oversight layer (8 agents — invoked by the pipeline, not the base team)
 
 | Agent | Role | When invoked |
 |---|---|---|
@@ -103,13 +114,30 @@ These agents are invoked by the oversight pipeline, not by the base development 
 | `spec-red-team` | Adversarial spec review before coding (uses agy for independence) | Per build step, pre-coding |
 | `oversight-evaluator` | Phase 1: compliance (sign-off register, §3 required fields, prompt artifacts, human authorization). Phase 2: quality (convergence failures, resolved findings, confidence gaps) | After system tests pass |
 | `oversight-orchestrator` | Acts on evaluator recommendation. Writes two separate files: `panel-context.md` (structural signals only, for panel) and `handoff.md` (full picture, for human/PR) | After evaluator produces recommendation |
-| `ops-designer` | Observability/telemetry authority; produces `TELEMETRY-SPEC.md` (the contract ops-reviewer enforces) | Project start (after architect ADR); reactive on ops gaps |
-| `ops-reviewer` | Reviews code for telemetry-spec conformance — does it emit the signals to monitor/diagnose it in prod? | Inner loop, parallel with security/privacy/reliability |
-| `reliability-reviewer` | Reviews resilience to external-dependency failures (timeouts, retry/backoff, graceful degradation, no unbounded waits) | Inner loop, parallel reviewers |
 | `post-change-sweep` | Orchestrates the full review suite after a change set — categorizes the diff, dispatches the right agents in dependency order | After any batch of changes, before commit |
-| `ux-designer` | UX design authority; audits/completes the design pack against the spec; produces `UX-DESIGN-READINESS.md` | Project start (after pm-agent Q&A); reactive during build |
 
-> The canonical set of agents shipped to consumers is `scripts/framework/consumer_agents.txt` (the single source of truth for the installer + `.hos-manifest`, #225). Keep this table in sync with it. The framework-dev validators (`framework-validator`, `doc-validator`, `spec-compliance-validator`, `framework-setup-validator`) are **not** shipped to consumers — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding).
+### Base development team (16 agents — shipped by HOS, used by the consumer project)
+
+| Agent | Role |
+|---|---|
+| `pm-agent` | Requirements and acceptance criteria |
+| `architect` | Architecture decisions and ADRs |
+| `technical-design` | Detailed technical design per build step |
+| `coder` | Implementation (self-flags per AGENTS.md) |
+| `code-reviewer` | General code quality review |
+| `security-reviewer` | Security lens |
+| `privacy-reviewer` | Privacy and data-handling lens |
+| `reliability-reviewer` | Resilience to external-dependency failures |
+| `ops-reviewer` | Telemetry-spec conformance (enforces `TELEMETRY-SPEC.md`) |
+| `ui-reviewer` | UI/UX conformance review |
+| `a11y-reviewer` | Accessibility review |
+| `infra-reviewer` | Infrastructure and deployment review |
+| `unit-test` | Unit test authoring and coverage |
+| `system-test` | System/e2e test authoring |
+| `ops-designer` | Observability/telemetry authority; produces `TELEMETRY-SPEC.md` |
+| `ux-designer` | UX design authority; produces `UX-DESIGN-READINESS.md` |
+
+> The framework-dev validators (`framework-validator`, `doc-validator`, `spec-compliance-validator`, `framework-setup-validator`) are **not** shipped to consumers — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding). They live in `.claude/agents/` in this source repo only.
 
 ---
 
@@ -127,7 +155,8 @@ INNER LOOP (per build step)
                           prompt_audit_risk (ambiguity score + fidelity surface)
   risk-assessor agent  →  composite score + inspection brief;
                           calls prompt-fidelity subagent at MEDIUM+
-  [internal review agents in the base project]
+  [base-team review agents: code-reviewer, security-reviewer, privacy-reviewer,
+   reliability-reviewer, ops-reviewer, ui-reviewer, a11y-reviewer, infra-reviewer]
   sign-off register updated (all entries must include Status/Agent/Artifact/Iterations)
 
 TRANSITION (post inner loop, pre-PR)
@@ -154,6 +183,6 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 ## Working in this repo
 
 - When writing or editing scripts, follow the conventions in `bootstrap/setup_clis.sh` (colours, idempotency, platform detection).
-- Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md` — don't add base-project logic here.
+- Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md`. CORE and PACK regions are HOS-owned — consumer project logic belongs only in PROJECT regions. Stack depth belongs in `packs/<name>/`, not in the base agent files.
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.

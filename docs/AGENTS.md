@@ -118,9 +118,11 @@ START
                      produce docs/design/UX-DESIGN-READINESS.md
   3. architect     — technical feasibility review, human Q&A
                      (reads confirmed requirements + design readiness doc)
+  4. ops-designer* — initial telemetry audit; produce docs/ops/TELEMETRY-SPEC.md;
+                     architect validates; required before build steps when ops complexity exists
 
 DESIGN
-  4. technical-design ↔ architect  — iterate until design approved
+  5. technical-design ↔ architect  — iterate until design approved
                      (reads confirmed requirements + ADR + design readiness doc)
 
 SPEC REVIEW (before coding starts)
@@ -133,23 +135,23 @@ PER FEATURE — INNER DEVELOPMENT LOOP (repeats per incremental change)
   Only when inner loop produces clean working state → move to outer pipeline
 
 PER FEATURE — OUTER PIPELINE (once per logical change set)
-  5. coder  [commit only after inner loop is clean]
+  6. coder  [commit only after inner loop is clean]
        ↓  (design pack gap? → ux-designer fills it; then coder continues)
   risk-assessor    — score risk, validate tier, generate inspection brief
        ↓             (invokes prompt-fidelity, dep-mapper, risk-historian)
-  6. code-reviewer
+  7. code-reviewer
        ↓ approved
-  7. security-reviewer  ─┐
-  8. privacy-reviewer   ─┤ parallel
-  9. ui-reviewer        ─┤ → ux-designer (design pack gap or ambiguity)
- 10. a11y-reviewer      ─┤ → ux-designer (token contrast failure / missing token)
- 11. ops-reviewer*          ─┤ → ops-designer (telemetry spec gap)   *optional
- 12. reliability-reviewer*  ─┤ → architect (structural reliability)  *optional
- 13. infra-reviewer         ─┘ (infra files only)
+  8. security-reviewer  ─┐
+  9. privacy-reviewer   ─┤ parallel
+ 10. ui-reviewer        ─┤ → ux-designer (design pack gap or ambiguity)
+ 11. a11y-reviewer      ─┤ → ux-designer (token contrast failure / missing token)
+ 12. ops-reviewer*          ─┤ → ops-designer (telemetry spec gap)   *optional
+ 13. reliability-reviewer*  ─┤ → architect (structural reliability)  *optional
+ 14. infra-reviewer         ─┘ (infra files only)
        ↓ all approved
- 14. unit-test      — configurable coverage + mutant score (default 80% / 75%)
+ 15. unit-test      — configurable coverage + mutant score (default 80% / 75%)
        ↓ targets met
- 15. system-test    — spec functional validation
+ 16. system-test    — spec functional validation
        ↓
   oversight-evaluator    — check compliance & quality; recommend proceed/escalate
        ↓
@@ -160,7 +162,7 @@ PER FEATURE — OUTER PIPELINE (once per logical change set)
   human gate             — resolve panel threads; merge PR
 
 DEPLOY
- 16. deploy-verify  — infra checks + browser smoke tests against live prod
+ 17. deploy-verify  — infra checks + browser smoke tests against live prod
 
 SUPPORT (available on demand throughout the build)
   ux-designer          — (1) proactive: invoked after pm-agent at project start to
@@ -245,7 +247,7 @@ When `technical-design` or a reviewer escalates a spec-gap that cannot be resolv
 ### 3. `technical-design` — Technical Design
 
 **Model:** `claude-opus-4-8`
-**Invoked:** After architect completes initial ADR; when coder has design questions.
+**Invoked:** During the design phase after the ADR, and reactively whenever coder, reviewers, or test roles need the design contract clarified or find a gap in it.
 
 **Role:** Translates the product spec and architectural decisions into a detailed technical specification that a coder can implement without ambiguity. Does not write application code — writes the spec for it.
 
@@ -275,10 +277,10 @@ When `coder`, `security-reviewer`, or `privacy-reviewer` escalates a spec-relate
 
 Do not bypass this chain — agents below technical-design in the hierarchy do not create `spec-gap` issues directly.
 
-**Loop exit:** Iteration with `architect` has a maximum of 3 rounds. After 3 rounds without approval, escalate to human with a summary of unresolved decisions and competing options.
+**Loop exit:** Iteration with `architect` has a maximum of 5 rounds. After 5 rounds without approval, escalate to human with the iteration count, what each revision changed, and the specific point the architect has not accepted.
 
-**Escalation out:** `architect` (design disputes, architectural questions; max 3 rounds then human); `pm-agent` via `spec-gap` issue (product decisions architect confirms cannot be resolved at design level).
-**Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `reliability-reviewer` (undefined reliability contract), `unit-test` (untestable designs, spec ambiguities), `system-test` (spec interpretation a test surfaces — routed here, not to pm-agent directly).
+**Escalation out:** `architect` (design disputes, architectural questions; max 5 rounds then human); `pm-agent` via `spec-gap` issue (product decisions architect confirms cannot be resolved at design level).
+**Escalation in:** From `coder` (design questions, spec ambiguity), `security-reviewer` (spec doesn't cover a threat), `privacy-reviewer` (spec doesn't cover a compliance requirement), `reliability-reviewer` (undefined reliability contract), `unit-test` (untestable designs — behavior whose contract is ambiguous or unobservable; spec ambiguity questions go to `pm-agent` directly), `system-test` (design makes correct behavior untestable at the system level; spec interpretation questions go to `pm-agent` directly).
 
 ---
 
@@ -363,7 +365,7 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 - Escalate to `technical-design` with the specific gap; technical-design determines if it's an implementation design fix or requires architectural/product decisions
 - Continue up the chain as needed: technical-design → architect → `spec-gap` issue for pm-agent
 
-**Escalation out:** `coder` (code fixes); `technical-design` (spec doesn't cover a threat — first receiver in the chain).
+**Escalation out:** Architectural security flaw → `architect`; security policy question → `pm-agent`; unresolvable after those → human via `Status: ESCALATED` register entry. (Gaps in design/spec contract that are not policy questions go to `technical-design`.)
 **Escalation in:** From `coder` (re-review after fixes).
 
 ---
@@ -399,7 +401,7 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 **Spec-gap routing:** Same chain as `security-reviewer` — when a finding reveals the spec doesn't cover a required compliance property (retention policy, PII boundary, consent requirement): escalate to `technical-design` first; do not route directly to pm-agent.
 
-**Escalation out:** `coder` (code fixes); `technical-design` (spec doesn't cover a compliance requirement — first receiver in the chain).
+**Escalation out:** Data-collection scope → `pm-agent`; encryption architecture → `architect`; retention policy → `pm-agent` → human; unresolvable after those → human via `Status: ESCALATED` register entry. (Gaps in design/spec contract that are not policy questions go to `technical-design`.)
 **Escalation in:** From `coder` (re-review after fixes).
 
 ---
@@ -422,7 +424,7 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 - Error messages explain what to do next ("No spots open then. Try a wider window.")
 - Empty states invite action ("List the first spot in your building.")
 
-**Escalation out:** `ux-designer` (design pack gap — missing token, component, copy pattern); `coder` (implementation bugs).
+**Escalation out:** `ux-designer` (design pack gap — missing token, component, copy pattern); `coder` (implementation bugs); `architect` (shared architectural dependency); human (design-intent ambiguity or unresolved loops after 2 cycles).
 **Escalation in:** From `coder` (re-review after fixes); from `ux-designer` (re-review notification after design pack extension).
 **Loop protocol:** When escalating a gap to `ux-designer`, state the specific missing element. After ux-designer fills the gap and notifies, re-review against the updated design pack. Maximum 2 cycles; escalate to human if unresolved.
 
@@ -463,7 +465,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **After extending the design pack:** Notifies the invoking agent with the exact change; notifies `a11y-reviewer` for new color tokens; notifies `ui-reviewer` so it can re-check template conformance. Appends a one-line entry to the `## Change log` section of `DESIGN.md`.
 
-**Escalation out:** `pm-agent` (design addition affects a user-visible flow, or reactive gap-filling reveals a spec-scope question not in the original spec); human (structural brand change — modifying core palette tokens, typeface, or design brief).
+**Escalation out:** brand-direction changes, structural paradigm changes, or structural UX changes (new user decision points, blocked/permission states, completion criteria, or flow steps) → human; out-of-scope addition or flow-behavior question → `pm-agent` (then human if out of scope); shared architectural dependency → `architect`; unresolved → human.
 **Escalation in:** From `pm-agent` (at project start); from `coder`, `ui-reviewer`, `a11y-reviewer`, `technical-design`, `pm-agent` (during build).
 **Loop exit:** ui-reviewer and a11y-reviewer escalation cycles have a 2-round maximum. After 2 cycles without resolution, escalate to human.
 
@@ -489,7 +491,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 - Error messages associated via `aria-describedby`
 - Touch targets ≥ 44×44px; no horizontal scroll at 375px viewport
 
-**Escalation out:** `ux-designer` (design system ambiguity or token contrast failure); `coder` (implementation bugs).
+**Escalation out:** accessible-token/pattern gap → `ux-designer` (2-cycle cap → human); design-system ambiguity `ux-designer` cannot settle → human; implementation bug or non-token CSS fix → `coder`; unresolved → human.
 **Escalation in:** From `coder` (re-review after fixes).
 
 ---
@@ -501,7 +503,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Role:** Authors and maintains `docs/ops/TELEMETRY-SPEC.md` — the observability contract that `ops-reviewer` enforces. Covers structured logging conventions, metric naming, distributed tracing requirements, health check requirements per dependency type, and dashboard/alerting intent. Does not implement instrumentation — records the contract for the build to follow.
 
-**Escalation out:** `architect` (architectural observability decisions); human (structural observability architecture changes — switching telemetry backends, changing trace propagation strategy).
+**Escalation out:** `architect` (new external dependency, trust boundary, or observability-architecture change; 2-round consultation cap then human); `pm-agent` (product-scope question surfaced while gap-filling); human (structural change unresolvable after 2 architect rounds, or unresolvable escalation — requires human authorization artifact before spec update).
 **Escalation in:** From `ops-reviewer` (spec gaps); `architect` (observability ADR inputs).
 
 **N/A for:** CLI tools, libraries, scripts, or projects without background jobs, external integrations, or multi-service architecture.
@@ -517,7 +519,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Scope boundary:** Does NOT cover security audit logging (`security-reviewer`), GDPR/data retention logging (`privacy-reviewer`), or deployment config (`infra-reviewer`).
 
-**Escalation out:** `ops-designer` (spec gap); `architect` (gap unresolvable after 2 cycles).
+**Escalation out:** Spec gap → `ops-designer`; after more than 2 unresolved `ops-designer` cycles → `architect` → human; any unresolvable issue → human via `Status: ESCALATED` register entry.
 **Escalation in:** From `post-change-sweep`, direct invocation.
 
 **N/A for:** Same projects as `ops-designer`. If `docs/ops/TELEMETRY-SPEC.md` is absent on a project with ops complexity, block and invoke `ops-designer` first.
@@ -558,7 +560,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 - `pg_dump` backup script exists; output to NAS/external volume; retention policy present
 - Portability: can the stack move to a new host by copying `.env` + restoring `pg_dump` + repointing CNAME?
 
-**Escalation out:** `architect` (architecture decisions); human (deployment policy).
+**Escalation out:** Suspicious application-config value → `coder` / `technical-design`; architecture toolchain choice → `architect`; deployment policy → human; unresolved → human via `Status: ESCALATED` register entry.
 **Escalation in:** From `coder`, `deploy-verify` (infra failures post-deploy).
 
 ---
@@ -583,7 +585,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Tooling:** `pytest-django`, `coverage`, `mutmut`, `factory_boy`, `freezegun` (for time-dependent tests).
 
-**Escalation out:** `technical-design` (untestable designs, **and spec ambiguities — via the design chain, not `pm-agent` directly**); `architect` (coder refuses testability refactor).
+**Escalation out:** `technical-design` (untestable designs — behavior whose contract is ambiguous or unobservable); `pm-agent` (spec ambiguities — what the product should do); `architect` (coder refuses testability refactor).
 **Escalation in:** From `coder` (fixes that re-run tests).
 
 ---
@@ -610,9 +612,10 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **When a test fails:**
 - Code bug (code doesn't match design) → report to `coder` with test name, expected vs. actual, spec citation
-- Spec gap → escalate to `technical-design` (the design chain — **not** `pm-agent` directly, per the no-bypass rule) with the two possible interpretations and which the test assumes; `technical-design` routes it to `architect`/`pm-agent` as the gap requires
+- Spec gap / interpretation dispute (spec does not define the behavior clearly) → escalate to `pm-agent` with the exact behavior in question, the two possible interpretations, which one the test assumes, and the spec section reference; `pm-agent` escalates to the human if the spec is genuinely silent
+- Design makes correct behavior untestable at the system level → `technical-design`, which makes the behavior explicit and testable
 
-**Escalation out:** `technical-design` (spec interpretation, via the design chain) → `architect`/`pm-agent` as needed; `coder` (code bugs).
+**Escalation out:** `pm-agent` (spec interpretation, ambiguity — what the product should do); `technical-design` (design makes behavior untestable); `coder` (code bugs); persistent failure past 5-round cap → file bug issue, write `Status: ESCALATED`, escalate to `architect` (unresolved → human).
 **Escalation in:** From `coder` (fixes).
 
 ---
@@ -682,9 +685,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 2. Runs static and IP validators (`run_validators.sh`, `prompt_audit_risk.py`, `ip_check.py`).
 3. For MEDIUM+ steps, invokes the `prompt-fidelity` subagent. For HIGH+ steps, invokes the `dep-mapper` and `risk-historian` subagents.
 4. Synthesizes risk scores to determine the final validated tier.
-5. Produces a ranked inspection brief.
+5. Produces a ranked inspection brief. Writes risk-assessment.md and required-reviewers.md (oversight-evaluator unions this list with the manifest so dynamic risk findings can add but never remove required reviewers).
 
-**Escalation out:** None (writes output to `.claudetmp/oversight/validators/risk-assessment.md`).
+**Escalation out:** Writes risk-assessment.md and required-reviewers.md; records unresolved blocking findings for evaluator. For HIGH+ dep-mapper LOW confidence without suspension, escalates to human via a blocking finding requiring either stack-specific dep-mapper override or human-authorized suspension.
 **Escalation in:** None.
 
 ---
@@ -717,8 +720,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 1. Checks direct imports and references across the codebase.
 2. Identifies framework-level implicit wiring (signals, events, middleware, views, templates).
 3. Classifies the blast radius category and applies risk multipliers.
+4. The generic mapper must report Data confidence HIGH|LOW. LOW is required when framework wiring or outward references cannot be traced; at HIGH+ risk-assessor records this as a blocking finding unless dep-mapper is human-suspended.
 
-**Escalation out:** `risk-assessor` (reports findings).
+**Escalation out:** `risk-assessor` (reports findings and data confidence).
 **Escalation in:** `risk-assessor`.
 
 ---
@@ -729,14 +733,14 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Invoked:** Subagent of `risk-assessor` (runs only at MEDIUM+).
 
 **Role:** Performs semantic comparison of prompt artifacts against generated code to verify faithful implementation.
-**Status:** Designed and stubbed — **NYI (Not Yet Implemented)**. The stub returns `Status: NYI` and does **not** block or escalate; `risk-assessor` records the coverage gap in the inspection brief. It does not perform a best-effort comparison — a stub that returns plausible results would create false confidence (see the agent file's stub-behavior rule).
+**Status:** Designed and stubbed — **NYI (Not Yet Implemented)**. The stub returns `Status: NYI` and does **not** block or escalate; `risk-assessor` records the coverage gap in the inspection brief. Note that NYI because semantic comparison is not implemented is a non-blocking coverage gap, but a missing prompt artifact on a MEDIUM+ step is a compliance issue surfaced under Human Review Required and enforced by evaluator prompt-artifact compliance checks. It does not perform a best-effort comparison — a stub that returns plausible results would create false confidence (see the agent file's stub-behavior rule).
 
 **Process:**
 1. Verifies positive fidelity (implements all requirements).
 2. Verifies negative fidelity (adheres to negative constraints).
 3. Catches scope creep and prompt-code discrepancies.
 
-**Escalation out:** `risk-assessor` (reports fidelity gaps).
+**Escalation out:** Fidelity gaps → `risk-assessor`; missing prompt artifact → report inability to assess and surface to human/risk-assessor as a MEDIUM+ compliance gap. Distinguish NYI semantic comparison from missing artifact.
 **Escalation in:** `risk-assessor`.
 
 ---
@@ -749,7 +753,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Role:** Evaluates compliance and quality of the build step review process.
 
 **Process:**
-1. Phase 1 (Compliance): Checks the sign-off register against the step manifest's required list. Confirms prompt-artifact compliance and checks for human authorization on CRITICAL steps.
+1. Phase 1 (Compliance): Verifies risk-assessment presence/scope and unresolved blocking findings, unions manifest and risk-assessor required reviewers, validates register entries including N/A reasons, re-derives N/A and structural-override waivers from the diff, enforces second-review behavior for MEDIUM+, prompt-artifact compliance, gate suspension limits, and the effective human gate.
 2. Phase 2 (Quality): Reviews convergence failures (long reviewer loops, overrides), resolved critical findings, confidence gaps, second review findings.
 3. Produces a final recommendation (`PROCEED`, `CONDITIONAL_PROCEED`, or `ESCALATE`).
 
@@ -864,11 +868,11 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 | Domain | File patterns | Track |
 |---|---|---|
-| framework | `.claude/agents/*.md`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, `scripts/framework/**` | 1 (independent) |
+| framework | `.claude/agents/*.md`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, `docs/SETUP.md`, `docs/CUSTOMIZATION.md`, `scripts/framework/**` | 1 (independent) |
 | application code | `**/*.py` (excl. tests/migrations/scripts) | 2 (sequential: code-reviewer → parallel reviewers) |
 | migrations | `**/migrations/*.py` | 2 (sequential: code-reviewer → parallel reviewers) |
 | templates | `**/templates/**/*.html` | 2 (parallel with security/privacy after code-reviewer) |
-| infrastructure | `docker-compose.yml`, `Caddyfile`, `*.env.example` | 2 (parallel, independent of code-reviewer) |
+| infrastructure | `docker-compose.yml`, `Caddyfile`, `**/*.env.example`, `{project}/scripts/backup.sh` | 6 (independent — does NOT depend on code-reviewer) |
 | tests | `tests/**/*.py`, `conftest.py` | 3 (independent) |
 | design pack | `Specs/**/*design*/**` | 4 (independent) |
 | spec | `Specs/*.md` | 5 (independent) |
@@ -893,8 +897,10 @@ Human
   ├── architect         (technical decisions, final arbiter)
   │     └── receives from: technical-design, coder, code-reviewer,
   │                        security-reviewer, privacy-reviewer,
-  │                        a11y-reviewer, unit-test
-  └── ux-designer       (design decisions — structural brand changes only)
+  │                        ui-reviewer, a11y-reviewer, infra-reviewer,
+  │                        reliability-reviewer, ops-designer, ops-reviewer,
+  │                        unit-test, system-test
+  └── ux-designer       (design decisions — brand, paradigm, or structural UX changes)
         └── receives from: pm-agent (project start + during build),
                            coder, ui-reviewer, a11y-reviewer, technical-design
 
@@ -903,8 +909,10 @@ ux-designer
   │                     fills design pack gaps →
   │                     writes docs/design/UX-DESIGN-READINESS.md →
   │                     architect + technical-design may proceed
-  ├── escalates to:  pm-agent (design addition affects a user-visible flow),
-  │                  human (structural brand change — core palette or brief)
+  ├── escalates to:  brand-direction changes, structural paradigm changes, or structural UX changes → human,
+  │                  out-of-scope addition or flow-behavior question → pm-agent (then human if out of scope),
+  │                  shared architectural dependency → architect,
+  │                  unresolved → human
   └── notifies after every additive change: invoking agent, a11y-reviewer,
                                             ui-reviewer
 
@@ -969,18 +977,15 @@ oversight-orchestrator
 
 ### Quick reference — what gets copied
 
-All files from `.claude/agents/` are copied verbatim. Current agent list (29 agents):
+The install copies agents from `scripts/framework/consumer_agents.txt` (the single source of truth for the installer). Current consumer agent list (24 agents):
 
 **Pipeline agents** (core build pipeline):
-`pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `ops-designer` *(optional)*, `ops-reviewer` *(optional)*, `reliability-reviewer` *(optional)*, `infra-reviewer`, `unit-test`, `system-test`, `deploy-verify`
+`pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `ops-designer` *(optional)*, `ops-reviewer` *(optional)*, `reliability-reviewer` *(optional)*, `infra-reviewer`, `unit-test`, `system-test`
 
 **Oversight agents** (risk scoring, second review, cross-vendor panel):
-`risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`
+`risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`, `post-change-sweep`
 
-**Framework agents** (pipeline self-validation):
-`framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator`, `post-change-sweep`
-
-All agent files are copied — including the framework agents. Any project using this pipeline will customize agents, and the framework agents validate those customizations.
+> **Framework-dev validators not shipped:** `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator` validate HOS itself, not a consumer's app — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding) and are not copied to consumer projects.
 
 ### Framework scripts
 
@@ -991,7 +996,7 @@ All agent files are copied — including the framework agents. Any project using
 | `install.sh` | Interactive install/update. Run once to set up, re-run to pick up framework updates. |
 | `check_agents_static.sh` | Fast structural checks (no AI). Run in pre-commit or CI. |
 | `validate_agents.sh` | agy + codex semantic review. Run when framework files change. |
-| `run_framework_validation.sh` | Runs both in sequence. The single command before committing framework changes. |
+| `run_framework_validation.sh` | Runs all four phases (static, agent semantic, doc coverage, spec compliance). The single command before committing framework changes. |
 | `run_post_change_sweep.sh` | Categorizes changed files and prints the agent routing plan. |
 | `config.sh` | Generated by `install.sh`. Holds all project-specific values. Never edit manually — re-run `install.sh`. |
 
@@ -1028,6 +1033,7 @@ Once installed and configured, invoke agents in this order before writing any co
 1. `pm-agent` → `docs/pm/CONFIRMED-REQUIREMENTS.md`
 2. `ux-designer` → `docs/design/UX-DESIGN-READINESS.md`
 3. `architect` → `docs/architecture/ADR-001-pilot.md`
-4. `technical-design` (iterated with `architect`) → `docs/design/TECHNICAL-DESIGN.md`
+4. `ops-designer` *(optional — projects with ops complexity)* → `docs/ops/TELEMETRY-SPEC.md`
+5. `technical-design` (iterated with `architect`) → `docs/design/TECHNICAL-DESIGN.md`
 
 Do not begin build step 1 until `docs/design/TECHNICAL-DESIGN.md` is architect-approved. See `docs/OVERSIGHT-RUNBOOK.md` § "Project Start Sequence" and `docs/SETUP.md` for exact commands.

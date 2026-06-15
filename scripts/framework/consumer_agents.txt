@@ -1,20 +1,22 @@
-# Canonical set of HOS oversight agents installed into a CONSUMER project.
+# Canonical set of HOS agents installed into a CONSUMER project (v0.3.0).
 #
 # Single source of truth for BOTH the install copy-loop AND the .hos-manifest
 # enumeration in bootstrap/hos_install.sh — so the manifest can never declare an
 # agent the install did not ship, and the install can never omit an agent the
 # manifest tracks (HOS#225). Edit here once; both sides follow.
 #
+# As of v0.3.0 HOS ships a canonical, layered (CORE/PACK/PROJECT) **base team** in
+# addition to the oversight layer — the consumer no longer hand-rolls it. The
+# stack depth (Django, etc.) lands in a PACK; project specifics in PROJECT.
+#
 # NOT listed here (deliberately):
-#   - Base-team agents (coder, code/security/privacy/ui/a11y/infra-reviewer,
-#     architect, pm-agent, technical-design, unit/system-test, …) are
-#     CONSUMER-OWNED — the consumer's own dev team — never shipped or tracked.
 #   - Framework-dev validators (framework-validator, framework-setup-validator,
 #     doc-validator, spec-compliance-validator) validate HOS *itself*, not a
-#     consumer's app — HOS-internal, not shipped to consumers (decided #225).
+#     consumer's app — they belong to the hos-dev-pack, not the consumer install.
 #
 # One agent slug per line (no .md). Blank lines and `#` comments ignored.
 
+# ── Oversight layer ──────────────────────────────────────────────────────────
 risk-assessor
 dep-mapper
 risk-historian
@@ -22,8 +24,28 @@ oversight-evaluator
 oversight-orchestrator
 spec-red-team
 prompt-fidelity
-ops-designer
-ops-reviewer
-reliability-reviewer
 post-change-sweep
+
+# ── Base team — build ────────────────────────────────────────────────────────
+pm-agent
+architect
+technical-design
+coder
+
+# ── Base team — review ───────────────────────────────────────────────────────
+code-reviewer
+security-reviewer
+privacy-reviewer
+reliability-reviewer
+ops-reviewer
+ui-reviewer
+a11y-reviewer
+infra-reviewer
+
+# ── Base team — test ─────────────────────────────────────────────────────────
+unit-test
+system-test
+
+# ── Design authorities ───────────────────────────────────────────────────────
+ops-designer
 ux-designer

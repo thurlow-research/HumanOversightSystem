@@ -439,6 +439,130 @@ flowchart LR
 
 ---
 
+## Agent File Composition: CORE / PACK / PROJECT Layers
+
+Every agent file installed into a consumer project is assembled from up to three marker-delimited regions, written in canonical order — CORE first, then PACK (alphabetical when multiple packs are selected), then PROJECT last. This order is intentional: recency precedence means each subsequent layer can override the one before it, so PROJECT instructions beat PACK beat CORE. `compose()` in `regions.py` is the only writer; it always produces this order regardless of injection order.
+
+**CORE** is the HOS-authored generic role instruction — the baseline that ships with every install and is identical across all consumer projects. **PACK** is the HOS-authored stack-depth layer: `packs/<name>/<agent>.md` contains the raw region body that `inject-pack` appends to the staged CORE template before the three-way merge runs. A pack only deepens the agents it has body files for — an agent with no file in `packs/<name>/` stays CORE-only. **PROJECT** is the consumer-owned customization region — it is never written by the installer (the PROJECT-never-written invariant), only read and preserved. This is what lets the consumer extend or override agent behavior without those edits being clobbered on upgrade.
+
+```mermaid
+flowchart TB
+    subgraph SOURCES["Source layers (canonical order = recency precedence)"]
+        direction TB
+        CORE_SRC[".claude/agents/&lt;agent&gt;.md\nin the HOS repo\n(CORE region body)"]
+        PACK_SRC["packs/&lt;name&gt;/&lt;agent&gt;.md\nin the HOS repo\n(PACK region body — raw bytes,\nno markers, no placeholders)"]
+        PROJ_SRC["Consumer-owned\nPROJECT region\n(never written by installer;\npreserved across upgrades)"]
+    end
+
+    subgraph STAGE["A1 staging (per agent, per install)"]
+        direction LR
+        SUB["perl substitutes\nplaceholders into CORE\n(CORE only — D6)"] --> WRAP["flat-wrap if needed\n(migrate to CORE region)"]
+        WRAP --> INJ["regions.py inject-pack\n(appends PACK:&lt;name&gt; region;\ncompose re-sorts alphabetically)"]
+    end
+
+    subgraph INSTALLED["Installed agent file (.claude/agents/&lt;agent&gt;.md)"]
+        direction TB
+        C["&lt;!-- HOS:CORE:START --&gt;\n...generic role...\n&lt;!-- HOS:CORE:END --&gt;"]
+        P["&lt;!-- HOS:PACK:django:START --&gt;\n...stack rules...\n&lt;!-- HOS:PACK:django:END --&gt;"]
+        PR["&lt;!-- HOS:PROJECT:START --&gt;\n...consumer rules...\n&lt;!-- HOS:PROJECT:END --&gt;"]
+        C --> P --> PR
+    end
+
+    CORE_SRC --> SUB
+    PACK_SRC --> INJ
+    INJ -->|"three-way merge\n(plan_upgrade)"| INSTALLED
+    PROJ_SRC -->|"preserved verbatim\n(PROJECT-never-written invariant)"| PR
+
+    style SOURCES fill:#f8f0e8,stroke:#d4905a
+    style STAGE fill:#e8f4f8,stroke:#4a90d9
+    style INSTALLED fill:#f0f8e8,stroke:#5a9e4a
+```
+
+The pack is selected before Phase A runs. The installer resolves the pack name from (in precedence order): the `--pack <name>` flag, then the `PACK=` key in the consumer project's `config.sh`, then — if neither is present in a non-interactive or CI context — a hard error (you do not accidentally ship a core-only project). `--no-pack` is the explicit opt-out; it installs the bare CORE+PROJECT agent set with a warning that stack depth is absent. The resolved pack name is written back to `config.sh` so the next upgrade reuses the same choice without requiring the flag.
+
+---
+
+## Pack Install and Upgrade Decision Flow
+
+The three-way merge is the architectural heart of pack upgrades. For every region of every agent file, the installer compares three values: the **`base_sha`** (the sha recorded in `.hos-manifest` when the region was last written by HOS — what HOS and the consumer agreed on), the **`disk_sha`** (what is on disk right now — may have drifted), and the **`incoming_sha`** (what the new HOS version wants to write). The action is deterministic from those three comparisons. PROJECT regions are never compared this way — they are excluded by the PROJECT-never-written invariant.
+
+```mermaid
+flowchart TD
+    START(["hos_install.sh --pack &lt;name&gt;"])
+
+    START --> RES["Pack resolution\n(ADR-031 §1.1)"]
+
+    RES --> FLAG{"--pack flag\ngiven?"}
+    FLAG -->|"yes"| VAL["validate packs/&lt;name&gt;/\nexists — unknown pack\nis a hard error (exit 1)"]
+    FLAG -->|"no"| CFG{"PACK= in\nconfig.sh?"}
+    CFG -->|"yes"| VAL
+    CFG -->|"no"| NOPK{"--no-pack\ngiven?"}
+    NOPK -->|"yes"| CORE_ONLY["core-only install\n#237 WARN fired\nconfig.sh PACK= cleared\nif previously set"]
+    NOPK -->|"no (interactive)"| ERR1["ERROR exit\nS1 hard default:\nmust select a pack"]
+    NOPK -->|"no (CI / non-interactive)"| ERR2["ERROR exit\nCI must be explicit"]
+
+    VAL --> MULTI{"more than\none pack?"}
+    MULTI -->|"yes"| WARN_MULTI["multi-pack WARN\n(untested in v0.3.0)\ncompose sorts alpha"]
+    MULTI -->|"no (supported path)"| A1
+    WARN_MULTI --> A1
+
+    subgraph A1["A1 staging (per agent)"]
+        direction TB
+        ST["substitute + flat-wrap\ninto staged CORE template"] --> IP["inject-pack\n(for each selected pack\nthat deepens this agent)"]
+    end
+
+    A1 --> MERGE
+
+    subgraph MERGE["Three-way merge (plan_upgrade — per region)"]
+        direction TB
+        CMP["compare base_sha · disk_sha · incoming_sha"]
+        CMP --> R1{"base == disk\nAND\ndisk == incoming?"}
+        R1 -->|"yes"| KEEP["KEEP\n(re-stamp base_sha)"]
+        R1 -->|"no"| R2{"base == disk\n(HOS-owned,\nnot consumer-edited)?"}
+        R2 -->|"yes (untouched)"| REFRESH["REFRESH\nwrite new body\nre-stamp base_sha\n(version bump lands)"]
+        R2 -->|"no (consumer edited)"| R3{"disk == incoming\n(convergent edit)?"}
+        R3 -->|"yes"| KEEP
+        R3 -->|"no"| HARDSTOP["HARDSTOP\nexit 4, nothing written\ndrift report names region\nremedy: --squash or\nmove edit to PROJECT"]
+    end
+
+    subgraph REMOVED["Removed-region sweep (absent from template, in manifest)"]
+        direction TB
+        REM_CMP{"base == disk\n(unedited)?"}
+        REM_CMP -->|"yes"| DROP["DROP\nomit from composed file\nremove manifest row"]
+        REM_CMP -->|"no (consumer edited)"| HS2["HARDSTOP\nunless --squash/--prune"]
+    end
+
+    MERGE -->|"PACK region present\nin manifest but absent\nfrom staged template\n(pack switch or --no-pack strip)"| REMOVED
+
+    REMOVED --> WRITE
+    MERGE --> WRITE
+
+    WRITE{"any HARDSTOP\nor inject failure?"}
+    WRITE -->|"yes"| ABORT["pre-Phase-B abort gate\n(decide-all-then-act)\nexit 4, nothing written\nno manifest, no version stamp"]
+    WRITE -->|"no"| PHASE_B["Phase B\nwrite composed files\n+ .hos-manifest\n+ .hos-release"]
+
+    subgraph PACK_SWITCH["Pack-switch special cases (handled by removed-region sweep)"]
+        direction LR
+        SW_LABEL["flask → django:\nPACK:flask in manifest\nbut absent from template\n→ DROP (if unedited)\nor HARDSTOP (if edited);\nPACK:django freshly\nintroduced → REFRESH"]
+        STRIP_LABEL["django → none (--no-pack):\nPACK:django in manifest\nbut absent from template\n→ DROP (if unedited)\nor HARDSTOP (if edited)"]
+    end
+
+    REMOVED -.->|"see cases"| PACK_SWITCH
+
+    style A1 fill:#e8f4f8,stroke:#4a90d9
+    style MERGE fill:#f0f8e8,stroke:#5a9e4a
+    style REMOVED fill:#f8f0e8,stroke:#d4905a
+    style PACK_SWITCH fill:#fdf8e8,stroke:#b89a3a
+    ABORT:::danger
+    classDef danger fill:#fde8e8,stroke:#d45a5a
+```
+
+**SKIP_PROJECT** is the implicit action in all paths above: the PROJECT region is never touched by the installer regardless of what the three-way finds. It is not a branch in the merge — it is a precondition that the `plan_upgrade` loop never enters for PROJECT regions. The result is that consumer customizations in PROJECT survive every REFRESH, DROP, and pack switch intact.
+
+The **decide-all-then-act gate** runs after the full agent loop completes, before Phase B writes anything. If any agent hit a HARDSTOP (drift) or a pack injection failure, the gate fires `exit 4` and the entire install is abandoned — not just the one failed agent. This preserves the fail-closed invariant: either all agents are written atomically (from the installer's perspective) or none are, and the `.hos-manifest` and `.hos-release` are never partially updated.
+
+---
+
 ## Risk Stratification — What Triggers What
 
 The composite score from the validator scripts maps to a tier, which controls how much scrutiny fires.

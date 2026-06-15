@@ -33,11 +33,14 @@ Installs Python 3.10+, ScanCode, gh, the analysis packages, and the agent CLIs
 ## 3. Install HOS into your project
 
 Your project must be a git repo. This fetches the latest validated release and
-scaffolds it in — no sudo.
+scaffolds it in — no sudo. Pick a stack pack with `--pack` to get stack-depth
+agent content (e.g., Django-specific security checks, test patterns, etc.); use
+`--no-pack` if you want the bare core only.
 
 ```bash
-./hos_install.sh /path/to/your-project
-#   pin a version:  ./hos_install.sh --release v0.1.0 /path/to/your-project
+./hos_install.sh --pack django /path/to/your-project
+#   no stack depth:  ./hos_install.sh --no-pack           /path/to/your-project
+#   pin a version:   ./hos_install.sh --release v0.3.0 --pack django /path/to/your-project
 ```
 
 That's it — your project now has the oversight agents, validators, gates, the
@@ -50,7 +53,7 @@ contract, and the audit trail. The installed version is recorded at
 
 | In your project | What it is |
 |---|---|
-| `.claude/agents/` | the oversight agents (risk-assessor, evaluator, orchestrator, …) |
+| `.claude/agents/` | the full base agent team (16 agents: pm-agent, architect, coder, 8 reviewers, test, ops, ux, …) plus the oversight agents |
 | `scripts/oversight/` | risk validators + blocking gates |
 | `scripts/` | the review runners (`run_panel.sh`, `run_second_review.sh`, `run_red_team.sh`, …) |
 | `AGENTS.md`, `contract/` | the self-flagging protocol + the step manifest to fill in |

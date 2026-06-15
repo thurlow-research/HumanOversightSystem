@@ -206,7 +206,7 @@ All must exit 0 before proceeding. Fix any failures before the review chain.
 
 ### PHASE 2 — Risk Assessment
 
-> **For MEDIUM+ steps: capture the prompt artifact BEFORE running this phase.** risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact does not exist at assessment time, the fidelity check is silently skipped. Run `bash scripts/capture_prompt.sh` and commit with the trailer first, then proceed with Phase 2. (Phase 5 below is a record-keeping step for this artifact, not the trigger.)
+> **For MEDIUM+ steps: capture the prompt artifact BEFORE running this phase.** risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact is missing at assessment time, risk-assessor records a missing-artifact finding; on MEDIUM+ the evaluator treats missing trailers/files according to prompt-artifact compliance rules. Only semantic comparison NYI is a non-blocking coverage gap. Run `bash scripts/capture_prompt.sh` and commit with the trailer first, then proceed with Phase 2. (Phase 5 below is a record-keeping step for this artifact, not the trigger.)
 
 Run after gates pass. Scores the code across 12 signal dimensions (across 11 validator scripts) and produces an inspection brief for reviewers.
 
@@ -434,9 +434,9 @@ Input: contract/step-manifest.yaml, .claudetmp/signoffs/stepN-register.md,
        .claudetmp/oversight/step{N}-human-authorization.md (if CRITICAL step)
 ```
 
-**For CRITICAL steps (3 and 6) — human authorization required FIRST:**
+**For any step whose manifest has human_gate_required: true or whose validated tier is CRITICAL — human authorization is required before oversight-evaluator runs (steps 3 and 6 are examples):**
 ```bash
-# Before running oversight-evaluator on steps 3 or 6:
+# Before running oversight-evaluator on applicable steps:
 mkdir -p .claudetmp/oversight
 cat > .claudetmp/oversight/stepN-human-authorization.md << EOF
 Authorized: $(date -I)
@@ -564,7 +564,7 @@ When work mid-build reveals a gap in the spec, design pack, or telemetry spec, a
 ### Spec-gap chain (requirements and design gaps)
 
 ```
-coder / security-reviewer / privacy-reviewer
+coder / security-reviewer / privacy-reviewer / reliability-reviewer / system-test design-untestable gaps / other reviewers with contract gaps
   → technical-design    (can it be resolved at the implementation design level?)
       → architect        (does it require an architectural decision?)
           → spec-gap issue for pm-agent   (only if it requires a product decision)
@@ -726,11 +726,11 @@ bash scripts/framework/run_framework_validation.sh --static-only
 
 | Domain changed | Agents invoked |
 |---|---|
-| `.claude/agents/`, `docs/AGENTS.md`, `scripts/framework/` | `framework-validator` |
+| `.claude/agents/*.md`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, `docs/SETUP.md`, `docs/CUSTOMIZATION.md`, `scripts/framework/**` | `framework-validator` |
 | `*.py` app code (application-code) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer`, `ops-reviewer`* |
 | `**/migrations/*.py` (migrations) | `code-reviewer` → (parallel) `security-reviewer`, `privacy-reviewer` |
 | `templates/*.html` (templates) | `ui-reviewer`, `a11y-reviewer` (after `code-reviewer` approves) |
-| `docker-compose.yml`, `Caddyfile` (infrastructure) | `infra-reviewer` |
+| `docker-compose.yml`, `Caddyfile`, `**/*.env.example`, `{project}/scripts/backup.sh` (infrastructure) | `infra-reviewer` |
 | `tests/**` (tests) | `unit-test` |
 | `Specs/*design*/**` (design-pack) | `ux-designer` → `ui-reviewer` |
 | `Specs/*.md` (spec) | `pm-agent` |
