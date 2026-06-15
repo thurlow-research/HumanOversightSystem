@@ -14,7 +14,7 @@
 |---|---|---|
 | **Spec home/format** | **Full PRD** at `docs/specs/UNATTENDED-WORKER-PROTOCOL.md` | A multi-release product line (v1 → adaptive/multi-customer → embargo automation), not a one-shot subsystem. PRD ceremony earns its keep. |
 | **Adaptive polling — v1 or v2?** | **Adaptive in v1**, probe floor **15 min**, ceiling **daily** | The cron **probe** is GitHub API calls with **no model invocation** — cheap enough to fire every 15 min, and **the model sleeps unless the probe finds work** (#254 consideration #11). What we throttle is *model spend* (gated by work-found **and** the §8 budget), not the probe. Adaptive back-off (toward daily) exists only to spare **API quota** on dormant repos when one HOS watches many. |
-| **Merge-gate dependency on #152** | **Hard prerequisite, per-repo.** Auto-merge enabled only where server-side branch protection is **detected** active; otherwise that repo runs **PROPOSE_ONLY**. | Auto-merge-≤MEDIUM is only a *boundary* if a bot can't bypass it. "Detected, not assumed" applies the fail-closed / re-derive-don't-trust principle (DECISIONS D33/D37/D41) to the merge gate. Lets CPS join in PROPOSE_ONLY day one and graduate when *its own* gate flips. |
+| **Dependency on #152 (machine accounts)** | **Hard prerequisite for the *whole system* — two levels.** (1) **Global:** the entire unattended worker requires #152 to land first — the loop runs under the **worker/overseer machine accounts**, not the human, so without machine-account identity there is no compliant actor to run it. (2) **Per-repo:** auto-merge is additionally enabled only where server-side branch protection is **detected** active; otherwise that repo runs **PROPOSE_ONLY**. | The loop *being* an AI actor distinct from the human is the foundation (#152 / `AGENT-IDENTITY.md`), and auto-merge-≤MEDIUM is only a *boundary* if a bot can't bypass it. "Detected, not assumed" applies fail-closed / re-derive-don't-trust (DECISIONS D33/D37/D41). #152 ships first; then CPS joins in PROPOSE_ONLY and graduates when *its own* gate flips. |
 | **Multi-customer scope** | **v1.** Per-customer budgets, round-robin, isolation, protocol versioning are in scope from the start. | CPS is the first real participant; retrofitting fairness/isolation onto a single-tenant loop is the expensive path. |
 | **Fold in #131** (scheduled self-review backlog job) | **Subsumed** as a **scheduled self-review work source** (§3.2), not a standalone cron. | #131's "daily full self-review → file NEW ledger-deduped findings as issues" is the same shape as the unattended loop (cron, no-model-unless-work, budget-gated, ledger-deduped). Folding it in lets it inherit this loop's budget gate, observability, and kill switch instead of re-implementing them. **#131 closed as a duplicate of #254.** |
 
@@ -66,6 +66,13 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 | **The customer project** | its own repo + machine accounts | Files reports/questions, watches PR comments, receives release notifications. May be HOS itself (HOS dogfoods the protocol on its own repo). |
 
 > **Identity is load-bearing, not cosmetic.** The whole merge-authority model rests on worker ≠ overseer ≠ human being *server-side distinguishable* (#152, `docs/AGENT-IDENTITY.md`). This PRD consumes that model; it does not re-specify it.
+
+> **This protocol is the runtime for the Faberix maintainer roles (`docs/FABERIX-ROLES.md`, #167 — subsumed).** Faberix is the named autonomous HOS maintainer running under the **overseer** machine account; its three roles map directly onto sections here, so #254 is the implementation of #167 rather than a parallel design:
+> - **R1 — validator tech-debt paydown** → the scheduled self-review work source (§3.2) with the three dispositions **fix / won't-fix+suppress / escalate** (R3.2.5).
+> - **R2 — incoming-item triage** → triage (§5) + severity + benefit-≫-risk gate (§5.3). *The overnight loop was R2's prototype — now generalized and given the cost gate it lacked.*
+> - **R3 — PR review** → the merge-authority matrix (§9.1): approve/merge what it may, escalate the rest.
+>
+> #167's bounding principles are already first-class here: #152 hard-prereq (§9.1, R13 detection), cost-gating (§1/§10), and machine-account accountability (§2). Its won't-fix→suppression mechanism is added below.
 
 ---
 
@@ -122,8 +129,9 @@ The PROBE finds two kinds of work, both feeding the same triage + gate machinery
 - **R3.2.2 — Budget-gated, configurable cadence, default weekly.** Self-review is expensive *and* noisy, so its cadence is a **configurable knob (`self_review_cadence`) defaulting to weekly** — deliberately far slower than the token-free inbound probe (§10). It is **budget-gated like all model work (§8)**. The inbound-probe cadence and the self-review cadence are independent knobs. (Daily was considered and rejected as too expensive/noisy for the burndown goal; weekly is the v1 default, tunable per repo.)
 - **R3.2.3 — Findings flow through normal triage.** A filed finding is triaged (`bug` / `spec-gap` / …) and handled by the same rules — including "no fix without a reproducing test" (R3.1.1) and the merge-authority matrix (§9.1). Self-review does not get a privileged fast path.
 - **R3.2.4 — Governance issues are human-to-close.** The loop **files** findings autonomously but does **not auto-close** a filed governance finding when it stops reproducing — close is human-only (a finding can vanish from a fuzzed re-run without being genuinely resolved; see O6).
+- **R3.2.5 — Three dispositions, and won't-fix → suppression ledger** *(Faberix R1, implements #133, subsumes #167)*. Every validator/self-review finding resolves to exactly one of **fix · won't-fix+suppress · escalate**. A **won't-fix** ruling writes a **scoped, accountable entry to a suppression ledger** so the validator/self-review **stops re-reporting it** — keyed like the dedup fingerprint `(sorted files, finding-class)`, with author + rationale + timestamp. This is what makes the M6 burndown actually *converge*: without suppression, won't-fix findings resurface every run and the open set never reaches zero. Suppression is **distinct from `scanner-fp`** (which fixes the heuristic) and from `noise` — it is an accountable *accepted-risk* record. **Won't-fix on certain classes is human-only** (security / privacy / license — see O10); the loop may suppress only the classes it is permitted to rule on, and escalates the rest.
 
-This is the §0 "fold #131 in" decision: #131's standalone-cron design becomes one work source of the unattended worker, inheriting the loop's budget gate, ledger, observability, and kill switch instead of re-implementing them.
+This is the §0 "fold #131 in" decision: #131's standalone-cron design becomes one work source of the unattended worker, inheriting the loop's budget gate, ledger, observability, and kill switch instead of re-implementing them. **#167 (Faberix maintainer roles) folds in the same way** — its R1/R2/R3 are the §3.2 / §5 / §9.1 machinery, and its won't-fix→suppression mechanism is R3.2.5.
 
 ---
 
@@ -327,7 +335,15 @@ One HOS polls many customer repos.
 
 ## 13. Configuration surface
 
-A per-customer profile (home TBD in design — likely `config.sh` keys or a `hos-coordination.yaml` in the customer repo):
+**Config is layered so the shipped framework source is always *unconfigured*.** Three layers, resolved at load time (later overlays earlier):
+
+1. **Shipped defaults (HOS-owned, in source).** A `hos-coordination.defaults.yaml` ships with the framework carrying **only defaults** — `enabled: false`, the §8.3 threshold profile, cadence bounds. It is **inert**: it turns nothing on. This is the layer that lives in the framework repo / a release.
+2. **Live per-deployment config (NOT in the framework source).** Each deployment supplies its own config in a location **outside** the shipped source tree — the consumer repo's own PROJECT-owned area, or a local, **gitignored** path (the existing `.ai-local/` convention; never committed to the framework). This is where `enabled: true` and any real values live.
+3. **Runtime overrides** — env / kill-switch / `enabled:false` short-circuit (R13.2).
+
+**HOS's own dogfood config is layer 2, not layer 1** — it lives in HOS's deployment location (e.g. `.ai-local/hos-coordination.yaml`, gitignored), **never in the committed framework source**. Consequence: a `git grep 'enabled: *true'` over the framework source returns nothing, and a cut release never carries HOS's (or anyone's) live enablement. The source ships unconfigured-and-disabled; configuration is an act each deployment performs separately.
+
+The schema (shown here as the shipped **defaults** — note `enabled: false`):
 
 ```yaml
 customer: cps
@@ -350,6 +366,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 
 - **R13.1 — `mode` can only be narrowed by config, never widened.** Config may force `propose-only` on a server-side-gated repo, but config **cannot** force `autonomous` on a repo where the gate isn't detected.
 - **R13.2 — Opt-in, disabled by default.** The unattended worker and the customer↔HOS coordination protocol are **off by default** for every repo, including HOS's own. `enabled: false` is the shipped default; a **customer must explicitly opt in** (set `enabled: true`) before any autonomous probe, triage, claim, or coordination action runs against their repo. Absence/ambiguity of the flag is read as **disabled** (fail-closed). Disable is always immediate (it composes with the §8.4 kill switch: kill-switch is the emergency stop, `enabled: false` is the steady-state default).
+- **R13.3 — Source ships unconfigured; live config lives elsewhere.** The framework **source carries defaults only** (layer 1); all live configuration — including HOS's own dogfood enablement — lives in a **per-deployment location outside the shipped source** (layer 2: consumer PROJECT area or a gitignored `.ai-local/` path). The framework repo must never contain a committed `enabled: true` or any deployment's real config. This keeps releases inert (a fresh install is disabled until its operator configures it) and keeps each deployment's posture out of the shared source. Mirrors the existing CORE/PACK (HOS-owned, shipped) vs PROJECT (consumer-owned, never overwritten) layering.
 
 ---
 
@@ -364,7 +381,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 
 ## 15. Open items for the design phase
 
-- **O1** — Config home: `config.sh` keys vs a dedicated `hos-coordination.yaml` per customer repo. (Leaning: in-repo YAML, so the customer owns its own profile and HOS reads it — consistent with "GitHub is the database.")
+- **O1** — *(direction set by R13.3)* Config home: layered — shipped `hos-coordination.defaults.yaml` (defaults only) + a per-deployment live config outside the source (consumer PROJECT area or gitignored `.ai-local/`). Remaining design detail: the exact live-config path + the resolution/merge order with `config.sh`, not *whether* to separate them.
 - **O2** — Instance-id scheme for the claim tiebreak (§7.1): hostname+pid is racy across machines; prefer a per-instance UUID minted at boot and carried in the claim envelope.
 - **O3** — Exact server-side-gate detection probe (§9.1.1): protection-API read vs an active no-op-rejection canary. The canary is stronger (proves enforcement, not just configuration) but noisier.
 - **O4** — Where the run ledger lives relative to `audit/oversight-log.jsonl`: same file, sibling file, or per-customer.
@@ -372,6 +389,9 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 - **O6** — *(from #131)* **Fingerprint fuzz** on self-review findings (R3.2.1): the same logical finding can return with a slightly different file set / class wording → fingerprint miss → duplicate issue. Need a fuzzy-match step or a periodic human de-dup pass (relates to #78 cross-vendor fingerprint reconciliation). The exact-key ledger is the v1 floor; fuzzy-match is the hardening.
 - **O7** — *(from #131)* **Auto-close policy** for filed governance findings: a finding whose underlying file changed such that it no longer reproduces — does its issue auto-close? v1 answer is **no** (R3.2.4, human-only close); O7 is whether a *suggested*-close signal (not an actual close) is worth adding later.
 - **O8** — **Execution model** (flagged in review): is an "instance" a long-running process that heartbeats while working (§7.2), or a short-lived cron invocation that exits between polls? The 45m claim-timeout / 15m heartbeat assumes the former; the weekly self-review (§3.2) is naturally the latter. The loop likely needs **both** — a short-lived probe-and-dispatch invocation plus longer-lived per-task workers that heartbeat — which the §7 locking model must accommodate.
+- **O9** — *(from #167(a))* **Suppression ledger scope** (R3.2.5): per-repo or shared across consumers? A shared ledger lets HOS suppress a known framework-level false positive once for everyone; a per-repo ledger keeps consumer accepted-risk decisions local. Likely both: a HOS-shipped baseline + a per-repo overlay.
+- **O10** — *(from #167(b))* **Won't-fix human-only classes** (R3.2.5): which finding classes may the loop *never* autonomously won't-fix? Proposed floor: **security / privacy / license** are human-ruled-only (the loop escalates, never self-suppresses them). Confirm the list.
+- **O11** — *(from #167(c))* **R3 auto-approve ceiling reconciliation.** #167 proposed Faberix R3 auto-approve at **LOW only**; #254 decision #1 locked the auto-merge ceiling at **≤MEDIUM** (§9.1). The PRD treats **§9.1 (≤MEDIUM, non-security, server-side-gated, benefit-≫-risk) as the governing answer**, superseding the more conservative #167 LOW-only proposal — but this is flagged for explicit human confirmation, since #167(c) was an open question pending review.
 
 ---
 
@@ -383,6 +403,7 @@ breakers: { per-issue-failures: 3, blast-radius: { prs: 5, issues: 10, files: 25
 | Token-burn estimation + significance gate | §8 (estimate-then-gate), O5 |
 | Human-escalation context contract (#257) | §8.2 |
 | Scheduled self-review → file findings, ledger-dedup (#131, subsumed) | §3.2, R3.2.1, O6, O7 |
+| Faberix maintainer roles R1/R2/R3 + won't-fix→suppression (#167, #133, subsumed) | §2 (Faberix note), R3.2.5, O9, O10, O11 |
 | Bidirectional comms protocol | G3, §4 |
 | Issue triage {bug, feature, communication} | §5 |
 | Bug handling (prioritize, fix in order) | §5.1, §5.3, §7 |
@@ -405,7 +426,7 @@ The work breakdown for building v1. Tracks the §14 phasing into concrete delive
 ### 17.1 Documentation & control (the enable/disable surface)
 
 - [ ] **T1 — Agent instructions for the customer↔HOS communication protocol.** Author the agent-facing spec (in `AGENTS.md` and/or the relevant `.claude/agents/` files) describing how agents participate in the protocol: the envelope format (§4), how to read/write `correlation-id`/`in-reply-to`, the triage classes (§5), claim-then-verify + heartbeat (§7), the escalation contract (§8.2), and the merge-authority boundaries (§9.1). This is the contract any compliant agent team implements to speak the protocol.
-- [ ] **T2 — Control mechanism (enable/disable).** Implement the opt-in switch (R13.2): the `enabled` flag + its fail-closed default, the per-customer config home (O1), and the §8.4 kill switch. Disable must be immediate and unambiguous; absence of the flag = disabled.
+- [ ] **T2 — Control mechanism (enable/disable) + layered config.** Implement the opt-in switch (R13.2): the `enabled` flag + its fail-closed default, and the §8.4 kill switch. **Build the layered config resolver (R13.3):** shipped `*.defaults.yaml` (layer 1, unconfigured) overlaid by a per-deployment live config outside the source (layer 2, gitignored `.ai-local/` or consumer PROJECT area). Ensure the framework source stays free of any `enabled: true`; disable is immediate and unambiguous; absence = disabled.
 - [ ] **T3 — Human-facing doc in `docs/`.** A new doc in the human docs section (e.g. `docs/UNATTENDED-WORKER.md` / `docs/COORDINATION-PROTOCOL.md`) so a human knows the subsystem exists, understands what it does autonomously, and can **enable/disable** it. **Must state plainly: off by default; the customer opts in; here is how to turn it on, how to turn it off, and how to hit the kill switch.** Cross-link from `docs/SETUP.md` and the runbook.
 
 ### 17.2 Core loop
