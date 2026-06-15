@@ -694,8 +694,15 @@ class Plan:
                            or None when `blocked`. REFRESH->template body,
                            KEEP->disk body, DROP->omitted, PROJECT->disk body
                            verbatim (or an empty stub on first_install). The
-                           PROJECT body in `new_bytes` is byte-identical to disk
-                           (the never-written invariant, §4.4 — assert-able).
+                           PROJECT body in `new_bytes` is `region_sha`-identical
+                           to disk — i.e. identical up to `_normalize_body` (LF +
+                           single trailing newline), which is how this module
+                           defines region identity; it is the never-written
+                           invariant (§4.4 — assert via `region_sha`, not raw
+                           bytes). NOTE: front-matter on the composed file is
+                           taken from the TEMPLATE (HOS-canonical, D8); a
+                           consumer's hand-edited front-matter field is not
+                           preserved on upgrade.
         new_manifest_rows: the manifest rows for the composed file, in canonical
                            order, with each HOS-owned region's sha re-stamped to
                            `incoming` for REFRESH/KEEP (base_sha = incoming, the

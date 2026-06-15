@@ -404,3 +404,42 @@ def test_plan_upgrade_no_filesystem_writes(tmp_path, monkeypatch):
     template = _agent(core="new")
     plan_upgrade(disk, template, _shas(disk))
     assert list(tmp_path.iterdir()) == []
+
+
+# --------------------------------------------------------------------------- #
+# Regression guards (code-review): the dual-loop edge cases
+# --------------------------------------------------------------------------- #
+
+
+def test_template_present_disk_absent_region_refreshes():
+    # Consumer deleted the HOS PACK region from disk, but its base_sha still
+    # tracks it. plan must RE-ADD it (REFRESH) — it's HOS-owned, not consumer
+    # data, so a missing HOS region on disk is restored, not treated as drift.
+    disk_no_pack = (
+        b"---\nname: security-reviewer\ndispatches: [code-reviewer]\n---\n\n"
+        b"<!-- HOS:CORE:START -->\ncore body\n<!-- HOS:CORE:END -->\n\n"
+        b"<!-- HOS:PROJECT:START -->\nmy project rules\n<!-- HOS:PROJECT:END -->\n"
+    )
+    template = _agent()  # CORE + PACK:django + PROJECT
+    base = _shas(template)  # base tracks all three, incl PACK:django
+
+    plan = plan_upgrade(disk_no_pack, template, base)
+
+    assert not plan.blocked
+    assert _action(plan, "PACK:django") == Action.REFRESH
+    assert "PACK:django" in _shas(plan.new_bytes)  # re-added to the composed file
+
+
+def test_base_region_absent_from_disk_and_template_is_skipped():
+    # A region in the manifest but in NEITHER disk nor template (a "ghost" — e.g.
+    # a pack the consumer never actually had on disk) is skipped: no action row,
+    # no block. Nothing to drop, nothing to refresh.
+    disk = _agent()
+    template = _agent()
+    base = _shas(disk)
+    base["PACK:rails"] = "f" * 64  # ghost: absent from both disk and template
+
+    plan = plan_upgrade(disk, template, base)
+
+    assert not plan.blocked
+    assert "PACK:rails" not in dict(plan.actions)
