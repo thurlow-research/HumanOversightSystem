@@ -105,6 +105,26 @@ The agent's checkout/session is configured to operate as the bot:
 - The human's personal credentials are **absent** from the agent's environment.
 - Pushes go to feature branches; `main` is protected (merge requires human approval — §5).
 
+### 8.1 Interactive sessions: Claude is the **worker**, not the human
+
+§8 applies to **interactive** sessions too — not only the autonomous loop. When a human (e.g. Scott) drives Claude live in a chat session, **Claude still authenticates as the worker bot; the human's account is reserved for the irreducible human-only acts.** The load-bearing reframe:
+
+> **"Interactive vs autonomous" is about whether a human is *present to direct* — NOT about which identity Claude wears.** A human present and directing *is* the human-in-the-loop, and that role is satisfied by their **review and authorization**, not by their account being the committer.
+
+Role mapping that follows from this:
+
+| Role | Interactive (human present) | Autonomous (no human) |
+|---|---|---|
+| **Worker** (writes code, opens PRs, never approves) | **Claude**, as the worker bot | Claude, as the worker bot |
+| **Oversight** (approves within the §7 ceiling) | the **human**, reviewing live | the **overseer bot** (auto-approves ≤ ceiling) |
+| **Human gate** (protected surface §9.0, above-ceiling, security, overrides) | the **human**, as themselves | escalated to the **human** |
+
+**Why it must be this way.** If interactive-Claude keeps using the human's account, that account's history becomes a mix of genuine-human and bot actions — and the human gate becomes *unfalsifiable*: you could never prove a given action under the human's account was actually a human's, because some "human" actions were the bot's. **Reserving the human account for human-only acts is the single thing that makes every action under it provably a human decision** — the §5.1 actor-identity guarantee applied to the day-to-day. "You are actually me" is the bug this closes, not a property to preserve.
+
+**Interim state (until the bot accounts are wired into a session):** an interactive session running under the human's credentials *is* the transitional case — its commits/PRs authenticate as the human, mitigated only by the `🤖 [AI: claude]` disclosure markers. Those fix the **attribution** layer ("the AI wrote this") but not the **actor** layer (which still says the human) — i.e. accountability, not forge-proofing (§5.1). Wiring the worker token into the session is what closes it.
+
+**Tooling rule.** The session wraps `git`/`gh` to use the **worker token by default**; it switches to the **overseer token** only for an autonomous within-ceiling approval; and it uses the **human's token *never*** — except when the human personally performs a human-gate act. The AI-CLI/model auth stays under the human's subscription (§4 decoupling) — that is the unavoidable attribution layer; the **git committer + gh actor** are the bot.
+
 ## 9. Branch protection (the merge gate as forge-proofing) — settable as code
 
 On the protected branch (`main`):
