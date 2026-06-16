@@ -91,6 +91,13 @@ Resolve effective config from 4 layers (later overlays earlier, **narrow-only**)
   breakers{...}, suppression{default_ttl,nag_lead_days} }
 ```
 
+**YAML-key → in-memory-attribute normalization (one-time rule — read this before any key reference below).** The §13 PRD YAML uses **hyphen-case** keys (`self-review`, `triage-confidence-floor`, `requester-allowlist`, `protocol-version`, `default-ttl`, `nag-lead-days`, `orchestrator-lock-timeout`, …); the in-memory `EffectiveConfig` uses **underscore** attributes. The resolver applies a single deterministic normalization **once, immediately after YAML parse, before any overlay or validation**:
+- **Hyphen-to-underscore key conversion:** every map key has `-` replaced with `_` (`self-review` → `self_review`, `triage-confidence-floor` → `triage_confidence_floor`, `requester-allowlist` → `requester_allowlist`). This is a pure key rename; values are untouched.
+- **Nested maps map to nested objects/dicts:** a YAML nested map stays nested in memory. `self-review: { cadence: weekly, cross-vendor: true }` becomes the `self_review` sub-object `{ cadence: "weekly", cross_vendor: true }`, accessed as `config.self_review.cadence` (attribute access on the `self_review` sub-object's `cadence` field) — **NOT** a flat `config.self_review_cadence` key. The flat name `self_review_cadence` used in PRD R3.2.2 prose and elsewhere in this document is **shorthand for that same value**; the canonical in-memory accessor is `config.self_review.cadence`.
+- **Layer at which normalization happens:** the YAML parser (layer 1 load step and each subsequent overlay load) emits hyphen-case keys; the normalization pass runs **in the resolver, right after each layer's YAML is parsed and before it is overlaid**, so every layer is already underscore-normalized by the time overlay/narrow-only logic (step 5) and validation (step 6) run. No downstream code ever sees a hyphen-case key.
+
+The canonical accessor for the R3.2.2 floor check is therefore **`config.self_review.cadence`** (the `cadence` field of the `self_review` sub-object) — this is the single in-memory name the coder uses; `self_review_cadence` is prose shorthand for it.
+
 ### Algorithm — `resolve(repo_root) -> EffectiveConfig`
 1. Load layer 1 defaults.
 2. Overlay layer 2a from `PROJECT/hos-coordination.yaml` if present.
@@ -98,11 +105,25 @@ Resolve effective config from 4 layers (later overlays earlier, **narrow-only**)
 4. Overlay layer 3 env (`HOS_AUTO_*`).
 5. **Narrow-only enforcement (R13.1):** after each overlay, for `enabled`, `thresholds.*`, `requester-allowlist`, `mode`: a later layer may only *narrow*. Concretely:
    - `enabled`: `false` at any earlier layer is an **absolute veto** — no later layer may set `true`. (`effective.enabled = AND of all layers that specify it`.)
-   - `thresholds`: `effective = min(layer values)` for each numeric threshold (tighter = smaller budget).
+   - `thresholds`: narrow-only direction is **per-key, by semantics** — NOT a blanket `min()`. "Narrow" always means "tighter / less permissive," but for some threshold keys *lower* is tighter and for others *higher* is tighter. See the **thresholds narrow-direction callout** immediately below for the authoritative per-key table. In short: budget/token/timeout thresholds use `min()` (lower = tighter, smaller budget); confidence/quality **floors** use `max()` (higher = tighter, stricter). Applying `min()` to a floor would let a later layer *lower* it — a **widen**, which violates narrow-only.
    - `requester-allowlist`: `effective = intersection` (a later layer may only remove members).
    - `mode`: `propose-only` floor wins; a later layer may force `propose-only` but never `autonomous` (also gated by detection, §10).
    Any attempted widen is **logged and dropped** (not fatal), with the narrowed value used.
-6. **Fatal config errors (exit non-zero at load):** `self_review.cadence < 24h` (R3.2.2 hard floor); a layer-2b file containing any governance key (R13.3 violation); a malformed YAML.
+
+   **Thresholds narrow-direction callout (authoritative for `config_resolver.py` — apply the correct direction per key).** The generic `min()` rule is WRONG for confidence/quality floors. Under `thresholds:`, "lower = more permissive" for a floor (a lower required-confidence floor lets *more* low-confidence work proceed autonomously), so the narrow-only (tighter-only) direction for a floor is `max()`, not `min()`. Each `thresholds.*` key takes exactly one of these two directions:
+
+   | `thresholds.*` key | Semantics | "Tighter" is | Narrow-only operator |
+   |---|---|---|---|
+   | `per_task_tokens` | per-task token budget | smaller | **`min()`** |
+   | `window_budget_tokens` | per-window token budget | smaller | **`min()`** |
+   | `approval_timeout` | default-deny deadline (shorter = stricter / less time to auto-proceed*) | smaller | **`min()`** |
+   | `triage_confidence_floor` | **confidence floor** — minimum required triage confidence to act autonomously | **larger** | **`max()`** |
+
+   - **Rule of thumb for any future `thresholds.*` key:** budget/token/spend/timeout knobs (where a *larger* value buys the loop more autonomous latitude) → `min()`. Confidence/quality **floors** (where a *larger* value raises the bar the loop must clear before acting) → `max()`. A new key must be classified into one of these two buckets when it is added; default to the **stricter-on-ambiguity** choice and flag for review.
+   - `triage_confidence_floor` lives under `thresholds:` in the §13 YAML (spec line 508) but is a **floor**, so it is in the `max()` bucket. Implementing it as `min()` is a latent governance bug — a later config layer (or a layer-3 env override) could *lower* the floor and let lower-confidence work auto-proceed, defeating the R13.1 narrow-only intent.
+   - *(`approval_timeout`: a shorter timeout means silence flips to default-deny sooner — i.e. the loop gets *less* leeway to proceed on un-answered asks — so shorter = stricter = `min()`. This matches the budget-bucket direction.)*
+
+6. **Fatal config errors (exit non-zero at load):** `config.self_review.cadence < 24h` (R3.2.2 hard floor — the canonical accessor per the normalization note above; the YAML `self-review.cadence` key has already been normalized to the `self_review.cadence` attribute by load time); a layer-2b file containing any governance key (R13.3 violation); a malformed YAML.
 
 ### Failure handling
 Missing layer-2a file → `enabled` stays `false` (inert), no error. Unreadable layer-2a → fatal (cannot safely assume authorization). Soft-state corruption → discard layer 2b, fall back to cadence floor (R10.5), warn.
@@ -130,13 +151,13 @@ The **very first action on every cron wake**, before any probe, GitHub API call,
 2. Normalize to `<owner>/<repo>`: strip scheme/host from both `https://github.com/owner/repo.git` and `git@github.com:owner/repo.git`; strip trailing `.git`.
 3. Lowercase; replace `/` with `-`. Result: `owner-repo`. Example: `https://github.com/ScottThurlow/HumanOversightSystem.git` → `scottthurlow-humanoversightsystem`.
 
-**File content contract (G3):** a single line — the machine-binding token: either `hostname -f` output or a per-machine UUID written by `hos activate`. (`hos activate` writes `hostname -f` by default; `--uuid` writes a generated UUID and records it for future comparison in `~/.hos/<repo-id>/MACHINE-TOKEN`.)
+**File content contract (G3):** a single line — the machine-binding token. The cron resolves ONE canonical machine token via a strict precedence rule (R13.4 M-T binding): (1) if `~/.hos/<repo-id>/MACHINE-TOKEN` exists and is readable and non-empty → UUID from that file; (2) if `MACHINE-TOKEN` exists but empty/unreadable → **OFF immediately** (never fall back to hostname); (3) if `MACHINE-TOKEN` absent → `hostname -f`. The comparison is always **single-equality** — never try-hostname-then-try-UUID (that would be fail-OPEN). `hos activate` writes `hostname -f` to `ACTIVE` and creates NO sidecar (default). `hos activate --uuid` writes a UUID to BOTH `MACHINE-TOKEN` and `ACTIVE`. `MACHINE-TOKEN` is never committed, never on the protected surface.
 
 ### Algorithm — `check_activation(repo_root) -> ACTIVE | OFF`  (fail-closed)
 1. Derive `<repo-id>`.
 2. `path = ~/.hos/<repo-id>/ACTIVE`. If not a readable regular file → **OFF**.
 3. Read, trim whitespace. If empty → **OFF**.
-4. Compute this machine's canonical token (`hostname -f`; or the recorded UUID if `MACHINE-TOKEN` exists). If file token ≠ machine token → **OFF**.
+4. Resolve the ONE canonical machine token per the file-content contract above: MACHINE-TOKEN present+readable+non-empty → UUID from it; MACHINE-TOKEN present but empty/unreadable → **OFF immediately** (do not fall back to hostname); MACHINE-TOKEN absent → `hostname -f`. **Single equality** comparison of ACTIVE's trimmed content against this resolved token; any mismatch → **OFF**.
 5. Else → **ACTIVE**.
 
 Any branch to OFF: the orchestrator emits **at most one** `"inactive — exiting"` log line and exits 0. **Zero** other activity (no probe, no API call, no model). "Off" = ZERO activity, not "no work performed."
@@ -187,7 +208,7 @@ marker=hos-orchestrator
 4. **Stale (dead OR command-mismatch, and not within timeout):** `rm -rf "$HOS_LOCK_DIR"`; retry acquire **once** from the jitter step; log `stale-lock-reclaim`.
 5. **Alive AND command-match AND not hung:** legitimate holder → **abort this run**, wait for next cron window; log `lock-contention`.
 
-**ADR-3 `orchestrator_lock_timeout` note (binding):** the hang timeout for the *machine lock* is a **separate, short** `orchestrator_lock_timeout` (default **20m**) — NOT `max_task_runtime` (4h). The machine lock only covers probe→dispatch(spawn), which should complete in minutes; a 20m hold is already anomalous. (The PRD R7.5.5 text says `max_task_runtime`; ADR-3 supersedes it here because the lock is released at spawn, not held for the 4h task. This is the one place the design deviates from the PRD prose, on the architect's binding ruling — recorded as a `startup-artifact-gap` candidate in §16.)
+**ADR-3 `orchestrator_lock_timeout` note (binding):** the hang timeout for the *machine lock* is a **separate, short** `orchestrator_lock_timeout` (default **20m**) — NOT `max_task_runtime` (4h). The machine lock only covers probe→dispatch(spawn), which should complete in minutes; a 20m hold is already anomalous. (PRD R7.5.5 has been **reconciled** to ADR-3 — reconcile commit `3d0f249` — and now keys the hang timeout on `orchestrator_lock_timeout`, so the PRD prose and ADR-3 agree; no live divergence remains. The earlier PRD-prose-vs-ADR `startup-artifact-gap` is **closed** by that reconcile. Coders must follow the 20m `orchestrator_lock_timeout` for the lock and the 4h `max_task_runtime` for per-task workers.)
 
 ### Algorithm — cleanup (R7.5.6)
 `trap 'rm -rf "$HOS_LOCK_DIR"' EXIT TERM INT`. `/tmp` clearance on reboot is the backstop. The trap removes the lock at **spawn-completion exit** of the orchestrator (ADR-3: the orchestrator process exits after dispatch; per-task workers are separate processes spawned detached — they do NOT hold the lock).
@@ -234,6 +255,10 @@ Honor `X-RateLimit-*` (R11.3): on remaining-near-zero, exponential backoff, neve
 ### O15 resolution — per-customer API-call budget default
 The REST core bucket is **5000 req/hr per machine-account**, shared across all customers on that account. Budget so the busiest plausible fleet stays under it with headroom:
 - Per probe cycle, a repo costs ≈ 1 list call + (1 events call per coordination item). Default **`per_customer_api_budget = 300 calls / rolling 1h window`**. With a 15m floor that is ≤4 cycles/hr × ~75 calls headroom per cycle — comfortably under 5000/hr even at ~15 active customers. Calibration constant; tune per-customer. Quota-aware round-robin skips a customer that hits 300 until its window resets.
+
+> **SPEC-TODO: add `per_customer_api_budget` to §8.3 and §13 YAML.** `per_customer_api_budget` (default **300 calls / rolling 1h window**, per customer) is a first-class configurable knob (PRD R12.1 calls the per-customer API-call budget first-class; PRD O15) but has **no row in the PRD §8.3 defaults table and no key in the §13 YAML block**. The spec editor should add: a §8.3 row (`per-customer-api-budget` | `300 calls / 1h` | per-customer GitHub API-call budget; quota-aware round-robin skips a customer that hits it until the window resets) and a §13 YAML key — most naturally under `thresholds:` as `per-customer-api-budget: 300` (window pinned at 1h), or as a sibling of `cadence:`. **Documentation gap only — no behavior change here.** (Do NOT edit the PROTOCOL from this design task; this flag is for the spec editor / architect routing.)
+
+> **SPEC-TODO: add `pin_max` to §8.3 and §13 YAML.** `pin_max` (default **72h**) is the configurable maximum duration of an unanswered-coordination cadence pin (used in §5 step 6 / Priority pin, and PRD R10.4 which states a "default 72h"). It is a named knob with a concrete default but has **no row in the PRD §8.3 defaults table and no key in the §13 YAML block**. The spec editor should add: a §8.3 row (`pin_max` | `72h` | max duration of an unanswered-coordination cadence pin before it deprioritizes to `needs-human` and releases, R10.4) and a §13 YAML key — most naturally alongside `cadence:` (e.g. `cadence: { floor: 15m, ceiling: 24h, pin-max: 72h }`). **Documentation gap only — no behavior change here.** (Do NOT edit the PROTOCOL from this design task.)
 
 ### Requirements implemented
 R10.1–R10.5, R10.1b (REST/GraphQL not Search; cold-reconcile carve-out), R11.2 (window pre-check), R11.3, R12.1, R12.2, R12.3, R4.1.4 (label-actor verify on probe), O15 (budget default).
@@ -308,7 +333,7 @@ plus the claim body carries `instance-id: <uuid>` and `claimed-at: <ISO>`.
 **Heartbeat envelope** (`type: heartbeat`) re-stamps `updated-at` every ≤ `heartbeat_interval`.
 
 ### Algorithm — claim-then-verify (R7.1)
-1. **Idempotency precheck first (R6.1 — correlation.py):** does `hos/auto/<cid>` branch / draft-PR / answer envelope already exist? (REST-by-id, never Search.) If yes → resume/skip, do not re-claim fresh.
+1. **Idempotency precheck first (R6.1 — correlation.py):** does `hos/auto/<cid>` branch / draft-PR / answer envelope already exist? (REST-by-id, never Search.) If yes → resume/skip, do not re-claim fresh. `correlation.py` MUST construct `issue_url` as `https://github.com/{owner}/{repo}/issues/{n}` with **owner and repo lowercased** (not from `html_url` directly) — the same owner/repo extraction as MF-4. See R6.1 canonical-URL binding.
 2. Mint instance-id (once per orchestrator). Post `type: claim` envelope + `hos-claimed` + self-assign.
 3. **Jittered delay** (default 30–90s).
 4. **Re-read the issue by id (REST, NOT search)** — read-your-writes invariant. Collect all claim envelopes.
@@ -419,6 +444,21 @@ estimate = BASE[class]
 estimate = max(estimate, historical_cost_median * 1.25)   # err high; floor at 1.25× historical
 ```
 `BASE[class]`: `bug=40_000`, `communication=8_000`, `spec-gap=15_000`, default `30_000`. Constants live in config (`thresholds.estimation`), are not load-bearing for correctness (the gate just needs to be roughly right and err high), and are calibrated against the ledger over time. **This is the authoritative estimation contract for test purposes** (a unit test feeds fixed signals → expects a deterministic estimate).
+
+> **SPEC-TODO: add the `estimation:` constants block to §13 YAML (and a §8.3 note).** The estimation constants are declared configurable here (`thresholds.estimation`) but the whole block is **absent from the PRD §13 YAML and unmentioned in §8.3**. The spec editor should add an `estimation:` block under `thresholds:` in the §13 YAML carrying the v1 defaults so the configurable surface is complete and discoverable:
+> ```yaml
+> thresholds:
+>   # ...existing keys...
+>   estimation:
+>     base: { bug: 40000, communication: 8000, spec-gap: 15000, default: 30000 }
+>     per-1k-body-chars: 6
+>     per-changed-file: 1500
+>     per-diff-line: 8
+>     per-blast-radius-unit: 1000
+>     historical-floor-multiplier: 1.25   # estimate = max(estimate, historical_median × 1.25)
+>     historical-window-k: 20              # median over the last K completed same-class tasks
+> ```
+> A §8.3 note should record that these are tunable calibration constants (not correctness-load-bearing; err-high by design, R8.1/R8.6). **Documentation gap only — no behavior change; the formula and defaults are already authoritative in this §9.** (Do NOT edit the PROTOCOL from this design task; flag for the spec editor / architect routing.)
 
 ### Algorithm — gates
 - **Per-task estimate gate (R8.1):** compute estimate **before** any GATED work. If `estimate > per_task_threshold` (150k) → create a `type: question` permission request (§8.2 contract) + label `hos-budget-gated`, **block that task** until approved.
@@ -538,7 +578,7 @@ A finding is filed **only if its fingerprint is absent** (R3.2.1). On file, reco
 scripts/automation/suppression-baseline.jsonl   # HOS-shipped (framework), known framework-level FPs
 PROJECT/suppression-overlay.jsonl               # per-repo accepted-risk decisions (committed, CODEOWNERS-gated*)
 ```
-Effective suppression set = baseline ∪ overlay. (*The overlay sits in PROJECT; a suppression that rules on governance config is itself a governance act — placement near `PROJECT/hos-coordination.yaml` keeps it auditable. Suppression entries are NOT on the auto-merge path; they require the §3.2.5 human ruling for restricted classes.) Suppression entry:
+Effective suppression set = baseline ∪ overlay. (*The overlay sits in PROJECT; a suppression that rules on governance config is itself a governance act — placement near `PROJECT/hos-coordination.yaml` keeps it auditable. Suppression entries are NOT on the auto-merge path; they require the R3.2.5 human ruling for restricted classes.) Suppression entry:
 ```
 { "fingerprint": "...", "files":[...], "finding_class":"...",
   "approver": "<login>", "rationale": "<text>", "approved_at": "<ISO>",
@@ -547,7 +587,7 @@ Effective suppression set = baseline ∪ overlay. (*The overlay sits in PROJECT;
 Suppression is **distinct from `scanner-fp`** (which fixes the heuristic) and from `noise` — it is an accountable accepted-risk record (R3.2.5).
 
 ### Algorithm
-- **Cadence (R3.2.2):** `self_review_cadence` default weekly, independent of probe cadence; **values < 24h are fatal at config-load**. Budget-gated like all GATED work (R8.7).
+- **Cadence (R3.2.2):** `self_review_cadence` (prose shorthand; canonical in-memory accessor `config.self_review.cadence` per the §2 normalization note — the §13 YAML key is `self-review.cadence`) default weekly, independent of probe cadence; **values < 24h are fatal at config-load** (enforced in §2 step 6 against `config.self_review.cadence`). Budget-gated like all GATED work (R8.7).
 - **Run:** invoke the existing `scripts/framework/validate_self.sh` (optionally cross-vendor). For each finding: compute fingerprint; if in effective suppression set → skip; if fingerprint in dedup ledger → skip; else **file an issue** (envelope, severity P0–P3 per R5.3.1, `hos-coordination` label), record `filed:#N`. Filed findings re-enter normal triage (R3.2.3 — no privileged fast path; reproducing-test/evidence rule R3.1.1 still applies).
 - **Dispositions (R3.2.5):** each finding → exactly one of fix / won't-fix+suppress / escalate. A won't-fix writes a scoped suppression entry (above) so the validator/self-review stops re-reporting. **Won't-fix on security / privacy / license is human-only** (O10 floor) — the loop suppresses only classes it is permitted to rule on, escalates the rest.
 - **Governance findings are human-to-close (R3.2.4):** the loop files but never auto-closes a filed governance finding when it stops reproducing.
@@ -581,14 +621,14 @@ First action on any found work; fails toward the human. Classify (confidence flo
   | Severity | tier ≤ MEDIUM | tier HIGH+ |
   |---|---|---|
   | P0/P1 | **ACT** | **ESCALATE** |
-  | P2/P3 | **ACT** if blast-radius within per-run caps (§11.2: 5 PRs/10 issues/25 files) | **ESCALATE** |
+  | P2/P3 | **ACT** if blast-radius within per-run caps (R11.2: 5 PRs/10 issues/25 files) | **ESCALATE** |
 
   **Hard overrides (always ESCALATE/HUMAN):** any security-relevance flag (R9.1.2); any protected-surface match (R9.1.3); any triage class other than `bug` or `communication`.
 - **Rejection → human (R5.3.4):** a benefit≫risk rejection is NOT silently dropped — route to human (`needs-human`) with the full §8.2 contract incl. the benefit-vs-risk analysis + the loop's recommendation to NOT proceed.
 
 ### Codeowner authorization tag (R5.4 · A7 · O19)
 `hos-autowork-authorized` (label) — an optional CODEOWNER pre-authorization that **expands the triage-class scope for that one item** (e.g. lets a queued feature proceed to claim+fix). It does **NOT** bypass any structural gate (R5.4.3: merge-authority matrix, protected-surface, embargo, benefit≫risk, budget all still apply).
-- **Label-actor verification (R5.4.2 — reuse §4.1.4 pattern):** read the `labeled` event actor (`GET .../issues/{n}/events`) for `hos-autowork-authorized`; verify actor ∈ CODEOWNERS (O19 below). A non-codeowner application is **ignored and logged**. Re-verify each cycle (no caching of "label present").
+- **Label-actor verification (R5.4.2 — reuse R4.1.4 pattern):** read the `labeled` event actor (`GET .../issues/{n}/events`) for `hos-autowork-authorized`; verify actor ∈ CODEOWNERS (O19 below). A non-codeowner application is **ignored and logged**. Re-verify each cycle (no caching of "label present").
 
 ### O19 resolution — CODEOWNERS lookup mechanism (technical-design's call)
 `codeowners.py`: **parse the repo's `.github/CODEOWNERS` file** (do NOT rely on a GitHub CODEOWNERS API endpoint — none returns "is X a codeowner for these files" cheaply; parsing is deterministic and free).
@@ -602,7 +642,8 @@ First action on any found work; fails toward the human. Classify (confidence flo
 
 ### O20 resolution — label names + T2 provisioning (technical-design's call)
 - **`hos-autowork-authorized`** confirmed as the v1 label name — fits the `hos-*` convention (R6.2), no conflict with the existing set. Added to the canonical label set.
-- **Full canonical `hos-*` label set provisioned at T2 onboarding:** `hos-coordination`, `hos-claimed`, `hos-in-progress`, `hos-budget-gated`, `hos-embargo`, `hos-halt` (label form is **NOT** the kill switch — the kill switch is the *file*; this label, if used at all, is only a visual marker — prefer not creating it to avoid confusion; **decision: do NOT create an `hos-halt` label** since R8.4 mandates a file, to avoid the false impression that the label is the switch), `hos-autowork-authorized`, `suppression-expired`. **Reuse (do not recreate):** `needs-ai`, `needs-human` (existing hyphen-case repo labels). T2 creates the `hos-*` set per repo on opt-in via `gh label create`.
+- **Full canonical `hos-*` label set provisioned at T2 onboarding (the exact `gh label create` list):** `hos-coordination`, `hos-claimed`, `hos-in-progress`, `hos-budget-gated`, `hos-embargo`, `hos-autowork-authorized`, `suppression-expired`. This is the complete, authoritative provisioning set — matches the PRD R6.2 canonical label set. **Reuse (do not recreate):** `needs-ai`, `needs-human` (existing hyphen-case repo labels). T2 creates the `hos-*` set per repo on opt-in via `gh label create`.
+- **`hos-halt` is NOT in the provisioned set — it is a FILE, never a label (R8.4, binding).** T2 MUST NOT run `gh label create hos-halt`. The kill switch is a committed file on the protected surface (§11 hos-halt contract); creating an `hos-halt` *label* would create the false impression that the label is the switch and is explicitly forbidden. There is no visual-marker label exception — do not create it in any form.
 
 ### Requirements implemented
 R5.1, R5.2.1, R5.2.2, R5.3.1–R5.3.4, R5.4.1–R5.4.4, R3.1.1 (verification artifact by class), O19 (CODEOWNERS lookup + edge cases), O20 (label names + T2).
@@ -664,7 +705,7 @@ Ordered so each task's dependencies are already built. Foundation first (correct
 
 1. **The cid is the only correctness mechanism — treat it as load-bearing (ADR-2).** Do NOT let any claim/lock/activation logic become a precondition for non-duplication. If you find yourself reasoning "the lock prevents two branches," stop — two branches with the *same cid* is the same branch, and two branches with *different cids for the same issue* is the bug (and means the cid derivation was non-deterministic). Unit-test the cid for determinism across HTTPS/SSH-remote and instance restarts first.
 2. **`flock` is unavailable (bash 3.2) — `mkdir` is the mutex.** Never check-then-create the lock dir (TOCTOU). The atomicity is in `mkdir` itself.
-3. **`orchestrator_lock_timeout (20m) ≠ max_task_runtime (4h)` (ADR-3, deviation from PRD prose).** The PRD R7.5.5 text says the machine-lock hang timeout is `max_task_runtime`. ADR-3 supersedes: because the lock is released at **spawn** (not held for the task's runtime), a 4h machine-lock hold would itself be the bug. Use a separate 20m timeout for the lock. **This is a `startup-artifact-gap` candidate** — the PRD prose and the ADR diverge; recorded here per the startup-gap-recovery obligation. Since no code exists yet, no prior sign-off is invalidated; the design simply adopts the ADR ruling. Flag to architect if the PRD prose is later treated as governing.
+3. **`orchestrator_lock_timeout (20m) ≠ max_task_runtime (4h)` (ADR-3).** The machine-lock hang timeout is a separate, short 20m `orchestrator_lock_timeout` — NOT the 4h `max_task_runtime`. Because the lock is released at **spawn** (not held for the task's runtime), a 4h machine-lock hold would itself be the bug. PRD R7.5.5 was **reconciled** to ADR-3 (reconcile commit `3d0f249`) and now keys the hang timeout on `orchestrator_lock_timeout`, so the PRD and ADR agree — the earlier PRD-prose-vs-ADR `startup-artifact-gap` is **closed**, no live divergence remains. Since no code exists yet, no prior sign-off is invalidated. Use 20m for the lock and 4h for per-task workers.
 4. **Read-your-writes: never call Search on a correctness path.** Search is eventually-consistent and rate-limited (~30/min). Claim re-verify, idempotency precheck, cost summation, blast-radius, "branch exists?" — ALL must be REST-by-id. Search is cold-reconcile only. A coder who reaches for `gh search` on the hot path has introduced both a correctness bug and a scaling cliff.
 5. **`ps` match must be alive-AND-command-match, never bare `kill -0` (O18).** A recycled PID would wedge the machine. The orchestrator must put the `hos-orchestrator` marker in its own argv so `ps -o command=` can see it; if you change how the cron invokes the script, keep that marker.
 6. **Allowlist + label-actor checks use the GitHub-API-verified actor, never the envelope/self-reported field.** `from:` is routing only and is checked *after* the author allowlist passes. A label's authority comes from its `labeled` *event actor*, re-verified each cycle (no caching) — the body/label presence alone proves nothing.
@@ -691,6 +732,9 @@ Ordered so each task's dependencies are already built. Foundation first (correct
 | O20 (label names + T2) | **Resolved** — §13: `hos-autowork-authorized` confirmed; full `hos-*` set + T2 provisioning; no `hos-halt` label. |
 | **O10 (won't-fix human-only classes)** | **NOT decided — flagged for human.** §12: mechanism built (default `security/privacy/license`); `HUMAN-DECISION-REQUIRED: O10`. |
 | #152 follow-ups (tier-vs-ceiling check, `provision_agent_account.sh`) | **Out of scope** (separate track, AGENT-IDENTITY §10b); declared as `DEP[#152-followup]` in §10. |
+| **SPEC-TODO (spec editor): `per_customer_api_budget` missing from §8.3 + §13 YAML** | **Flagged in §5** — add a §8.3 row + §13 YAML key (default 300 calls / 1h / customer). Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |
+| **SPEC-TODO (spec editor): `pin_max` missing from §8.3 + §13 YAML** | **Flagged in §5** — add a §8.3 row + §13 YAML key (default 72h). Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |
+| **SPEC-TODO (spec editor): `estimation:` constants block missing from §13 YAML** | **Flagged in §9** — add the `thresholds.estimation` block (BASE 40k/8k/15k/30k, multipliers, 1.25 floor, K=20) to §13 YAML + a §8.3 note. Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |
 
 ---
 
