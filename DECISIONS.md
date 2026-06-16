@@ -386,3 +386,31 @@ v0.3.0 shipped (tag `v0.3.0`, release published) integrating the three escalated
 Sibling to D46, different mechanism. `hos_install.sh` ran several `regions.py` calls as `… 2>/dev/null` and then **silently fell back** on failure (#276): a crash left a region unwrapped, used a raw `cp` as the composed "disk" image, or yielded empty `base-shas={}` — and the install still stamped success. The traceback was *eaten by `2>/dev/null`*, which is why a real consumer's "python crash in the terminal" was unattributable. Where D46 was a guard that didn't halt, this is a failure that was never surfaced at all — the same fail-open family from the opposite direction (D46 swallowed the *control*, this swallowed the *signal*).
 
 **Decision:** regions.py calls with no legitimate non-zero exit (`migrate` on a grep-confirmed-flat file; `base-shas`) run through `_regions_strict`, which captures stderr and on **any** non-zero **surfaces the traceback and `exit 1` in Phase A — before Phase B writes any agent, manifest, or version stamp.** A crash now fails closed (nothing written) instead of degrading silently. The two calls that already failed closed via the decide-all-then-act gate (`inject-pack`, `plan`) now surface their stderr too — a fail-closed abort must never be blind. The triage line (from the review): **`exit` where an irreversible/integrity-degrading action would otherwise follow; the deferred-error counter only where the damage is already contained.** Bundled with #273 (the `--pr` commit-swallow) under one theme: *the installer never reports success over a swallowed failure.* Post-Phase-B manifest-assembly swallows (deferred-impact, same class) filed as #277 for a follow-up.
+
+### D48. The version stamp is the commit point — write it last (v0.3.5, #277, 2026-06-15)
+
+Completing D47's theme into the manifest path: the two post-Phase-B manifest-assembly calls now fail closed (surface stderr + `exit 1`) on a crash, distinguished from a genuine *regions.py-absent* degraded-but-warned fallback. But the adversarial review of the first cut caught a sharper, structural bug: **`.hos-release` (the version stamp) was written several steps *before* the manifest block**, so a manifest crash left a new version stamped over a stale/missing `.hos-manifest` — exactly the integrity gap #277 targets, the D41 "looks like it ran" failure mode at the install level.
+
+**Decision:** `.hos-release` is written **last**, only after the agents AND the manifest are on disk. The version marker is the *commit point* of the install — the one artifact that says "this install is complete and at version X" — so it must be the final write, and any earlier failure (agents, manifest) must precede it. Generalizes beyond the installer: **whatever artifact downstream consumers treat as "this completed at version X" is the commit point and must be written last, after everything it attests to.** A commit point that outruns the work it attests to is a lie the next reader believes. (Caught only because the fix was adversarially reviewed — the first cut's own error message falsely claimed `.hos-release` was not stamped.)
+
+### D49 — 2026-06-16: Consolidate to two named runtime agents with interactive/autonomous modes (#305, #306)
+
+**Problem.** No named agent served as the human entry point. The cron invoked shell scripts with no governing spec. Interactive and autonomous behavior had no shared specification — they were described in different places with no relationship stated.
+
+**Decision.** Two agents: `worker.md` (human entry point + autonomous build agent, `hos_orchestrator.sh --class worker`) and `overseer.md` (oversight console + autonomous review/merge agent, `hos_orchestrator.sh --class overseer`). Each has explicit INTERACTIVE and AUTONOMOUS behavioral sections in one spec file. Mode is determined by invocation context, not by which file was loaded.
+
+**Rationale.** Interactive and autonomous modes share the same routing logic, tool set, and artifact-naming contracts. What changes is: who initiates work, which gates apply instead of human approval, and which credentials are active. Splitting into two files requires maintaining two specs for one role and creates drift risk — a routing change must be applied to both files and divergence is invisible until something breaks. One spec with explicit mode sections is easier to validate and documents the relationship clearly.
+
+**Consequences.** `worker` is the correct agent to invoke for any new session. `overseer` answers PR/risk questions and is the autonomous review agent. The specialist agents (coder, reviewers, etc.) remain; worker and overseer are the orchestration layer above them, not replacements.
+
+### D50 — 2026-06-16: PROJECT carve-out clause replaces the unconditional "PROJECT governs" footer (#291)
+
+**Problem.** Every CORE agent file ended with: *"Where the PROJECT section below conflicts with anything above, PROJECT governs."* That unconditional clause allows a consumer's PROJECT section to override any CORE behavior, including human approval gates, risk-tier thresholds, reviewer independence requirements, loop-exit caps, and escalation terminal points — exactly the safety-critical behaviors the oversight system is designed to enforce.
+
+**Decision (architect-approved hybrid A+B).** Replace the unconditional clause with an enumerated carve-out that:
+- Permits PROJECT to extend CORE with app-specific context, routing hints, and *stricter* checks.
+- Permanently protects five named safety classes from PROJECT override: (1) human approval gates, (2) risk-tier thresholds and required sign-offs, (3) reviewer independence and cross-vendor requirements, (4) loop-exit conditions and round caps, (5) escalation terminal points.
+- States that PROJECT may only ever make these stricter, never looser.
+- Adds mechanical enforcement: `check_agents_static.sh` section 6 fails any CORE file that lacks the carve-out text.
+
+**Status:** Implemented 2026-06-16 — carve-out clause applied to all 18 CORE agent files; `check_agents_static.sh` section 6 enforcement added.

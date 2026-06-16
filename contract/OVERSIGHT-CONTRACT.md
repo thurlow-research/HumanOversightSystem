@@ -179,6 +179,8 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `reliability` | Resilience review — timeouts, retry, graceful degradation (optional — projects with external connections) |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
+**Documentation currency (required for any step that modifies documented behavior):** The relevant spec, design doc, AGENTS.md entry, or METHODOLOGY.md section must reflect what was built before the step is signed off. A step whose observable behavior differs from its documentation is not done — it is broken. "I'll update the docs later" is not a valid sign-off state.
+
 **Gate suspension (brownfield remediation):**
 A project may temporarily suspend specific gates/roles during brownfield onboarding by creating `contract/gate-suspension.md` (see `contract/gate-suspension.template.md`). Suspended gates exit 0 instead of blocking; suspended sign-off roles are treated as WAIVED by the oversight-evaluator. The suspension file:
 - Must be created by a human (agents may not create or modify it)
@@ -316,6 +318,7 @@ Both requirements apply to all projects that install this framework.
 | `na-invalidated` | An independent re-derivation rejected a `Status: N/A` waiver because the role's domain was in fact changed | oversight-evaluator | `role`, `step`, `evidence` |
 | `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
+| `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp` |
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 
@@ -339,6 +342,8 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the step already cleared a human gate or the change was already classified `structural` with authorization.
 
 Conditions 9–10 are **anti-gaming** checks: they re-derive — independently of the actor that produced the change — the two determinations that can loosen oversight (an N/A waiver, an `additive`/`clarifying` self-label). They never run when upstream asked for *more* review; spending verification cost only in the loosening direction is itself the ratchet.
+
+**Pre-merge bounce (overseer):** The overseer re-checks conditions 1–3 and 7b before applying the merge-authority matrix. Failure returns the PR to the worker as a `pr-bounced` event; the per-cid failure counter is untouched. The worker's pre-PR gate (REQ-W-15) checks the same conditions one step earlier as the primary enforcement point; the overseer bounce is the backstop.
 
 **MEDIUM fail-closed (second review):** a MEDIUM+ step cannot proceed without an actual cross-vendor judgment. `run_second_review.sh` exits non-zero in every case where the review did not produce one:
 - a fired vendor is **unavailable at pre-check** (agy at MEDIUM+, or both vendors at HIGH+) — the original guard;

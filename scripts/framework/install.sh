@@ -93,26 +93,7 @@ if [[ -n "$SOURCE_REPO" ]]; then
         fi
     done
     echo "  $AGENT_COUNT agent file(s) copied"
-
-    # Substitute placeholders in newly copied agent files
-    # Uses perl for cross-platform in-place substitution (macOS + Linux)
-    SUBST_COUNT=0
-    _spec_file="${NEW_SPEC_FILE:-{SPEC_FILE}}"
-    _design_pack_dir="${NEW_DESIGN_PACK_DIR:-{DESIGN_PACK_DIR}}"
-    _project_name="${NEW_PROJECT_NAME:-{PROJECT_NAME}}"
-    for agent in "$TARGET_REPO"/.claude/agents/*.md; do
-        [[ -f "$agent" ]] || continue
-        # Only process files that contain at least one placeholder
-        if grep -qE '\{SPEC_FILE\}|\{DESIGN_PACK_DIR\}|\{PROJECT_NAME\}' "$agent" 2>/dev/null; then
-            perl -i -p \
-                -e "s|\{SPEC_FILE\}|${_spec_file}|g;" \
-                -e "s|\{DESIGN_PACK_DIR\}|${_design_pack_dir}|g;" \
-                -e "s|\{PROJECT_NAME\}|${_project_name}|g;" \
-                "$agent"
-            SUBST_COUNT=$(( SUBST_COUNT + 1 ))
-        fi
-    done
-    [[ $SUBST_COUNT -gt 0 ]] && echo "  Substituted placeholders in $SUBST_COUNT agent file(s)"
+    # Placeholder substitution runs after Step 4, once NEW_* values are known.
 
     # Copy framework scripts — always update (these are framework infrastructure)
     for script in \
@@ -265,6 +246,34 @@ NEW_EXTRA_FILES=$(prompt_value \
     "")
 
 echo ""
+
+# ── Step 4b: Substitute placeholders in copied agent files ───────────────────
+# Runs here (after Step 4) so all NEW_* values are populated from either the
+# config file, env vars, or interactive prompts.  Substitution in Step 2 was
+# incorrect because NEW_* variables were not yet set at that point.
+if [[ -n "$SOURCE_REPO" ]]; then
+    SUBST_COUNT=0
+    # Use the collected values; fall back to the raw token only when the user
+    # genuinely left the field blank (so the file stays obviously unresolved
+    # rather than being blanked silently).
+    _spec_file="${NEW_SPEC_FILE:-{SPEC_FILE}}"
+    _design_pack_dir="${NEW_DESIGN_PACK_DIR:-{DESIGN_PACK_DIR}}"
+    _project_name="${NEW_PROJECT_NAME:-{PROJECT_NAME}}"
+    for agent in "$TARGET_REPO"/.claude/agents/*.md; do
+        [[ -f "$agent" ]] || continue
+        # Only process files that contain at least one placeholder
+        if grep -qE '\{SPEC_FILE\}|\{DESIGN_PACK_DIR\}|\{PROJECT_NAME\}' "$agent" 2>/dev/null; then
+            perl -i -p \
+                -e "s|\{SPEC_FILE\}|${_spec_file}|g;" \
+                -e "s|\{DESIGN_PACK_DIR\}|${_design_pack_dir}|g;" \
+                -e "s|\{PROJECT_NAME\}|${_project_name}|g;" \
+                "$agent"
+            SUBST_COUNT=$(( SUBST_COUNT + 1 ))
+        fi
+    done
+    [[ $SUBST_COUNT -gt 0 ]] && echo "  Substituted placeholders in $SUBST_COUNT agent file(s)"
+    echo ""
+fi
 
 # ── Step 5: Write config.sh ──────────────────────────────────────────────────
 echo "── Step 5: Writing scripts/framework/config.sh"

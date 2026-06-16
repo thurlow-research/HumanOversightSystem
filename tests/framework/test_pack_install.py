@@ -21,6 +21,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import regions
 from regions import parse, region_sha
 
@@ -95,6 +96,8 @@ def _assert_pack_body(target: Path, pack_name: str) -> bytes:
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_pack_mutual_exclusion(tmp_path):
     """--pack and --no-pack together → usage error exit 1 before any work."""
     target = _git_init_target(tmp_path)
@@ -109,6 +112,8 @@ def test_install_pack_mutual_exclusion(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_unknown_pack_hard_error(tmp_path):
     """An unknown pack name → non-zero exit; message names the pack; agents dir empty."""
     target = _git_init_target(tmp_path)
@@ -128,6 +133,8 @@ def test_install_unknown_pack_hard_error(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_no_pack_interactive_errors(tmp_path):
     """No --pack, no --no-pack → non-zero exit; message names --pack/--no-pack."""
     target = _git_init_target(tmp_path)
@@ -138,6 +145,8 @@ def test_install_no_pack_interactive_errors(tmp_path):
     assert "--pack" in combined or "--no-pack" in combined
 
 
+
+@pytest.mark.slow
 def test_install_no_pack_core_only_warn(tmp_path):
     """--no-pack → exit 0; PACK_AGENT gets CORE+PROJECT only; bare-core WARN."""
     target = _git_init_target(tmp_path)
@@ -160,6 +169,8 @@ def test_install_no_pack_core_only_warn(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_with_pack_composes_three_regions(tmp_path):
     """--pack testpack → PACK_AGENT has CORE+PACK:testpack+PROJECT."""
     target = _git_init_target(tmp_path)
@@ -173,6 +184,8 @@ def test_install_with_pack_composes_three_regions(tmp_path):
     assert ids == ["CORE", "PACK:testpack", "PROJECT"], f"unexpected ids: {ids}"
 
 
+
+@pytest.mark.slow
 def test_install_pack_manifest_rows(tmp_path):
     """--pack testpack → .hos-manifest has PACK:testpack row with correct sha."""
     target = _git_init_target(tmp_path)
@@ -197,6 +210,8 @@ def test_install_pack_manifest_rows(tmp_path):
     ), f"manifest sha mismatch: expected {expected_sha!r} in {pack_rows[0]!r}"
 
 
+
+@pytest.mark.slow
 def test_install_pack_records_config(tmp_path):
     """--pack testpack → scripts/framework/config.sh contains PACK=\"testpack\"."""
     target = _git_init_target(tmp_path)
@@ -213,6 +228,8 @@ def test_install_pack_records_config(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_multipack_warns(tmp_path):
     """--pack testpack --pack testpack2 → multi-pack WARN fires; both packs listed."""
     target = _git_init_target(tmp_path)
@@ -238,6 +255,8 @@ def test_install_multipack_warns(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_upgrade_pack_version_bump_refresh(tmp_path):
     """Install testpack, bump the body in a tmp copy, re-install → PACK REFRESHed."""
     target = _git_init_target(tmp_path)
@@ -264,6 +283,8 @@ def test_upgrade_pack_version_bump_refresh(tmp_path):
         real_body.write_bytes(backup)
 
 
+
+@pytest.mark.slow
 def test_upgrade_consumer_edited_pack_hardstop(tmp_path):
     """Consumer-edited PACK region + bumped body → HARDSTOP exit 4, nothing written."""
     target = _git_init_target(tmp_path)
@@ -306,6 +327,8 @@ def test_upgrade_consumer_edited_pack_hardstop(tmp_path):
         real_body.write_bytes(backup)
 
 
+
+@pytest.mark.slow
 def test_pack_switch_drops_old_region(tmp_path):
     """Install testpack (unedited), switch to testpack2 → PACK:testpack dropped."""
     target = _git_init_target(tmp_path)
@@ -344,6 +367,8 @@ def test_pack_switch_drops_old_region(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_no_pack_over_recorded_pack_drops_region(tmp_path):
     """First install --pack testpack (records PACK= + writes PACK region), then
     re-install --no-pack: assert --no-pack WINS over the recorded PACK=django,
@@ -400,6 +425,8 @@ def test_install_no_pack_over_recorded_pack_drops_region(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+
+@pytest.mark.slow
 def test_install_inject_failure_writes_nothing(tmp_path):
     """A malformed pack body (column-0 literal HOS marker) → inject-pack fails →
     the install exits non-zero AND no agent file is written AND .hos-manifest /

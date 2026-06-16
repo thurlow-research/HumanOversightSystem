@@ -35,11 +35,9 @@ The minimum set of agents required for the pipeline to function:
 ```bash
 REQUIRED="pm-agent architect technical-design ux-designer coder code-reviewer
           security-reviewer privacy-reviewer ui-reviewer a11y-reviewer
-          infra-reviewer unit-test system-test deploy-verify
+          infra-reviewer unit-test system-test
           risk-assessor risk-historian dep-mapper spec-red-team prompt-fidelity
-          oversight-evaluator oversight-orchestrator
-          framework-validator framework-setup-validator doc-validator
-          spec-compliance-validator post-change-sweep"
+          oversight-evaluator oversight-orchestrator post-change-sweep"
 for a in $REQUIRED; do
     [[ -f ".claude/agents/${a}.md" ]] \
         && echo "OK: $a" \
@@ -52,6 +50,17 @@ for a in $OPTIONAL; do
     [[ -f ".claude/agents/${a}.md" ]] \
         && echo "OK (optional): $a" \
         || echo "INFO (optional): .claude/agents/${a}.md not present — add if project has background jobs, external integrations, or multi-service architecture"
+done
+
+# Framework-dev validators — shipped by the hos-dev-pack, NOT the base consumer
+# install (they validate HOS itself). Absent in a normal consumer repo, so their
+# absence is INFO, never MISSING — requiring them produced a false NOT READY on
+# every correct consumer install (#259).
+DEV_PACK="framework-validator framework-setup-validator doc-validator spec-compliance-validator"
+for a in $DEV_PACK; do
+    [[ -f ".claude/agents/${a}.md" ]] \
+        && echo "OK (dev-pack): $a" \
+        || echo "INFO (dev-pack): .claude/agents/${a}.md not present — only the hos-dev-pack ships these; normal for a consumer install"
 done
 ```
 

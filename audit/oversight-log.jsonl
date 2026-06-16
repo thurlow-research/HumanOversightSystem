@@ -1,0 +1,13 @@
+{"event":"step-head","step":"A","head_sha":"be9c9e7363bc95b15d10bac160d551257b373d2d","timestamp":"2026-06-16T18:23:21Z"}
+{"event":"suspension-census","active_suspensions":0,"suspended_gates":[],"timestamp":"2026-06-16T18:23:22Z"}
+{"event":"structural-override","signal":"new-observability-instrumentation","step":"A","file":"research/findings/governance-config-currency-gap.md","covered":false,"timestamp":"2026-06-16T18:23:27Z"}
+{"event":"structural-override","signal":"new-observability-instrumentation","step":"A","file":"research/findings/two-key-enable-for-autonomous-systems.md","covered":false,"timestamp":"2026-06-16T18:23:27Z"}
+{"event":"structural-override","signal":"new-observability-instrumentation","step":"A","file":"research/sessions/2026-06-16-v040-unattended-worker.md","covered":false,"timestamp":"2026-06-16T18:23:27Z"}
+{"event":"step-head","step":"C","head_sha":"97f7bfe178f7b2c993b23fb8b484fbc476500327","timestamp":"2026-06-16T18:23:54Z"}
+{"event":"suspension-census","active_suspensions":0,"suspended_gates":[],"timestamp":"2026-06-16T18:23:58Z"}
+{"event":"step-head","step":"D","head_sha":"59f436227577d7088c7c618892c0b1475db4c059","timestamp":"2026-06-16T18:24:06Z"}
+{"event":"suspension-census","active_suspensions":0,"suspended_gates":[],"timestamp":"2026-06-16T18:24:10Z"}
+{"event":"step-head","step":"B","head_sha":"827bcdb9dae10f41c39963c5b28c9c0ee8356ff6","timestamp":"2026-06-16T18:24:47Z"}
+{"event":"suspension-census","active_suspensions":0,"suspended_gates":[],"timestamp":"2026-06-16T18:24:50Z"}
+{"event":"structural-override","signal":"new-external-dependency","step":"B","file":"pyproject.toml","covered":false,"timestamp":"2026-06-16T18:25:34Z"}
+{"event":"na-invalidated","role":"security","step":"B","evidence":"tests/framework/test_pack_install.py matched security domain file rule (*.py); security N/A is not credible","timestamp":"2026-06-16T18:25:34Z"}
