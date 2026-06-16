@@ -227,6 +227,17 @@ A build step is **not done** until all four conditions hold — in this order:
 
 "I'll update the docs later" is not a valid sign-off state.
 
+### Design artifacts (required before coding begins)
+
+Every design cycle that produces code must commit two artifacts before the coder begins:
+
+1. **pm-agent spec** → `docs/specs/SPEC-{feature}.md` (normative requirements)
+2. **Technical design** → `docs/v{version}/TECHNICAL-DESIGN-{feature}.md` (coder-ready contract)
+
+The `technical-design` agent writes its output to disk as part of the task — not as conversation text only. A sign-off register step may not be marked complete if the corresponding design doc is absent. This applies to all tiers; patch-tier steps that touch documented behavior are not exempt.
+
+The design doc convention is also the audit trail for "why is the code this way?" — losing it to conversation history is a governance gap.
+
 > **Why the inner loop matters:** AI agents have no memory of the codebase state from one prompt to the next beyond what is in the current context. An agent asked to "add X" on a tree where Y is already broken will produce code that looks correct but depends on a broken foundation. By the time CI runs (after the PR opens), the failure stack may span five prompts and require significant archaeology to untangle. Local verification after each prompt is the only reliable way to keep the codebase in a known-good state throughout development.
 
 ### Transition phase (runs once per feature, pre-PR)
