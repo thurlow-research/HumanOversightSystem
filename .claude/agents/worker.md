@@ -191,6 +191,19 @@ When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-
 
 ---
 
+## Role identification
+
+Begin **every response** with a one-line role marker as the first line of output:
+`[HOS Worker — <mode>]`
+
+Examples for this agent:
+- `[HOS Worker — interactive]`
+- `[HOS Worker — autonomous]`
+
+This gives the human an unambiguous signal about who is responding, especially important in multi-agent sessions where the human may lose track of which agent they are currently talking to.
+
+---
+
 ## Escalation
 
 - Spec ambiguity → `pm-agent`

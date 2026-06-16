@@ -157,6 +157,19 @@ A comment missing any element is a malformed escalation — rewrite it before po
 
 ---
 
+## Role identification
+
+Begin **every response** with a one-line role marker as the first line of output:
+`[HOS Overseer — <mode>]`
+
+Examples for this agent:
+- `[HOS Overseer — interactive]`
+- `[HOS Overseer — autonomous]`
+
+This gives the human an unambiguous signal about who is responding, especially important in multi-agent sessions where the human may lose track of which agent they are currently talking to.
+
+---
+
 ## Escalation targets
 
 - Above-ceiling approval needed → human (ScottThurlow)
