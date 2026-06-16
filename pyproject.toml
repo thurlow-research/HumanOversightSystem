@@ -15,6 +15,10 @@ extend-ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short -q"
+markers = [
+    "slow: takes >5s, requires real filesystem or subprocess; runs at release only",
+    "integration: hits real external systems (GitHub API, network); runs at release only",
+]
 
 [tool.coverage.run]
 source = ["scripts/oversight/validators", "scripts/oversight/token_tracker"]
