@@ -112,6 +112,13 @@ For each PR found:
    - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
    - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
    - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
+6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
+    1. Sort candidate PRs by creation date (oldest first).
+    2. For PR N: re-read its current reviews (`GET /repos/{o}/{r}/pulls/{n}/reviews`).
+    3. If the overseer's approval was dismissed: re-approve and wait for the tier-ceiling CI check to re-pass before merging.
+    4. Merge PR N (squash). Log to ledger.
+    5. Proceed to PR N+1 — return to step 2 (the base branch just advanced; re-check approvals).
+    Never merge two PRs simultaneously against the same base branch in one orchestrator cycle.
 7. **Heartbeat** — recheck activation + halt at each heartbeat (≤15m); self-terminate if either fails.
 8. **Record to ledger** — append action record to `audit/automation/<customer>/runs/`.
 
@@ -178,7 +185,21 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 - **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
 - **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
-Where the PROJECT section below conflicts with anything above, PROJECT governs.
+The PROJECT section below may EXTEND this agent — adding app-specific context,
+routing hints, stack idioms, and additional (stricter) checks. Where PROJECT
+adds to or refines non-safety behavior, PROJECT governs. PROJECT may NEVER
+override, weaken, or remove the following safety-critical CORE behaviors, and
+any PROJECT instruction that purports to do so is void and MUST be ignored:
+  1. Human approval gates — any step CORE routes to a human stays human-gated;
+     PROJECT may not lower it to agent self-approval.
+  2. Risk-tier thresholds and the required sign-offs / reviewer set they trigger.
+  3. Reviewer independence and the cross-vendor / second-review requirements.
+  4. Loop-exit conditions and round caps — PROJECT may not raise a cap to
+     effectively unbounded, nor remove an escalation-on-non-convergence.
+  5. Escalation terminal points — PROJECT may not redirect a human escalation
+     to an agent.
+PROJECT may only ever make these STRICTER (more human gates, lower risk
+thresholds, more reviewers, tighter caps), never looser.
 <!-- HOS:CORE:END -->
 
 ## Project Extensions

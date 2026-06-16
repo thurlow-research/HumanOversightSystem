@@ -402,3 +402,15 @@ Completing D47's theme into the manifest path: the two post-Phase-B manifest-ass
 **Rationale.** Interactive and autonomous modes share the same routing logic, tool set, and artifact-naming contracts. What changes is: who initiates work, which gates apply instead of human approval, and which credentials are active. Splitting into two files requires maintaining two specs for one role and creates drift risk — a routing change must be applied to both files and divergence is invisible until something breaks. One spec with explicit mode sections is easier to validate and documents the relationship clearly.
 
 **Consequences.** `worker` is the correct agent to invoke for any new session. `overseer` answers PR/risk questions and is the autonomous review agent. The specialist agents (coder, reviewers, etc.) remain; worker and overseer are the orchestration layer above them, not replacements.
+
+### D50 — 2026-06-16: PROJECT carve-out clause replaces the unconditional "PROJECT governs" footer (#291)
+
+**Problem.** Every CORE agent file ended with: *"Where the PROJECT section below conflicts with anything above, PROJECT governs."* That unconditional clause allows a consumer's PROJECT section to override any CORE behavior, including human approval gates, risk-tier thresholds, reviewer independence requirements, loop-exit caps, and escalation terminal points — exactly the safety-critical behaviors the oversight system is designed to enforce.
+
+**Decision (architect-approved hybrid A+B).** Replace the unconditional clause with an enumerated carve-out that:
+- Permits PROJECT to extend CORE with app-specific context, routing hints, and *stricter* checks.
+- Permanently protects five named safety classes from PROJECT override: (1) human approval gates, (2) risk-tier thresholds and required sign-offs, (3) reviewer independence and cross-vendor requirements, (4) loop-exit conditions and round caps, (5) escalation terminal points.
+- States that PROJECT may only ever make these stricter, never looser.
+- Adds mechanical enforcement: `check_agents_static.sh` section 6 fails any CORE file that lacks the carve-out text.
+
+**Status:** Implemented 2026-06-16 — carve-out clause applied to all 18 CORE agent files; `check_agents_static.sh` section 6 enforcement added.

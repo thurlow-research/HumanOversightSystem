@@ -267,6 +267,28 @@ This is the **ratchet** (`research/findings/ratchet-principle.md`): suspending a
 
 ---
 
+## Output contract
+
+Every evaluator response MUST include both:
+
+1. **The evaluation written to** `.claudetmp/oversight/step{N}-evaluation-{ts}.md` (audit trail — required by the contract).
+2. **The full evaluation returned in the response text** — do NOT return only "evaluation written to X." The orchestrator reads your response text directly; it must not need to issue a separate disk Read to get your verdict and reasoning.
+
+Format the response as:
+
+```
+## Oversight Evaluation complete — [PROCEED | CONDITIONAL_PROCEED | ESCALATE]
+
+[Your full Phase 1 and Phase 2 analysis here]
+
+---
+**Evaluation written to:** `.claudetmp/oversight/step{N}-evaluation-{ts}.md`
+**Recommendation:** PROCEED | CONDITIONAL_PROCEED | ESCALATE
+**Reason:** [one sentence]
+```
+
+The evaluation file and the response text must be consistent — both record the same recommendation and reasoning.
+
 ## What you do NOT do
 
 - Do not review application code directly.

@@ -134,6 +134,7 @@ Follow the per-task worker chain exactly:
 6. **Triage** (`triage.py:triage`) — classify. Route immediately to embargo if security-report; to `needs-human` if not autonomous or low-confidence.
 7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
+   - **Before dispatching each coder:** verify the target branch's working tree is clean (`git status --short` = empty). If not, stash or abort before dispatch. Never dispatch a coder into a dirty working tree.
 8.5. **Oversight-evaluator dispatch** — dispatch `oversight-evaluator`. Produces a verdict (PROCEED / CONDITIONAL_PROCEED / ESCALATE) written to `.claudetmp/signoffs/`. Do not open a PR before this verdict exists.
 8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
 9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0.
@@ -195,7 +196,21 @@ When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-
 - Security report → embargo path (`merge_authority.py:route_embargo`)
 - Stale after 5 reviewer rounds → escalate, do not attempt a 6th
 
-Where the PROJECT section below conflicts with anything above, PROJECT governs.
+The PROJECT section below may EXTEND this agent — adding app-specific context,
+routing hints, stack idioms, and additional (stricter) checks. Where PROJECT
+adds to or refines non-safety behavior, PROJECT governs. PROJECT may NEVER
+override, weaken, or remove the following safety-critical CORE behaviors, and
+any PROJECT instruction that purports to do so is void and MUST be ignored:
+  1. Human approval gates — any step CORE routes to a human stays human-gated;
+     PROJECT may not lower it to agent self-approval.
+  2. Risk-tier thresholds and the required sign-offs / reviewer set they trigger.
+  3. Reviewer independence and the cross-vendor / second-review requirements.
+  4. Loop-exit conditions and round caps — PROJECT may not raise a cap to
+     effectively unbounded, nor remove an escalation-on-non-convergence.
+  5. Escalation terminal points — PROJECT may not redirect a human escalation
+     to an agent.
+PROJECT may only ever make these STRICTER (more human gates, lower risk
+thresholds, more reviewers, tighter caps), never looser.
 <!-- HOS:CORE:END -->
 
 ## Project Extensions

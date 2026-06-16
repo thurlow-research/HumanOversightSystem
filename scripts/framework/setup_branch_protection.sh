@@ -100,6 +100,13 @@ fi
 #   - enforce_admins: false               (human admin retains bypass for emergencies)
 #   - No bypass_pull_request_allowances   (bots are NOT bypass actors)
 #   - Required status check: require-human-approval (the CI gate from workflows/)
+#
+# CODEOWNERS model (#329): require_code_owner_reviews: true ensures protected
+# surfaces (scripts/framework/protected_surfaces.txt) require @ScottThurlow.
+# Non-protected paths have NO CODEOWNERS entry — so any collaborator (including
+# HOSOversightTutelare with Maintainer role) can satisfy the code-owner
+# requirement for those paths. The catch-all `* @ScottThurlow` must NEVER be
+# added; it would block the overseer from merging any PR.
 
 PAYLOAD="$(cat <<JSON
 {
@@ -110,6 +117,11 @@ PAYLOAD="$(cat <<JSON
   "enforce_admins": false,
   "required_pull_request_reviews": {
     "dismissal_restrictions": {},
+    # dismiss_stale_reviews: true — security requirement (new commits void prior approvals).
+    # Side effect in autonomous batch merges: merging PR A advances the base branch, which
+    # dismisses approvals on PRs B, C, etc. The overseer handles this via batch serialization
+    # (step 6b in overseer.md): re-approve each PR individually before merging it.
+    # Changing this to false would allow stale approvals to persist — do not do that.
     "dismiss_stale_reviews": true,
     "require_code_owner_reviews": true,
     "required_approving_review_count": 1,
