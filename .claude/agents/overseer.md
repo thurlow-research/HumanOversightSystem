@@ -105,7 +105,7 @@ For each PR found:
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
    - If no bounce conditions → proceed to step 5.
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
-   - AUTO_MERGE conditions: tier ≤ MEDIUM, not security-relevant, not protected-surface, full PROCEED, gate detected, overseer ceiling not exceeded
+   - AUTO_MERGE conditions: tier ≤ OVERSEER_CEILING (read from `machine-accounts.env`; default LOW), not security-relevant, not protected-surface, full PROCEED, gate detected
    - PROPOSE_ONLY: gate not detected
    - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
 6. **Act on decision**:
@@ -132,10 +132,10 @@ Git and gh operations run under `HOSOversightTutelare`. Commits carry `Supervise
 
 | Risk tier | Security-relevant | Protected surface | Oversight verdict | Gate detected | Decision |
 |---|---|---|---|---|---|
-| SAFE/LOW/MEDIUM | No | No | PROCEED | Yes | **AUTO_MERGE** |
-| SAFE/LOW/MEDIUM | No | No | PROCEED | No | PROPOSE_ONLY |
-| SAFE/LOW/MEDIUM | Yes | Any | Any | Any | **HUMAN_REQUIRED** |
-| SAFE/LOW/MEDIUM | Any | Yes | Any | Any | **HUMAN_REQUIRED** |
+| ≤ OVERSEER_CEILING | No | No | PROCEED | Yes | **AUTO_MERGE** |
+| ≤ OVERSEER_CEILING | No | No | PROCEED | No | PROPOSE_ONLY |
+| ≤ OVERSEER_CEILING | Yes | Any | Any | Any | **HUMAN_REQUIRED** |
+| ≤ OVERSEER_CEILING | Any | Yes | Any | Any | **HUMAN_REQUIRED** |
 | HIGH/CRITICAL | Any | Any | Any | Any | **HUMAN_REQUIRED** |
 | Any | Any | Any | CONDITIONAL/ESCALATE | Any | **HUMAN_REQUIRED** |
 | Above OVERSEER_CEILING | Any | Any | Any | Any | **HUMAN_REQUIRED** |

@@ -156,6 +156,11 @@ while IFS= read -r -d '' f; do
         # Agent names either contain a hyphen (e.g. code-reviewer, pm-agent)
         # OR are single known short names. Skip library names, types, and status values.
         KNOWN_SHORT_AGENTS="architect|coder|human"
+        # GitHub labels and HOS workflow tokens are not agent names — skip them
+        KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized"
+        if echo "$target" | grep -qE "^($KNOWN_LABELS)$"; then
+            continue
+        fi
         if ! echo "$target" | grep -qE "^($KNOWN_SHORT_AGENTS)$" && \
            ! echo "$target" | grep -q '-'; then
             continue

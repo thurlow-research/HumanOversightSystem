@@ -35,7 +35,7 @@ The minimum set of agents required for the pipeline to function:
 ```bash
 REQUIRED="pm-agent architect technical-design ux-designer coder code-reviewer
           security-reviewer privacy-reviewer ui-reviewer a11y-reviewer
-          infra-reviewer unit-test system-test deploy-verify
+          infra-reviewer unit-test system-test
           risk-assessor risk-historian dep-mapper spec-red-team prompt-fidelity
           oversight-evaluator oversight-orchestrator post-change-sweep"
 for a in $REQUIRED; do
