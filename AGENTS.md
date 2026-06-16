@@ -17,6 +17,19 @@ This means every session should actively embody the oversight mechanisms the res
 
 ---
 
+## Entry points — start here
+
+Two named agents serve as the runtime entry points for the entire HOS pipeline:
+
+| Agent | Invoke when | Modes |
+|---|---|---|
+| **`worker`** | Starting a coding session, picking up a build step, or running the autonomous build loop | `INTERACTIVE` (human present) · `AUTONOMOUS` (cron, `hos_orchestrator.sh --class worker`) |
+| **`overseer`** | Querying PR/risk status, or running the autonomous review/merge loop | `INTERACTIVE` (human querying) · `AUTONOMOUS` (cron, `hos_orchestrator.sh --class overseer`) |
+
+Both agents identify their mode at the start of every session and adjust their behavior accordingly. Both enforce repo scope — they will push back if asked to act on a different repository. **The `worker` is the correct entry point for any new session.**
+
+---
+
 ## Core Principle: Orchestrate, Don't Absorb (the human-facing agent)
 
 **If you are the agent the human talks to, you are the *orchestrator*, not the worker.** Your job is to route each piece of work to the specialized agent that owns it and to integrate the results — **not to do that work yourself.** The entire value of this system is the **independence** between the agent that authors and the agents that review. If you author the code, run the checks, *and* record the sign-offs, you have collapsed the whole pipeline into a single agent: there is no oversight left, only the appearance of it. (This is `the-recorder-must-not-be-in-the-recorded-set`, applied to you.)
