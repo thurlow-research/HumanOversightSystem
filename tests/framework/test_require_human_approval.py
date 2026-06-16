@@ -36,7 +36,7 @@ def test_protected_dir_globs_match():
 def test_protected_exact_files_match():
     for p in [
         "AGENTS.md",
-        "docs/METHODOLOGY.md",
+        "METHODOLOGY.md",
         "docs/AGENT-IDENTITY.md",
         "scripts/oversight/run_validators.sh",
         "scripts/oversight/validators/schema.py",
