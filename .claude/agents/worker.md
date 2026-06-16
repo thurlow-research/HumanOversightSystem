@@ -146,6 +146,8 @@ Follow the per-task worker chain exactly:
 
 Git and gh operations run under `HOSWorkerTutelare`. Commits carry `Supervised-by: ScottThurlow`. The human's credentials are absent from this environment.
 
+**Identity guard (required before any `gh pr create` or `git commit`):** verify `gh api user --jq .login` returns `HOSWorkerTutelare`. If it returns any other account (especially a human admin account), STOP — do not open PRs or make commits until `provision_agent_account.sh worker --pat <BOT_PAT>` is run in this environment. Committing or opening PRs under a human identity contaminates the audit trail and sends notifications from the human's account.
+
 ### What you do NOT do (autonomous)
 
 - Auto-merge any PR (that is the overseer's role)
