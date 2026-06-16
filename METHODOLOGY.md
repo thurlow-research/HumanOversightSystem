@@ -312,6 +312,17 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
 
 16. MERGE → AUDIT    Resolved trail committed to
                      audit/oversight-log.jsonl (append-only).          [✅]
+
+17. RELEASE AUTH     Human-authorized only (NG3b). Trigger: human creates
+                     "do release vX.Y.Z" issue (label release-request, assigned
+                     to worker). Worker validates all required suites, posts
+                     results + "Release candidate SHA: <sha>" + how-to-authorize
+                     instructions. Final cut ONLY on three-part GitHub signal:
+                     release-authorized label + needs-human removal + re-assign
+                     to worker — all by the same human CODEOWNER, temporally
+                     after the results comment (§6 four conditions + §6.3
+                     same-actor three-signal). Chat never authorizes the cut.
+                     Violations → ng3b-violation-attempt audit event.  [#345]
 ```
 
 **Why the panel runs locally, not in CI:** the CLIs authenticate interactively (browser OAuth that lives on your machine); CI runners can't hold that session. So CI handles the deterministic gates + Copilot's native PR review, while the cross-vendor AI panel runs from a local command and **posts its findings to the PR**. The PR stays the auditable record.

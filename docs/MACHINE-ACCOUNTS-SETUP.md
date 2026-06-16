@@ -96,3 +96,20 @@ so the two never drift. Commit it.
 The protected-surface gate is the load-bearing one: it's the place the controls
 that define the controls (`AGENT-IDENTITY.md` §9) can't be loosened on the bots'
 own say-so. See `research/findings/actor-identity-vs-determination-honesty.md`.
+
+---
+
+## Step 7 — Create the release-authorization labels *(human; one-time)*
+
+```sh
+gh label create release-request    --color B60205 \
+  --description "Requests the worker prepare a release for human authorization"
+gh label create release-authorized --color 0E8A16 \
+  --description "Human authorized the release — paired with re-assignment to the worker"
+```
+
+These labels are part of the NG3b human-approval gate. `release-request` marks
+a valid release-preparation request; `release-authorized` is one of the three
+required authorization signals (add this label + remove `needs-human` + re-assign
+to the worker, ALL by the same human CODEOWNER). See `worker.md` Release
+authorization protocol.
