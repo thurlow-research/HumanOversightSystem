@@ -105,7 +105,7 @@ PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-human-approval"]
+    "contexts": ["require-human-approval", "require-tier-ceiling"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -141,7 +141,7 @@ echo "    require_code_owner_reviews      : true   (protected paths → human CO
 echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
-echo "  Required status checks            : require-human-approval"
+echo "  Required status checks            : require-human-approval, require-tier-ceiling"
 echo "  enforce_admins                    : false  (admin/human retains emergency bypass)"
 echo "  allow_force_pushes                : false"
 echo "  allow_deletions                   : false"
@@ -211,5 +211,5 @@ ok "Branch protection setup complete."
 echo ""
 info "Next: verify with  gh api $API_BASE | jq ."
 info "Then: enable 'Require status checks to pass' for 'require-human-approval'"
-info "       in the GitHub UI if it is not yet showing as a required check"
-info "       (the CI check must run at least once before GitHub will enforce it)."
+info "       and 'require-tier-ceiling' in the GitHub UI if not yet showing"
+info "       (each CI check must run at least once before GitHub will enforce it)."

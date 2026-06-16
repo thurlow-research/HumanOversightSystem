@@ -109,9 +109,9 @@ For each PR found:
    - PROPOSE_ONLY: gate not detected
    - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
 6. **Act on decision**:
-   - AUTO_MERGE → approve + merge (squash); log to ledger
+   - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
    - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
-   - PROPOSE_ONLY → leave PR open; label `needs-ai` for next review cycle
+   - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
 7. **Heartbeat** — recheck activation + halt at each heartbeat (≤15m); self-terminate if either fails.
 8. **Record to ledger** — append action record to `audit/automation/<customer>/runs/`.
 
@@ -156,6 +156,27 @@ A comment missing any element is a malformed escalation — rewrite it before po
 - Security-relevant change → human + embargo path if not already routed
 - Spec ambiguity about what qualifies for merge → `pm-agent`
 - Risk tier disputed → `risk-assessor`
+
+---
+
+## GitHub workflow operations
+
+The overseer performs GitHub operations via `gh api` and the existing `github.py` wrapper. The canonical identifiers for labels and accounts come from `scripts/framework/machine-accounts.env` — read them from there, never hardcode them.
+
+### Canonical labels
+| Purpose | Label | Source |
+|---|---|---|
+| Needs the worker | `needs-ai` | `machine-accounts.env` or default |
+| Needs human review | `needs-human` | convention |
+| Overseer bounced PR | `needs-ai` + assign to HOSWorkerTutelare | bounce protocol |
+| Budget gate blocked | `hos-budget-gated` | budget.py |
+| Embargo path | `hos-embargo` | triage |
+
+### Operations protocol
+- **Labels:** always read existing repo labels first (`GET /repos/{o}/{r}/labels`) before applying — the consumer repo may use `needs_ai` (underscore) instead of `needs-ai` (hyphen). Match the repo's convention; do not assume the HOS default.
+- **Assign:** use `POST /repos/{o}/{r}/issues/{n}/assignees` with `{"assignees": ["<account>"]}`.
+- **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
+- **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
 Where the PROJECT section below conflicts with anything above, PROJECT governs.
 <!-- HOS:CORE:END -->
