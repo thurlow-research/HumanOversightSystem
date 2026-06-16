@@ -18,4 +18,4 @@
 PROJECT_NAME	Human-readable project name used in agent prompts (e.g. CondoParkShare)
 SPEC_FILE	Path to the primary spec file, repo-relative (e.g. Specs/SPEC-1-pilot.md)
 DESIGN_PACK_DIR	Directory holding the design pack (e.g. docs/design)
-ADR_FILE	Path to the architect's ADR — architectural decisions / boundaries (e.g. docs/adr/ADR-001.md)
+ADR_FILE	Path to the architect's ADR — architectural decisions / boundaries (e.g. docs/architecture/ADR-001.md)
