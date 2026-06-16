@@ -383,7 +383,7 @@ Run after all internal reviewers have approved and system tests pass.
 # Get composite score AND validated tier from validators (or re-run if stale)
 SCORE=$(cat .claudetmp/oversight/validators/summary.json | \
   python3 -c "import json,sys; print(json.load(sys.stdin)['composite_score'])")
-TIER=$(grep -i '^tier:' .claudetmp/oversight/validators/risk-assessment.md | head -1 | awk '{print $2}')
+TIER=$(grep -i '^validated_tier:' .claudetmp/oversight/validators/risk-assessment.md | head -1 | awk '{print $2}')
 
 echo "Score: $SCORE  Tier: $TIER"
 
