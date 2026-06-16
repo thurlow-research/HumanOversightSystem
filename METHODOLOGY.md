@@ -79,6 +79,10 @@ We deliberately use **multiple vendors and model tiers** — the whole point is 
 
 > Google is retiring the Gemini CLI (consumer shutoff **2026-06-18**) in favor of the **Antigravity CLI (`agy`)**, which is what the tooling now installs.
 
+### Runtime orchestration agents (the human interface layer)
+
+Two named agents sit above the specialist roles listed above: `worker` is the human's console interface and the autonomous build agent — it accepts work from a human or from a cron invocation, routes it to the appropriate specialist agents (coder, reviewers, etc.), and never absorbs their outputs into its own response. `overseer` is the oversight console and the autonomous review/merge agent — it evaluates what the worker produced and decides what may merge per the merge-authority matrix. Both run under their dedicated machine accounts (`HOSWorkerTutelare` / `HOSOversightTutelare`) in autonomous mode. This is an orchestration layer above the specialist agents, not a replacement for them; the specialists perform the actual code authoring, reviewing, and testing.
+
 ---
 
 ## 4. Agent Role Definitions
@@ -211,6 +215,17 @@ Each prompt-to-verify cycle must leave the codebase in a working state before th
 │                                                             │
 │  └──────── back to 1 for next incremental change ──────────┘
 ```
+
+### Definition of Done (inner loop step)
+
+A build step is **not done** until all four conditions hold — in this order:
+
+1. **Code passes inner-loop tests.** `run_tests_inner_loop.sh` exits 0 against the current working tree.
+2. **Relevant docs updated.** If the step modified documented behavior (new agent, new gate, new governance rule, changed spec flow), the relevant spec, design doc, AGENTS.md, or DECISIONS.md entry reflects what was built. A step whose observable behavior differs from its documentation is not done — it is broken.
+3. **Research finding filed (if applicable).** If the step produced empirical data (escaped defect, tier-calibration signal, pipeline timing), a finding is recorded in `research/findings/`.
+4. **Sign-off register entry written.** The step's register entry is complete with all required fields (§3).
+
+"I'll update the docs later" is not a valid sign-off state.
 
 > **Why the inner loop matters:** AI agents have no memory of the codebase state from one prompt to the next beyond what is in the current context. An agent asked to "add X" on a tree where Y is already broken will produce code that looks correct but depends on a broken foundation. By the time CI runs (after the PR opens), the failure stack may span five prompts and require significant archaeology to untangle. Local verification after each prompt is the only reliable way to keep the codebase in a known-good state throughout development.
 

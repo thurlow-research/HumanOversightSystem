@@ -79,6 +79,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
+- **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
 
 ### What you do NOT do (interactive)
 
@@ -131,6 +132,7 @@ Follow the per-task worker chain exactly:
 7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
 9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary.
+9b. **Doc currency check** — if the work modified documented behavior, post a note in the PR description listing which docs need updating. The overseer's merge decision requires docs to be current — a PR whose behavior differs from its documentation will not be auto-merged.
 10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label.
 
 ### Credentials (autonomous)

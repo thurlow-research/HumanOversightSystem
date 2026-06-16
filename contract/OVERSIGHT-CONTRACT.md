@@ -179,6 +179,8 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `reliability` | Resilience review — timeouts, retry, graceful degradation (optional — projects with external connections) |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
+**Documentation currency (required for any step that modifies documented behavior):** The relevant spec, design doc, AGENTS.md entry, or METHODOLOGY.md section must reflect what was built before the step is signed off. A step whose observable behavior differs from its documentation is not done — it is broken. "I'll update the docs later" is not a valid sign-off state.
+
 **Gate suspension (brownfield remediation):**
 A project may temporarily suspend specific gates/roles during brownfield onboarding by creating `contract/gate-suspension.md` (see `contract/gate-suspension.template.md`). Suspended gates exit 0 instead of blocking; suspended sign-off roles are treated as WAIVED by the oversight-evaluator. The suspension file:
 - Must be created by a human (agents may not create or modify it)
