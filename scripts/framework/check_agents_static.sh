@@ -172,8 +172,8 @@ while IFS= read -r -d '' f; do
     done < <(python3 -c "
 import re, sys
 text = open('$f').read()
-pattern = r'(?:escalat\w+\s+to|invok\w+|receives?\s+from|notif\w+)[^\`]*\`([a-z][a-z0-9_-]+)\`'
-for m in re.findall(pattern, text, re.IGNORECASE):
+pattern = r'(?i:escalat\w+\s+to|invok\w+|receives?\s+from|notif\w+)[^\`]*\`([a-z][a-z0-9_-]+)\`'
+for m in re.findall(pattern, text):
     print(m)
 " 2>/dev/null || true)
 done < <(find "$AGENTS_DIR" -name '*.md' -print0)
