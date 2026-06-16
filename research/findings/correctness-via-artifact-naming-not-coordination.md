@@ -27,8 +27,8 @@ The design also surfaces a useful **operational definition of failure**: a "dupl
 ## Evidence
 
 - `scripts/automation/lib/correlation.py` (this session) — the cid algorithm and the `already_exists()` precheck. The unit tests explicitly verify cid determinism across URL forms and instances (`test_correlation.py`).
-- `scripts/automation/lib/machine_lock.sh` (this session) — the lock is explicitly documented as a "contention reducer" in a comment; `machine_lock.sh` carries the ADR-3 note that M1 correctness lives in `correlation.py`, not the lock.
-- Design doc comment in tech design (§8): "claim.py must **not** be relied on for correctness (ADR-2). It reduces contention; M1 lives in correlation.py."
+- `scripts/automation/lib/machine_lock.sh` (this session) — implements the ADR-3 spawn-scope constraint; the architectural framing ("contention reducer") lives in the tech design, not in the lock file's comments.
+- `docs/specs/UNATTENDED-WORKER-TECH-DESIGN.md` (§8, line 65) — the architectural framing: "claim.py must **not** be relied on for correctness (ADR-2). It reduces contention; M1 lives in `correlation.py`, not the lock."
 
 ## Implications for Research
 

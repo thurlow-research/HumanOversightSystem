@@ -25,6 +25,9 @@ dispatches:
   - privacy-reviewer
   - reliability-reviewer
   - ops-reviewer
+  - ui-reviewer
+  - a11y-reviewer
+  - infra-reviewer
   - unit-test
   - system-test
   - oversight-evaluator
@@ -174,6 +177,9 @@ When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-
 | Privacy review | `privacy-reviewer` |
 | Reliability review | `reliability-reviewer` |
 | Telemetry review | `ops-reviewer` |
+| UI/UX conformance review | `ui-reviewer` |
+| Accessibility review | `a11y-reviewer` |
+| Infrastructure/deployment review | `infra-reviewer` |
 | Unit tests | `unit-test` |
 | System/e2e tests | `system-test` |
 | Post-review compliance | `oversight-evaluator` |
