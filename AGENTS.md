@@ -259,6 +259,18 @@ Human approval is required before merge for **MEDIUM+ risk or any protected surf
 
 This section must appear before all other content. Never omit or abbreviate it.
 
+### Actor Identity (Layer 1) — Who Authenticated the Operation
+
+HOS uses two machine accounts to make agent actions structurally distinguishable from human actions at the GitHub actor level (not just in commit content). See `docs/AGENT-IDENTITY.md` for the full spec.
+
+| Account | Class | May approve PRs? |
+|---|---|---|
+| `HOSWorkerTutelare` | **worker** — opens PRs, never approves | No |
+| `HOSOversightTutelare` | **overseer** — reviews and approves within ceiling | Yes (≤ OVERSEER_CEILING) |
+| `ScottThurlow` (human) | escalation ceiling | Yes (all tiers) |
+
+The split is load-bearing: `HOSWorkerTutelare` literally cannot approve its own PR — GitHub's identity layer enforces it, not a policy check. Any agent session that pushes branches or opens PRs runs under the **worker** credentials. Review agents run under the **overseer** credentials. The human account is absent from both bot environments.
+
 ### Git Commit Trailer Convention
 
 For every commit containing AI-generated code, append trailers:
@@ -270,7 +282,8 @@ Implements JWT validation with refresh token rotation.
 
 Prompt-Artifact: prompts/auth/middleware.md
 AI-Model: claude-sonnet-4-6
-AI-Risk: HIGH"
+AI-Risk: HIGH
+Supervised-by: ScottThurlow"
 ```
 
 For LOW risk changes with no artifact file:
@@ -278,9 +291,12 @@ For LOW risk changes with no artifact file:
 Prompt-Artifact: none (LOW risk)
 AI-Model: claude-sonnet-4-6
 AI-Risk: LOW
+Supervised-by: ScottThurlow
 ```
 
-AI provenance is then queryable: `git log --grep="Prompt-Artifact:"` returns all AI-assisted commits.
+`Supervised-by:` names the human who holds recovery for the bot account and bears responsibility for the work. It links the bot's Layer-1 actor identity back to the human "reports-to" relationship (AGENT-IDENTITY.md §6). Always set to the human operator's GitHub handle.
+
+AI provenance is then queryable: `git log --grep="Prompt-Artifact:"` returns all AI-assisted commits; `git log --grep="Supervised-by:"` confirms the responsible human for each.
 
 ### Prompt Quality Requirements
 

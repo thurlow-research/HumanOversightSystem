@@ -28,3 +28,10 @@ scripts/oversight/run_validators.sh
 scripts/oversight/validators/schema.py
 .github/CODEOWNERS
 .github/workflows/**
+
+# Unattended-worker governance surfaces (#254). These decide whether the
+# autonomous worker may run, how much it may spend, and whose commands it obeys —
+# the highest control-loosening surfaces of all. A bot must never self-authorize
+# by merging a change to its own enable/budget/allowlist or to the kill switch.
+PROJECT/hos-coordination.yaml
+PROJECT/hos-halt
