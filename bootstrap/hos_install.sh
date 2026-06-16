@@ -446,6 +446,13 @@ if [[ "$PR_MODE" != "off" ]] && ! $DRY_RUN; then
   fi
 fi
 
+# #274: --pr under --dry-run is silently inert (the PR block above is gated on
+# `! $DRY_RUN`). Say so, so the operator doesn't read the in-place-looking dry-run
+# output as evidence that --pr was honored.
+if [[ "$PR_MODE" == "on" ]] && $DRY_RUN; then
+  warn "--pr + --dry-run: PR-mode is NOT simulated in a dry run — no branch or PR is created, and the preview below reflects an in-place apply. Re-run without --dry-run to produce the PR."
+fi
+
 # ── .gitignore ─────────────────────────────────────────────────────────────────
 echo ""
 info ".gitignore"
@@ -920,7 +927,8 @@ open(sys.argv[2],"wb").write(base64.b64decode(data))' "$_pj" "$dst" \
   # Aggregate every planned file's rows into one spec, then write the manifest
   # via assemble-manifest (schema-v2 header + LC_ALL=C-sorted body).
   if ! $DRY_RUN; then
-    python3 -c 'import json,sys
+    _spec_err="$_AGENT_STAGE/manifest-spec.err"
+    if ! python3 -c 'import json,sys
 spec={}
 import os
 stage=sys.argv[1]
@@ -933,7 +941,16 @@ for agent in sys.argv[2:]:
     if rows:
         spec[".claude/agents/%s.md" % agent]=rows
 json.dump(spec, open(os.path.join(stage,"manifest-spec.json"),"w"))' \
-      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>/dev/null || true
+      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>"$_spec_err"; then
+      # #277: the agents are written, but a crashed spec build would leave a
+      # manifest MISSING every agent's region rows — which silently breaks the
+      # NEXT upgrade's drift detection. Refuse to stamp a degraded manifest.
+      echo "" >&2
+      err "manifest-spec assembly crashed — refusing to write a manifest missing agent region rows (#277):"
+      [[ -s "$_spec_err" ]] && sed 's/^/    /' "$_spec_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
 fi
 
@@ -1116,8 +1133,17 @@ else
   skip "CLAUDE.md — HOS orchestrator block refreshed in place"
 fi
 
-# ── contract/ — step manifest template ────────────────────────────────────────
+# ── contract/ — oversight contract + step manifest template ───────────────────
 run mkdir -p "$TARGET_REPO/contract"
+
+# OVERSIGHT-CONTRACT.md — framework-canonical contract the reviewer agents
+# enforce against (6 shipped reviewers cite it). Shipped + refreshed like
+# AGENTS.md; #283 — it was declared REQUIRED in source but never installed to
+# consumers, leaving every consumer install with a dangling contract reference.
+cp_file "$HOS_SOURCE/contract/OVERSIGHT-CONTRACT.md" \
+        "$TARGET_REPO/contract/OVERSIGHT-CONTRACT.md" \
+        "contract/OVERSIGHT-CONTRACT.md"
+
 if [[ ! -f "$TARGET_REPO/contract/step-manifest.yaml" ]]; then
   cp_file "$HOS_SOURCE/contract/step-manifest.template.yaml" \
           "$TARGET_REPO/contract/step-manifest.yaml" \
@@ -1188,15 +1214,10 @@ else
   skip "prompts/ already exists"
 fi
 
-# ── .hos-release — record the installed framework version ─────────────────────
-echo ""
-info ".hos-release — installed framework version marker"
-if $DRY_RUN; then
-  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
-else
-  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
-  ok ".hos-release = $HOS_REF"
-fi
+# NOTE: .hos-release (the version stamp) is written AFTER the manifest block
+# below — the version is the COMMIT POINT, stamped only once the agents AND the
+# manifest are on disk. So a manifest-assembly failure (#277) can never leave a
+# new .hos-release stamped over a stale or missing .hos-manifest.
 
 # ── .hos-manifest — framework inventory, obsolete-file detection + opt-in prune (#182) ──
 # Records the framework-OWNED files this release ships, each with its sha256 (so a
@@ -1223,7 +1244,7 @@ enumerate_framework_files() {
   ( cd "$src" && {
       [[ -d scripts/oversight ]] && find scripts/oversight -type f \
           ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
-      for _f in AGENTS.md METHODOLOGY.md \
+      for _f in AGENTS.md METHODOLOGY.md contract/OVERSIGHT-CONTRACT.md \
           scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
           scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
           scripts/prompt_audit.sh; do [[ -f "$_f" ]] && echo "$_f"; done
@@ -1245,6 +1266,8 @@ else
   # them through unchanged.
   _agent_spec="$_AGENT_STAGE/manifest-spec.json"
   [[ -f "$_agent_spec" ]] || echo '{}' > "$_agent_spec"
+  _manifest_err="$_AGENT_STAGE/manifest-assemble.err"
+  _assemble_rc=0
   _new_manifest="$(python3 -c 'import json,sys
 spec=json.load(open(sys.argv[1]))
 # WHOLE rows arrive on stdin as full "<path>\tWHOLE\t<sha>" lines; bucket them
@@ -1255,10 +1278,23 @@ if whole:
 sys.path.insert(0, sys.argv[2])
 import regions
 sys.stdout.write(regions.assemble_manifest(spec))' \
-      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>/dev/null)"
-  if [[ -z "$_new_manifest" ]]; then
-    # Fallback: regions.py unavailable — write at least the WHOLE rows with a v2 header.
-    _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>"$_manifest_err")" || _assemble_rc=$?
+  if [[ $_assemble_rc -ne 0 || -z "$_new_manifest" ]]; then
+    if [[ ! -f "$HOS_SOURCE/scripts/oversight/validators/regions.py" ]]; then
+      # regions.py genuinely absent — WHOLE-only is the best-effort fallback, but
+      # say so: region drift tracking is degraded until a region-aware install.
+      warn ".hos-manifest: regions.py unavailable — writing WHOLE rows only (region drift tracking is degraded until the next region-aware install)."
+      _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+    else
+      # #277: regions.py IS present but assembly crashed — do NOT silently stamp a
+      # degraded (region-row-less) manifest. The agents are written, but a degraded
+      # manifest breaks the next upgrade's drift detection. Refuse to stamp.
+      echo "" >&2
+      err ".hos-manifest assembly crashed (regions.py present, exit $_assemble_rc) — refusing to write a degraded manifest (#277):"
+      [[ -s "$_manifest_err" ]] && sed 's/^/    /' "$_manifest_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
   if [[ -f "$_manifest_file" ]]; then
     # Orphans = paths in the prior manifest but not this one, that still exist.
@@ -1325,6 +1361,18 @@ ARCH
   ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -cvE '^(#|[[:space:]]*$)') region/file rows tracked)"
 fi
 
+# ── .hos-release — record the installed framework version (the COMMIT POINT) ───
+# Written LAST, only after the agents and manifest are on disk — so a failure in
+# the manifest block above (#277) never leaves a new version over a bad manifest.
+echo ""
+info ".hos-release — installed framework version marker"
+if $DRY_RUN; then
+  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
+else
+  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
+  ok ".hos-release = $HOS_REF"
+fi
+
 # ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──
 if $PR_ACTIVE; then
   header "Install-via-PR — opening the upgrade PR"
@@ -1340,12 +1388,22 @@ if $PR_ACTIVE; then
       # message. Fail-closed; the base branch is untouched (work is on PR_BRANCH).
       fail "Commit failed on '$PR_BRANCH' (e.g. a rejecting hook) — staged changes remain; your base branch is untouched. Resolve and re-run."
     elif git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
-      _pr_body="Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
+      # #226: disclose that this PR is machine-generated — by a deterministic
+      # installer script, not hand-authored (and not LLM-authored). Draft +
+      # best-effort needs-human so a human reviews before merge.
+      _pr_body="> 🤖 **Automated PR — generated by \`hos_install.sh\`.** Produced by the HOS installer (a deterministic script), not hand-authored. A human must review the diff before merging; it must not be auto-merged.
+
+Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
       _pr_url="$( cd "$TARGET_REPO" && gh pr create \
-        --title "chore(hos): upgrade framework to ${HOS_REF}" \
-        --body "$_pr_body" --head "$PR_BRANCH" 2>/dev/null || true )"
-      if [[ -n "$_pr_url" ]]; then ok "Opened upgrade PR: $_pr_url"
-      else fail "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --head $PR_BRANCH"; fi
+        --title "🤖 [hos-install] chore(hos): upgrade framework to ${HOS_REF}" \
+        --body "$_pr_body" --head "$PR_BRANCH" --draft 2>/dev/null || true )"
+      if [[ -n "$_pr_url" ]]; then
+        ok "Opened upgrade PR (draft): $_pr_url"
+        # The label may not exist in the consumer repo — best-effort; never fail
+        # the PR over a missing label (#226).
+        ( cd "$TARGET_REPO" && gh pr edit "$_pr_url" --add-label needs-human >/dev/null 2>&1 ) \
+          || info "(tip: this PR is flagged for human review — add a 'needs-human' label if your repo uses one)"
+      else fail "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --draft --head $PR_BRANCH"; fi
     else
       fail "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually. (Your base branch is untouched.)"
     fi
