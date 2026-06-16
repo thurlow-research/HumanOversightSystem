@@ -261,6 +261,9 @@ Once the inner loop produces a complete verified working state, a transition pha
                      PROCEED/CONDITIONAL → opens PR.
                      ESCALATE → surfaces bounded questions to human;
                                 does NOT open the PR.                   [✅ oversight-orchestrator]
+
+   pr_readiness.py   →  deterministic self-assessment gate (REQ-W-01..W-14);
+                        exit 0 required before gh pr create              [✅ #317]
 ```
 
 **Why `panel-context.md` withholds internal findings:** if the outer panel could read the internal reviewers' conclusions, it would tend to converge on the same findings rather than produce a genuinely independent signal. The isolation is an anchoring-prevention mechanism — the same principle as blind peer review. The panel sees structural signals (risk tier, blast radius, provenance) but forms its own judgments.
@@ -284,6 +287,10 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
 12. PR               Opened by oversight-orchestrator (or human on
                      ESCALATE). main is protected: ≥1 approval + all
                      review threads resolved before merge.              [✅]
+
+   overseer bounce-back  →  register-completeness check before merge-authority
+                            matrix; incomplete → pr-bounced (PR stays open,
+                            re-assigned to worker, failure counter unchanged) [✅ #317]
 
 13. CI CHEAP GATES   lint, types, build, unit tests, secret scan.
                      If CI fails on a gate the inner loop should have

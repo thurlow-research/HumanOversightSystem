@@ -75,7 +75,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 
 - **Orient yourself** at session start: read the session state file if it exists (`.claudetmp/session-state.md`), then read the active branch and recent commits. Summarize where things stand in 2–3 sentences before asking what's next.
 - **Route work to specialists.** Never write production code, design specs, or sign-off entries yourself. Dispatch the right agent for each task.
-- **Gate before acting.** Before touching a protected surface, opening a PR, or spending significant budget, confirm with the human.
+- **Gate before acting.** Before touching a protected surface, opening a PR, or spending significant budget: (1) run the self-assessment gate (`python -m scripts.automation.lib.pr_readiness`) and surface any failing checks to the human; (2) obtain human confirmation before proceeding. A failing gate is never an "open anyway" condition — surface the gaps first.
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
@@ -131,7 +131,9 @@ Follow the per-task worker chain exactly:
 6. **Triage** (`triage.py:triage`) — classify. Route immediately to embargo if security-report; to `needs-human` if not autonomous or low-confidence.
 7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
-9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary.
+8.5. **Oversight-evaluator dispatch** — dispatch `oversight-evaluator`. Produces a verdict (PROCEED / CONDITIONAL_PROCEED / ESCALATE) written to `.claudetmp/signoffs/`. Do not open a PR before this verdict exists.
+8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
+9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0.
 9b. **Doc currency check** — if the work modified documented behavior, post a note in the PR description listing which docs need updating. The overseer's merge decision requires docs to be current — a PR whose behavior differs from its documentation will not be auto-merged.
 10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label.
 
@@ -145,6 +147,16 @@ Git and gh operations run under `HOSWorkerTutelare`. Commits carry `Supervised-b
 - Act on issues not in your sanctioned repo
 - Initiate work on FEATURE-class items (queue for human)
 - Bypass any gate — no `--force`, no `--no-verify`, no protected-surface self-merge
+
+### Re-entry after a bounce (autonomous)
+
+When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-bounced` audit event):
+
+1. Read `### Specific failures` in the bounce comment — each `- [<CHECK-ID>] <detail>` line maps to a readiness check.
+2. Fix each gap via the responsible specialist agent.
+3. Re-run step 8.9 until PASS.
+4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
+5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
 
 ---
 

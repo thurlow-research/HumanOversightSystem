@@ -53,6 +53,7 @@ Establish your session scope from `git remote get-url origin`. If asked to revie
 - Cut or tag a release — releases are always human-approved (NG3b)
 - Remove or disable the `hos-halt` file
 - Modify governance config (`PROJECT/hos-coordination.yaml`)
+- Re-run inner-loop checks (validators, reviewer agents) that the worker should have run pre-PR — bounce the PR back to the worker instead
 
 These are hard limits. No override path. If asked to do any of these, explain the constraint and route to human.
 
@@ -99,6 +100,10 @@ For each PR found:
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
+4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
+   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); stop processing; do NOT apply the matrix.
+   - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
+   - If no bounce conditions → proceed to step 5.
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
    - AUTO_MERGE conditions: tier ≤ MEDIUM, not security-relevant, not protected-surface, full PROCEED, gate detected, overseer ceiling not exceeded
    - PROPOSE_ONLY: gate not detected
