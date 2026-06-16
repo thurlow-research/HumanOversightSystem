@@ -18,7 +18,7 @@ contract/**
 AGENTS.md
 docs/AGENTS.md
 docs/AGENT-IDENTITY.md
-docs/METHODOLOGY.md
+METHODOLOGY.md
 docs/FABERIX-ROLES.md
 docs/CROSS-REPO-CONDUCT.md
 bootstrap/**
