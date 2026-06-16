@@ -1116,8 +1116,17 @@ else
   skip "CLAUDE.md — HOS orchestrator block refreshed in place"
 fi
 
-# ── contract/ — step manifest template ────────────────────────────────────────
+# ── contract/ — oversight contract + step manifest template ───────────────────
 run mkdir -p "$TARGET_REPO/contract"
+
+# OVERSIGHT-CONTRACT.md — framework-canonical contract the reviewer agents
+# enforce against (6 shipped reviewers cite it). Shipped + refreshed like
+# AGENTS.md; #283 — it was declared REQUIRED in source but never installed to
+# consumers, leaving every consumer install with a dangling contract reference.
+cp_file "$HOS_SOURCE/contract/OVERSIGHT-CONTRACT.md" \
+        "$TARGET_REPO/contract/OVERSIGHT-CONTRACT.md" \
+        "contract/OVERSIGHT-CONTRACT.md"
+
 if [[ ! -f "$TARGET_REPO/contract/step-manifest.yaml" ]]; then
   cp_file "$HOS_SOURCE/contract/step-manifest.template.yaml" \
           "$TARGET_REPO/contract/step-manifest.yaml" \
@@ -1223,7 +1232,7 @@ enumerate_framework_files() {
   ( cd "$src" && {
       [[ -d scripts/oversight ]] && find scripts/oversight -type f \
           ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
-      for _f in AGENTS.md METHODOLOGY.md \
+      for _f in AGENTS.md METHODOLOGY.md contract/OVERSIGHT-CONTRACT.md \
           scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
           scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
           scripts/prompt_audit.sh; do [[ -f "$_f" ]] && echo "$_f"; done
