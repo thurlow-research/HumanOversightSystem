@@ -54,8 +54,11 @@ tail -f /tmp/hos-worker.log
 ## Dead-man switch
 
 The overseer checks for a heartbeat file written by the worker. If no heartbeat
-is seen within 6 hours the overseer pages the on-call contact configured in
-`config.sh` (`ONCALL_EMAIL`).
+is seen within 6 hours the overseer logs a warning to its output file.
+
+> **Not yet implemented** — paging integration (e.g. emailing an on-call contact)
+> is a placeholder for a future release. No `ONCALL_EMAIL` or equivalent key is
+> defined in `config.sh` at this time.
 
 ---
 
@@ -76,4 +79,4 @@ Remove the cron entries manually after deactivating.
 |---|---|---|
 | `hos activate` fails with "not found or not executable" | Phase C not built | Build Phase C or use `--no-verify` |
 | Cron fires but nothing happens | `ACTIVE` file missing | Run `hos activate` |
-| Overseer pages after < 6 h | Worker cron not installed | Check `crontab -l` |
+| Dead-man switch fires after < 6 h | Worker cron not installed or probe failing | Check `crontab -l`; paging not yet implemented (see issue #316) |

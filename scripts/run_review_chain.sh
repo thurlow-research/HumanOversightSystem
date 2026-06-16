@@ -16,7 +16,7 @@
 #   3. Default: MEDIUM
 #
 # Tier gating:
-#   LOW/SAFE   validators only
+#   LOW        validators only
 #   MEDIUM     validators + agy second review
 #   HIGH/CRITICAL  validators + agy + codex second review
 #   All tiers  if --pr provided, run_panel.sh runs after second review passes
@@ -104,9 +104,6 @@ resolve_tier() {
 
 TIER="$(resolve_tier)"
 
-# Canonicalize SAFE → LOW
-[[ "$TIER" == "SAFE" ]] && TIER="LOW"
-
 # Validate tier
 case "$TIER" in
   LOW|MEDIUM|HIGH|CRITICAL) ;;
@@ -183,8 +180,13 @@ else
   SECOND_REVIEW_SCRIPT="$SCRIPT_DIR/run_second_review.sh"
   [[ -f "$SECOND_REVIEW_SCRIPT" ]] || die "run_second_review.sh not found at $SECOND_REVIEW_SCRIPT"
 
-  # run_second_review.sh requires --step; derive one if not provided
-  EFFECTIVE_STEP="${STEP_ARG:-0}"
+  # run_second_review.sh artifact names embed the step number; require it at MEDIUM+
+  # to prevent multiple runs colliding on the same "step0-<ts>.md" filename.
+  # (For LOW tier, second review is skipped entirely, so the step is never used.)
+  if [[ -z "$STEP_ARG" ]]; then
+    die "ERROR: --step <N> is required for MEDIUM+ tier (second review artifact naming)"
+  fi
+  EFFECTIVE_STEP="$STEP_ARG"
 
   SR_CMD=("$SECOND_REVIEW_SCRIPT" "--step" "$EFFECTIVE_STEP" "--tier" "$TIER")
 
