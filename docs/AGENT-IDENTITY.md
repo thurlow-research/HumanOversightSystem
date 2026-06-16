@@ -145,7 +145,7 @@ The overseer's "approve/merge safe (LOW)" authority is gated on a **content-risk
 ```
 .claude/agents/**          AGENTS.md
 contract/**                docs/AGENTS.md
-docs/AGENT-IDENTITY.md     docs/METHODOLOGY.md
+docs/AGENT-IDENTITY.md     METHODOLOGY.md
 docs/FABERIX-ROLES.md      docs/CROSS-REPO-CONDUCT.md
 bootstrap/**               scripts/framework/**        (install, release, validation tooling)
 scripts/oversight/gates/** scripts/oversight/run_validators.sh
