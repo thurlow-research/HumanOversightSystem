@@ -356,6 +356,9 @@ if [[ ! -d "$TARGET_REPO/.git" ]]; then
 fi
 
 # ── Helper: copy file (skip if exists unless --force) ─────────────────────────
+# Use cp_file for CONSUMER-owned files that should not be silently overwritten.
+# Use cp_framework_file for HOS-owned (WHOLE) files that must always be refreshed
+# on upgrade — the whole point of a framework install (#351).
 cp_file() {
   local src="$1" dst="$2" label="${3:-}"
   [[ -z "$label" ]] && label="$(basename "$dst")"
@@ -372,6 +375,25 @@ cp_file() {
   # chmod +x only sensible for shell scripts; harmless on others, suppress noise
   case "$dst" in *.sh) run chmod +x "$dst" 2>/dev/null || true ;; esac
   $FORCE && ok "$label (updated)" || ok "$label"
+}
+
+# ── Helper: copy a framework-owned file — always overwrites on upgrade (#351) ──
+# Framework files (AGENTS.md, OVERSIGHT-CONTRACT.md, runner scripts, etc.) are
+# HOS-owned WHOLE files. Overwriting them on upgrade IS the intended behaviour;
+# skipping them defeats the purpose of running an upgrade. --force is NOT
+# required. Consumer PROJECT files (step-manifest.yaml, config.sh) must NEVER
+# use this helper — they stay with cp_file or their own explicit guard.
+cp_framework_file() {
+  local src="$1" dst="$2" label="${3:-}"
+  [[ -z "$label" ]] && label="$(basename "$dst")"
+  if [[ ! -f "$src" ]]; then
+    warn "Source not found: $src — skipping $label"
+    return
+  fi
+  run mkdir -p "$(dirname "$dst")"
+  run cp "$src" "$dst"
+  case "$dst" in *.sh) run chmod +x "$dst" 2>/dev/null || true ;; esac
+  ok "$label (framework — updated)"
 }
 
 # ── Helper: ensure line present in file (append if missing) ───────────────────
@@ -444,6 +466,13 @@ if [[ "$PR_MODE" != "off" ]] && ! $DRY_RUN; then
   else
     info "Install-via-PR not used ($_pr_why) — applying in place. (Pass --pr to require it.)"
   fi
+fi
+
+# #274: --pr under --dry-run is silently inert (the PR block above is gated on
+# `! $DRY_RUN`). Say so, so the operator doesn't read the in-place-looking dry-run
+# output as evidence that --pr was honored.
+if [[ "$PR_MODE" == "on" ]] && $DRY_RUN; then
+  warn "--pr + --dry-run: PR-mode is NOT simulated in a dry run — no branch or PR is created, and the preview below reflects an in-place apply. Re-run without --dry-run to produce the PR."
 fi
 
 # ── .gitignore ─────────────────────────────────────────────────────────────────
@@ -920,7 +949,8 @@ open(sys.argv[2],"wb").write(base64.b64decode(data))' "$_pj" "$dst" \
   # Aggregate every planned file's rows into one spec, then write the manifest
   # via assemble-manifest (schema-v2 header + LC_ALL=C-sorted body).
   if ! $DRY_RUN; then
-    python3 -c 'import json,sys
+    _spec_err="$_AGENT_STAGE/manifest-spec.err"
+    if ! python3 -c 'import json,sys
 spec={}
 import os
 stage=sys.argv[1]
@@ -933,7 +963,16 @@ for agent in sys.argv[2:]:
     if rows:
         spec[".claude/agents/%s.md" % agent]=rows
 json.dump(spec, open(os.path.join(stage,"manifest-spec.json"),"w"))' \
-      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>/dev/null || true
+      "$_AGENT_STAGE" ${_planned_agents[@]+"${_planned_agents[@]}"} 2>"$_spec_err"; then
+      # #277: the agents are written, but a crashed spec build would leave a
+      # manifest MISSING every agent's region rows — which silently breaks the
+      # NEXT upgrade's drift detection. Refuse to stamp a degraded manifest.
+      echo "" >&2
+      err "manifest-spec assembly crashed — refusing to write a manifest missing agent region rows (#277):"
+      [[ -s "$_spec_err" ]] && sed 's/^/    /' "$_spec_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
 fi
 
@@ -1032,7 +1071,7 @@ for script in run_panel.sh run_second_review.sh run_red_team.sh \
               capture_prompt.sh prompt_audit.sh; do
   src="$HOS_SOURCE/scripts/$script"
   [[ ! -f "$src" ]] && src="$HOS_SOURCE/templates/$script"   # fallback to templates/
-  cp_file "$src" "$TARGET_REPO/scripts/$script"
+  cp_framework_file "$src" "$TARGET_REPO/scripts/$script"
 done
 
 # ── scripts/oversight/ — validators + gates ───────────────────────────────────
@@ -1048,22 +1087,21 @@ elif ! $DRY_RUN; then
   # NEVER copy the source's Python virtualenv or bytecode caches: a .venv is
   # absolute-path-bound to the HOS source tree and would be broken (and huge) in
   # the target — the target builds its own via ensure_venv.sh. (HOS #self-review)
+  # scripts/oversight/ is framework-owned (WHOLE); always overwrite on upgrade (#351).
+  # --force additionally forces rsync checksum-level sync (vs mtime), but the
+  # default is now always-overwrite, matching cp_framework_file semantics.
   if command -v rsync &>/dev/null; then
     rsync_flags=(-a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc')
-    if $FORCE; then rsync_flags+=(--ignore-times --checksum); else rsync_flags+=(--ignore-existing); fi
+    if $FORCE; then rsync_flags+=(--ignore-times --checksum); fi
     rsync "${rsync_flags[@]}" "$HOS_SOURCE/scripts/oversight/" "$TARGET_REPO/scripts/oversight/"
   else
-    if $FORCE; then
-      cp -R "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"      # overwrite
-    else
-      cp -Rn "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/" 2>/dev/null || true  # no-clobber
-    fi
+    cp -R "$HOS_SOURCE/scripts/oversight/." "$TARGET_REPO/scripts/oversight/"
     # cp cannot --exclude; strip any source venv/bytecode that came along so the
     # target rebuilds a clean env (the copied .venv would be path-broken anyway).
     rm -rf "$TARGET_REPO/scripts/oversight/.venv"
     find "$TARGET_REPO/scripts/oversight" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
   fi
-  if $FORCE; then ok "scripts/oversight/ synced (forced overwrite)"; else ok "scripts/oversight/ synced"; fi
+  ok "scripts/oversight/ synced (framework — updated)"
 else
   dry_run "Would sync $HOS_SOURCE/scripts/oversight/ → $TARGET_REPO/scripts/oversight/"
 fi
@@ -1071,9 +1109,11 @@ fi
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
 echo ""
 info "Core governance documents"
-cp_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
-cp_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" \
-  2>/dev/null || true  # optional
+cp_framework_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
+# METHODOLOGY.md is optional (not all releases ship it); suppress source-not-found
+# by calling cp_framework_file only when the source exists.
+[[ -f "$HOS_SOURCE/METHODOLOGY.md" ]] && \
+  cp_framework_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" || true
 
 # ── CLAUDE.md — wire the orchestrator role into the auto-loaded context ────────
 # AGENTS.md holds the protocol, but the main interactive agent only auto-loads
@@ -1123,7 +1163,7 @@ run mkdir -p "$TARGET_REPO/contract"
 # enforce against (6 shipped reviewers cite it). Shipped + refreshed like
 # AGENTS.md; #283 — it was declared REQUIRED in source but never installed to
 # consumers, leaving every consumer install with a dangling contract reference.
-cp_file "$HOS_SOURCE/contract/OVERSIGHT-CONTRACT.md" \
+cp_framework_file "$HOS_SOURCE/contract/OVERSIGHT-CONTRACT.md" \
         "$TARGET_REPO/contract/OVERSIGHT-CONTRACT.md" \
         "contract/OVERSIGHT-CONTRACT.md"
 
@@ -1170,8 +1210,8 @@ fi
 echo ""
 info ".github/ — code owners and PR template"
 run mkdir -p "$TARGET_REPO/.github"
-cp_file "$HOS_SOURCE/.github/CODEOWNERS"              "$TARGET_REPO/.github/CODEOWNERS"
-cp_file "$HOS_SOURCE/.github/pull_request_template.md" "$TARGET_REPO/.github/pull_request_template.md"
+cp_framework_file "$HOS_SOURCE/.github/CODEOWNERS"              "$TARGET_REPO/.github/CODEOWNERS"
+cp_framework_file "$HOS_SOURCE/.github/pull_request_template.md" "$TARGET_REPO/.github/pull_request_template.md"
 
 # ── prompts/ — prompt artifact directory ──────────────────────────────────────
 echo ""
@@ -1197,15 +1237,10 @@ else
   skip "prompts/ already exists"
 fi
 
-# ── .hos-release — record the installed framework version ─────────────────────
-echo ""
-info ".hos-release — installed framework version marker"
-if $DRY_RUN; then
-  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
-else
-  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
-  ok ".hos-release = $HOS_REF"
-fi
+# NOTE: .hos-release (the version stamp) is written AFTER the manifest block
+# below — the version is the COMMIT POINT, stamped only once the agents AND the
+# manifest are on disk. So a manifest-assembly failure (#277) can never leave a
+# new .hos-release stamped over a stale or missing .hos-manifest.
 
 # ── .hos-manifest — framework inventory, obsolete-file detection + opt-in prune (#182) ──
 # Records the framework-OWNED files this release ships, each with its sha256 (so a
@@ -1254,6 +1289,8 @@ else
   # them through unchanged.
   _agent_spec="$_AGENT_STAGE/manifest-spec.json"
   [[ -f "$_agent_spec" ]] || echo '{}' > "$_agent_spec"
+  _manifest_err="$_AGENT_STAGE/manifest-assemble.err"
+  _assemble_rc=0
   _new_manifest="$(python3 -c 'import json,sys
 spec=json.load(open(sys.argv[1]))
 # WHOLE rows arrive on stdin as full "<path>\tWHOLE\t<sha>" lines; bucket them
@@ -1264,10 +1301,23 @@ if whole:
 sys.path.insert(0, sys.argv[2])
 import regions
 sys.stdout.write(regions.assemble_manifest(spec))' \
-      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>/dev/null)"
-  if [[ -z "$_new_manifest" ]]; then
-    # Fallback: regions.py unavailable — write at least the WHOLE rows with a v2 header.
-    _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+      "$_agent_spec" "$HOS_SOURCE/scripts/oversight/validators" <<< "$_whole_rows" 2>"$_manifest_err")" || _assemble_rc=$?
+  if [[ $_assemble_rc -ne 0 || -z "$_new_manifest" ]]; then
+    if [[ ! -f "$HOS_SOURCE/scripts/oversight/validators/regions.py" ]]; then
+      # regions.py genuinely absent — WHOLE-only is the best-effort fallback, but
+      # say so: region drift tracking is degraded until a region-aware install.
+      warn ".hos-manifest: regions.py unavailable — writing WHOLE rows only (region drift tracking is degraded until the next region-aware install)."
+      _new_manifest="$(printf '# hos-manifest-schema: 2\n%s\n' "$_whole_rows" | LC_ALL=C sort)"
+    else
+      # #277: regions.py IS present but assembly crashed — do NOT silently stamp a
+      # degraded (region-row-less) manifest. The agents are written, but a degraded
+      # manifest breaks the next upgrade's drift detection. Refuse to stamp.
+      echo "" >&2
+      err ".hos-manifest assembly crashed (regions.py present, exit $_assemble_rc) — refusing to write a degraded manifest (#277):"
+      [[ -s "$_manifest_err" ]] && sed 's/^/    /' "$_manifest_err" >&2
+      err "The agents were written, but .hos-manifest / .hos-release are NOT stamped. Fix the cause and re-run to complete the install."
+      exit 1
+    fi
   fi
   if [[ -f "$_manifest_file" ]]; then
     # Orphans = paths in the prior manifest but not this one, that still exist.
@@ -1286,14 +1336,78 @@ sys.stdout.write(regions.assemble_manifest(spec))' \
           *)                echo "      $_p" ;;
         esac
       done
+
+      # ── Stale agent auto-archive (#350) ────────────────────────────────────
+      # Stale .claude/agents/*.md files are an AI-confusion risk: the AI will
+      # load every agent in that directory, including ones the framework removed.
+      # Unlike non-agent orphans, we act immediately rather than just warn.
+      #   Non-interactive / --pr mode → archive automatically to .hos-stale/.
+      #   Interactive → prompt the user (Y to archive, n to leave in place).
+      # This is separate from --prune (which archives ALL orphans to .hos-archive/).
+      _stale_agents=()
+      for _p in "${_orphans[@]}"; do
+        case "$_p" in .claude/agents/*) _stale_agents+=("$_p") ;; esac
+      done
+
+      if [[ ${#_stale_agents[@]} -gt 0 ]]; then
+        _do_stale_archive=false
+        if ! [[ -t 0 ]] || $PR_ACTIVE; then
+          # Non-interactive or PR-mode: auto-archive without prompting (#350).
+          _do_stale_archive=true
+          warn "Non-interactive mode — archiving ${#_stale_agents[@]} stale agent file(s) to .hos-stale/ automatically (#350)"
+        else
+          # Interactive: prompt.
+          echo ""
+          echo -e "  ${YELLOW}⚠${RESET}  ${#_stale_agents[@]} stale agent definition(s) detected."
+          echo "     The AI loads every file in .claude/agents/ — stale agents cause confusion."
+          printf "     Archive them to .hos-stale/ now? [Y/n] "
+          read -r _stale_ans </dev/tty || _stale_ans="Y"
+          [[ "${_stale_ans:-Y}" =~ ^[Yy]?$ ]] && _do_stale_archive=true
+        fi
+
+        if $_do_stale_archive; then
+          _stale_root="$TARGET_REPO/.hos-stale"
+          _stale_archived=0; _stale_skipped=0
+          for _p in "${_stale_agents[@]}"; do
+            _fname="$(basename "$_p")"
+            mkdir -p "$_stale_root"
+            if mv "$TARGET_REPO/$_p" "$_stale_root/$_fname" 2>/dev/null; then
+              _stale_archived=$((_stale_archived+1))
+              _stale_sha="$(_sha256 "$_stale_root/$_fname")"
+              printf '{"event":"hos-stale-archive","file":"%s","archived_to":".hos-stale/%s","release":"%s","sha256":"%s","timestamp":"%s"}\n' \
+                "$_p" "$_fname" "$HOS_REF" "$_stale_sha" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                >> "$TARGET_REPO/audit/oversight-log.jsonl" 2>/dev/null || true
+              ok "Archived stale agent: $_p → .hos-stale/$_fname"
+            else
+              warn "Could not archive $_p — check permissions; remove manually."; _stale_skipped=$((_stale_skipped+1))
+            fi
+          done
+          if [[ $_stale_archived -gt 0 ]]; then
+            # Quarantine marker — keep agents/tools from treating stale dir as live.
+            cat > "$_stale_root/DO-NOT-USE.md" <<'STALE'
+# .hos-stale/ — quarantined stale agent definitions
+
+Agent files here were removed from the HOS framework and auto-archived by
+`hos_install.sh` (#350). They are NOT active — Claude will NOT load them here.
+To recover one, move it back to `.claude/agents/`. It is also in git history.
+STALE
+          fi
+          [[ $_stale_skipped -gt 0 ]] && warn "$_stale_skipped stale agent(s) left in place (move failed — remove manually)."
+        else
+          warn "Stale agents left in place — remove or move them manually before using HOS (#350)."
+        fi
+      fi
+
       if $PRUNE; then
         # Opt-in archive-prune (destructive → cautious): MOVE each orphan to a committed,
         # quarantined .hos-archive/, but only if it is UNMODIFIED since install (sha256
         # matches the prior manifest). Consumer-edited files are left in place + flagged.
+        # Stale agents already handled above — skip them in the --prune pass.
         _ref_slug="$(printf '%s' "$HOS_REF" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
         _arch_root="$TARGET_REPO/.hos-archive"; _arch_dir="$_arch_root/removed-in-${_ref_slug:-update}"
         _pruned=0; _skipped=0
         for _p in "${_orphans[@]}"; do
+          case "$_p" in .claude/agents/*) continue ;; esac   # already handled by stale-archive
           _prior_sha="$(awk -F '\t' -v p="$_p" '$1==p{print $2; exit}' "$_manifest_file")"
           _cur_sha="$(_sha256 "$TARGET_REPO/$_p")"
           if [[ -z "$_prior_sha" ]]; then
@@ -1326,12 +1440,30 @@ ARCH
           ls -dt "$_arch_root"/removed-in-* 2>/dev/null | tail -n +3 | while IFS= read -r _old; do rm -rf "$_old"; done
         fi
       else
-        warn "Review and remove if unused, or re-run with --prune to archive them safely to .hos-archive/ (#182)."
+        # Non-agent orphan files: always warn, suggest --prune.
+        _non_agent_orphans=()
+        for _p in "${_orphans[@]}"; do
+          case "$_p" in .claude/agents/*) ;; *) _non_agent_orphans+=("$_p") ;; esac
+        done
+        [[ ${#_non_agent_orphans[@]} -gt 0 ]] && \
+          warn "Review and remove non-agent orphan(s) if unused, or re-run with --prune to archive them safely to .hos-archive/ (#182)."
       fi
     fi
   fi
   printf '%s\n' "$_new_manifest" > "$_manifest_file"
   ok ".hos-manifest written ($(printf '%s\n' "$_new_manifest" | grep -cvE '^(#|[[:space:]]*$)') region/file rows tracked)"
+fi
+
+# ── .hos-release — record the installed framework version (the COMMIT POINT) ───
+# Written LAST, only after the agents and manifest are on disk — so a failure in
+# the manifest block above (#277) never leaves a new version over a bad manifest.
+echo ""
+info ".hos-release — installed framework version marker"
+if $DRY_RUN; then
+  dry_run "Would write $TARGET_REPO/.hos-release ($HOS_REF)"
+else
+  printf "%s\n" "$HOS_REF" > "$TARGET_REPO/.hos-release"
+  ok ".hos-release = $HOS_REF"
 fi
 
 # ── Install-via-PR: commit the upgrade, open the PR, return to the original branch (#193) ──
@@ -1349,12 +1481,22 @@ if $PR_ACTIVE; then
       # message. Fail-closed; the base branch is untouched (work is on PR_BRANCH).
       fail "Commit failed on '$PR_BRANCH' (e.g. a rejecting hook) — staged changes remain; your base branch is untouched. Resolve and re-run."
     elif git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
-      _pr_body="Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
+      # #226: disclose that this PR is machine-generated — by a deterministic
+      # installer script, not hand-authored (and not LLM-authored). Draft +
+      # best-effort needs-human so a human reviews before merge.
+      _pr_body="> 🤖 **Automated PR — generated by \`hos_install.sh\`.** Produced by the HOS installer (a deterministic script), not hand-authored. A human must review the diff before merging; it must not be auto-merged.
+
+Automated HOS framework upgrade to **${HOS_REF}**. Review the diff, then **merge to adopt** or **close/revert to roll back** — your \`main\` is untouched until you merge. Any framework files removed this version are visible in the \`.hos-manifest\` diff (#182)."
       _pr_url="$( cd "$TARGET_REPO" && gh pr create \
-        --title "chore(hos): upgrade framework to ${HOS_REF}" \
-        --body "$_pr_body" --head "$PR_BRANCH" 2>/dev/null || true )"
-      if [[ -n "$_pr_url" ]]; then ok "Opened upgrade PR: $_pr_url"
-      else fail "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --head $PR_BRANCH"; fi
+        --title "🤖 [hos-install] chore(hos): upgrade framework to ${HOS_REF}" \
+        --body "$_pr_body" --head "$PR_BRANCH" --draft 2>/dev/null || true )"
+      if [[ -n "$_pr_url" ]]; then
+        ok "Opened upgrade PR (draft): $_pr_url"
+        # The label may not exist in the consumer repo — best-effort; never fail
+        # the PR over a missing label (#226).
+        ( cd "$TARGET_REPO" && gh pr edit "$_pr_url" --add-label needs-human >/dev/null 2>&1 ) \
+          || info "(tip: this PR is flagged for human review — add a 'needs-human' label if your repo uses one)"
+      else fail "Pushed '$PR_BRANCH' but PR creation failed — open it manually: gh pr create --draft --head $PR_BRANCH"; fi
     else
       fail "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually. (Your base branch is untouched.)"
     fi

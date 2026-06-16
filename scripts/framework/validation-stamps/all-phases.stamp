@@ -1,8 +1,4 @@
-validated: 2026-06-15T18:50:17Z
-phases: 1-static 1.5-self 1.6-scripts 2-agents
-skipped: 
-result: human-authorized-override
-override: HOS_ALLOW_UNVALIDATED
-override_authorized_by: Scott Thurlow
-override_reason: #208 stopping decision — 3 HIGH + 5 medium pre-existing cross-vendor governance findings (none regress the v0.3.0 diff), filed in #269. Static + Opus self-review + scripts review converged clean; the shipped-surface pilot-contamination defect was fixed (#262). Only the open-ended adversarial agent review did not converge within the pass cap.
-override_expires: 2026-06-22T00:00:00Z
+validated: 2026-06-15T21:12:39Z
+phases: 1-static
+skipped: 2-agents 3-docs 4-spec-compliance
+result: pass

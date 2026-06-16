@@ -70,15 +70,26 @@ git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
 | `template_refs_check.sh` | `template-refs` | — |
 | `portability_check.sh` | `portability` | — |
 | `django_check.sh` | `django` | — |
+| code-reviewer sign-off | `code-review` | `code-review` |
 | security-reviewer sign-off | `security` | `security` |
-| privacy-reviewer sign-off | — | `privacy` |
-| ui-reviewer sign-off | — | `ui` |
-| a11y-reviewer sign-off | — | `a11y` |
-| infra-reviewer sign-off | — | `infra` |
-| ops-reviewer sign-off | — | `ops` |
-| reliability-reviewer sign-off | — | `reliability` |
-| unit-test sign-off | — | `test-unit` |
-| system-test sign-off | — | `test-system` |
+| privacy-reviewer sign-off | `privacy` | `privacy` |
+| ui-reviewer sign-off | `ui` | `ui` |
+| a11y-reviewer sign-off | `a11y` | `a11y` |
+| infra-reviewer sign-off | `infra` | `infra` |
+| ops-reviewer sign-off | `ops` | `ops` |
+| reliability-reviewer sign-off | `reliability` | `reliability` |
+| unit-test sign-off | `test-unit` | `test-unit` |
+| system-test sign-off | `test-system` | `test-system` |
+
+> Any required sign-off role can be suspended by adding `SUSPENDED: <role>` to
+> `contract/gate-suspension.md` — the evaluator's suspension check is generic over
+> every role in `required_signoffs`. **Differences in how they re-enable:** pure
+> script gates (lint, types, secrets, template-refs, portability, django) are
+> auto-re-enabled after consecutive clean passes; reviewer-role suspensions —
+> and `security`, which has a reviewer counterpart a passing scan can't satisfy —
+> are removed only by a human. Suspension of any role is additionally **ignored**
+> on a step behind the effective human gate (validated tier == CRITICAL or
+> `human_gate_required`).
 
 **5. Delete the suspension file when done:**
 ```bash
@@ -685,9 +696,9 @@ python3 scripts/oversight/token_tracker.py report
 # Token burn all-time
 python3 scripts/oversight/token_tracker.py report --all
 
-# All escaped defects
-jq 'select(.event=="panel-run") | {step, escaped_defects}' \
-  audit/oversight-log.jsonl
+# Escaped defects surface as PR review threads / filed issues, not an audit event.
+#   (There is no panel-run audit event; the panel posts to the PR.)
+gh issue list --label escaped-defect --state all
 
 # All security findings filed
 gh issue list --label security-finding --state all
@@ -698,8 +709,12 @@ cat .claudetmp/signoffs/stepN-register.md
 # Second review verdict for step N
 head -10 .claudetmp/second-review/stepN-*.md
 
-# Risk tier history
-jq 'select(.event=="risk-assessment") | {step, tier, score}' \
+# Risk tier for the current step — read the risk-assessment artifact
+#   (risk-assessor writes this file; it does not emit an audit-log event)
+head -20 .claudetmp/oversight/validators/risk-assessment.md
+
+# Step head commits recorded in the audit log
+jq 'select(.event=="step-head") | {step, head_sha}' \
   audit/oversight-log.jsonl
 ```
 
@@ -764,3 +779,30 @@ bash scripts/framework/run_framework_validation.sh --static-only
 | 9 Notifications | MEDIUM | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | | |
 | 10 Admin portals | HIGH | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | ✓ | | admin |
 | 11 Deploy | HIGH | ✓ | ✓ | ✓ | | ✓ | ✓ | ✓ | | | deploy |
+
+---
+
+## Filing Release-Blocking Issues
+
+If you encounter a bug in HOS that affects a production deployment, use this protocol to report it and request a patch.
+
+**Where to file:** Open an issue in the HOS repo at `thurlow-research/HumanOversightSystem` — not in your consumer project repo. The HOS maintainers triage issues filed there; issues filed in your own repo are not monitored for framework bugs.
+
+**Labels:** Use the existing `bug` label — no new label is needed. The worker's triage picks up `bug`-labeled issues automatically.
+
+**Indicating a release is blocked:** In the issue body, include the line:
+```
+Release blocking: affects v<version> in production
+```
+Or prefix the issue title with `[BLOCKER]`, for example:
+```
+[BLOCKER] R5 §6 condition 2 uses wrong field for authorizing actor
+```
+Either form signals to the worker that this issue should be triaged with elevated priority.
+
+**Requesting a patch release:** Open an issue with a title starting `[PATCH REQUEST]`. The worker picks up `[PATCH REQUEST]` issues and routes them to human triage. Include:
+- The version affected (e.g., `v0.3.x`)
+- A minimal reproduction or description of the failure
+- The urgency (blocking a deployment, blocking a release cut, etc.)
+
+**What happens next:** The worker's triage classifies the issue. If it is confirmed release-blocking, the maintainer will open a `release-request` issue and cut a patch through the standard release authorization protocol. You will be notified via the original issue.

@@ -114,6 +114,7 @@ while IFS= read -r -d '' f; do
         [[ -z "$ref_clean" ]] && continue
         [[ "$ref_clean" != */* ]] && continue   # skip bare filenames
         [[ "$ref_clean" == \{*\}* ]] && continue  # skip template placeholders like {SPEC_FILE}
+        [[ "$ref_clean" == PROJECT/* ]] && continue  # skip consumer-project-scoped paths (live in target repos, not HOS source)
         # Exempt project-start output docs — they are written during the build, not beforehand
         if echo "$OUTPUT_DOCS" | grep -qx "$ref_clean"; then
             ok "[$agent_name] $ref_clean (output doc — existence not required)"
@@ -155,6 +156,11 @@ while IFS= read -r -d '' f; do
         # Agent names either contain a hyphen (e.g. code-reviewer, pm-agent)
         # OR are single known short names. Skip library names, types, and status values.
         KNOWN_SHORT_AGENTS="architect|coder|human"
+        # GitHub labels and HOS workflow tokens are not agent names — skip them
+        KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized"
+        if echo "$target" | grep -qE "^($KNOWN_LABELS)$"; then
+            continue
+        fi
         if ! echo "$target" | grep -qE "^($KNOWN_SHORT_AGENTS)$" && \
            ! echo "$target" | grep -q '-'; then
             continue
@@ -212,8 +218,28 @@ for canonical in "${DOC_CANONICALS[@]}"; do
     done <<< "$all_refs"
 done
 
-# ── 6. Doc update staleness — agent files changed without doc update ─────────
-section "6. Agent-to-doc staleness check"
+# ── 6. CORE region carve-out clause — #291 ──────────────────────────────────
+section "6. CORE region PROJECT carve-out clause (#291)"
+
+# Every agent file that has a HOS:CORE:START region must contain the
+# enumerated carve-out clause (Decision D49 hybrid A+B).  A file with
+# HOS:CORE:START but not "PROJECT may NEVER" has the unconditional
+# "PROJECT governs" form that allows consumers to override safety gates.
+CARVE_OUT_FINDINGS=0
+while IFS= read -r -d '' f; do
+    if grep -q "HOS:CORE:START" "$f"; then
+        agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+        if grep -q "PROJECT may NEVER" "$f"; then
+            ok "[$agent_name] CORE carve-out clause present"
+        else
+            fail "[$agent_name] missing PROJECT carve-out clause — unconditional override still present (#291)"
+            CARVE_OUT_FINDINGS=$(( CARVE_OUT_FINDINGS + 1 ))
+        fi
+    fi
+done < <(find "$AGENTS_DIR" -name '*.md' -print0)
+
+# ── 7. Doc update staleness — agent files changed without doc update ─────────
+section "7. Agent-to-doc staleness check"
 
 # For each agent file changed in the last commit or uncommitted, check whether
 # the key doc files (AGENTS.md, OVERSIGHT-RUNBOOK.md) were also touched.
