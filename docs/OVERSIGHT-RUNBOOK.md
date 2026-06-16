@@ -779,3 +779,30 @@ bash scripts/framework/run_framework_validation.sh --static-only
 | 9 Notifications | MEDIUM | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | | |
 | 10 Admin portals | HIGH | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | ✓ | | admin |
 | 11 Deploy | HIGH | ✓ | ✓ | ✓ | | ✓ | ✓ | ✓ | | | deploy |
+
+---
+
+## Filing Release-Blocking Issues
+
+If you encounter a bug in HOS that affects a production deployment, use this protocol to report it and request a patch.
+
+**Where to file:** Open an issue in the HOS repo at `thurlow-research/HumanOversightSystem` — not in your consumer project repo. The HOS maintainers triage issues filed there; issues filed in your own repo are not monitored for framework bugs.
+
+**Labels:** Use the existing `bug` label — no new label is needed. The worker's triage picks up `bug`-labeled issues automatically.
+
+**Indicating a release is blocked:** In the issue body, include the line:
+```
+Release blocking: affects v<version> in production
+```
+Or prefix the issue title with `[BLOCKER]`, for example:
+```
+[BLOCKER] R5 §6 condition 2 uses wrong field for authorizing actor
+```
+Either form signals to the worker that this issue should be triaged with elevated priority.
+
+**Requesting a patch release:** Open an issue with a title starting `[PATCH REQUEST]`. The worker picks up `[PATCH REQUEST]` issues and routes them to human triage. Include:
+- The version affected (e.g., `v0.3.x`)
+- A minimal reproduction or description of the failure
+- The urgency (blocking a deployment, blocking a release cut, etc.)
+
+**What happens next:** The worker's triage classifies the issue. If it is confirmed release-blocking, the maintainer will open a `release-request` issue and cut a patch through the standard release authorization protocol. You will be notified via the original issue.

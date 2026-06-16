@@ -281,9 +281,11 @@ Re-read live on every evaluation — never cache. All must hold simultaneously.
 
 **Four temporal conditions (§6):**
 1. `issue.assignee.login == "HOSWorkerTutelare"` at evaluation time.
-2. The most recent `assigned` event with `assignee.login == HOSWorkerTutelare`
-   has `actor.login` that IS a human CODEOWNER (per `.github/CODEOWNERS`,
-   last-match-wins) and IS NOT in `BOT_ACCOUNTS`. A bot self-assign can never pass.
+2. The most recent `assigned` event where `assignee.login == HOSWorkerTutelare`
+   has `assigner.login` (not `actor.login` — the GitHub Issues Events API uses
+   `actor` for the assignee and `assigner` for who performed the assignment) that
+   IS a human CODEOWNER (per `.github/CODEOWNERS`, last-match-wins) and IS NOT in
+   `BOT_ACCOUNTS`. A bot self-assign can never pass.
 3. `T_assign > T_comment` (that assignment event postdates the results comment).
 4. `HEAD` at evaluation time matches the `Release candidate SHA` recorded in the
    results comment. If HEAD has advanced, the binding is stale — abort, re-post
@@ -293,9 +295,14 @@ Re-read live on every evaluation — never cache. All must hold simultaneously.
 All three signals must have been performed by THE SAME human CODEOWNER:
 - `labeled` event for `release-authorized` — `actor.login`
 - `unlabeled` event for `needs-human` — `actor.login`
-- `assigned` event for `HOSWorkerTutelare` — `actor.login`
+- `assigned` event for `HOSWorkerTutelare` — `assigner.login` (the GitHub Issues
+  Events API uses `actor` for the assignee and `assigner` for who performed the
+  assignment; use `assigner.login` here, not `actor.login`)
 
-All three `actor.login` values must be equal AND must be in `.github/CODEOWNERS` AND must NOT be in `BOT_ACCOUNTS`. Any single signal by a different actor or by a bot disqualifies the entire authorization. Re-read all three from issue events live on every evaluation.
+The `actor.login` values from the labeled and unlabeled events and the `assigner.login`
+from the assigned event must all be equal AND must be in `.github/CODEOWNERS` AND must
+NOT be in `BOT_ACCOUNTS`. Any single signal by a different actor or by a bot disqualifies
+the entire authorization. Re-read all three from issue events live on every evaluation.
 
 On any condition failure: fire `ng3b-violation-attempt` with the appropriate
 `failed_check` code (R5.6.1 through R5.6.4, R5.6.3-label) and do not proceed.
