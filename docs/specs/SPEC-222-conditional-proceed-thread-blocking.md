@@ -1,9 +1,15 @@
 # SPEC-222: CONDITIONAL_PROCEED as Blocking PR Threads
 
-**Status:** Draft — for architect review
+**Status:** REVISED — pending human clearance on branch-protection flip (see issue #399)
 **Issue:** #222
 **Author:** pm-agent
 **Date:** 2026-06-17
+**Revised:** 2026-06-17 — architect REQUEST_CHANGES applied: R1.5 (API verification), R2 product
+boundary checkpoint + startup-artifact-gap, R3 WARN/FAIL distinction (tamper signal), AC-10
+update, setup_branch_protection.sh added to §6 Affected Artifacts. Classification: R1.5 and
+AC-10 are structural (new requirement / behavior change); R2 notes are structural (new decision
+gate); setup_branch_protection.sh entry is structural (pending #399); startup-artifact-gap note
+is clarifying.
 **Companion:** `SPEC-overseer-merge-authority.md` §1 (this spec elaborates the requirements
 first written there; this document supersedes §1 as the canonical requirements source for #222)
 
@@ -108,6 +114,14 @@ equals the number of conditional items. If fewer threads were posted than items 
 `gh pr review` call failed), the orchestrator must halt and print the discrepancy rather
 than silently proceeding.
 
+**R1.5** The orchestrator implementation MUST empirically verify that the chosen GitHub API
+call creates a thread resolvable by the `required_conversation_resolution` branch protection
+rule. If `gh pr review --comment` does NOT produce such threads (i.e., GitHub does not treat
+general review comments as "conversations" for the purposes of the branch protection gate),
+the implementation must use the GraphQL `addPullRequestReviewThread` API instead.
+Technical-design must confirm which API creates resolvable threads before implementing R1.
+This verification must be completed before any R1 implementation is submitted for review.
+
 ### R2 — Branch protection must enforce resolved conversations
 
 **R2.1** Any repository branch that can receive a CONDITIONAL_PROCEED PR (any branch that
@@ -133,23 +147,52 @@ runtime — that is a project setup invariant. However, if the orchestrator dete
 requirement, it must emit a warning in its PR summary comment. The warning does not block PR
 opening — the branch protection gap is a setup deficiency, not a per-PR runtime error.
 
+**Product boundary checkpoint (R2):** The branch-protection flip required by R2 changes the
+merge gate default for ALL PRs on any branch that receives CONDITIONAL_PROCEED PRs — not only
+CONDITIONAL_PROCEED PRs. This affects all existing installs from the moment `setup_branch_protection.sh`
+is re-run. Technical-design may build R1 (thread posting) and R4 (ledger field) without this
+checkpoint. The branch-protection flip (R2) and the evaluator tamper-check (R3.2) bind only
+after pm-agent + human explicitly confirm that changing the merge gate default is acceptable
+for all existing installs. Issue #399 tracks this clearance. Do not implement R2 or R3.2 until
+#399 is resolved.
+
+**Startup-artifact-gap:** `scripts/framework/setup_branch_protection.sh` currently sets
+`"required_conversation_resolution": false` at line 140 of that file. This spec adds
+`setup_branch_protection.sh` as an Affected Artifact (see §6). Until this spec ships and
+`setup_branch_protection.sh` is updated, new installs default to `required_conversation_resolution:
+false`, meaning the thread-blocking mechanism is installed but not mechanically enforced on
+those installs. This is a known startup-artifact-gap — tracked in issue #399.
+
 ### R3 — Oversight-evaluator Phase 1 check verifies threads exist
 
 When the oversight-evaluator runs Phase 1 compliance check against a step that carries a
 CONDITIONAL_PROCEED verdict:
 
 **R3.1** The evaluator must query the PR's review threads (via `gh pr view <PR_NUMBER> --json reviews`
-or equivalent) and verify that at least one unresolved thread posted by the orchestrator
-account (`HOSOversightTutelare`) exists. If no such thread exists and the step has conditional
-items → **COMPLIANCE WARN** (not FAIL — the threads may have been resolved by a human before
-the evaluator runs; an evaluator running post-resolution is expected). The warning must state
-how many conditional items the evaluator verdict listed and that no unresolved orchestrator
-threads were found.
+or equivalent) and cross-reference the ledger's `conditional_threads_opened` field. The
+compliance outcome is determined as follows:
+
+- **COMPLIANCE WARN:** No unresolved orchestrator threads are found AND the ledger shows
+  `conditional_threads_opened = 0`. This is an ambiguous state — threads may have been resolved
+  by a human before the evaluator runs, or may never have been posted. The warning must state
+  how many conditional items the evaluator verdict listed, that no unresolved orchestrator
+  threads were found, and that the ledger records zero threads opened.
+
+- **COMPLIANCE FAIL (tampering signal):** The ledger shows `conditional_threads_opened > 0`
+  (the orchestrator recorded that it posted threads) BUT the evaluator finds zero unresolved
+  threads AND zero resolved-thread evidence on the PR (no thread resolution events from any
+  account). This combination means threads were reportedly posted but have vanished with no
+  resolution record — a tampering signal. The evaluator must escalate with COMPLIANCE FAIL,
+  state the discrepancy (ledger count vs. observed thread state), and halt evaluation.
+
+The warning must state how many conditional items the evaluator verdict listed and the ledger
+`conditional_threads_opened` count for context.
 
 **R3.2** The evaluator must NOT treat all-resolved threads as a COMPLIANCE FAIL. A PR where
 a human resolved all conditional threads before the evaluator re-runs is in the correct state —
 the threads did their job. The evaluator notes this as "conditional items resolved" and allows
-the step to proceed.
+the step to proceed. (Note: R3.2 binds only after human clearance on issue #399 — see the
+product boundary checkpoint under R2.)
 
 **R3.3** The evaluator must NOT treat unresolved threads as blocking evaluation. The purpose
 of the Phase 1 check is to verify the threads were posted. Whether they are resolved is the
@@ -223,7 +266,7 @@ a `conditional_threads_opened` field with the integer count of threads successfu
 | AC-7 | The ledger entry includes `conditional_threads_opened` with the correct integer count |
 | AC-8 | A PROCEED-verdict PR opens no conditional threads |
 | AC-9 | Posting N conditional items results in exactly N threads posted; if any `gh pr review` call fails, the orchestrator halts and reports the discrepancy |
-| AC-10 | The oversight-evaluator, running after a CONDITIONAL_PROCEED PR was opened, emits a COMPLIANCE WARN (not FAIL) if no unresolved orchestrator threads are found |
+| AC-10 | The oversight-evaluator emits COMPLIANCE WARN (not FAIL) when no unresolved orchestrator threads are found AND the ledger shows `conditional_threads_opened = 0` (ambiguous state); it emits COMPLIANCE FAIL when the ledger shows `conditional_threads_opened > 0` but zero threads and zero resolved-thread evidence are found on the PR (tampering signal) |
 | AC-11 | The oversight-evaluator, running after all threads have been resolved by a human, records "conditional items resolved" and does not block the step |
 | AC-12 | The contract documents "Require conversation resolution before merging" as a prerequisite for CONDITIONAL_PROCEED enforcement |
 
@@ -238,6 +281,7 @@ a `conditional_threads_opened` field with the integer count of threads successfu
 | `contract/OVERSIGHT-CONTRACT.md` §7 | Additive | Add evaluator Phase 1 thread-existence COMPLIANCE WARN (R3.1) for CONDITIONAL_PROCEED steps |
 | `.claude/agents/oversight-evaluator.md` | Additive | Phase 1: add thread-existence check for CONDITIONAL_PROCEED steps (R3.1–R3.4) |
 | `docs/MACHINE-ACCOUNTS-SETUP.md` | Additive | Add branch protection setup step confirming "Require conversation resolution before merging" is enabled |
+| `scripts/framework/setup_branch_protection.sh` | Structural (pending #399) | Flip `"required_conversation_resolution": false` to `true` at line 140; add a `_check "required_conversation_resolution"` verification call matching the `_check()` pattern at lines 214–219. This change MUST NOT be implemented until issue #399 (human clearance on merge-gate default change) is resolved. |
 
 No new files are created. The existing PR body format is not restructured. The `CONDITIONAL_PROCEED`
 audit event is not changed. Contract version is not bumped (additive-only change per contract §8).
