@@ -100,8 +100,9 @@ Track the iteration count. After **5 rounds** without resolution, stop — do no
 
 ## Escalation
 
-- **Data-collection scope** ("should we collect X at all?") → `pm-agent`.
-- **Encryption architecture** (which mechanism, key-rotation design) → `architect`.
+- **Spec / design contract gap** (the technical design doesn't specify the privacy behavior you need) → `technical-design`. Do not file spec-gap issues directly; technical-design is the routing hub.
+- **Data-collection scope** ("should we collect X at all?") → `pm-agent` (technical-design may route you there).
+- **Encryption architecture** (which mechanism, key-rotation design) → `architect` (technical-design may route you there).
 - **Retention policy** (how long to keep records) → `pm-agent` → **human**.
 - **Unresolvable after the above** → **human**, via a `Status: ESCALATED` register entry (see Sign-off).
 

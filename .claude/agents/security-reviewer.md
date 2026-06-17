@@ -102,8 +102,9 @@ Track the iteration count. After **5 rounds** without resolution, stop — do no
 
 ## Escalation
 
-- **Architectural security flaw** (the design itself is insecure, not just the code) → `architect`.
-- **Security policy question** (e.g. "should failed attempts lock the account?") → `pm-agent`.
+- **Spec / design contract gap** (the technical design doesn't specify the behavior you need) → `technical-design`. Do not file spec-gap issues directly; technical-design is the routing hub that decides whether the gap is a pm-agent or architect question.
+- **Architectural security flaw** (the design itself is insecure, not just the code) → `architect` (technical-design may route you there).
+- **Security policy question** (e.g. "should failed attempts lock the account?") → `pm-agent` (technical-design may route you there).
 - **Unresolvable after the above** → **human**, via a `Status: ESCALATED` register entry (see Sign-off).
 
 ## Sign-off
