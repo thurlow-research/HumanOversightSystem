@@ -33,6 +33,7 @@ Read these before starting:
 3. `.claudetmp/second-review/step{N}-*.md` — second review output. The file is **always written** when the review runs (it carries `verdict: skipped` when the score was below thresholds). Therefore a *present* file with `verdict: skipped` is valid **only when the validated tier is below MEDIUM** — on a MEDIUM+ validated-tier step a present `verdict: skipped` is a COMPLIANCE FAIL (the mandatory cross-vendor review did not run); a *genuinely absent* file means the review never ran. See the Phase 1 second-review compliance check below.
 4. `.claudetmp/oversight/validators/risk-assessment.md` — validated risk tier
 5. `.claudetmp/oversight/step{N}-human-authorization.md` — CRITICAL steps only: human must create this file before the evaluator runs. If the step has `human_gate_required: true` and this file is absent or empty, compliance fails immediately in Phase 1.
+6. `.claudetmp/notifications/step{N}/` — inter-agent notification artifacts (SPEC-85). When present and addressed (`To:`) to a required `ui`/`a11y`/`ops` reviewer, Phase 1 verifies that role's register entry records `Notifications_acknowledged:` (WARN if absent; FAIL if the notification is `Blocking: yes`). The evaluator reads only each file's `To:` and `Blocking:` fields — never the inline `Acknowledged:` field.
 
 ---
 
@@ -153,6 +154,35 @@ For each required role that is NOT suspended, check:
       "$N" "$H" "${A:-unknown}" "$(jq -Rs . < .claudetmp/oversight/step{N}-human-authorization.md)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> audit/oversight-log.jsonl
     ```
     This pins *what* was authorized (the content hash + decision text), *when*, and the claimed authorizer into committed history — so an authorization cannot be silently altered or denied after the fact. It is **accountability + tamper-evidence, not cryptographic forge-proofing**: it does not prevent an agent-on-the-human's-account from writing the file, which requires out-of-band human proof verified outside the agent's reach (tracked as the bulletproof backfill — see METHODOLOGY threat-model note).
+
+**Notification acknowledgment compliance (SPEC-85) — runs after the per-role sign-off field checks:**
+
+When `ux-designer`/`ops-designer` change a shared artifact (design pack, telemetry spec) they file a notification to `.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md` (contract §1) so the receiving reviewer (`ui`/`a11y`/`ops`) re-reviews. This check verifies the receiving reviewer **recorded** that it acted on the notification — it backstops acknowledgment-*recording*, not discovery (a reviewer never told where to look is a behavioral gap carried in the reviewer prompts, not a mechanical check here).
+
+Inputs are exactly three (do **not** read the inline `Acknowledged:` field of the notification file — the register field is the sole source of truth):
+1. the existence of `.claudetmp/notifications/step{N}/` and the `To:` field of each file in it,
+2. the `Blocking:` field of each file,
+3. the `Notifications_acknowledged:` field of the register entry for each addressed role.
+
+```
+1. If .claudetmp/notifications/step{N}/ does not exist OR is empty:
+     skip this check entirely — no compliance item.            # AC1
+2. For each *.md file F in the directory, read To(F) and Blocking(F).
+3. For each distinct addressed role r = To(F):
+     - If r is NOT in this step's effective required_signoffs:
+         skip r — emit NO compliance item, even if Blocking:yes.  # required-roles-only (AC5)
+     - Else read the register entry for r and its Notifications_acknowledged: field, ACK(r).
+         ACK(r) is "recorded" iff present AND non-empty AND not whitespace-only
+         ("none" counts as recorded — the reviewer affirmatively checked).
+       a. ACK(r) recorded                     → pass, no item.    # AC2, AC6, AC7
+       b. ACK(r) NOT recorded, no Blocking:yes file to r → COMPLIANCE WARN → CONDITIONAL_PROCEED.  # AC3
+       c. ACK(r) NOT recorded, ≥1 Blocking:yes file to r → COMPLIANCE FAIL → ESCALATE.            # AC4
+```
+
+- **WARN message:** "Notification file {filename} addressed to {role} for step {N}: register entry for {role} does not record acknowledgment (`Notifications_acknowledged:` absent or empty). Reviewer may not have read the notification." Add to conditional items; trigger CONDITIONAL_PROCEED; do **not** fail compliance.
+- **FAIL message:** "Blocking notification {filename} ({from} → {role}) for step {N} was not acknowledged in the sign-off register. The sign-off may predate the {from} change. Re-review required." → recommendation ESCALATE.
+
+The check is **scoped to required roles only**: a `Blocking: yes` notification addressed to a role that is NOT in `required_signoffs` for this step never triggers a FAIL or WARN (it is out of the step's review scope). The check does not discover a directory that "should" have existed (Gap 1 stays behavioral) and does not re-check steps completed before this spec shipped (spec NR4).
 
 **Independent diff re-derivation (anti-gaming — only in the loosening direction):**
 

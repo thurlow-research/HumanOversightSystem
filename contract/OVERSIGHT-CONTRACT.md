@@ -186,6 +186,25 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 
 **`Critical_findings_resolved`** is required for `security` and `privacy` roles; optional (N/A) for all others. When `true`, it signals that the evaluator should add the finding to the conditional-items list for human review before merge — it is a Phase 2 quality signal, not a Phase 1 compliance check.
 
+**`Notifications_acknowledged`** (SPEC-85) is **required for the `ui`, `a11y`, and `ops` roles** and optional (may be omitted or recorded as `N/A`) for every other role — `code-review`, `security`, `privacy`, `test-unit`, `test-system`, `process`, `infra`, `reliability` do not receive designer notifications and need not include it. It records the inter-agent notification artifacts (`.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md`, §1) the reviewer read and acted on before signing off:
+
+```markdown
+Notifications_acknowledged: none | {count} — {comma-separated file basenames}
+```
+
+- `none` — no notification directory existed for this step, OR the directory contained no file addressed to this reviewer (`To:` did not match). No action was required. `none` is a *recorded* value (the reviewer affirmatively checked), distinct from an absent/empty field.
+- `{count} — {basenames}` — the reviewer read and acknowledged this many notification files, named by basename. The count must equal the number of basenames listed, and each basename must exist in `.claudetmp/notifications/step{N}/`.
+
+Examples:
+
+```markdown
+Notifications_acknowledged: none
+Notifications_acknowledged: 1 — ux-designer-to-ui-reviewer-20260617T143200Z.md
+Notifications_acknowledged: 2 — ux-designer-to-a11y-reviewer-20260617T143200Z.md, ux-designer-to-a11y-reviewer-20260617T153000Z.md
+```
+
+The `oversight-evaluator` reads this field in Phase 1 (§7) when a notification file exists for the step and names a required reviewer role: an absent/empty field on such a role is a COMPLIANCE WARN, upgraded to a COMPLIANCE FAIL when the unacknowledged notification carries `Blocking: yes`. A notification addressed to a role that is **not** in the step's `required_signoffs` does not trigger any compliance item (the evaluator scopes the check to required roles).
+
 **`Human_resolution`** is required only when `Status: ESCALATED`. Format: `{ISO date} — {decision text}`. The oversight-evaluator reads this field to confirm human resolution is on record before clearing the compliance check. Example: `Human_resolution: 2026-06-11 — Reviewed 5-round loop; architect decision is sound, proceed`.
 
 **`Status: CONDITIONAL`** passes Phase 1 compliance but automatically causes the oversight-evaluator to recommend at least `CONDITIONAL_PROCEED` — a human must verify the conditional item before merge.

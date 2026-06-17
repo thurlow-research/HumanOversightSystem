@@ -1,6 +1,6 @@
 # SPEC-85: Concrete Notification-Consumption Protocol for Reviewer Agents
 
-**Status:** Draft — for architect review
+**Status:** Revised — ready for technical-design
 **Issue:** #85
 **Author:** pm-agent
 **Date:** 2026-06-17
@@ -223,10 +223,11 @@ the existing sign-off role checks:
 1. List all files in `.claudetmp/notifications/step{N}/`. If none exist, skip
    this check entirely.
 2. For each file in the directory, read the `To:` field.
-3. For each distinct value of `To:` that names a role in `required_signoffs`
-   for this step (`ui`, `a11y`, `ops`), verify that the corresponding
+3. For each distinct value of `To:` that names a role **in `required_signoffs`
+   for this step** (`ui`, `a11y`, `ops`), verify that the corresponding
    register entry contains a non-empty `Notifications_acknowledged:` field
-   (any value other than absent or empty).
+   (any value other than absent or empty). A notification addressed to a role
+   that is NOT in `required_signoffs` for this step is ignored by this check.
 4. If a required reviewer role has at least one notification file addressed to
    it AND its register entry is missing the `Notifications_acknowledged:` field
    (or it is present but empty) → **COMPLIANCE WARN** (not FAIL).
@@ -240,16 +241,31 @@ communication protocol between agents, not a gate-enforcement artifact. A
 missing acknowledgment is a process gap (the reviewer may have read the file
 and simply not recorded it, or the notification may have been sent after sign-
 off completed). It is surfaced as a conditional item rather than a hard
-escalation. However, when the notification has `Blocking: yes`, the warn is
-upgraded to a **COMPLIANCE FAIL**: a blocking notification that was not
-acknowledged represents a concrete gap in the review chain — the reviewer's
-sign-off may not reflect the design-pack or telemetry-spec change the
-notification described.
+escalation. However, when the notification has `Blocking: yes` AND the
+addressed role is in `required_signoffs` for this step, the warn is upgraded
+to a **COMPLIANCE FAIL**: a blocking notification to a required reviewer that
+was not acknowledged represents a concrete gap in the review chain — the
+reviewer's sign-off may not reflect the design-pack or telemetry-spec change
+the notification described. A `Blocking: yes` notification addressed to a role
+that is NOT in `required_signoffs` does not trigger FAIL; it does not trigger
+any compliance item from this check.
 
-**Emit a conditional item when Blocking: yes notifications are unacknowledged:**
+**Emit a conditional item when Blocking: yes notifications are unacknowledged
+(required roles only):**
 "Blocking notification {filename} ({from} → {role}) for step {N} was not
 acknowledged in the sign-off register. The sign-off may predate the
 {from} change. Re-review required."
+
+**Note on Gap 1 (notification discovery).** This check backstops
+acknowledgment-recording — it detects a reviewer who received a notification
+but did not record it in their sign-off entry. It does NOT close Gap 1 (a
+reviewer who is invoked without ever learning the notification directory
+exists). Gap 1 remains behaviorally-enforced by the reviewer CORE prompt
+(§4 Step 1 — Discover). The evaluator §6 check cannot detect an undiscovered
+notification directory, because it has no visibility into whether the reviewer
+executed Step 1 or was invoked with a context that omitted it. Projects
+relying solely on the §6 check to enforce consumption should be aware of this
+limit.
 
 ---
 
@@ -271,10 +287,12 @@ entry either lacks `Notifications_acknowledged:` or has it empty, when the
 evaluator runs Phase 1, it emits exactly one COMPLIANCE WARN naming the file
 and the role, and triggers CONDITIONAL_PROCEED (not ESCALATE).
 
-**AC4 — Blocking notification, no acknowledgment: COMPLIANCE FAIL.**
-Given the notification file exists with `Blocking: yes`, and the `ui` sign-off
-entry lacks a non-empty `Notifications_acknowledged:` field, when the evaluator
-runs Phase 1, it emits COMPLIANCE FAIL and the recommendation is ESCALATE.
+**AC4 — Blocking notification to a required role, no acknowledgment: COMPLIANCE FAIL.**
+Given a notification file with `Blocking: yes` and `To: ui-reviewer`, and `ui`
+is in `required_signoffs` for this step, and the `ui` sign-off entry lacks a
+non-empty `Notifications_acknowledged:` field, when the evaluator runs Phase 1,
+it emits COMPLIANCE FAIL and the recommendation is ESCALATE. If `ui` is NOT
+in `required_signoffs` for this step, no FAIL is emitted for this notification.
 
 **AC5 — Notification addressed to a different reviewer: not checked.**
 Given a notification file with `To: ops-reviewer`, and the step's
@@ -344,5 +362,5 @@ it in a reviewer obligation rather than an optional gesture.
 
 ---
 
-*Status: Draft — for architect review*
+*Status: Revised — ready for technical-design*
 *Author: pm-agent | 2026-06-17*
