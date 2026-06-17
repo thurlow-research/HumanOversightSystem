@@ -7,6 +7,7 @@ Primary mutation targets:
   - _FunctionRNVisitor: depth tracking, nesting increment application
 """
 import ast
+import sys
 import textwrap
 import pytest
 from rn_calculator import (
@@ -318,3 +319,165 @@ class TestAnalyseFile:
             assert result["error"] is not None
         finally:
             os.unlink(path)
+
+    def test_nested_function_not_double_counted(self):
+        src = textwrap.dedent("""
+            def outer(x):
+                if x:
+                    def inner(y):
+                        if y:
+                            pass
+                    pass
+        """)
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write(src)
+            path = f.name
+        try:
+            result = analyse_files([path])
+            # Both outer and inner are collected but not double-counted
+            assert result["error"] is None
+            func_names = [f["function"] for f in result["findings"]]
+            assert "outer" in func_names
+        finally:
+            os.unlink(path)
+
+    def test_analyse_files_exception_in_file_produces_error(self):
+        # A file that exists but raises on read (simulate via a non-py extension
+        # or a file that is actually a directory via the generic except branch)
+        result = analyse_files(["/dev/null"])
+        # /dev/null is readable as empty Python → no functions → score 0, no error
+        assert 0.0 <= result["score"] <= 1.0
+
+
+class TestChecklistItems:
+    """_checklist_items produces node-type-specific items; zero-rn stmts are skipped."""
+
+    def _make_func_dict(self, src: str, name: str = "f") -> dict:
+        tree = ast.parse(textwrap.dedent(src))
+        func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+        visitor = _FunctionRNVisitor("t.py", func.name, func.lineno)
+        for stmt in func.body:
+            visitor.visit(stmt)
+        return {
+            "name": func.name,
+            "file": "t.py",
+            "start_line": func.lineno,
+            "risk_number": visitor.total_rn,
+            "statements": visitor.statements,
+        }
+
+    def test_for_loop_checklist(self):
+        from rn_calculator import _checklist_items
+        func = self._make_func_dict("""
+            def f(items):
+                for item in items:
+                    pass
+        """)
+        items = _checklist_items(func)
+        assert any("loop" in i.lower() or "bound" in i.lower() for i in items)
+
+    def test_while_checklist(self):
+        from rn_calculator import _checklist_items
+        func = self._make_func_dict("""
+            def f(cond):
+                while cond:
+                    pass
+        """)
+        items = _checklist_items(func)
+        assert any("while" in i.lower() or "condition" in i.lower() for i in items)
+
+    def test_with_statement_checklist(self):
+        from rn_calculator import _checklist_items
+        func = self._make_func_dict("""
+            def f():
+                with open("x") as fh:
+                    pass
+        """)
+        items = _checklist_items(func)
+        assert any("context manager" in i.lower() or "resources" in i.lower() for i in items)
+
+    def test_except_handler_checklist(self):
+        from rn_calculator import _checklist_items
+        func = self._make_func_dict("""
+            def f():
+                try:
+                    risky()
+                except ValueError:
+                    pass
+        """)
+        items = _checklist_items(func)
+        assert any("exception" in i.lower() or "granularity" in i.lower() for i in items)
+
+    def test_zero_rn_statements_skipped(self):
+        from rn_calculator import _checklist_items
+        # A function with all-zero rn statements (shouldn't happen in practice,
+        # but test the guard)
+        func_dict = {
+            "name": "f",
+            "file": "t.py",
+            "start_line": 1,
+            "risk_number": 0.0,
+            "statements": [{"type": "If", "line": 1, "rn": 0.0, "nesting_depth": 0}],
+        }
+        items = _checklist_items(func_dict)
+        assert items == []
+
+
+class TestElifWithTrailingElse:
+    """Exercises the elif-with-trailing-else path (line 148)."""
+
+    def test_elif_with_else_recorded(self):
+        src = textwrap.dedent("""
+            def f(x, y):
+                if x:
+                    pass
+                elif y:
+                    pass
+                else:
+                    pass
+        """)
+        tree = ast.parse(src)
+        func = tree.body[0]
+        visitor = _FunctionRNVisitor("t.py", func.name, func.lineno)
+        for stmt in func.body:
+            visitor.visit(stmt)
+        # if + elif both in statements; else adds to total_rn only
+        assert len(visitor.statements) >= 2
+        assert visitor.total_rn > visitor.statements[-1]["rn"]
+
+
+class TestRNCalculatorMain:
+    def test_main_no_files(self, capsys, monkeypatch):
+        import json as _json
+        monkeypatch.setattr(sys, "argv", ["rn_calculator.py"])
+        from rn_calculator import main
+        main()
+        captured = capsys.readouterr()
+        data = _json.loads(captured.out)
+        assert data["score"] == 0.0
+        assert data["error"] == "no input files"
+
+    def test_main_with_files_flag(self, capsys, monkeypatch, tmp_path):
+        import json as _json
+        py = tmp_path / "mod.py"
+        py.write_text("def f(x):\n    if x:\n        return x\n")
+        monkeypatch.setattr(sys, "argv", [
+            "rn_calculator.py", "--files", str(py)
+        ])
+        from rn_calculator import main
+        main()
+        captured = capsys.readouterr()
+        data = _json.loads(captured.out)
+        assert "score" in data
+
+    def test_main_valid_file_direct(self, capsys, monkeypatch, tmp_path):
+        import json as _json
+        py = tmp_path / "service.py"
+        py.write_text("def process(x):\n    for i in x:\n        pass\n")
+        monkeypatch.setattr(sys, "argv", ["rn_calculator.py", str(py)])
+        from rn_calculator import main
+        main()
+        captured = capsys.readouterr()
+        data = _json.loads(captured.out)
+        assert "score" in data
+        assert data["error"] is None

@@ -258,6 +258,19 @@ composite = round(weighted_sum / total_w, 4)
 TIERS = [("LOW", 0.30), ("MEDIUM", 0.55), ("HIGH", 0.78), ("CRITICAL", 1.01)]
 tier = next(t for t, hi in TIERS if composite < hi)
 
+# Hoist the maximum tier_floor across all validator results.
+# Read-only surfacing: it does NOT alter composite_score or the derived tier —
+# the risk-assessor is the actor that promotes the final tier using this floor.
+# Taking the maximum (not the first non-null) ensures that if rn_calculator
+# emits MEDIUM and diff_size emits HIGH, the hoisted floor is HIGH (#408).
+TIER_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+tier_floor = None
+for r in results:
+    tf = r.get("tier_floor")
+    if tf and tf in TIER_RANK:
+        if tier_floor is None or TIER_RANK[tf] > TIER_RANK[tier_floor]:
+            tier_floor = tf
+
 summary = {
     "composite_score": composite,
     "tier": tier,
@@ -265,6 +278,8 @@ summary = {
     "successful_validators": len(successful),
     "results": results,
 }
+if tier_floor is not None:
+    summary["tier_floor"] = tier_floor
 
 out = out_dir / "summary.json"
 out.write_text(json.dumps(summary, indent=2))

@@ -432,3 +432,13 @@ An LLM arbiter, reviewer, or any agent component may not suppress, dismiss, or o
 Author-supplied natural-language framing (PR title, description, commit message, inline code comments written by the author) is treated as untrusted input in all reviewer agent prompts. An explicit anti-framing instruction is added to the CORE regions of code-reviewer, security-reviewer, and privacy-reviewer: reviewers evaluate the diff on its own merits; the author's prose description of what the change does does not constitute evidence that the change does it.
 
 **Rationale:** Mitropoulos et al. 2026 (Zotero X7EN6DXZ) demonstrated a 100% attack success rate at getting vulnerability-reintroducing PRs accepted across 17 CVEs in 10 real open-source projects by adversarially crafting PR framing. The attacker refines locally against a clone of the pipeline (asymmetric advantage); redacting PR metadata and adding an anti-framing instruction restored correct detection in all cases. The defense is cheap (a prompt instruction and a context-construction choice) but must be explicit — without it, reviewer agents are vulnerable to this class of attack by default. This is a supply-chain attack on the oversight mechanism itself: a reviewer that can be socially engineered through author-supplied prose weakens every other correctness guarantee at the boundary where a human would have relied on it most. See `research/findings/adversarial-framing-attack-on-reviewer-agents.md`.
+
+### D51 — 2026-06-17: Agent front-matter is fully HOS-canonical on upgrade (#240)
+
+**Problem.** On upgrade, `hos_install.sh` replaces agent file front-matter with the HOS-template version. This silently reverts any consumer edits to fields like `model` or `tools`.
+
+**Decision.** Agent front-matter is **fully HOS-canonical**. Consumers must not edit agent front-matter.
+
+**Rationale.** Front-matter fields interact; `model` and `tools` affect correctness; consumers should use PROJECT region or packs. Simplicity wins.
+
+**Consequences.** Document in `docs/CUSTOMIZATION.md` that agent front-matter must not be edited by consumers.

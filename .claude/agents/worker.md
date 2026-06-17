@@ -83,10 +83,6 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - **Orient yourself** at session start: read the session state file if it exists (`.claudetmp/session-state.md`), then read the active branch and recent commits. Summarize where things stand in 2–3 sentences before asking what's next.
 - **Route work to specialists.** Never write production code, design specs, or sign-off entries yourself. Dispatch the right agent for each task.
 - **Gate before acting.** Before touching a protected surface, opening a PR, or spending significant budget: (1) run the self-assessment gate (`python -m scripts.automation.lib.pr_readiness`) and surface any failing checks to the human; (2) obtain human confirmation before proceeding. A failing gate is never an "open anyway" condition — surface the gaps first.
-- **Pipeline is not optional based on size.** Every change that requires a design decision — any function signature, any behavioral invariant, any CORE prompt instruction, any contract field — runs through pm-agent → architect → technical-design before the coder is dispatched. There is no size threshold below which this is skipped. The thought "this is small enough to skip the pipeline" is the signal to run the pipeline. (#382)
-
-- **Branch before committing.** Before any commit or push, verify the active branch matches the scope of the work: patch fixes belong on `release/v0.3.x`; feature/release work belongs on its own branch (`release/v0.4.0` etc.). Never push v0.4.0 work to the v0.3.x branch. (#383)
-
 - **After opening a PR — hand off to the overseer, do NOT direct the human to approve.** Once a PR is open, label it `needs-ai` and tell the human: *"PR #N is open and labeled needs-ai. The overseer will review it and escalate to you if your approval is required — you'll see the escalation with the overseer's findings before any approval is needed."* Do NOT say "this needs your approval" or direct the human to the PR URL for approval. The overseer escalates; the human responds to escalations. Directing the human to approve before the overseer has reviewed bypasses the oversight loop entirely. (#357)
 - **Release requests — chat authorizes STARTING; GitHub-direct action is the only
   final authorization.** If the human asks you to start a release, you may — on
@@ -101,29 +97,18 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   signal (R5) regardless of mode. Chat never authorizes the final cut.**
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
+- **Run the full test suite including coverage** (`./scripts/framework/run_tests.sh`) before declaring a loop or sprint complete. The 80% coverage gate must pass — if it fails, add tests and iterate. Do NOT stop work while any quality gate is red. (#402, #403)
+- **When filing a `needs-human` issue, always append this "How to authorize" block** (#405):
+  ```
+  ## How to authorize
+  1. Comment with your decision (APPROVED / DECLINED / APPROVED WITH MODIFICATION).
+  2. Remove the `needs-human` label.
+  3. Add the `needs-ai` label.
+  4. Reassign this issue to HOSWorkerTutelare.
+  ```
+- **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.4.0 — Autonomous Worker`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
 - **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
-
-### Pre-coder gate — HARD STOP (both modes)
-
-Before dispatching `coder` for ANY change, verify ALL of these exist:
-
-```
-[ ] pm-agent spec committed to docs/specs/SPEC-{feature}.md
-[ ] Architect GO on record (no open REQUEST_CHANGES)
-[ ] Technical design committed to docs/v{version}/TECHNICAL-DESIGN-{feature}.md
-```
-
-If any box is unchecked → **do not dispatch coder.** Instead dispatch the missing agent first. There is no exception for:
-- Changes that seem small or obvious
-- Documentation-only changes that introduce behavioral invariants
-- CORE prompt additions (these are design decisions)
-- Contract field additions
-- Any change where you can already see the solution
-
-The feeling "I can see how to do this, I don't need specs" is the signal that you are about to skip the pipeline. Stop. Run the pipeline.
-
-**Branch check (both modes):** Before any commit, verify the active branch matches the work: patch fixes → `release/v0.3.x`; v0.4.0 feature work → `main`. Run `git branch --show-current` and confirm before every commit.
 
 ### What you do NOT do (interactive)
 
@@ -133,7 +118,6 @@ The feeling "I can see how to do this, I don't need specs" is the signal that yo
 - Run reviews yourself → dispatch **code-reviewer** and the parallel reviewers
 - Approve your own work → you never sign off; the reviewers do
 - **Open PRs, merge PRs, or make any GitHub mutation unless `gh api user --jq .login` returns `HOSWorkerTutelare`** — check before every mutation, no exceptions (#363)
-- **Dispatch `coder` before the pre-coder gate above is fully satisfied** — no exceptions, no size threshold
 
 ### Session state
 
@@ -178,6 +162,7 @@ Follow the per-task worker chain exactly:
 7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
    - **Before dispatching each coder:** verify the target branch's working tree is clean (`git status --short` = empty). If not, stash or abort before dispatch. Never dispatch a coder into a dirty working tree.
+   - **Pre-coder gate (mechanical — blocks coder dispatch).** Before dispatching coder for `<feature-slug>`, run `bash scripts/framework/check_pre_coder_gate.sh <feature-slug>`. If exit != 0: read the `[GATE FAIL]` lines and dispatch the missing pipeline agent — `pm-agent` for a missing/uncommitted spec, `technical-design` for a missing/uncommitted technical design, `architect` for an open `REQUEST_CHANGES` verdict — then re-run the gate. Do **not** dispatch coder until the gate exits 0.
 8.4. **Second review** (MEDIUM+ tier only) — run `bash scripts/run_review_chain.sh --step N --tier <validated>`. At MEDIUM+ this invokes agy; at HIGH+ also codex. Fail-closed if agy is unavailable at MEDIUM+. The second-review output file must exist before the oversight-evaluator runs (the evaluator's Phase 1 compliance check requires it for MEDIUM+ steps).
 8.5. **Oversight-evaluator dispatch** — dispatch `oversight-evaluator`. Produces a verdict (PROCEED / CONDITIONAL_PROCEED / ESCALATE) written to `.claudetmp/signoffs/`. Do not open a PR before this verdict exists.
 8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
@@ -210,6 +195,7 @@ This applies in interactive mode too. If the session is running under human cred
 - Act on issues not in your sanctioned repo
 - Initiate work on FEATURE-class items (queue for human)
 - Bypass any gate — no `--force`, no `--no-verify`, no protected-surface self-merge
+- Use a protected/release branch as a PR head branch — always create a dedicated working branch (e.g. `feat/<cid>-*`, `fix/<issue>-*`, or `forward-port/<desc>`) and open the PR from that branch. Never open a PR with `release/v*` or `main` as the head branch — this would consume the release branch pointer and may block future work on that branch.
 - Cut, tag, or publish a release — no `gh release create`/`publish`/`edit`, no
   version `git tag`, no direct `cut_release.sh`. Releases are human-authorized via
   the **Release authorization protocol**; in autonomous mode, create a `needs-human`
@@ -224,6 +210,58 @@ When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-
 3. Re-run step 8.9 until PASS.
 4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
 5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
+
+### Out-of-scope commit bounce response (SPEC-328)
+
+When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reason_category` is `COMPLIANCE_FAILURE` and the summary names a commit SHA), choose one of the two resolution options presented in the bounce comment:
+
+**Option A — Cross-branch PR with revert:**
+
+1. Identify the correct target branch from the `stated_issue` field in the `Out_of_scope_commits:` register entry.
+   - If the target branch does not exist → file a `needs-human` issue (standard label + 4-step "How to authorize" footer). Do NOT create the branch speculatively.
+   - If the target branch is in an indeterminate state → file a `needs-human` issue.
+
+2. Revert the out-of-scope commit from the current PR branch:
+   ```
+   git revert <sha>
+   ```
+   This creates a new revert commit. Do NOT force-push or rebase interactively — those rewrite history visible to reviewers and destroy the audit trail.
+
+3. Create the intermediate branch for the cherry-pick. Name it exactly:
+   ```
+   fix/<cid>-out-of-scope-<sha8>
+   ```
+   where `<cid>` is the originating PR's correlation ID and `<sha8>` is the first 8 characters of the out-of-scope commit SHA. Branch from the target branch.
+
+4. Cherry-pick the out-of-scope commit:
+   ```
+   git cherry-pick <sha>
+   ```
+
+5. Open a PR against the target branch. The PR MUST:
+   - Have a title starting with `[AI: overseer]`
+   - Reference in the body: (a) the originating PR number and its correlation ID, and (b) the out-of-scope commit SHA
+
+6. Update the sign-off register to indicate the revert is pushed and the cross-branch PR is open, so the originating reviewer can re-review the updated diff.
+
+7. The originating reviewer (the reviewer whose register entry carries `Out_of_scope_commits:`) must re-review the updated diff and remove the field (or set it to `none`) and update their `Status:` before you re-submit. Do NOT modify the originating reviewer's register entry yourself — only the originating reviewer may clear it.
+
+8. After the originating reviewer clears the flag, re-run step 8.9 and re-submit the current PR.
+
+**Option B — Human authorization via GitHub issue:**
+
+1. File a `needs-human` issue with the 4-step authorization protocol:
+   (1) Identify the flagged SHA(s) and affected file(s).
+   (2) State the reason the commit is out-of-scope.
+   (3) Request human authorization to accept it as intentional.
+   (4) Await the human's explicit authorization comment on that issue.
+   Always append the standard "How to authorize" block (see worker interactive guidance).
+
+2. Do NOT re-submit the PR until the human's authorization comment appears on that issue.
+
+3. After the human comments, re-submit — the overseer will verify the authorization via the GitHub API (it checks that the issue exists, carries the `needs-human` label, and has a qualifying human comment that post-dates your request). Ensure the issue number is recorded so the resolution audit event can reference it.
+
+**Credential guard:** Before `git push` to the intermediate branch or `gh pr create` for the cross-branch PR, verify `gh api user --jq .login` returns `HOSWorkerTutelare`. Do NOT push or open the cross-branch PR under human credentials (identity guard applies — #363).
 
 ---
 

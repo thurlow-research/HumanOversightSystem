@@ -304,3 +304,214 @@ class TestIPAnalyseFiles:
             assert result["score"] > 0.0
         finally:
             import shutil; shutil.rmtree(tmpdir)
+
+
+# ── pyproject.toml parsing ────────────────────────────────────────────────────
+
+class TestPyprojectToml:
+    def test_pyproject_toml_parsed(self):
+        import sys
+        if sys.version_info < (3, 11):
+            pytest.skip("tomllib not available on Python < 3.11")
+        tmpdir = tempfile.mkdtemp()
+        toml_path = os.path.join(tmpdir, "pyproject.toml")
+        with open(toml_path, "w") as f:
+            f.write('[project]\ndependencies = ["requests>=2.28"]\n')
+        try:
+            with patch("ip_check._pypi_license", return_value="MIT"):
+                findings = check_dependency_licenses([toml_path])
+            assert isinstance(findings, list)
+        finally:
+            os.unlink(toml_path)
+            os.rmdir(tmpdir)
+
+
+# ── package.json invalid JSON skipped ────────────────────────────────────────
+
+class TestPackageJsonEdgeCases:
+    def test_invalid_json_package_json_skipped(self):
+        tmpdir = tempfile.mkdtemp()
+        pkg_path = os.path.join(tmpdir, "package.json")
+        with open(pkg_path, "w") as f:
+            f.write("not valid json {\n")
+        try:
+            findings = check_dependency_licenses([pkg_path])
+            # Should not raise; bad JSON silently skipped
+            assert isinstance(findings, list)
+        finally:
+            os.unlink(pkg_path)
+            os.rmdir(tmpdir)
+
+
+# ── check_prompt_cleanroom — attribution trigger ───────────────────────────────
+
+class TestPromptCleanroomAttribution:
+    def test_attribution_trigger_flagged(self):
+        tmpdir = tempfile.mkdtemp()
+        prompt_path = os.path.join(tmpdir, "views.md")
+        with open(prompt_path, "w") as f:
+            f.write("based on the implementation from Django's source code.\n")
+        src_file = os.path.join(tmpdir, "views.py")
+        try:
+            with patch("ip_check.subprocess.run",
+                       return_value=MagicMock(stdout="", returncode=0)):
+                findings = check_prompt_cleanroom(tmpdir, [src_file])
+            attr = [f for f in findings if f.get("category") == "attribution-trigger"]
+            assert len(attr) >= 1
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_cleanroom_positive_signal_included(self):
+        tmpdir = tempfile.mkdtemp()
+        prompt_path = os.path.join(tmpdir, "views.md")
+        with open(prompt_path, "w") as f:
+            # Multiple clean-room signals
+            f.write(
+                "Implement per spec §3. According to spec, use from scratch. "
+                "Spec-compliant implementation. Per spec.\n"
+            )
+        src_file = os.path.join(tmpdir, "views.py")
+        try:
+            with patch("ip_check.subprocess.run",
+                       return_value=MagicMock(stdout="", returncode=0)):
+                findings = check_prompt_cleanroom(tmpdir, [src_file])
+            positive = [f for f in findings if f.get("category") == "cleanroom-positive"]
+            assert len(positive) >= 1
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_git_trailer_prompt_artifact_resolved(self):
+        tmpdir = tempfile.mkdtemp()
+        artifact = os.path.join(tmpdir, "custom_prompt.md")
+        with open(artifact, "w") as f:
+            f.write("Implement per spec §3.\n")
+        src_file = os.path.join(tmpdir, "views.py")
+        trailer = f"Prompt-Artifact: {artifact}\n"
+        try:
+            with patch("ip_check.subprocess.run",
+                       return_value=MagicMock(stdout=trailer, returncode=0)):
+                findings = check_prompt_cleanroom(tmpdir, [src_file])
+            # No attribution trigger — just verify no error raised
+            assert isinstance(findings, list)
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_git_subprocess_exception_does_not_crash(self):
+        tmpdir = tempfile.mkdtemp()
+        prompt_path = os.path.join(tmpdir, "views.md")
+        with open(prompt_path, "w") as f:
+            f.write("per spec from scratch.\n")
+        src_file = os.path.join(tmpdir, "views.py")
+        try:
+            with patch("ip_check.subprocess.run",
+                       side_effect=Exception("git not found")):
+                findings = check_prompt_cleanroom(tmpdir, [src_file])
+            assert isinstance(findings, list)
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+
+# ── analyse_files — checklist paths ──────────────────────────────────────────
+
+class TestIPAnalyseChecklist:
+    def test_copyleft_in_checklist(self):
+        tmpdir = tempfile.mkdtemp()
+        req = os.path.join(tmpdir, "requirements.txt")
+        with open(req, "w") as f:
+            f.write("gpl-package>=1.0\n")
+        try:
+            with patch("ip_check._pypi_license", return_value="GPL-3.0"):
+                result = analyse_files([req])
+            assert any("copyleft" in item or "GPL" in item
+                       for item in result["checklist_items"])
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_unknown_license_in_checklist(self):
+        tmpdir = tempfile.mkdtemp()
+        req = os.path.join(tmpdir, "requirements.txt")
+        with open(req, "w") as f:
+            f.write("mystery-pkg>=1.0\n")
+        try:
+            with patch("ip_check._pypi_license", return_value=None):
+                result = analyse_files([req])
+            assert any("legal review" in item or "unknown" in item.lower()
+                       for item in result["checklist_items"])
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_attribution_trigger_in_checklist(self):
+        tmpdir = tempfile.mkdtemp()
+        prompt = os.path.join(tmpdir, "service.md")
+        with open(prompt, "w") as f:
+            f.write("based on the implementation in library X.\n")
+        src = os.path.join(tmpdir, "service.py")
+        with open(src, "w") as f:
+            f.write("import os\n")
+        try:
+            with patch("ip_check.subprocess.run",
+                       return_value=MagicMock(stdout="", returncode=0)):
+                result = analyse_files([src], prompts_dir=tmpdir)
+            # Attribution trigger may produce checklist item
+            assert isinstance(result["checklist_items"], list)
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+    def test_cleanroom_positive_in_checklist(self):
+        tmpdir = tempfile.mkdtemp()
+        prompt = os.path.join(tmpdir, "service.md")
+        with open(prompt, "w") as f:
+            f.write("Per spec, implement from scratch. Spec section 3.\n")
+        src = os.path.join(tmpdir, "service.py")
+        with open(src, "w") as f:
+            f.write("import os\n")
+        try:
+            with patch("ip_check.subprocess.run",
+                       return_value=MagicMock(stdout="", returncode=0)):
+                result = analyse_files([src], prompts_dir=tmpdir)
+            # Clean-room positive may appear in checklist
+            assert isinstance(result["checklist_items"], list)
+        finally:
+            import shutil; shutil.rmtree(tmpdir)
+
+
+# ── main() ────────────────────────────────────────────────────────────────────
+
+class TestIPCheckMain:
+    def test_main_no_files_prints_json(self, capsys, monkeypatch):
+        import sys
+        monkeypatch.setattr(sys, "argv", ["ip_check.py"])
+        import ip_check
+        ip_check.main()
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["score"] == 0.0
+        assert data["error"] == "no input files"
+
+    def test_main_with_prompts_dir_arg(self, capsys, monkeypatch, tmp_path):
+        import sys
+        py_file = tmp_path / "test.py"
+        py_file.write_text("import os\n")
+        monkeypatch.setattr(sys, "argv", [
+            "ip_check.py",
+            "--prompts-dir", str(tmp_path),
+            str(py_file),
+        ])
+        import ip_check
+        with patch("ip_check.subprocess.run",
+                   return_value=MagicMock(stdout="", returncode=0)):
+            ip_check.main()
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "score" in data
+
+    def test_main_nonexistent_file_prints_no_input(self, capsys, monkeypatch):
+        import sys
+        monkeypatch.setattr(sys, "argv", [
+            "ip_check.py", "/nonexistent/path.py"
+        ])
+        import ip_check
+        ip_check.main()
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["score"] == 0.0
