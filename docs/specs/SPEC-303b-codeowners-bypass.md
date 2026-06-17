@@ -1,7 +1,7 @@
 # Requirements Spec — Issue #303 Finding 2: CODEOWNERS Bypass Gap
 
 **Document type:** Requirements specification
-**Status:** Draft — for technical-design
+**Status:** PENDING HUMAN SIGN-OFF on team-entry policy (issue #396). Technical-design blocked until #396 is resolved.
 **Issue:** #303 (Finding 2 only)
 **Companion:** `SPEC-overseer-merge-authority.md` (merge-authority decision logic)
 **Date:** 2026-06-16
@@ -39,7 +39,9 @@ This spec covers the overseer's merge-authority check only. It does not cover:
 - `require_human_approval.py` — that file enforces the protected-surface gate and
   does not need to be changed by this spec. The CODEOWNERS-derived gate is an
   additional check layered on top of it.
-- Paths where CODEOWNERS lists a team rather than an individual. (See OQ-1.)
+- Paths where CODEOWNERS lists a team (`@org/team`) are IN SCOPE as HUMAN_REQUIRED
+  without membership expansion. See §3 (Team-owned path definition) and AC-9.
+  (PENDING HUMAN SIGN-OFF — issue #396.)
 
 ---
 
@@ -50,14 +52,25 @@ marks HUMAN_REQUIRED. Unchanged by this spec.
 
 **CODEOWNERS human-owned path:** Any path pattern in the repo's CODEOWNERS file whose
 owning entry resolves to one or more individual human GitHub usernames (i.e., entries
-of the form `@username`, not `@org/team`). CODEOWNERS files supported by this spec are
-the standard GitHub locations: `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`,
-checked in that priority order.
+of the form `@username`). CODEOWNERS files supported by this spec are the standard
+GitHub locations: `.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`, checked in
+that priority order.
 
-**Bot accounts:** The overseer account (`OVERSIGHT_ACCOUNT`, default
-`HOSOversightTutelare`) and the worker account (`WORKER_ACCOUNT`, default
-`HOSWorkerTutelare`). A CODEOWNERS entry that lists only bot accounts is not a
+**Team-owned path:** Any path pattern in CODEOWNERS whose owning entry is of the form
+`@org/team`. Team-owned paths are IN SCOPE and are treated as HUMAN_REQUIRED
+unconditionally. The overseer does not perform membership expansion; it routes the PR
+to a human without determining whether the team is composed entirely of humans or bots.
+(PENDING HUMAN SIGN-OFF — issue #396.)
+
+**Bot accounts:** The set of GitHub usernames identified as non-human accounts, drawn
+from the `BOT_ACCOUNTS` environment variable (space-separated list; same variable as
+`require_human_approval.py`). The defaults are `HOSOversightTutelare` and
+`HOSWorkerTutelare`. A CODEOWNERS entry that lists only bot accounts is not a
 human-owned path for purposes of this spec.
+
+Note: R5 below refers to `OVERSIGHT_ACCOUNT` and `WORKER_ACCOUNT` as the historical
+env-var names. The new `codeowners.py` module must use `BOT_ACCOUNTS` as the
+authoritative source to avoid a split bot-account definition. See R5 below.
 
 **HUMAN_REQUIRED:** A verdict the overseer must emit when it cannot self-approve.
 The overseer posts a comment, does not merge, and assigns to the human operator.
@@ -73,7 +86,8 @@ Before the overseer decides to auto-approve or auto-merge a PR, it must:
    `CODEOWNERS`, then `docs/CODEOWNERS`).
 2. Parse it to build a map of path patterns to owner lists.
 3. For each path pattern, determine whether any owner is a human account (i.e., not
-   in the bot accounts set defined by `OVERSIGHT_ACCOUNT` and `WORKER_ACCOUNT`).
+   in the bot accounts set drawn from `BOT_ACCOUNTS`), or whether the owner is an
+   `@org/team` entry (which is treated as HUMAN_REQUIRED unconditionally per §3).
 
 If no CODEOWNERS file exists, skip this check (log a note) and proceed with only the
 existing protected-surface gate.
@@ -93,8 +107,10 @@ rather than away from it. (See OQ-2.)
 ### R3 — HUMAN_REQUIRED on any CODEOWNERS-human-owned match
 
 If any changed file in the PR matches a CODEOWNERS pattern whose owner list includes at
-least one human account (after excluding bot accounts), the overseer must emit
-HUMAN_REQUIRED for the entire PR. The overseer must not self-approve that PR.
+least one human account (after excluding bot accounts), or any `@org/team` entry, the
+overseer must emit HUMAN_REQUIRED for the entire PR. The overseer must not self-approve
+that PR. For team entries the overseer does not expand membership — the team entry alone
+is sufficient to trigger HUMAN_REQUIRED.
 
 This requirement holds regardless of whether the matched path is on the protected-surface
 list. CODEOWNERS-derived HUMAN_REQUIRED is additive to, not a replacement for, the
@@ -112,9 +128,11 @@ check), it must post a PR comment that:
 
 ### R5 — Bot account configuration
 
-`OVERSIGHT_ACCOUNT` and `WORKER_ACCOUNT` environment variables override the defaults
-(`HOSOversightTutelare` and `HOSWorkerTutelare`). The overseer must use the resolved
-values when determining whether an owner is a human vs. bot.
+The `BOT_ACCOUNTS` environment variable (space-separated list) is the authoritative
+source of non-human accounts, shared with `require_human_approval.py`. The new
+`codeowners.py` module must read `BOT_ACCOUNTS` — not `OVERSIGHT_ACCOUNT` or
+`WORKER_ACCOUNT` separately — to avoid a split bot-account definition. Defaults
+(`HOSOversightTutelare HOSWorkerTutelare`) apply when `BOT_ACCOUNTS` is unset.
 
 ### R6 — No merge without HUMAN_REQUIRED resolution
 
@@ -137,8 +155,9 @@ The overseer must log:
   approvals from other accounts.
 - This spec does not change branch protection ruleset configuration. The CODEOWNERS check
   is implemented in the overseer's merge-authority logic, not as a GitHub ruleset.
-- This spec does not address paths owned by `@org/team` entries. Those are deferred
-  (OQ-1).
+- This spec does not require the overseer to expand `@org/team` membership. The team
+  entry triggers HUMAN_REQUIRED unconditionally; no GitHub API call is made to resolve
+  team members. (PENDING HUMAN SIGN-OFF — issue #396.)
 - This spec does not require the overseer to validate that the human listed as CODEOWNERS
   owner actually has permission to approve the PR on GitHub. That is a setup concern.
 
@@ -153,19 +172,20 @@ The overseer must log:
 | AC-3 | PR touching a CODEOWNERS path owned only by bot accounts: not flagged by this check |
 | AC-4 | PR touching a CODEOWNERS path on the existing protected-surface list: HUMAN_REQUIRED (both checks may fire; only one HUMAN_REQUIRED verdict is emitted) |
 | AC-5 | No CODEOWNERS file present: check skipped, logged, no regression to existing behavior |
-| AC-6 | OVERSIGHT_ACCOUNT and WORKER_ACCOUNT overrides are respected |
+| AC-6 | BOT_ACCOUNTS override is respected; codeowners.py reads BOT_ACCOUNTS (not OVERSIGHT_ACCOUNT/WORKER_ACCOUNT separately) |
 | AC-7 | HUMAN_REQUIRED comment lists the triggering files and CODEOWNERS entries |
 | AC-8 | Overseer does not merge a CODEOWNERS-HUMAN_REQUIRED PR regardless of protected-surface check outcome |
+| AC-9 | A PR touching a CODEOWNERS path owned by `@org/team` is routed to HUMAN_REQUIRED without performing membership expansion (PENDING HUMAN SIGN-OFF — issue #396) |
 
 ---
 
 ## 7. Open Questions for Architect
 
 **OQ-1 — Team entries in CODEOWNERS.**
-The issue is silent on whether `@org/team` entries should be treated as human-owned.
-For a team that contains only humans, the answer is probably yes. But resolving team
-membership requires an additional GitHub API call. Current scope treats team entries as
-out of scope (not matched by this check). Architect should confirm or extend.
+DRAFTED — PENDING HUMAN SIGN-OFF (issue #396). Current draft position: `@org/team`
+entries are IN SCOPE and trigger HUMAN_REQUIRED unconditionally without membership
+expansion. This avoids a GitHub API call and errs toward safety. Technical-design is
+blocked on this question until #396 is resolved by the human.
 
 **OQ-2 — CODEOWNERS pattern matching fidelity.**
 Full gitignore-glob semantics (negation, `**`, character classes) are non-trivial to
