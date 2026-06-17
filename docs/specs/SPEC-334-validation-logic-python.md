@@ -1,6 +1,6 @@
 # SPEC-334: Move dedup-ledger fingerprinting and verdict aggregation to Python
 
-**Status:** Draft — for architect review
+**Status:** REVISED — ready for architect re-review
 **Issue:** #334
 **Policy:** #314 — prefer Python for logic, shell for launch; testability is a code review criterion
 **Date:** 2026-06-17
@@ -53,16 +53,20 @@ The two implementations are not identical. The Python module must implement the 
 
 ### 2c. Severity ranking
 
-Both scripts use a severity ordering to find the highest severity across all findings. `validate_agents.sh`:
+The canonical severity ordering is: `critical > high > blocking > warning > medium > low > none` (7 ranks, from `validate_agents.sh`).
+
+`validate_agents.sh` already implements this correctly:
 ```python
 severities = ["critical", "high", "blocking", "warning", "medium", "low", "none"]
 ```
-`validate_scripts.sh`:
+
+`validate_scripts.sh` implements a non-canonical ordering that collapses `critical`/`high` into `blocking` before ranking:
 ```python
 sev = ["critical","blocking","high","warning","none"]
 # and maps critical/high → "blocking" before ranking
 ```
-These are inconsistent. The architect should specify the canonical ordering (see OQ-1).
+
+This collapse is a bug. The Python module must use the canonical 7-rank ordering. As a direct consequence, `validate_scripts.sh`'s `highest_severity` output will change after this refactoring: findings with severity `critical` or `high` will now be reported as `critical` or `high` (respectively) rather than being collapsed to `blocking`. This is a deliberate behavior correction, not a regression. The gate verdict (`blocking_count`, `new_blocking_count`) and merge decisions are unchanged by this fix.
 
 ### 2d. Verdict logic
 
@@ -123,7 +127,7 @@ Both scripts use `re.sub` to rewrite four header fields in the output file in-pl
 
 **R7 — Robust JSON extraction.** The module must implement the string-aware brace matcher from `validate_agents.sh` (`_brace_objects`), not the simpler `validate_scripts.sh` variant. The more robust implementation must serve both scripts.
 
-**R8 — Behavior parity with both scripts.** The computed verdict, counts, and header rewrite must be identical to what each script currently computes for the same input. Any discrepancy is a regression.
+**R8 — Behavior parity with both scripts.** The computed verdict, counts, and header rewrite must be identical to what each script currently computes for the same input. Any discrepancy is a regression. Exception: `validate_scripts.sh`'s `highest_severity` output will legitimately change — the module will report `critical` or `high` where the old script reported `blocking` (see §2c). This is the intended correction, not a regression.
 
 **R9 — Stdlib only.** No third-party dependencies. Consistent with all other `scripts/oversight/*.py` modules.
 
@@ -137,12 +141,25 @@ Both scripts use `re.sub` to rewrite four header fields in the output file in-pl
 - This change does not modify how reviewers are invoked (agy, codex, claude remain shell-invoked).
 - This change does not unify the two separate ledger files into one (the agents ledger and the scripts ledger remain separate, each script manages its own).
 - No new features. No new validation checks.
+- Note: `validate_scripts.sh`'s `highest_severity` header field WILL change as a deliberate correction (see §2c and R8). The gate verdict and merge decisions are not affected.
 
 ---
 
-## 6. Open questions for architect
+## 6. Acceptance criteria
 
-**OQ-1 (canonical severity ordering):** `validate_agents.sh` and `validate_scripts.sh` use inconsistent severity orderings (see §2c above). The Python module must use one canonical ordering. The architect should decide: (a) use the `validate_agents.sh` ordering (`critical > high > blocking > warning > medium > low > none`) treating `blocking` as an alias for severity between `high` and `warning`, or (b) use the `validate_scripts.sh` approach of collapsing `critical`/`high` into `blocking` before ranking. This is the only behavioral discrepancy between the two scripts and must be resolved before implementation.
+**AC-1:** Given a finding with severity `critical`, the rewritten `validate_scripts.sh` workflow reports `highest_severity: critical` in its output header (not `blocking`).
+
+**AC-2:** Given a finding carrying a `type` key and no `category` key (codex response format), `fingerprint(finding)` produces a fingerprint that matches a ledger entry recorded with the same class string. (Symmetrically: a finding carrying `category` and no `type` also matches correctly.)
+
+---
+
+## 7. Resolved decisions
+
+**OQ-1 (canonical severity ordering) — RESOLVED:** The canonical severity ordering is the `validate_agents.sh` 7-rank ordering: `critical > high > blocking > warning > medium > low > none`. The `validate_scripts.sh` behavior of collapsing `critical`/`high` to `blocking` is a bug that this refactoring fixes. See §2c for full treatment.
+
+---
+
+## 8. Open questions for architect
 
 **OQ-2 (pass-cap exit code):** `validate_scripts.sh` currently exits with code 3 from inside the heredoc Python when the pass cap is hit and new findings remain. `validate_agents.sh` checks the pass cap in bash after the heredoc. The module should return enough information (the `new_blocking_count`) for the shell to enforce the cap itself, rather than encoding exit-code semantics in the module. The architect should confirm this is the preferred interface, or specify an alternative.
 
