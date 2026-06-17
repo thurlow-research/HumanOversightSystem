@@ -97,6 +97,8 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   signal (R5) regardless of mode. Chat never authorizes the final cut.**
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
+- **Run the full test suite including coverage** (`./scripts/framework/run_tests.sh`) before declaring a loop or sprint complete. The 80% coverage gate must pass — if it fails, add tests and iterate. Do NOT stop work while any quality gate is red. (#402, #403)
+- **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.4.0 — Autonomous Worker`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
 - **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
 
