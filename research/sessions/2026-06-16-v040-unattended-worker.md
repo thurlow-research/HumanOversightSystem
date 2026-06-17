@@ -52,6 +52,39 @@ Full implementation of the HOS unattended worker subsystem (all 15 build steps, 
 
 ---
 
+## Overnight unattended loop (2026-06-17 continuation)
+
+Autonomous overnight loop completed the following under /loop:
+
+**Implemented (full pipeline):**
+- SPEC-375: run_gates.sh + gate_compliance.py + oversight-evaluator Phase 1 gate checks (#375 closed)
+- SPEC-385: check_pre_coder_gate.sh — mechanical pipeline gate enforcement (#385 closed)
+- SPEC-291: PROJECT governs carve-out — confirmed all 18 CORE files already carry the clause (#291 closed)
+- SPEC-366: per-step stamp subdirectories — sign_off.sh --step, signoff_gate.py manifest-authoritative, installer hard-stop (#366 closed)
+
+**Infrastructure:**
+- release/v0.3.x restored to clean patch state via PR #394 (reverts 5 v0.4.0 commits)
+- PR #393 (P2/P3/P9 full pipeline) merged to main
+- PR #395 open with all above implementations
+
+**Research findings filed (SLR P3-P8):**
+- llm-reviewer-can-mask-deterministic-scanner-failures (Parris 2026, AIRA)
+- corroboration-ranked-review-reduces-noise-without-losing-coverage (Charoenwet et al. 2026)
+- agentic-prs-are-larger-and-more-multipurpose-than-human-prs (Watanabe et al. 2026)
+- unexplained-pr-rejection-is-a-transparency-gap-in-agentic-systems (Watanabe et al. 2026)
+- more-context-makes-llm-review-worse-not-better (Kumar 2026 + Charoenwet et al. 2026)
+- the-1point7x-defect-rate-claim-has-a-precise-empirical-source (Loker 2025 + Ferdous et al. 2026)
+
+**Process bugs filed and fixed:**
+- #382: worker skipped pipeline (worker.md pre-coder gate added)
+- #383: worker pushed v0.4.0 work to release/v0.3.x branch
+- #363: identity guard hard stop (worker.md)
+- #359: role identification moved to top of CORE in 8 agents
+
+**489 tests passing | static check clean**
+
+---
+
 ## Notable design decisions
 
 - **Two-cronjob model** (spec §11a): worker at 0,30 / overseer at 15,45; 15-minute stagger; machine lock remains machine-global.
