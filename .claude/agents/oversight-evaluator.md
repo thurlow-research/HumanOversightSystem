@@ -190,6 +190,50 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - For every detected structural signal, append `{"event":"structural-override","signal":"{name}","step":N,"file":"{file}","covered":{true|false},"timestamp":"..."}` to `audit/oversight-log.jsonl`. Emit it **even when `covered` is true** — a covered signal still means an authoring agent under-classified a change the human happened to catch via another gate; the covered-vs-uncovered ratio is the escaped-misclassification rate (#75).
   - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
 
+**Condition 11 — independent tier-floor re-derivation (#94, SPEC-94):**
+
+Same anti-gaming shape as conditions 9–10: `risk-assessor` self-reports `validated_tier` in
+`risk-assessment.md`, and that tier controls which of the tier-gated checks above even fire
+(second-review, effective human gate, prompt-artifact). A risk-assessor that under-computes
+the tier — drift, misconfiguration, or a forged/stale artifact — silently de-fangs those
+gates. Re-derive the **minimum** tier independently from the diff and fail only in the
+loosening direction (`validated_tier` below the re-derived floor). This is defense-in-depth
+behind the primary human gate (`manifest.human_gate_required`), catching the case where the
+manifest tier was set correctly but the dynamic floor was under-computed, or the manifest
+tier was never raised when the step's scope grew.
+
+`validated_tier` is the tier you already established above (`max(manifest, risk-assessment.md)`).
+`BASE_SHA`/`HEAD_SHA` are the register-header range.
+
+```bash
+python3 scripts/oversight/change_classifier.py --tier-floor \
+  --base "$BASE_SHA" --head "$HEAD_SHA"
+```
+
+Read `tier_floor` and `evidence` from the JSON. Rank tiers `LOW < MEDIUM < HIGH < CRITICAL`.
+
+- **If `rank(validated_tier) >= rank(tier_floor)`** → no action (upstream asked for the same
+  or more oversight; nothing to guard against — the ratchet). Skip silently.
+- **If `rank(validated_tier) < rank(tier_floor)`** (the loosening direction):
+  - If `.claudetmp/oversight/human-tier-override.md` exists and is non-empty → **no action**.
+    A human explicitly authorized a lower tier (the escape valve). Note it: "tier floor
+    {floor} exceeds validated {tier}; suppressed by human-tier-override.md."
+  - Otherwise → **COMPLIANCE FAIL (condition 11)**. The message MUST state the re-derived
+    floor, the self-reported `validated_tier`, and the evidence list (the specific files and
+    patterns that triggered the floor). Recommendation → ESCALATE.
+    - **Emit the audit event** (per §6a) — write it on the FAIL (the escalation is the
+      compliance outcome; the event is the research record):
+      ```bash
+      printf '{"event":"tier-floor-mismatch","step":%s,"re_derived_floor":"%s","self_reported_tier":"%s","evidence":%s,"timestamp":"%s"}\n' \
+        "$N" "$FLOOR" "$VALIDATED_TIER" "$EVIDENCE_JSON" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        >> audit/oversight-log.jsonl
+      ```
+      where `$EVIDENCE_JSON` is the `evidence` array verbatim from the classifier output.
+
+You may **never** create `.claudetmp/oversight/human-tier-override.md` to suppress this
+check — it is a human-only governance artifact (see "Human authorization file integrity"
+below). Condition 11 only reads it.
+
 **Gate results compliance (REQ-GATE-NN-16 / REQ-GATE-NN-08 / REQ-GATE-NN-17):**
 
 These checks enforce the deterministic gate non-override invariant (SPEC-375). Run them after the sign-off compliance checks above, before the second-review check below.
