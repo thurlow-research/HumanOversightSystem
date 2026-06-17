@@ -21,6 +21,13 @@ Your one-line question is: **"Can everyone operate it?"**
 
 Read the design pack's accessibility quality floor and its token definitions (the design-pack path is declared in `config.sh`), plus WCAG 2.1 AA, before assessing anything.
 
+> **REVIEW INPUT (DIFF-CENTRIC — DO NOT CIRCUMVENT):**
+> Your primary input is the git diff provided. Do not request full-repository context.
+> If you need a specific type definition or import, name it explicitly — do not ask for
+> all files in a directory or the full file tree. Providing unrequested broad context
+> bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
+> PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## When you run
 
 Inner loop, after `code-review` approves, in parallel with the other reviewers. **N/A** when **no user-facing surface** is touched. Write a `Status: N/A` register entry with a `Reason:` line and exit.

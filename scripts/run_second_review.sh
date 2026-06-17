@@ -40,10 +40,20 @@
 #   OVERSIGHT_AGY_THRESHOLD=0.30    fire agy when composite score >= this
 #   OVERSIGHT_CODEX_THRESHOLD=0.55  fire codex when composite score >= this
 #
+# DIFF-CENTRIC CONTEXT (SPEC-379): --diff-only is DEFAULT ON. Reviewers receive the
+# diff as primary input — never the full file tree. Evidence (Kumar 2026 / SWE-PRBench)
+# shows that providing more-than-diff context REDUCES reviewer detection rates. Pass
+# --no-diff-only to disable (prints a startup warning). When --diff-only is on and a
+# reviewer response asks for full-repository context, an ADVISORY entry is appended to
+# the run's output file (non-blocking; does not change verdict or exit code).
+#
 # Usage:
 #   ./scripts/run_second_review.sh --step 3 --score 0.67
 #   ./scripts/run_second_review.sh --diff HEAD~1 --score 0.45
 #   ./scripts/run_second_review.sh --files a.py b.py --score 0.71
+#   ./scripts/run_second_review.sh --step 3 --no-diff-only   # disable diff-centric (warns)
+#   --diff-only       (default) reviewers get only the diff; advisory on context requests
+#   --no-diff-only    disable diff-centric mode — full context allowed (NOT recommended)
 #
 # Prerequisites: agy authenticated (`agy` login), codex authenticated (`codex` login)
 
@@ -62,17 +72,30 @@ SCORE=""
 TIER=""
 DIFF_REF=""
 FILES=()
+DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
+
+# SPEC-379 R4 — advisory pattern list (case-insensitive). When --diff-only is on and a
+# reviewer's response contains one of these, an ADVISORY (non-blocking) is logged.
+# This is the single named location for the pattern list in this script.
+DIFF_ONLY_REQUEST_PATTERNS='full repo|all files|entire codebase|repository context|all source files|project files'
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --score)   SCORE="$2";    shift 2 ;;
-        --tier)    TIER="$2";     shift 2 ;;
-        --step)    STEP="$2";     shift 2 ;;
-        --diff)    DIFF_REF="$2"; shift 2 ;;
-        --files)   shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
-        *)         shift ;;
+        --score)        SCORE="$2";    shift 2 ;;
+        --tier)         TIER="$2";     shift 2 ;;
+        --step)         STEP="$2";     shift 2 ;;
+        --diff)         DIFF_REF="$2"; shift 2 ;;
+        --files)        shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
+        --diff-only)    DIFF_ONLY=1; shift ;;
+        --no-diff-only) DIFF_ONLY=0; shift ;;
+        *)              shift ;;
     esac
 done
+
+# SPEC-379 R2 — opting out of diff-centric mode emits a startup warning.
+if [[ "$DIFF_ONLY" -eq 0 ]]; then
+    echo "[WARN] --diff-only disabled: full-file context enabled. Evidence (Kumar 2026 / SWE-PRBench) shows this can reduce reviewer detection rates." >&2
+fi
 
 if [[ -z "$STEP" ]]; then
     echo "Error: --step <N> is required (used to name output and match oversight-evaluator lookup)" >&2
@@ -324,6 +347,29 @@ sys.exit(1)
 PYEOF
 }
 
+# ── SPEC-379 R4: advisory when a reviewer requests full-repository context ────
+# Non-blocking. Appends an ADVISORY block to $OUTFILE (the .claudetmp/second-review/
+# file the oversight-evaluator reads). Does NOT change verdict, severity, or exit code.
+log_context_advisory() {
+    local reviewer="$1" response="$2"
+    [[ "$DIFF_ONLY" -eq 1 ]] || return 0
+    local match
+    match=$(printf '%s' "$response" | grep -ioE "$DIFF_ONLY_REQUEST_PATTERNS" | head -1 || true)
+    [[ -n "$match" ]] || return 0
+    {
+        echo "## [ADVISORY] Full-context request — diff-centric mode (SPEC-379)"
+        echo '```'
+        echo "[ADVISORY] Reviewer requested full-file/full-repository context while --diff-only is on."
+        echo "Reviewer: ${reviewer}"
+        echo "Matched pattern: ${match}"
+        echo "Action: Full-context request not fulfilled. If a specific artifact is needed,"
+        echo "re-invoke with the named file passed as targeted context."
+        echo '```'
+        echo ""
+    } >> "$OUTFILE"
+    echo "  [ADVISORY] ${reviewer} requested full-repo context (pattern: '${match}') — logged, non-blocking"
+}
+
 # ── agy: correctness + spec adherence ───────────────────────────────────────
 run_agy_review() {
     local lens="$1"
@@ -504,6 +550,7 @@ if $RUN_AGY && $AGY_AVAILABLE; then
         echo ""
     } >> "$OUTFILE"
     create_finding_issues "agy" "$AGY_OUT"
+    log_context_advisory "agy" "$AGY_OUT"
     echo "  done"
 
 elif $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
@@ -519,6 +566,7 @@ elif $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
         echo ""
     } >> "$OUTFILE"
     create_finding_issues "codex-fallback" "$FALLBACK_OUT"
+    log_context_advisory "codex-fallback" "$FALLBACK_OUT"
     echo "  done (fallback)"
 else
     [[ ! $AGY_AVAILABLE ]] && echo "  SKIP agy: not available"
@@ -537,6 +585,7 @@ if $RUN_CODEX && $CODEX_AVAILABLE && ! ( $RUN_AGY && ! $AGY_AVAILABLE ); then
         echo ""
     } >> "$OUTFILE"
     create_finding_issues "codex" "$CODEX_OUT"
+    log_context_advisory "codex" "$CODEX_OUT"
     echo "  done"
 elif $RUN_CODEX && ! $CODEX_AVAILABLE; then
     echo "  SKIP codex: not available"

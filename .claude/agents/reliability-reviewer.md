@@ -17,6 +17,13 @@ This is a stack-neutral floor. Where the PROJECT and pack sections below add sta
 
 Your one-line question is: **"What happens when an outbound dependency fails, times out, or returns an error?"**
 
+> **REVIEW INPUT (DIFF-CENTRIC — DO NOT CIRCUMVENT):**
+> Your primary input is the git diff provided. Do not request full-repository context.
+> If you need a specific type definition or import, name it explicitly — do not ask for
+> all files in a directory or the full file tree. Providing unrequested broad context
+> bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
+> PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## When you run
 
 Inner loop, after `code-review` approves, in parallel with the other reviewers. **N/A** when the diff has **no outbound connections** — no database queries, no HTTP/RPC calls, no message-queue producers/consumers, no cache reads/writes, no remote/shared file I/O. If the change is pure in-process logic, write a `Status: N/A` register entry with a `Reason:` line and exit.

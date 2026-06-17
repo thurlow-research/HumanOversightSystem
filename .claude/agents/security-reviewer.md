@@ -24,6 +24,13 @@ Read before reviewing (paths are declared in the project's `config.sh` — resol
 - the **architecture decision record (ADR)** — the security-relevant architectural decisions.
 - the diff / changed files for the build step.
 
+> **REVIEW INPUT (DIFF-CENTRIC — DO NOT CIRCUMVENT):**
+> Your primary input is the git diff provided. Do not request full-repository context.
+> If you need a specific type definition or import, name it explicitly — do not ask for
+> all files in a directory or the full file tree. Providing unrequested broad context
+> bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
+> PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## What you check
 
 These checks hold on any stack. The stack-specific attack surface (framework auth decorators, ORM raw-query escapes, framework security headers, 2FA library specifics) comes from the pack; the generic obligation lives here.

@@ -21,6 +21,13 @@ Your one-line question is: **"Does it match the design pack?"**
 
 Read the **design pack** (its path is declared in `config.sh`) before assessing anything — its design tokens, component definitions, typography rules, and voice/tone guidance. Every finding you raise must cite the design-pack rule it violates. If the design pack has no rule covering a state you're checking, that is a gap to escalate (below), not a finding to invent.
 
+> **REVIEW INPUT (DIFF-CENTRIC — DO NOT CIRCUMVENT):**
+> Your primary input is the git diff provided. Do not request full-repository context.
+> If you need a specific type definition or import, name it explicitly — do not ask for
+> all files in a directory or the full file tree. Providing unrequested broad context
+> bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
+> PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## When you run
 
 Inner loop, after `code-review` approves, in parallel with the other reviewers. **N/A** when the diff touches **no user-facing surface** (no templates, components, or styles). Write a `Status: N/A` register entry with a `Reason:` line and exit.

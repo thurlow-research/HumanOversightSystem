@@ -182,6 +182,51 @@ fi
 # Migration scorer — all files
 run_validator "migration_risk"   "$VALIDATORS_DIR/migration_scorer.py"         60 false "${ALL_FILES[@]}"
 
+# Diff-size floor + multi-purpose split trigger (#377).
+# Git runs HERE (not in the validator); the validator receives CLI flags.
+# Base ref: same logic as SPEC-360/change_classifier — merge-base with
+# origin/main when available, else most-recent tag, else HEAD~1. Any git
+# failure → pass 0/0 and empty list so the floor does not fire (data
+# unavailable), never a false CRITICAL.
+DS_BASE_REF=""
+if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    DS_BASE_REF="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+fi
+if [[ -z "$DS_BASE_REF" ]]; then
+    DS_BASE_REF="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+fi
+if [[ -z "$DS_BASE_REF" ]]; then
+    DS_BASE_REF="$(git rev-parse --verify HEAD~1 2>/dev/null || true)"
+fi
+
+DS_CHANGED_LINES=0
+DS_CHANGED_FILES=0
+DS_FILE_LIST=()
+if [[ -n "$DS_BASE_REF" ]]; then
+    # changed_lines = sum of added + deleted (numstat cols 1+2); binary "-" skipped.
+    DS_CHANGED_LINES="$(git diff --numstat "$DS_BASE_REF" 2>/dev/null \
+        | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { s += $1 + $2 } END { print s + 0 }' \
+        || echo 0)"
+    while IFS= read -r _df; do
+        [[ -n "$_df" ]] && DS_FILE_LIST+=("$_df")
+    done < <(git diff --name-only "$DS_BASE_REF" 2>/dev/null || true)
+    DS_CHANGED_FILES=${#DS_FILE_LIST[@]}
+fi
+# Guard against non-numeric awk output.
+[[ "$DS_CHANGED_LINES" =~ ^[0-9]+$ ]] || DS_CHANGED_LINES=0
+
+# bash 3.2 (macOS) errors on "${arr[@]}" when the array is empty under set -u;
+# only expand the file list when it is non-empty.
+if [[ ${#DS_FILE_LIST[@]} -gt 0 ]]; then
+    run_validator "diff_size"    "$VALIDATORS_DIR/diff_size.py"                30 false \
+        --changed-lines "$DS_CHANGED_LINES" --changed-files "$DS_CHANGED_FILES" \
+        --changed-file-list "${DS_FILE_LIST[@]}"
+else
+    run_validator "diff_size"    "$VALIDATORS_DIR/diff_size.py"                30 false \
+        --changed-lines "$DS_CHANGED_LINES" --changed-files "$DS_CHANGED_FILES" \
+        --changed-file-list
+fi
+
 # Historical density — network-dependent (calls gh + git); shorter timeout
 run_validator "historical_density" "$VALIDATORS_DIR/issue_query.py"   \
     "$NETWORK_TIMEOUT" false "${ALL_FILES[@]}"
@@ -258,6 +303,17 @@ composite = round(weighted_sum / total_w, 4)
 TIERS = [("LOW", 0.30), ("MEDIUM", 0.55), ("HIGH", 0.78), ("CRITICAL", 1.01)]
 tier = next(t for t, hi in TIERS if composite < hi)
 
+# Hoist any non-null tier_floor signal (e.g. from diff_size, #377) to the top
+# level of the summary so the risk-assessor reads it without parsing raw_value.
+# Read-only surfacing: it does NOT alter composite_score or the derived tier
+# (the risk-assessor is the actor that promotes the final tier).
+tier_floor = None
+for r in results:
+    tf = r.get("tier_floor")
+    if tf:
+        tier_floor = tf
+        break
+
 summary = {
     "composite_score": composite,
     "tier": tier,
@@ -265,6 +321,8 @@ summary = {
     "successful_validators": len(successful),
     "results": results,
 }
+if tier_floor is not None:
+    summary["tier_floor"] = tier_floor
 
 out = out_dir / "summary.json"
 out.write_text(json.dumps(summary, indent=2))

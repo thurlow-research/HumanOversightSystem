@@ -39,7 +39,14 @@
 #   ./scripts/run_panel.sh 42 --risk HIGH # force a risk level (skips triage's judgement)
 #   ./scripts/run_panel.sh 42 --dry-run   # run reviewers + arbiter, print, post NOTHING
 #   ./scripts/run_panel.sh 42 --no-sample # skip the random red-team audit for this run
+#   ./scripts/run_panel.sh 42 --no-diff-only # disable diff-centric mode (warns; NOT recommended)
 #   ./scripts/run_panel.sh --help
+#
+# DIFF-CENTRIC CONTEXT (SPEC-379): --diff-only is DEFAULT ON. Cross-vendor reviewers
+# receive only the PR diff (never the full file tree) — evidence (Kumar 2026 /
+# SWE-PRBench) shows more-than-diff context REDUCES detection rates. --no-diff-only
+# disables it with a startup warning. When on, a reviewer response that requests
+# full-repository context produces a non-blocking ADVISORY in the run output dir.
 #
 # Requires (install via setup_clis.sh): gh (authed), claude, agy, codex, plus jq + python3.
 # Findings I/O is best-effort JSON (D15d): reviewers are asked for a JSON schema and
@@ -69,19 +76,32 @@ SAMPLE_LOW="${OVERSIGHT_SAMPLE_LOW:-25}"    # % of LOW PRs sampled for a red-tea
 SAMPLE_MED="${OVERSIGHT_SAMPLE_MED:-50}"    # % of MEDIUM PRs sampled for a red-team audit (pilot)
 SALT_FILE=".ai-local/sample.salt"           # secret salt → sample is reproducible & non-gameable
 
+# SPEC-379 R4 — advisory pattern list (case-insensitive). When --diff-only is on and a
+# reviewer's response contains one of these, a non-blocking ADVISORY is logged to the
+# panel output dir. This is the single named location for the pattern list in this script.
+DIFF_ONLY_REQUEST_PATTERNS='full repo|all files|entire codebase|repository context|all source files|project files'
+
 # ── Args ─────────────────────────────────────────────────────────────────────--
 PR=""; DRY_RUN=0; RISK_OVERRIDE=""; DO_SAMPLE=1
+DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)   DRY_RUN=1; shift ;;
-    --risk)      [[ $# -ge 2 ]] || die "--risk needs a value (LOW|MEDIUM|HIGH|CRITICAL)"
-                 RISK_OVERRIDE="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; shift 2 ;;
-    --no-sample) DO_SAMPLE=0; shift ;;
-    --help|-h)   sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    -*)          die "Unknown option: $1  (try --help)" ;;
-    *)           PR="$1"; shift ;;
+    --dry-run)      DRY_RUN=1; shift ;;
+    --risk)         [[ $# -ge 2 ]] || die "--risk needs a value (LOW|MEDIUM|HIGH|CRITICAL)"
+                    RISK_OVERRIDE="$(echo "$2" | tr '[:lower:]' '[:upper:]')"; shift 2 ;;
+    --no-sample)    DO_SAMPLE=0; shift ;;
+    --diff-only)    DIFF_ONLY=1; shift ;;
+    --no-diff-only) DIFF_ONLY=0; shift ;;
+    --help|-h)      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*)             die "Unknown option: $1  (try --help)" ;;
+    *)              PR="$1"; shift ;;
   esac
 done
+
+# SPEC-379 R3 — opting out of diff-centric mode emits a startup warning.
+if [[ "$DIFF_ONLY" -eq 0 ]]; then
+  echo "[WARN] --diff-only disabled: full-file context enabled. Evidence (Kumar 2026 / SWE-PRBench) shows this can reduce reviewer detection rates." >&2
+fi
 
 # ── Risk ranking helpers ───────────────────────────────────────────────────────
 rank() { case "$1" in LOW) echo 0;; MEDIUM) echo 1;; HIGH) echo 2;; CRITICAL) echo 3;; *) echo 0;; esac; }
@@ -397,6 +417,28 @@ $(head -c "$CAP" "$2")
 EOF
 }
 
+# ── SPEC-379 R4: advisory when a reviewer requests full-repository context ────
+# Non-blocking. Appends an ADVISORY entry to .claudetmp/panel/ (the dir the
+# oversight-evaluator reads). Does NOT change exit code, the arbiter verdict,
+# posted threads, or the summary.
+PANEL_ADVISORY_FILE=".claudetmp/panel/advisory-pr${PR}-$(date +%Y%m%dT%H%M%S).md"
+log_context_advisory() {  # $1=reviewer  $2=response-text
+  [[ "$DIFF_ONLY" -eq 1 ]] || return 0
+  local match
+  match=$(printf '%s' "$2" | grep -ioE "$DIFF_ONLY_REQUEST_PATTERNS" | head -1 || true)
+  [[ -n "$match" ]] || return 0
+  mkdir -p "$(dirname "$PANEL_ADVISORY_FILE")"
+  {
+    echo "[ADVISORY] Reviewer requested full-file/full-repository context while --diff-only is on."
+    echo "Reviewer: $1"
+    echo "Matched pattern: ${match}"
+    echo "Action: Full-context request not fulfilled. If a specific artifact is needed,"
+    echo "re-invoke with the named file passed as targeted context."
+    echo ""
+  } >> "$PANEL_ADVISORY_FILE"
+  warn "[ADVISORY] $1 requested full-repo context (pattern: '${match}') — logged, non-blocking"
+}
+
 # ── REVIEWERS — fan-out, parse best-effort JSON, tag each finding ───────────────
 ALL_FINDINGS="[]"
 for spec in "${ROSTER[@]}"; do
@@ -409,6 +451,7 @@ for spec in "${ROSTER[@]}"; do
     ci=$((ci+1))
     raw="$(call_model "$tool" "$(build_review_prompt "$lens" "$chunk")")" || raw='{"findings":[]}'
     printf '%s' "$raw" > "$RUN_DIR/${tool}-${lens}-chunk${ci}.raw.txt"
+    log_context_advisory "$tool" "$raw"
     f="$(printf '%s' "$raw" | extract_json | jq -c '.findings // []' 2>/dev/null || echo '[]')"
     tool_findings="$(jq -cn --argjson a "$tool_findings" --argjson b "$f" '$a + $b' 2>/dev/null || echo "$tool_findings")"
   done
