@@ -234,6 +234,64 @@ You may **never** create `.claudetmp/oversight/human-tier-override.md` to suppre
 check — it is a human-only governance artifact (see "Human authorization file integrity"
 below). Condition 11 only reads it.
 
+**Condition 14 — structural-override MODIFICATION re-derivation (#121, SPEC-121):**
+
+Conditions 9–10 detect structural *additions* (a new auth check, a new route, a new
+permission state). They do **not** detect *modifications* to an existing structural
+signature — an existing `@permission_required('admin')` weakened to `('user')`, a
+`@login_required` removed from an existing route, or a tracked spec/design document whose
+`## Authorization` section is edited to reduce required approvals. Such a change weakens a
+security boundary without adding any signature-bearing line, so condition 10 stays silent.
+Condition 14 closes that residual gap (contract §2a) for two mechanically-detectable classes:
+auth/permission decorator modifications in application code, and structural-section
+modifications in tracked spec/design documents.
+
+Same loosening-direction-only shape as conditions 10–11. Run it after condition 11, using the
+register-header range `BASE_SHA`/`HEAD_SHA`:
+
+```bash
+python3 scripts/oversight/change_classifier.py --modifications-only \
+  --base "$BASE_SHA" --head "$HEAD_SHA"
+```
+
+Read `structural_modifications` from the JSON. Each entry is
+`{signal, file, section, evidence}` where `signal` is `modified-permission-or-auth-state`
+(Category A; `section` is `null`) or `modified-doc-structural-section` (Category B; `section`
+is the section title or, on file-level fallback, the file path).
+
+- **Skip (loosening-only ratchet).** Condition 14 is skipped for the same reasons condition 10
+  is skipped: the change was already classified `structural` by the authoring agent **and** a
+  covering human-authorization artifact exists, **or** the SPEC-267 `reviewed_files:`
+  enumeration in `.claudetmp/oversight/step{N}-human-authorization.md` overlaps the diff (reuse
+  the condition-10 skip determination — do not re-implement it).
+- **Covering-artifact check.** For each `structural_modification` signal, a covering
+  human-authorization artifact must exist: `.claudetmp/oversight/step{N}-human-authorization.md`,
+  a domain structural-auth file (e.g. `.claudetmp/oversight/step{N}-spec-structural-auth.md`),
+  **or** a non-empty `.claudetmp/oversight/human-tier-override.md`. If the modification is
+  covered → no action (a human authorized the change).
+- **If any modification signal is NOT covered → COMPLIANCE FAIL (condition 14).** The change
+  reached pre-PR without the human gate it requires. The failure message MUST list, per
+  uncovered signal: the file, the section title or nearest header (Category B) or `null`
+  (Category A), the removed-line/added-line `evidence`, and which artifact path(s) were
+  checked. Recommendation → ESCALATE.
+
+**Emit the audit event** (per §6a) — write it on every uncovered modification (the research
+record of an escaped loosening):
+
+```bash
+printf '{"event":"doc-modification-uncovered","step":%s,"file":"%s","section":%s,"evidence":"%s","timestamp":"%s"}\n' \
+  "$N" "$FILE" "$SECTION_JSON" "$EVIDENCE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  >> audit/oversight-log.jsonl
+```
+
+where `$SECTION_JSON` is the section title as a JSON string or the literal `null` for
+Category A.
+
+Condition 14 is independent of conditions 10 and 11: it does not alter their invocations,
+their output, or their audit events — condition 10 catches *additions*, condition 14 catches
+*modifications*. You may **never** create `human-tier-override.md` /
+`step{N}-human-authorization.md` to suppress this check; condition 14 only reads them.
+
 **Gate results compliance (REQ-GATE-NN-16 / REQ-GATE-NN-08 / REQ-GATE-NN-17):**
 
 These checks enforce the deterministic gate non-override invariant (SPEC-375). Run them after the sign-off compliance checks above, before the second-review check below.

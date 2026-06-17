@@ -72,8 +72,8 @@ def test_benign_change_has_no_structural_signal():
 # ── #121: structural MODIFICATION detection (Category A — auth/permission) ────
 def test_modified_permission_decorator_is_flagged():
     ns = [("M", "app/views.py")]
-    added = {"app/views.py": ["@require_permission('user')"]}
-    removed = {"app/views.py": ["@require_permission('admin')"]}
+    added = {"app/views.py": ["@permission_required('app.use')"]}
+    removed = {"app/views.py": ["@permission_required('app.admin')"]}
     sigs = {s["signal"] for s in cc.detect_structural_modifications(ns, added, removed)}
     assert "modified-permission-or-auth-state" in sigs
 
@@ -350,10 +350,10 @@ def _make_auth_mod_repo(repo):
     run("init", "-q")
     run("config", "user.email", "t@t")
     run("config", "user.name", "t")
-    (repo / "views.py").write_text("@require_permission('admin')\ndef view():\n    return 1\n")
+    (repo / "views.py").write_text("@permission_required('app.admin')\ndef view():\n    return 1\n")
     run("add", "-A")
     run("commit", "-qm", "base")
-    (repo / "views.py").write_text("@require_permission('user')\ndef view():\n    return 1\n")
+    (repo / "views.py").write_text("@permission_required('app.use')\ndef view():\n    return 1\n")
     run("add", "-A")
     run("commit", "-qm", "weaken auth")
     return run
@@ -396,7 +396,7 @@ def test_cli_modifications_only_emits_only_modifications(tmp_path):
     assert "modified-permission-or-auth-state" in signals
     mod = next(m for m in out["structural_modifications"] if m["file"] == "views.py")
     assert mod["section"] is None
-    assert "admin" in mod["evidence"] and "user" in mod["evidence"]
+    assert "app.admin" in mod["evidence"] and "app.use" in mod["evidence"]
 
 
 def test_cli_default_output_byte_identical_with_unused_removed(tmp_path):
