@@ -97,6 +97,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   signal (R5) regardless of mode. Chat never authorizes the final cut.**
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
+- **On every loop, actively read all open PR feedback** — not just `mergeable` status. For each open PR, check: (1) CI check statuses (`statusCheckRollup`) — any FAILURE must be investigated and fixed immediately; (2) all PR comments including overseer feedback requesting worker action; (3) formal reviews. Checking only `mergeable: CONFLICTING` misses CI failures and overseer requests that have been waiting for action. (#411)
 - **Run the full test suite including coverage** (`./scripts/framework/run_tests.sh`) before declaring a loop or sprint complete. The 80% coverage gate must pass — if it fails, add tests and iterate. Do NOT stop work while any quality gate is red. (#402, #403)
 - **When filing a `needs-human` issue, always append this "How to authorize" block** (#405):
   ```
