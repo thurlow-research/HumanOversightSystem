@@ -328,6 +328,7 @@ Both requirements apply to all projects that install this framework.
 | Event | Meaning | Emitted by | Key fields |
 |---|---|---|---|
 | `step-head` | Records a step's HEAD SHA so the next step finds its base | oversight-evaluator | `step`, `head_sha` |
+| `step-head-final` | Records a step's **post-panel** final HEAD SHA (after PR merge, or after a Phase-10 close with no PR) — the authoritative base anchor for the next step. The next step's evaluator prefers it over `step-head` (SPEC-220). | oversight-orchestrator | `step`, `head_sha` (full 40-char), `merged` (`true` on PR-merge path / `false` on ESCALATE-no-PR path), `panel_fix_commits` (advisory, optional), `timestamp` |
 | `human-authorization` | A human authorization gate was satisfied — pins the content hash, decision, and claimed authorizer into committed history | oversight-evaluator | `step`, `artifact`, `content_sha256`, `authorized_by`, `decision` |
 | `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
 | `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file`, `reason_category` (`EMERGENCY \| PLANNED_MAINTENANCE \| FALSE_POSITIVE \| OTHER`) |

@@ -44,8 +44,37 @@ The register must record which commits belong to this step so prompt-artifact an
 ```bash
 # base_sha: previous step's head_sha (from the audit log) or, for step 1,
 # the merge-base of this branch with the default branch.
-PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
-  | tail -1 | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+#
+# SPEC-220 R2: prefer step-head-final (post-panel, written by the orchestrator
+# after the PR merges) over the early step-head (pre-panel) for the PREVIOUS
+# step, so panel-fix commits are inside this step's base_sha..head_sha window.
+# The lookup is STEP-SCOPED — it matches the previous step (N-1), not "the most
+# recent step-head from any step" (AC-6; this is also the correctness fix R2
+# calls out: the old `tail -1` over ALL events could pick a different step).
+#
+# Range resolution lives in scripts/oversight/lib/step_range.sh (shared with
+# run_second_review.sh per the SPEC-219 cross-spec binding). Prefer it; fall
+# back to an inline portable lookup if the helper is absent (older install /
+# dogfood drift) so the evaluator is never blocked on a missing file.
+N={N}   # the step being evaluated
+if [ -f scripts/oversight/lib/step_range.sh ]; then
+  # shellcheck source=scripts/oversight/lib/step_range.sh
+  . scripts/oversight/lib/step_range.sh
+  PREV_HEAD=$(_shr_preferred_head "$((N-1))" audit/oversight-log.jsonl)
+else
+  # Inline fallback — same final-over-plain, step-scoped logic. Portable grep
+  # (BC-220-3): field-delimiter pattern '"step":N[,}]', never `\b` (BSD-unsafe).
+  PREV_HEAD=$(grep -h '"event":"step-head-final"' audit/oversight-log.jsonl 2>/dev/null \
+    | grep -E '"step":'"$((N-1))"'[,}]' | tail -1 \
+    | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+  if [ -z "$PREV_HEAD" ]; then
+    PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
+      | grep -E '"step":'"$((N-1))"'[,}]' | tail -1 \
+      | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+  fi
+fi
+# No step-head-final/step-head for the previous step (step 1, or an older step
+# evaluated before SPEC-220 shipped) -> merge-base fallback (AC-5, no error).
 BASE_SHA="${PREV_HEAD:-$(git merge-base HEAD "$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' || echo main)")}"
 HEAD_SHA=$(git rev-parse HEAD)
 ```
