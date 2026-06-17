@@ -1,9 +1,16 @@
 # SPEC-328: Out-of-Scope Commits Protocol
 
-**Status:** Draft — for architect review
+**Status:** REVISED — pending human clearance on two open items (issue #398)
 **Issue:** #328
 **Author:** pm-agent
 **Date:** 2026-06-17
+
+> **PENDING HUMAN SIGN-OFF on two items (issue #398):**
+> 1. Worker authority to push to a second branch beyond its assigned PR branch (required for the cherry-pick step in R3).
+> 2. Whether the human-acceptance artifact should be committed to a tracked path (not `.claudetmp/`) for audit durability.
+> Technical-design is blocked until issue #398 is resolved.
+>
+> **NOTE — human-acceptance artifact path:** `.claudetmp/oversight/step{N}-out-of-scope-accepted.md` is ephemeral and gitignored. The architect recommends a committed path instead for audit durability. The human decides (issue #398 item 2).
 
 ---
 
@@ -60,6 +67,15 @@ Out_of_scope_commits:
 
 **R1.5** Any reviewer role may flag out-of-scope commits, not only the security reviewer. The flag is a structural anomaly, not a security finding; the reviewer that first notices it logs it, regardless of role.
 
+**R1.6** The `Out_of_scope_commits:` flag is cleared ONLY when the originating reviewer (the reviewer whose register entry carries the flag) re-reviews the updated diff and explicitly removes the field (or sets it to `none`) and updates their `Status:` accordingly. No other agent, artifact, or automated process edits the reviewer's register entry to clear this flag.
+
+**R1.7** A human-acceptance artifact (R2.5) is a separate surface from the sign-off register. Its existence does NOT cause the `Out_of_scope_commits:` field to be edited or removed from the reviewer's entry. The overseer evaluates both surfaces independently:
+
+- SHAs covered by a valid human-acceptance artifact are treated as **resolved-by-human** for merge-gate purposes.
+- SHAs not covered by any artifact remain **live** and block merge.
+
+The flag in the register entry persists as written by the reviewer. The overseer treats it as live whenever it is present, regardless of any acceptance artifact. There is no silent clearing.
+
 ---
 
 ### R2 — Overseer response protocol
@@ -68,13 +84,22 @@ Out_of_scope_commits:
 
 - **Path A (worker-resolvable):** Route the PR back to the worker via `record_pr_bounce()` with `reason_category: COMPLIANCE_FAILURE` and a `summary` sentence naming the flagged commit SHA(s). The worker is directed to either (a) cherry-pick the out-of-scope commit to its correct branch and revert it from the current PR (see R3), or (b) obtain a human confirmation artifact that the cross-issue inclusion is intentional (see R2.3).
 
-- **Path B (human escalation):** If the PR has already been bounced once for the same out-of-scope commit flag and the flag is still unresolved on re-submission, the overseer must escalate to a human via `HUMAN_REQUIRED` with `reason_category: FINDINGS_NOT_RESOLVED`. The overseer must not bounce the same out-of-scope commit flag a second time autonomously.
+- **Path B (human escalation):** Escalate to a human via `HUMAN_REQUIRED` with `reason_category: FINDINGS_NOT_RESOLVED` when any of the following conditions are met (whichever occurs first):
+  1. **Same-SHA re-appearance:** Any SHA named in the current `Out_of_scope_commits:` flag was also named in a prior bounce on this `cid` (correlation ID for this PR), regardless of the current `bounce_count(cid)`. The overseer must not bounce the same SHA a second time autonomously.
+  2. **Bounce-count cap:** `bounce_count(cid) >= 2` under the existing bounce-count governance (§4 bounce-back gate).
 
-**R2.2** The overseer's bounce comment (Path A) must name the specific commit SHA(s) and the flagged file(s), and must present both options (cherry-pick-and-revert, or human confirmation artifact) as required resolutions. The worker must choose one and complete it before resubmitting.
+**R2.2** Out-of-scope bounces use the existing `record_pr_bounce()` function and the existing `bounce_count(cid)` counter. No parallel or separate counter is maintained for out-of-scope bounces. The bounce counts toward the same cap (`bounce_count(cid) >= 2 → HUMAN_REQUIRED`) that governs all other bounce categories.
 
-**R2.3** Human confirmation path: a human may accept an out-of-scope commit as intentional by creating `.claudetmp/oversight/step{N}-out-of-scope-accepted.md` with a `Date:`, `Authorized_by:`, `Commit_sha:`, and `Reason:` field. When this artifact exists and covers the flagged SHA(s), the overseer treats the flag as resolved and proceeds. The overseer must verify that every flagged SHA has a matching entry in the artifact before treating the flag as resolved; a partial authorization does not clear unaddressed commits.
+**R2.3** The out-of-scope flag check is performed inside the existing §4 bounce-back gate, after the register-completeness check and before the merge-authority matrix. The ordering within the §4 gate is:
+  1. Register-completeness check (all required sign-off fields present).
+  2. Out-of-scope commit flag check (this spec — R2.1 through R2.5).
+  3. Merge-authority matrix evaluation.
 
-**R2.4** The out-of-scope flag check is performed in the overseer's pre-merge gate, before the merge-authority matrix is evaluated. A PR with an unresolved out-of-scope flag does not reach the merge-authority matrix.
+A PR with an unresolved out-of-scope flag does not reach step 3.
+
+**R2.4** The overseer's bounce comment (Path A) must name the specific commit SHA(s) and the flagged file(s), and must present both options (cherry-pick-and-revert, or human confirmation artifact) as required resolutions. The worker must choose one and complete it before resubmitting.
+
+**R2.5** Human confirmation path: a human may accept an out-of-scope commit as intentional by creating `.claudetmp/oversight/step{N}-out-of-scope-accepted.md` with a `Date:`, `Authorized_by:`, `Commit_sha:`, and `Reason:` field. When this artifact exists and covers the flagged SHA(s), the overseer treats those SHAs as **resolved-by-human** for merge-gate purposes (see R1.7). The overseer must verify that every flagged SHA is either covered by the artifact or has been resolved by the originating reviewer before proceeding. A partial artifact does not clear unaddressed SHAs.
 
 ---
 
@@ -82,7 +107,7 @@ Out_of_scope_commits:
 
 **R3.1** When the overseer routes the PR to the worker under Path A (R2.1), the worker must follow this workflow to resolve the out-of-scope commit:
 
-1. Identify or create the correct target branch for the out-of-scope commit (the branch associated with the stated issue in the `Out_of_scope_commits:` flag).
+1. Identify the correct target branch for the out-of-scope commit (the branch associated with the stated issue in the `Out_of_scope_commits:` flag). See R3.3 for constraints: the worker may not create branches and may not push to a branch that has an open PR.
 2. Cherry-pick the out-of-scope commit to the correct branch: `git cherry-pick <sha>` on the target branch.
 3. Revert the out-of-scope commit from the current PR's branch: `git revert <sha>` (a new revert commit, not a destructive history edit).
 4. Push the cherry-pick to the target branch and the revert to the current PR's branch.
@@ -90,7 +115,9 @@ Out_of_scope_commits:
 
 **R3.2** The worker must use `git revert` (a new commit) to remove the out-of-scope commit from the current PR branch. Force-push and interactive rebase are not permitted on a PR branch — they rewrite history visible to reviewers and destroy the audit trail of the original flag.
 
-**R3.3** If the target branch for the out-of-scope commit does not exist and the worker cannot determine the correct branch, the worker must escalate to the human rather than create a branch speculatively.
+**R3.3** The worker may cherry-pick ONLY to an existing target branch that has NO open PR of its own at the time of the cherry-pick. The worker must check both conditions before proceeding:
+  - If the target branch does not exist: escalate to the human. The worker must not create a branch speculatively.
+  - If the target branch exists but has an open PR of its own: escalate to the human. The worker must not push commits to a branch that is already under active PR review.
 
 **R3.4** After the cherry-pick and revert are complete, the worker must re-submit the PR for overseer evaluation. The register must reflect the resolved state before re-submission.
 
@@ -98,7 +125,13 @@ Out_of_scope_commits:
 
 ### R4 — Audit log event
 
-**R4.1** A new `out-of-scope-commit` event type is added to the `audit/oversight-log.jsonl` catalog. The event is emitted by the overseer at the point of detection (when the flag is found in the register during the pre-merge gate). A second event is emitted at resolution.
+**R4.1** A new `out-of-scope-commit` event type is added to the `audit/oversight-log.jsonl` catalog. A detection event and a resolution event are defined.
+
+The detection event is NOT emitted as a standalone event at the moment the flag is found. It is appended as part of the confirmed-comment-posted sequence: the detection event is written to the audit log in the same halt-on-failure unit as the bounce or escalation comment post, sharing the `comment_posted` gate. If the comment post fails, neither the comment nor the detection event is recorded — the overseer halts. This prevents a detection event from existing in the log without a corresponding PR comment, and prevents double-logging when the disposition is a bounce or escalation.
+
+The resolution event remains a separate, standalone event emitted when the out-of-scope commit is resolved (either via cherry-pick-and-revert or via human acceptance artifact).
+
+Technical-design specifies the exact append ordering within the confirmed-comment-posted sequence.
 
 **R4.2** Detection event schema:
 
@@ -139,7 +172,7 @@ Out_of_scope_commits:
 
 **R4.4** The `human-accepted` resolution value is used when the resolution was a human confirmation artifact (R2.3). The `cherry-pick-reverted` value is used when the worker completed the cherry-pick and revert workflow (R3.1). Both values are mutually exclusive for a given SHA.
 
-**R4.5** The `comment_posted: true` field in the detection event must follow the same convention as other disposition events: the audit event is appended only after the bounce or escalation comment is confirmed posted. If the comment post fails, the overseer halts rather than logging a detection event with no corresponding PR comment.
+**R4.5** The `comment_posted: true` field in the detection event confirms the comment was successfully posted before the event was written. This field is always `true` in a committed detection event — a detection event with `comment_posted: false` is not a valid log entry and must never be written. The halt-on-failure behavior is defined in R4.1; this field is the log-level confirmation that the gate was satisfied.
 
 ---
 
@@ -151,17 +184,17 @@ Given a reviewer identifies a commit that does not belong in the PR (e.g., `docs
 **AC2 — Overseer blocks merge on unresolved flag.**
 Given a sign-off register contains a non-empty `Out_of_scope_commits:` field, when the overseer runs its pre-merge gate, then the overseer does not evaluate the merge-authority matrix and instead routes the PR via Path A (bounce to worker) or Path B (human escalation per R2.1).
 
-**AC3 — Worker cherry-pick and revert resolves the flag.**
-Given the overseer bounced the PR to the worker with Path A, when the worker completes the cherry-pick to the correct branch and the revert on the PR branch and the original reviewer re-confirms the diff, then the reviewer's register entry is updated to remove the `Out_of_scope_commits:` field and set `Status: APPROVED`, and the overseer proceeds to the merge-authority matrix on re-submission.
+**AC3 — Worker cherry-pick and revert resolves the flag (originating reviewer must re-review).**
+Given the overseer bounced the PR to the worker with Path A, when the worker completes the cherry-pick to the correct branch and the revert on the PR branch, then the ORIGINATING reviewer (the one whose entry carries the `Out_of_scope_commits:` field) must re-review the updated diff, remove the `Out_of_scope_commits:` field (or set it to `none`), and update their `Status:` to `APPROVED`. No other agent or artifact edits the reviewer's register entry. Only after the originating reviewer's entry is updated does the overseer proceed to the merge-authority matrix on re-submission.
 
-**AC4 — Human confirmation artifact resolves the flag.**
-Given a human creates `.claudetmp/oversight/step{N}-out-of-scope-accepted.md` with the required fields covering all flagged SHAs, when the overseer runs its pre-merge gate on re-submission, then the overseer treats the flag as resolved and proceeds to the merge-authority matrix.
+**AC4 — Human confirmation artifact marks SHAs as resolved-by-human (register entry unchanged).**
+Given a human creates `.claudetmp/oversight/step{N}-out-of-scope-accepted.md` with the required fields covering all flagged SHAs, when the overseer runs its pre-merge gate on re-submission, then the overseer treats each covered SHA as resolved-by-human and proceeds to the merge-authority matrix — WITHOUT editing or clearing the reviewer's `Out_of_scope_commits:` field. The field persists in the register as written by the reviewer.
 
-**AC5 — Second bounce for the same flag triggers human escalation.**
-Given the overseer has already bounced a PR once for a specific out-of-scope commit SHA and the flag is still unresolved on re-submission, when the overseer runs its pre-merge gate, then the overseer issues `HUMAN_REQUIRED` with `reason_category: FINDINGS_NOT_RESOLVED` rather than a second bounce.
+**AC5 — Same-SHA re-appearance triggers immediate human escalation; bounce-count cap also applies.**
+Given the overseer encounters an `Out_of_scope_commits:` flag naming a SHA that was already named in a prior bounce on the same `cid`, when the overseer runs its pre-merge gate, then the overseer immediately issues `HUMAN_REQUIRED` with `reason_category: FINDINGS_NOT_RESOLVED` regardless of the current `bounce_count(cid)`. Separately, if `bounce_count(cid) >= 2` for any reason, the overseer also escalates rather than bouncing again.
 
-**AC6 — Audit log records detection and resolution events.**
-Given an out-of-scope commit flag is detected and then resolved, when `audit/oversight-log.jsonl` is read, then it contains both an `out-of-scope-commit` detection event (with `phase: detected`, the flagged SHAs, and `comment_posted: true`) and a resolution event (with `phase: resolved` and the correct `resolution` value matching the path taken).
+**AC6 — Detection event is appended in the same unit as the confirmed comment post; resolution event is separate.**
+Given an out-of-scope commit flag is detected and then resolved, when `audit/oversight-log.jsonl` is read, then: (a) the detection event (with `phase: detected`, the flagged SHAs, and `comment_posted: true`) appears in the log only if the bounce or escalation comment was successfully posted — no detection event exists without a corresponding PR comment; and (b) a separate resolution event (with `phase: resolved` and the correct `resolution` value) is appended when the commit is resolved. There is no standalone detection event emitted prior to the comment-post confirmation.
 
 ---
 
@@ -173,7 +206,7 @@ Given an out-of-scope commit flag is detected and then resolved, when `audit/ove
 
 **NR3 — No new commit-message convention is required.** This protocol does not add a commit-message field for issue traceability. The existing `Prompt-Artifact:` git trailer (contract §2) is not extended. Traceability is asserted through reviewer review, not through commit metadata.
 
-**NR4 — Worker is not required to create the target branch.** If the correct target branch for the out-of-scope commit does not exist, the worker escalates to a human (R3.3). Branch creation decisions are a human judgment call, not an autonomous worker action.
+**NR4 — Worker may not create branches or push to contested branches.** The worker cherry-picks only to an existing target branch that has no open PR of its own. Branch creation is a human judgment call, not an autonomous worker action (R3.3).
 
 **NR5 — Force-push and interactive rebase are not introduced.** The revert workflow uses `git revert` exclusively. Destructive history editing on PR branches is explicitly excluded (R3.2).
 
