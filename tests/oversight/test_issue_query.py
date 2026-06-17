@@ -30,7 +30,7 @@ class TestGhIssuesForFiles:
         help_mock = MagicMock(returncode=0)
         issue_mock = _make_gh_mock(issues)
         with patch("issue_query.subprocess.run",
-                   side_effect=[help_mock] + [issue_mock] * 7):
+                   side_effect=[help_mock] + [issue_mock] * 8):
             result = _gh_issues_for_files(["auth/views.py"])
         assert any(i["number"] == 42 for i in result)
 
@@ -45,7 +45,7 @@ class TestGhIssuesForFiles:
         help_mock = MagicMock(returncode=0)
         issue_mock = _make_gh_mock(issues)
         with patch("issue_query.subprocess.run",
-                   side_effect=[help_mock] + [issue_mock] * 7):
+                   side_effect=[help_mock] + [issue_mock] * 8):
             result = _gh_issues_for_files(["auth/views.py"])
         assert result == []
 
@@ -62,7 +62,7 @@ class TestGhIssuesForFiles:
         # Return same issue for every label query
         issue_mock = _make_gh_mock([issue])
         with patch("issue_query.subprocess.run",
-                   side_effect=[help_mock] + [issue_mock] * 7):
+                   side_effect=[help_mock] + [issue_mock] * 8):
             result = _gh_issues_for_files(["views.py"])
         # Should appear only once despite matching on multiple labels
         numbers = [i["number"] for i in result]
@@ -72,7 +72,7 @@ class TestGhIssuesForFiles:
         help_mock = MagicMock(returncode=0)
         bad_mock = MagicMock(stdout="not-json", returncode=0)
         with patch("issue_query.subprocess.run",
-                   side_effect=[help_mock] + [bad_mock] * 7):
+                   side_effect=[help_mock] + [bad_mock] * 8):
             result = _gh_issues_for_files(["views.py"])
         assert result == []
 
