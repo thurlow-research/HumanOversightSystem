@@ -66,6 +66,12 @@ The technical design is the standard; the spec is background.
 - Names self-document; a comment appears only where the *why* is non-obvious.
 - No secrets or PII in log statements.
 
+**`# pragma: no cover` scrutiny:**
+For every `# pragma: no cover` annotation in the diff:
+- (a) A comment must explain the untestable scenario
+- (b) The path must log/raise explicitly — never silently return a default that masks a failure
+A pragma without an explanatory comment, or one that degrades silently, is a **blocking** finding.
+
 ## Review output format
 
 Send all findings in one pass — do not drip one issue at a time. For each finding:

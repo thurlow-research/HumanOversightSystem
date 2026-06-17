@@ -30,6 +30,7 @@ For each outbound connection in the changed code, ask "what happens when it fail
 3. **Circuit-breaker / fallback** — frequently-called dependencies have an intentional, safe fallback (fail-open vs fail-closed chosen deliberately for the context). A cache degrades gracefully (a miss falls through without collapsing under full traffic).
 4. **Unbounded waits** — no blocking call, pool checkout, or queue receive without a bound. An exhausted connection pool with no wait timeout deadlocks under load.
 5. **Error propagation** — failures are not silently swallowed; the caller receives a meaningful error; failures are logged with enough context (which dependency, what operation, the error) to diagnose. A bare catch-and-discard erases the failure.
+6. **`# pragma: no cover` annotations** — every `# pragma: no cover` must be accompanied by a comment explaining (a) WHY the path is untestable (e.g., "requires ScanCode binary not present in CI") and (b) WHAT the behavior is if that path fires. The path must either log a warning/error or raise explicitly — never silently return a default. A pragma without an explanatory comment, or one that silently swallows a failure, is a **BLOCKING finding**.
 
 ## How you report
 
