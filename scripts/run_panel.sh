@@ -84,6 +84,11 @@ DIFF_ONLY_REQUEST_PATTERNS='full repo|all files|entire codebase|repository conte
 # ── Args ─────────────────────────────────────────────────────────────────────--
 PR=""; DRY_RUN=0; RISK_OVERRIDE=""; DO_SAMPLE=1
 DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
+# SPEC-78: ledger subcommand state. PR is resolved in preflight; PANEL_LEDGER after.
+_PANEL_SUBCMD=""
+_REC_FILES=""
+_REC_CLASS=""
+_REC_DISP=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)      DRY_RUN=1; shift ;;
@@ -93,6 +98,13 @@ while [[ $# -gt 0 ]]; do
     --diff-only)    DIFF_ONLY=1; shift ;;
     --no-diff-only) DIFF_ONLY=0; shift ;;
     --help|-h)      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # SPEC-78: ledger subcommands.
+    --record)
+        _PANEL_SUBCMD="record"
+        _REC_FILES="${2:-}"; _REC_CLASS="${3:-}"; _REC_DISP="${4:-}"
+        shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift ;;
+    --reset)
+        _PANEL_SUBCMD="reset"; shift ;;
     -*)             die "Unknown option: $1  (try --help)" ;;
     *)              PR="$1"; shift ;;
   esac
@@ -206,6 +218,33 @@ fi
 HEAD_SHA="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || true)"
 [[ -n "$HEAD_SHA" ]] || die "could not resolve PR #$PR (is it open, and is gh pointed at the right repo?)"
 PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || echo "(unknown)")"
+
+# SPEC-78: panel ledger — per-PR, in .ai-local (persistent across runs, gitignored).
+PANEL_LEDGER=".ai-local/panel/pr${PR}-ledger.jsonl"
+
+# SPEC-78: post-parse dispatch for --record and --reset (C4/C5/C6).
+# Resolved here because PR is now known. These short-circuit before any review runs.
+_VL_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/validation_logic.py"
+[[ -f "$_VL_PY" ]] || _VL_PY="scripts/oversight/validation_logic.py"
+if [[ "$_PANEL_SUBCMD" == "record" ]]; then
+    [[ -z "$_REC_FILES" || -z "$_REC_CLASS" || -z "$_REC_DISP" ]] && {
+        echo "Usage: run_panel.sh [PR#] --record <files> <class> <disposition>" >&2
+        echo "  disposition: fixed | filed:#<N> | residual | noise" >&2
+        exit 1
+    }
+    mkdir -p ".ai-local/panel"
+    python3 "$_VL_PY" record \
+        --ledger "$PANEL_LEDGER" \
+        --files "$_REC_FILES" \
+        --class "$_REC_CLASS" \
+        --disposition "$_REC_DISP"
+    exit $?
+fi
+if [[ "$_PANEL_SUBCMD" == "reset" ]]; then
+    rm -f "$PANEL_LEDGER"
+    echo "reset: removed panel ledger for PR #${PR} (${PANEL_LEDGER})"
+    exit 0
+fi
 
 RUN_DIR=".ai-local/panel/pr${PR}-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"
@@ -510,6 +549,44 @@ TIER1_COUNT=$(printf '%s' "$TIER_COUNTS" | jq -r '.tier1')
 TIER2_COUNT=$(printf '%s' "$TIER_COUNTS" | jq -r '.tier2')
 ok "arbiter: $FCOUNT finding(s) after dedup (from $RAW_COUNT raw) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT"
 
+# ── SPEC-78: ledger-aware convergence verdict ─────────────────────────────────
+# new_blocking_count: tier1 findings not already in the per-PR ledger.
+# Gates the exit code only — does NOT suppress thread posting (OQ-2/C3 pending #400).
+# Fingerprint = (sorted files, lens) per validation_logic.fingerprint + C7.
+NEW_BLOCKING_COUNT="${TIER1_COUNT}"
+if [[ -f "$_VL_PY" ]]; then
+    _LEDGER_PATH="$PANEL_LEDGER"
+    _ARBITER_JSON="$RUN_DIR/arbiter.json"
+    NEW_BLOCKING_COUNT=$(python3 - <<PYEOF
+import json, sys, os
+sys.path.insert(0, os.path.dirname("$_VL_PY"))
+from validation_logic import load_ledger, fingerprint
+
+ledger = load_ledger("$_LEDGER_PATH")
+try:
+    with open("$_ARBITER_JSON") as fh:
+        data = json.load(fh)
+    findings = data.get("findings", [])
+except Exception:
+    print(0)
+    sys.exit(0)
+
+new_blocking = 0
+for f in findings:
+    if f.get("severity", "") != "tier1":
+        continue
+    # fingerprint uses (sorted files, category/type). Map: file -> files list,
+    # lens -> category (closest panel equivalent, per C7 / technical-design §5.3).
+    fp_finding = {"file": f.get("file", ""), "category": f.get("lens", "")}
+    if fingerprint(fp_finding) not in ledger:
+        new_blocking += 1
+
+print(new_blocking)
+PYEOF
+    ) || NEW_BLOCKING_COUNT="${TIER1_COUNT}"
+fi
+info "convergence (SPEC-78): tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} ledger=${PANEL_LEDGER}"
+
 # ── POST — one line-level thread per finding, then one summary comment ──────────
 # Line threads (review comments on the diff) are what the resolution gate enforces;
 # the summary is a plain issue comment for the human's overview.
@@ -605,5 +682,17 @@ else
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · raw archive: $RUN_DIR"
+echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} · raw archive: $RUN_DIR"
 echo ""
+
+# SPEC-78: write panel-verdict.json for oversight-evaluator (new_blocking_count field).
+printf '{"new_blocking_count":%s,"tier1_count":%s,"ledger":"%s","pr":%s}\n' \
+    "${NEW_BLOCKING_COUNT}" "${TIER1_COUNT}" "${PANEL_LEDGER}" "${PR}" \
+    > "$RUN_DIR/panel-verdict.json"
+
+# SPEC-78 R4: exit 3 (escalation) when there are un-ledgered blocking findings
+# on a non-dry-run. Mirrors second-review convention (exit 3 = human decides).
+if [[ $DRY_RUN -eq 0 && "${NEW_BLOCKING_COUNT:-0}" -gt 0 ]]; then
+    warn "Panel verdict: ESCALATE — ${NEW_BLOCKING_COUNT} new un-ledgered blocking finding(s) (tier1)"
+    exit 3
+fi

@@ -1,8 +1,28 @@
 # SPEC-78: Convergence ledger for external and panel reviews
 
-**Status:** Draft — for architect review
+**Status:** REVISED — OQ-2 pending human clearance (#400). C1-C7 applied.
 **Issue:** #78
 **Date:** 2026-06-17
+
+---
+
+## Architect bindings (applied 2026-06-17)
+
+The following constraints were issued by the architect and are binding on all implementations of this spec. They take precedence over any spec text that conflicts.
+
+**C1 — Import, never reimplement.** Fingerprint and ledger I/O (`load_ledger`, `fingerprint`, `record_ledger_entry`) must be imported from `scripts/oversight/validation_logic.py`. They must never be reimplemented in `panel_logic.py`, `second_review_logic.py`, or any other module.
+
+**C2 — No panel pass counter.** The panel does not adopt a pass counter. The ledger (per R3/R4) is the sole convergence mechanism for the panel. `--reset` on the panel script is a no-op on any counter; it removes only the ledger file. OQ-1 is resolved: no explicit pass counter for the panel.
+
+**C3 — OQ-2 PENDING HUMAN CHECKPOINT (#400).** Suppressing ledgered findings from PR thread posting on panel re-runs is a user-visible behavior change (reviewers and the human will not see re-surfaced threads for already-triaged findings). This behavior is NOT implemented until human clearance is received on issue #400. The implementation in this release omits thread-suppression; `new_blocking_count` gates the exit verdict only.
+
+**C4 — No step-less fallback.** `--step` is required for `run_second_review.sh` (already enforced). The ledger is scoped to step. No fallback ledger path for `--files` or `--diff` invocation modes — those modes require `--step` to be ledger-scoped.
+
+**C5 — Ledger path asymmetry is intentional.** Panel ledger: `.ai-local/panel/pr<N>-ledger.jsonl`. Second-review ledger: `.claudetmp/second-review/step<N>-ledger.jsonl`. The asymmetry mirrors the existing output-file location asymmetry and is by design.
+
+**C6 — `record_ledger_entry` is the only writer.** Both scripts must open their ledger file exclusively via `record_ledger_entry` (append mode). No script or delegate may open the ledger file directly for writing.
+
+**C7 — Fingerprint = (sorted files, category) only.** The fingerprint is `(sorted files, finding-class)` as defined in `validation_logic.py`. No finding TEXT is included. This is already the behavior of `validation_logic.fingerprint()` — implementations must use that function, not a local variant.
 
 ---
 
@@ -127,8 +147,8 @@ The following are explicitly out of scope for this spec:
 
 ## 8. Open questions for architect
 
-**OQ-1 (ledger scope for the panel):** The panel currently does not have a per-PR pass counter or a notion of "passes." It runs once per invocation. The `--reset` and `--record` subcommands are defined here at the PR scope. Should the panel also adopt an explicit pass counter (analogous to `SELF_REVIEW_MAX_PASSES`) or is the existing `--dry-run` / one-invocation model sufficient? The pass-cap behavior for the panel is left to the architect to decide; this spec only requires the ledger read/write and the `new_blocking_count` verdict field.
+**OQ-1 (ledger scope for the panel) — RESOLVED (C2):** No pass counter for the panel. The ledger is the sole convergence mechanism. `--reset` removes the ledger file only; no counter to clear. The existing one-invocation model is sufficient.
 
-**OQ-2 (panel verdict vs. thread posting):** The panel's primary output is PR review threads, not an exit code. The `new_blocking_count` field gates the script's exit verdict but does not currently suppress thread posting. Should findings that are already in the ledger be omitted from posted threads on a re-run (to avoid re-posting resolved threads), or should all current-run findings continue to be posted regardless of ledger status? This is an architect decision; this spec does not prescribe thread-suppression behavior.
+**OQ-2 (panel verdict vs. thread posting) — PENDING HUMAN CHECKPOINT (#400):** The panel's primary output is PR review threads, not an exit code. The `new_blocking_count` field gates the script's exit verdict but does not currently suppress thread posting. The architect has ruled this a user-visible behavior change: if ledgered findings were suppressed from PR threads on re-runs, reviewers and the human would not see re-surfaced threads for already-triaged findings. This behavior is NOT implemented until human clearance is received on issue #400. Current behavior (all current-run findings posted regardless of ledger status) is preserved.
 
-**OQ-3 (ledger path for multi-step second reviews):** The ledger path `.claudetmp/second-review/step<N>-ledger.jsonl` assumes `--step N` is always passed. For the `--files` and `--diff` invocation modes (which do not necessarily have a step number), a fallback ledger path is needed. Architect to decide whether to require `--step` for ledger-scoped invocations or to define a step-less fallback path.
+**OQ-3 (ledger path for multi-step second reviews) — RESOLVED (C4):** No step-less fallback. `--step` is required for ledger-scoped invocations (it is already required by the script). The `--files` and `--diff` modes also require `--step` when a ledger is in use. The script already exits with an error when `--step` is absent; no new behavior is needed.

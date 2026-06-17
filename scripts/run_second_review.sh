@@ -73,6 +73,12 @@ TIER=""
 DIFF_REF=""
 FILES=()
 DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
+# SPEC-78: ledger file resolved after STEP is confirmed; see post-parse dispatch below.
+LEDGER_FILE=""
+_SUBCMD=""
+_REC_FILES=""
+_REC_CLASS=""
+_REC_DISP=""
 
 # SPEC-219: the reviewed commit range, recorded in every report header so the
 # oversight-evaluator can verify the second review covered the step's canonical
@@ -95,6 +101,13 @@ while [[ $# -gt 0 ]]; do
         --files)        shift; while [[ $# -gt 0 && "$1" != --* ]]; do FILES+=("$1"); shift; done ;;
         --diff-only)    DIFF_ONLY=1; shift ;;
         --no-diff-only) DIFF_ONLY=0; shift ;;
+        # SPEC-78: ledger subcommands. --step must be supplied before these.
+        --record)
+            _SUBCMD="record"
+            _REC_FILES="${2:-}"; _REC_CLASS="${3:-}"; _REC_DISP="${4:-}"
+            shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift ;;
+        --reset)
+            _SUBCMD="reset"; shift ;;
         *)              shift ;;
     esac
 done
@@ -107,6 +120,31 @@ fi
 if [[ -z "$STEP" ]]; then
     echo "Error: --step <N> is required (used to name output and match oversight-evaluator lookup)" >&2
     exit 1
+fi
+
+# SPEC-78: resolve ledger path now that STEP is confirmed.
+LEDGER_FILE="${OUT_DIR}/step${STEP}-ledger.jsonl"
+
+# SPEC-78: post-parse dispatch for --record and --reset subcommands.
+# These short-circuit before any reviewer invocation or diff-derivation.
+if [[ "$_SUBCMD" == "record" ]]; then
+    [[ -z "$_REC_FILES" || -z "$_REC_CLASS" || -z "$_REC_DISP" ]] && {
+        echo "Usage: run_second_review.sh --step <N> --record <files> <class> <disposition>" >&2
+        echo "  disposition: fixed | filed:#<N> | residual | noise" >&2
+        exit 1
+    }
+    mkdir -p "$OUT_DIR"
+    python3 "$(dirname "$0")/oversight/validation_logic.py" record \
+        --ledger "$LEDGER_FILE" \
+        --files "$_REC_FILES" \
+        --class "$_REC_CLASS" \
+        --disposition "$_REC_DISP"
+    exit $?
+fi
+if [[ "$_SUBCMD" == "reset" ]]; then
+    rm -f "$LEDGER_FILE"
+    echo "reset: removed ledger for step ${STEP} (${LEDGER_FILE})"
+    exit 0
 fi
 
 # Read score from validator summary if not provided
@@ -307,6 +345,8 @@ echo ""
     printf "reviewed_range: %s\n" "$REVIEWED_RANGE"
     printf "highest_severity: none\n"
     printf "unresolved_findings: 0\n"
+    printf "blocking_count: 0\n"
+    printf "new_blocking_count: 0\n"
     printf "agy_threshold: %s | codex_threshold: %s\n\n" "$AGY_THRESHOLD" "$CODEX_THRESHOLD"
 } > "$OUTFILE"
 
@@ -661,12 +701,18 @@ fi
 echo ""
 
 # ── Finalize machine-readable verdict header ─────────────────────────────────
-# Verdict aggregation (SPEC-331): parsing reviewer sections, classifying JSON-or-
-# prose responses, computing the aggregate severity + verdict precedence
-# (error > request_changes > unparseable > approve), and rewriting the three
-# header lines in place all live in scripts/oversight/second_review_logic.py
-# (named, unit-testable). The module reads $OUTFILE and rewrites it in place.
+# Step 1 (SPEC-331): second_review_logic.py rewrites verdict, highest_severity,
+# and unresolved_findings from the prose/JSON classifier. The module reads
+# $OUTFILE and rewrites it in place.
 python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate --file "$OUTFILE"
+
+# Step 2 (SPEC-78 C1): validation_logic.py process rewrites new_blocking_count
+# (and re-keys verdict) against the step-scoped convergence ledger. This is the
+# only place that reads the ledger — imported from validation_logic.py, never
+# reimplemented here (C1). A missing ledger is treated as empty (zero seen
+# fingerprints), so first-run behavior is unchanged.
+python3 "$(dirname "$0")/oversight/validation_logic.py" process \
+    --file "$OUTFILE" --ledger "$LEDGER_FILE"
 
 echo "Second review complete: $OUTFILE"
 echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCALATE."
