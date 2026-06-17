@@ -1,7 +1,7 @@
 # SPEC-366 — Per-Step Stamp Subdirectories
 
 **Issue:** #366
-**Status:** Draft — awaiting architect review
+**Status:** Draft — architect open questions resolved 2026-06-16; ready for technical design
 **Date:** 2026-06-16
 **Classification:** Additive — fills a structural gap implied by the per-step sign-off model
 
@@ -94,8 +94,7 @@ per-step mode it reads only `signoffs/<step-id>/` and checks only the
 `required_signoffs` for that step. In `--all` (deploy) mode it checks every
 step subdirectory against its respective step's required roles.
 
-Open question for architect (see §7): whether `--step` is required or
-optional; what the fallback behavior is when it is absent.
+`--step` is a required argument; omission is a hard error. See OQ-366-01 in §7.
 
 ---
 
@@ -125,11 +124,15 @@ The gate must read the `required_signoffs` list for the specific step being
 evaluated, not the union of all steps. This is a behavioral change from the
 current implementation, which reads the union.
 
-### REQ-366-06: Deploy mode covers all steps
-In `--all` (deploy) mode, the gate checks every step's subdirectory against
-that step's `required_signoffs`. A step with no subdirectory is a gate failure
-(missing stamps) unless the step has no required signoffs or is explicitly
-excluded (see §7, open question on opt-out).
+### REQ-366-06: Deploy mode covers all steps (manifest-authoritative)
+In `--all` (deploy) mode, the gate iterates the step-id set from
+`step-manifest.yaml`. For every step with a non-empty `required_signoffs` list,
+if `signoffs/<step-id>/` does not exist or does not contain passing stamps for
+all required roles, the gate MUST exit 1 (GATE FAIL). Disk enumeration of
+`signoffs/` subdirectories is explicitly prohibited as the authoritative source
+for this check — it is fail-open (a missing directory is silently skipped,
+leaving unsigned steps undetected). The manifest is the only authoritative step
+enumeration source.
 
 ### REQ-366-07: ESCALATED has no stamp (unchanged)
 An unresolved escalation has no passing stamp. The gate fails on a missing stamp
@@ -139,6 +142,14 @@ for a required role. This behavior is unchanged.
 `signoff_gate.py`'s `OVERSIGHT_ARTIFACT_PREFIXES` tuple must remain prefixed
 with `signoffs/` (not a specific step subdirectory) so that all stamp files
 across all steps are excluded from the changed-file set that stamps must beat.
+
+### REQ-366-09: Orphan step directory is a gate failure
+When `signoffs/<step-id>/` exists on disk but `<step-id>` has no matching entry
+in `step-manifest.yaml`, the gate MUST exit 1 (GATE FAIL) and emit an error
+message that names the orphan directory. This applies in both PR mode and deploy
+(`--all`) mode. Warn-and-pass is explicitly prohibited: an orphan directory
+indicates a step was removed from the manifest after stamps were committed, which
+is a contract integrity failure requiring operator intervention.
 
 ---
 
@@ -150,8 +161,19 @@ At the time of this writing the `signoffs/` directory contains only a
 `README.md` — no existing stamp files are present in the repo. Migration of
 live flat stamps is therefore not required for this repo.
 
-For consumer projects that have already deployed the flat layout, migration is
-the responsibility of the project operator. The recommended migration path:
+For consumer projects that have already deployed the flat layout, `hos_install.sh`
+MUST detect committed flat stamps — files matching `signoffs/*.stamp` at the top
+level of `signoffs/` (i.e., outside any step subdirectory) — on upgrade and MUST
+FAIL loudly (non-zero exit, descriptive error) with the migration instructions
+below. Silent skip is explicitly prohibited: a silent skip leaves the consumer
+unable to satisfy the new gate because the gate will not find stamps in the
+expected per-step subdirectory paths, and the consumer will not know why.
+
+The upgrade MUST NOT proceed past the flat-stamp detection check until the
+operator has completed the migration. This is a breaking contract change; the
+`contract_version` must increment (see §5.3).
+
+Required migration path for operators:
 
 1. For each existing `signoffs/<role>.stamp`, determine which step it belongs to
    by inspecting the branch's build history or `.claudetmp/signoffs/` register files.
@@ -183,8 +205,8 @@ subdirectory structure, and `contract_version` must increment.
 ### 6.1 `sign_off.sh`
 
 Requires a new `--step <id>` argument. The script must:
-- Accept `--step <id>` as a required parameter (or optional with a sensible
-  default — see §7 open question).
+- Accept `--step <id>` as a required parameter; omission is a hard error (non-zero
+  exit, descriptive message). See OQ-366-01 in §7.
 - Create `signoffs/<step-id>/` if absent.
 - Write to `signoffs/<step-id>/<role>.stamp`.
 - Update the commit instruction in output.
@@ -195,6 +217,12 @@ Requires changes to:
 - `SIGNOFFS_DIR` handling — stamp path becomes `signoffs/<step-id>/<role>.stamp`.
 - `load_required_roles` — must return per-step required roles, not the union.
 - `main` — must accept `--step <id>`; in PR mode only check that step's stamps.
+- `--all` (deploy) mode — MUST iterate the step-id set from `step-manifest.yaml`
+  (manifest-authoritative). For each step with a non-empty `required_signoffs`,
+  a missing or incomplete `signoffs/<step-id>/` is a GATE FAIL (exit 1). Disk
+  enumeration of `signoffs/` subdirectories is explicitly prohibited as the
+  authoritative source — enumerating only directories that exist on disk is
+  fail-open and must not be used.
 - `OVERSIGHT_ARTIFACT_PREFIXES` — keep `signoffs/` prefix as-is (covers all
   subdirectories).
 - `is_oversight_artifact` — behavior unchanged; `signoffs/<step-id>/...` still
@@ -240,41 +268,41 @@ collisions, cited in issue #366) must be updated to note the fix.
 
 ---
 
-## 7. Open Questions for Architect
+## 7. Open Questions — RESOLVED
 
-These are design questions, not requirements questions. The spec does not
-prescribe the answers — the architect decides.
+All five open questions are resolved per architect ruling (2026-06-16). The
+resolutions are normative and are reflected in the requirements above.
 
-**Q1 — Is `--step` required or has a default?**
-If `sign_off.sh` and `signoff_gate.py` are invoked from scripts that do not yet
-pass `--step`, a default step (e.g. `default` or the current git branch slug)
-could prevent breakage during migration. Or `--step` can be required immediately
-with a hard error on omission. Required is cleaner; a default may ease rollout.
+**OQ-366-01 — Is `--step` required or has a default? — RESOLVED**
+Ruling: `--step <id>` is a required argument in both `sign_off.sh` and
+`signoff_gate.py`. Omission is a hard error (non-zero exit, descriptive message).
+No default step is provided. This prevents silent routing to a wrong step during
+rollout. Scripts that do not yet pass `--step` must be updated before the gate
+is activated. Rationale: a default silently misdirects stamps; "required" is
+cleaner and the migration window is controlled.
 
-**Q2 — Deploy mode: what steps are "all"?**
-In `--all` mode the gate must know which step-ids to check. Options: (a) read
-all subdirectories under `signoffs/`; (b) read the union of all step ids from
-`step-manifest.yaml`. Option (b) is authoritative but requires a manifest step;
-option (a) is simpler but would pass if a step subdirectory was never created
-(missing stamps go undetected). The spec requires fail-closed behavior — the
-architect should select the approach that satisfies REQ-366-06.
+**OQ-366-02 — Deploy mode: what steps are "all"? — RESOLVED**
+Ruling: manifest-authoritative (option b). Deploy mode iterates the step-id set
+from `step-manifest.yaml`. Disk enumeration of `signoffs/` subdirectories is
+explicitly prohibited as the authoritative source — it is fail-open. See
+REQ-366-06 and §6.2.
 
-**Q3 — Same-step, multiple PRs?**
-If two PRs legitimately cover the same step (e.g. a split or rework), they will
-still conflict on stamp files. This spec does not address that case. The
-architect should determine whether the worker protocol already prevents it or
-whether an additional disambiguation layer is needed (e.g. `signoffs/<step-id>/<branch-slug>/<role>.stamp`). Note: adding branch-slug reintroduces some of
-Option B's complexity.
+**OQ-366-03 — Same-step, multiple PRs? — RESOLVED**
+Ruling: the existing worker protocol already prohibits concurrent same-step work.
+No additional disambiguation layer (branch-slug nesting) is introduced by this
+spec. If the worker protocol is violated and two PRs cover the same step, they
+will conflict on stamp files — this is intentional and surfaces the protocol
+violation. Adding branch-slug nesting is deferred; it reintroduces Option B
+complexity and is out of scope for this spec.
 
-**Q4 — Consumer install / upgrade path?**
-The `hos_install.sh` upgrader performs a three-way region merge on agent files
-but does not currently manage runtime artifacts like `signoffs/`. Should the
-upgrader detect flat stamps and fail loudly, or silently skip migration? The
-spec does not prescribe this — it is an installer design question.
+**OQ-366-04 — Consumer install / upgrade path? — RESOLVED**
+Ruling: `hos_install.sh` MUST detect committed flat stamps and MUST fail loudly
+with migration instructions. Silent skip is prohibited. See §5.1. This is a
+breaking contract change; `contract_version` increments per §5.3.
 
-**Q5 — Gate behavior when step-id does not exist in manifest?**
-If `signoffs/99/` exists but step `99` is not in the manifest, the gate should
-presumably fail or warn. The architect should decide the error mode.
+**OQ-366-05 — Gate behavior when step-id does not exist in manifest? — RESOLVED**
+Ruling: gate MUST exit 1 (GATE FAIL) and name the orphan directory in the error
+message. Warn-and-pass is prohibited. See REQ-366-09.
 
 ---
 
