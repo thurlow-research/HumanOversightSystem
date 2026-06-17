@@ -27,6 +27,11 @@
 #                                         #   PROJECT). Resolves a layering drift hard-stop.
 #   ./hos_install.sh --pack <name> [DIR]  # install with a named pack (repeatable for multi-pack)
 #   ./hos_install.sh --no-pack [DIR]      # install bare core only (deliberate; see #237)
+#   ./hos_install.sh --brownfield [DIR]   # classify flat agent files + migrate safely (#275)
+#                                         #   (pre-region-model repos without .hos-manifest)
+#   ./hos_install.sh --scaffold-pack <slug> [DIR]
+#                                         # extract PROJECT customizations into a consumer
+#                                         #   pack (requires --brownfield; slug = pack name)
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -69,6 +74,9 @@ PR_MODE="off"         # off (default — opt-in) | on (--pr) — branch+PR the u
 PRUNE=false           # --prune: archive framework files removed across versions (#182)
 SQUASH=false          # --squash: take HOS's version of a drifted CORE/PACK region (TD §4.3)
 NO_PACK=false         # --no-pack: install bare core, no pack (deliberate; #237 WARN)
+FULL=false            # --full: bypass version-adjacency hard-stop; install target wholesale (#238)
+BROWNFIELD=false      # --brownfield: classify flat agent files, synth a baseline, then merge (#275)
+SCAFFOLD_PACK=""      # --scaffold-pack <slug>: extract project_custom into a consumer pack (#275)
 _packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -84,6 +92,10 @@ while [[ $# -gt 0 ]]; do
     --no-pr)         PR_MODE="off"; shift ;;
     --prune)         PRUNE=true; shift ;;
     --squash)        SQUASH=true; shift ;;
+    --full)          FULL=true; shift ;;
+    --brownfield)    BROWNFIELD=true; shift ;;
+    --scaffold-pack) SCAFFOLD_PACK="${2:?--scaffold-pack needs a slug, e.g. --scaffold-pack condoparkshare}"; shift 2 ;;
+    --scaffold-pack=*) SCAFFOLD_PACK="${1#*=}"; shift ;;
     --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
     --pack=*)        _packs+=("${1#*=}"); shift ;;
     --no-pack)       NO_PACK=true; shift ;;
@@ -99,6 +111,22 @@ TARGET_REPO="$(cd "$TARGET_REPO" 2>/dev/null && pwd)" || {
 # Mutual-exclusion: --no-pack and --pack are contradictory.
 if $NO_PACK && [[ ${#_packs[@]} -gt 0 ]]; then
   echo "ERROR: --no-pack and --pack are mutually exclusive (try --help)"; exit 1
+fi
+
+# REQ-B-01: --brownfield and --squash are mutually exclusive (#275).
+if $BROWNFIELD && $SQUASH; then
+  echo "ERROR: --brownfield and --squash are mutually exclusive."
+  echo "  --brownfield performs its own safe classification before merging."
+  echo "  --squash overwrites all CORE/PACK regions without classification."
+  echo "  Use --brownfield for pre-region-model repos."
+  exit 2
+fi
+
+# REQ-CS-07: --scaffold-pack requires --brownfield.
+if [[ -n "$SCAFFOLD_PACK" ]] && ! $BROWNFIELD; then
+  echo "ERROR: --scaffold-pack requires --brownfield."
+  echo "  Consumer pack scaffolding is part of the brownfield migration flow."
+  exit 2
 fi
 
 # ── Colours ───────────────────────────────────────────────────────────────────
@@ -304,6 +332,96 @@ resolve_hos_source() {
 
 resolve_hos_source
 
+# ── Version-skip detection (REQ-U-01/U-02/U-03, #238) ────────────────────────
+# Only relevant for upgrades (existing .hos-release) and non-local installs.
+# Fresh installs (no .hos-release) skip the adjacency gate entirely — there is
+# no prior version to be adjacent to.  --full bypasses the adjacency hard-stop.
+INSTALLED_TAG=""
+[[ -f "${TARGET_REPO}/.hos-release" ]] && INSTALLED_TAG="$(tr -d '[:space:]' < "${TARGET_REPO}/.hos-release")"
+
+if [[ -n "$INSTALLED_TAG" ]] && ! $LOCAL_SOURCE && ! $FULL; then
+  # Determine the target tag being installed.
+  _install_tag="$RELEASE_REF"
+  if [[ -z "$_install_tag" ]]; then
+    _install_tag="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$_install_tag" && "$INSTALLED_TAG" != "$_install_tag" ]]; then
+    # Fetch the ordered release list (newest-first, non-draft only).
+    _releases_json="$(gh api "repos/${HOS_REPO}/releases" \
+      --jq '[.[] | select(.draft==false) | .tag_name]' 2>/dev/null)" || _releases_json=""
+
+    if [[ -z "$_releases_json" || "$_releases_json" == "null" || "$_releases_json" == "[]" ]]; then
+      # Cannot verify upgrade sequence — network or API failure.
+      err "cannot verify upgrade sequence — network required (could not fetch release list from ${HOS_REPO})"
+      err "To proceed without the adjacency check: re-run with --full"
+      exit 1
+    fi
+
+    # Find indices of installed and target in the releases list.
+    _skip_result="$(python3 - "$_releases_json" "$INSTALLED_TAG" "$_install_tag" <<'PYEOF'
+import json, sys
+releases = json.loads(sys.argv[1])   # newest-first
+installed = sys.argv[2]
+target    = sys.argv[3]
+try:
+    idx_target    = releases.index(target)
+    idx_installed = releases.index(installed)
+except ValueError as e:
+    # One of the tags not found in the release list — treat as non-sequential.
+    print("NOT_FOUND:" + str(e))
+    sys.exit(0)
+# Sequential: installed is immediately after target in newest-first list,
+# i.e. installed == releases[idx_target + 1].
+if idx_installed == idx_target + 1:
+    print("OK")
+else:
+    # Skipped versions are between target (exclusive) and installed (exclusive)
+    # in newest-first order — i.e. releases[idx_target+1 : idx_installed].
+    skipped = releases[idx_target + 1 : idx_installed]
+    print("SKIP:" + ",".join(skipped))
+PYEOF
+    )"
+
+    case "$_skip_result" in
+      OK)
+        # Sequential upgrade — proceed normally.
+        ;;
+      NOT_FOUND:*)
+        warn "Version-skip check: could not find '$INSTALLED_TAG' or '$_install_tag' in the release list — proceeding (treat as non-sequential upgrade at your risk)."
+        warn "Re-run with --full to make this explicit."
+        ;;
+      SKIP:*)
+        _skipped="${_skip_result#SKIP:}"
+        _skipped_display="${_skipped//,/, }"
+        # Build intermediate install command lines (oldest skipped first).
+        _inter_cmds=""
+        IFS=',' read -ra _sv <<< "$_skipped"
+        for _v in "${_sv[@]}"; do
+          _inter_cmds+="        ./bootstrap/hos_install.sh --release ${_v} ${TARGET_REPO}"$'\n'
+        done
+        _inter_cmds+="        ./bootstrap/hos_install.sh --release ${_install_tag} ${TARGET_REPO}"
+
+        echo ""
+        err "ERROR: version-skip detected."
+        echo "  Installed: ${INSTALLED_TAG}"
+        echo "  Target:    ${_install_tag}"
+        echo "  Skipped:   ${_skipped_display}"
+        echo ""
+        echo "  A non-sequential upgrade risks a content-incomplete install."
+        echo "  Supported paths:"
+        echo "    (a) Re-run with --full to install ${_install_tag} wholesale"
+        echo "        (overwrites all CORE and PACK regions; PROJECT regions are preserved)."
+        echo "    (b) Apply each intermediate version in sequence:"
+        printf '%s' "$_inter_cmds"
+        echo ""
+        echo "  Run with --full to proceed if you understand the implications."
+        exit 1
+        ;;
+    esac
+  fi
+fi
+
 echo ""
 echo -e "${BOLD}Human Oversight System — project installer${RESET}"
 echo "  Platform:    $OS  ($PKG_MGR)"
@@ -481,9 +599,10 @@ info ".gitignore"
 GITIGNORE="$TARGET_REPO/.gitignore"
 [[ -f "$GITIGNORE" ]] || run touch "$GITIGNORE"
 
-ensure_line     "$GITIGNORE" ".claudetmp/"   ".claudetmp/ (agent ephemeral state)"
-ensure_line     "$GITIGNORE" ".ai-local/"    ".ai-local/ (SQC salt + panel cache)"
-ensure_line     "$GITIGNORE" "*.salt"        "*.salt (sampling keys)"
+ensure_line     "$GITIGNORE" ".claudetmp/"      ".claudetmp/ (agent ephemeral state)"
+ensure_line     "$GITIGNORE" ".ai-local/"     ".ai-local/ (SQC salt + panel cache)"
+ensure_line     "$GITIGNORE" "*.salt"         "*.salt (sampling keys)"
+ensure_line     "$GITIGNORE" ".hos-brownfield/" ".hos-brownfield/ (brownfield migration scratch — not committed, #275)"
 ensure_not_ignored "$GITIGNORE" "audit/"     "audit/ (committed audit trail)"
 ensure_not_ignored "$GITIGNORE" "AGENTS.md"  "AGENTS.md (governance protocol)"
 ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
@@ -593,6 +712,265 @@ _substitute_into() {
   fi
 }
 
+# ── Brownfield helpers (#275) ──────────────────────────────────────────────────
+# These functions implement the brownfield migration flow specified in the
+# TECHNICAL-DESIGN-consumer-pack.md §1.2–1.5, §3.2–3.5.
+
+# Detect brownfield state: returns 0 (true) if the repo has flat agent files
+# but no .hos-manifest. Called early, before the agent-install phase.
+_brownfield_detect() {
+  # Brownfield = ! has_manifest AND has_agents AND any_flat
+  [[ -f "$TARGET_REPO/.hos-manifest" ]] && return 1
+  local _agents_d="$TARGET_REPO/.claude/agents"
+  [[ -d "$_agents_d" ]] || return 1
+  # Check that at least one .md exists
+  local _any_md
+  _any_md="$(ls "$_agents_d"/*.md 2>/dev/null | head -1 || true)"
+  [[ -z "$_any_md" ]] && return 1
+  # Check that at least one has no <!-- HOS: marker
+  local _flat
+  _flat="$(grep -rL '<!-- HOS:' "$_agents_d/"*.md 2>/dev/null | head -1 || true)"
+  [[ -n "$_flat" ]] && return 0
+  return 1
+}
+
+# Run the Python brownfield classifier on all flat agent files.
+# Writes .hos-brownfield/<slug>.json and the report txt.
+_brownfield_migrate() {
+  local _BROWNFIELD_PY="$HOS_SOURCE/scripts/oversight/validators/brownfield.py"
+  if [[ ! -f "$_BROWNFIELD_PY" ]]; then
+    err "brownfield.py not found in HOS source — cannot perform brownfield migration"
+    exit 1
+  fi
+
+  local _ts; _ts="$(date +%Y%m%d-%H%M%S)"
+  local _report_dir="$TARGET_REPO/.claudetmp"
+  local _report_file="$_report_dir/brownfield-${_ts}-report.txt"
+  local _brownfield_dir="$TARGET_REPO/.hos-brownfield"
+
+  if $DRY_RUN; then
+    dry_run "Would run brownfield.py migrate $TARGET_REPO"
+    dry_run "Would write .claudetmp/brownfield-${_ts}-report.txt"
+    return
+  fi
+
+  mkdir -p "$_report_dir" "$_brownfield_dir"
+
+  info "[brownfield] Classifying flat agent files…"
+
+  # Run the Python classifier on all flat agent files
+  local _agents_d="$TARGET_REPO/.claude/agents"
+  local _any_classified=false
+  local _n_total=0 _n_marked=0 _n_flat=0 _n_project=0 _n_stock=0
+
+  for _agent_md in "$_agents_d"/*.md; do
+    [[ -f "$_agent_md" ]] || continue
+    _n_total=$((_n_total + 1))
+    local _slug; _slug="$(basename "$_agent_md" .md)"
+
+    # Skip already-marked files (REQ-B-04 / AC-B-08)
+    if grep -q '<!-- HOS:' "$_agent_md" 2>/dev/null; then
+      _n_marked=$((_n_marked + 1))
+      continue
+    fi
+
+    _n_flat=$((_n_flat + 1))
+    _any_classified=true
+
+    # Resolve the CORE template for this slug
+    local _core_tmpl=""
+    if [[ -f "$HOS_SOURCE/.claude/agents/${_slug}.md" ]]; then
+      _core_tmpl="$HOS_SOURCE/.claude/agents/${_slug}.md"
+    fi
+
+    local _json_out="$_brownfield_dir/${_slug}.json"
+    local _classify_args=("$_agent_md")
+    [[ -n "$_core_tmpl" ]] && _classify_args+=("$_core_tmpl")
+    _classify_args+=(--json-out "$_json_out")
+
+    # Classify: human-readable to report file, JSON to .hos-brownfield/
+    if ! python3 "$_BROWNFIELD_PY" classify "${_classify_args[@]}" >> "$_report_file" 2>&1; then
+      warn "brownfield classify failed for ${_slug} — treating as project_custom"
+    fi
+
+    # Count PROJECT/STOCK from resulting JSON
+    if [[ -f "$_json_out" ]]; then
+      local _n_pc; _n_pc="$(python3 -c "import json; d=json.load(open('$_json_out')); print(len(d.get('project_custom',[])+d.get('mixed',[])))" 2>/dev/null || echo 0)"
+      local _n_sc; _n_sc="$(python3 -c "import json; d=json.load(open('$_json_out')); print(len(d.get('stock_core',[])))" 2>/dev/null || echo 0)"
+      [[ "$_n_pc" -gt 0 ]] && _n_project=$((_n_project + 1))
+      [[ "$_n_sc" -gt 0 ]] && _n_stock=$((_n_stock + 1))
+    fi
+  done
+
+  # ── Scaffold-pack offer (§3.1) ────────────────────────────────────────────
+  if [[ -n "$SCAFFOLD_PACK" ]] && [[ "$_n_project" -ge 3 ]]; then
+    _brownfield_scaffold_pack "$SCAFFOLD_PACK"
+  elif [[ -z "$SCAFFOLD_PACK" && "$_n_project" -ge 3 ]]; then
+    if [[ -t 0 ]]; then
+      echo ""
+      info "[brownfield] Found PROJECT customizations in $_n_project agents."
+      info "  These could be extracted into a consumer pack for cleaner versioning."
+      printf "  Scaffold a consumer pack? (recommended for N >= 3) [y/N]: "
+      read -r _scaffold_ans </dev/tty || _scaffold_ans="N"
+      if [[ "${_scaffold_ans:-N}" =~ ^[Yy]$ ]]; then
+        local _slug_input=""
+        while [[ ! "$_slug_input" =~ ^[a-z][a-z0-9-]*$ ]]; do
+          printf "  Pack slug [a-z][a-z0-9-]*: "
+          read -r _slug_input </dev/tty || _slug_input=""
+        done
+        _brownfield_scaffold_pack "$_slug_input"
+      fi
+    fi
+    # Non-interactive: skip scaffolding silently (REQ-CS-01)
+  fi
+
+  # ── Synthetic baseline construction (§1.4) ───────────────────────────────
+  # For each flat file, build a CORE+PROJECT-marked disk image so the standard
+  # three-way merge can proceed. Flat files with no CORE template get PROJECT-only.
+  _REGIONS_PY_BF="$HOS_SOURCE/scripts/oversight/validators/regions.py"
+  for _agent_md in "$_agents_d"/*.md; do
+    [[ -f "$_agent_md" ]] || continue
+    grep -q '<!-- HOS:' "$_agent_md" 2>/dev/null && continue  # already marked
+    local _slug; _slug="$(basename "$_agent_md" .md)"
+    local _json_out="$_brownfield_dir/${_slug}.json"
+
+    if [[ ! -f "$_json_out" ]]; then
+      warn "[brownfield] Missing JSON for ${_slug} — skipping synthetic baseline for this file"
+      continue
+    fi
+
+    # Build the PROJECT region body = concatenated PROJECT_CUSTOMIZATION section lines
+    local _project_body
+    _project_body="$(python3 - "$_json_out" <<'PYEOF'
+import json, sys
+data = json.load(open(sys.argv[1]))
+parts = []
+for s in data.get("sections", []):
+    if s.get("classification") == "PROJECT_CUSTOMIZATION":
+        lines = s.get("lines", [])
+        parts.extend(lines)
+        if parts and not parts[-1].endswith("\n"):
+            parts.append("\n")
+        parts.append("\n")
+print("".join(parts).rstrip("\n"), end="")
+PYEOF
+)"
+
+    # Write the marked disk image: migrate the flat file first, then inject PROJECT body
+    if [[ -f "$_REGIONS_PY_BF" ]]; then
+      local _marked_tmp; _marked_tmp="$(mktemp "${TMPDIR:-/tmp}/hos-bf.XXXXXX.md")"
+      python3 "$_REGIONS_PY_BF" migrate "$_agent_md" --ships yes > "$_marked_tmp" 2>/dev/null || true
+      if [[ -s "$_marked_tmp" ]]; then
+        cp "$_marked_tmp" "$_agent_md"
+        # If there is PROJECT content, inject it into the PROJECT region
+        if [[ -n "$_project_body" ]]; then
+          python3 - "$_agent_md" "$_project_body" <<'PYEOF'
+import sys, re
+path = sys.argv[1]
+body = sys.argv[2]
+content = open(path).read()
+# Replace empty PROJECT region with the classified content
+pattern = r'(<!-- HOS:PROJECT:START -->)\s*(<!-- HOS:PROJECT:END -->)'
+replacement = f'<!-- HOS:PROJECT:START -->\n{body}\n<!-- HOS:PROJECT:END -->'
+new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+open(path, 'w').write(new_content)
+PYEOF
+        fi
+      fi
+      rm -f "$_marked_tmp"
+    fi
+  done
+
+  # ── Summary (REQ-B-07) ───────────────────────────────────────────────────
+  echo ""
+  info "[brownfield] Migration complete."
+  info "  Agents processed:          $_n_total"
+  info "  Already-marked (skipped):  $_n_marked"
+  info "  Flat files classified:     $_n_flat"
+  info "  PROJECT regions preserved: $_n_project"
+  info "  Stock CORE overwritten:    $_n_stock"
+  info "  Classification report:     .claudetmp/brownfield-${_ts}-report.txt"
+  echo ""
+}
+
+# Scaffold a consumer pack from .hos-brownfield/ classification JSON.
+# Delegates to the Python module for the actual file generation.
+_brownfield_scaffold_pack() {
+  local _slug="$1"
+  local _BROWNFIELD_PY="$HOS_SOURCE/scripts/oversight/validators/brownfield.py"
+
+  # Slug validation (REQ-CS-02)
+  if [[ ! "$_slug" =~ ^[a-z][a-z0-9-]*$ ]]; then
+    err "ERROR: invalid pack slug '$_slug' — must match ^[a-z][a-z0-9-]*$"
+    exit 2
+  fi
+
+  # Collision check: reject slugs that collide with HOS built-in pack names
+  if [[ -d "$HOS_SOURCE/packs/$_slug" ]]; then
+    err "ERROR: '$_slug' conflicts with a HOS built-in pack name. Choose a different slug."
+    exit 2
+  fi
+
+  if $DRY_RUN; then
+    dry_run "Would scaffold packs/${_slug}/ from brownfield classification"
+    return
+  fi
+
+  if ! python3 "$_BROWNFIELD_PY" scaffold-pack "$TARGET_REPO" "$_slug"; then
+    warn "[brownfield] scaffold-pack failed for slug '$_slug'"
+    return
+  fi
+
+  # Count body files written
+  local _n_files; _n_files="$(ls "$TARGET_REPO/packs/${_slug}/"*.md 2>/dev/null | wc -l || echo 0)"
+
+  info "[brownfield] Consumer pack scaffolded at packs/${_slug}/."
+  info "  To apply it, re-run the installer with --pack ${_slug} (and any other packs)."
+  info "  Example: hos_install.sh --pack django --pack ${_slug} [DIR]"
+}
+
+# Resolve a pack name to its directory: consumer-local packs/ first, then HOS-shipped.
+# REQ-CS-06: consumer-local resolution applies to every --pack resolution.
+# Prints the absolute directory path to stdout (only the path, no decoration);
+# logs the resolution source to stderr (so callers can capture stdout cleanly).
+# Returns 0 on success, 1 if not found.
+_resolve_pack_dir() {
+  local _n="$1"
+  if [[ -d "$TARGET_REPO/packs/$_n" ]]; then
+    echo -e "  ${CYAN}→${RESET}  [pack] Resolved $_n from consumer-local packs/ (not HOS-shipped)" >&2
+    printf '%s' "$TARGET_REPO/packs/$_n"; return 0
+  elif [[ -d "$HOS_SOURCE/packs/$_n" ]]; then
+    echo -e "  ${CYAN}→${RESET}  [pack] Resolved $_n from HOS source (HOS-shipped)" >&2
+    printf '%s' "$HOS_SOURCE/packs/$_n"; return 0
+  fi
+  return 1
+}
+
+# ── Brownfield-state detection and pre-flight handling (#275) ─────────────────
+# Called once after all brownfield helper functions are defined, after TARGET_REPO
+# is resolved, and before the agent-install phase (§1.2 contract). With
+# --brownfield: run the migration so the standard three-way merge can proceed.
+if _brownfield_detect; then
+  if $BROWNFIELD; then
+    # §1.5: classify + produce synthetic baseline, then let the merge proceed
+    _brownfield_migrate
+    # After migration the .hos-manifest exists (written by migration) → the standard
+    # merge treats the now-marked files correctly (CORE refreshed, PROJECT preserved).
+  else
+    # §1.3: actionable pre-flight error
+    err "This looks like a pre-region-model (brownfield) repo:"
+    err "  no .hos-manifest, and flat agent files in .claude/agents/."
+    err "  The standard installer cannot three-way-merge without a recorded baseline."
+    err "  Re-run with --brownfield to classify your flat files and migrate safely"
+    err "  (or --squash to overwrite all CORE/PACK regions — destructive, see --help)."
+    exit 4
+  fi
+elif $BROWNFIELD; then
+  # §1.6: --brownfield on a non-brownfield repo → no-op WARN
+  warn "[brownfield] --brownfield passed but this repo is not brownfield"
+  warn "  (.hos-manifest present or all agent files already marked) — proceeding with the standard merge."
+fi
+
 # ── Pack resolution (ADR-031 Decision 1) ─────────────────────────────────────
 _resolved_packs=()
 
@@ -663,19 +1041,22 @@ for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
     fi
 done
 
-# (R3) Validate each resolved pack exists in the HOS source (unknown → hard error,
-#      fail-closed: nothing written, exit non-zero — never fall through to core-only).
+# (R3) Validate each resolved pack exists (consumer-local or HOS-shipped).
+#      Uses _resolve_pack_dir (REQ-CS-06): consumer-local packs/ wins over HOS-shipped.
+#      Unknown pack (neither location) → hard error, fail-closed.
 for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
-    if [[ ! -d "$HOS_SOURCE/packs/$_p" ]]; then
-        err "unknown pack '$_p' — no packs/$_p/ in the HOS source ($HOS_REF)"
-        err "available: $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+    _pack_dir="$(_resolve_pack_dir "$_p")" || {
+        err "unknown pack '$_p' — no packs/$_p/ in the consumer repo or HOS source ($HOS_REF)"
+        err "available (HOS): $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+              | tr -d / | tr '\n' ' ' || echo '(none)')"
+        err "available (consumer): $(cd "$TARGET_REPO/packs" 2>/dev/null && ls -d */ 2>/dev/null \
               | tr -d / | tr '\n' ' ' || echo '(none)')"
         exit 1
-    fi
+    }
     # pack.toml name/dir sanity (ADR-031 §2.4; mismatch → WARN, not hard error —
     # directory name is authoritative; see TD-pack §6 flag #4).
     _declared="$(grep -E '^[[:space:]]*name[[:space:]]*=' \
-                   "$HOS_SOURCE/packs/$_p/pack.toml" 2>/dev/null \
+                   "$_pack_dir/pack.toml" 2>/dev/null \
                  | head -1 | cut -d= -f2- \
                  | sed 's/[[:space:]]*//g; s/^"//; s/"$//; s/^'\''//; s/'\''$//' || true)"
     if [[ -n "$_declared" && "$_declared" != "$_p" ]]; then
@@ -745,6 +1126,56 @@ _any_blocked=false
 _any_inject_fail=false   # B2: any inject-pack failure → pre-Phase-B abort (§2.4.1)
 _any_plan_fail=false     # R-B2: any planning failure → pre-Phase-B abort (§2.4.1)
 
+# ── Pack placeholder substitution helper (§3, #287) ──────────────────────────
+# Substitutes {{TOKEN}} (double-brace) in the pack body file BEFORE injection.
+# Deliberately distinct from the single-brace {NAME} engine (which runs before
+# this, over staged templates). The two engines must never merge — different
+# timing, different syntax, different scope (PACK-only for {{}}). (OQ-8)
+#
+# Reads the four pack-substitution keys from config.sh. If a key is absent or
+# empty, leaves the literal {{TOKEN}} and prints a WARNING (AC-S-02).
+# Never fails the install on a missing token.
+_subst_pack_tokens() {
+  local _file="$1" _agent="${2:-<unknown>}"
+  local _config="${_subst_config:-$TARGET_REPO/scripts/framework/config.sh}"
+
+  # Map of token names to their config.sh keys.
+  local -a _tokens=("PROJECT_ROOT" "PROJECT_SETTINGS_MODULE" "PROJECT_TESTS_DIR" "PROJECT_PACKAGE")
+  local _total_substituted=0
+  local _any_warning=false
+
+  for _tok in "${_tokens[@]}"; do
+    # Read value from env (override) > config.sh.
+    local _val="${!_tok:-}"
+    if [[ -z "$_val" && -f "$_config" ]]; then
+      _val="$(grep -E "^${_tok}=" "$_config" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true)"
+    fi
+
+    if [[ -z "$_val" ]]; then
+      # Only warn if the token actually appears in the body — no noise for unused tokens.
+      if grep -qF "{{${_tok}}}" "$_file" 2>/dev/null; then
+        echo "[pack-substitution] WARNING: token {{${_tok}}} has no value in config.sh — left literal in ${_agent}"
+        _any_warning=true
+      fi
+      continue
+    fi
+
+    # Count occurrences before substitution for the confirmation log.
+    local _count
+    _count="$(grep -oF "{{${_tok}}}" "$_file" 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "$_count" -gt 0 ]]; then
+      # Use perl with $ENV to avoid interpolating the value into the regex/program
+      # text — safe even when values contain special characters. (REQ-S-01)
+      tok="$_tok" val="$_val" perl -i -pe 's/\{\{\Q$ENV{tok}\E\}\}/$ENV{val}/g' "$_file" 2>/dev/null || true
+      _total_substituted=$(( _total_substituted + _count ))
+    fi
+  done
+
+  if [[ "$_total_substituted" -gt 0 ]] && ! $_any_warning; then
+    echo "[pack-substitution] ${_agent}: substituted ${_total_substituted} token(s)"
+  fi
+}
+
 # Run a regions.py subcommand that has NO expected non-zero exit (migrate on a
 # file already confirmed flat; base-shas read). Any non-zero is a CRASH, not a
 # result — surface its stderr and FAIL CLOSED before Phase B writes anything
@@ -812,12 +1243,20 @@ else
     # alphabetically, so injection order is irrelevant. An agent with no pack file
     # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
     # are NEVER substituted (D6) — they are injected raw, post-substitution.
+    # _resolve_pack_dir is called once per pack (B-4: never call it twice; it logs).
     for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
-      _body="$HOS_SOURCE/packs/$_pk/${agent}.md"
+      _pk_dir="$(_resolve_pack_dir "$_pk")" || _pk_dir="$HOS_SOURCE/packs/$_pk"
+      _body="$_pk_dir/${agent}.md"
       [[ -f "$_body" ]] || continue
+      # (§3, #287) Stage the pack body to a temp copy and substitute {{TOKEN}}
+      # placeholders BEFORE injection. PACK-scoped by construction (the body file
+      # is 100% PACK content). Separate from the single-brace {NAME} engine.
+      _body_sub="$_AGENT_STAGE/${agent}.${_pk}.body.md"
+      cp "$_body" "$_body_sub"
+      _subst_pack_tokens "$_body_sub" "${agent}.md"
       _inj_err="$_AGENT_STAGE/${agent}.inject.err"
       if ! python3 "$_REGIONS_PY" inject-pack "$_stage" \
-            --name "$_pk" --body-file "$_body" --in-place 2>"$_inj_err"; then
+            --name "$_pk" --body-file "$_body_sub" --in-place 2>"$_inj_err"; then
         fail "inject-pack $_pk into ${agent} failed — check packs/$_pk/${agent}.md"
         [[ -s "$_inj_err" ]] && sed 's/^/    /' "$_inj_err" >&2   # #276: surface why it died, don't just abort blind
         _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)

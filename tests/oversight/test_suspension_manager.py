@@ -125,3 +125,70 @@ def test_ratchet_manager_never_writes_a_suspended_line(tmp_path, monkeypatch):
     before = SAMPLE.count("SUSPENDED:")
     after = sm.cmd_auto_remove(SAMPLE, susp).count("SUSPENDED:")
     assert after <= before  # never increases
+
+
+# ── Regression tests for --is-suspended (#303 §5 / REQ-F-03/F-06) ─────────────
+
+
+def test_is_suspended_honors_pinned_flag(tmp_path, monkeypatch):
+    """SUSPENDED: portability [pinned] must be detected as suspended (AC-F-03/F-06).
+
+    This is the regression test for HOS#105 / #303: the [pinned] flag must NOT
+    cause the parser to miss the suspension line.  Both the parse_suspensions()
+    path (used by cmd_is_suspended) and the _SUSPENDED_RE pattern are verified.
+    """
+    monkeypatch.chdir(tmp_path)
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    susp_file = contract / "gate-suspension.md"
+    susp_file.write_text(
+        "Authorized by: Test Human\n"
+        "Date: 2026-06-16\n\n"
+        "## Currently suspended\n"
+        "SUSPENDED: portability [pinned]\n"
+    )
+
+    # Verify via parse_suspensions (the canonical path).
+    text = susp_file.read_text()
+    gates = {s.gate for s in sm.parse_suspensions(text)}
+    assert "portability" in gates, (
+        "parse_suspensions missed 'SUSPENDED: portability [pinned]' — regression in #303 §5"
+    )
+
+    # Verify via cmd_is_suspended (the --is-suspended subcommand).
+    result = sm.cmd_is_suspended("portability")
+    assert result == 0, (
+        "cmd_is_suspended returned non-zero for 'portability [pinned]' — regression"
+    )
+
+
+def test_is_suspended_honors_review_by_flag(tmp_path, monkeypatch):
+    """SUSPENDED: gate review-by: YYYY-MM-DD must also be detected."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "contract").mkdir()
+    (tmp_path / "contract" / "gate-suspension.md").write_text(
+        "Authorized by: Test Human\n\n"
+        "## Currently suspended\n"
+        "SUSPENDED: lint review-by: 2027-01-01\n"
+    )
+    result = sm.cmd_is_suspended("lint")
+    assert result == 0
+
+
+def test_is_suspended_absent_file_returns_1(tmp_path, monkeypatch):
+    """When gate-suspension.md does not exist, --is-suspended exits 1 (not suspended)."""
+    monkeypatch.chdir(tmp_path)
+    # No contract/gate-suspension.md — must not raise, must exit 1.
+    result = sm.cmd_is_suspended("portability")
+    assert result == 1
+
+
+def test_is_suspended_not_in_file_returns_1(tmp_path, monkeypatch):
+    """A gate not listed in the suspension file exits 1."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "contract").mkdir()
+    (tmp_path / "contract" / "gate-suspension.md").write_text(
+        "## Currently suspended\nSUSPENDED: lint\n"
+    )
+    result = sm.cmd_is_suspended("security")
+    assert result == 1

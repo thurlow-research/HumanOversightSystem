@@ -313,6 +313,15 @@ DESIGN_PACK_DIR="${NEW_DESIGN_PACK_DIR}"
 # ── Extra files for AI review ────────────────────────────────────────────────
 # Space-separated additional files to include in validate_agents.sh reviews.
 EXTRA_REVIEW_FILES="${NEW_EXTRA_FILES}"
+
+# ── Pack placeholder substitution (#287) ─────────────────────────────────────
+# Values substituted into PACK regions of .claude/agents/*.md when a pack is
+# injected during install. Leave empty if not using a pack or if the pack does
+# not use these tokens. Tokens use double-brace syntax {{TOKEN}} in pack bodies.
+PROJECT_ROOT=""              # Absolute path to project root, e.g. /app
+PROJECT_SETTINGS_MODULE=""   # Settings module path, e.g. parkshare/settings
+PROJECT_TESTS_DIR=""         # Tests dir relative to PROJECT_ROOT, e.g. tests
+PROJECT_PACKAGE=""           # Top-level package name, e.g. parkshare
 CONFIGEOF
 
 echo "  Written: $CONFIG_FILE"

@@ -1,0 +1,17 @@
+# installer-internal-paths.txt — prefixes stripped from CORE regions on install.
+#
+# Lines whose content CONTAINS any of these strings as a substring are removed
+# from CORE regions by strip_internal_paths.sh during install and release-cut.
+# This prevents HOS-internal paths (research dirs, dev-only docs) from appearing
+# in shipped agent files where they would produce dead links for consumers.
+#
+# Format: one prefix string per line. Blank lines and # comment lines ignored.
+# A CORE-region line is internal iff it contains any listed string as a substring
+# (not anchored to line start — substring-match is intentional per REQ-P-01).
+#
+# PACK and PROJECT regions are never stripped.
+
+research/findings/
+docs/SETUP
+docs/SETUP.md
+packs/
