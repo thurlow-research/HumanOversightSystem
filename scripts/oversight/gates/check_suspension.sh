@@ -26,30 +26,16 @@ _find_suspension_file() {
     echo "${repo_root}/contract/gate-suspension.md"
 }
 
-_find_suspension_manager() {
-    # Locate suspension_manager.py relative to the repo root.
-    local repo_root
-    repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
-    echo "${repo_root}/scripts/oversight/suspension_manager.py"
-}
-
 is_suspended() {
     local gate="$1"
-    # Preferred path: delegate to suspension_manager.py --is-suspended so there
-    # is ONE canonical suspension parser (REQ-F-02, #303 §5). The manager uses
-    # _SUSPENDED_RE which already handles [pinned] and review-by: flags correctly.
-    local mgr
-    mgr="$(_find_suspension_manager)"
-    if [[ -f "$mgr" ]] && command -v python3 >/dev/null 2>&1; then
-        python3 "$mgr" --is-suspended "$gate"
-        return $?
-    fi
-    # Fallback: bash grep (kept for environments without python3).
-    # Grammar mirrors _SUSPENDED_RE in suspension_manager.py — any drift here
-    # reintroduces the two-parser hazard fixed by HOS#105. Treat as emergency
-    # fallback only; fix python3/manager availability as soon as possible.
     [[ -z "$_SUSPENSION_FILE" ]] && _SUSPENSION_FILE=$(_find_suspension_file)
     [[ -f "$_SUSPENSION_FILE" ]] || return 1
+    # Grammar MUST stay in sync with _SUSPENDED_RE in suspension_manager.py:
+    # an active line is `SUSPENDED: <gate>` optionally followed by [pinned]
+    # and/or `review-by: YYYY-MM-DD` flags. The old end-anchored bare match
+    # ("^SUSPENDED: gate$") rejected those flagged forms — so a suspension the
+    # manager/census reported as ACTIVE was silently IGNORED here and the gate
+    # kept running. Two parsers, one grammar. (HOS#105)
     grep -Eq "^SUSPENDED:[[:space:]]*${gate}([[:space:]]+\[pinned\]|[[:space:]]+review-by:[[:space:]]*[0-9]{4}-[0-9]{2}-[0-9]{2})*[[:space:]]*$" \
         "$_SUSPENSION_FILE" 2>/dev/null
 }

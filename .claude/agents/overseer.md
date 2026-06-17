@@ -102,38 +102,6 @@ For each PR found:
 
 1. **Activation + halt recheck** — read `~/.hos/<repo-id>/ACTIVE` and check for `hos-halt`. Self-terminate if either fails.
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
-2b. **Immediate notification on new-PR discovery** — if this PR number was not in the prior oversight-state (i.e. `is_new_pr(prior_state, pr_number)` is True), post an immediate PR issue comment BEFORE beginning step 3:
-    ```
-    [HOS Overseer] PR received — beginning review cycle.
-    ```
-    This ensures the human sees the overseer has picked up the PR before any review work starts. Do not wait for a later tick to post this — post it at discovery time, immediately after step 2.
-2c. **Empty-PR guard** — before reading PR state, check whether the PR has any changed files:
-    ```bash
-    CHANGED=$(gh pr diff "${PR}" --name-only 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')
-    ```
-    If `CHANGED -eq 0` (zero files changed — the branch has no commits ahead of base, likely emptied by a rebase):
-    - Post structured comment (verbatim — no improvisation):
-      ```
-      [OVERSEER] Empty-PR guard triggered.
-
-      This PR has zero commits ahead of base. There is nothing to review.
-
-      Possible causes:
-      - The branch was rebased and all commits were already upstream.
-      - The branch was reset to match the base.
-
-      Action required: close this PR and investigate the branch state.
-
-      The oversight review cycle has NOT been run. No sign-off was recorded.
-      ```
-    - Read actual repo label spelling first (`GET /repos/{o}/{r}/labels`) and apply `needs-human` (matching the repo's convention — may be `needs_human`). Do NOT apply `needs-ai`.
-    - Append to `audit/oversight-log.jsonl`:
-      ```json
-      {"event":"empty-pr-guard","pr":<PR-number>,"base":"<base-branch>","head":"<head-branch>","action":"needs-human-labeled, no review run","timestamp":"<ISO-8601>"}
-      ```
-      (resolve base/head via `gh pr view {PR} --json baseRefName,headRefName`)
-    - Write **no** sign-off register entry. Dispatch **no** reviewer agents. Do **not** close, delete, or request deletion of the branch.
-    - **STOP processing this PR** — skip steps 3 through 8 entirely for this PR.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
