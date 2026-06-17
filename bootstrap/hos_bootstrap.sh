@@ -54,7 +54,9 @@ warn()    { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 err()     { echo -e "  ${RED}✘${RESET}  $*"; }
 header()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
 dry_run() { echo -e "  ${YELLOW}[dry]${RESET} $*"; }
-run() { if $DRY_RUN; then dry_run "$@"; else eval "$@"; fi; }
+# Execute a command as argv — never eval a built string. For redirections
+# or || true, inline the dry-run check at the call site instead of using run().
+run() { if $DRY_RUN; then dry_run "$(printf '%q ' "$@")"; else "$@"; fi; }
 
 ERRORS=0
 fail() { err "$*"; ERRORS=$((ERRORS + 1)); }
@@ -103,12 +105,26 @@ install_python() {
   fi
   # `|| true` so a failed system install doesn't abort the whole bootstrap — the
   # presence check below records the real outcome.
+  # _s: optional sudo prefix as a single-element array (empty when no sudo)
+  local _s=(); [[ -n "$SUDO" ]] && _s=("$SUDO")
   case "$OS-$PKG_MGR" in
-    macos-brew)   info "Installing Python 3.12 via brew...";  run "brew install python@3.12 || true"; run "brew link --force python@3.12 2>/dev/null || true" ;;
-    linux-apt)    info "Installing Python 3 via apt...";      run "$SUDO apt-get update -qq || true"; run "$SUDO apt-get install -y python3 python3-pip python3-venv python3-dev || true" ;;
-    linux-dnf)    info "Installing Python 3 via dnf...";      run "$SUDO dnf install -y python3 python3-pip python3-devel || true" ;;
-    linux-yum)    info "Installing Python 3 via yum...";      run "$SUDO yum install -y python3 python3-pip || true" ;;
-    linux-pacman) info "Installing Python 3 via pacman...";   run "$SUDO pacman -Sy --noconfirm python python-pip || true" ;;
+    macos-brew)
+      info "Installing Python 3.12 via brew..."
+      run brew install python@3.12 || true
+      run brew link --force python@3.12 2>/dev/null || true ;;
+    linux-apt)
+      info "Installing Python 3 via apt..."
+      run ${_s[@]+"${_s[@]}"} apt-get update -qq || true
+      run ${_s[@]+"${_s[@]}"} apt-get install -y python3 python3-pip python3-venv python3-dev || true ;;
+    linux-dnf)
+      info "Installing Python 3 via dnf..."
+      run ${_s[@]+"${_s[@]}"} dnf install -y python3 python3-pip python3-devel || true ;;
+    linux-yum)
+      info "Installing Python 3 via yum..."
+      run ${_s[@]+"${_s[@]}"} yum install -y python3 python3-pip || true ;;
+    linux-pacman)
+      info "Installing Python 3 via pacman..."
+      run ${_s[@]+"${_s[@]}"} pacman -Sy --noconfirm python python-pip || true ;;
     macos-none)   fail "brew not found. Install Homebrew first: https://brew.sh, then re-run." ;;
     *)            fail "No supported package manager (brew/apt/dnf/yum/pacman). Install Python 3.10+ manually." ;;
   esac
@@ -120,11 +136,12 @@ if python3 -m pip --version &>/dev/null 2>&1; then
   ok "pip $(python3 -m pip --version | awk '{print $2}')"
 else
   warn "pip not found — attempting to install..."
+  local _s2=(); [[ -n "$SUDO" ]] && _s2=("$SUDO")
   case "$OS-$PKG_MGR" in
-    linux-apt) run "$SUDO apt-get install -y python3-pip" ;;
-    linux-dnf) run "$SUDO dnf install -y python3-pip" ;;
-    linux-yum) run "$SUDO yum install -y python3-pip" ;;
-    *)         run "python3 -m ensurepip --upgrade" ;;
+    linux-apt) run ${_s2[@]+"${_s2[@]}"} apt-get install -y python3-pip ;;
+    linux-dnf) run ${_s2[@]+"${_s2[@]}"} dnf install -y python3-pip ;;
+    linux-yum) run ${_s2[@]+"${_s2[@]}"} yum install -y python3-pip ;;
+    *)         run python3 -m ensurepip --upgrade ;;
   esac
 fi
 
@@ -169,11 +186,12 @@ header "2a. IP tooling — ScanCode Toolkit"
 install_scancode() {
   if command -v scancode &>/dev/null; then ok "scancode $(scancode --version 2>/dev/null | head -1 | tr -d '\n')"; return; fi
   info "Installing ScanCode Toolkit (IP/license detection)..."
+  local _s3=(); [[ -n "$SUDO" ]] && _s3=("$SUDO")
   case "$OS-$PKG_MGR" in
-    linux-apt) info "Installing libmagic (ScanCode dependency)..."; run "$SUDO apt-get install -y libmagic-dev libmagic1 2>/dev/null || true" ;;
-    linux-dnf) run "$SUDO dnf install -y file-libs file-devel 2>/dev/null || true" ;;
-    linux-yum) run "$SUDO yum install -y file-libs file-devel 2>/dev/null || true" ;;
-    macos-brew) command -v file &>/dev/null || run "brew install libmagic 2>/dev/null || true" ;;
+    linux-apt) info "Installing libmagic (ScanCode dependency)..."; run ${_s3[@]+"${_s3[@]}"} apt-get install -y libmagic-dev libmagic1 2>/dev/null || true ;;
+    linux-dnf) run ${_s3[@]+"${_s3[@]}"} dnf install -y file-libs file-devel 2>/dev/null || true ;;
+    linux-yum) run ${_s3[@]+"${_s3[@]}"} yum install -y file-libs file-devel 2>/dev/null || true ;;
+    macos-brew) command -v file &>/dev/null || { run brew install libmagic 2>/dev/null || true; } ;;
   esac
   if ! $DRY_RUN; then
     # ScanCode is a CLI tool, so pipx is the right installer and is PEP-668-safe
@@ -207,7 +225,7 @@ if command -v gh &>/dev/null; then
   if gh auth status &>/dev/null 2>&1; then ok "gh authenticated"; else warn "gh not authenticated — run: gh auth login"; fi
 else
   case "$OS-$PKG_MGR" in
-    macos-brew) info "Installing gh via brew..."; run "brew install gh"; ok "gh installed" ;;
+    macos-brew) info "Installing gh via brew..."; run brew install gh; ok "gh installed" ;;
     linux-apt)
       info "Installing gh via apt..."
       if $DRY_RUN; then dry_run "Would install gh via apt"
@@ -224,9 +242,10 @@ else
       fi ;;
     linux-dnf|linux-yum)
       info "Installing gh via $PKG_MGR..."
-      run "$SUDO $PKG_MGR install -y 'dnf-command(config-manager)' 2>/dev/null || true"
-      run "$SUDO $PKG_MGR config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo 2>/dev/null || true"
-      run "$SUDO $PKG_MGR install -y gh" ;;
+      local _s4=(); [[ -n "$SUDO" ]] && _s4=("$SUDO")
+      run ${_s4[@]+"${_s4[@]}"} "$PKG_MGR" install -y 'dnf-command(config-manager)' 2>/dev/null || true
+      run ${_s4[@]+"${_s4[@]}"} "$PKG_MGR" config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo 2>/dev/null || true
+      run ${_s4[@]+"${_s4[@]}"} "$PKG_MGR" install -y gh ;;
     *) warn "Cannot auto-install gh on $OS/$PKG_MGR — install from https://cli.github.com" ;;
   esac
 fi

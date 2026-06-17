@@ -215,6 +215,36 @@ fetch_release_tarball() {  # ref dest_dir -> 0 on success
     curl -fsSL "https://github.com/${HOS_REPO}/archive/refs/tags/${ref}.tar.gz" -o "$tgz" 2>/dev/null || true
   fi
   [[ -s "$tgz" ]] || return 1
+  # Optional SHA256SUMS verification: advisory, non-blocking.
+  # If the release publishes a SHA256SUMS asset and shasum(1) is available,
+  # verify the tarball digest before extraction. Skipped silently when:
+  #   - SHA256SUMS is not listed in the release assets (older releases), or
+  #   - shasum(1) is not available on this machine.
+  if command -v shasum &>/dev/null && command -v gh &>/dev/null; then
+    local _assets _sha_url _sha_file _tgz_name
+    _assets="$(gh release view "$ref" --repo "$HOS_REPO" --json assets -q '.assets[].name' 2>/dev/null || true)"
+    if printf '%s\n' "$_assets" | grep -qxF 'SHA256SUMS'; then
+      _sha_file="$tmpd/SHA256SUMS"
+      gh release download "$ref" --repo "$HOS_REPO" --pattern 'SHA256SUMS' --output "$_sha_file" 2>/dev/null || true
+      if [[ -s "$_sha_file" ]]; then
+        # shasum -c expects "hash  filename" with the filename relative to cwd.
+        # Copy tgz under the name recorded in SHA256SUMS (the asset filename).
+        _tgz_name="$(awk '{print $2}' "$_sha_file" | head -1)"
+        if [[ -n "$_tgz_name" ]]; then
+          cp "$tgz" "$tmpd/$_tgz_name" 2>/dev/null || true
+          if ( cd "$tmpd" && shasum -a 256 -c "$_sha_file" >/dev/null 2>&1 ); then
+            ok "SHA256 verified: OK"
+          else
+            err "SHA256 verification FAILED for release $ref — the downloaded archive does not match SHA256SUMS."
+            err "This may indicate a corrupted download or a tampered asset. Refusing to install."
+            return 1
+          fi
+        fi
+      fi
+    else
+      info "SHA256 check skipped (no SHA256SUMS asset in release $ref)"
+    fi
+  fi
   # Refuse archives with unsafe members before extracting (defence-in-depth even
   # though GitHub's generated archives are well-formed): absolute paths or `..`.
   if tar -tzf "$tgz" 2>/dev/null | grep -qE '^/|(^|/)\.\.(/|$)'; then
