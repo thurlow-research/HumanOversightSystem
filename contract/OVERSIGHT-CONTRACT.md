@@ -51,7 +51,16 @@ audit/                               ← COMMITTED to project repo (not gitignor
     step{N}-human-authorization.md ← CRITICAL steps only: human creates this file
                                     BEFORE running oversight-evaluator to authorize
                                     proceeding. Evaluator reads it during Phase 1.
-                                    Required content: date + decision text.
+                                    Required fields: Authorized: (date), Decision:
+                                    (text), Authorized by: (name), and reviewed_files:
+                                    (YAML-style list of ≥1 diff-relative path the human
+                                    reviewed — SPEC-267). The reviewed_files: list must
+                                    overlap the diff for the file to clear the
+                                    structural-override skip (§7 condition 10).
+                                    Files committed before SPEC-267 ship are
+                                    grandfathered: a missing reviewed_files: field is a
+                                    COMPLIANCE WARN, not FAIL. Files authored after ship
+                                    that omit the field are a COMPLIANCE FAIL.
     human-tier-override.md       ← created by human to authorize lowering a risk tier
                                     below the coder's declaration. Risk-assessor reads
                                     this before accepting a lower tier. Without it the
@@ -390,7 +399,7 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
     Use `scripts/automation/lib/gate_compliance.py` (`check_gate_compliance()`) for the programmatic evaluation.
 8. MEDIUM+ commits missing `Prompt-Artifact:` git trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items; human confirms intent was captured another way). If the trailer references a path that does not exist → **COMPLIANCE FAIL**
 9. A `Status: N/A` entry for a role whose domain the diff actually touched (independent re-derivation via `change_classifier.py`, scoped to the N/A'd roles) → **COMPLIANCE FAIL** (the waiver is not credible; require a real sign-off). See §2a and the evaluator's "Independent diff re-derivation."
-10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the step already cleared a human gate or the change was already classified `structural` with authorization.
+10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the change was already classified `structural` with authorization, **or** when the step's `step{N}-human-authorization.md` carries a `reviewed_files:` enumeration that overlaps the diff (SPEC-267). The skip is no longer justified by the auth file's mere existence — it requires *coverage*: the `reviewed_files:` list (paths relative to the project root, exact-match against `git diff --name-only`, no prefix/basename match) must contain at least one file present in the diff. An auth file with an absent, empty, or entirely non-overlapping `reviewed_files:` list does **not** clear the skip — condition 10 runs as if no authorization existed. Independently of the skip decision, a present auth file missing the `reviewed_files:` field is a **COMPLIANCE WARN** when the file was committed before SPEC-267 ship (grandfathered legacy) and a **COMPLIANCE FAIL** when authored after ship; this audit signal is separate from the skip denial, which is unconditional whenever the enumeration does not overlap the diff.
 
 11. **Gate-suspension `reason_category` (SPEC-378 R2.3):** a `contract/gate-suspension.md` file present but missing the `reason_category` field → **COMPLIANCE WARN** (not FAIL). The field is required in new suspension files (enum `EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER`); legacy files created before SPEC-378 are grandfathered so projects can migrate without breaking brownfield remediations. A present-but-invalid `reason_category` value (not in the enum) → **COMPLIANCE WARN** with the offending value named. Agents must not create or modify `contract/gate-suspension.md` (existing invariant); `reason_category` is set by the human who creates the file.
 

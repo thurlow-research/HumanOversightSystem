@@ -134,7 +134,24 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   ```
   For any N/A'd role that appears in `domains_touched` → the domain was in fact changed → the waiver is not credible → **COMPLIANCE FAIL** (require a real sign-off for that role). Roles not returned as touched keep their valid N/A. **`code-review` is explicitly IN scope here** — although the orchestrator never N/A's it, `code-reviewer` may *self-write* `Status: N/A` ("no application code in diff", per `post-change-sweep`), so a self-N/A'd or forged code-review on a diff that does touch application code would otherwise be the one foundational role exempt from this distrust check. Re-derive any `Status: N/A` for `code-review` against the diff exactly as for every other role: if the application-code domain (`**/*.py` etc.) was touched → **COMPLIANCE FAIL**.
 
-- **Structural-override verification (#75) — skip if this step already cleared a human gate** (i.e. `human_gate_required: true` **and** the human-authorization file is present and non-empty — the human already saw every change). Otherwise run:
+- **Structural-override verification (#75) — skip ONLY when the human-authorization file enumerates a reviewed file that overlaps the diff** (SPEC-267).
+
+  > **Disambiguation (do not conflate with the effective-human-gate above, ~the "Effective human gate" bullet).** That earlier check decides *whether a human-authorization file must exist at all* for this step (gate-firing, keyed on `human_gate_required OR tier == CRITICAL`). **This** check decides *whether an existing auth file is sufficient to skip condition 10* (skip-sufficiency, keyed on `reviewed_files:` overlapping the diff). They are different determinations on the same `step{N}-human-authorization.md` artifact and must not be merged: a file can satisfy the existence gate yet fail the skip-sufficiency gate.
+
+  The condition-10 skip is taken **only** when the auth file is present, non-empty, **and** its `reviewed_files:` enumeration lists at least one file that is also present in the diff. Mere existence of the file is no longer sufficient (SPEC-267).
+
+  1. **Parse the enumeration `R`.** Read `reviewed_files:` from `.claudetmp/oversight/step{N}-human-authorization.md`: collect every `  - {path}` entry under the `reviewed_files:` header until the next non-list/non-blank line or EOF.
+  2. **Canonicalize both sides** (exact-match only — no prefix, no basename, no directory containment): strip leading/trailing whitespace, strip surrounding quotes, strip a single leading `./`. Do **not** lowercase, resolve symlinks, or collapse `..`. Compare with byte-exact, case-sensitive string equality.
+  3. **Compute the diff set `D`:** `git diff --name-only "$BASE_SHA".."$HEAD_SHA"`, each line canonicalized as above.
+  4. **Overlap = `R ∩ D`.**
+     - If overlap is **non-empty** → SKIP condition 10. Report the overlapping file(s) used to justify the skip (AC-8).
+     - If overlap is **empty** (field absent, empty list, or no listed file in the diff) → **DO NOT SKIP**; run condition 10 below as if no authorization file existed. Report which diff files triggered the structural signal and which `reviewed_files:` entries did not match (R3 / AC-2).
+  5. **Commit-era WARN/FAIL audit signal (separate from the skip decision).** When the auth file is present but `reviewed_files:` is absent or empty, emit a compliance audit signal — **independently of step 4** (the skip is already denied by step 4 whenever overlap is empty; this only sets WARN vs FAIL):
+     - If the auth file is **tracked in git and its introducing commit predates the SPEC-267 ship commit** → **COMPLIANCE WARN** (grandfathered legacy file — do not retroactively FAIL a sealed history).
+     - Otherwise (untracked working-tree file, or committed at/after the SPEC-267 ship) → the file is authored under the new schema → **COMPLIANCE FAIL** for the missing/empty `reviewed_files:` field.
+     - **The skip denial in step 4 is unconditional regardless of WARN vs FAIL here:** even a WARN'd legacy file does not get the skip when its enumeration does not overlap the diff — the audit signal and the gate are separate (SPEC-267 binding).
+
+  When the skip is NOT taken, run condition 10:
   ```bash
   python3 scripts/oversight/change_classifier.py --base "$BASE_SHA" --head "$HEAD_SHA" --structural-only
   ```

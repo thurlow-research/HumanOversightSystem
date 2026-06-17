@@ -209,11 +209,17 @@ If the failure is a missing human authorization for a CRITICAL step, print:
 ```
 CRITICAL STEP AUTHORIZATION REQUIRED
 Create the file: .claudetmp/oversight/step{N}-human-authorization.md
-Contents: your explicit decision to proceed and the date.
+Contents: your explicit decision to proceed, the date, and the files you reviewed.
+The reviewed_files: list must name the files you actually read from the diff
+(not the whole repo, not unrelated files); at least one must appear in this step's
+diff or the structural-override skip will be denied (SPEC-267).
 Example:
   Authorized: {date}
   Decision: Proceed to panel. Auth system reviewed by hand; rate-limiting fix verified.
   Authorized by: {name}
+  reviewed_files:
+    - src/auth/middleware.py
+    - src/auth/models.py
 Re-run oversight-evaluator after creating the file.
 ```
 
