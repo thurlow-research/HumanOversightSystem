@@ -102,6 +102,38 @@ For each PR found:
 
 1. **Activation + halt recheck** — read `~/.hos/<repo-id>/ACTIVE` and check for `hos-halt`. Self-terminate if either fails.
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
+2b. **Immediate notification on new-PR discovery** — if this PR number was not in the prior oversight-state (i.e. `is_new_pr(prior_state, pr_number)` is True), post an immediate PR issue comment BEFORE beginning step 3:
+    ```
+    [HOS Overseer] PR received — beginning review cycle.
+    ```
+    This ensures the human sees the overseer has picked up the PR before any review work starts. Do not wait for a later tick to post this — post it at discovery time, immediately after step 2.
+2c. **Empty-PR guard** — before reading PR state, check whether the PR has any changed files:
+    ```bash
+    CHANGED=$(gh pr diff "${PR}" --name-only 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')
+    ```
+    If `CHANGED -eq 0` (zero files changed — the branch has no commits ahead of base, likely emptied by a rebase):
+    - Post structured comment (verbatim — no improvisation):
+      ```
+      [OVERSEER] Empty-PR guard triggered.
+
+      This PR has zero commits ahead of base. There is nothing to review.
+
+      Possible causes:
+      - The branch was rebased and all commits were already upstream.
+      - The branch was reset to match the base.
+
+      Action required: close this PR and investigate the branch state.
+
+      The oversight review cycle has NOT been run. No sign-off was recorded.
+      ```
+    - Read actual repo label spelling first (`GET /repos/{o}/{r}/labels`) and apply `needs-human` (matching the repo's convention — may be `needs_human`). Do NOT apply `needs-ai`.
+    - Append to `audit/oversight-log.jsonl`:
+      ```json
+      {"event":"empty-pr-guard","pr":<PR-number>,"base":"<base-branch>","head":"<head-branch>","action":"needs-human-labeled, no review run","timestamp":"<ISO-8601>"}
+      ```
+      (resolve base/head via `gh pr view {PR} --json baseRefName,headRefName`)
+    - Write **no** sign-off register entry. Dispatch **no** reviewer agents. Do **not** close, delete, or request deletion of the branch.
+    - **STOP processing this PR** — skip steps 3 through 8 entirely for this PR.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
@@ -114,6 +146,18 @@ For each PR found:
    - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
 6. **Act on decision**:
    - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
+     **After a successful merge, append the step-head event (ARCH-Q-5):** obtain the actual merged commit SHA (from `gh pr view {n} --json mergeCommit -q .mergeCommit.oid` or `git rev-parse <merge-base-branch>` post-merge — NOT the pre-PR branch head), read the previous step's `head_sha` from `audit/oversight-log.jsonl` as `base_sha`, then append one line:
+     ```bash
+     MERGED_SHA=$(gh pr view {PR_NUMBER} --json mergeCommit -q .mergeCommit.oid)
+     PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
+       | grep "\"step\":{PREV_STEP}" | tail -1 \
+       | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+     MERGED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+     printf '{"event":"step-head","step":{N},"base_sha":"%s","head_sha":"%s","merged_sha":"%s","merged_at":"%s","merged_by":"HOSOversightTutelare","pr_number":"{PR_NUMBER}","timestamp":"%s"}\n' \
+       "${PREV_HEAD}" "${MERGED_SHA}" "${MERGED_SHA}" "${MERGED_AT}" "${MERGED_AT}" \
+       >> audit/oversight-log.jsonl
+     ```
+     This post-merge entry supersedes any pre-PR `step-head` for the same step — the next step reads with `tail -1` so the last-written entry wins. `head_sha` and `merged_sha` both carry the merged commit SHA for backward-compatibility with readers keyed on either field.
    - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
    - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:

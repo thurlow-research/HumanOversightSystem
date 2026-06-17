@@ -58,8 +58,11 @@ Mutant_score_pct: 77
 Thresholds_met: true
 Surviving_equivalents: 2
 Equivalents_documented: true
+collection_errors: 0
 Notes: 80%/75% targets met after 3 rounds. Two surviving mutants documented as
   equivalent (see tests/test_booking_gates.py comments L234, L251).
+  collection_errors: 0 — full suite collects cleanly (collection_integrity gate passed).
+  Required on any build step that touches *.py files; omit only on non-Python steps.
 ```
 
 ## test-system entry (includes §4 test declaration fields inline)

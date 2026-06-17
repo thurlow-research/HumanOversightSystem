@@ -129,9 +129,174 @@ def test_collect_diff_parses_added_lines(tmp_path):
     prev = os.getcwd()
     try:
         os.chdir(repo)
-        ns, added = cc.collect_diff("HEAD~1", "HEAD")
+        ns, added, removed = cc.collect_diff("HEAD~1", "HEAD")
     finally:
         os.chdir(prev)
     assert ("M", "requirements.txt") in ns
     assert "celery==5.3" in added["requirements.txt"]
     assert "django==4.2" not in added["requirements.txt"]  # unchanged line not in added set
+    # removed contains the original django line (replaced by both lines in the new file,
+    # but since django==4.2 is still present in the new version, diff shows no removal
+    # for it — only the new celery line is added). removed may be empty for this diff.
+    assert isinstance(removed, dict)
+
+
+# ── detect_tier_floor ─────────────────────────────────────────────────────────
+
+def test_tier_floor_auth_path_gives_high():
+    ns = [("M", "app/auth/views.py")]
+    result = cc.detect_tier_floor(ns, {})
+    assert result["tier_floor"] == "HIGH"
+
+
+def test_tier_floor_payment_path_gives_critical():
+    ns = [("M", "app/payment/views.py")]
+    result = cc.detect_tier_floor(ns, {})
+    assert result["tier_floor"] == "CRITICAL"
+
+
+def test_tier_floor_financial_api_added_line_gives_critical():
+    ns = [("M", "app/orders/views.py")]
+    added = {"app/orders/views.py": ["stripe.PaymentIntent.create(amount=100)"]}
+    result = cc.detect_tier_floor(ns, added)
+    assert result["tier_floor"] == "CRITICAL"
+
+
+def test_tier_floor_migration_gives_high():
+    ns = [("A", "app/migrations/0002_add_user.py")]
+    result = cc.detect_tier_floor(ns, {})
+    assert result["tier_floor"] == "HIGH"
+
+
+def test_tier_floor_plain_py_gives_medium():
+    ns = [("M", "app/utils/helpers.py")]
+    result = cc.detect_tier_floor(ns, {})
+    assert result["tier_floor"] == "MEDIUM"
+
+
+def test_tier_floor_framework_tooling_not_raised_by_line_rules():
+    # The classifier's own source contains EmailField as a literal — must not self-match.
+    ns = [("M", "scripts/oversight/change_classifier.py")]
+    added = {"scripts/oversight/change_classifier.py": ["EmailField"]}
+    result = cc.detect_tier_floor(ns, added)
+    # FRAMEWORK_TOOLING — path exempt from path and added-line rules
+    # app-logic also exempt; result should be LOW (no other file).
+    assert result["tier_floor"] == "LOW"
+
+
+def test_tier_floor_readme_only_gives_low():
+    ns = [("M", "README.md")]
+    result = cc.detect_tier_floor(ns, {})
+    assert result["tier_floor"] == "LOW"
+
+
+def test_tier_floor_evidence_populated():
+    ns = [("M", "app/auth/login.py")]
+    result = cc.detect_tier_floor(ns, {})
+    assert len(result["evidence"]) >= 1
+    assert result["evidence"][0]["rule"] in ("auth-path", "payment-path", "app-logic")
+
+
+# ── detect_warranted_lanes ────────────────────────────────────────────────────
+
+def test_warranted_lanes_requests_gives_reliability():
+    ns = [("M", "app/services.py")]
+    added = {"app/services.py": ["response = requests.get(url, timeout=5)"]}
+    result = cc.detect_warranted_lanes(ns, added)
+    assert "reliability" in result["warranted"]
+
+
+def test_warranted_lanes_shared_task_gives_ops():
+    ns = [("M", "app/tasks.py")]
+    added = {"app/tasks.py": ["@shared_task", "def process(): pass"]}
+    result = cc.detect_warranted_lanes(ns, added)
+    assert "ops" in result["warranted"]
+
+
+def test_warranted_lanes_password_field_gives_security():
+    ns = [("M", "app/accounts/forms.py")]
+    added = {"app/accounts/forms.py": ['password = forms.CharField(widget=forms.PasswordInput)']}
+    result = cc.detect_warranted_lanes(ns, added)
+    # Security domain is triggered by .py files (file_rx check in DOMAIN_RULES).
+    assert "security" in result["warranted"]
+
+
+def test_warranted_lanes_no_match_gives_empty():
+    ns = [("M", "README.md")]
+    result = cc.detect_warranted_lanes(ns, {})
+    assert result["warranted"] == {}
+
+
+def test_warranted_lanes_structure():
+    ns = [("M", "app/tasks.py")]
+    added = {"app/tasks.py": ["@shared_task"]}
+    result = cc.detect_warranted_lanes(ns, added)
+    assert "warranted" in result
+    if result["warranted"]:
+        first = next(iter(result["warranted"].values()))
+        assert "by" in first
+        assert "file" in first
+
+
+# ── detect_structural_modifications ──────────────────────────────────────────
+
+def test_structural_mod_tracked_doc_both_sides():
+    # A technical design doc with both removals and additions → reported.
+    ns = [("M", "docs/v0.4.0/TECHNICAL-DESIGN-foo.md")]
+    added = {"docs/v0.4.0/TECHNICAL-DESIGN-foo.md": ["## New Section"]}
+    removed = {"docs/v0.4.0/TECHNICAL-DESIGN-foo.md": ["## Old Section"]}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    mods = result["doc_modifications"]
+    assert len(mods) == 1
+    assert mods[0]["file"] == "docs/v0.4.0/TECHNICAL-DESIGN-foo.md"
+    assert "removed" in mods[0]["evidence"]
+    assert "added" in mods[0]["evidence"]
+
+
+def test_structural_mod_pure_addition_not_reported():
+    # Only additions, no removals → not a modification.
+    ns = [("M", "docs/v0.4.0/TECHNICAL-DESIGN-foo.md")]
+    added = {"docs/v0.4.0/TECHNICAL-DESIGN-foo.md": ["## Authorization"]}
+    removed = {}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    assert result["doc_modifications"] == []
+
+
+def test_structural_mod_readme_not_tracked():
+    # README is not a tracked governance doc.
+    ns = [("M", "README.md")]
+    added = {"README.md": ["new line"]}
+    removed = {"README.md": ["old line"]}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    assert result["doc_modifications"] == []
+
+
+def test_structural_mod_agent_file_tracked():
+    # .claude/agents/*.md is in the tracked set.
+    ns = [("M", ".claude/agents/coder.md")]
+    added = {".claude/agents/coder.md": ["new instruction"]}
+    removed = {".claude/agents/coder.md": ["old instruction"]}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    assert len(result["doc_modifications"]) == 1
+
+
+def test_structural_mod_contract_tracked():
+    ns = [("M", "contract/OVERSIGHT-CONTRACT.md")]
+    added = {"contract/OVERSIGHT-CONTRACT.md": ["## New section"]}
+    removed = {"contract/OVERSIGHT-CONTRACT.md": ["## Old section"]}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    assert len(result["doc_modifications"]) == 1
+
+
+def test_structural_mod_result_structure():
+    ns = [("M", "docs/specs/SPEC-foo.md")]
+    added = {"docs/specs/SPEC-foo.md": ["added"]}
+    removed = {"docs/specs/SPEC-foo.md": ["removed"]}
+    result = cc.detect_structural_modifications(ns, added, removed)
+    assert "doc_modifications" in result
+    m = result["doc_modifications"][0]
+    assert "file" in m
+    assert "section" in m
+    assert "evidence" in m
+    assert "removed" in m["evidence"]
+    assert "added" in m["evidence"]
