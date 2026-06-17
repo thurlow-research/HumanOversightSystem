@@ -105,9 +105,19 @@ For each PR found:
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
-   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); stop processing; do NOT apply the matrix.
+   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
    - If no bounce conditions → proceed to step 5.
+
+   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, assigns to HOSWorkerTutelare, applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
+
+   ```markdown
+   **Reason category:** <REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER>
+   **Summary:** <one sentence — what must change before this PR can proceed>
+   ```
+
+   Enum semantics: `REGISTER_GAP` = required sign-off register entries absent or missing required fields; `COMPLIANCE_FAILURE` = a concrete compliance/register check failure (the specific `check_id`(s) appear in the audit event's `failures` field); `SPEC_AMBIGUITY` = a procedural requirement could not be evaluated because the spec is ambiguous; `OTHER` = anything else — the `Summary` must make it unambiguous. Apply the rationale only when acting on a PR the overseer opened (`[AI: overseer]` title prefix); never post it to a human-opened PR (R1.5). The `pr-bounced` audit event payload gains `reason_category` and `summary` carrying the same values written into the comment; all existing payload fields are unchanged. See the halt-on-failure ordering in §8.2.
+
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
    - AUTO_MERGE conditions: tier ≤ OVERSEER_CEILING (read from `machine-accounts.env`; default LOW), not security-relevant, not protected-surface, full PROCEED, gate detected
    - PROPOSE_ONLY: gate not detected
@@ -158,6 +168,26 @@ Every `needs-human` comment must carry, in order:
 5. Default-deny deadline if applicable
 
 A comment missing any element is a malformed escalation — rewrite it before posting.
+
+### Structured rationale (SPEC-378 R1.1)
+
+When the disposition is HUMAN_REQUIRED and the overseer is acting on a PR it previously opened (`[AI: overseer]` title prefix — R1.5; never post to a human-opened PR), append two structured fields **after** the five elements above. Do not alter the five existing elements:
+
+```markdown
+**Reason category:** <FINDINGS_NOT_RESOLVED | ESCALATION | GATE_UNSATISFIED | OTHER>
+**Summary:** <one sentence — what the decisive blocker was>
+```
+
+Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review findings remain unresolved after the maximum iteration budget; `ESCALATION` = the oversight-evaluator issued ESCALATE and the condition requires human resolution; `GATE_UNSATISFIED` = a human gate is required (CRITICAL step, merge-authority matrix) and has not been satisfied; `OTHER` = anything else — the `Summary` must make it unambiguous. (`GATE_UNSATISFIED` is the SPEC-378 R1.3 `HUMAN_REQUIRED` reason renamed per architect binding 8 to avoid colliding with the disposition name.) The `Summary` is templated, not generated — fill it from the evaluator's ESCALATE output or the specific compliance-failure list; no language-model generation step. These fields are additive to the existing ESCALATE console output, which is unchanged (R1.4); the PR comment is the durable artifact.
+
+### Halt-on-failure ordering for non-merge dispositions (SPEC-378 R3.3 / R3.4)
+
+Both non-merge dispositions append an audit event ONLY after the comment is confirmed posted, and finalize ONLY after the audit append succeeds.
+
+- **HUMAN_REQUIRED:** (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
+- **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — assign, `needs-ai`, convert-to-draft.
+
+If the comment post fails: **do not finalize** — do not append the audit event, do not treat the disposition as recorded; halt and print the failure. If the audit append fails: **do not finalize**; halt and print the failure. The audit log is append-only and committed; a missing entry is an audit-trail gap. The overseer must never silently continue past a comment-post or audit-append failure.
 
 ---
 

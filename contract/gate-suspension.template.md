@@ -23,6 +23,13 @@
 Authorized by: [Your name]
 Date: [YYYY-MM-DD]
 Reason: [Why enforcement is suspended — e.g., "Brownfield onboarding: applying HOS to existing CondoParkShare codebase. Gates suspended initially; re-enabling reviewer by reviewer as each domain is remediated."]
+# reason_category — required in new suspension files (SPEC-378 R2). One of:
+#   EMERGENCY            — a blocking production issue requires bypassing the gate; expected very short-lived.
+#   PLANNED_MAINTENANCE  — a known, scheduled window where the gate would produce expected failures (migration, transient outage).
+#   FALSE_POSITIVE       — the gate consistently triggers on a known non-issue here; a fix/gate-rule update is planned.
+#   OTHER                — anything else; the prose Reason: above must make it unambiguous.
+# Files created before SPEC-378 without this field are grandfathered (oversight-evaluator emits COMPLIANCE WARN, not FAIL).
+reason_category: [EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER]
 
 # Required if suspending security or privacy reviewer on HIGH-risk steps.
 # Confirms you understand that HIGH-risk changes are proceeding without security review.

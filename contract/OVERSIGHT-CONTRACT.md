@@ -321,7 +321,7 @@ Both requirements apply to all projects that install this framework.
 | `step-head` | Records a step's HEAD SHA so the next step finds its base | oversight-evaluator | `step`, `head_sha` |
 | `human-authorization` | A human authorization gate was satisfied — pins the content hash, decision, and claimed authorizer into committed history | oversight-evaluator | `step`, `artifact`, `content_sha256`, `authorized_by`, `decision` |
 | `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
-| `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file` |
+| `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file`, `reason_category` (`EMERGENCY \| PLANNED_MAINTENANCE \| FALSE_POSITIVE \| OTHER`) |
 | `gate-na` | An orchestrator determined a reviewer is not applicable to the diff | post-change-sweep | `gate`, `step`, `reason`, `determined_by` |
 | `gate-rerun` | A step was re-run because one of its inputs changed | reactive re-run mechanism | `gate`, `step`, `trigger`, `previous_run` |
 | `gate-auto-reenabled` | A suspended gate was auto-removed after consistent passes | suspension auto-removal | `gate`, `step`, `consecutive_passes` |
@@ -330,7 +330,41 @@ Both requirements apply to all projects that install this framework.
 | `na-invalidated` | An independent re-derivation rejected a `Status: N/A` waiver because the role's domain was in fact changed | oversight-evaluator | `role`, `step`, `evidence` |
 | `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
-| `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp` |
+| `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp`, `reason_category` (`REGISTER_GAP \| COMPLIANCE_FAILURE \| SPEC_AMBIGUITY \| OTHER`), `summary` |
+| `human-required` | Overseer escalated a PR to a human (label `needs-human` + §8.2 comment); PR left open. Logs a non-merge disposition the overseer already performs so all non-merge dispositions are queryable/categorizable. | overseer | `pr`, `step`, `reason_category` (`FINDINGS_NOT_RESOLVED \| ESCALATION \| GATE_UNSATISFIED \| OTHER`), `summary`, `agent`, `comment_posted` |
+
+The two non-merge dispositions carry structured rationale (SPEC-378). The `reason_category` and `summary` values in each event MUST match the values written into the corresponding PR comment (the `pr-bounced` bounce comment via `record_pr_bounce()`, the `human-required` §8.2 escalation comment). The `summary` is a templated one-sentence description, not model-generated. Both events are appended only after the comment is confirmed posted (`comment_posted: true`); if the comment post or the audit append fails, the overseer halts rather than finalizing the disposition (audit-trail completeness). The `human-required` `GATE_UNSATISFIED` value is the SPEC-378 `HUMAN_REQUIRED` reason renamed (architect binding) to avoid colliding with the disposition name. Extended `pr-bounced` schema:
+
+```json
+{
+  "event": "pr-bounced",
+  "pr": "<PR number or URL>",
+  "cid": "<worker correlation id>",
+  "bounce_number": "<integer>",
+  "failures": ["<check_id>", "..."],
+  "assigned_to": "<HOSWorkerTutelare account>",
+  "repo": "<owner/repo>",
+  "timestamp": "<ISO-8601>",
+  "reason_category": "REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER",
+  "summary": "<same one-sentence summary as the bounce comment>",
+  "comment_posted": true
+}
+```
+
+New `human-required` schema:
+
+```json
+{
+  "event": "human-required",
+  "pr": "<PR number or URL>",
+  "step": "<step id>",
+  "reason_category": "FINDINGS_NOT_RESOLVED | ESCALATION | GATE_UNSATISFIED | OTHER",
+  "summary": "<same one-sentence summary as the §8.2 comment>",
+  "agent": "overseer",
+  "timestamp": "<ISO-8601>",
+  "comment_posted": true
+}
+```
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 
@@ -357,6 +391,8 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 8. MEDIUM+ commits missing `Prompt-Artifact:` git trailer → **COMPLIANCE WARN** (not hard fail — add to conditional items; human confirms intent was captured another way). If the trailer references a path that does not exist → **COMPLIANCE FAIL**
 9. A `Status: N/A` entry for a role whose domain the diff actually touched (independent re-derivation via `change_classifier.py`, scoped to the N/A'd roles) → **COMPLIANCE FAIL** (the waiver is not credible; require a real sign-off). See §2a and the evaluator's "Independent diff re-derivation."
 10. A structural-override signature (§2a) present in the diff with no covering human-authorization artifact → **COMPLIANCE FAIL** (a change that forces `structural` reached pre-PR without the human gate). Checked **only in the loosening direction**: skipped when the step already cleared a human gate or the change was already classified `structural` with authorization.
+
+11. **Gate-suspension `reason_category` (SPEC-378 R2.3):** a `contract/gate-suspension.md` file present but missing the `reason_category` field → **COMPLIANCE WARN** (not FAIL). The field is required in new suspension files (enum `EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER`); legacy files created before SPEC-378 are grandfathered so projects can migrate without breaking brownfield remediations. A present-but-invalid `reason_category` value (not in the enum) → **COMPLIANCE WARN** with the offending value named. Agents must not create or modify `contract/gate-suspension.md` (existing invariant); `reason_category` is set by the human who creates the file.
 
 Conditions 9–10 are **anti-gaming** checks: they re-derive — independently of the actor that produced the change — the two determinations that can loosen oversight (an N/A waiver, an `additive`/`clarifying` self-label). They never run when upstream asked for *more* review; spending verification cost only in the loosening direction is itself the ratchet.
 
