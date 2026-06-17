@@ -60,20 +60,6 @@ Notes: {one paragraph; empty if clean}
 ```
 `Status`, `Agent`, `Artifact`, and `Iterations` are always required. An `N/A` status requires a `Reason:` line.
 
-**When the entry covers a change to a tracked spec or design document** (`docs/specs/*.md`, `docs/v*/*.md`, `docs/v*/TECHNICAL-DESIGN-*.md`, `docs/ops/TELEMETRY-SPEC.md`, `docs/design/UX-DESIGN-READINESS.md`), two additional fields are required by the oversight-evaluator (condition 15):
-
-```
-Change_classification: additive | structural | clarifying | none
-Behavior_delta:
-  - [new | modified | removed | clarifying | none] {one-line description of the user-visible behavior or obligation}
-  - [new | modified | removed | clarifying | none] {next behavior if multiple}
-```
-
-- `Change_classification:` closed value set: `additive`, `structural`, `clarifying`, `none`.
-- `Behavior_delta:` YAML/markdown list; each item begins with a bracketed marker from `{new, modified, removed, clarifying, none}`. For a purely clarifying change, `- [clarifying] no behavior change` is valid.
-- `new` and `modified` delta entries require a human-authorization artifact (`.claudetmp/oversight/step{N}-human-authorization.md` or `.claudetmp/oversight/step{N}-spec-structural-auth.md`) — obtain human sign-off before writing the entry if any `[new]` or `[modified]` behavior is being recorded.
-- These fields are required only when the entry covers a tracked spec/design doc change (not for non-spec process sign-offs).
-
 ## Escalation
 
 - The spec is genuinely silent, or any change is structural → **human** (after filing the spec-gap issue).

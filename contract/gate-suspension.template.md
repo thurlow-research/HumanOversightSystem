@@ -1,10 +1,7 @@
 # Gate Suspension — Brownfield Remediation
 
 <!--
-  HUMAN ONLY — autonomous agents may not modify this file. The installer may
-  write install-time suspension records when the human explicitly declines a
-  gate feature during setup (human decision OQ-D: the installer acts under
-  interactive human authorization at install time).
+  HUMAN ONLY. Agents must not create or modify this file.
   Creating this file without human authorization is a protocol violation.
 
   PURPOSE: Temporarily suspend enforcement of specific gates/reviewers while

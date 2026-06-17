@@ -74,20 +74,3 @@ Notable issues:
 ```
 
 If no issues exist yet, state: "No historical data yet — this dimension will gain signal as issues accumulate." Do not classify risk tiers — return raw data only.
-
----
-
-## On completion — write a stamp file (ARCH-Q-2)
-
-After successfully producing your historical risk profile and returning it to risk-assessor, write a completion stamp as your final action:
-
-```bash
-mkdir -p .claudetmp/oversight/subagents
-TS=$(date -u +%Y%m%dT%H%M%S)
-STEP="${STEP:-unknown}"  # risk-assessor must pass the step number as $STEP
-printf '{"subagent":"risk-historian","step":"%s","cid":"%s","completed_at":"%s"}\n' \
-  "$STEP" "${CID:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  > ".claudetmp/oversight/subagents/risk-historian-${STEP}-${TS}.stamp"
-```
-
-The stamp path `.claudetmp/oversight/subagents/risk-historian-<step>-<ts>.stamp` is what the oversight-evaluator globs for condition 12 compliance. Content is one-line JSON; existence is the check. Write the stamp only on successful completion — not on error or partial output.

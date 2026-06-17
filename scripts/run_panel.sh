@@ -68,13 +68,9 @@ SIZE_FLOOR=500     # added-line count that bumps the deterministic floor to MEDI
 SAMPLE_LOW="${OVERSIGHT_SAMPLE_LOW:-25}"    # % of LOW PRs sampled for a red-team audit (pilot)
 SAMPLE_MED="${OVERSIGHT_SAMPLE_MED:-50}"    # % of MEDIUM PRs sampled for a red-team audit (pilot)
 SALT_FILE=".ai-local/sample.salt"           # secret salt → sample is reproducible & non-gameable
-# GitHub Copilot panel integration (REQ-255-08; #255)
-COPILOT_POLL_INTERVAL_SEC="${COPILOT_POLL_INTERVAL_SEC:-30}"   # poll cadence for the Copilot review
-COPILOT_POLL_TIMEOUT_SEC="${COPILOT_POLL_TIMEOUT_SEC:-300}"    # ceiling (10 polls @ 30s)
 
 # ── Args ─────────────────────────────────────────────────────────────────────--
 PR=""; DRY_RUN=0; RISK_OVERRIDE=""; DO_SAMPLE=1
-COPILOT_VERDICT="copilot:skipped"; COPILOT_SKIP_REASON=""; COPILOT_REQUESTED_AT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)   DRY_RUN=1; shift ;;
@@ -190,92 +186,6 @@ ip_agent() {  # $1 = the standard review prompt/diff
   else
     echo '{"findings":[],"note":"ip_check.py not found — install HOS scripts first"}'
   fi
-}
-
-# ── GitHub Copilot panel integration (REQ-255-*; #255) ──────────────────────--
-# request_copilot_review() — POST a review request to Copilot, then poll for its
-# verdict. Echoes the resolved verdict token to stdout:
-#   APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | TIMEOUT | SKIPPED
-# Side effects: sets COPILOT_REQUESTED_AT, COPILOT_SKIP_REASON globals;
-# writes the review body to $RUN_DIR/copilot-review-body.txt on CHANGES_REQUESTED/COMMENTED.
-#
-# Called only when: --pr provided AND tier MEDIUM+ AND COPILOT_BOT_LOGIN is set.
-# All failure modes are fail-open (SKIPPED or TIMEOUT; panel always continues).
-request_copilot_review() {
-  local _pr="$1"
-  local _interval="${COPILOT_POLL_INTERVAL_SEC:-30}"
-  local _ceiling="${COPILOT_POLL_TIMEOUT_SEC:-300}"
-
-  # ── dry-run gate (AC-09) ────────────────────────────────────────────────────
-  if (( DRY_RUN )); then
-    echo "[dry-run] would POST requested_reviewers reviewers[]=copilot to PR #$_pr"
-    COPILOT_SKIP_REASON="dry-run"
-    echo "SKIPPED"; return
-  fi
-
-  # ── Request step (REQ-255-04, REQ-255-06) ──────────────────────────────────
-  COPILOT_REQUESTED_AT="$(date -u +%FT%TZ)"
-  local _req_err
-  _req_err="$(mktemp "${TMPDIR:-/tmp}/copilot-req.XXXXXX")"
-  if ! gh api "repos/{owner}/{repo}/pulls/${_pr}/requested_reviewers" \
-      --method POST --field 'reviewers[]=copilot' \
-      >/dev/null 2>"$_req_err"; then
-    local _http_hint
-    _http_hint="$(grep -oE 'HTTP [0-9]+' "$_req_err" | head -1 || true)"
-    warn "Copilot review could not be requested${_http_hint:+ ($_http_hint)}"
-    cat "$_req_err" >> "$RUN_DIR/errors.log" 2>/dev/null || true
-    rm -f "$_req_err"
-    COPILOT_SKIP_REASON="request failed"
-    echo "SKIPPED"; return
-  fi
-  rm -f "$_req_err"
-  info "Copilot review requested at $COPILOT_REQUESTED_AT — polling every ${_interval}s (ceiling ${_ceiling}s)"
-
-  # ── Polling loop (REQ-255-07/08/09/10) ─────────────────────────────────────
-  local _elapsed=0 _state="" _reviews _poll_start _poll_elapsed
-  _poll_start="$(date +%s 2>/dev/null || echo 0)"
-  while (( _elapsed < _ceiling )); do
-    sleep "$_interval"
-    _elapsed=$(( _elapsed + _interval ))
-
-    _reviews="$(gh pr reviews "$_pr" --json author,state,submittedAt,body \
-                2>>"$RUN_DIR/errors.log" || echo '[]')"
-    _state="$(printf '%s' "$_reviews" | jq -r '
-        [ .[] | select(
-            (.author.login // "") | ascii_downcase | test("copilot\\[bot\\]")
-          )
-        ]
-        | sort_by(.submittedAt) | last | .state // empty' 2>/dev/null || true)"
-
-    case "$_state" in
-      APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED)
-        break ;;
-      *)
-        if [[ -z "$_state" ]]; then
-          warn "Copilot poll attempt ${_elapsed}s/${_ceiling}s — no review yet (will retry)"
-        fi
-        ;;
-    esac
-  done
-
-  # ── Save review body for the arbiter (§4) ──────────────────────────────────
-  if [[ "$_state" == "CHANGES_REQUESTED" || "$_state" == "COMMENTED" ]]; then
-    printf '%s' "$_reviews" | jq -r '
-        [ .[] | select(
-            (.author.login // "") | ascii_downcase | test("copilot\\[bot\\]")
-          )
-        ]
-        | sort_by(.submittedAt) | last | .body // ""' \
-      > "$RUN_DIR/copilot-review-body.txt" 2>/dev/null || true
-  fi
-
-  # ── Timeout (REQ-255-10) ────────────────────────────────────────────────────
-  if [[ -z "$_state" ]]; then
-    warn "Copilot review timed out after $_ceiling seconds — continuing without it"
-    echo "TIMEOUT"; return
-  fi
-
-  echo "$_state"
 }
 
 # ── Preflight ───────────────────────────────────────────────────────────────---
@@ -510,81 +420,6 @@ done
 printf '%s' "$ALL_FINDINGS" > "$RUN_DIR/findings.raw.json"
 RAW_COUNT=$(printf '%s' "$ALL_FINDINGS" | jq 'length')
 
-# ── COPILOT — request + poll after the fan-out roster (REQ-255-05; §3.1) ──────
-# Called when: --pr provided AND tier MEDIUM+ AND COPILOT_BOT_LOGIN is set in env.
-# Fail-open: any failure degrades to SKIPPED and the panel continues.
-# Sequential: runs after the fan-out, before the arbiter (spec-aligned; single call
-# is simpler and correct given the per-call cost model — see §3.1 design note O-4).
-_cv_token="skipped"
-if [[ -n "${PR:-}" && "$(rank "$RISK")" -ge 1 && -n "${COPILOT_BOT_LOGIN:-}" ]]; then
-  info "Requesting Copilot review for PR #$PR (MEDIUM+ tier, COPILOT_BOT_LOGIN set)"
-  _cv_token="$(request_copilot_review "$PR")"
-  COPILOT_VERDICT="copilot:$(printf '%s' "$_cv_token" | tr '[:upper:]' '[:lower:]')"
-  ok "Copilot verdict: $_cv_token"
-elif [[ "$(rank "$RISK")" -lt 1 ]]; then
-  skip "Copilot review omitted at LOW tier (panel reviewer floor not reached)"
-  COPILOT_SKIP_REASON="LOW tier"
-  COPILOT_VERDICT="copilot:skipped"
-  _cv_token="SKIPPED"
-elif [[ -z "${COPILOT_BOT_LOGIN:-}" ]]; then
-  skip "Copilot review skipped (COPILOT_BOT_LOGIN not set in env — see machine-accounts.env)"
-  COPILOT_SKIP_REASON="COPILOT_BOT_LOGIN not set"
-  COPILOT_VERDICT="copilot:skipped"
-  _cv_token="SKIPPED"
-fi
-
-# Record the Copilot event in the token tracker (REQ-255-28; AC-07: one record per panel run).
-_TRACKER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/token_tracker.py"
-if [[ ! -f "$_TRACKER" ]]; then _TRACKER="scripts/oversight/token_tracker.py"; fi
-if [[ -f "$_TRACKER" ]]; then
-  python3 "$_TRACKER" record \
-    --vendor copilot --stage panel --review-event \
-    --outcome "${_cv_token,,}" --step "${STEP:-0}" \
-    >/dev/null 2>>"$RUN_DIR/errors.log" \
-    || warn "token_tracker copilot record failed (non-fatal)"
-fi
-
-# Inject a Copilot finding into ALL_FINDINGS if verdict warrants it (REQ-255-13; §4).
-if [[ "$_cv_token" == "CHANGES_REQUESTED" || "$_cv_token" == "COMMENTED" ]]; then
-  _cbody="$(cat "$RUN_DIR/copilot-review-body.txt" 2>/dev/null || echo '')"
-  _csev="tier3"; [[ "$_cv_token" == "CHANGES_REQUESTED" ]] && _csev="tier2"
-  _ctitle="$(printf '%s' "$_cbody" | sed -e 's/^[[:space:]]*//' | head -c 80)"
-  _cfinding="$(jq -cn --arg t "$_ctitle" --arg d "$_cbody" --arg s "$_csev" \
-     '[{"reviewer":"copilot","lens":"general","severity":$s,"title":$t,"detail":$d,"file":"","line":0,"end_line":0,"suggestion":""}]')"
-  ALL_FINDINGS="$(jq -cn --argjson a "$ALL_FINDINGS" --argjson b "$_cfinding" '$a + $b')"
-  RAW_COUNT=$(printf '%s' "$ALL_FINDINGS" | jq 'length')
-fi
-
-# Append Copilot section to panel-context.md (REQ-255-20/21; §6).
-# Target: the HANDOFF_FILE resolved at startup; fallback: $RUN_DIR/copilot-verdict.txt.
-if (( DRY_RUN == 0 )); then
-  _copilot_notes=""
-  case "$_cv_token" in
-    APPROVED)           _copilot_notes="Review approved." ;;
-    CHANGES_REQUESTED)  _copilot_notes="Changes requested by Copilot." ;;
-    COMMENTED)          _copilot_notes="Copilot left comments." ;;
-    DISMISSED)          _copilot_notes="Review was dismissed." ;;
-    TIMEOUT)            _copilot_notes="Timed out after ${COPILOT_POLL_TIMEOUT_SEC:-300}s." ;;
-    *)                  _copilot_notes="${COPILOT_SKIP_REASON:-Skipped}." ;;
-  esac
-  _copilot_section="$(cat <<CPSEC
-
-## Copilot Review
-Requested: ${COPILOT_REQUESTED_AT:-(not requested)}
-Verdict: ${COPILOT_VERDICT}
-Notes: ${_copilot_notes}
-CPSEC
-)"
-  if [[ -n "${HANDOFF_FILE:-}" && -f "${HANDOFF_FILE:-}" ]]; then
-    printf '%s\n' "$_copilot_section" >> "$HANDOFF_FILE" \
-      || warn "Could not append Copilot section to $HANDOFF_FILE"
-  else
-    # REQ-255-21: no panel-context.md → write to copilot-verdict.txt
-    printf '%s\n' "$_copilot_section" > "$RUN_DIR/copilot-verdict.txt"
-    info "Copilot verdict written to $RUN_DIR/copilot-verdict.txt (no panel-context.md found)"
-  fi
-fi
-
 # ── ARBITER — Sonnet synthesizes + dedups into one verdict (NOT the independent check) ─
 if command -v claude >/dev/null 2>&1 && (( RAW_COUNT > 0 )); then
   info "arbiter: Sonnet synthesizing $RAW_COUNT raw finding(s)…"
@@ -650,23 +485,11 @@ if (( FCOUNT > 0 )); then
   done < <(printf '%s' "$FINDINGS" | jq -c '.[]')
 fi
 
-# Assemble the Copilot status display string (REQ-255-18; §5).
-_copilot_status=""
-case "$_cv_token" in
-  APPROVED)           _copilot_status="APPROVED" ;;
-  CHANGES_REQUESTED)  _copilot_status="CHANGES_REQUESTED" ;;
-  COMMENTED)          _copilot_status="COMMENTED" ;;
-  DISMISSED)          _copilot_status="SKIPPED (review dismissed)" ;;
-  TIMEOUT)            _copilot_status="TIMEOUT (no review within ${COPILOT_POLL_TIMEOUT_SEC:-300}s)" ;;
-  *)                  _copilot_status="SKIPPED (${COPILOT_SKIP_REASON:-not configured})" ;;
-esac
-
 # Assemble the summary comment.
 SUMMARY_BODY=$(cat <<EOF
 ## 🔭 Oversight panel — verdict
 
 **Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads)
-**Copilot:** ${_copilot_status}
 
 $SUMMARY
 EOF

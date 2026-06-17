@@ -270,43 +270,13 @@ def _append_reenable_log(text: str, gates: list[str]) -> str:
     return text.rstrip() + "\n\n## Re-enable log\n\n" + rows
 
 
-def cmd_is_suspended(gate: str) -> int:
-    """
-    --is-suspended <gate> subcommand (REQ-F-03, #303 §5).
-
-    Reads contract/gate-suspension.md using the canonical _SUSPENDED_RE parser
-    (which already handles [pinned] and review-by: flags).  Exits 0 if <gate>
-    is currently suspended, 1 otherwise.  No stdout — quiet by design so gate
-    scripts can use it as a predicate without capturing output.
-
-    This is the single canonical suspension-test entry point; check_suspension.sh
-    delegates here so both callers share one parser and one grammar.
-    """
-    susp_path = Path(SUSPENSION_FILE)
-    if not susp_path.exists():
-        return 1  # no file → nothing suspended → not suspended
-    text = susp_path.read_text()
-    gates = {s.gate for s in parse_suspensions(text)}
-    return 0 if gate in gates else 1
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--census", action="store_true")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--auto-remove", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument(
-        "--is-suspended",
-        metavar="GATE",
-        default=None,
-        help="Exit 0 if GATE is currently suspended, 1 otherwise. Quiet.",
-    )
     args = parser.parse_args()
-
-    # --is-suspended is a fast-exit predicate — it must not run census/check/auto-remove.
-    if args.is_suspended is not None:
-        return cmd_is_suspended(args.is_suspended)
 
     susp_path = Path(SUSPENSION_FILE)
     if not susp_path.exists():
