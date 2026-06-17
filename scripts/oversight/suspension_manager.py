@@ -115,6 +115,124 @@ def acknowledged_security(text: str) -> bool:
     return False
 
 
+def _iter_noncomment_lines(text: str):
+    """Yield stripped lines that are outside HTML comment blocks and not '#' comments.
+
+    Mirrors parse_suspensions()'s crude-but-correct comment tracking — the template
+    keeps its examples inside <!-- --> and as '#'-prefixed lines, and those must be
+    ignored (a human enables a field by un-commenting it).
+    """
+    in_comment = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "<!--" in stripped and "-->" not in stripped:
+            in_comment = True
+            continue
+        if "-->" in stripped:
+            in_comment = False
+            continue
+        if in_comment:
+            continue
+        if stripped.startswith("#"):
+            continue
+        yield stripped
+
+
+_TRUTHY = ("1", "true", "yes", "on")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_per_step_scope(text: str) -> tuple[bool, list[str]]:
+    """Parse `per_step_scope:` and `steps:` from a gate-suspension file (SPEC-83 R1).
+
+    Returns (per_step_scope, steps). HTML-commented and '#'-commented lines are
+    ignored (template examples). Both block-list (`  - step-3`) and inline
+    (`steps: [step-3, step-4]`) forms are accepted. Step IDs are returned verbatim
+    (byte-exact, case-sensitive — the caller matches with `==`).
+    """
+    per_step = False
+    steps: list[str] = []
+    in_block_list = False
+    for stripped in _iter_noncomment_lines(text):
+        low = stripped.lower()
+        if low.replace(" ", "").startswith("per_step_scope:"):
+            val = stripped.split(":", 1)[1].strip().lower()
+            per_step = val in _TRUTHY
+            in_block_list = False
+            continue
+        if low.startswith("steps:"):
+            rest = stripped.split(":", 1)[1].strip()
+            if rest.startswith("[") and rest.endswith("]"):
+                # inline form: steps: [step-3, step-4]
+                inner = rest[1:-1].strip()
+                if inner:
+                    steps.extend(
+                        s.strip().strip("'\"") for s in inner.split(",") if s.strip()
+                    )
+                in_block_list = False
+            elif rest:
+                # `steps: step-3` single inline value (no brackets)
+                steps.append(rest.strip("'\""))
+                in_block_list = False
+            else:
+                in_block_list = True  # block-list entries follow on subsequent lines
+            continue
+        if in_block_list:
+            if stripped.startswith("- "):
+                steps.append(stripped[2:].strip().strip("'\""))
+                continue
+            in_block_list = False  # non-list line ends the block
+    return per_step, steps
+
+
+def validate_per_step_scope(text: str, step_id: str) -> dict:
+    """Classify the per-step scope fields against a step ID (SPEC-83 R2.2a / R1.6).
+
+    Returns:
+      {per_step_scope: bool, malformed: bool, covers_step: bool, steps: [str]}
+
+    - per_step_scope False (blanket/absent) → not malformed, not covering.
+    - per_step_scope True + empty/absent steps → malformed True (R1.6 distinct FAIL).
+    - per_step_scope True + non-empty steps → covers_step = (step_id in steps), exact match.
+
+    Does NOT check the tier or security-suspension-acknowledged — that stays with the
+    evaluator (R2.3). Pure classifier of the scope fields.
+    """
+    per_step, steps = parse_per_step_scope(text)
+    malformed = per_step and not steps
+    covers = per_step and not malformed and step_id in steps
+    return {
+        "per_step_scope": per_step,
+        "malformed": malformed,
+        "covers_step": covers,
+        "steps": steps,
+    }
+
+
+def check_grandfathered_until(text: str, today: str | None = None) -> dict:
+    """Resolve the `grandfathered_until:` transition date (SPEC-83 R3).
+
+    Reuses the `review-by:` date idiom: lexicographic YYYY-MM-DD comparison against
+    today. `today` defaults to _today() (injectable for tests).
+
+    Returns {present: bool, date: str|None, status: str} where status is one of:
+      "absent"    — no grandfathered_until line → no grandfathering (FAIL applies)
+      "future"    — date strictly after today  → WARN + CONDITIONAL_PROCEED
+      "expired"   — date today or in the past  → FAIL (period over)
+      "malformed" — value not YYYY-MM-DD       → FAIL (fail-closed)
+    """
+    today = today or _today()
+    for stripped in _iter_noncomment_lines(text):
+        if stripped.lower().replace(" ", "").startswith("grandfathered_until:"):
+            val = stripped.split(":", 1)[1].strip()
+            if not _DATE_RE.match(val):
+                return {"present": True, "date": val or None, "status": "malformed"}
+            # strictly-future = grandfathered; today or past = expired (period over)
+            status = "future" if val > today else "expired"
+            return {"present": True, "date": val, "status": status}
+    return {"present": False, "date": None, "status": "absent"}
+
+
 def _read_config_bool(name: str, default: bool) -> bool:
     val = os.environ.get(name)
     if val is None:

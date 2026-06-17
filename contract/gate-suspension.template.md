@@ -36,6 +36,32 @@ reason_category: [EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER]
 # Remove this line when security/privacy are re-enabled.
 # security-suspension-acknowledged: yes
 
+# ── Per-step authorization for HIGH-tier security-relevant steps (SPEC-83) ──
+# A blanket security/privacy suspension is NOT sufficient for a HIGH-tier step that
+# touches security-relevant surfaces (auth, payments, migrations, PII). Such a step
+# requires EITHER per-step scoping here OR a per-step override at
+# contract/tier-overrides/step{N}-human-tier-override.md (HUMAN ONLY).
+# These fields are human-set; agents must not create or modify this file.
+#
+# per_step_scope (boolean, default false when absent — blanket, backward compatible):
+#   When true, the security/privacy suspension applies ONLY to the steps listed in
+#   `steps:` below. A HIGH-tier security-relevant step NOT listed is not covered.
+#   security-suspension-acknowledged: yes is still required alongside per-step scoping.
+# per_step_scope: false
+#
+# steps (required when per_step_scope: true — a non-empty list of step IDs that match
+#   the `id:` field in contract/step-manifest.yaml; exact string match). Block-list or
+#   inline form both accepted. Empty/absent while per_step_scope: true → COMPLIANCE FAIL.
+# steps:
+#   - step-3
+#   - step-4
+#
+# grandfathered_until (optional, YYYY-MM-DD, human-set): transition deadline for the
+#   blanket-suspension deprecation. Absent → no grandfathering (FAIL applies on a
+#   HIGH-tier security-relevant step). Future date → COMPLIANCE WARN + CONDITIONAL_PROCEED.
+#   Past/today → grandfathering period over → COMPLIANCE FAIL.
+# grandfathered_until: 2026-12-31
+
 ---
 
 ## Currently suspended

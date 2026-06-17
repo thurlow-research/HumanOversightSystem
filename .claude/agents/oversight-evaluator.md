@@ -112,6 +112,8 @@ If `security-suspension-acknowledged: yes` is present, record as WAIVED (acknowl
 
 If `contract/gate-suspension.md` does not exist, skip this check (normal mode).
 
+> **SPEC-83 interposition:** the "record as WAIVED (acknowledged), no additional warning" path above applies ONLY when the HIGH-tier step does **not** touch a security-relevant surface. When a HIGH-tier security/privacy suspension touches a security-relevant surface, **Condition 12 (below) governs** — a blanket acknowledgment is no longer sufficient there, and Condition 12's stricter per-step authorization decision tree replaces this block's outcome for that sub-case.
+
 **Establish the validated tier (every tier-gated check depends on it):**
 Read `.claudetmp/oversight/validators/risk-assessment.md` for the validated risk tier. The second-review, prompt-artifact, N/A, and structural-override checks all branch on `validated tier MEDIUM/HIGH/CRITICAL` — if no validated tier is established they would silently no-op, so an agent that skipped risk-assessor would de-fang the entire tier-gated half of this evaluation with no flag raised.
 - If `risk-assessment.md` is **absent on a per-step build evaluation → COMPLIANCE FAIL** (escalate). `risk-assessor` is responsible for the deterministic tier floor, the required-reviewers set, prompt-fidelity, dep-mapper, and risk-historian; the evaluator cannot substitute for any of those. A missing assessment means those analyses never ran, so a CRITICAL-by-diff change with a MEDIUM manifest would proceed under-scrutinized. Do **not** silently fall back — absence of the validated-risk artifact fails closed (the safe/ratchet direction). The evaluator does not invent a tier to unblock itself.
@@ -233,6 +235,137 @@ Read `tier_floor` and `evidence` from the JSON. Rank tiers `LOW < MEDIUM < HIGH 
 You may **never** create `.claudetmp/oversight/human-tier-override.md` to suppress this
 check — it is a human-only governance artifact (see "Human authorization file integrity"
 below). Condition 11 only reads it.
+
+**Condition 12 — HIGH-tier per-step suspension authorization (#83, SPEC-83):**
+
+A blanket security/privacy suspension is too coarse for a HIGH-tier step that touches a
+**security-relevant surface** (auth, payments, migrations, PII). The blanket
+acknowledgment authorizes *the decision to suspend*, not the risk of an individual
+auth-/payment-touching step proceeding without security review. Condition 12 requires
+*per-step* human authorization for that sub-case. This condition **governs** the
+"record WAIVED (acknowledged), no warning" path in the HIGH-tier warning block above
+whenever it fires; that block's blanket outcome applies only to non-security-relevant
+HIGH-tier steps (AC5).
+
+Read `contract/gate-suspension.md` into `$TEXT` (if it does not exist, skip Condition 12
+entirely — normal mode). Establish `STEP_ID` from `contract/step-manifest.yaml` (this
+step's `id:` field) and reuse the register-header `BASE_SHA`/`HEAD_SHA`.
+
+**Gating predicate — Condition 12 runs only when ALL THREE hold (R2.1):**
+
+1. Validated tier is **exactly HIGH** (not CRITICAL — see the CRITICAL guard below, which
+   wins) — and not LOW/MEDIUM (those are unchanged, AC6).
+2. `security` OR `privacy` appears as `SUSPENDED: {role}` in `contract/gate-suspension.md`.
+3. The step touches a **security-relevant surface**. Determine this from the tier-floor
+   classifier evidence:
+   ```bash
+   python3 scripts/oversight/change_classifier.py --tier-floor --base "$BASE_SHA" --head "$HEAD_SHA"
+   ```
+   The surface is **security-relevant** iff the `evidence` array contains at least one
+   entry whose `rule` names a security-relevant floor pattern: `auth/session path`,
+   `payment/financial path`, `migration file`, `privacy/PII path`, `PCI/financial API`,
+   or `PII field`. These are exactly the `change_classifier.py` tier-floor labels that
+   establish the HIGH/CRITICAL floor (the spec's "same surfaces change_classifier.py uses").
+   - **Fail-closed (R2.1):** if the classifier is **unavailable or errors** (non-zero
+     exit, missing file, unparseable JSON), treat the surface condition as **TRUE** and
+     proceed as though R2.1 is satisfied. A safety gate that no-ops when its classifier
+     breaks is worse than the status quo. Emit the note:
+     "NOTE: change_classifier.py unavailable — security-relevant-surface condition assumed TRUE (fail-closed)."
+   - If the classifier runs cleanly and finds **no** security-relevant evidence → the
+     surface is not relevant → Condition 12 does NOT fire → the existing blanket HIGH-tier
+     warning behavior applies unchanged (AC5).
+
+**CRITICAL guard (R2.6 — evaluated FIRST, before the scope/override branches).** If
+validated tier == CRITICAL AND (`security` or `privacy` is suspended), no per-step
+authorization is recognized — whether via a `steps:` entry naming this step or a
+`human-tier-override` artifact. The absolute prohibition (contract §2a) applies
+unconditionally. Emit:
+> **COMPLIANCE FAIL:** "CRITICAL-tier step {N}: per-step suspension authorization is not recognized. The absolute prohibition (contract §2a) applies — security/privacy may not be suspended on CRITICAL-tier steps regardless of authorization."
+
+This restates the effective-human-gate rule above (a CRITICAL step's suspension is already
+ignored); Condition 12 makes explicit that a `steps:` entry naming a CRITICAL step is never
+authorization. Recommendation → ESCALATE.
+
+**Authorization decision tree (when the gating predicate holds — evaluate in this order):**
+
+The deterministic scope/date parsing lives in `scripts/oversight/suspension_manager.py`
+(`validate_per_step_scope`, `check_grandfathered_until`). Invoke it once:
+```bash
+python3 -c "
+import sys, json
+sys.path.insert(0, 'scripts/oversight')
+import suspension_manager as sm
+text = open('contract/gate-suspension.md').read()
+v = sm.validate_per_step_scope(text, '$STEP_ID')
+g = sm.check_grandfathered_until(text)
+print(json.dumps({'scope': v, 'grandfather': g, 'ack': sm.acknowledged_security(text)}))
+"
+```
+
+**Step A — malformed authorization (R1.6, highest precedence after the CRITICAL guard).**
+If `scope.malformed` is true (`per_step_scope: true` with an empty/absent `steps:` list):
+> **COMPLIANCE FAIL:** "Malformed authorization: `per_step_scope: true` requires a non-empty `steps:` list. No steps are covered by this suspension entry."
+
+Halt Condition 12 for this step — do NOT fall through to grandfathering or the blanket FAIL.
+Recommendation → ESCALATE.
+
+**Step B — per-step-scoped suspension (path a, R2.2a + R2.3).**
+If `scope.covers_step` is true (the current step's ID is in `steps:`):
+- Require `ack` (`security-suspension-acknowledged: yes`) in the same file (R2.3). If
+  absent → **COMPLIANCE FAIL:** "HIGH-tier security-relevant step {N}: per-step-scoped
+  suspension covers this step but `security-suspension-acknowledged: yes` is missing. Both
+  are required." → ESCALATE.
+- If `ack` present → **record the role as WAIVED (per-step acknowledged)**, no warning.
+  Emit the `gate-suspended` audit event with the additional field `"per_step_authorized":true`
+  (R2.5). Condition 12 passes for this step.
+
+**Step C — per-step human-tier-override (path b, R2.2b).**
+Else (not covered by scoping), check `contract/tier-overrides/step{N}-human-tier-override.md`.
+The override is **valid** only when ALL hold (architect bindings 2–3):
+- File exists and is non-empty.
+- `step` field equals `STEP_ID`.
+- `role` field equals the suspended role (`security` or `privacy`).
+- `head_sha` field equals the evaluated `HEAD_SHA` (commit-bound — an override authored for
+  a different commit is NOT honored).
+- `authorized_by`, `date`, `reason` are present and non-empty.
+
+If **valid** → **record the role as WAIVED (per-step human override)**, no warning. Emit a
+new `human-tier-override` audit event (§6a) AND the `gate-suspended` event with
+`"per_step_authorized":true`:
+```bash
+printf '{"event":"human-tier-override","step":%s,"role":"%s","artifact":"contract/tier-overrides/step%s-human-tier-override.md","authorized_by":"%s","head_sha":"%s","timestamp":"%s"}\n' \
+  "$N" "$ROLE" "$N" "$AUTHORIZED_BY" "$HEAD_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> audit/oversight-log.jsonl
+```
+Condition 12 passes for this step.
+
+If the override is **present but invalid** (e.g. `head_sha` mismatch) → state the failing
+validity condition in the output (e.g. "override present but head_sha `abc..` ≠ evaluated
+HEAD `def..` — not accepted") and fall through to Step D as if the override were absent.
+
+You may **never** create or modify any file under `contract/tier-overrides/` — it is
+HUMAN ONLY (see "Human authorization file integrity" below). Condition 12 only reads it.
+
+**Step D — grandfathering / FAIL (R3 / R2.2 neither path).**
+Neither scoping (B) nor a valid override (C) covers the step. Use `grandfather.status`:
+- `"future"` → **COMPLIANCE WARN** (not FAIL), and force **CONDITIONAL_PROCEED** (R3.2/R3.3):
+  > "COMPLIANCE WARN: HIGH-tier security-relevant step {N} is proceeding under a blanket
+  > suspension. Blanket suspensions for HIGH-tier security-relevant surfaces are deprecated;
+  > this step is grandfathered until {date}. Add per-step scoping (R1) or a per-step
+  > human-tier-override to remove this warning."
+- `"expired"` → **COMPLIANCE FAIL** (R3.1), name the date:
+  > "COMPLIANCE FAIL: Grandfathering period expired ({date}): HIGH-tier security-relevant
+  > step {N} must now comply with per-step authorization requirements (R1, R2)."
+- `"malformed"` → **COMPLIANCE FAIL** (fail-closed), name the unparseable value (same shape
+  as expired).
+- `"absent"` → **COMPLIANCE FAIL** (R2.2 / AC4b):
+  > "COMPLIANCE FAIL: HIGH-tier security-relevant step {N}: `security`/`privacy` is suspended
+  > via a blanket suspension (`per_step_scope: false`). A blanket suspension is insufficient
+  > for a HIGH-tier step touching security-relevant surfaces. Provide either (a) a per-step-scoped
+  > suspension covering step {N}, or (b) a per-step human-tier-override artifact at
+  > `contract/tier-overrides/step{N}-human-tier-override.md`."
+
+A Condition-12 hard FAIL flips the recommendation to ESCALATE per the end-of-Phase-1 rule.
+A Condition-12 WARN forces CONDITIONAL_PROCEED (the warning appears in the PR body).
 
 **Condition 14 — structural-override MODIFICATION re-derivation (#121, SPEC-121):**
 
@@ -483,7 +616,7 @@ Step N: [PROCEED|CONDITIONAL_PROCEED|ESCALATE] — [one sentence reason]
 
 ## Human authorization file integrity
 
-**You may not create, modify, or delete any human-authored governance artifact** — `.claudetmp/oversight/step{N}-human-authorization.md`, `.claudetmp/oversight/human-tier-override.md`, or `contract/gate-suspension.md`. These may only be written by a human. If one is absent, your only action is to report the corresponding COMPLIANCE FAIL / unsuspended state and halt — you never create it to unblock the pipeline. This prohibition is absolute.
+**You may not create, modify, or delete any human-authored governance artifact** — `.claudetmp/oversight/step{N}-human-authorization.md`, `.claudetmp/oversight/human-tier-override.md`, `contract/gate-suspension.md`, or any file under `contract/tier-overrides/` (the per-step `human-tier-override.md` artifacts — SPEC-83). These may only be written by a human. If one is absent, your only action is to report the corresponding COMPLIANCE FAIL / unsuspended state and halt — you never create it to unblock the pipeline. This prohibition is absolute.
 
 This is the **ratchet** (`research/findings/ratchet-principle.md`): suspending a gate or lowering a tier *loosens* oversight, and loosening always requires a human. As of now this is enforced behaviorally, not mechanically — the same identity limitation documented in `research/findings/human-gate-enforcement-limits.md` (AI and human commits share one account, so signature-based enforcement isn't yet possible). The prohibition is explicit and auditable (git history shows who created the file); a mechanical guard is an open item.
 

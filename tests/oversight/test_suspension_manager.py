@@ -170,3 +170,150 @@ def test_ratchet_manager_never_writes_a_suspended_line(tmp_path, monkeypatch):
     before = SAMPLE.count("SUSPENDED:")
     after = sm.cmd_auto_remove(SAMPLE, susp).count("SUSPENDED:")
     assert after <= before  # never increases
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEC-83 — per-step scope + grandfathered_until
+# ─────────────────────────────────────────────────────────────────────────────
+
+PER_STEP_BLOCK = """\
+Authorized by: Test Human
+Date: 2026-06-17
+
+security-suspension-acknowledged: yes
+per_step_scope: true
+steps:
+  - step-3
+  - step-4
+
+## Currently suspended
+SUSPENDED: security
+"""
+
+PER_STEP_INLINE = """\
+security-suspension-acknowledged: yes
+per_step_scope: true
+steps: [step-3, step-4]
+"""
+
+BLANKET = """\
+security-suspension-acknowledged: yes
+## Currently suspended
+SUSPENDED: security
+"""
+
+MALFORMED = """\
+security-suspension-acknowledged: yes
+per_step_scope: true
+## Currently suspended
+SUSPENDED: security
+"""
+
+COMMENTED_FIELDS = """\
+# per_step_scope: true
+# steps:
+#   - step-9
+<!--
+per_step_scope: true
+steps:
+  - step-99
+-->
+## Currently suspended
+SUSPENDED: security
+"""
+
+
+def test_parse_per_step_scope_block_list():
+    per, steps = sm.parse_per_step_scope(PER_STEP_BLOCK)
+    assert per is True
+    assert steps == ["step-3", "step-4"]
+
+
+def test_parse_per_step_scope_inline_list():
+    per, steps = sm.parse_per_step_scope(PER_STEP_INLINE)
+    assert per is True
+    assert steps == ["step-3", "step-4"]
+
+
+def test_parse_per_step_scope_absent_defaults_false():
+    per, steps = sm.parse_per_step_scope(BLANKET)
+    assert per is False
+    assert steps == []
+
+
+def test_parse_per_step_scope_ignores_commented_and_html():
+    per, steps = sm.parse_per_step_scope(COMMENTED_FIELDS)
+    assert per is False
+    assert steps == []
+
+
+def test_validate_per_step_scope_covers_listed_step():
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-3")
+    assert v["per_step_scope"] is True
+    assert v["malformed"] is False
+    assert v["covers_step"] is True
+
+
+def test_validate_per_step_scope_does_not_cover_unlisted_step():
+    # AC7 — scope covering step-3/4 does not cover step-5
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-5")
+    assert v["covers_step"] is False
+    assert v["malformed"] is False
+
+
+def test_validate_per_step_scope_exact_match_only():
+    # no prefix / substring matching
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-3-extra")
+    assert v["covers_step"] is False
+
+
+def test_validate_per_step_scope_malformed():
+    # R1.6 — per_step_scope: true with no steps is malformed (distinct FAIL)
+    v = sm.validate_per_step_scope(MALFORMED, "step-3")
+    assert v["malformed"] is True
+    assert v["covers_step"] is False
+
+
+def test_validate_per_step_scope_blanket_not_malformed():
+    v = sm.validate_per_step_scope(BLANKET, "step-3")
+    assert v["per_step_scope"] is False
+    assert v["malformed"] is False
+    assert v["covers_step"] is False
+
+
+def test_grandfathered_until_absent():
+    g = sm.check_grandfathered_until(BLANKET)
+    assert g["present"] is False
+    assert g["status"] == "absent"
+
+
+def test_grandfathered_until_future():
+    text = "grandfathered_until: 2099-12-31\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "future"
+    assert g["date"] == "2099-12-31"
+
+
+def test_grandfathered_until_expired_past():
+    text = "grandfathered_until: 2020-01-01\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "expired"
+
+
+def test_grandfathered_until_today_is_expired():
+    # boundary: today is not "in the future"
+    text = "grandfathered_until: 2026-06-17\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "expired"
+
+
+def test_grandfathered_until_malformed_value_fails_closed():
+    text = "grandfathered_until: someday\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "malformed"
+
+
+def test_grandfathered_until_ignores_commented():
+    text = "# grandfathered_until: 2099-01-01\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "absent"

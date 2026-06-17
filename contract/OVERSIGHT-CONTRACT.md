@@ -22,6 +22,17 @@ audit/                               ← COMMITTED to project repo (not gitignor
   step-{N}-summary.md               ← human-readable per-step report (generated at merge)
   escaped-defects.md                ← consolidated escaped-defect record
 
+contract/
+  tier-overrides/                    ← COMMITTED. HUMAN ONLY — agents must not create or
+    step{N}-human-tier-override.md      modify any file here (SPEC-83). Per-step human
+                                        authorization to suspend security/privacy on a
+                                        HIGH-tier security-relevant step. Required fields:
+                                        step, role (security|privacy), authorized_by,
+                                        date (YYYY-MM-DD), head_sha (must equal the
+                                        evaluated HEAD — the override is commit-bound),
+                                        reason. The oversight-evaluator READS it during
+                                        Phase 1 Condition 12; it never writes it.
+
 .claudetmp/                          ← ephemeral working state (gitignored)
   signoffs/
     step{N}-register.md          ← sign-off register for build step N
@@ -212,6 +223,29 @@ A project may temporarily suspend specific gates/roles during brownfield onboard
 Gate script names for suspension: `lint`, `security`, `secrets`, `types`, `template-refs`, `portability`, `django`
 Sign-off role names match `required_signoffs` in `step-manifest.yaml`
 
+**Per-step authorization for HIGH-tier security-relevant steps (SPEC-83):** A blanket
+`security`/`privacy` suspension is **not sufficient** for a HIGH-tier step that touches a
+security-relevant surface (auth, payments, destructive migrations, PII — the
+`change_classifier.py` tier-floor surfaces). Such a step requires per-step human authorization
+via one of two paths, both human-set:
+
+- **(a) Per-step-scoped suspension** in `contract/gate-suspension.md`: `per_step_scope: true`
+  plus a non-empty `steps:` list naming the covered step IDs (matching `step-manifest.yaml`
+  `id:` fields, exact match). `security-suspension-acknowledged: yes` is still required
+  alongside the scoping. `per_step_scope` defaults to `false` (blanket) when absent —
+  backward compatible. `per_step_scope: true` with an empty/absent `steps:` list is a
+  COMPLIANCE FAIL (malformed authorization).
+- **(b) Per-step human-tier-override** at `contract/tier-overrides/step{N}-human-tier-override.md`
+  (committed, HUMAN ONLY) — bound to the evaluated HEAD by its `head_sha` field.
+
+A blanket suspension on such a step without per-step authorization is a COMPLIANCE FAIL, unless
+a human-set `grandfathered_until: YYYY-MM-DD` field (future date) is present in
+`gate-suspension.md` — which downgrades the FAIL to a COMPLIANCE WARN + CONDITIONAL_PROCEED for
+the transition period. An absent `grandfathered_until` = no grandfathering (FAIL applies); a
+past/expired date = FAIL. CRITICAL-tier steps may never have `security`/`privacy` suspended
+regardless of per-step authorization (the absolute prohibition, §2a, wins). LOW/MEDIUM tier and
+HIGH-tier non-security-relevant suspensions are unchanged.
+
 ---
 
 ## 4. Test declaration schema
@@ -331,7 +365,7 @@ Both requirements apply to all projects that install this framework.
 | `step-head-final` | Records a step's **post-panel** final HEAD SHA (after PR merge, or after a Phase-10 close with no PR) — the authoritative base anchor for the next step. The next step's evaluator prefers it over `step-head` (SPEC-220). | oversight-orchestrator | `step`, `head_sha` (full 40-char), `merged` (`true` on PR-merge path / `false` on ESCALATE-no-PR path), `panel_fix_commits` (advisory, optional), `timestamp` |
 | `human-authorization` | A human authorization gate was satisfied — pins the content hash, decision, and claimed authorizer into committed history | oversight-evaluator | `step`, `artifact`, `content_sha256`, `authorized_by`, `decision` |
 | `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
-| `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file`, `reason_category` (`EMERGENCY \| PLANNED_MAINTENANCE \| FALSE_POSITIVE \| OTHER`) |
+| `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file`, `reason_category` (`EMERGENCY \| PLANNED_MAINTENANCE \| FALSE_POSITIVE \| OTHER`); optional `per_step_authorized` (bool, SPEC-83 — `true` when the HIGH-tier security-relevant suspension was accepted via per-step scoping or a per-step override rather than a blanket acknowledgment) |
 | `gate-na` | An orchestrator determined a reviewer is not applicable to the diff | post-change-sweep | `gate`, `step`, `reason`, `determined_by` |
 | `gate-rerun` | A step was re-run because one of its inputs changed | reactive re-run mechanism | `gate`, `step`, `trigger`, `previous_run` |
 | `gate-auto-reenabled` | A suspended gate was auto-removed after consistent passes | suspension auto-removal | `gate`, `step`, `consecutive_passes` |
@@ -340,6 +374,7 @@ Both requirements apply to all projects that install this framework.
 | `na-invalidated` | An independent re-derivation rejected a `Status: N/A` waiver because the role's domain was in fact changed | oversight-evaluator | `role`, `step`, `evidence` |
 | `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
 | `tier-floor-mismatch` | The evaluator's independent tier-floor re-derivation (`change_classifier.py --tier-floor`) exceeded the self-reported `validated_tier` (loosening), with no `human-tier-override.md` present — §7 condition 11 (#94) | oversight-evaluator | `step`, `re_derived_floor`, `self_reported_tier`, `evidence` (array of `{rule, file, pattern}`) |
+| `human-tier-override` | A committed, commit-bound per-step human override (`contract/tier-overrides/step{N}-human-tier-override.md`) was accepted to waive a HIGH-tier security/privacy review for a specific step — §7 Condition 12 (SPEC-83) | oversight-evaluator | `step`, `role` (`security \| privacy`), `artifact`, `authorized_by`, `head_sha` (the evaluated HEAD the override is bound to) |
 | `conditional_proceed` | The orchestrator opened a CONDITIONAL_PROCEED PR — the step's process record. Carries the conditional-item count and the count of merge-blocking review threads posted (SPEC-222 R4.3). Read by the evaluator's CONDITIONAL_PROCEED thread-compliance checks (R3.1/R3.4). `conditional_threads_opened` is `0` until SPEC-222 R1 (per-item thread posting) ships — pending #399 + R1.5 API verification. | oversight-orchestrator | `step`, `pr`, `conditional_items`, `conditional_threads_opened`, `review_requested` |
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
 | `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp`, `reason_category` (`REGISTER_GAP \| COMPLIANCE_FAILURE \| SPEC_AMBIGUITY \| OTHER`), `summary` |
