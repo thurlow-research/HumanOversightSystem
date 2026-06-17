@@ -334,6 +334,16 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
                      after the results comment (§6 four conditions + §6.3
                      same-actor three-signal). Chat never authorizes the cut.
                      Violations → ng3b-violation-attempt audit event.  [#345]
+
+**Three-tier review model (confirmed, #356 decision 2026-06-16):**
+
+| Tier | When | Script | Vendor cost |
+|---|---|---|---|
+| **Inner loop** | Per code change | `run_validators.sh` + reviewer agents | None |
+| **Pre-PR** | Before opening any PR | `run_review_chain.sh --tier <tier>` | agy (MEDIUM+), codex (HIGH+) |
+| **Release gate** | Per phase, at release | `run_panel.sh` on phase-review PR | Full panel (agy + codex + Copilot) |
+
+`run_review_chain.sh` is the canonical pre-PR script. Panel is release-only by default; invoke one-off with `--pr N` when needed.
 ```
 
 **Why the panel runs locally, not in CI:** the CLIs authenticate interactively (browser OAuth that lives on your machine); CI runners can't hold that session. So CI handles the deterministic gates + Copilot's native PR review, while the cross-vendor AI panel runs from a local command and **posts its findings to the PR**. The PR stays the auditable record.
