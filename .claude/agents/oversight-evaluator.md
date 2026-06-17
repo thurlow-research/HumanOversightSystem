@@ -544,6 +544,63 @@ CP_REC=$(grep '"event":"conditional_proceed"' audit/oversight-log.jsonl 2>/dev/n
 
 A WARN from any of these three checks does NOT change the recommendation — the step stays CONDITIONAL_PROCEED — but the WARN text must be added to the conditional items so the human sees it. The R3.1 tamper FAIL (when armed) is a hard compliance failure and flips the recommendation to ESCALATE per the rule below. Record all three results in a "CONDITIONAL_PROCEED thread compliance" subsection of the Phase 1 output.
 
+**Governance-artifact authorship check (SPEC-82) — runs AFTER all per-artifact existence/field-validation checks above (conditions 7, 11, 12):**
+
+This is a supplementary tamper-evidence check on the **human-only** governance artifacts: it verifies that the most recent commit touching each one was not authored by a known bot account. It is **WARN-only** — it can raise the recommendation to CONDITIONAL_PROCEED but never produces a COMPLIANCE FAIL or ESCALATE on its own. Under the shared-identity worker setup, a bot-email match is a credible tampering signal but not cryptographic proof; the proportionate response is to flag it for human verification (accountability + tamper-evidence, not forge-proofing). It does not change what agents may create — detection only.
+
+**Step 1 — resolve the known-bot email set (once).** Source the framework machine-account config and build the comparison set from the bot **commit emails** (not usernames — `git log %ae` returns emails):
+
+```bash
+[ -f scripts/framework/machine-accounts.env ] && . scripts/framework/machine-accounts.env
+KNOWN_BOT_EMAILS=""
+for e in "$BOT_WORKER_EMAIL" "$BOT_OVERSEER_EMAIL"; do
+  [ -n "$e" ] && KNOWN_BOT_EMAILS="$KNOWN_BOT_EMAILS $(printf '%s' "$e" | tr 'A-Z' 'a-z')"
+done
+```
+
+If `KNOWN_BOT_EMAILS` is empty (both `BOT_WORKER_EMAIL` and `BOT_OVERSEER_EMAIL` are unset/empty, or `machine-accounts.env` is absent), **skip this entire check** for the run (fail-open) and emit the note: "Authorship check skipped — no bot commit emails configured in machine-accounts.env (BOT_WORKER_EMAIL and BOT_OVERSEER_EMAIL are unset)." No compliance item is added. Do **not** fall back to `BOT_ACCOUNTS` usernames — usernames never match `%ae` and would silently no-op.
+
+**Step 2 — per-artifact loop.** The four human-only artifacts (`{N}` = current step) are:
+
+```
+.claudetmp/oversight/step{N}-human-authorization.md
+contract/tier-overrides/step{N}-human-tier-override.md
+contract/gate-suspension.md
+.claudetmp/oversight/step{N}-human-tier-override.md      # legacy path — only if it still exists
+```
+
+For each artifact path:
+
+1. If it does **not** exist on disk → skip it (its absence, if it matters, is already handled by conditions 7/11/12; there is nothing to authorship-check).
+2. If it **already produced a field-validation COMPLIANCE FAIL** in a prior condition (7/11/12) → skip it. The field-validation FAIL stands as the primary finding; authorship is moot.
+3. Otherwise read the most recent commit's author:
+   ```bash
+   git log --follow --format="%ae %an %h" -- "$ARTIFACT" 2>/dev/null | head -1
+   ```
+   - **No output** (file exists but has no git history — untracked or never committed) → **COMPLIANCE WARN**: "Governance artifact `{path}` exists but has no git commit history. It may have been created without being committed (untracked working-tree file) or may have been added to the index but not yet committed. Human-only artifacts must be committed to be auditable." Append a `governance-artifact-untracked` audit event (below) and a conditional item (Step 3). Do **not** emit a `governance-artifact-bot-commit` event in this case.
+   - **Author email (lowercased) is in `KNOWN_BOT_EMAILS`** → **COMPLIANCE WARN**: "Governance artifact `{path}` — most recent commit authored by known bot account `{bot_email}` (`{name}`). Human-only artifacts must be committed by a human. Flagging for human verification. Commit: `{short_sha}`." Append a `governance-artifact-bot-commit` audit event and a conditional item.
+   - **Author email is NOT in the set** → record: "Governance artifact `{path}` — authorship check passed (last commit: `{email}`, not a known bot account)." No compliance item.
+
+Compare emails **case-insensitively**. Inspect only the author **email** of the **most recent** commit — never the commit message, a git trailer, or intermediate commits.
+
+**Step 3 — conditional items (R3).** Each authorship WARN forces the recommendation to **at minimum CONDITIONAL_PROCEED** and emits **one conditional item per artifact** (multiple warned artifacts → multiple separate items; never merged). The item names the artifact path and the suspicious commit author and asks the human to confirm the artifact was not created by an AI agent.
+
+- **Special case — `step{N}-human-authorization.md`:** when the warned artifact is the human-authorization file, the conditional item MUST additionally state: "The CRITICAL step authorization artifact may have been authored by a bot account. The human-gate requirement for step {N} may not have been satisfied. Please confirm you created this file." (name the step number and the artifact path).
+
+A WARN here never lowers an already-ESCALATE recommendation; if Phase 1 already failed a hard check, ESCALATE stands but the authorship WARNs and their audit events are still recorded.
+
+**Audit events (per §6a) — appended regardless of the final recommendation (PROCEED / CONDITIONAL_PROCEED / ESCALATE):**
+
+```bash
+# bot-email match (one per affected artifact):
+printf '{"event":"governance-artifact-bot-commit","step":%s,"artifact":"%s","bot_email":"%s","bot_name":"%s","commit_sha":"%s","timestamp":"%s"}\n' \
+  "$N" "$ARTIFACT" "$EMAIL" "$NAME" "$SHORT_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> audit/oversight-log.jsonl
+
+# untracked artifact (one per affected artifact):
+printf '{"event":"governance-artifact-untracked","step":%s,"artifact":"%s","timestamp":"%s"}\n' \
+  "$N" "$ARTIFACT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> audit/oversight-log.jsonl
+```
+
 If any hard compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
 
 ---
@@ -648,7 +705,7 @@ Step N: [PROCEED|CONDITIONAL_PROCEED|ESCALATE] — [one sentence reason]
 
 **You may not create, modify, or delete any human-authored governance artifact** — `.claudetmp/oversight/step{N}-human-authorization.md`, `.claudetmp/oversight/human-tier-override.md`, `contract/gate-suspension.md`, or any file under `contract/tier-overrides/` (the per-step `human-tier-override.md` artifacts — SPEC-83). These may only be written by a human. If one is absent, your only action is to report the corresponding COMPLIANCE FAIL / unsuspended state and halt — you never create it to unblock the pipeline. This prohibition is absolute.
 
-This is the **ratchet** (`research/findings/ratchet-principle.md`): suspending a gate or lowering a tier *loosens* oversight, and loosening always requires a human. As of now this is enforced behaviorally, not mechanically — the same identity limitation documented in `research/findings/human-gate-enforcement-limits.md` (AI and human commits share one account, so signature-based enforcement isn't yet possible). The prohibition is explicit and auditable (git history shows who created the file); a mechanical guard is an open item.
+This is the **ratchet** (`research/findings/ratchet-principle.md`): suspending a gate or lowering a tier *loosens* oversight, and loosening always requires a human. A **partial mechanical guard now exists** (SPEC-82): the "Governance-artifact authorship check" in Phase 1 flags a COMPLIANCE WARN when the most recent commit touching one of these human-only artifacts was authored by a known bot account (or when the artifact is untracked). That guard is tamper-*evidence*, not tamper-*proof* — the same identity limitation documented in `research/findings/human-gate-enforcement-limits.md` (AI and human commits can share one account, so signature-based enforcement isn't yet possible) means full cryptographic forge-proofing remains an open item. The prohibition is explicit and auditable (git history shows who created the file).
 
 ---
 
