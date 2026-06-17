@@ -157,7 +157,7 @@ while IFS= read -r -d '' f; do
         # OR are single known short names. Skip library names, types, and status values.
         KNOWN_SHORT_AGENTS="architect|coder|human"
         # GitHub labels and HOS workflow tokens are not agent names — skip them
-        KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized"
+        KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized|release-request|release-authorized"
         if echo "$target" | grep -qE "^($KNOWN_LABELS)$"; then
             continue
         fi
