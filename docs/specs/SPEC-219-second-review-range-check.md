@@ -1,7 +1,7 @@
 # SPEC-219 — Evaluator: Verify Second-Review Reviewed Range
 
 **Issue:** #219
-**Status:** REVISED — ready for architect re-review
+**Status:** REVISED (pass 4) — ready for architect re-review
 **Family:** #204 commit-range machinery
 **Date:** 2026-06-17
 **Author:** pm-agent
@@ -140,6 +140,23 @@ This is a recording requirement, not a new derivation: the script was already co
 this range to build the diff. R2 requires that it capture and record what it computed
 rather than discarding it.
 
+The helper has two edge-case outputs that `run_second_review.sh` must handle before
+recording:
+
+- **Empty string** (step N has no event in the log): `run_second_review.sh` must record
+  `reviewed_range: none`. The evaluator treats this as the absent-range WARN case (same
+  as the no-diff-content sentinel). Do not attempt to run the diff or invoke the reviewer.
+
+- **Leading-empty base (`..HEAD_SHA`)** (step N-1 has no event, which is normal for
+  step 1): `run_second_review.sh` must apply the merge-base fallback before recording.
+  Derive BASE with:
+  ```
+  BASE=$(git merge-base HEAD $(git rev-parse HEAD~1 2>/dev/null || echo HEAD))
+  ```
+  then record `BASE..HEAD_SHA`. This mirrors the merge-base fallback the evaluator uses
+  for step 1 (SPEC-220 R2). The helper's contract comment explicitly delegates this
+  fallback to the caller ("the caller owns the merge-base fallback for an empty base").
+
 ### R3 — `oversight-evaluator.md` Phase 1: verify `reviewed_range` matches register
 
 The second-review compliance check (the block headed "Second-review compliance (MEDIUM+
@@ -171,6 +188,7 @@ verdict (`approve`, `request_changes`, `unparseable`), also verify the range:
    | `skipped` (score-below-threshold) | present, any value | Range check applies: same mismatch/match/UNCOMMITTED rules as `approve`. |
    | `skipped` (no-diff-content) | `none` | COMPLIANCE WARN — "second review skipped: no diff content; cannot verify range." Add to conditional items. This is not a fail: absence of diff content is a legitimate early exit. |
    | `skipped` (no-diff-content) | absent or any other value | COMPLIANCE WARN — unexpected sentinel format; treat as instrumentation gap. |
+   | (any) | empty string | COMPLIANCE WARN — same as absent; missing range data, not a scope violation. Treat identically to the `none` sentinel: "second review report for step {N} does not record a usable `reviewed_range`; cannot confirm the review covered the step's canonical commit range." Add to conditional items. |
    | `error` | any | Range check **skipped** — an errored run produces no judgment to accept or reject. The error itself is already a COMPLIANCE FAIL per existing rules. Emit COMPLIANCE WARN only if `reviewed_range` is absent, to note the instrumentation gap (does not change the existing FAIL outcome). |
    | `pending` | any | Range check **skipped** — a `pending` verdict should not reach the evaluator. Evaluator emits COMPLIANCE WARN: "second review report for step {N} has `verdict: pending`; review did not complete." |
    | `UNCOMMITTED` (literal) | — | **COMPLIANCE FAIL** — "second review for step {N} ran against uncommitted worktree state (`reviewed_range: UNCOMMITTED`). Second review must run on committed state. Re-commit the changes and re-run `run_second_review.sh`." A dirty-worktree review is structurally wrong: the reviewer saw changes not in any verifiable commit. This is a hard fail regardless of the verdict. |
@@ -236,3 +254,15 @@ AC-9. Reports with `verdict: pending` cause the evaluator to emit a COMPLIANCE W
 
 AC-10. The `--step N` range derivation delegates entirely to the shared helper defined
        in SPEC-220; the script does not re-implement the step-range lookup.
+
+AC-11. For step 1 (or any step where `get_step_range` returns `..HEAD_SHA` because the
+       previous step has no log event): `run_second_review.sh` applies the merge-base
+       fallback and records `MERGEBASE..HEAD_SHA`, not `..HEAD_SHA`. The evaluator
+       compares this against the register's `base_sha..head_sha` (which was derived by
+       the same merge-base logic in SPEC-220 R2) and finds a match; no compliance event
+       is emitted.
+
+AC-12. For any step where `get_step_range` returns empty string (step N has no event in
+       the log): `run_second_review.sh` records `reviewed_range: none` and does not
+       invoke the reviewer. The evaluator reads `reviewed_range: none` and emits
+       COMPLIANCE WARN (not FAIL), adding a conditional item.
