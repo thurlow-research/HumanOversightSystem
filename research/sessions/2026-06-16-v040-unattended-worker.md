@@ -58,3 +58,16 @@ Full implementation of the HOS unattended worker subsystem (all 15 build steps, 
 - **ADR-2 correctness**: cid is the only M1 guarantee; lock, claim, and activation are all contention reducers on top.
 - **DEP[#152-followup]**: merge_authority.py detect_server_side_gate returns PROPOSE_ONLY until the risk-tier-vs-ceiling CI check ships — intentional fail-safe, not a bug.
 - **Issue #300**: pre-run `git pull` added as step 0; the governance config currency gap is documented as a research finding and a known limitation.
+
+## SLR research integration (2026-06-17 continuation)
+
+Nine evidence-based change proposals (P1–P9) derived from full-text reads of five SLR papers were filed as individual issues (#373–#381):
+
+- **P9 (CRITICAL):** Adversarial framing attack on reviewer agents — 100% attack success rate in the literature; anti-framing instruction added to reviewer CORE regions (Mitropoulos et al. 2026)
+- **P2/P3:** Confidence asymmetry rule + deterministic gate non-override invariant added to AGENTS.md, oversight-evaluator.md, OVERSIGHT-CONTRACT.md
+- **P8:** ~1.7× citation fixed in AGENTS.md (Loker 2025 + Ferdous et al. 2026)
+- P1/P4/P5/P6 → v0.5.0; P7 → v0.6.0
+
+**Process gap noted:** P2/P3/P9 were implemented without the pm-agent → architect → technical-design pipeline. Bug #382 filed. Retroactive specs required.
+
+Three new research findings filed: adversarial framing, confidence saturation, maintenance-class risk inversion.
