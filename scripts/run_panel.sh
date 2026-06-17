@@ -473,13 +473,16 @@ do not add new findings the reviewers didn't raise. Risk level: $RISK.
 Tasks: (1) DEDUPE findings that describe the same underlying issue (same file/line/cause), keeping
 the highest severity and merging detail. (2) Drop anything clearly spurious or out of its lens.
 (3) Write a short markdown SUMMARY for the human (verdict + the headline risks).
+(4) For EACH output finding, include \"merged_from\": the membership list of every raw finding you
+merged into it (INCLUDING the finding itself), as [{\"reviewer\":\"...\",\"lens\":\"...\"}]. This is
+how cross-vendor corroboration is counted downstream (SPEC-376) — do NOT omit it.
 
 Reviewer findings (JSON):
 $ALL_FINDINGS
 
 Return ONLY JSON of this exact shape:
 {\"summary\":\"markdown overview for the human\",
- \"findings\":[{\"file\":\"path\",\"line\":<int>,\"end_line\":<int>,\"severity\":\"tier1|tier2|tier3|tier4\",\"lens\":\"...\",\"reviewer\":\"...\",\"title\":\"short\",\"detail\":\"why\",\"suggestion\":\"fix\"}]}"
+ \"findings\":[{\"file\":\"path\",\"line\":<int>,\"end_line\":<int>,\"severity\":\"tier1|tier2|tier3|tier4\",\"lens\":\"...\",\"reviewer\":\"...\",\"title\":\"short\",\"detail\":\"why\",\"suggestion\":\"fix\",\"merged_from\":[{\"reviewer\":\"...\",\"lens\":\"...\"}]}]}"
   ARB_RAW="$(call_model sonnet "$ARB_PROMPT")"
   printf '%s' "$ARB_RAW" > "$RUN_DIR/arbiter.raw.txt"
   ARB_JSON="$(printf '%s' "$ARB_RAW" | extract_json)"
@@ -488,10 +491,32 @@ else
   ARB_JSON="$(jq -cn --arg s "Panel found no issues under the active lenses at risk $RISK." '{summary:$s, findings:[]}')"
 fi
 printf '%s' "$ARB_JSON" > "$RUN_DIR/arbiter.json"
-SUMMARY="$(printf '%s' "$ARB_JSON" | jq -r '.summary // "(no summary)"')"
-FINDINGS="$(printf '%s' "$ARB_JSON" | jq -c '.findings // []')"
+
+# ── CORROBORATION RANKING (SPEC-376) — annotate + tier-order via panel_logic.py ─
+# Counts cross-vendor corroboration from the arbiter's merged_from membership,
+# tags each finding with corroborated_by/corroborating_reviewers/corroboration_tier,
+# and reorders Tier 1 (>=2 vendors) before Tier 2 (single reviewer). Logic lives in
+# the Python module (#314 — shell launches, doesn't implement). A module failure
+# degrades to the un-ranked arbiter output (no suppression, all findings still post).
+PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/panel_logic.py"
+[[ -f "$PANEL_LOGIC" ]] || PANEL_LOGIC="scripts/oversight/panel_logic.py"
+if [[ -f "$PANEL_LOGIC" ]]; then
+  RANKED_JSON="$(printf '%s' "$ARB_JSON" \
+    | python3 "$PANEL_LOGIC" --raw "$RUN_DIR/findings.raw.json" 2>>"$RUN_DIR/errors.log" \
+    || printf '%s' "$ARB_JSON")"
+  [[ -n "$RANKED_JSON" ]] || RANKED_JSON="$ARB_JSON"
+else
+  warn "panel_logic.py not found — skipping corroboration ranking (findings un-tiered)"
+  RANKED_JSON="$ARB_JSON"
+fi
+printf '%s' "$RANKED_JSON" > "$RUN_DIR/arbiter.json"   # re-written WITH corroboration fields (binding 8)
+
+SUMMARY="$(printf '%s' "$RANKED_JSON" | jq -r '.summary // "(no summary)"')"
+FINDINGS="$(printf '%s' "$RANKED_JSON" | jq -c '.findings // []')"
 FCOUNT=$(printf '%s' "$FINDINGS" | jq 'length')
-ok "arbiter: $FCOUNT finding(s) after dedup (from $RAW_COUNT raw)"
+TIER1_COUNT=$(printf '%s' "$FINDINGS" | jq '[.[] | select(.corroboration_tier == 1)] | length')
+TIER2_COUNT=$(printf '%s' "$FINDINGS" | jq '[.[] | select((.corroboration_tier // 2) == 2)] | length')
+ok "arbiter: $FCOUNT finding(s) after dedup (from $RAW_COUNT raw) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT"
 
 # ── POST — one line-level thread per finding, then one summary comment ──────────
 # Line threads (review comments on the diff) are what the resolution gate enforces;
@@ -514,8 +539,15 @@ if (( FCOUNT > 0 )); then
     title=$(jq -r '.title // ""' <<<"$row")
     detail=$(jq -r '.detail // ""' <<<"$row")
     sugg=$(jq -r '.suggestion // ""' <<<"$row")
-    body=$(printf '**🔭 Oversight panel — %s / %s** (via %s)\n\n**%s**\n\n%s\n\n%s%s' \
-      "$sev" "$lens" "$rvw" "$title" "$detail" \
+    ctier=$(jq -r '.corroboration_tier // 2' <<<"$row")
+    cby=$(jq -r '.corroborated_by // 1' <<<"$row")
+    if [[ "$ctier" == "1" ]]; then
+      clabel="Tier 1 — cross-vendor confirmed (corroborated by $cby reviewers)"
+    else
+      clabel="Tier 2 — single reviewer"
+    fi
+    body=$(printf '**🔭 Oversight panel — %s / %s** (via %s)\n_%s_\n\n**%s**\n\n%s\n\n%s%s' \
+      "$sev" "$lens" "$rvw" "$clabel" "$title" "$detail" \
       "${sugg:+_Suggested fix:_ }" "$sugg")
     if (( DRY_RUN )); then
       echo -e "  ${CYAN}[dry-run] thread${RESET} $file:$line  [$sev/$lens] $title"
@@ -528,15 +560,33 @@ if (( FCOUNT > 0 )); then
   done < <(printf '%s' "$FINDINGS" | jq -c '.[]')
 fi
 
+# ── SPEC-376: render one tier's findings as markdown bullet lines (severity-ordered;
+# FINDINGS is already globally tier-1-first, severity-within-tier from panel_logic.py).
+render_tier_findings() {  # $1 = corroboration_tier (1|2)
+  printf '%s' "$FINDINGS" | jq -r --argjson t "$1" '
+    [.[] | select((.corroboration_tier // 2) == $t)]
+    | map("- **\(.severity // "tier?") / \(.lens // "?")** (\(.corroborating_reviewers // [.reviewer // "panel"] | join(", "))) — `\(.file // "?"):\(.line // 0)` — **\(.title // "")** — \(.detail // "")")
+    | .[]'
+}
+TIER1_FINDINGS="$(render_tier_findings 1)"
+TIER2_FINDINGS="$(render_tier_findings 2)"
+
 # Assemble the summary comment.
 SUMMARY_BODY=$(cat <<EOF
 ## 🔭 Oversight panel — verdict
 
-**Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads)
+**Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT
 
 $SUMMARY
 EOF
 )
+# SPEC-376 R3 / binding 5: Tier 1 section BEFORE Tier 2; each empty section omitted.
+if [[ -n "$TIER1_FINDINGS" ]]; then
+  SUMMARY_BODY+=$'\n\n## Critical Findings (Corroborated by ≥2 Reviewers)\n> Confirmed by ≥ 2 independent reviewers. Address before merge.\n\n'"$TIER1_FINDINGS"
+fi
+if [[ -n "$TIER2_FINDINGS" ]]; then
+  SUMMARY_BODY+=$'\n\n## Additional Findings (Single Reviewer)\n> Raised by one reviewer. Review and address where warranted.\n\n'"$TIER2_FINDINGS"
+fi
 if (( SAMPLED )); then
   SUMMARY_BODY+=$'\n\n> 🎲 **Selected for random red-team audit** — this `'"$RISK"$'` PR was sampled for an adversarial pass (SQC; rate '"$RATE"$'%, roll '"$ROLL"$'). Lower-tier PRs are spot-checked at random to estimate the escaped-defect rate and to deter risk under-declaration. Selection is reproducible from the head SHA + the secret audit salt.'
 fi
