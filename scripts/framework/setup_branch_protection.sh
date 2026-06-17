@@ -117,11 +117,6 @@ PAYLOAD="$(cat <<JSON
   "enforce_admins": false,
   "required_pull_request_reviews": {
     "dismissal_restrictions": {},
-    # dismiss_stale_reviews: true — security requirement (new commits void prior approvals).
-    # Side effect in autonomous batch merges: merging PR A advances the base branch, which
-    # dismisses approvals on PRs B, C, etc. The overseer handles this via batch serialization
-    # (step 6b in overseer.md): re-approve each PR individually before merging it.
-    # Changing this to false would allow stale approvals to persist — do not do that.
     "dismiss_stale_reviews": true,
     "require_code_owner_reviews": true,
     "required_approving_review_count": 1,
@@ -137,7 +132,7 @@ PAYLOAD="$(cat <<JSON
   "allow_force_pushes": false,
   "allow_deletions": false,
   "block_creations": false,
-  "required_conversation_resolution": false,
+  "required_conversation_resolution": true,
   "lock_branch": false,
   "allow_fork_syncing": false
 }
