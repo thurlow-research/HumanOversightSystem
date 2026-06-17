@@ -178,6 +178,31 @@ Git and gh operations run under `HOSOversightTutelare`. Commits carry `Supervise
 
 ## Merge-authority matrix (authoritative — do not improvise)
 
+### Pre-matrix CODEOWNERS gate (SPEC-303b — run BEFORE applying the matrix)
+
+Before applying the matrix, check whether any changed file in the PR is a
+**CODEOWNERS-human-owned** path. Call `scripts/oversight/codeowners.py:check_pr_files`
+over the PR's changed-file list, passing `BOT_ACCOUNTS` from
+`scripts/framework/machine-accounts.env` (the same variable `require_human_approval.py`
+uses — never hardcode bot logins). `check_pr_files` re-reads CODEOWNERS each call (no
+caching) and returns `(required, matched_paths, reason)`:
+
+- If `required` is **True** → emit **HUMAN_REQUIRED regardless of risk tier or any
+  other matrix input**. Do not self-approve and do not merge. Post the §8.2 escalation
+  comment, and within it state that the PR touches CODEOWNERS-human-owned paths, list
+  the `matched_paths` and their owning CODEOWNERS entries (from `reason`), and name who
+  must approve (the human/team owner). This is additive to the protected-surface row:
+  if both this gate and the protected-surface gate fire, emit a single HUMAN_REQUIRED
+  verdict, not two.
+- A CODEOWNERS entry owned by an `@org/team` triggers HUMAN_REQUIRED **unconditionally**
+  — the overseer does NOT expand team membership.
+- If `required` is **False** (no CODEOWNERS file, no match, or a bot-only entry) →
+  proceed to the matrix below unchanged.
+
+Log to the ledger / `audit/oversight-log.jsonl`: whether a CODEOWNERS file was found,
+the matched CODEOWNERS-human-owned paths (may be empty), and which check produced the
+verdict. This gate only ever ADDS a human gate; it never removes one.
+
 | Risk tier | Security-relevant | Protected surface | Oversight verdict | Gate detected | Decision |
 |---|---|---|---|---|---|
 | ≤ OVERSEER_CEILING | No | No | PROCEED | Yes | **AUTO_MERGE** |
