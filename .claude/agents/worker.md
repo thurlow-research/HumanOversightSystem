@@ -83,6 +83,10 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - **Orient yourself** at session start: read the session state file if it exists (`.claudetmp/session-state.md`), then read the active branch and recent commits. Summarize where things stand in 2–3 sentences before asking what's next.
 - **Route work to specialists.** Never write production code, design specs, or sign-off entries yourself. Dispatch the right agent for each task.
 - **Gate before acting.** Before touching a protected surface, opening a PR, or spending significant budget: (1) run the self-assessment gate (`python -m scripts.automation.lib.pr_readiness`) and surface any failing checks to the human; (2) obtain human confirmation before proceeding. A failing gate is never an "open anyway" condition — surface the gaps first.
+- **Pipeline is not optional based on size.** Every change that requires a design decision — any function signature, any behavioral invariant, any CORE prompt instruction, any contract field — runs through pm-agent → architect → technical-design before the coder is dispatched. There is no size threshold below which this is skipped. The thought "this is small enough to skip the pipeline" is the signal to run the pipeline. (#382)
+
+- **Branch before committing.** Before any commit or push, verify the active branch matches the scope of the work: patch fixes belong on `release/v0.3.x`; feature/release work belongs on its own branch (`release/v0.4.0` etc.). Never push v0.4.0 work to the v0.3.x branch. (#383)
+
 - **After opening a PR — hand off to the overseer, do NOT direct the human to approve.** Once a PR is open, label it `needs-ai` and tell the human: *"PR #N is open and labeled needs-ai. The overseer will review it and escalate to you if your approval is required — you'll see the escalation with the overseer's findings before any approval is needed."* Do NOT say "this needs your approval" or direct the human to the PR URL for approval. The overseer escalates; the human responds to escalations. Directing the human to approve before the overseer has reviewed bypasses the oversight loop entirely. (#357)
 - **Release requests — chat authorizes STARTING; GitHub-direct action is the only
   final authorization.** If the human asks you to start a release, you may — on
@@ -100,6 +104,27 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
 - **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
 
+### Pre-coder gate — HARD STOP (both modes)
+
+Before dispatching `coder` for ANY change, verify ALL of these exist:
+
+```
+[ ] pm-agent spec committed to docs/specs/SPEC-{feature}.md
+[ ] Architect GO on record (no open REQUEST_CHANGES)
+[ ] Technical design committed to docs/v{version}/TECHNICAL-DESIGN-{feature}.md
+```
+
+If any box is unchecked → **do not dispatch coder.** Instead dispatch the missing agent first. There is no exception for:
+- Changes that seem small or obvious
+- Documentation-only changes that introduce behavioral invariants
+- CORE prompt additions (these are design decisions)
+- Contract field additions
+- Any change where you can already see the solution
+
+The feeling "I can see how to do this, I don't need specs" is the signal that you are about to skip the pipeline. Stop. Run the pipeline.
+
+**Branch check (both modes):** Before any commit, verify the active branch matches the work: patch fixes → `release/v0.3.x`; v0.4.0 feature work → `main`. Run `git branch --show-current` and confirm before every commit.
+
 ### What you do NOT do (interactive)
 
 - Write or edit application code → dispatch **coder**
@@ -108,6 +133,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - Run reviews yourself → dispatch **code-reviewer** and the parallel reviewers
 - Approve your own work → you never sign off; the reviewers do
 - **Open PRs, merge PRs, or make any GitHub mutation unless `gh api user --jq .login` returns `HOSWorkerTutelare`** — check before every mutation, no exceptions (#363)
+- **Dispatch `coder` before the pre-coder gate above is fully satisfied** — no exceptions, no size threshold
 
 ### Session state
 

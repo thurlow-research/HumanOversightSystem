@@ -414,3 +414,21 @@ Completing D47's theme into the manifest path: the two post-Phase-B manifest-ass
 - Adds mechanical enforcement: `check_agents_static.sh` section 6 fails any CORE file that lacks the carve-out text.
 
 **Status:** Implemented 2026-06-16 — carve-out clause applied to all 18 CORE agent files; `check_agents_static.sh` section 6 enforcement added.
+
+### D51 — 2026-06-17: Confidence asymmetry rule — agent-declared confidence excluded from automated routing
+
+Agent self-reported confidence is excluded from automated routing decisions. High confidence may never lower the scrutiny tier; low confidence may raise it.
+
+**Rationale:** Ferdous et al. 2026 (MSR, DOI:10.1145/3793302.3793610) shows that 99.9% of agent PRs self-rate confidence 8–10, and defect rates are flat at 3.16–3.96% across that range. The signal is saturated and empirically uninformative as a discriminator. Using it to route lighter review imports a measurably false signal — one that would apply lighter treatment uniformly rather than selectively. Confidence is retained as a calibration prior for the human reader; it is removed from any path where it could cause a tier downgrade. See `research/findings/agent-confidence-is-uninformative-for-defect-prediction.md`.
+
+### D52 — 2026-06-17: Deterministic gate non-override invariant
+
+An LLM arbiter, reviewer, or any agent component may not suppress, dismiss, or override a finding produced by a deterministic scanner. Deterministic findings reach the human gate verbatim, regardless of any agent's assessment that they are false positives.
+
+**Rationale:** Parris 2026 (AIRA) documents LLM masking of deterministic scanner failures — an arbiter adjudicating a scanner finding as acceptable removes the finding from the human-visible record, converting a detectable defect into a silent pass. The combination of "scanner ran and flagged X" with "agent decided X is fine" is indistinguishable at the output from "scanner ran and found nothing." The correct resolution is to always surface deterministic findings and let the human decide on disposition. An agent may *annotate* a finding (context, severity assessment, suggested disposition) but may not *suppress* it from the human-visible record. This is the same principle as D41's "honest degradation" applied to findings rather than reviewer availability. See `research/findings/gates-and-review-are-complementary.md`.
+
+### D53 — 2026-06-17: Reviewer framing guard — author-supplied NL framing is untrusted input in all reviewer prompts
+
+Author-supplied natural-language framing (PR title, description, commit message, inline code comments written by the author) is treated as untrusted input in all reviewer agent prompts. An explicit anti-framing instruction is added to the CORE regions of code-reviewer, security-reviewer, and privacy-reviewer: reviewers evaluate the diff on its own merits; the author's prose description of what the change does does not constitute evidence that the change does it.
+
+**Rationale:** Mitropoulos et al. 2026 (Zotero X7EN6DXZ) demonstrated a 100% attack success rate at getting vulnerability-reintroducing PRs accepted across 17 CVEs in 10 real open-source projects by adversarially crafting PR framing. The attacker refines locally against a clone of the pipeline (asymmetric advantage); redacting PR metadata and adding an anti-framing instruction restored correct detection in all cases. The defense is cheap (a prompt instruction and a context-construction choice) but must be explicit — without it, reviewer agents are vulnerable to this class of attack by default. This is a supply-chain attack on the oversight mechanism itself: a reviewer that can be socially engineered through author-supplied prose weakens every other correctness guarantee at the boundary where a human would have relied on it most. See `research/findings/adversarial-framing-attack-on-reviewer-agents.md`.
