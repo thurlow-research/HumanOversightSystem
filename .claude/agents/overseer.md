@@ -114,6 +114,18 @@ For each PR found:
    - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
 6. **Act on decision**:
    - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
+     **After a successful merge, append the step-head event (ARCH-Q-5):** obtain the actual merged commit SHA (from `gh pr view {n} --json mergeCommit -q .mergeCommit.oid` or `git rev-parse <merge-base-branch>` post-merge — NOT the pre-PR branch head), read the previous step's `head_sha` from `audit/oversight-log.jsonl` as `base_sha`, then append one line:
+     ```bash
+     MERGED_SHA=$(gh pr view {PR_NUMBER} --json mergeCommit -q .mergeCommit.oid)
+     PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
+       | grep "\"step\":{PREV_STEP}" | tail -1 \
+       | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
+     MERGED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+     printf '{"event":"step-head","step":{N},"base_sha":"%s","head_sha":"%s","merged_sha":"%s","merged_at":"%s","merged_by":"HOSOversightTutelare","pr_number":"{PR_NUMBER}","timestamp":"%s"}\n' \
+       "${PREV_HEAD}" "${MERGED_SHA}" "${MERGED_SHA}" "${MERGED_AT}" "${MERGED_AT}" \
+       >> audit/oversight-log.jsonl
+     ```
+     This post-merge entry supersedes any pre-PR `step-head` for the same step — the next step reads with `tail -1` so the last-written entry wins. `head_sha` and `merged_sha` both carry the merged commit SHA for backward-compatibility with readers keyed on either field.
    - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
    - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
