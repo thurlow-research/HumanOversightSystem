@@ -628,6 +628,8 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 17. `deploy-verify` — Deployment Verification & Production Smoke Tests
 
+> **Note:** `deploy-verify` is a **consumer-project agent** — it is not shipped in the HOS framework source. Consumer projects generate this agent during `./bootstrap/hos_install.sh` based on their deployment stack. It is listed in `scripts/framework/config.sh` as `EXTERNAL_AGENTS` so HOS's own static checker correctly skips the agent-file existence check.
+
 **Model:** `claude-sonnet-4-6`
 **Invoked:** After `docker compose up` on `opus.[your-domain]`.
 
