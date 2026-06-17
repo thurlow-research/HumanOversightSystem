@@ -95,6 +95,11 @@ section "3. File path references in agent files"
 # Only check paths that contain a directory separator — bare filenames like
 # `tokens.css` or `TECHNICAL-DESIGN.md` are prose shorthand, not path claims.
 # Output documents produced at project-start don't exist yet — exempt them.
+# Extraction (grep -oE at the old line 128) and the per-reference SKIP/CHECK
+# cascade are now in scripts/oversight/agents_static_logic.py (SPEC-336). The
+# shell still iterates files, derives the cleaned path for the existence test +
+# display, and runs the [[ -e ]] check; it no longer re-implements the cascade.
+LOGIC_PY="scripts/oversight/agents_static_logic.py"
 OUTPUT_DOCS="docs/pm/CONFIRMED-REQUIREMENTS.md
 docs/design/UX-DESIGN-READINESS.md
 docs/architecture/ADR-001-pilot.md
@@ -105,17 +110,20 @@ contract/gate-suspension.md
 audit/oversight-log.jsonl
 scripts/framework/config.sh"
 
+# The Python filter is called WITHOUT the output-doc list so that an output-doc
+# reference returns CHECK (not SKIP); the shell then emits the distinct
+# "(output doc — existence not required)" OK line, preserving the original
+# OK/WARN output verbatim (spec §5: no behavior change). Pure skip cases (http,
+# empty, bare filename, {template}, PROJECT/) are decided entirely in Python.
 while IFS= read -r -d '' f; do
     agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
-    # Require at least one slash to count as a path claim; strip #anchor fragments
     while IFS= read -r ref; do
+        verdict=$(python3 "$LOGIC_PY" filter-path-ref "$ref")
+        [[ "$verdict" == SKIP ]] && continue
+        # CHECK: derive the cleaned path (display + existence test only — the
+        # classification decision already happened in Python).
         ref_clean=$(echo "$ref" | tr -d '`"' | sed 's/#.*//' | xargs)
-        [[ "$ref_clean" == http* ]] && continue
-        [[ -z "$ref_clean" ]] && continue
-        [[ "$ref_clean" != */* ]] && continue   # skip bare filenames
-        [[ "$ref_clean" == \{*\}* ]] && continue  # skip template placeholders like {SPEC_FILE}
-        [[ "$ref_clean" == PROJECT/* ]] && continue  # skip consumer-project-scoped paths (live in target repos, not HOS source)
-        # Exempt project-start output docs — they are written during the build, not beforehand
+        # Exempt project-start output docs — written during the build, not before.
         if echo "$OUTPUT_DOCS" | grep -qx "$ref_clean"; then
             ok "[$agent_name] $ref_clean (output doc — existence not required)"
             continue
@@ -125,63 +133,53 @@ while IFS= read -r -d '' f; do
         else
             fail "[$agent_name] referenced path not found: $ref_clean"
         fi
-    done < <(grep -oE '`[A-Za-z][A-Za-z0-9_./-]+/[A-Za-z0-9_./-]+\.(md|yaml|html|css|sh|py|json)[^`]*`' "$f" \
-             | tr -d '`' \
-             | grep -v '^http' \
-             || true)
+    done < <(python3 "$LOGIC_PY" extract-path-refs < "$f" || true)
 done < <(find "$AGENTS_DIR" -name '*.md' -print0)
 
 # ── 4. Escalation targets resolve to known agents ────────────────────────────
 section "4. Escalation target resolution"
 
-# Patterns to catch: → agent-name, escalate to agent-name, invoked by agent-name
-# We look for backtick-quoted names that follow escalation keywords.
-ESCALATION_RE='(escalates?[[:space:]]+to|invoke|receives[[:space:]]+from|invoked[[:space:]]+by|notify|notif[yi]es)[^`]*`([a-z][a-z0-9_-]+)`'
+# Escalation-target extraction (formerly an inline python heredoc) and the
+# three-stage exclusion cascade now live in scripts/oversight/agents_static_logic.py
+# (SPEC-336). The shell assembles the token lists (binding 4: config.sh stays in
+# shell), passes the per-file content on stdin (no `open('$f')` quoting hazard),
+# classifies each token, and runs the final KNOWN_AGENTS existence test for CHECK.
 
 # Generic tokens that appear in escalation-like phrases but are never agent names.
 # Do NOT add project-specific hostnames or service names here — those belong in
 # scripts/framework/config.sh as PROJECT_NON_AGENT_TOKENS.
 NON_AGENT_TOKENS="human|you|main|build|prod|staging|ci|github|pr"
 NON_AGENT_TOKENS="${NON_AGENT_TOKENS}${PROJECT_NON_AGENT_TOKENS:+|$PROJECT_NON_AGENT_TOKENS}"
+# Agent names either contain a hyphen (e.g. code-reviewer, pm-agent) or are single
+# known short names. Skip library names, types, and status values.
+KNOWN_SHORT_AGENTS="architect|coder|human"
+# GitHub labels and HOS workflow tokens are not agent names — skip them.
+KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized|release-request|release-authorized"
+
+# KNOWN_AGENTS is a newline-separated string; the classifier takes a pipe-joined
+# alternation, so join once (trim the trailing pipe).
+KNOWN_AGENTS_PIPE=$(echo "$KNOWN_AGENTS" | grep -v '^$' | tr '\n' '|' | sed 's/|$//')
 
 while IFS= read -r -d '' f; do
     agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
-    # Use python for multiline regex since bash ERE can't span lines
     while IFS= read -r target; do
         [[ -z "$target" ]] && continue
-        # Skip known non-agent tokens (hostnames, placeholders, env terms)
-        if echo "$target" | grep -qE "^($NON_AGENT_TOKENS)$"; then
-            continue
-        fi
-        # Agent names either contain a hyphen (e.g. code-reviewer, pm-agent)
-        # OR are single known short names. Skip library names, types, and status values.
-        KNOWN_SHORT_AGENTS="architect|coder|human"
-        # GitHub labels and HOS workflow tokens are not agent names — skip them
-        KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized|release-request|release-authorized"
-        if echo "$target" | grep -qE "^($KNOWN_LABELS)$"; then
-            continue
-        fi
-        if ! echo "$target" | grep -qE "^($KNOWN_SHORT_AGENTS)$" && \
-           ! echo "$target" | grep -q '-'; then
-            continue
-        fi
-        # External agents declared in config.sh are valid targets even without local files
-        if [[ -n "$EXTERNAL_AGENTS" ]] && echo "$target" | grep -qE "^($EXTERNAL_AGENTS)$"; then
-            ok "[$agent_name] → $target (external — lives in consumer projects)"
-            continue
-        fi
+        verdict=$(python3 "$LOGIC_PY" classify-token \
+            "$target" "$KNOWN_AGENTS_PIPE" "$NON_AGENT_TOKENS" \
+            "$KNOWN_LABELS" "$KNOWN_SHORT_AGENTS" "$EXTERNAL_AGENTS")
+        case "$verdict" in
+            SKIP) continue ;;
+            EXTERNAL)
+                ok "[$agent_name] → $target (external — lives in consumer projects)"
+                continue ;;
+        esac
+        # CHECK: existence test against the canonical agent set stays in shell.
         if echo "$KNOWN_AGENTS" | grep -qx "$target"; then
             ok "[$agent_name] → $target resolves"
         else
             fail "[$agent_name] escalates/notifies '$target' but no agent file found for it"
         fi
-    done < <(python3 -c "
-import re, sys
-text = open('$f').read()
-pattern = r'(?i:escalat\w+\s+to|invok\w+|receives?\s+from|notif\w+)[^\`]*\`([a-z][a-z0-9_-]+)\`'
-for m in re.findall(pattern, text):
-    print(m)
-" 2>/dev/null || true)
+    done < <(python3 "$LOGIC_PY" extract-escalation-targets < "$f" || true)
 done < <(find "$AGENTS_DIR" -name '*.md' -print0)
 
 # ── 5. Project-start output doc paths are consistent ────────────────────────
