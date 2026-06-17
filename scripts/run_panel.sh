@@ -263,17 +263,15 @@ info "PR #$PR — $PR_TITLE"
 info "head $HEAD_SHA · $(echo "$CHANGED_FILES" | grep -c . ) file(s) · +${ADDED} lines · run dir $RUN_DIR"
 
 # ── TRIAGE — deterministic floor ∪ author trailer, confirmed/raised by Haiku ────
-det_floor() {
-  local files="$1" added="$2" level="LOW"
-  echo "$files" | grep -qiE '\.(ts|tsx|js|jsx|py|go|rb|java|cs|php|rs|sh)$' && level="MEDIUM"
-  echo "$files" | grep -qiE '(package\.json|package-lock|yarn\.lock|pnpm-lock|requirements\.txt|go\.mod|Gemfile|Cargo\.toml|composer\.json)' && level="MEDIUM"
-  (( added > SIZE_FLOOR )) && level="$(max_risk "$level" MEDIUM)"
-  echo "$files" | grep -qiE '(auth|login|session|middleware|password|token|crypto|secret|/api/|routes?/|migrations?/|schema|/db/|sql)' && level="$(max_risk "$level" HIGH)"
-  echo "$files" | grep -qiE '(payment|billing|stripe|checkout|/delete|destroy|drop_)' && level="$(max_risk "$level" CRITICAL)"
-  echo "$level"
-}
+# The deterministic floor rules + SQC sample hash now live in panel_logic.py
+# (SPEC-332 / #314 — Python owns the logic, shell launches it). Resolve the module
+# path the same way the SPEC-376 ranking call below does.
+PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/panel_logic.py"
+[[ -f "$PANEL_LOGIC" ]] || PANEL_LOGIC="scripts/oversight/panel_logic.py"
 
-FLOOR="$(det_floor "$CHANGED_FILES" "$ADDED")"
+# Deterministic floor: file list on stdin, added-line count + size floor as flags.
+FLOOR="$(printf '%s' "$CHANGED_FILES" \
+  | python3 "$PANEL_LOGIC" triage-floor --added-lines "$ADDED" --size-floor "$SIZE_FLOOR")"
 AUTHOR_RISK="$(gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/dev/null \
   | grep -oiE 'AI-Risk:[[:space:]]*(LOW|MEDIUM|HIGH|CRITICAL)' \
   | grep -oiE '(LOW|MEDIUM|HIGH|CRITICAL)' | tr '[:lower:]' '[:upper:]' \
@@ -311,7 +309,6 @@ fi
 # selected ⇔ SHA256(head_sha + secret_salt) mod 100 < tier_rate. Reproducible (an
 # auditor with the salt can prove a PR was/wasn't sampled) and non-gameable (the salt
 # is secret, so an author can't grind commit hashes to dodge the sample).
-sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | awk '{print $1}'; }
 SAMPLED=0; ROLL=-1; RATE=0
 if (( DO_SAMPLE )); then
   # Acquire (or mint) the secret salt — kept in gitignored .ai-local so it persists.
@@ -323,11 +320,16 @@ if (( DO_SAMPLE )); then
     printf '%s' "$SALT" > "$SALT_FILE"; chmod 600 "$SALT_FILE"
     warn "minted a new audit salt at $SALT_FILE (gitignored) — keep it; it makes the sample reproducible & non-gameable"
   fi
-  case "$RISK" in LOW) RATE=$SAMPLE_LOW ;; MEDIUM) RATE=$SAMPLE_MED ;; *) RATE=0 ;; esac  # HIGH/CRITICAL already 100%
+  # SQC sample decision now in panel_logic.py (SPEC-332): salted SHA256 roll vs.
+  # tier rate. HIGH/CRITICAL return rate=0 here (they fire the adversary pass via
+  # the always-on roster path below, not via SQC). Salt stays shell-side (Spec §5).
+  SQC_JSON="$(python3 "$PANEL_LOGIC" sqc-sample \
+    --head-sha "$HEAD_SHA" --salt "$SALT" --tier "$RISK" \
+    --sample-low "$SAMPLE_LOW" --sample-med "$SAMPLE_MED")"
+  RATE=$(printf '%s' "$SQC_JSON" | jq -r '.rate')
+  ROLL=$(printf '%s' "$SQC_JSON" | jq -r '.roll')
+  SAMPLED=$(printf '%s' "$SQC_JSON" | jq -r 'if .sampled then 1 else 0 end')
   if (( RATE > 0 )); then
-    HEX=$(printf '%s' "${HEAD_SHA}${SALT}" | sha256 | cut -c1-8)
-    ROLL=$(( 0x$HEX % 100 ))
-    (( ROLL < RATE )) && SAMPLED=1
     mkdir -p "$(dirname "$SALT_FILE")"
     printf '{"ts":"%s","pr":%s,"head":"%s","tier":"%s","rate":%s,"roll":%s,"selected":%s}\n' \
       "$(date -u +%FT%TZ)" "$PR" "$HEAD_SHA" "$RISK" "$RATE" "$ROLL" \
@@ -498,8 +500,7 @@ printf '%s' "$ARB_JSON" > "$RUN_DIR/arbiter.json"
 # and reorders Tier 1 (>=2 vendors) before Tier 2 (single reviewer). Logic lives in
 # the Python module (#314 — shell launches, doesn't implement). A module failure
 # degrades to the un-ranked arbiter output (no suppression, all findings still post).
-PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/panel_logic.py"
-[[ -f "$PANEL_LOGIC" ]] || PANEL_LOGIC="scripts/oversight/panel_logic.py"
+# $PANEL_LOGIC was already resolved in the TRIAGE section (SPEC-332).
 if [[ -f "$PANEL_LOGIC" ]]; then
   RANKED_JSON="$(printf '%s' "$ARB_JSON" \
     | python3 "$PANEL_LOGIC" --raw "$RUN_DIR/findings.raw.json" 2>>"$RUN_DIR/errors.log" \
