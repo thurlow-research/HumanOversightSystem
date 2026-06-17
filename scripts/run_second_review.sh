@@ -122,20 +122,14 @@ RUN_CODEX=false
 AGY_AVAILABLE=false
 CODEX_AVAILABLE=false
 
-# Normalize tier to upper for comparison.
-TIER_UC=$(printf '%s' "$TIER" | tr '[:lower:]' '[:upper:]')
-
-# agy is mandatory at MEDIUM+ (tier) or score ≥ AGY_THRESHOLD.
-case "$TIER_UC" in MEDIUM|HIGH|CRITICAL) RUN_AGY=true ;; esac
-python3 -c "
-s=float('$SCORE'); t=float('$AGY_THRESHOLD')
-exit(0 if s >= t else 1)" 2>/dev/null && RUN_AGY=true || true
-
-# codex is mandatory at HIGH+ (tier) or score ≥ CODEX_THRESHOLD.
-case "$TIER_UC" in HIGH|CRITICAL) RUN_CODEX=true ;; esac
-python3 -c "
-s=float('$SCORE'); t=float('$CODEX_THRESHOLD')
-exit(0 if s >= t else 1)" 2>/dev/null && RUN_CODEX=true || true
+# Reviewer selection (SPEC-331): the threshold comparison and tier-floor rules
+# live in scripts/oversight/second_review_logic.py (named, unit-testable). The
+# module prints RUN_AGY=true|false and RUN_CODEX=true|false for us to eval. Tier
+# normalization and the >= threshold comparison are done inside the module.
+SELECT_OUT=$(python3 "$(dirname "$0")/oversight/second_review_logic.py" \
+    select-reviewers --score "$SCORE" --tier "$TIER" \
+    --agy-threshold "$AGY_THRESHOLD" --codex-threshold "$CODEX_THRESHOLD")
+eval "$SELECT_OUT"   # sets RUN_AGY / RUN_CODEX to true|false
 
 if ! $RUN_AGY && ! $RUN_CODEX; then
     echo "run_second_review: score=$SCORE below both thresholds (agy≥$AGY_THRESHOLD, codex≥$CODEX_THRESHOLD) and tier=${TIER:-none} below MEDIUM — skip"
@@ -595,117 +589,12 @@ fi
 echo ""
 
 # ── Finalize machine-readable verdict header ─────────────────────────────────
-# Parse all reviewer JSON blocks to determine aggregate verdict and severity.
-python3 - "$OUTFILE" <<'PYEOF'
-import json, re, sys
-path = sys.argv[1]
-try:
-    content = open(path).read()
-except Exception:
-    sys.exit(0)
-
-severities = ["critical", "high", "medium", "low", "none"]
-SEV_RANK = {s: i for i, s in enumerate(severities)}
-
-# Parse by REVIEWER SECTION (## header), not by a bare ```json regex. agy is an
-# agentic CLI: it returns a narrated transcript + a markdown report, not the
-# strict JSON the prompt requested (HOS#113). The old parser required a fenced
-# block starting with `{`, found none, and fail-closed every prose review as
-# `error` — throwing away a genuine independent review. Section parsing also
-# survives the reviewer emitting its own ``` code fences.
-sections = re.split(r'(?m)^## ', content)[1:]   # each starts after "## "
-
-def fenced_body(text):
-    """Content inside the outer ```json ... ``` if present, else the whole text."""
-    m = re.search(r'```(?:json)?\s*\n(.*)\n```', text, re.DOTALL)
-    return (m.group(1) if m else text).strip()
-
-def classify_prose(text):
-    """Best-effort verdict/severity from a non-JSON markdown review report.
-    Returns (verdict, severity): verdict in approve|request_changes|unparseable."""
-    low = text.lower()
-    risk = re.search(r'\brisk:\s*(critical|high|medium|low|none)\b', low)
-    blocking = re.search(r'must[ -]?fix|tier\s*1\b|request[_ ]changes|\bblocking\b|\bcritical\b', low)
-    approve = re.search(r'\bverdict:\s*approve\b|no (issues|findings|problems)|lgtm|looks good|\bapprove\b', low)
-    if risk and risk.group(1) in ("critical", "high"):
-        return "request_changes", risk.group(1)
-    if blocking:
-        sev = "critical" if "critical" in low else "high"
-        return "request_changes", sev
-    if approve or (risk and risk.group(1) in ("low", "none")):
-        return "approve", (risk.group(1) if risk else "none")
-    return "unparseable", (risk.group(1) if risk else "none")
-
-reviewers = []   # (name, verdict, severity, finding_count, parsed_from)
-for sec in sections:
-    head = sec.splitlines()[0] if sec.splitlines() else ""
-    hl = head.lower()
-    name = "agy" if hl.startswith("agy") else ("codex" if hl.startswith("codex") else None)
-    if name is None:
-        continue                      # not a reviewer section (verdict header etc.)
-    if "skipped" in hl:
-        continue                      # a skipped reviewer is handled by the pre-check
-    body = fenced_body(sec[len(head):])
-    if not body:
-        reviewers.append((name, "error", "none", 0, "empty"))   # true crash / no output
-        continue
-    # Structured path: the body is valid JSON exactly as the prompt asked.
-    try:
-        data = json.loads(body)
-    except Exception:
-        v, sev = classify_prose(body)
-        fc = len(re.findall(r'(?m)^\s*#{1,4}\s', body)) if v == "request_changes" else 0
-        reviewers.append((name, v, sev, fc, "prose"))
-        continue
-    if data.get("verdict") == "error" or data.get("error"):
-        reviewers.append((name, "error", "none", 0, "json"))
-        continue
-    v = "request_changes" if data.get("verdict") == "request_changes" else "approve"
-    sev, fc = "none", 0
-    for f in data.get("findings", []):
-        s = str(f.get("severity", "low")).lower()
-        if SEV_RANK.get(s, 4) < SEV_RANK[sev]:
-            sev = s
-        if s in ("critical", "high"):
-            fc += 1
-    reviewers.append((name, v, sev, fc, "json"))
-
-# Aggregate. Precedence: error > request_changes > unparseable > approve.
-#   error        — a fired reviewer genuinely crashed / produced no output.
-#                  Fails closed (must not silently become a PASS).
-#   request_changes — at least one reviewer flagged blocking issues.
-#   unparseable  — a reviewer produced a review we could not structure. This is
-#                  DISTINCT from error: the review content exists and is preserved
-#                  in this file for a human to read. It must NOT silently pass and
-#                  must NOT be misread as the reviewer crashing.
-#   approve      — all fired reviewers approved.
-if not reviewers:
-    verdict, highest, finding_count = "error", "none", 0
-else:
-    highest = "none"
-    finding_count = 0
-    for _, _, sev, fc, _ in reviewers:
-        if SEV_RANK.get(sev, 4) < SEV_RANK[highest]:
-            highest = sev
-        finding_count += fc
-    verds = [v for _, v, _, _, _ in reviewers]
-    if "error" in verds:
-        verdict = "error"
-    elif "request_changes" in verds:
-        verdict = "request_changes"
-    elif "unparseable" in verds:
-        verdict = "unparseable"
-    else:
-        verdict = "approve"
-
-new_content = re.sub(r'^verdict: pending$', f'verdict: {verdict}', content, flags=re.M)
-new_content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', new_content, flags=re.M)
-new_content = re.sub(r'^unresolved_findings: 0$', f'unresolved_findings: {finding_count}', new_content, flags=re.M)
-open(path, 'w').write(new_content)
-prose_note = " (parsed from prose — agy returned a markdown report, not JSON)" \
-    if any(pf == "prose" for *_ , pf in reviewers) else ""
-print(f"  verdict={verdict} highest_severity={highest} unresolved={finding_count}{prose_note}")
-PYEOF
+# Verdict aggregation (SPEC-331): parsing reviewer sections, classifying JSON-or-
+# prose responses, computing the aggregate severity + verdict precedence
+# (error > request_changes > unparseable > approve), and rewriting the three
+# header lines in place all live in scripts/oversight/second_review_logic.py
+# (named, unit-testable). The module reads $OUTFILE and rewrites it in place.
+python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate --file "$OUTFILE"
 
 echo "Second review complete: $OUTFILE"
 echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCALATE."
