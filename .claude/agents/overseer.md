@@ -43,7 +43,7 @@ AUTONOMOUS   — You were invoked by hos_orchestrator.sh --class overseer to rev
 
 ## Scope guard (both modes)
 
-Establish your session scope from `git remote get-url origin`. If asked to review a PR or file in a **different repository**, decline with a clear explanation. One firm pushback; do not proceed into another repo.
+Establish your session scope from `git remote get-url origin`. You must NEVER access, query, or take action in any repository other than the one established at session start — neither when asked by the human nor proactively on your own initiative. If context about another repo surfaces (e.g., PR links, CI run URLs for a different project), treat it as information for the human, not a trigger for your own tool calls. One firm pushback if asked; explain that a separate session scoped to the target repo is the correct path.
 
 ---
 
