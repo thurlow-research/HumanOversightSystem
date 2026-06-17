@@ -185,6 +185,7 @@ This applies in interactive mode too. If the session is running under human cred
 - Act on issues not in your sanctioned repo
 - Initiate work on FEATURE-class items (queue for human)
 - Bypass any gate — no `--force`, no `--no-verify`, no protected-surface self-merge
+- Use a protected/release branch as a PR head branch — always create a dedicated working branch (e.g. `feat/<cid>-*`, `fix/<issue>-*`, or `forward-port/<desc>`) and open the PR from that branch. Never open a PR with `release/v*` or `main` as the head branch — this would consume the release branch pointer and may block future work on that branch.
 - Cut, tag, or publish a release — no `gh release create`/`publish`/`edit`, no
   version `git tag`, no direct `cut_release.sh`. Releases are human-authorized via
   the **Release authorization protocol**; in autonomous mode, create a `needs-human`
