@@ -115,11 +115,14 @@ def test_auto_remove_disabled_keeps_everything(tmp_path, monkeypatch):
 
 
 def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
-    """--emit-audit must produce the SAME field set/order as the old bash
-    printf: event, gate, authorized_by, timestamp (parity, HOS#337)."""
+    """--emit-audit produces the full OVERSIGHT-CONTRACT §6a field set (#397).
+
+    PARITY fields (HOS#337): event, gate, authorized_by, timestamp.
+    Added by HOS#397: step, suspension_file, reason_category.
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "audit").mkdir()
-    rc = sm.cmd_emit_audit("lint", "Test Human")
+    rc = sm.cmd_emit_audit("lint", "Test Human", step="step-3")
     assert rc == 0
     lines = (tmp_path / "audit" / "oversight-log.jsonl").read_text().splitlines()
     assert len(lines) == 1
@@ -127,10 +130,15 @@ def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
     assert event["event"] == "gate-suspended"
     assert event["gate"] == "lint"
     assert event["authorized_by"] == "Test Human"
+    assert event["step"] == "step-3"
+    assert "suspension_file" in event
+    assert event["reason_category"] == "unspecified"  # no suspension file in tmp_path
     assert "timestamp" in event
-    # PARITY: exactly these four fields, in this order (no step/suspension_file/
-    # reason_category — those are deferred to the #337 follow-up).
-    assert list(event.keys()) == ["event", "gate", "authorized_by", "timestamp"]
+    # Full schema per OVERSIGHT-CONTRACT §6a (parity + #397 additions)
+    assert list(event.keys()) == [
+        "event", "gate", "authorized_by", "step",
+        "suspension_file", "reason_category", "timestamp",
+    ]
 
 
 def test_emit_audit_noop_without_audit_dir(tmp_path, monkeypatch):

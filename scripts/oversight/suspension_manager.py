@@ -388,22 +388,43 @@ def _append_reenable_log(text: str, gates: list[str]) -> str:
     return text.rstrip() + "\n\n## Re-enable log\n\n" + rows
 
 
-def cmd_emit_audit(gate: str, authorized_by: str | None) -> int:
+def _read_reason_category(suspension_file: str) -> str:
+    """Read reason_category from gate-suspension.md; return 'unspecified' if absent."""
+    try:
+        text = Path(suspension_file).read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            low = line.strip().lower()
+            if low.startswith("reason_category:"):
+                val = line.split(":", 1)[1].strip().strip("'\"").upper()
+                if val and not val.startswith("["):  # skip template placeholders
+                    return val
+    except (OSError, UnicodeDecodeError):
+        pass
+    return "unspecified"
+
+
+def cmd_emit_audit(
+    gate: str,
+    authorized_by: str | None,
+    step: str | None = None,
+    suspension_file: str = SUSPENSION_FILE,
+) -> int:
     """Append a `gate-suspended` event to audit/oversight-log.jsonl.
 
     Canonical home for the audit JSON that check_suspension.sh used to build by
-    hand with printf (HOS#337). Field set/order is held at PARITY with the old
-    bash builder: {event, gate, authorized_by, timestamp} — emit_audit() appends
-    `timestamp` last. The three OVERSIGHT-CONTRACT §6a fields (step,
-    suspension_file, reason_category) are intentionally NOT filled here; see the
-    #337 follow-up issue. No-op when audit/ is absent (the guard lives in
-    emit_audit). Best-effort: always exits 0.
+    hand with printf (HOS#337). Now includes the three OVERSIGHT-CONTRACT §6a
+    fields deferred from #337: step, suspension_file, reason_category (#397).
+    No-op when audit/ is absent (the guard lives in emit_audit). Best-effort:
+    always exits 0.
     """
     emit_audit(
         {
             "event": "gate-suspended",
             "gate": gate,
             "authorized_by": authorized_by or "unknown",
+            "step": step or "unknown",
+            "suspension_file": suspension_file,
+            "reason_category": _read_reason_category(suspension_file),
         }
     )
     return 0
@@ -444,6 +465,18 @@ def main() -> int:
         metavar="VALUE",
         help="Authorizer string for --emit-audit (default: unknown).",
     )
+    parser.add_argument(
+        "--step",
+        metavar="STEP_ID",
+        default=None,
+        help="Build step the suspension applies to, for --emit-audit (#397).",
+    )
+    parser.add_argument(
+        "--suspension-file",
+        metavar="PATH",
+        default=SUSPENSION_FILE,
+        help=f"Path to the suspension record file (default: {SUSPENSION_FILE}).",
+    )
     args = parser.parse_args()
 
     # Point query — does not need the suspension file to exist to parse.
@@ -456,7 +489,12 @@ def main() -> int:
         if not args.gate:
             print("--emit-audit requires --gate", file=sys.stderr)
             return 2
-        return cmd_emit_audit(args.gate, args.authorized_by)
+        return cmd_emit_audit(
+            args.gate,
+            args.authorized_by,
+            step=args.step,
+            suspension_file=args.suspension_file,
+        )
 
     susp_path = Path(SUSPENSION_FILE)
     if not susp_path.exists():
