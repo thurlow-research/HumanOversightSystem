@@ -1,197 +1,343 @@
 """
-triage.py — Issue-triage helpers for the HOS autonomous worker.
+Issue triage for the HOS automation loop (T6, §5).
 
-triage() classifies an incoming GitHub issue (title + body) into a risk tier
-and recommended action.  Because issue text originates from external requesters,
-the body is treated as **untrusted framing** by default — it is used as a
-classification signal, but any language that tries to steer the triage outcome
-(e.g. "mark this as LOW risk", "this is safe", "auto-approve") is detected and
-surfaced to the caller so a human can decide.
+Classifies inbound items into: bug | feature | communication | security-report |
+spec-gap | duplicate | invalid | needs-human.
 
-Trust boundary (P9, Mitropoulos et al. 2026):
-  issue_body_trusted=False (the default) means the body is untrusted framing.
-  The classification still uses the body text for signal extraction (keywords
-  that indicate risk level, affected components, etc.), but:
-    - TriageResult.reason always notes "body treated as untrusted framing".
-    - If the body contains framing-steering patterns, TriageResult.reason
-      includes a FRAMING_DETECTED marker so the caller can gate on it.
+Design rules:
+  - Low-confidence triage → escalate to human (never act on uncertain classification)
+  - Security reports → immediate embargo path, never public auto-fix (§5.2)
+  - Features → queued for human review, never auto-built (NG3)
+  - Bugs and communications → handled autonomously (within gates)
+  - Requester allowlist is enforced by envelope.py (GitHub-author check); triage
+    does NOT re-check it — it trusts the caller has already verified the actor
 
-  Pass issue_body_trusted=True only when the body comes from a verified internal
-  author (e.g. a human team member filing a known-safe doc-only fix).
-
-Stdlib only — no third-party imports.
+Caller responsibility — repo-scope guard:
+  triage() does not have access to the issue's origin repo.  Callers MUST verify
+  that the issue belongs to the current session's repo before acting on
+  ``autonomous=True``.  The worker scope guard in worker.md owns this check.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 
-# ── Framing-steering detection ────────────────────────────────────────────────
-# Patterns that attempt to steer the triage outcome rather than describe the
-# issue.  These are matched case-insensitively against the issue body.
+class TriageClass(Enum):
+    BUG = "bug"
+    FEATURE = "feature"
+    COMMUNICATION = "communication"
+    SECURITY_REPORT = "security-report"
+    SPEC_GAP = "spec-gap"
+    DUPLICATE = "duplicate"
+    INVALID = "invalid"
+    NEEDS_HUMAN = "needs-human"
 
-_FRAMING_STEERING_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\bmark\s+(?:this|it)\s+as\s+(?:low|medium|safe|approved?)\b", re.IGNORECASE),
-    re.compile(r"\bthis\s+is\s+safe\b", re.IGNORECASE),
-    re.compile(r"\bauto.?approve\b", re.IGNORECASE),
-    re.compile(r"\bno\s+review\s+(?:needed|required)\b", re.IGNORECASE),
-    re.compile(r"\bskip\s+review\b", re.IGNORECASE),
-    re.compile(r"\blow\s+risk\b.*\bapprove\b", re.IGNORECASE),
-    re.compile(r"\bapprove\b.*\blow\s+risk\b", re.IGNORECASE),
-    re.compile(r"\bsafe\s+to\s+(?:merge|approve|deploy)\b", re.IGNORECASE),
+
+# Autonomous classes (may proceed through the build chain)
+AUTONOMOUS_CLASSES = frozenset({TriageClass.BUG, TriageClass.COMMUNICATION, TriageClass.SPEC_GAP})
+
+# Human-only classes — always route to human regardless of confidence
+HUMAN_ONLY_CLASSES = frozenset({
+    TriageClass.FEATURE,
+    TriageClass.SECURITY_REPORT,
+    TriageClass.NEEDS_HUMAN,
+})
+
+# ---------------------------------------------------------------------------
+# Security patterns — asymmetric: a single match triggers embargo path (§5.2).
+#
+# Fix 2 (#311): patterns require real security vocabulary.  Vague terms like
+# "threshold", "confidence", "calibrate", "protocol", and "commits" must NOT
+# trigger the security path on their own.  Each pattern either:
+#   (a) directly names a well-known vulnerability class / CVE notation, OR
+#   (b) pairs "security" with a concrete harm word (bug/flaw/hole/exploit).
+# ---------------------------------------------------------------------------
+_SECURITY_PATTERNS = [
+    # Specific vulnerability classes and well-known attack names
+    re.compile(
+        r"\b(vuln(?:erability)?|exploit|CVE[-\s]\d{4}[-\s]\d+|RCE|XSS|SQLi|SQL\s+injection|"
+        r"SSRF|CSRF|LFI|auth[\s\-]?bypass|secret[\s\-]leak|credential[\s\-]theft|"
+        r"token[\s\-]exfil(?:tration)?|privilege[\s\-]escal(?:ation)?|"
+        r"injection|backdoor|malware|ransomware)\b",
+        re.IGNORECASE,
+    ),
+    # "security" paired with a concrete harm word — requires BOTH to be present
+    re.compile(
+        r"\bsecurity\b.{0,60}\b(bug|flaw|hole|exploit|vulnerability|breach|bypass|"
+        r"misconfiguration|weakness)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(r"\bembargo\b", re.IGNORECASE),
 ]
 
-# ── Risk-classification keyword sets ─────────────────────────────────────────
-# Scored heuristically: HIGH keywords raise the tier, LOW keywords lower it.
-# The caller (the agent) owns final classification; this is a signal, not a
-# decision.
-
-_HIGH_RISK_KEYWORDS: list[re.Pattern[str]] = [
-    re.compile(r"\b(?:auth(?:entication|orization)?|login|logout|session|token|credential|password|secret|key|permission|privilege|escalat)\b", re.IGNORECASE),
-    re.compile(r"\b(?:inject|xss|csrf|sqli|sql\s+injection|exploit|vulnerability|cve-\d+|rce|lfi|ssrf)\b", re.IGNORECASE),
-    re.compile(r"\b(?:pii|personal\s+data|gdpr|erasure|encryption|decrypt|private)\b", re.IGNORECASE),
-    re.compile(r"\b(?:migration|schema|database|db|data\s+loss|destructive)\b", re.IGNORECASE),
-    re.compile(r"\b(?:payment|billing|stripe|financial|money|invoice)\b", re.IGNORECASE),
+# Feature request keywords
+_FEATURE_PATTERNS = [
+    re.compile(
+        r"\b(feature[\s\-]request|enhancement|FR:|new[\s\-]feature|add[\s\-]support[\s\-]for|"
+        r"would[\s\-]be[\s\-]nice|could[\s\-]we[\s\-]have|please[\s\-]add)\b",
+        re.IGNORECASE,
+    ),
 ]
 
-_LOW_RISK_KEYWORDS: list[re.Pattern[str]] = [
-    re.compile(r"\b(?:typo|spelling|doc(?:ument(?:ation)?)?|readme|comment|whitespace)\b", re.IGNORECASE),
-    re.compile(r"\b(?:css|style|colour|color|font|layout|margin|padding|icon|logo)\b", re.IGNORECASE),
+# Bug patterns
+_BUG_PATTERNS = [
+    re.compile(
+        r"\b(bug|error|exception|traceback|crash|broken|regression|"
+        r"not[\s\-]working|fails|fails[\s\-]to|unexpected[\s\-]behavior|wrong[\s\-]output)\b",
+        re.IGNORECASE,
+    ),
 ]
 
+# Communication patterns (questions, reports, coordination)
+_COMM_PATTERNS = [
+    re.compile(
+        r"\b(question|question:|how[\s\-]do|can[\s\-]you|please[\s\-]explain|"
+        r"status[\s\-]update|coordination|follow[\s\-]up|report|observation)\b",
+        re.IGNORECASE,
+    ),
+]
 
-# ── Result type ───────────────────────────────────────────────────────────────
+# Spec-gap patterns — behavior gaps, missing specs, design deviations
+_SPEC_GAP_PATTERNS = [
+    re.compile(
+        r"\b(spec[\s\-]gap|behavior[\s\-]gap|missing[\s\-]spec|design[\s\-]deviation|"
+        r"undocumented|not[\s\-]specified|should[\s\-](?:be|do)|"
+        r"expected[\s\-]behavior|actual[\s\-]behavior)\b",
+        re.IGNORECASE,
+    ),
+]
+
+# Default confidence floor — below this, escalate to human (R13 triage-confidence-floor)
+DEFAULT_CONFIDENCE_FLOOR = 0.75
+
 
 @dataclass
 class TriageResult:
-    """
-    Result of a triage() call.
-
-    Attributes:
-        risk_tier:        Suggested risk tier: "LOW", "MEDIUM", "HIGH", or "CRITICAL".
-        action:           Recommended action: "AUTO_PROCESS", "HUMAN_REVIEW", or "ESCALATE".
-        reason:           Human-readable explanation of the classification, always including
-                          the body-trust note when issue_body_trusted=False.
-        framing_detected: True when the issue body contained framing-steering language that
-                          attempts to influence the triage outcome.  The caller MUST NOT
-                          auto-approve when this is True.
-        high_risk_signals: List of matched high-risk keyword patterns (for traceability).
-    """
-    risk_tier: str
-    action: str
+    triage_class: TriageClass
+    confidence: float
     reason: str
-    framing_detected: bool = False
-    high_risk_signals: list[str] = field(default_factory=list)
+    autonomous: bool
+    embargo: bool = False  # True → immediate embargo path
+
+    @property
+    def should_escalate(self) -> bool:
+        return not self.autonomous or self.triage_class in HUMAN_ONLY_CLASSES
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Severity mapping (§5.3)
+# ---------------------------------------------------------------------------
+
+class Severity(Enum):
+    P0 = 0  # Critical — immediate, above all other work
+    P1 = 1  # High
+    P2 = 2  # Medium
+    P3 = 3  # Low (default)
+
+
+_SEVERITY_KEYWORDS = {
+    Severity.P0: re.compile(r"\b(P0|critical|outage|data[\s\-]loss|production[\s\-]down)\b", re.IGNORECASE),
+    Severity.P1: re.compile(r"\b(P1|high[\s\-]priority|urgent|blocker)\b", re.IGNORECASE),
+    Severity.P2: re.compile(r"\b(P2|medium|moderate)\b", re.IGNORECASE),
+}
+
+
+def infer_severity(title: str, body: str) -> Severity:
+    text = f"{title} {body}"
+    for sev in (Severity.P0, Severity.P1, Severity.P2):
+        if _SEVERITY_KEYWORDS[sev].search(text):
+            return sev
+    return Severity.P3
+
+
+# ---------------------------------------------------------------------------
+# Triage engine
+# ---------------------------------------------------------------------------
+
+def _score_patterns(text: str, patterns: list[re.Pattern]) -> float:
+    """Score a text against a pattern list. Returns 0.0–1.0."""
+    matches = sum(1 for p in patterns if p.search(text))
+    return min(1.0, matches / max(len(patterns), 1))
+
 
 def triage(
     title: str,
     body: str,
-    *,
-    issue_body_trusted: bool = False,
+    labels: list[str] = (),
+    existing_issues: int = 0,
+    confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR,
 ) -> TriageResult:
     """
-    Classify an incoming GitHub issue and return a TriageResult.
+    Classify an issue/item into a triage class.
+
+    Security is asymmetric: a single security-pattern match triggers
+    the embargo path regardless of other signals (§5.2).
+
+    Low confidence (<= confidence_floor) → escalate to human.
+
+    Caller responsibility — repo-scope guard:
+        triage() does not have access to the issue's origin repo.  Callers MUST
+        verify that the issue belongs to the current session's repo before acting
+        on ``autonomous=True``.  The worker scope guard in worker.md owns this
+        check.  An ``autonomous=True`` result for an out-of-scope issue MUST be
+        treated as ``autonomous=False`` by the caller.
 
     Args:
-        title:              The issue title (treated as trusted — short, structured text
-                            filed under the contributor's GitHub identity).
-        body:               The issue body.  When issue_body_trusted=False (the default),
-                            the body is used only as a classification signal; its framing
-                            claims are not taken at face value and are checked for
-                            steering patterns.
-        issue_body_trusted: Pass True only when the body comes from a verified internal
-                            author filing a known-safe change (e.g. a team member's
-                            doc-only fix).  False is the safe default for all
-                            autonomously-triaged issues from external requesters.
-
-    Returns:
-        TriageResult with the suggested risk tier, recommended action, and a
-        reason string that always records the body-trust posture.
-
-    Trust boundary note (P9):
-        When issue_body_trusted=False the returned reason always contains
-        "body treated as untrusted framing".  If framing-steering language is
-        detected the reason also contains "FRAMING_DETECTED" and
-        TriageResult.framing_detected is True.  The caller must gate on
-        framing_detected before taking any automated action.
+        title:            Issue title.
+        body:             Issue body.
+        labels:           List of label strings attached to the issue.
+        existing_issues:  Count of potential duplicates (reserved for future use).
+        confidence_floor: Minimum confidence for autonomous=True.
     """
-    combined_text = f"{title}\n{body}"
-    body_text = body or ""
+    text = f"{title} {body}"
 
-    # ── Step 1: Framing-steering detection (body only) ────────────────────────
-    framing_detected = False
-    framing_notes: list[str] = []
-    if not issue_body_trusted:
-        for pat in _FRAMING_STEERING_PATTERNS:
-            m = pat.search(body_text)
-            if m:
-                framing_detected = True
-                framing_notes.append(m.group(0))
+    # ── Fix 1 (#311): needs-human label is authoritative — check before everything ──
+    # The label is set by a human reviewer explicitly requesting human attention.
+    # Skip all pattern matching; return NEEDS_HUMAN immediately.
+    label_set = {lbl.lower() for lbl in labels}
+    if "needs-human" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.NEEDS_HUMAN,
+            confidence=1.0,
+            reason="Explicit 'needs-human' label — human review required",
+            autonomous=False,
+        )
 
-    # ── Step 2: Risk-keyword scoring ─────────────────────────────────────────
-    high_signals: list[str] = []
-    for pat in _HIGH_RISK_KEYWORDS:
-        m = pat.search(combined_text)
-        if m:
-            high_signals.append(m.group(0))
+    # ── Fix 3 (#311): field-report label — classify as spec-gap or communication ──
+    # field-report issues describe observed behaviors; they must not fall through
+    # to the security path via keyword coincidence (e.g. "commits", "protocol").
+    if "field-report" in label_set:
+        # If the body describes a behavior gap → spec-gap; otherwise communication.
+        if _score_patterns(text, _SPEC_GAP_PATTERNS) > 0:
+            return TriageResult(
+                triage_class=TriageClass.SPEC_GAP,
+                confidence=0.85,
+                reason="Explicit 'field-report' label with behavior-gap signals → spec-gap",
+                autonomous=True,
+            )
+        return TriageResult(
+            triage_class=TriageClass.COMMUNICATION,
+            confidence=0.85,
+            reason="Explicit 'field-report' label (no behavior-gap signals) → communication",
+            autonomous=True,
+        )
 
-    low_signals: list[str] = []
-    for pat in _LOW_RISK_KEYWORDS:
-        m = pat.search(combined_text)
-        if m:
-            low_signals.append(m.group(0))
+    # ── Security check — asymmetric (one match is enough) ────────────────────
+    # Fix 2 (#311): patterns now require real security vocabulary.  See
+    # _SECURITY_PATTERNS definition for the narrowing rationale.
+    if any(p.search(text) for p in _SECURITY_PATTERNS):
+        return TriageResult(
+            triage_class=TriageClass.SECURITY_REPORT,
+            confidence=0.9,
+            reason="Security-pattern match → embargo path",
+            autonomous=False,
+            embargo=True,
+        )
 
-    # ── Step 3: Tier assignment ───────────────────────────────────────────────
-    # Heuristic: high-risk signals dominate; low-risk signals only apply when
-    # there are no high-risk signals.
-    if framing_detected:
-        # Framing-steering is itself a risk signal — floor at MEDIUM so it
-        # always reaches a human.
-        risk_tier = "MEDIUM"
-        action = "HUMAN_REVIEW"
-    elif high_signals:
-        # Two or more distinct high-risk keyword matches → HIGH.
-        risk_tier = "HIGH" if len(high_signals) >= 2 else "MEDIUM"
-        action = "HUMAN_REVIEW"
-    elif low_signals and not high_signals:
-        risk_tier = "LOW"
-        action = "AUTO_PROCESS"
-    else:
-        # No clear signal → MEDIUM (conservative default).
-        risk_tier = "MEDIUM"
-        action = "HUMAN_REVIEW"
+    # ── Label-based fast-path (remaining labels) ──────────────────────────────
+    if "bug" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.BUG,
+            confidence=0.95,
+            reason="Explicit 'bug' label",
+            autonomous=True,
+        )
+    if "enhancement" in label_set or "feature" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.FEATURE,
+            confidence=0.95,
+            reason="Explicit 'enhancement'/'feature' label",
+            autonomous=False,
+        )
+    if "spec-gap" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.SPEC_GAP,
+            confidence=0.95,
+            reason="Explicit 'spec-gap' label",
+            autonomous=True,
+        )
+    if "duplicate" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.DUPLICATE,
+            confidence=0.95,
+            reason="Explicit 'duplicate' label",
+            autonomous=False,
+        )
+    if "invalid" in label_set or "wontfix" in label_set:
+        return TriageResult(
+            triage_class=TriageClass.INVALID,
+            confidence=0.95,
+            reason="Explicit 'invalid'/'wontfix' label",
+            autonomous=False,
+        )
 
-    # ── Step 4: Reason assembly ───────────────────────────────────────────────
-    reason_parts: list[str] = []
+    # ── Content scoring ───────────────────────────────────────────────────────
+    scores = {
+        TriageClass.FEATURE: _score_patterns(text, _FEATURE_PATTERNS),
+        TriageClass.BUG: _score_patterns(text, _BUG_PATTERNS),
+        TriageClass.COMMUNICATION: _score_patterns(text, _COMM_PATTERNS),
+        TriageClass.SPEC_GAP: _score_patterns(text, _SPEC_GAP_PATTERNS),
+    }
 
-    if not issue_body_trusted:
-        reason_parts.append("body treated as untrusted framing")
+    best_class = max(scores, key=lambda c: scores[c])
+    best_score = scores[best_class]
 
-    if framing_detected:
-        snippet = "; ".join(repr(f) for f in framing_notes[:3])
-        reason_parts.append(f"FRAMING_DETECTED: body contains steering language ({snippet})")
+    # Margin between top-two scores lowers confidence when classes are ambiguous.
+    sorted_scores = sorted(scores.values(), reverse=True)
+    margin = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else sorted_scores[0]
+    confidence = min(0.95, best_score * (0.5 + 0.5 * margin))
 
-    if high_signals:
-        reason_parts.append(f"high-risk signals: {', '.join(high_signals[:5])}")
+    if best_score == 0.0:
+        # Nothing matched — treat as communication with low confidence.
+        best_class = TriageClass.COMMUNICATION
+        confidence = 0.4
 
-    if low_signals and not high_signals and not framing_detected:
-        reason_parts.append(f"low-risk signals only: {', '.join(low_signals[:3])}")
+    autonomous = (
+        best_class in AUTONOMOUS_CLASSES
+        and confidence >= confidence_floor
+    )
 
-    if not reason_parts:
-        reason_parts.append("no strong risk signal; defaulting to MEDIUM")
+    reason = (
+        f"Content signals: {best_class.value} (score={best_score:.2f}, "
+        f"confidence={confidence:.2f})"
+    )
 
-    reason = "; ".join(reason_parts) + f" → {risk_tier}/{action}"
+    if confidence < confidence_floor:
+        reason += f" — below floor {confidence_floor:.2f}, escalating to human"
 
     return TriageResult(
-        risk_tier=risk_tier,
-        action=action,
+        triage_class=best_class,
+        confidence=confidence,
         reason=reason,
-        framing_detected=framing_detected,
-        high_risk_signals=high_signals,
+        autonomous=autonomous,
     )
+
+
+# ---------------------------------------------------------------------------
+# Benefit ≫ risk gate (§5.3)
+# ---------------------------------------------------------------------------
+
+def benefit_exceeds_risk(
+    triage_result: TriageResult,
+    security_sensitive: bool = False,
+    tier_estimate: str = "LOW",
+) -> bool:
+    """
+    Quick gate: is the expected benefit clearly > the risk for autonomous action?
+
+    Returns False (escalate) when:
+      - Class is FEATURE, SECURITY_REPORT, or NEEDS_HUMAN
+      - Triage confidence is below floor
+      - Change touches a security-sensitive path and tier is not LOW
+    """
+    if triage_result.triage_class in HUMAN_ONLY_CLASSES:
+        return False
+    if not triage_result.autonomous:
+        return False
+    if security_sensitive and tier_estimate not in ("LOW", "SAFE"):
+        return False
+    return True
