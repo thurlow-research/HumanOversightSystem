@@ -114,6 +114,51 @@ def test_auto_remove_disabled_keeps_everything(tmp_path, monkeypatch):
     assert "SUSPENDED: lint" in new_text
 
 
+def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
+    """--emit-audit must produce the SAME field set/order as the old bash
+    printf: event, gate, authorized_by, timestamp (parity, HOS#337)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    rc = sm.cmd_emit_audit("lint", "Test Human")
+    assert rc == 0
+    lines = (tmp_path / "audit" / "oversight-log.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["event"] == "gate-suspended"
+    assert event["gate"] == "lint"
+    assert event["authorized_by"] == "Test Human"
+    assert "timestamp" in event
+    # PARITY: exactly these four fields, in this order (no step/suspension_file/
+    # reason_category — those are deferred to the #337 follow-up).
+    assert list(event.keys()) == ["event", "gate", "authorized_by", "timestamp"]
+
+
+def test_emit_audit_noop_without_audit_dir(tmp_path, monkeypatch):
+    """No audit/ directory → no file, no exception (guard preserved)."""
+    monkeypatch.chdir(tmp_path)
+    rc = sm.cmd_emit_audit("lint", "Test Human")
+    assert rc == 0
+    assert not (tmp_path / "audit" / "oversight-log.jsonl").exists()
+
+
+def test_emit_audit_default_authorized_by(tmp_path, monkeypatch):
+    """Missing authorized_by defaults to 'unknown' (matches bash :-unknown)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    sm.cmd_emit_audit("lint", None)
+    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    assert event["authorized_by"] == "unknown"
+
+
+def test_emit_audit_escapes_authorized_by(tmp_path, monkeypatch):
+    """A quote in authorized_by must yield valid JSON that round-trips."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    sm.cmd_emit_audit("lint", 'Ann "Q" Smith')
+    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    assert event["authorized_by"] == 'Ann "Q" Smith'
+
+
 def test_ratchet_manager_never_writes_a_suspended_line(tmp_path, monkeypatch):
     """The whole point: auto_remove may only DELETE suspension lines, never add.
     Feeding it a file with one suspension can never yield MORE suspensions."""

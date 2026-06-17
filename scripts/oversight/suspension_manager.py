@@ -270,6 +270,27 @@ def _append_reenable_log(text: str, gates: list[str]) -> str:
     return text.rstrip() + "\n\n## Re-enable log\n\n" + rows
 
 
+def cmd_emit_audit(gate: str, authorized_by: str | None) -> int:
+    """Append a `gate-suspended` event to audit/oversight-log.jsonl.
+
+    Canonical home for the audit JSON that check_suspension.sh used to build by
+    hand with printf (HOS#337). Field set/order is held at PARITY with the old
+    bash builder: {event, gate, authorized_by, timestamp} — emit_audit() appends
+    `timestamp` last. The three OVERSIGHT-CONTRACT §6a fields (step,
+    suspension_file, reason_category) are intentionally NOT filled here; see the
+    #337 follow-up issue. No-op when audit/ is absent (the guard lives in
+    emit_audit). Best-effort: always exits 0.
+    """
+    emit_audit(
+        {
+            "event": "gate-suspended",
+            "gate": gate,
+            "authorized_by": authorized_by or "unknown",
+        }
+    )
+    return 0
+
+
 def cmd_is_suspended(gate: str) -> int:
     """Exit 0 if gate is currently suspended, exit 1 otherwise.
 
@@ -294,11 +315,30 @@ def main() -> int:
         metavar="GATE",
         help="Exit 0 if GATE is currently suspended, exit 1 otherwise.",
     )
+    parser.add_argument(
+        "--emit-audit",
+        action="store_true",
+        help="Append a gate-suspended audit event (use with --gate / --authorized-by).",
+    )
+    parser.add_argument("--gate", metavar="GATE", help="Gate name for --emit-audit.")
+    parser.add_argument(
+        "--authorized-by",
+        metavar="VALUE",
+        help="Authorizer string for --emit-audit (default: unknown).",
+    )
     args = parser.parse_args()
 
     # Point query — does not need the suspension file to exist to parse.
     if args.is_suspended:
         return cmd_is_suspended(args.is_suspended)
+
+    # Audit emission — does not need the suspension file to exist; the caller
+    # already knows the gate is suspended by the time it emits.
+    if args.emit_audit:
+        if not args.gate:
+            print("--emit-audit requires --gate", file=sys.stderr)
+            return 2
+        return cmd_emit_audit(args.gate, args.authorized_by)
 
     susp_path = Path(SUSPENSION_FILE)
     if not susp_path.exists():
