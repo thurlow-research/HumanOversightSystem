@@ -60,6 +60,8 @@ head_sha: {HEAD_SHA}
 
 Check the sign-off register against the step manifest's `required_signoffs` list.
 
+**Deterministic gate non-override (Parris 2026, AIRA):** If any gate in `scripts/oversight/gates/` or validator in `scripts/oversight/validators/` exited non-zero for this step, that finding must be present and unresolved in the human-facing output. It cannot be closed by a reviewer or the arbiter — deterministic failures are surfaced verbatim to the human gate and cannot be resolved, downgraded, summarized away, or treated as "addressed" because a subsequent LLM reviewer did not flag it independently. Check: read `audit/oversight-log.jsonl` for `validator-failure` events scoped to this step. If any such event has `final_outcome: failed` and no corresponding human-authorization artifact explicitly acknowledges it → that gate failure remains open and must appear in the Phase 2 output and the handoff document.
+
 **Before checking sign-offs, check for gate suspension:**
 Read `contract/gate-suspension.md` if it exists. For each required role in `required_signoffs`, check if the role name appears as `SUSPENDED: {role}` in that file. If suspended:
 - Record the role as **WAIVED (suspended)** — not a compliance fail
@@ -261,6 +263,7 @@ Review the content of the sign-off entries:
 **Confidence gaps:**
 - Check the risk-assessment for confidence-complexity mismatches
 - Any CONFIDENCE < 70% on HIGH+ files that wasn't directly addressed by reviewers → flag
+- **Confidence asymmetry rule (Ferdous et al. 2026):** Confidence may only raise human attention (low confidence = flag for human); high confidence is never a reason to reduce scrutiny or skip a finding. Do not interpret high agent-declared confidence as evidence that findings can be deprioritized, reviewers waived, or tiers lowered — agent self-reported confidence does not predict defect rates and is excluded from all automated routing decisions.
 
 **Second review findings:**
 - Read the second review output for this step
