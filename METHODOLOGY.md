@@ -227,6 +227,17 @@ A build step is **not done** until all four conditions hold — in this order:
 
 "I'll update the docs later" is not a valid sign-off state.
 
+### Design artifacts (required before coding begins)
+
+Every design cycle that produces code must commit two artifacts before the coder begins:
+
+1. **pm-agent spec** → `docs/specs/SPEC-{feature}.md` (normative requirements)
+2. **Technical design** → `docs/v{version}/TECHNICAL-DESIGN-{feature}.md` (coder-ready contract)
+
+The `technical-design` agent writes its output to disk as part of the task — not as conversation text only. A sign-off register step may not be marked complete if the corresponding design doc is absent. This applies to all tiers; patch-tier steps that touch documented behavior are not exempt.
+
+The design doc convention is also the audit trail for "why is the code this way?" — losing it to conversation history is a governance gap.
+
 > **Why the inner loop matters:** AI agents have no memory of the codebase state from one prompt to the next beyond what is in the current context. An agent asked to "add X" on a tree where Y is already broken will produce code that looks correct but depends on a broken foundation. By the time CI runs (after the PR opens), the failure stack may span five prompts and require significant archaeology to untangle. Local verification after each prompt is the only reliable way to keep the codebase in a known-good state throughout development.
 
 ### Transition phase (runs once per feature, pre-PR)
@@ -323,6 +334,16 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
                      after the results comment (§6 four conditions + §6.3
                      same-actor three-signal). Chat never authorizes the cut.
                      Violations → ng3b-violation-attempt audit event.  [#345]
+
+**Three-tier review model (confirmed, #356 decision 2026-06-16):**
+
+| Tier | When | Script | Vendor cost |
+|---|---|---|---|
+| **Inner loop** | Per code change | `run_validators.sh` + reviewer agents | None |
+| **Pre-PR** | Before opening any PR | `run_review_chain.sh --tier <tier>` | agy (MEDIUM+), codex (HIGH+) |
+| **Release gate** | Per phase, at release | `run_panel.sh` on phase-review PR | Full panel (agy + codex + Copilot) |
+
+`run_review_chain.sh` is the canonical pre-PR script. Panel is release-only by default; invoke one-off with `--pr N` when needed.
 ```
 
 **Why the panel runs locally, not in CI:** the CLIs authenticate interactively (browser OAuth that lives on your machine); CI runners can't hold that session. So CI handles the deterministic gates + Copilot's native PR review, while the cross-vendor AI panel runs from a local command and **posts its findings to the PR**. The PR stays the auditable record.

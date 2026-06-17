@@ -40,4 +40,23 @@ A problem in the owner's own application code, where we can help.
 - The owner's repo, the owner's gates, the owner's merge button. When in doubt, advise and ask — do not act.
 
 ---
+
+## Consumer-to-framework engagement
+
+These rules govern how a consumer worker session may interact with the HOS framework repo (`thurlow-research/HumanOversightSystem`).
+
+**Allowed:**
+- Filing issues in the HOS repo with the `field-report` label. One issue per distinct observation; minor observations batched into one issue.
+- Commenting on existing HOS issues when the comment is directly relevant.
+
+**Not allowed:**
+- Cloning the HOS repo, creating branches in HOS, committing to HOS, or opening PRs in HOS — from a consumer worker session. Consumer workers are guests of the framework, not contributors to it.
+
+**Implementation channel:** Consumer workers file issues; the HOS worker picks them up and implements. Consumer workers do not self-implement HOS framework changes — even when the fix appears obvious.
+
+**Per-session cap:** A consumer worker session should file at most 5 issues per session to avoid flooding the HOS tracker. Minor related observations belong in a single batched issue.
+
+**Escalation:** If a consumer worker disagrees with framework behavior, file an issue only. No self-implementation. Route the issue; do not route around the process.
+
+---
 *Applies to all HOS agents (overnight loop, Faberix R2/R3, the oversight agent). Companion to `docs/HANDLING-FINDINGS.md` (verify-before-fix) and the `needs-human` ⇄ `needs-ai` handoff in `docs/AGENTS.md`.*
