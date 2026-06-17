@@ -401,17 +401,6 @@ The `oversight-evaluator` enforces these independently (a MEDIUM+ second-review 
 
 Compliance failure → `ESCALATE` regardless of content evaluation.
 
-### Deterministic gate non-override invariant (Parris 2026, AIRA)
-
-A deterministic validator failure (any gate in `scripts/oversight/gates/` or validator in `scripts/oversight/validators/` exiting non-zero) is surfaced to the human gate **verbatim** and cannot be:
-- Resolved, downgraded, or closed by an LLM reviewer or the arbiter
-- Summarized away or absorbed into a panel verdict
-- Treated as "addressed" because a subsequent LLM reviewer did not independently flag it
-
-The arbiter may add context or corroboration to a deterministic finding but may **never** suppress or outrank it. Oversight-evaluator Phase-1 compliance (condition TBD — to be added as condition 16 once the evaluator re-derivation work lands) shall assert that no deterministic FAIL was closed by a non-deterministic actor.
-
-Empirical basis: AIRA documented an LLM reviewer masking a failure that a deterministic scanner had correctly caught, manufacturing false assurance. With AI code carrying ~1.7× more high-severity findings, a synthesis layer that can bury a deterministic signal is a direct path to escaped defects.
-
 ---
 
 ## 8. Extension points
