@@ -69,6 +69,7 @@ PR_MODE="off"         # off (default — opt-in) | on (--pr) — branch+PR the u
 PRUNE=false           # --prune: archive framework files removed across versions (#182)
 SQUASH=false          # --squash: take HOS's version of a drifted CORE/PACK region (TD §4.3)
 NO_PACK=false         # --no-pack: install bare core, no pack (deliberate; #237 WARN)
+YES=false             # --yes: non-interactive; accept all defaults (skips interactive prompts)
 _packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
     --pack=*)        _packs+=("${1#*=}"); shift ;;
     --no-pack)       NO_PACK=true; shift ;;
+    --yes)           YES=true; shift ;;
     --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
@@ -1117,6 +1119,99 @@ else
   # No existing settings — create from HOS template
   SETTINGS_SRC="$HOS_SOURCE/.claude/settings.json"
   cp_file "$SETTINGS_SRC" "$SETTINGS_DST" ".claude/settings.json"
+fi
+
+# ── Prompt capture hooks — ask once at install time (#54) ─────────────────────
+# Engineers forget to run capture_prompt.sh / capture_session.sh before MEDIUM+
+# commits. Offering Claude Code hooks at install time wires the reminder
+# automatically. The opt-out path records a gate-suspension entry so the gate
+# knows capture is intentionally disabled (no broken-gate surprise).
+echo ""
+info "Prompt artifact capture (MEDIUM+ changes)"
+
+_pc_ans="Y"   # default: yes
+if ! $YES && [[ -t 0 ]]; then
+  printf "  Enable prompt artifact capture for MEDIUM+ changes? [Y/n]: "
+  read -r _pc_ans </dev/tty || _pc_ans="Y"
+  _pc_ans="${_pc_ans:-Y}"
+fi
+
+_SUSPENSION_FILE="$TARGET_REPO/contract/gate-suspension.md"
+
+if [[ "${_pc_ans:-Y}" =~ ^[Yy]?$ ]]; then
+  # ── YES path: write PostToolUse + Stop hooks into .claude/settings.json ──────
+  if $DRY_RUN; then
+    dry_run "Would write PostToolUse + Stop prompt-capture hooks to .claude/settings.json"
+  else
+    python3 - "$SETTINGS_DST" <<'PYHOOKS'
+import json, sys
+
+path = sys.argv[1]
+with open(path) as f:
+    cfg = json.load(f)
+
+hooks = cfg.setdefault("hooks", {})
+
+# PostToolUse: log each Edit/Write/Bash turn to capture_session.sh
+post_hook = {
+    "type": "command",
+    "command": "bash scripts/capture_session.sh --log \"$CLAUDE_TOOL_INPUT_FILE\" \"$CLAUDE_TOOL_NAME tool use\""
+}
+matchers = hooks.setdefault("PostToolUse", [])
+# Only add if not already present (idempotent)
+already = any(
+    isinstance(e, dict) and e.get("command", "").startswith("bash scripts/capture_session.sh --log")
+    for e in matchers
+)
+if not already:
+    matchers.append(post_hook)
+    print("  Added hooks.PostToolUse: capture_session.sh --log")
+else:
+    print("  hooks.PostToolUse capture_session entry already present")
+
+# Stop: remind the engineer to run capture_prompt.sh
+stop_hook = {
+    "type": "command",
+    "command": "echo 'HOS: If MEDIUM+ files were changed this session, run: bash scripts/capture_prompt.sh <file> \"<description>\"'"
+}
+stop_matchers = hooks.setdefault("Stop", [])
+already_stop = any(
+    isinstance(e, dict) and "capture_prompt.sh" in e.get("command", "")
+    for e in stop_matchers
+)
+if not already_stop:
+    stop_matchers.append(stop_hook)
+    print("  Added hooks.Stop: capture_prompt.sh reminder")
+else:
+    print("  hooks.Stop capture_prompt reminder already present")
+
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PYHOOKS
+    ok "settings.json — prompt capture hooks written"
+  fi
+else
+  # ── NO path: record gate-suspension entry in contract/gate-suspension.md ─────
+  _suspend_entry="SUSPENDED: prompt-capture"
+  if [[ -f "$_SUSPENSION_FILE" ]] && grep -qF "$_suspend_entry" "$_SUSPENSION_FILE" 2>/dev/null; then
+    skip "contract/gate-suspension.md — prompt-capture suspension already present"
+  else
+    _install_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if $DRY_RUN; then
+      dry_run "Would append '$_suspend_entry' to contract/gate-suspension.md"
+    else
+      run mkdir -p "$TARGET_REPO/contract"
+      {
+        printf '\n%s\n' "$_suspend_entry"
+        printf 'Reason: Opted out at install time (hos_install.sh, %s)\n' "$_install_ts"
+        printf 'Scope: all steps\n'
+      } >> "$_SUSPENSION_FILE"
+      ok "contract/gate-suspension.md — prompt-capture suspended"
+    fi
+  fi
+  warn "Prompt-capture gate suspended. To re-enable: re-run hos_install.sh, or remove"
+  warn "the '$_suspend_entry' entry from contract/gate-suspension.md"
 fi
 
 # ── scripts/ — HOS runner scripts ─────────────────────────────────────────────
