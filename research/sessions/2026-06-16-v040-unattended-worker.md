@@ -85,6 +85,20 @@ Autonomous overnight loop completed the following under /loop:
 
 ---
 
+## Literature reconciliation — validated design choices
+
+Five existing HOS design choices were found to have direct empirical support in the SLR corpus (independently validated, not designed from the literature):
+
+1. Cross-vendor decorrelation (D4) — Kumar 2026, Charoenwet et al. 2026
+2. Deterministic gates as pre-review blockers (D6/D7) — Parris 2026 (AIRA)
+3. Prompts-as-artifact discipline (D8) — practitioner-stream construct
+4. Human routed to high-risk decisions, not removed — Charoenwet et al. 2026; Watanabe et al. 2026
+5. Diff-centric reviewer context (independence invariant) — Kumar 2026; Charoenwet et al. 2026
+
+Filed as: `hos-design-choices-validated-by-slr.md`
+
+---
+
 ## Notable design decisions
 
 - **Two-cronjob model** (spec §11a): worker at 0,30 / overseer at 15,45; 15-minute stagger; machine lock remains machine-global.
