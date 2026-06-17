@@ -144,20 +144,3 @@ This is the generic dep-mapper. Projects should override this file in their own 
 3. Add any framework-specific blast-radius categories
 
 The generic version is installed by `install.sh`. If a project-specific version already exists in `.claude/agents/dep-mapper.md`, the installer leaves it unchanged.
-
----
-
-## On completion — write a stamp file (ARCH-Q-2)
-
-After successfully producing your blast-radius report and returning it to risk-assessor, write a completion stamp as your final action:
-
-```bash
-mkdir -p .claudetmp/oversight/subagents
-TS=$(date -u +%Y%m%dT%H%M%S)
-STEP="${STEP:-unknown}"  # risk-assessor must pass the step number as $STEP
-printf '{"subagent":"dep-mapper","step":"%s","cid":"%s","completed_at":"%s"}\n' \
-  "$STEP" "${CID:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  > ".claudetmp/oversight/subagents/dep-mapper-${STEP}-${TS}.stamp"
-```
-
-The stamp path `.claudetmp/oversight/subagents/dep-mapper-<step>-<ts>.stamp` is what the oversight-evaluator globs for condition 12 compliance. Content is one-line JSON; existence is the check. Write the stamp only on successful completion — not on error or partial output.

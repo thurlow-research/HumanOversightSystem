@@ -171,18 +171,11 @@ def _has_ref(ref: str) -> bool:
         return False
 
 
-def collect_diff(
-    base: str, head: str
-) -> tuple[
-    list[tuple[str, str]],  # name_status: (status_letter, path)
-    dict[str, list[str]],  # added_by_file: path -> added content lines (no leading '+')
-    dict[str, list[str]],  # removed_by_file: path -> removed content lines (no leading '-')
-]:
-    """Return (name_status, added_lines_by_file, removed_lines_by_file).
+def collect_diff(base: str, head: str) -> tuple[list[tuple[str, str]], dict[str, list[str]]]:
+    """Return (name_status, added_lines_by_file).
 
     name_status: list of (status_letter, path). status A=added, M=modified, etc.
     added_lines_by_file: path → list of added content lines (without leading '+').
-    removed_lines_by_file: path → list of removed content lines (without leading '-').
     """
     name_status: list[tuple[str, str]] = []
     for line in _git(["diff", "--name-status", f"{base}..{head}"]).splitlines():
@@ -191,26 +184,17 @@ def collect_diff(
             name_status.append((parts[0][0], parts[-1]))
 
     added: dict[str, list[str]] = {}
-    removed: dict[str, list[str]] = {}
-    current_added: str | None = None
-    current_removed: str | None = None
-    # --unified=0 keeps only changed lines; parse per-file added and removed content.
+    current: str | None = None
+    # --unified=0 keeps only changed lines; parse per-file added content.
     for line in _git(["diff", "--unified=0", f"{base}..{head}"]).splitlines():
         if line.startswith("+++ b/"):
-            current_added = line[6:]
-            added.setdefault(current_added, [])
+            current = line[6:]
+            added.setdefault(current, [])
         elif line.startswith("+++ "):
-            current_added = None
-        elif line.startswith("--- a/"):
-            current_removed = line[6:]
-            removed.setdefault(current_removed, [])
-        elif line.startswith("--- "):
-            current_removed = None
-        elif current_added and line.startswith("+") and not line.startswith("+++"):
-            added[current_added].append(line[1:])
-        elif current_removed and line.startswith("-") and not line.startswith("---"):
-            removed[current_removed].append(line[1:])
-    return name_status, added, removed
+            current = None
+        elif current and line.startswith("+") and not line.startswith("+++"):
+            added[current].append(line[1:])
+    return name_status, added
 
 
 def detect_domains(name_status, added, roles=None) -> dict[str, dict]:
@@ -284,275 +268,6 @@ def detect_structural(name_status, added) -> list[dict]:
     return signals
 
 
-# ── Tier-floor rule table ─────────────────────────────────────────────────────
-# Evaluated in descending tier order; highest matching tier wins.
-# Each entry: (rule_name, tier, channel, patterns)
-#   channel: "path" → match against changed file paths (case-insensitive fnmatch)
-#            "added-line" → match against added content lines (case-insensitive regex)
-# Path patterns use ** convention; added-line patterns are compiled as regex.
-
-_TIER_PATH_RULES: list[tuple[str, str, list[str]]] = [
-    (
-        "payment-path",
-        "CRITICAL",
-        [
-            "**/payment*", "**/billing*", "**/financial*", "**/checkout*",
-            "**/subscription*", "**/invoice*", "**/stripe*", "**/braintree*",
-            "**/paypal*",
-        ],
-    ),
-    (
-        "auth-path",
-        "HIGH",
-        [
-            "**/auth*", "**/login*", "**/logout*", "**/session*", "**/token*",
-            "**/credential*", "**/password*", "**/mfa*", "**/totp*", "**/oauth*",
-            "**/sso*", "**/jwt*", "**/permission*",
-        ],
-    ),
-    (
-        "migration",
-        "HIGH",
-        ["**/migrations/*.py"],
-    ),
-    (
-        "prod-settings",
-        "HIGH",
-        ["**/settings/production*"],
-    ),
-    (
-        "privacy-path",
-        "HIGH",
-        ["**/pii*", "**/gdpr*", "**/privacy*", "**/consent*"],
-    ),
-    (
-        "app-logic",
-        "MEDIUM",
-        [],  # handled specially: .py/.js/.ts/.jsx/.tsx + gates/ .sh
-    ),
-]
-
-_TIER_LINE_RULES: list[tuple[str, str, str]] = [
-    (
-        "financial-api",
-        "CRITICAL",
-        r"stripe\.|braintree\.|PaymentIntent|\bcharge\(|\bCard\(|\bACH\b|\bIBAN\b|account_number",
-    ),
-    (
-        "pii-field",
-        "HIGH",
-        r"EmailField|first_name|last_name|date_of_birth|\bssn\b|national_id|phone_number|\baddress\b|personal_data",
-    ),
-]
-
-_TIER_RANK: dict[str, int] = {"SAFE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-
-
-def _path_matches_any(path: str, patterns: list[str]) -> str | None:
-    """Return the first matching pattern, or None. Case-insensitive, ** supported."""
-    import fnmatch
-    path_lower = path.lower()
-    for pat in patterns:
-        # Convert ** glob to fnmatch-compatible: fnmatch doesn't support ** natively.
-        # Strategy: strip a leading **/ and check suffix, or use re for full support.
-        if fnmatch.fnmatch(path_lower, pat.lower()):
-            return pat
-        # Also match path segments: if pattern is **/foo* match any component.
-        if pat.startswith("**/"):
-            suffix_pat = pat[3:]  # e.g. "payment*"
-            # Check every path segment against the suffix pattern.
-            parts = path_lower.replace("\\", "/").split("/")
-            for i in range(len(parts)):
-                candidate = "/".join(parts[i:])
-                if fnmatch.fnmatch(candidate, suffix_pat.lower()):
-                    return pat
-    return None
-
-
-def detect_tier_floor(
-    name_status: list[tuple[str, str]],
-    added: dict[str, list[str]],
-) -> dict:
-    """Return the deterministic tier floor and the evidence that set it.
-
-    Returns:
-      {
-        "tier_floor": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
-        "evidence": [ {"rule": "<rule-name>", "file": "<path>",
-                       "pattern": "<matched-pattern-or-line>"}, ... ],
-      }
-
-    The lowest output is "LOW" — "SAFE" is never returned.
-    Evaluate ALL rules; the HIGHEST resulting floor wins.
-    """
-    import re
-
-    floor = "LOW"
-    evidence: list[dict] = []
-    # Track which rules have already fired (one entry per rule name).
-    fired_rules: set[str] = set()
-
-    files = [p for _, p in name_status]
-
-    # Path rules (except app-logic which is handled below).
-    for rule_name, tier, patterns in _TIER_PATH_RULES:
-        if rule_name == "app-logic":
-            continue
-        for path in files:
-            if FRAMEWORK_TOOLING.search(path):
-                continue
-            matched = _path_matches_any(path, patterns)
-            if matched and rule_name not in fired_rules:
-                fired_rules.add(rule_name)
-                evidence.append({"rule": rule_name, "file": path, "pattern": matched})
-                if _TIER_RANK[tier] > _TIER_RANK[floor]:
-                    floor = tier
-                break  # one evidence entry per rule
-
-    # Added-line rules (skip FRAMEWORK_TOOLING files).
-    for rule_name, tier, rx in _TIER_LINE_RULES:
-        if rule_name in fired_rules:
-            continue
-        crx = re.compile(rx, re.IGNORECASE)
-        for path, lines in added.items():
-            if FRAMEWORK_TOOLING.search(path):
-                continue
-            for ln in lines:
-                if crx.search(ln):
-                    fired_rules.add(rule_name)
-                    evidence.append({"rule": rule_name, "file": path, "pattern": ln.strip()[:120]})
-                    if _TIER_RANK[tier] > _TIER_RANK[floor]:
-                        floor = tier
-                    break
-            if rule_name in fired_rules:
-                break
-
-    # app-logic: any .py/.js/.ts/.jsx/.tsx (not already higher-tier) or .sh in gates/.
-    if "app-logic" not in fired_rules and _TIER_RANK["MEDIUM"] > _TIER_RANK[floor]:
-        import re as _re
-        _app_rx = _re.compile(r"\.(py|js|ts|jsx|tsx)$", re.IGNORECASE)
-        _gates_sh_rx = _re.compile(r"scripts/oversight/gates/.*\.sh$", re.IGNORECASE)
-        for path in files:
-            if FRAMEWORK_TOOLING.search(path):
-                continue
-            if _app_rx.search(path) or _gates_sh_rx.search(path):
-                fired_rules.add("app-logic")
-                evidence.append({"rule": "app-logic", "file": path, "pattern": path})
-                floor = "MEDIUM"
-                break
-
-    return {"tier_floor": floor, "evidence": evidence}
-
-
-def detect_warranted_lanes(
-    name_status: list[tuple[str, str]],
-    added: dict[str, list[str]],
-) -> dict:
-    """Return reviewer lanes the diff deterministically warrants.
-
-    Thin wrapper over detect_domains() — warranted lanes are exactly the domains
-    detect_domains() reports as touched. No separate pattern set (single source of truth).
-
-    Returns:
-      {
-        "warranted": { "<lane>": {"by": "path"|"added-line",
-                                   "file": "<path>", "evidence": "<...>"}, ... }
-      }
-    """
-    domains = detect_domains(name_status, added)
-    warranted: dict[str, dict] = {}
-    for role, data in domains.items():
-        if data.get("touched"):
-            ev = data.get("evidence", {})
-            warranted[role] = {
-                "by": ev.get("by", "unknown"),
-                "file": ev.get("file", ""),
-                "evidence": ev.get("line", ev.get("file", "")),
-            }
-    return {"warranted": warranted}
-
-
-# Tracked governance documents — a file in scope for structural-modification detection.
-_TRACKED_DOC_GLOBS: list[str] = [
-    "docs/specs/SPEC-*.md",
-    "docs/v*/SPEC-*.md",
-    "docs/v*/TECHNICAL-DESIGN-*.md",
-    "TECHNICAL-DESIGN-*.md",
-    "docs/v*/DESIGN*.md",
-    "DESIGN.md",
-    "contract/OVERSIGHT-CONTRACT.md",
-    ".claude/agents/*.md",
-    "TELEMETRY-SPEC.md",
-    "docs/ops/TELEMETRY-SPEC.md",
-]
-
-
-def _is_tracked_doc(path: str, globs: list[str] | None = None) -> bool:
-    """Return True if path matches any tracked-document glob."""
-    import fnmatch
-    check_globs = globs if globs is not None else _TRACKED_DOC_GLOBS
-    for pat in check_globs:
-        if fnmatch.fnmatch(path, pat):
-            return True
-        # Also match without leading directory noise for patterns without **.
-        if fnmatch.fnmatch(path.split("/")[-1], pat.split("/")[-1]):
-            # Confirm directory prefix matches too if pattern has directory parts.
-            dir_part = "/".join(pat.split("/")[:-1])
-            if not dir_part or fnmatch.fnmatch("/".join(path.split("/")[:-1]), dir_part):
-                return True
-    return False
-
-
-def detect_structural_modifications(
-    name_status: list[tuple[str, str]],
-    added: dict[str, list[str]],
-    removed: dict[str, list[str]],
-) -> dict:
-    """Detect non-additive edits to existing sections of tracked governance docs.
-
-    Per-file both-sides test: a file is reported iff it appears in both removed
-    (non-empty) and added (non-empty) AND matches the tracked-document path set.
-    Pure additions (removed empty) are never reported.
-
-    Returns:
-      {
-        "doc_modifications": [
-          {"file": "<path>", "section": "<nearest-header-or-'(unknown)'>",
-           "evidence": {"removed": "<one removed line>", "added": "<one added line>"}},
-          ...
-        ]
-      }
-    """
-    import re as _re
-
-    doc_modifications: list[dict] = []
-    files = {p for _, p in name_status}
-
-    for path in files:
-        if not _is_tracked_doc(path):
-            continue
-        file_removed = removed.get(path, [])
-        file_added = added.get(path, [])
-        if not file_removed or not file_added:
-            # Pure addition (no removals) or pure deletion — not a modification.
-            continue
-        # Both sides non-empty → structural modification detected.
-        # Best-effort section from diff hunk context — informational only.
-        section = "(unknown)"
-        doc_modifications.append(
-            {
-                "file": path,
-                "section": section,
-                "evidence": {
-                    "removed": file_removed[0].strip()[:120],
-                    "added": file_added[0].strip()[:120],
-                },
-            }
-        )
-
-    return {"doc_modifications": doc_modifications}
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Independent diff classification for the oversight evaluator."
@@ -574,70 +289,10 @@ def main() -> int:
         help="comma-separated reviewer roles to check (default: all). "
         "Pass only the N/A'd roles to avoid scanning domains nobody waived.",
     )
-    ap.add_argument(
-        "--tier-floor",
-        action="store_true",
-        help="only report the deterministic tier floor (REQ-TIER-3)",
-    )
-    ap.add_argument(
-        "--warranted-lanes",
-        action="store_true",
-        help="only report warranted reviewer lanes (REQ-REV-1)",
-    )
-    ap.add_argument(
-        "--modifications-only",
-        action="store_true",
-        help="only report structural modifications to tracked governance docs (REQ-MOD-5)",
-    )
     args = ap.parse_args()
 
     base, head = resolve_range(args.base, args.head)
-    name_status, added, removed = collect_diff(base, head)
-
-    # Scoped flags — each suppresses the combined default output, mirroring
-    # --domains-only / --structural-only.
-    scoped = args.tier_floor or args.warranted_lanes or args.modifications_only
-
-    if args.tier_floor:
-        result = detect_tier_floor(name_status, added)
-        out = {"base": base, "head": head, **result}
-        if args.explain:
-            print(f"Diff {base[:8]}..{head[:8]}")
-            print(f"Tier floor: {result['tier_floor']}")
-            for ev in result["evidence"]:
-                print(f"  [{ev['rule']}] {ev['file']}  «{ev['pattern']}»")
-        else:
-            print(json.dumps(out, indent=2))
-        return 0
-
-    if args.warranted_lanes:
-        result = detect_warranted_lanes(name_status, added)
-        out = {"base": base, "head": head, **result}
-        if args.explain:
-            print(f"Diff {base[:8]}..{head[:8]}")
-            print(f"Warranted lanes ({len(result['warranted'])}):")
-            for lane, ev in result["warranted"].items():
-                print(f"  {lane:14s} ← {ev['by']}: {ev['file']}  «{ev['evidence']}»")
-        else:
-            print(json.dumps(out, indent=2))
-        return 0
-
-    if args.modifications_only:
-        result = detect_structural_modifications(name_status, added, removed)
-        out = {"base": base, "head": head, **result}
-        if args.explain:
-            print(f"Diff {base[:8]}..{head[:8]}")
-            mods = result["doc_modifications"]
-            print(f"Structural doc modifications ({len(mods)}):")
-            for m in mods:
-                print(f"  {m['file']} (section: {m['section']})")
-                print(f"    removed: «{m['evidence']['removed']}»")
-                print(f"    added:   «{m['evidence']['added']}»")
-            if not mods:
-                print("  (none)")
-        else:
-            print(json.dumps(out, indent=2))
-        return 0
+    name_status, added = collect_diff(base, head)
 
     want_domains = not args.structural_only
     want_structural = not args.domains_only

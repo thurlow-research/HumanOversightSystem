@@ -179,16 +179,6 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 | `reliability` | Resilience review — timeouts, retry, graceful degradation (optional — projects with external connections) |
 | `risk-assessment` | Risk tier validation — note: risk-assessor writes to `.claudetmp/oversight/validators/risk-assessment.md`, NOT to the sign-off register. Do not include `risk-assessment` in `required_signoffs` — it is a validator artifact, not a sign-off role. |
 
-**`Change_classification:`** (required in `process` entries when the entry covers a tracked spec/design doc change — condition 15) Closed value set: `additive`, `structural`, `clarifying`, `none`.
-
-**`Behavior_delta:`** (required alongside `Change_classification:` — condition 15) A YAML/markdown list; each item begins with a bracketed marker from `{new, modified, removed, clarifying, none}`. Only `new` and `modified` entries require a human-authorization artifact. For a purely clarifying change, `- [clarifying] no behavior change` is valid. Example:
-```
-Change_classification: additive
-Behavior_delta:
-  - [new] Users can now reset their password via email link
-  - [clarifying] Error message wording clarified (no behavior change)
-```
-
 **Documentation currency (required for any step that modifies documented behavior):** The relevant spec, design doc, AGENTS.md entry, or METHODOLOGY.md section must reflect what was built before the step is signed off. A step whose observable behavior differs from its documentation is not done — it is broken. "I'll update the docs later" is not a valid sign-off state.
 
 **Gate suspension (brownfield remediation):**
@@ -316,7 +306,7 @@ Both requirements apply to all projects that install this framework.
 
 | Event | Meaning | Emitted by | Key fields |
 |---|---|---|---|
-| `step-head` | Records a step's merged commit SHA post-merge so the next step finds its base. Written by the **overseer** after a successful squash merge — NOT by the oversight-evaluator. `head_sha` and `merged_sha` both carry the actual merged commit SHA; `base_sha` is the previous step's `head_sha`. A post-merge entry supersedes any pre-PR entry for the same step (last entry wins via `tail -1`). | overseer (autonomous, post-merge) | `step`, `base_sha`, `head_sha`, `merged_sha`, `merged_at`, `merged_by`, `pr_number` |
+| `step-head` | Records a step's HEAD SHA so the next step finds its base | oversight-evaluator | `step`, `head_sha` |
 | `human-authorization` | A human authorization gate was satisfied — pins the content hash, decision, and claimed authorizer into committed history | oversight-evaluator | `step`, `artifact`, `content_sha256`, `authorized_by`, `decision` |
 | `validator-failure` | A validator/gate exhausted retries (timeout or crash) | run_with_retry.sh | `validator`, `required`, `attempts`, `final_outcome` (failed\|skipped), `last_error` |
 | `gate-suspended` | A required role/gate was waived because it is suspended | oversight-evaluator | `gate`, `step`, `authorized_by`, `suspension_file` |
@@ -329,11 +319,6 @@ Both requirements apply to all projects that install this framework.
 | `structural-override` | A structural-override signature was detected in a change not labeled `structural` (a self-classification escape, caught pre-PR) | oversight-evaluator | `signal`, `step`, `file`, `covered` (bool) |
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
 | `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp` |
-| `tier-floor-mismatch` | Self-reported tier is below the deterministic floor derived from the diff (condition 11) | oversight-evaluator | `step`, `re_derived_floor`, `self_reported_tier`, `evidence` |
-| `subagent-skipped` | A required subagent (dep-mapper, risk-historian, prompt-fidelity) did not produce a completion stamp for the step (condition 12) | oversight-evaluator | `step`, `validated_tier`, `required_subagents`, `present_stamps`, `missing` |
-| `warranted-lane-absent` | A reviewer lane warranted by the diff has no register entry (condition 13) | oversight-evaluator | `step`, `lane`, `evidence`, `finding` |
-| `doc-modification-uncovered` | A structural modification to a tracked governance doc has no covering human-authorization artifact (condition 14) | oversight-evaluator | `step`, `file`, `section`, `evidence` |
-| `spec-change-behavior-delta` | A spec/design-doc change lacks the required Behavior_delta field, or has [new]/[modified] entries without human authorization (condition 15) | oversight-evaluator | `step`, `failure_mode`, `file`, `delta_entries` |
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 
@@ -358,42 +343,11 @@ The `oversight-evaluator` agent checks compliance before quality evaluation. Com
 
 Conditions 9–10 are **anti-gaming** checks: they re-derive — independently of the actor that produced the change — the two determinations that can loosen oversight (an N/A waiver, an `additive`/`clarifying` self-label). They never run when upstream asked for *more* review; spending verification cost only in the loosening direction is itself the ratchet.
 
-11. **Tier floor re-derivation (#94):** `change_classifier.py --tier-floor` is run against the step's commit range. If `rank(validated_tier) < rank(tier_floor)` AND no `.claudetmp/oversight/step{N}-human-tier-override.md` exists → **COMPLIANCE FAIL**: `"Self-reported tier {validated_tier} is below the deterministic floor {tier_floor} for these changed files: {evidence}."` A conservative self-report (tier ≥ floor) always passes. Audit event: `tier-floor-mismatch`.
-
-12. **Mandated subagent stamps (#221 — ARCH-Q-2):** Authoritative source is `.stamp` files in `.claudetmp/oversight/subagents/`, NOT the `subagents_run:` header field (which remains informational). HIGH+ steps require `dep-mapper-{N}-*.stamp` and `risk-historian-{N}-*.stamp`. MEDIUM+ steps require `prompt-fidelity-{N}-*.stamp` iff a `Prompt-Artifact:` git trailer exists for an AI-authored commit in the range (re-derived, not self-reported). Missing stamp → **COMPLIANCE FAIL**: `"Required subagent {name} did not complete for step {N} — stamp file absent."` Audit event: `subagent-skipped`. See §7b for the stamp-file contract.
-
-13. **Warranted reviewer-lane set (#261):** `change_classifier.py --warranted-lanes` is run. For each warranted lane in the project's `role_mappings`: absent register entry → **COMPLIANCE FAIL**: `"Warranted reviewer lane '{lane}' has no sign-off register entry."` N/A entries defer to condition 9 (not double-reported here). Loosening only: a register entry for an un-warranted lane is accepted. Audit event: `warranted-lane-absent`.
-
-14. **Structural document modifications (#121):** `change_classifier.py --modifications-only` is run. For each `doc_modification` (a per-file both-sides diff test on tracked governance docs), a covering human-authorization artifact must exist (`.claudetmp/oversight/step{N}-human-authorization.md` or `.claudetmp/oversight/step{N}-spec-structural-auth.md`). Uncovered modification → **COMPLIANCE FAIL**: `"Structural modification to {file} (section '{section}') has no covering human authorization."` Pure additions (no removals) never appear in `doc_modifications`. Audit event: `doc-modification-uncovered`. This closes the residual coverage gap documented in §2a for edits to tracked governance documents.
-
-15. **Spec-change behavior delta (#205):** When a `process` sign-off entry (pm-agent or ux-designer) is present AND the step diff touches a tracked spec/design doc (`docs/specs/*.md`, `docs/v*/*.md`, `docs/v*/TECHNICAL-DESIGN-*.md`, `TELEMETRY-SPEC.md`, `UX-DESIGN-READINESS.md`): (a) `Behavior_delta:` and `Change_classification:` fields must be present in the `process` entry — absent → **FAIL**; (b) if any `Behavior_delta:` entry carries `[new]` or `[modified]` AND no human-authorization artifact exists → **FAIL**: list the specific delta entries. Pass when only `[clarifying]`/`[removed]`/`[none]` entries present, or a covering authorization artifact exists. Audit event: `spec-change-behavior-delta`. Accepted marker values: `new`, `modified`, `removed`, `clarifying`, `none`. Accepted `Change_classification:` values: `additive`, `structural`, `clarifying`, `none`.
-
-16. **Step-head timing (timing correction — not a compliance gate):** The `step-head` audit event is written by the **overseer** post-merge (with the actual merged commit SHA), not by the oversight-evaluator. The evaluator reads the previous step's `step-head` to establish its `BASE_SHA` but does not write one. Older pre-PR `step-head` entries are tolerated; the post-merge entry supersedes them (last entry wins per `tail -1`). See §6a for the updated `step-head` schema.
-
-Conditions 9–15 are **anti-gaming** checks: they re-derive — independently of the actor that produced the change — determinations that can loosen oversight (an N/A waiver, an `additive`/`clarifying` self-label, a self-reported tier, a warranted-lane absence, a doc modification without authorization, a behavior delta without authorization). They never run when upstream asked for *more* review.
-
 **Pre-merge bounce (overseer):** The overseer re-checks conditions 1–3 and 7b before applying the merge-authority matrix. Failure returns the PR to the worker as a `pr-bounced` event; the per-cid failure counter is untouched. The worker's pre-PR gate (REQ-W-15) checks the same conditions one step earlier as the primary enforcement point; the overseer bounce is the backstop.
 
 **MEDIUM fail-closed (second review):** a MEDIUM+ step cannot proceed without an actual cross-vendor judgment. `run_second_review.sh` exits non-zero in every case where the review did not produce one:
 - a fired vendor is **unavailable at pre-check** (agy at MEDIUM+, or both vendors at HIGH+) — the original guard;
 - a fired-and-required vendor **errors at runtime** (timeout, rate-limit, crash after the CLI passed pre-check) → aggregate `verdict: error`, exit non-zero. A runtime error must not collapse into `approve`; that would silently convert the mandatory independent review into a PASS (a fail-open).
-
-**§7b — Stamp-file contract (authoritative source for condition 12, ARCH-Q-2):**
-
-Subagent completion stamps are the evaluator's authoritative source for whether dep-mapper, risk-historian, and prompt-fidelity ran for a given step. The `subagents_run:` field in `risk-assessment.md` is informational only and must not be used for compliance decisions.
-
-**Path convention:** `.claudetmp/oversight/subagents/<subagent-name>-<step>-<ts>.stamp`
-- `<subagent-name>` ∈ `{dep-mapper, risk-historian, prompt-fidelity}` (canonical role keys)
-- `<step>` is the integer step number
-- `<ts>` is an ISO-8601 compact timestamp (e.g. `20260616T142233`) for uniqueness across re-runs
-
-**Content (one-line JSON):** `{"subagent": "<name>", "step": "<step>", "cid": "<cid>", "completed_at": "<ISO-8601>"}`
-
-**Writer responsibility:** each subagent writes its **own** stamp as the final action on successful completion. risk-assessor does NOT write stamps on behalf of subagents — independent attestation is the entire point.
-
-**Reader responsibility:** the evaluator globs `.claudetmp/oversight/subagents/<name>-{N}-*.stamp` for existence only. Content is informational; no schema validation gates compliance. If multiple stamps match (re-runs), any one satisfies existence.
-
-**Directory creation:** subagents run `mkdir -p .claudetmp/oversight/subagents` before writing. The directory is under `.claudetmp/` and is not committed (gitignored per §1).
 
 A fifth verdict, **`unparseable`**, is distinct from `error`: the reviewer *ran and produced a real review* the harness could not auto-structure (e.g. an agentic CLI returned a narrated markdown report instead of strict JSON — HOS#113). The review content exists and is preserved in the output file. `unparseable` must **NOT** be collapsed into `error` (fail-closed — throws away a real independent review) or `approve` (silent pass). `run_second_review.sh` exits 0 on `unparseable` with a loud "a human must read this" notice rather than fail-closed.
 
