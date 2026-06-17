@@ -74,6 +74,13 @@ DIFF_REF=""
 FILES=()
 DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
 
+# SPEC-219: the reviewed commit range, recorded in every report header so the
+# oversight-evaluator can verify the second review covered the step's canonical
+# base_sha..head_sha. Default to the absent-range sentinel `none` (architect
+# binding B2) so the field is NEVER emitted empty, on any path. Resolved to a
+# full-SHA pair, `UNCOMMITTED`, or `none` at diff-derivation time (binding B3).
+REVIEWED_RANGE="none"
+
 # SPEC-379 R4 — advisory pattern list (case-insensitive). When --diff-only is on and a
 # reviewer's response contains one of these, an ADVISORY (non-blocking) is logged.
 # This is the single named location for the pattern list in this script.
@@ -140,6 +147,7 @@ if ! $RUN_AGY && ! $RUN_CODEX; then
 # Second Review — Step ${STEP}
 Timestamp: ${TS}
 verdict: skipped
+reviewed_range: none
 reason: composite score=${SCORE} below both thresholds (agy≥${AGY_THRESHOLD}, codex≥${CODEX_THRESHOLD}) and tier=${TIER:-none} below MEDIUM
 agy_threshold: ${AGY_THRESHOLD}
 codex_threshold: ${CODEX_THRESHOLD}
@@ -189,13 +197,75 @@ mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
 OUTFILE="$OUT_DIR/step${STEP}-${TIMESTAMP}.md"
 
-# --- Build diff content ---
-if [[ -n "$DIFF_REF" ]]; then
+# --- Build diff content + capture reviewed range (SPEC-219) ---
+# REVIEWED_RANGE is resolved in the SAME if/elif/else that derives DIFF_CONTENT so
+# the recorded range and the diff source can never diverge (binding B3), and the
+# UNCOMMITTED/none sentinels are mutually exclusive by construction (binding B4):
+# only one branch runs. All SHAs are full 40-char (git rev-parse / get_step_range).
+if [[ -n "$DIFF_REF" && "$DIFF_REF" == *..* ]]; then
+    # Path: --diff <A>..<B> (range form). BASE=rev-parse A, HEAD=rev-parse B.
     DIFF_CONTENT=$(git diff "$DIFF_REF" 2>/dev/null || echo "")
+    _RANGE_A="${DIFF_REF%%..*}"
+    _RANGE_B="${DIFF_REF##*..}"
+    _BASE_SHA=$(git rev-parse "$_RANGE_A" 2>/dev/null || echo "")
+    _HEAD_SHA=$(git rev-parse "$_RANGE_B" 2>/dev/null || echo "")
+    [[ -n "$_BASE_SHA" && -n "$_HEAD_SHA" ]] && REVIEWED_RANGE="${_BASE_SHA}..${_HEAD_SHA}"
+elif [[ -n "$DIFF_REF" ]]; then
+    # Path 1: --diff <ref> (single ref). git diff <ref> compares <ref> to the tree.
+    # BASE=rev-parse <ref>, HEAD=rev-parse HEAD — NEW calls at derivation time (B3).
+    DIFF_CONTENT=$(git diff "$DIFF_REF" 2>/dev/null || echo "")
+    _BASE_SHA=$(git rev-parse "$DIFF_REF" 2>/dev/null || echo "")
+    _HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+    [[ -n "$_BASE_SHA" && -n "$_HEAD_SHA" ]] && REVIEWED_RANGE="${_BASE_SHA}..${_HEAD_SHA}"
 elif [[ ${#FILES[@]} -gt 0 ]]; then
+    # Path 3 (scoped): --files ... → HEAD-vs-worktree for named files. A dirty
+    # worktree means the review sees uncommitted state → UNCOMMITTED (BC-219-3).
     DIFF_CONTENT=$(git diff HEAD -- "${FILES[@]}" 2>/dev/null || cat "${FILES[@]}" 2>/dev/null || echo "")
+    if ! git diff --quiet HEAD -- "${FILES[@]}" 2>/dev/null; then
+        REVIEWED_RANGE="UNCOMMITTED"
+    else
+        _HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+        [[ -n "$_HEAD_SHA" ]] && REVIEWED_RANGE="${_HEAD_SHA}..${_HEAD_SHA}"
+    fi
 else
-    DIFF_CONTENT=$(git diff HEAD 2>/dev/null || echo "")
+    # --step N path: canonical step range via the shared helper (SPEC-220 / binding
+    # B1). Used when no --diff/--files narrows the diff — the run relies on the
+    # step's canonical range. The helper owns range derivation; we own the
+    # merge-base fallback for a leading-empty base and the empty→none sentinel.
+    if [[ -f "$(dirname "$0")/oversight/lib/step_range.sh" ]]; then
+        # shellcheck source=scripts/oversight/lib/step_range.sh
+        . "$(dirname "$0")/oversight/lib/step_range.sh"
+        _STEP_RANGE=$(get_step_range "$STEP" 2>/dev/null || echo "")
+    else
+        _STEP_RANGE=""
+    fi
+    if [[ -z "$_STEP_RANGE" ]]; then
+        # Step N has no event in the log → no range. Do NOT invoke a reviewer; emit
+        # the no-content sentinel with reviewed_range: none (binding B2, AC-12).
+        echo "run_second_review: step ${STEP} has no range in audit log — writing skipped (none) sentinel"
+        mkdir -p "$OUT_DIR"
+        TS=$(date +%Y%m%dT%H%M%S)
+        cat > "$OUT_DIR/step${STEP}-${TS}.md" <<EOF
+# Second Review — Step ${STEP}
+Timestamp: ${TS}
+verdict: skipped
+highest_severity: none
+unresolved_findings: 0
+reviewed_range: none
+reason: no commit range for step ${STEP} in audit log
+EOF
+        exit 0
+    fi
+    _BASE_SHA="${_STEP_RANGE%%..*}"
+    _HEAD_SHA="${_STEP_RANGE##*..}"
+    if [[ -z "$_BASE_SHA" ]]; then
+        # Leading-empty base (step 1, or step N-1 has no event). Merge-base fallback
+        # — byte-identical to the SPEC-220 evaluator so both resolve BASE the same
+        # way (binding B1).
+        _BASE_SHA=$(git merge-base HEAD "$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)")
+    fi
+    REVIEWED_RANGE="${_BASE_SHA}..${_HEAD_SHA}"
+    DIFF_CONTENT=$(git diff "${_BASE_SHA}..${_HEAD_SHA}" 2>/dev/null || echo "")
 fi
 
 if [[ -z "$DIFF_CONTENT" ]]; then
@@ -208,6 +278,7 @@ Timestamp: ${TS}
 verdict: skipped
 highest_severity: none
 unresolved_findings: 0
+reviewed_range: none
 reason: no diff content detected
 EOF
     exit 0
@@ -233,6 +304,7 @@ echo ""
     printf "# Second Review — Step %s\n" "$STEP"
     printf "Score: %s | Timestamp: %s\n" "$SCORE" "$TIMESTAMP"
     printf "verdict: pending\n"
+    printf "reviewed_range: %s\n" "$REVIEWED_RANGE"
     printf "highest_severity: none\n"
     printf "unresolved_findings: 0\n"
     printf "agy_threshold: %s | codex_threshold: %s\n\n" "$AGY_THRESHOLD" "$CODEX_THRESHOLD"

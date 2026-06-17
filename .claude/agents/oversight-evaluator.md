@@ -227,6 +227,24 @@ for f in fails:
 - A present file with **`verdict: skipped` on a MEDIUM+ validated-tier step → COMPLIANCE FAIL.** `skipped` means neither vendor fired, which on a MEDIUM+ tier means the mandatory cross-vendor review did not happen — gating it on score alone would let a floor-raised tier silently skip the independence requirement. (`skipped` is only acceptable when the validated tier is below MEDIUM.) Cross-check the file's `validated_tier:` field against the tier you established; if the review was invoked without the tier (score-only) and skipped on a MEDIUM+ step, that is the failure this catches. Ensure `run_second_review.sh` is invoked with `--tier`.
 - A **genuinely absent** file on a MEDIUM+ step → the review never ran → **COMPLIANCE FAIL**. Do not interpret absence as "below threshold." This and the `skipped`-on-MEDIUM+ rule together close the hole where a MEDIUM+ step could silently skip cross-vendor review and still pass compliance.
 
+**Second-review range verification (SPEC-219):** After establishing that a present report has an actionable verdict (above), verify that the review covered this step's canonical commit range. The second-review script records a `reviewed_range:` field in every report header, captured at diff-derivation time. Compare it against the register's `base_sha`/`head_sha` (written earlier in Phase 1). Without this check, a review run against a stale or truncated diff can produce `verdict: approve` while never seeing this step's commits — defeating the independence requirement.
+
+1. **Read `reviewed_range`** from the present second-review report header. It is one of: a full-SHA pair `BASE_SHA..HEAD_SHA`, the literal `UNCOMMITTED`, or the literal `none`. The script never emits an empty field; an empty or missing field is treated as absent below.
+
+2. **Disposition (BC-219-5) — by `reviewed_range` value:**
+   - **`UNCOMMITTED`** → **COMPLIANCE FAIL**, *regardless of verdict*: "second review for step {N} ran against uncommitted worktree state (`reviewed_range: UNCOMMITTED`). Second review must run on committed state. Re-commit the changes and re-run `run_second_review.sh`." A dirty-worktree review saw changes not in any verifiable commit — structurally wrong.
+   - **`none`** → **COMPLIANCE WARN**: "second review report for step {N} does not record a usable `reviewed_range` (`none`); cannot confirm the review covered the step's canonical commit range." Add to conditional items. Not a FAIL — `none` is a legitimate no-diff-content / no-range early exit.
+   - **absent or empty** (no `reviewed_range:` line, or empty value) → **COMPLIANCE WARN**: same instrumentation-gap message as `none`. Add to conditional items.
+   - **present full-SHA pair** → split on `..` into `report_base` and `report_head` and run step 3.
+
+3. **Compare (exact full-SHA equality — BC-219-5).** Compare `report_base` to the register's `base_sha` and `report_head` to the register's `head_sha` with **byte-exact, case-sensitive string equality**. Prefix match, abbreviated-SHA match, and partial match are all **mismatch**.
+   - **Match** (`report_base == reg_base` AND `report_head == reg_head`) → **pass silently**, no compliance note. (For step 1, the register's `base_sha` was produced by the same merge-base fallback `run_second_review.sh` applies, so a correctly-scoped step-1 review matches exactly.)
+   - **Mismatch** → **COMPLIANCE FAIL**: "second review `reviewed_range` `{report_base}..{report_head}` does not match register `{reg_base}..{reg_head}` for step {N}. The independent review covered a different commit set than this step. Re-run `run_second_review.sh` scoped to the correct range." A mismatched range means the verdict was issued against commits that are not this step's diff.
+
+4. **Verdict interaction.** The range check (steps 1–3) applies to `approve`, `request_changes`, `unparseable`, and score-below-threshold `skipped` reports. For **`verdict: error`** and **`verdict: pending`**, the range comparison is **skipped** (an errored/incomplete run produces no judgment to accept) — but for `error`, still emit a COMPLIANCE WARN if `reviewed_range` is absent (instrumentation note; does not change the existing `error`→FAIL outcome). The `UNCOMMITTED` FAIL fires regardless of verdict.
+
+A range **FAIL** (`UNCOMMITTED` or mismatch) is a hard compliance failure → recommendation **ESCALATE** (per the rule at the end of Phase 1). A range **WARN** (`none` / absent / empty) does not fail compliance; its text is added to the conditional items.
+
 **Prompt artifact compliance (MEDIUM+ steps):**
 - Use the commit range from the register header (`base_sha..head_sha`) — this is the definitive set of commits for the step:
   ```bash
