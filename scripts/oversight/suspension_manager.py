@@ -270,13 +270,35 @@ def _append_reenable_log(text: str, gates: list[str]) -> str:
     return text.rstrip() + "\n\n## Re-enable log\n\n" + rows
 
 
+def cmd_is_suspended(gate: str) -> int:
+    """Exit 0 if gate is currently suspended, exit 1 otherwise.
+
+    Used by run_gates.sh to populate the 'suspended' field in gate-results.json
+    without sourcing the bash check_suspension.sh helper.
+    """
+    susp_path = Path(SUSPENSION_FILE)
+    if not susp_path.exists():
+        return 1
+    suspensions = parse_suspensions(susp_path.read_text())
+    return 0 if any(s.gate == gate for s in suspensions) else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--census", action="store_true")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--auto-remove", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--is-suspended",
+        metavar="GATE",
+        help="Exit 0 if GATE is currently suspended, exit 1 otherwise.",
+    )
     args = parser.parse_args()
+
+    # Point query — does not need the suspension file to exist to parse.
+    if args.is_suspended:
+        return cmd_is_suspended(args.is_suspended)
 
     susp_path = Path(SUSPENSION_FILE)
     if not susp_path.exists():

@@ -144,6 +144,36 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - For every detected structural signal, append `{"event":"structural-override","signal":"{name}","step":N,"file":"{file}","covered":{true|false},"timestamp":"..."}` to `audit/oversight-log.jsonl`. Emit it **even when `covered` is true** — a covered signal still means an authoring agent under-classified a change the human happened to catch via another gate; the covered-vs-uncovered ratio is the escaped-misclassification rate (#75).
   - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
 
+**Gate results compliance (REQ-GATE-NN-16 / REQ-GATE-NN-08 / REQ-GATE-NN-17):**
+
+These checks enforce the deterministic gate non-override invariant (SPEC-375). Run them after the sign-off compliance checks above, before the second-review check below.
+
+*REQ-GATE-NN-16 — gate-results.json required when step manifest declares gates_required:*
+Read `.claudetmp/oversight/validators/gate-results.json`. If the step manifest declares `gates_required: true` for this step AND the file is absent (or empty) → **COMPLIANCE FAIL**: gates were required but the gate runner did not produce results. List as: `"gate-results.json absent for step {N} — COMPLIANCE FAIL (REQ-GATE-NN-16)"`.
+
+*REQ-GATE-NN-08 — failed non-suspended gates must appear unresolved in human-facing output:*
+For each record in `gate-results.json` where `exit_code != 0` AND `suspended == false`, the gate failed and was not waived. Verify that the failure appears unresolved in the human-facing output (this evaluation document and the orchestrator's handoff). If any such failure is absent from human-facing output → **COMPLIANCE FAIL**: `"Gate {gate} failed (exit {exit_code}) — deterministic failure must appear unresolved in human-facing output (REQ-GATE-NN-08)"`. A gate where `suspended == true` is waived by human authorization (the same ratchet as gate-suspension.md) and must NOT be counted as a failure.
+
+*REQ-GATE-NN-17 — composite score at or above CRITICAL threshold is deterministic regardless of blocking_findings:*
+Read `.claudetmp/oversight/validators/summary.json`. If `composite_score >= 0.78` → **COMPLIANCE FAIL**: `"Composite score {score:.3f} ≥ CRITICAL threshold 0.78 — deterministic CRITICAL regardless of blocking_findings (REQ-GATE-NN-17)"`. This prevents a validator run from self-reporting a score below CRITICAL after the fact (anti-gaming). A `composite_score < 0.78` or an absent summary.json (step with no validators) does not trigger this check.
+
+You may use `scripts/automation/lib/gate_compliance.py` to evaluate these three checks programmatically:
+
+```bash
+python3 -c "
+import sys, json
+sys.path.insert(0, 'scripts/automation/lib')
+import gate_compliance as gc
+
+results = gc.load_gate_results('.')
+score   = gc.load_composite_score('.')
+gr      = gc.gates_required('contract/step-manifest.yaml', {N})
+fails   = gc.check_gate_compliance(results, score, {N}, gates_required=gr)
+for f in fails:
+    print('COMPLIANCE FAIL:', f)
+"
+```
+
 **Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review **fires on the validated tier OR the composite score** (`run_second_review.sh --tier <tier> --score <score>`) — this matters because the deterministic risk floor raises tier (auth→HIGH, booking/payment→CRITICAL) *without* raising the composite score, so a HIGH-by-floor step can have a low score. Therefore:
 - A present file with `verdict: approve` or `verdict: request_changes` → the review actually ran and produced an independent judgment → satisfied (act on the verdict in Phase 2).
 - A present file with **`verdict: unparseable` on a MEDIUM+ step → the review RAN but its output could not be auto-structured** (e.g. agy returned a narrated markdown report instead of strict JSON — HOS#113). This is **distinct from `error`**: an independent judgment *was* produced and is preserved verbatim in the file. Do **NOT** COMPLIANCE FAIL (the mandatory review did happen), and do **NOT** treat it as PASS. Route to **CONDITIONAL_PROCEED**: add a conditional item — *"a human must read the second-review report `.claudetmp/second-review/step{N}-*.md` and confirm its verdict before merge"* — so the preserved prose review is dispositioned by a person, not silently absorbed. Collapsing `unparseable` into either `error` (fail-closed, throws away a real review) or `approve` (silent pass) is the exact bug this state exists to prevent.
