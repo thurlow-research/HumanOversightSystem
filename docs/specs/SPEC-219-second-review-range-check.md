@@ -1,7 +1,7 @@
 # SPEC-219 — Evaluator: Verify Second-Review Reviewed Range
 
 **Issue:** #219
-**Status:** Draft — for architect review
+**Status:** REVISED — ready for architect re-review
 **Family:** #204 commit-range machinery
 **Date:** 2026-06-17
 **Author:** pm-agent
@@ -77,24 +77,68 @@ the evaluator must perform an exact string comparison against the register's
 
 This requirement applies to all report files: agy reviews, codex reviews, fallback
 combined reviews, and reports with `verdict: skipped` or `verdict: error`. A
-`verdict: skipped` report records the range that *would have* been reviewed (the diff
-at invocation time); a `verdict: error` report records the range the script attempted.
-Absence of `reviewed_range` in any of these cases is the condition that triggers
-COMPLIANCE WARN in R3.
+`verdict: skipped` (score-below-threshold) report records the range that *would have*
+been reviewed (the diff at invocation time). A `verdict: error` report records the range
+the script attempted. Absence of `reviewed_range` in any of these cases is the condition
+that triggers COMPLIANCE WARN in R3.
 
-### R2 — `run_second_review.sh`: derive range from `--diff` / `--step` arguments
+**Dirty-worktree path (BC-219-3).** When the diff was derived from Path 3
+(HEAD-vs-worktree, i.e. `--files ...` or no `--diff` argument) and the worktree
+contains uncommitted changes, the report must record:
+
+```
+reviewed_range: UNCOMMITTED
+```
+
+The literal string `UNCOMMITTED` (not a SHA pair) signals to the evaluator that the
+second review ran against uncommitted state. Running the second review against a dirty
+worktree is structurally wrong: the review sees changes that are not in any commit the
+evaluator can verify. The evaluator's R3 must treat `reviewed_range: UNCOMMITTED` as a
+COMPLIANCE FAIL (see R3 disposition table).
+
+**No-diff-content sentinel (BC-219-4).** When the script exits early because no diff
+content was detected (the `verdict: skipped` / `reason: no diff content detected`
+sentinel written at line ~205 of the current script), there is no range to record.
+The report must record:
+
+```
+reviewed_range: none
+```
+
+The literal string `none` is the explicit absent-range marker. The evaluator's R3
+must treat `reviewed_range: none` as the absent→WARN case (not a FAIL).
+
+### R2 — `run_second_review.sh`: derive range from invocation arguments (three paths)
 
 The `BASE_SHA` and `HEAD_SHA` written to `reviewed_range` must be derived from the
 script's own invocation arguments, not re-read from the register or any other file.
-The script already accepts `--diff BASE..HEAD` and `--step N` arguments. For
-`--step N`, the script must resolve the step's base and head using the same
-`audit/oversight-log.jsonl` lookup the evaluator uses (grep for the most recent
-`step-head` event for step N-1 as base, and `git rev-parse HEAD` as head). For
-`--diff BASE..HEAD`, parse the argument directly.
+The script has three diff derivation paths; each path has its own derivation rule:
+
+**Path 1 — `--diff <ref>` (single ref, e.g. `HEAD~1`).**
+The script runs `git diff <ref>`, which compares `<ref>` to the working tree (or HEAD
+when the tree is clean). BASE_SHA = `git rev-parse <ref>`, HEAD_SHA = `git rev-parse HEAD`.
+Both calls must be made at diff-derivation time. These are new calls — they do not
+exist in the current script; the script discards the resolved SHAs after building the
+diff. R2 requires that they be captured and recorded.
+
+**Path 2 — `--diff <A>..<B>` (range form).**
+Parse `A` and `B` from the argument. BASE_SHA = `git rev-parse <A>`,
+HEAD_SHA = `git rev-parse <B>`. Both must be full 40-character SHAs.
+
+**Path 3 — `--files ...` or no `--diff` argument (HEAD-vs-worktree).**
+The script runs `git diff HEAD`, which diffs the index/worktree against HEAD.
+This is an uncommitted-state path. See R1 for how the `reviewed_range` field must
+be recorded in this case (BC-219-3).
+
+**`--step N` path.**
+Uses the canonical step-range derivation defined in SPEC-220 (shared helper in
+`scripts/oversight/lib/step_range.sh` or equivalent). Do not restate the derivation
+here; SPEC-220 is the authoritative source. The BASE_SHA and HEAD_SHA produced by
+that helper are recorded as `reviewed_range`.
 
 This is a recording requirement, not a new derivation: the script was already computing
-this range to build the diff. R2 requires that it record what it computed rather than
-discarding it.
+this range to build the diff. R2 requires that it capture and record what it computed
+rather than discarding it.
 
 ### R3 — `oversight-evaluator.md` Phase 1: verify `reviewed_range` matches register
 
@@ -109,25 +153,34 @@ verdict (`approve`, `request_changes`, `unparseable`), also verify the range:
    by the evaluator earlier in Phase 1. Compare with exact full-SHA string equality.
    Partial match, prefix match, and abbreviated-SHA match are all treated as mismatch.
 
-3. **Disposition:**
-   - `reviewed_range` field **absent** from the report: **COMPLIANCE WARN** — "second
-     review report for step {N} does not record `reviewed_range`; cannot confirm the
-     review covered the step's canonical commit range." Add to conditional items.
-     Do not FAIL: the review ran and produced a verdict; the missing field is an
-     instrumentation gap, not evidence the wrong range was reviewed.
-   - `reviewed_range` field **present but mismatched** (either SHA differs from the
-     register): **COMPLIANCE FAIL** — "second review `reviewed_range`
-     `{report_base}..{report_head}` does not match register `{reg_base}..{reg_head}` for
-     step {N}. The independent review covered a different commit set than this step.
-     Re-run `run_second_review.sh` scoped to the correct range." This is a hard fail:
-     a mismatched range means the `approve` verdict was issued against commits that are
-     not this step's diff; accepting it would defeat the independence requirement.
-   - `reviewed_range` field **present and matching**: check passes silently.
+3. **Disposition table — all verdicts (BC-219-5).**
 
-The range check applies to every report with a real verdict (`approve`, `request_changes`,
-`unparseable`). It does not apply to `verdict: error` reports because an errored run
-produces no judgment to accept or reject; the error itself is already a COMPLIANCE FAIL
-per existing rules.
+   The following table is exhaustive. Every verdict the second-review script can emit
+   has an explicit range-check disposition.
+
+   | `verdict` value | `reviewed_range` value | Range check disposition |
+   |---|---|---|
+   | `approve` | absent | COMPLIANCE WARN — "second review report for step {N} does not record `reviewed_range`; cannot confirm the review covered the step's canonical commit range." Add to conditional items. The review ran and produced a verdict; missing field is an instrumentation gap. |
+   | `approve` | `UNCOMMITTED` | COMPLIANCE FAIL — dirty-worktree second review; see below. |
+   | `approve` | `none` | COMPLIANCE WARN — no-diff-content sentinel; see below. |
+   | `approve` | present, mismatched | COMPLIANCE FAIL — range mismatch; see below. |
+   | `approve` | present, matching | Pass silently. |
+   | `request_changes` | (same rules as `approve` above, row for row) | Same as `approve`. |
+   | `unparseable` | (same rules as `approve` above, row for row) | Same as `approve`. |
+   | `skipped` (score-below-threshold) | absent | COMPLIANCE WARN — same instrumentation-gap message as `approve`/absent. |
+   | `skipped` (score-below-threshold) | present, any value | Range check applies: same mismatch/match/UNCOMMITTED rules as `approve`. |
+   | `skipped` (no-diff-content) | `none` | COMPLIANCE WARN — "second review skipped: no diff content; cannot verify range." Add to conditional items. This is not a fail: absence of diff content is a legitimate early exit. |
+   | `skipped` (no-diff-content) | absent or any other value | COMPLIANCE WARN — unexpected sentinel format; treat as instrumentation gap. |
+   | `error` | any | Range check **skipped** — an errored run produces no judgment to accept or reject. The error itself is already a COMPLIANCE FAIL per existing rules. Emit COMPLIANCE WARN only if `reviewed_range` is absent, to note the instrumentation gap (does not change the existing FAIL outcome). |
+   | `pending` | any | Range check **skipped** — a `pending` verdict should not reach the evaluator. Evaluator emits COMPLIANCE WARN: "second review report for step {N} has `verdict: pending`; review did not complete." |
+   | `UNCOMMITTED` (literal) | — | **COMPLIANCE FAIL** — "second review for step {N} ran against uncommitted worktree state (`reviewed_range: UNCOMMITTED`). Second review must run on committed state. Re-commit the changes and re-run `run_second_review.sh`." A dirty-worktree review is structurally wrong: the reviewer saw changes not in any verifiable commit. This is a hard fail regardless of the verdict. |
+
+   **COMPLIANCE FAIL — range mismatch (present but mismatched):** "second review
+   `reviewed_range` `{report_base}..{report_head}` does not match register
+   `{reg_base}..{reg_head}` for step {N}. The independent review covered a different
+   commit set than this step. Re-run `run_second_review.sh` scoped to the correct
+   range." A mismatched range means the `approve` verdict was issued against commits
+   that are not this step's diff; accepting it would defeat the independence requirement.
 
 ---
 
@@ -166,6 +219,20 @@ AC-5. When the evaluator reads a report whose `reviewed_range` does not match th
       register's `base_sha..head_sha`, Phase 1 records a COMPLIANCE FAIL and the
       recommendation is ESCALATE.
 
-AC-6. Reports with `verdict: skipped` and `verdict: error` include a `reviewed_range`
-      field (AC-1 applies universally); the evaluator does not perform the range
-      comparison on `verdict: error` reports (non-requirement above).
+AC-6. A report from Path 3 (HEAD-vs-worktree) where the worktree is dirty records
+      `reviewed_range: UNCOMMITTED` (not a SHA pair), and the evaluator issues a
+      COMPLIANCE FAIL on that report regardless of verdict.
+
+AC-7. A `verdict: skipped` / `reason: no diff content detected` sentinel records
+      `reviewed_range: none`, and the evaluator issues a COMPLIANCE WARN (not FAIL)
+      on that report.
+
+AC-8. Reports with `verdict: error` include a `reviewed_range` field where possible;
+      the evaluator does not perform the range comparison on `verdict: error` reports
+      (the error itself is already a COMPLIANCE FAIL per existing rules).
+
+AC-9. Reports with `verdict: pending` cause the evaluator to emit a COMPLIANCE WARN;
+      the range check is skipped for `pending` reports.
+
+AC-10. The `--step N` range derivation delegates entirely to the shared helper defined
+       in SPEC-220; the script does not re-implement the step-range lookup.
