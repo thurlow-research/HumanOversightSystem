@@ -170,8 +170,46 @@ run_validator() {
 #   REQUIRED=false: timeout/crash → SKIP (optional); all validators are optional individually
 #   Network-dependent validators get shorter timeout; heavy ones get longer
 
+# Task-class detection pre-step (#373). Resolves the conventional-commit task
+# class (R1a) and, only as a fallback, the GitHub issue label (R1b). The result
+# is forwarded to rn_calculator.py via --task-class, which applies the risk-tier
+# floor. Detection lives HERE, never inside the Python validator (binding 6/7).
+# Fail-open is total: every command ends in `|| true` or sits in a `[[ ]]` test
+# so a non-zero git/gh exit can never abort the run under `set -euo pipefail`
+# (binding 8). Bash 3.2 safe: lowercasing via `tr`, never `${var,,}` (binding 7).
+TASK_CLASS=""
+TASK_CLASS_SOURCE=""
+# R1a: conventional-commit prefix in the HEAD subject line.
+TASK_CLASS=$(git log -1 --format=%s 2>/dev/null \
+    | grep -oE '^(feat|fix|refactor|chore)(\(.+\))?(!)?:' \
+    | grep -oE '^(feat|fix|refactor|chore)' \
+    | tr '[:upper:]' '[:lower:]' || true)
+if [[ -n "$TASK_CLASS" ]]; then
+    TASK_CLASS_SOURCE="commit_prefix"
+fi
+# R1b fallback: GitHub issue label — only when R1a was empty AND ISSUE_NUMBER set.
+if [[ -z "$TASK_CLASS" && -n "${ISSUE_NUMBER:-}" ]]; then
+    TASK_CLASS=$(gh issue view "$ISSUE_NUMBER" --json labels \
+        --jq '.labels[].name | select(test("^(feat|fix|refactor|chore)$"; "i"))' 2>/dev/null \
+        | head -1 | tr '[:upper:]' '[:lower:]' || true)
+    if [[ -n "$TASK_CLASS" ]]; then
+        TASK_CLASS_SOURCE="issue_label"
+    fi
+fi
+# Build the extra-args array forwarded to the RN validator (flags first, then files).
+RN_EXTRA=()
+if [[ -n "$TASK_CLASS" ]]; then
+    RN_EXTRA+=(--task-class "$TASK_CLASS")
+    [[ -n "$TASK_CLASS_SOURCE" ]] && RN_EXTRA+=(--task-class-source "$TASK_CLASS_SOURCE")
+fi
+
 if [[ ${#PY_FILES[@]} -gt 0 ]]; then
-    run_validator "risk_number"      "$VALIDATORS_DIR/rn_calculator.py"         60 false "${PY_FILES[@]}"
+    # bash 3.2 errors on "${arr[@]}" for an empty array under set -u — guard RN_EXTRA.
+    if [[ ${#RN_EXTRA[@]} -gt 0 ]]; then
+        run_validator "risk_number"  "$VALIDATORS_DIR/rn_calculator.py"         60 false "${RN_EXTRA[@]}" "${PY_FILES[@]}"
+    else
+        run_validator "risk_number"  "$VALIDATORS_DIR/rn_calculator.py"         60 false "${PY_FILES[@]}"
+    fi
     run_validator "complexity"       "$VALIDATORS_DIR/complexity_metrics.py"    60 false "${PY_FILES[@]}"
     run_validator "function_metrics" "$VALIDATORS_DIR/function_metrics.py"      60 false "${PY_FILES[@]}"
     run_validator "n1_queries"       "$VALIDATORS_DIR/n1_detector.py"           60 false "${PY_FILES[@]}"
