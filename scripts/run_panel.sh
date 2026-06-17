@@ -107,31 +107,10 @@ fi
 rank() { case "$1" in LOW) echo 0;; MEDIUM) echo 1;; HIGH) echo 2;; CRITICAL) echo 3;; *) echo 0;; esac; }
 max_risk() { [[ "$(rank "$1")" -ge "$(rank "$2")" ]] && echo "$1" || echo "$2"; }
 
-# ── JSON extraction (best-effort — tolerate prose / code fences around the JSON) ─
-extract_json() {
-  # NB: stdin is captured to a temp file FIRST — `python3 - <<'PY'` makes the heredoc
-  # python's stdin, so the program can't also read the piped data from stdin.
-  local _tmp; _tmp="$(mktemp)"; cat > "$_tmp"
-  python3 - "$_tmp" <<'PY'
-import sys, json, re
-data = open(sys.argv[1]).read()
-def load(s):
-    try: return json.loads(s)
-    except Exception: return None
-obj = load(data)                                   # 1) whole string is clean JSON (common)
-if obj is None:                                    # 2) fenced ```json ... ``` block
-    m = re.search(r'```(?:json)?\s*(.*?)```', data, re.S)
-    if m: obj = load(m.group(1))
-if obj is None:                                    # 3) JSON embedded in prose — raw_decode
-    dec = json.JSONDecoder()                       #    (robust to literal braces in strings
-    for i, ch in enumerate(data):                  #     and to trailing text after the JSON)
-        if ch in '{[':
-            try: obj, _ = dec.raw_decode(data[i:]); break
-            except Exception: continue
-print(json.dumps(obj if obj is not None else {"findings": []}))
-PY
-  rm -f "$_tmp"
-}
+# ── JSON extraction (best-effort) now lives in panel_logic.py (SPEC-333; #314) ──
+# The former `extract_json` bash function is removed: the shell calls the
+# `extract-json` subcommand (raw response on stdin, extracted JSON on stdout).
+# `$PANEL_LOGIC` is resolved in the TRIAGE section before any extract-json call.
 
 # ── Model dispatch (subscription CLIs; Opus is the author and is NEVER called here) ─
 call_model() {
@@ -295,8 +274,9 @@ $(head -c "$CAP" "$DIFF_FILE")
 Return ONLY JSON: {\"risk\":\"LOW|MEDIUM|HIGH|CRITICAL\",\"reason\":\"one sentence\"}"
   TRIAGE_RAW="$(call_model haiku "$TRIAGE_PROMPT")"
   echo "$TRIAGE_RAW" > "$RUN_DIR/triage.raw.txt"
-  HAIKU_RISK="$(printf '%s' "$TRIAGE_RAW" | extract_json | jq -r '.risk // empty' | tr '[:lower:]' '[:upper:]')"
-  TRIAGE_REASON="$(printf '%s' "$TRIAGE_RAW" | extract_json | jq -r '.reason // empty')"
+  TRIAGE_JSON="$(printf '%s' "$TRIAGE_RAW" | python3 "$PANEL_LOGIC" extract-json)"
+  HAIKU_RISK="$(printf '%s' "$TRIAGE_JSON" | jq -r '.risk // empty' | tr '[:lower:]' '[:upper:]')"
+  TRIAGE_REASON="$(printf '%s' "$TRIAGE_JSON" | jq -r '.reason // empty')"
   RISK="$(max_risk "$FLOOR" "${HAIKU_RISK:-$FLOOR}")"
   info "triage: floor=$FLOOR author=${AUTHOR_RISK:-none} haiku=${HAIKU_RISK:-?} → ${BOLD}$RISK${RESET}"
   [[ -n "$TRIAGE_REASON" ]] && info "        \"$TRIAGE_REASON\""
@@ -441,8 +421,13 @@ log_context_advisory() {  # $1=reviewer  $2=response-text
   warn "[ADVISORY] $1 requested full-repo context (pattern: '${match}') — logged, non-blocking"
 }
 
-# ── REVIEWERS — fan-out, parse best-effort JSON, tag each finding ───────────────
-ALL_FINDINGS="[]"
+# ── REVIEWERS — fan-out, parse best-effort JSON, collect one entry per reviewer ──
+# SPEC-333 (#314): the testable cross-reviewer tag+merge is now ONE Python call.
+# The shell collects a {reviewer,lens,raw} entry per reviewer into RESPONSES_JSON,
+# then calls `panel_logic.py aggregate` once after the loop. Per-chunk extraction
+# uses the `extract-json` subcommand; the per-reviewer chunk union stays a trivial
+# `.findings // []` jq concat (binding 4 permits trivial single-field plucks).
+RESPONSES_JSON="[]"
 for spec in "${ROSTER[@]}"; do
   tool="${spec%%:*}"; lens="${spec##*:}"
   if [[ "$tool" != "ipcheck" ]] && ! command -v "$tool" >/dev/null 2>&1; then warn "skip $spec — $tool not on PATH"; continue; fi
@@ -454,14 +439,18 @@ for spec in "${ROSTER[@]}"; do
     raw="$(call_model "$tool" "$(build_review_prompt "$lens" "$chunk")")" || raw='{"findings":[]}'
     printf '%s' "$raw" > "$RUN_DIR/${tool}-${lens}-chunk${ci}.raw.txt"
     log_context_advisory "$tool" "$raw"
-    f="$(printf '%s' "$raw" | extract_json | jq -c '.findings // []' 2>/dev/null || echo '[]')"
+    f="$(printf '%s' "$raw" | python3 "$PANEL_LOGIC" extract-json | jq -c '.findings // []' 2>/dev/null || echo '[]')"
     tool_findings="$(jq -cn --argjson a "$tool_findings" --argjson b "$f" '$a + $b' 2>/dev/null || echo "$tool_findings")"
   done
   n=$(printf '%s' "$tool_findings" | jq 'length' 2>/dev/null || echo 0)
   ok "$tool/$lens → $n raw finding(s)"
-  tool_findings="$(printf '%s' "$tool_findings" | jq -c --arg t "$tool" --arg l "$lens" 'map(. + {reviewer:$t, lens:$l})' 2>/dev/null || echo '[]')"
-  ALL_FINDINGS="$(jq -cn --argjson a "$ALL_FINDINGS" --argjson b "$tool_findings" '$a + $b')"
+  # Append one {reviewer,lens,raw} entry (raw = this reviewer's chunk-union object).
+  RESPONSES_JSON="$(jq -cn --argjson a "$RESPONSES_JSON" --arg t "$tool" --arg l "$lens" --argjson fs "$tool_findings" \
+    '$a + [{reviewer:$t, lens:$l, raw:{findings:$fs}}]')"
 done
+# One-pass aggregation (binding 3): Python tags every finding with reviewer+lens
+# and flattens in roster order. A structural failure exits non-zero (binding 5).
+ALL_FINDINGS="$(printf '%s' "$RESPONSES_JSON" | python3 "$PANEL_LOGIC" aggregate)"
 printf '%s' "$ALL_FINDINGS" > "$RUN_DIR/findings.raw.json"
 RAW_COUNT=$(printf '%s' "$ALL_FINDINGS" | jq 'length')
 
@@ -487,7 +476,7 @@ Return ONLY JSON of this exact shape:
  \"findings\":[{\"file\":\"path\",\"line\":<int>,\"end_line\":<int>,\"severity\":\"tier1|tier2|tier3|tier4\",\"lens\":\"...\",\"reviewer\":\"...\",\"title\":\"short\",\"detail\":\"why\",\"suggestion\":\"fix\",\"merged_from\":[{\"reviewer\":\"...\",\"lens\":\"...\"}]}]}"
   ARB_RAW="$(call_model sonnet "$ARB_PROMPT")"
   printf '%s' "$ARB_RAW" > "$RUN_DIR/arbiter.raw.txt"
-  ARB_JSON="$(printf '%s' "$ARB_RAW" | extract_json)"
+  ARB_JSON="$(printf '%s' "$ARB_RAW" | python3 "$PANEL_LOGIC" extract-json)"
 else
   # No reviewer findings (or no claude): nothing to arbitrate.
   ARB_JSON="$(jq -cn --arg s "Panel found no issues under the active lenses at risk $RISK." '{summary:$s, findings:[]}')"
@@ -514,9 +503,11 @@ printf '%s' "$RANKED_JSON" > "$RUN_DIR/arbiter.json"   # re-written WITH corrobo
 
 SUMMARY="$(printf '%s' "$RANKED_JSON" | jq -r '.summary // "(no summary)"')"
 FINDINGS="$(printf '%s' "$RANKED_JSON" | jq -c '.findings // []')"
-FCOUNT=$(printf '%s' "$FINDINGS" | jq 'length')
-TIER1_COUNT=$(printf '%s' "$FINDINGS" | jq '[.[] | select(.corroboration_tier == 1)] | length')
-TIER2_COUNT=$(printf '%s' "$FINDINGS" | jq '[.[] | select((.corroboration_tier // 2) == 2)] | length')
+# SPEC-333 (#314): tier counts via panel_logic.py (one call → trivial .total/.tier1/.tier2 plucks).
+TIER_COUNTS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" tier-counts)"
+FCOUNT=$(printf '%s' "$TIER_COUNTS" | jq -r '.total')
+TIER1_COUNT=$(printf '%s' "$TIER_COUNTS" | jq -r '.tier1')
+TIER2_COUNT=$(printf '%s' "$TIER_COUNTS" | jq -r '.tier2')
 ok "arbiter: $FCOUNT finding(s) after dedup (from $RAW_COUNT raw) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT"
 
 # ── POST — one line-level thread per finding, then one summary comment ──────────
@@ -561,16 +552,12 @@ if (( FCOUNT > 0 )); then
   done < <(printf '%s' "$FINDINGS" | jq -c '.[]')
 fi
 
-# ── SPEC-376: render one tier's findings as markdown bullet lines (severity-ordered;
-# FINDINGS is already globally tier-1-first, severity-within-tier from panel_logic.py).
-render_tier_findings() {  # $1 = corroboration_tier (1|2)
-  printf '%s' "$FINDINGS" | jq -r --argjson t "$1" '
-    [.[] | select((.corroboration_tier // 2) == $t)]
-    | map("- **\(.severity // "tier?") / \(.lens // "?")** (\(.corroborating_reviewers // [.reviewer // "panel"] | join(", "))) — `\(.file // "?"):\(.line // 0)` — **\(.title // "")** — \(.detail // "")")
-    | .[]'
-}
-TIER1_FINDINGS="$(render_tier_findings 1)"
-TIER2_FINDINGS="$(render_tier_findings 2)"
+# ── SPEC-333 (#314): render one tier's findings as markdown bullet lines now lives
+# in panel_logic.py (`render-tier`). FINDINGS is already globally tier-1-first,
+# severity-within-tier from panel_logic.py. The former `render_tier_findings` jq
+# filter is removed.
+TIER1_FINDINGS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" render-tier --tier 1)"
+TIER2_FINDINGS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" render-tier --tier 2)"
 
 # Assemble the summary comment.
 SUMMARY_BODY=$(cat <<EOF

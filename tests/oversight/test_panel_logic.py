@@ -37,6 +37,10 @@ rank_findings = panel_logic.rank_findings
 annotate_and_rank = panel_logic.annotate_and_rank
 compute_triage_floor = panel_logic.compute_triage_floor
 compute_sqc_sample = panel_logic.compute_sqc_sample
+extract_json = panel_logic.extract_json
+aggregate_findings = panel_logic.aggregate_findings
+count_tiers = panel_logic.count_tiers
+render_tier_section = panel_logic.render_tier_section
 
 
 # --------------------------------------------------------------------------- #
@@ -375,3 +379,178 @@ def test_sqc_missing_rate_key_not_sampled():
         "roll": -1,
         "rate": 0,
     }
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-333 — extract_json (Spec R1 / AC1-AC4)                                  #
+# --------------------------------------------------------------------------- #
+def test_extract_json_clean():
+    # AC1: a clean JSON string returns the parsed dict directly.
+    assert extract_json('{"findings":[{"file":"a.py","line":5}]}') == {
+        "findings": [{"file": "a.py", "line": 5}]
+    }
+
+
+def test_extract_json_fenced_block():
+    # AC2: a ```json ... ``` fence returns the inner object.
+    raw = 'Sure, here is my review:\n```json\n{"findings":[{"title":"x"}]}\n```\n'
+    assert extract_json(raw) == {"findings": [{"title": "x"}]}
+
+
+def test_extract_json_fenced_block_bare_fence():
+    # Parity: a bare ``` ... ``` fence (no json tag) is also parsed.
+    raw = "```\n{\"findings\":[]}\n```"
+    assert extract_json(raw) == {"findings": []}
+
+
+def test_extract_json_embedded_in_prose():
+    # AC3: leading prose + embedded object + trailing text returns the object.
+    raw = 'I found this: {"findings":[]} and some trailing commentary.'
+    assert extract_json(raw) == {"findings": []}
+
+
+def test_extract_json_no_json_fallback():
+    # AC4: no JSON whatsoever -> fallback {"findings": []}.
+    assert extract_json("there is nothing parseable here") == {"findings": []}
+
+
+def test_extract_json_empty_string_fallback():
+    # Empty input is a benign degrade to the fallback (never raises).
+    assert extract_json("") == {"findings": []}
+
+
+def test_extract_json_top_level_array_returned_as_is():
+    # Parity: a top-level JSON array is returned as a list (caller plucks).
+    assert extract_json('[{"a":1}]') == [{"a": 1}]
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-333 — aggregate_findings (Spec R2 / AC5-AC6)                            #
+# --------------------------------------------------------------------------- #
+def test_aggregate_tags_reviewer_and_lens_in_order():
+    # AC5: agy/correctness (1) + codex/security (2) -> 3 findings, tagged, in order.
+    responses = [
+        {"reviewer": "agy", "lens": "correctness", "raw": {"findings": [{"title": "a"}]}},
+        {
+            "reviewer": "codex",
+            "lens": "security",
+            "raw": {"findings": [{"title": "b"}, {"title": "c"}]},
+        },
+    ]
+    out = aggregate_findings(responses)
+    assert len(out) == 3
+    assert out[0] == {"title": "a", "reviewer": "agy", "lens": "correctness"}
+    assert out[1] == {"title": "b", "reviewer": "codex", "lens": "security"}
+    assert out[2] == {"title": "c", "reviewer": "codex", "lens": "security"}
+
+
+def test_aggregate_missing_findings_key_contributes_zero():
+    # AC6: a raw with no findings key contributes 0.
+    responses = [
+        {"reviewer": "agy", "lens": "correctness", "raw": {"summary": "all good"}},
+        {"reviewer": "codex", "lens": "security", "raw": {"findings": [{"title": "x"}]}},
+    ]
+    out = aggregate_findings(responses)
+    assert out == [{"title": "x", "reviewer": "codex", "lens": "security"}]
+
+
+def test_aggregate_overwrites_echoed_tags():
+    # R2: reviewer/lens are source-of-truth from the response, overwriting any echo.
+    responses = [
+        {
+            "reviewer": "agy",
+            "lens": "correctness",
+            "raw": {"findings": [{"title": "x", "reviewer": "WRONG", "lens": "WRONG"}]},
+        }
+    ]
+    out = aggregate_findings(responses)
+    assert out[0]["reviewer"] == "agy"
+    assert out[0]["lens"] == "correctness"
+
+
+def test_aggregate_does_not_mutate_input():
+    # Purity: the caller's finding dict is not mutated.
+    finding = {"title": "x"}
+    responses = [{"reviewer": "agy", "lens": "correctness", "raw": {"findings": [finding]}}]
+    aggregate_findings(responses)
+    assert "reviewer" not in finding
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-333 — count_tiers (Spec R3a / AC7)                                      #
+# --------------------------------------------------------------------------- #
+def test_count_tiers_basic():
+    # AC7: 1x tier1 + 2x tier2 -> {total:3, tier1:1, tier2:2}.
+    findings = [
+        {"corroboration_tier": 1},
+        {"corroboration_tier": 2},
+        {"corroboration_tier": 2},
+    ]
+    assert count_tiers(findings) == {"total": 3, "tier1": 1, "tier2": 2}
+
+
+def test_count_tiers_missing_field_counts_as_tier2():
+    # Parity with shell `(.corroboration_tier // 2) == 2`: absent -> tier2.
+    findings = [{"corroboration_tier": 1}, {}]
+    assert count_tiers(findings) == {"total": 2, "tier1": 1, "tier2": 1}
+
+
+def test_count_tiers_empty():
+    assert count_tiers([]) == {"total": 0, "tier1": 0, "tier2": 0}
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-333 — render_tier_section (Spec R3b / AC8-AC9)                          #
+# --------------------------------------------------------------------------- #
+def test_render_tier_section_format():
+    # AC8: a tier-1 finding renders a line with `views.py:42` and (agy, codex).
+    findings = [
+        {
+            "corroboration_tier": 1,
+            "severity": "tier1",
+            "lens": "correctness",
+            "corroborating_reviewers": ["agy", "codex"],
+            "file": "views.py",
+            "line": 42,
+            "title": "Missing guard",
+            "detail": "Can return null",
+        }
+    ]
+    out = render_tier_section(findings, 1)
+    assert "`views.py:42`" in out
+    assert "(agy, codex)" in out
+    assert "**tier1 / correctness**" in out
+    assert "**Missing guard**" in out
+    assert "Can return null" in out
+
+
+def test_render_tier_section_empty_tier_returns_empty():
+    # AC9: no tier-1 findings -> empty string.
+    findings = [{"corroboration_tier": 2}]
+    assert render_tier_section(findings, 1) == ""
+
+
+def test_render_tier_section_reviewer_fallback_chain():
+    # Fallback: corroborating_reviewers absent -> [reviewer]; absent -> ["panel"].
+    findings = [
+        {"corroboration_tier": 2, "reviewer": "agy", "title": "t"},
+        {"corroboration_tier": 2, "title": "u"},
+    ]
+    out = render_tier_section(findings, 2).splitlines()
+    assert "(agy)" in out[0]
+    assert "(panel)" in out[1]
+
+
+def test_render_tier_section_tier2_includes_missing_field():
+    # Parity: tier-2 selection includes findings missing corroboration_tier.
+    findings = [{"title": "x"}]
+    out = render_tier_section(findings, 2)
+    assert "**x**" in out
+
+
+def test_render_tier_section_defaults():
+    # Defaults: severity tier?, lens ?, file ?, line 0, title/detail empty.
+    findings = [{"corroboration_tier": 1}]
+    out = render_tier_section(findings, 1)
+    assert "**tier? / ?**" in out
+    assert "`?:0`" in out
