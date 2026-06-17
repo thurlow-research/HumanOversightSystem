@@ -414,3 +414,15 @@ Completing D47's theme into the manifest path: the two post-Phase-B manifest-ass
 - Adds mechanical enforcement: `check_agents_static.sh` section 6 fails any CORE file that lacks the carve-out text.
 
 **Status:** Implemented 2026-06-16 — carve-out clause applied to all 18 CORE agent files; `check_agents_static.sh` section 6 enforcement added.
+
+### D51 — 2026-06-17: Agent front-matter is fully HOS-canonical on upgrade (#240)
+
+**Problem.** On upgrade, `hos_install.sh` replaces agent file front-matter with the HOS-template version (consistent with D8 — out-of-region content is HOS-canonical). This silently reverts any consumer edits to fields like `model` or `tools`. The question is whether some front-matter fields (e.g. `model`, `tools`) should be consumer-overridable.
+
+**Decision.** Agent front-matter is **fully HOS-canonical**. Consumers must not edit agent front-matter. The `model`, `tools`, `name`, `description`, and `dispatches:` fields are all HOS-owned.
+
+**Rationale.** (a) Front-matter fields interact: a consumer changing `tools:` without understanding which tools a reviewer needs could silently degrade the review. (b) `model` selection affects correctness, safety, and cost in ways the oversight pipeline accounts for — consumer overrides could break guarantees. (c) Consumers who need a different model or tool set for cost reasons should fork the agent to their PROJECT region or use the pack system. (d) Simplicity: a uniform "front-matter = HOS-owned" rule is easy to document, audit, and enforce. (e) If a genuine consumer need for `model` overrides emerges (cost gating, specific use cases), that is a future pack feature with an explicit configuration surface, not ad-hoc front-matter editing.
+
+**Alternative considered.** A whitelist of consumer-overridable fields (`model`, `tools`) was considered but rejected because it introduces a partial ownership model that is harder to document and enforce, and because there is no demonstrated consumer need yet.
+
+**Consequences.** Document in `docs/CUSTOMIZATION.md` that agent front-matter must not be edited by consumers. The installer's upgrade behavior is correct as-is. Revisit if a real consumer need for model/tool overrides emerges in a future release.
