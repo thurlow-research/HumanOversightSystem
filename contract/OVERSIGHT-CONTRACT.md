@@ -186,6 +186,19 @@ Notes: {one paragraph: what was found and how resolved. Empty if clean.}
 
 **`Critical_findings_resolved`** is required for `security` and `privacy` roles; optional (N/A) for all others. When `true`, it signals that the evaluator should add the finding to the conditional-items list for human review before merge — it is a Phase 2 quality signal, not a Phase 1 compliance check.
 
+**`Out_of_scope_commits:`** (optional structured field — any reviewer role, SPEC-328)
+When a reviewer identifies a commit that does not belong in the PR (content not traceable to the PR's stated issue), the reviewer populates this field with one entry per flagged commit. Its presence forces `Status: ESCALATED` — a reviewer MUST NOT set `Status: APPROVED` while this field is populated. The field is absent or explicitly `none` in the clean state. Format:
+
+```
+Out_of_scope_commits:
+  - sha: <short SHA or full SHA>
+    files: [<list of affected file paths>]
+    stated_issue: <issue number or "unknown">
+    reason: <one sentence — why this commit does not belong in this PR>
+```
+
+The `Out_of_scope_commits:` field is cleared ONLY by the originating reviewer (the reviewer whose entry carries the flag) after re-reviewing the updated diff and confirming the out-of-scope commit is no longer in the PR's diff. No other agent, artifact, or automated process edits the originating reviewer's register entry to clear this flag. A human authorization via GitHub issue (SPEC-328 R2.5) does not cause the field to be edited — the overseer evaluates the field and the authorization surface independently; the field persists as written by the reviewer.
+
 **`Notifications_acknowledged`** (SPEC-85) is **required for the `ui`, `a11y`, and `ops` roles** and optional (may be omitted or recorded as `N/A`) for every other role — `code-review`, `security`, `privacy`, `test-unit`, `test-system`, `process`, `infra`, `reliability` do not receive designer notifications and need not include it. It records the inter-agent notification artifacts (`.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md`, §1) the reviewer read and acted on before signing off:
 
 ```markdown
@@ -400,6 +413,8 @@ Both requirements apply to all projects that install this framework.
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
 | `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp`, `reason_category` (`REGISTER_GAP \| COMPLIANCE_FAILURE \| SPEC_AMBIGUITY \| OTHER`), `summary` |
 | `human-required` | Overseer escalated a PR to a human (label `needs-human` + §8.2 comment); PR left open. Logs a non-merge disposition the overseer already performs so all non-merge dispositions are queryable/categorizable. | overseer | `pr`, `step`, `reason_category` (`FINDINGS_NOT_RESOLVED \| ESCALATION \| GATE_UNSATISFIED \| OTHER`), `summary`, `agent`, `comment_posted` |
+| `out-of-scope-commit` (phase: `detected`) | A reviewer flagged one or more commits as not belonging in the PR; the overseer bounced or escalated and confirmed the comment was posted before appending this event. The detection event is NOT a standalone event emitted independently — it is appended in the same halt-on-failure unit as the bounce or escalation comment post (SPEC-328 R4.1). `comment_posted` is always `true` in a committed detection event. | overseer | `pr`, `step`, `flagged_by`, `commits` (array of `{sha, files, stated_issue}`), `disposition` (`bounced\|escalated`), `comment_posted` (always `true`) |
+| `out-of-scope-commit` (phase: `resolved`) | The out-of-scope commit was resolved — either by cross-branch PR with revert (worker completed R3.2 workflow) or by human authorization via GitHub issue (R2.5 verification passed). Emitted as a separate standalone event when resolution is confirmed. | overseer or worker | `pr`, `step`, `resolution` (`cherry-pick-pr-opened\|human-accepted`), `authorized_by`, `authorizing_issue` (required when `human-accepted`; null when `cherry-pick-pr-opened`), `cross_branch_pr` (required when `cherry-pick-pr-opened`; null when `human-accepted`), `commits` |
 
 The two non-merge dispositions carry structured rationale (SPEC-378). The `reason_category` and `summary` values in each event MUST match the values written into the corresponding PR comment (the `pr-bounced` bounce comment via `record_pr_bounce()`, the `human-required` §8.2 escalation comment). The `summary` is a templated one-sentence description, not model-generated. Both events are appended only after the comment is confirmed posted (`comment_posted: true`); if the comment post or the audit append fails, the overseer halts rather than finalizing the disposition (audit-trail completeness). The `human-required` `GATE_UNSATISFIED` value is the SPEC-378 `HUMAN_REQUIRED` reason renamed (architect binding) to avoid colliding with the disposition name. Extended `pr-bounced` schema:
 
@@ -433,6 +448,49 @@ New `human-required` schema:
   "comment_posted": true
 }
 ```
+
+New `out-of-scope-commit` (phase: `detected`) schema (SPEC-328):
+
+```json
+{
+  "event": "out-of-scope-commit",
+  "phase": "detected",
+  "pr": "<PR number or URL>",
+  "step": "<step id>",
+  "flagged_by": "<reviewer agent name>",
+  "commits": [
+    {
+      "sha": "<commit SHA>",
+      "files": ["<file path>", "..."],
+      "stated_issue": "<issue number or unknown>"
+    }
+  ],
+  "disposition": "bounced | escalated",
+  "timestamp": "<ISO-8601>",
+  "comment_posted": true
+}
+```
+
+`comment_posted` is always `true` in a committed detection event — a detection event with `comment_posted: false` is not a valid log entry and MUST NOT be written. The detection event is appended only after the bounce or escalation comment is confirmed posted; if the comment post fails, the detection event is not written and the overseer halts.
+
+New `out-of-scope-commit` (phase: `resolved`) schema (SPEC-328):
+
+```json
+{
+  "event": "out-of-scope-commit",
+  "phase": "resolved",
+  "pr": "<PR number or URL>",
+  "step": "<step id>",
+  "resolution": "cherry-pick-pr-opened | human-accepted",
+  "authorized_by": "<human name or agent name>",
+  "authorizing_issue": "<GitHub issue number — required when human-accepted; null when cherry-pick-pr-opened>",
+  "cross_branch_pr": "<PR number of the cross-branch PR — required when cherry-pick-pr-opened; null when human-accepted>",
+  "commits": ["<sha>", "..."],
+  "timestamp": "<ISO-8601>"
+}
+```
+
+`cross_branch_pr` and `authorizing_issue` are mutually exclusive for a given resolution value: `cherry-pick-pr-opened` requires `cross_branch_pr` and omits `authorizing_issue`; `human-accepted` requires `authorizing_issue` and omits `cross_branch_pr`. The `human-accepted` resolution is only written after the overseer's GitHub API verification (SPEC-328 R2.5 C3/C4) confirms a qualifying human authorization comment exists.
 
 **Why this matters (ratchet + audit completeness):** the three "non-APPROVED" states — `gate-suspended` (human chose to skip), `gate-na` (not applicable), `validator-failure` (tried and failed) — are genuinely different and currently invisible if not logged. A complete audit trail records all of them. Note the ratchet: `gate-suspended` requires a human (`authorized_by`); `gate-auto-reenabled` does not (re-enabling is the safe direction). See `research/findings/ratchet-principle.md` and `research/findings/explicit-na-audit-entries.md`.
 

@@ -211,6 +211,58 @@ When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-
 4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
 5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
 
+### Out-of-scope commit bounce response (SPEC-328)
+
+When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reason_category` is `COMPLIANCE_FAILURE` and the summary names a commit SHA), choose one of the two resolution options presented in the bounce comment:
+
+**Option A — Cross-branch PR with revert:**
+
+1. Identify the correct target branch from the `stated_issue` field in the `Out_of_scope_commits:` register entry.
+   - If the target branch does not exist → file a `needs-human` issue (standard label + 4-step "How to authorize" footer). Do NOT create the branch speculatively.
+   - If the target branch is in an indeterminate state → file a `needs-human` issue.
+
+2. Revert the out-of-scope commit from the current PR branch:
+   ```
+   git revert <sha>
+   ```
+   This creates a new revert commit. Do NOT force-push or rebase interactively — those rewrite history visible to reviewers and destroy the audit trail.
+
+3. Create the intermediate branch for the cherry-pick. Name it exactly:
+   ```
+   fix/<cid>-out-of-scope-<sha8>
+   ```
+   where `<cid>` is the originating PR's correlation ID and `<sha8>` is the first 8 characters of the out-of-scope commit SHA. Branch from the target branch.
+
+4. Cherry-pick the out-of-scope commit:
+   ```
+   git cherry-pick <sha>
+   ```
+
+5. Open a PR against the target branch. The PR MUST:
+   - Have a title starting with `[AI: overseer]`
+   - Reference in the body: (a) the originating PR number and its correlation ID, and (b) the out-of-scope commit SHA
+
+6. Update the sign-off register to indicate the revert is pushed and the cross-branch PR is open, so the originating reviewer can re-review the updated diff.
+
+7. The originating reviewer (the reviewer whose register entry carries `Out_of_scope_commits:`) must re-review the updated diff and remove the field (or set it to `none`) and update their `Status:` before you re-submit. Do NOT modify the originating reviewer's register entry yourself — only the originating reviewer may clear it.
+
+8. After the originating reviewer clears the flag, re-run step 8.9 and re-submit the current PR.
+
+**Option B — Human authorization via GitHub issue:**
+
+1. File a `needs-human` issue with the 4-step authorization protocol:
+   (1) Identify the flagged SHA(s) and affected file(s).
+   (2) State the reason the commit is out-of-scope.
+   (3) Request human authorization to accept it as intentional.
+   (4) Await the human's explicit authorization comment on that issue.
+   Always append the standard "How to authorize" block (see worker interactive guidance).
+
+2. Do NOT re-submit the PR until the human's authorization comment appears on that issue.
+
+3. After the human comments, re-submit — the overseer will verify the authorization via the GitHub API (it checks that the issue exists, carries the `needs-human` label, and has a qualifying human comment that post-dates your request). Ensure the issue number is recorded so the resolution audit event can reference it.
+
+**Credential guard:** Before `git push` to the intermediate branch or `gh pr create` for the cross-branch PR, verify `gh api user --jq .login` returns `HOSWorkerTutelare`. Do NOT push or open the cross-branch PR under human credentials (identity guard applies — #363).
+
 ---
 
 ## Release authorization protocol (NG3b — both modes)
