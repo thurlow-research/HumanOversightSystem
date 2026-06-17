@@ -9,6 +9,14 @@ This document defines what any compliant agent team must produce for the Human O
 All files live relative to the project root. The HOS reads these locations; compliant teams must write to them.
 
 ```
+signoffs/                            ← COMMITTED to project repo (not gitignored)
+  README.md
+  <step-id>/                        ← one subdirectory per build step (id from step-manifest.yaml)
+    <role>.stamp                    ← one stamp per role per step; committed. The gate
+                                       (signoff_gate.py) reads its git commit timestamp.
+                                       Per-step subdirectories keep concurrent PRs for
+                                       different steps from colliding (#366).
+
 audit/                               ← COMMITTED to project repo (not gitignored)
   oversight-log.jsonl               ← append-only audit trail; one JSON event per line
   step-{N}-summary.md               ← human-readable per-step report (generated at merge)

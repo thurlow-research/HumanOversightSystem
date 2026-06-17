@@ -355,6 +355,38 @@ if [[ ! -d "$TARGET_REPO/.git" ]]; then
   exit 1
 fi
 
+# ── Flat sign-off stamp detection — fail-closed migration gate (#366) ─────────
+# Per-step stamp subdirectories (signoffs/<step-id>/<role>.stamp) replaced the
+# flat layout (signoffs/<role>.stamp). A project still carrying flat top-level
+# stamps cannot satisfy the new gate (it looks under signoffs/<step-id>/), and a
+# silent skip would leave the operator unable to pass the gate with no idea why.
+# So we HARD-STOP before writing any framework file and print the migration
+# steps. --force does NOT waive this: it is a contract-integrity migration, not
+# a file-overwrite preference. compgen -G matches only the top level (no
+# recursion), so already-migrated signoffs/<step-id>/<role>.stamp does not trip.
+_flat_stamps=()
+while IFS= read -r _fs; do
+  [[ -n "$_fs" ]] && _flat_stamps+=("$_fs")
+done < <(compgen -G "$TARGET_REPO/signoffs/*.stamp" 2>/dev/null || true)
+if (( ${#_flat_stamps[@]} > 0 )); then
+  err "Flat sign-off stamps detected — per-step migration required (#366)."
+  echo "    The stamp layout changed from signoffs/<role>.stamp to"
+  echo "    signoffs/<step-id>/<role>.stamp. The sign-off gate now reads the"
+  echo "    per-step subdirectories; these top-level stamps will not be found:"
+  for _fs in "${_flat_stamps[@]}"; do
+    echo "      - signoffs/$(basename "$_fs")"
+  done
+  echo ""
+  echo "    Migrate before re-running the installer:"
+  echo "      1. For each signoffs/<role>.stamp, find which build step it signed"
+  echo "         (branch build history or .claudetmp/signoffs/ register files)."
+  echo "      2. mv signoffs/<role>.stamp signoffs/<step-id>/<role>.stamp"
+  echo "      3. git add signoffs/ && git commit -m 'migrate: per-step stamp subdirectories (#366)'"
+  echo "    The migration commit time becomes the stamps' signed time; source"
+  echo "    files committed after it in the same PR will need re-signing."
+  exit 1
+fi
+
 # ── Helper: copy file (skip if exists unless --force) ─────────────────────────
 # Use cp_file for CONSUMER-owned files that should not be silently overwritten.
 # Use cp_framework_file for HOS-owned (WHOLE) files that must always be refreshed

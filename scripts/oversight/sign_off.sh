@@ -2,16 +2,20 @@
 # sign_off.sh — write a validation-suite sign-off stamp.
 #
 # Each agent in the validation suite runs this when it approves a change. It
-# writes signoffs/<role>.stamp. The stamp's *git commit timestamp* is what the
-# gate checks (scripts/oversight/signoff_gate.py), so the caller must commit the
-# stamp together with — or after — the changes it signs off on.
+# writes signoffs/<step-id>/<role>.stamp. The stamp's *git commit timestamp* is
+# what the gate checks (scripts/oversight/signoff_gate.py), so the caller must
+# commit the stamp together with — or after — the changes it signs off on.
 #
 # Usage:
-#   scripts/oversight/sign_off.sh <role> [--status STATUS] [--agent NAME] [--note "text"]
+#   scripts/oversight/sign_off.sh <role> --step <step-id> [--status STATUS] [--agent NAME] [--note "text"]
 #
 #   <role>      One of the role keys in contract/step-manifest.yaml role_mappings
 #               (code-review, security, privacy, test-unit, test-system, process,
 #                infra, ui, a11y).
+#   --step      REQUIRED. The build-step id from contract/step-manifest.yaml
+#               (e.g. 1, auth, scaffold). Filesystem-safe: alphanumeric and
+#               hyphen only. Stamps are written under signoffs/<step-id>/ so that
+#               concurrent PRs for different steps never collide (#366).
 #   --status    APPROVED (default) | CONDITIONAL | NOT_APPLICABLE
 #   --agent     Override the agent name (defaults to the manifest mapping).
 #   --note      Free-text note recorded in the stamp.
@@ -19,7 +23,7 @@
 # The stamp is written but NOT committed — commit it yourself so the timestamp
 # is authoritative:
 #
-#   git add signoffs/<role>.stamp && git commit
+#   git add signoffs/<step-id>/<role>.stamp && git commit
 #
 # Exit 0 on success, 2 on usage/role error.
 set -euo pipefail
@@ -43,7 +47,7 @@ else
 fi
 
 usage() {
-    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit "${1:-2}"
 }
 
@@ -54,8 +58,10 @@ ROLE="$1"; shift
 STATUS="APPROVED"
 AGENT=""
 NOTE=""
+STEP=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --step)   STEP="${2:?--step needs a value}"; shift 2 ;;
         --status) STATUS="${2:?--status needs a value}"; shift 2 ;;
         --agent)  AGENT="${2:?--agent needs a value}"; shift 2 ;;
         --note)   NOTE="${2:?--note needs a value}"; shift 2 ;;
@@ -63,6 +69,19 @@ while [[ $# -gt 0 ]]; do
         *) echo "sign_off: unknown argument: $1" >&2; usage 2 ;;
     esac
 done
+
+# --step is REQUIRED (#366, OQ-366-01). No default — a default silently
+# misroutes a stamp to the wrong step.
+if [[ -z "$STEP" ]]; then
+    echo "sign_off: --step <step-id> is required (the build-step id from step-manifest.yaml)." >&2
+    usage 2
+fi
+# Filesystem- and URL-safe: alphanumeric and hyphen only, no leading hyphen,
+# no slash, no space. Blocks path traversal / stray separators in the stamp path.
+if [[ ! "$STEP" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+    echo "sign_off: invalid --step '$STEP' (allowed: alphanumeric and hyphen, no leading hyphen)." >&2
+    exit 2
+fi
 
 STATUS="$(echo "$STATUS" | tr '[:lower:]' '[:upper:]')"
 case "$STATUS" in
@@ -89,8 +108,9 @@ PY
 )"
 [[ -n "$AGENT" ]] || AGENT="$RESOLVED_AGENT"
 
-mkdir -p "$SIGNOFFS_DIR"
-STAMP="$SIGNOFFS_DIR/${ROLE}.stamp"
+STEP_DIR="$SIGNOFFS_DIR/$STEP"
+mkdir -p "$STEP_DIR"
+STAMP="$STEP_DIR/${ROLE}.stamp"
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "uncommitted")"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

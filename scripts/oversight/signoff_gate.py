@@ -10,7 +10,7 @@ disk. The commit timestamp is set when `git commit` runs, so the supported
 workflow is:
 
   1. Make changes (not yet committed).
-  2. Run the validation suite → each agent writes signoffs/<role>.stamp.
+  2. Run the validation suite → each agent writes signoffs/<step-id>/<role>.stamp.
   3. git add -A && git commit        ← changed files AND stamps share commit time T.
   4. Push.
   5. Gate: max(changed-file commit time) <= min(stamp commit time)  → PASS.
@@ -19,13 +19,19 @@ Two-commit variant (commit code at T1, then commit stamps at T2 > T1) also
 passes. The only case that fails is committing *new* changes after a stamp
 without re-signing — exactly what the gate exists to catch.
 
-Required roles are read from contract/step-manifest.yaml: the union of every
-step's `required_signoffs`, mapped to agent names via `role_mappings`. That
-manifest is the single source of truth for who is in the validation suite.
+Stamps are per-step (#366): signoffs/<step-id>/<role>.stamp. This keeps
+concurrent PRs for different steps from colliding on a flat namespace.
+
+Required roles are read per step from contract/step-manifest.yaml's
+`required_signoffs`, mapped to agent names via `role_mappings`. The manifest is
+the authoritative step enumeration source — deploy mode iterates it, never the
+disk.
 
 Modes:
-  --base <ref>   PR/CI mode. Compared file set = files changed vs. merge-base(ref).
-  --all          Deploy mode. Compared file set = every tracked file.
+  --base <ref> --step <id>   PR/CI mode. Checks only step <id>'s stamps against
+                             files changed vs. merge-base(ref). --step required.
+  --all                      Deploy mode. Iterates every manifest step against
+                             every tracked file.
 
 A stamp's status must be APPROVED, CONDITIONAL, or NOT_APPLICABLE. NOT_APPLICABLE
 still has to be re-affirmed (re-committed) after later changes, so a role can
@@ -128,8 +134,14 @@ def commit_time(root: Path, path: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
-def load_required_roles(manifest_path: Path) -> tuple[list[str], dict[str, str]]:
-    """Return (sorted required role keys, role -> agent-name map) from the manifest."""
+def load_manifest(manifest_path: Path) -> tuple[dict[str, str], list[dict]]:
+    """Return (role -> agent-name map, list of step dicts) from the manifest.
+
+    Each step dict is {"id": str, "required": [role, ...]}. Step ids are
+    stringified (manifest ids may be ints). This is the *authoritative* step
+    enumeration source — the deploy-mode gate iterates this, never the disk
+    (#366, REQ-366-06).
+    """
     try:
         manifest = yaml.safe_load(manifest_path.read_text())
     except FileNotFoundError:
@@ -140,11 +152,14 @@ def load_required_roles(manifest_path: Path) -> tuple[list[str], dict[str, str]]
         sys.exit(2)
 
     role_map = manifest.get("role_mappings", {}) or {}
-    roles: set[str] = set()
+    steps: list[dict] = []
     for step in manifest.get("steps", []) or []:
-        for role in step.get("required_signoffs", []) or []:
-            roles.add(role)
-    return sorted(roles), role_map
+        step_id = step.get("id")
+        if step_id is None:
+            continue
+        required = list(step.get("required_signoffs", []) or [])
+        steps.append({"id": str(step_id), "required": required})
+    return role_map, steps
 
 
 def parse_stamp_status(path: Path) -> str | None:
@@ -208,6 +223,82 @@ def is_oversight_artifact(path: str) -> bool:
     return path.startswith(OVERSIGHT_ARTIFACT_PREFIXES)
 
 
+def check_step(
+    root: Path,
+    step_id: str,
+    required_roles: list[str],
+    role_map: dict[str, str],
+    newest_file_time: int,
+    log,
+    failures: list[str],
+) -> None:
+    """Check every required role for one step against signoffs/<step-id>/.
+
+    Appends a human-readable message to `failures` for each unsatisfied role
+    (missing stamp, invalid status, uncommitted stamp, or stamp older than the
+    newest changed file). Mirrors the per-role checks the gate has always run,
+    now scoped to a single step's subdirectory (#366).
+    """
+    for role in sorted(required_roles):
+        agent = role_map.get(role, "?")
+        rel = f"{SIGNOFFS_DIR}/{step_id}/{role}{STAMP_SUFFIX}"
+        stamp_path = root / rel
+        agent_label = f"step {step_id}/{role} ({agent})"
+
+        if not stamp_path.exists():
+            log(f"  ✗ {agent_label}: MISSING stamp {rel}")
+            failures.append(f"{agent_label}: no stamp at {rel}")
+            continue
+
+        status = parse_stamp_status(stamp_path)
+        if status not in VALID_STATUSES:
+            log(f"  ✗ {agent_label}: invalid status {status!r}")
+            failures.append(
+                f"{agent_label}: status must be one of "
+                f"{sorted(VALID_STATUSES)}, got {status!r}"
+            )
+            continue
+
+        stamp_time = commit_time(root, rel)
+        if stamp_time == 0:
+            log(f"  ✗ {agent_label}: stamp not committed yet")
+            failures.append(
+                f"{agent_label}: stamp {rel} exists but has no commit — "
+                f"commit it so it gets an authoritative timestamp"
+            )
+            continue
+
+        if stamp_time < newest_file_time:
+            delta = newest_file_time - stamp_time
+            log(f"  ✗ {agent_label}: STALE — signed {delta}s before newest change")
+            failures.append(
+                f"{agent_label}: stamp ({stamp_time}) is older than the newest "
+                f"changed file ({newest_file_time}) — re-sign after changes"
+            )
+            continue
+
+        log(f"  ✓ {agent_label}: {status} @ commit {stamp_time}")
+
+
+def orphan_step_dirs(root: Path, manifest_step_ids: set[str]) -> list[str]:
+    """Subdirectories of signoffs/ whose name is not a manifest step-id.
+
+    An orphan directory means a step was removed from the manifest after its
+    stamps were committed — a contract-integrity failure (#366, REQ-366-09).
+    Non-directory entries (README.md, a stray top-level flat stamp) are ignored.
+    """
+    base = root / SIGNOFFS_DIR
+    if not base.is_dir():
+        return []
+    orphans: list[str] = []
+    for child in sorted(base.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name not in manifest_step_ids:
+            orphans.append(child.name)
+    return orphans
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate validation-suite sign-offs against changed files.",
@@ -224,6 +315,15 @@ def main() -> int:
         help="Deploy mode: compare against every tracked file.",
     )
     parser.add_argument(
+        "--step",
+        metavar="ID",
+        help=(
+            "Build-step id (from step-manifest.yaml). REQUIRED in PR mode (--base): "
+            "only that step's signoffs/<step-id>/ are checked. Ignored in --all "
+            "(deploy iterates the whole manifest)."
+        ),
+    )
+    parser.add_argument(
         "--manifest",
         default="contract/step-manifest.yaml",
         help="Path to step-manifest.yaml (default: contract/step-manifest.yaml).",
@@ -238,14 +338,22 @@ def main() -> int:
     if not args.all and not args.base:
         parser.error("one of --base REF or --all is required")
 
+    # --step is REQUIRED in PR mode (#366, OQ-366-01). A default would silently
+    # route the gate at the wrong step.
+    if args.base and not args.step:
+        parser.error("--step <id> is required in PR mode (--base)")
+
     root = repo_root(Path.cwd())
     manifest_path = (root / args.manifest).resolve()
-    required_roles, role_map = load_required_roles(manifest_path)
+    role_map, steps = load_manifest(manifest_path)
+    step_ids = {s["id"] for s in steps}
 
-    if not required_roles:
+    # Misconfiguration guard: a manifest that declares no sign-offs *anywhere*.
+    # A single step with an empty required_signoffs list is legal.
+    if not any(s["required"] for s in steps):
         sys.stderr.write(
-            "signoff_gate: no required_signoffs found in manifest — refusing to "
-            "pass an empty validation suite.\n"
+            "signoff_gate: no required_signoffs found in any manifest step — "
+            "refusing to pass an empty validation suite.\n"
         )
         return 2
 
@@ -255,7 +363,9 @@ def main() -> int:
 
     log("=== sign-off gate ===")
     log(f"manifest: {args.manifest}")
-    log(f"mode:     {'deploy (--all)' if args.all else f'pr (--base {args.base})'}")
+    log(
+        f"mode:     {'deploy (--all)' if args.all else f'pr (--base {args.base} --step {args.step})'}"
+    )
     log("")
 
     # ── 1. Working tree must be clean of unsigned changes ────────────────────
@@ -293,46 +403,47 @@ def main() -> int:
         log("no non-sign-off files in scope.")
     log("")
 
-    # ── 3. Every required role needs a fresh, approved, committed stamp ──────
-    log(f"required validation suite ({len(required_roles)} roles):")
-    for role in required_roles:
-        agent = role_map.get(role, "?")
-        rel = f"{SIGNOFFS_DIR}/{role}{STAMP_SUFFIX}"
-        stamp_path = root / rel
-        agent_label = f"{role} ({agent})"
+    # ── 3. Orphan-directory sweep (both modes, #366 REQ-366-09) ──────────────
+    # A signoffs/<dir>/ that is not a manifest step-id means a step was removed
+    # from the manifest after its stamps were committed — a contract-integrity
+    # failure. Warn-and-pass is prohibited; this is a hard fail.
+    for orphan in orphan_step_dirs(root, step_ids):
+        log(f"  ✗ orphan step directory: {SIGNOFFS_DIR}/{orphan}/ (no manifest step '{orphan}')")
+        failures.append(
+            f"orphan step directory {SIGNOFFS_DIR}/{orphan}/ has no matching step "
+            f"in the manifest — a step was removed after stamps were committed; "
+            f"remove the directory or restore the manifest step"
+        )
 
-        if not stamp_path.exists():
-            log(f"  ✗ {agent_label}: MISSING stamp {rel}")
-            failures.append(f"{agent_label}: no stamp at {rel}")
-            continue
-
-        status = parse_stamp_status(stamp_path)
-        if status not in VALID_STATUSES:
-            log(f"  ✗ {agent_label}: invalid status {status!r}")
+    # ── 4. Select which steps to check ───────────────────────────────────────
+    if args.all:
+        # Deploy mode: manifest-authoritative. Iterate every manifest step;
+        # disk enumeration is never the source (#366 REQ-366-06, fail-open risk).
+        steps_to_check = [s for s in steps if s["required"]]
+    else:
+        # PR mode: the one requested step. An unknown step is a hard fail
+        # (#366 REQ-366-09 applies to PR mode too).
+        if args.step not in step_ids:
+            log(f"  ✗ unknown step '{args.step}' (not in manifest)")
             failures.append(
-                f"{agent_label}: status must be one of " f"{sorted(VALID_STATUSES)}, got {status!r}"
+                f"--step '{args.step}' has no matching step in the manifest"
             )
-            continue
+            steps_to_check = []
+        else:
+            steps_to_check = [s for s in steps if s["id"] == args.step]
 
-        stamp_time = commit_time(root, rel)
-        if stamp_time == 0:
-            log(f"  ✗ {agent_label}: stamp not committed yet")
-            failures.append(
-                f"{agent_label}: stamp {rel} exists but has no commit — "
-                f"commit it so it gets an authoritative timestamp"
-            )
-            continue
-
-        if stamp_time < newest_file_time:
-            delta = newest_file_time - stamp_time
-            log(f"  ✗ {agent_label}: STALE — signed {delta}s before " f"{newest_file} changed")
-            failures.append(
-                f"{agent_label}: stamp ({stamp_time}) is older than changed file "
-                f"{newest_file} ({newest_file_time}) — re-sign after changes"
-            )
-            continue
-
-        log(f"  ✓ {agent_label}: {status} @ commit {stamp_time}")
+    # ── 5. Every required role per selected step needs a fresh committed stamp ─
+    for step in steps_to_check:
+        log(f"step {step['id']} required suite ({len(step['required'])} roles):")
+        check_step(
+            root,
+            step["id"],
+            step["required"],
+            role_map,
+            newest_file_time,
+            log,
+            failures,
+        )
 
     log("")
     if failures:
