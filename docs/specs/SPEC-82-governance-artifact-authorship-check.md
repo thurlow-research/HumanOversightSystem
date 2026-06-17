@@ -1,6 +1,6 @@
 # SPEC-82: Retrospective Audit of Governance-Artifact Authorship
 
-**Status:** Draft — for architect review
+**Status:** Revised — ready for architect re-review
 **Issue:** #82
 **Author:** pm-agent
 **Date:** 2026-06-17
@@ -58,9 +58,11 @@ This spec covers:
    touching that file carries an email address matching a known bot account.
 
 2. **Known bot account list**: the set of email addresses the evaluator treats
-   as bot-authored. This list is sourced from `config.sh` (runtime resolution,
-   not hardcoded in the agent). The variable names are `OVERSIGHT_ACCOUNT` and
-   `WORKER_ACCOUNT`; the evaluator reads their git-configured email addresses.
+   as bot-authored. The bot account usernames are sourced from `BOT_ACCOUNTS`
+   in `scripts/framework/machine-accounts.env` (a space-separated list of
+   GitHub usernames). The corresponding commit email addresses are carried in
+   `BOT_WORKER_EMAIL` and `BOT_OVERSEER_EMAIL` in that same file. If those
+   email fields are absent or empty, the check is skipped (fail-open).
 
 3. **COMPLIANCE WARN (not FAIL) outcome**: a governance artifact whose last
    commit was authored by a known bot account produces a COMPLIANCE WARN and
@@ -100,29 +102,34 @@ This spec does NOT cover:
 
 ### R1 — Known bot account resolution
 
-**R1.1** The evaluator must resolve the bot account email addresses at runtime
-from `config.sh`. It must not hardcode any account identifiers. The variables
-to read are `OVERSIGHT_ACCOUNT` and `WORKER_ACCOUNT`.
+**R1.1** The evaluator must resolve the bot account identifiers at runtime
+from `scripts/framework/machine-accounts.env`. It must not hardcode any
+account identifiers. The variable to read for bot usernames is `BOT_ACCOUNTS`
+(a space-separated list of GitHub usernames). The variables to read for bot
+commit email addresses are `BOT_WORKER_EMAIL` and `BOT_OVERSEER_EMAIL`.
 
-**R1.2** The evaluator constructs the known-bot set as the git email addresses
-associated with those account names. It does this by reading the git config for
-those accounts or, if unavailable, reading the configured values directly from
-`config.sh`. The exact resolution mechanism is an implementation detail; the
-requirement is that the set is non-empty whenever those variables are defined.
+**R1.2** The evaluator constructs the known-bot email set from `BOT_WORKER_EMAIL`
+and `BOT_OVERSEER_EMAIL` as defined in `machine-accounts.env`. These are the
+email addresses that appear in `git log --format="%ae"` for commits made by
+the bot accounts. The requirement is that the set is non-empty when at least
+one of those email variables is defined and non-empty.
 
-**R1.3** If `OVERSIGHT_ACCOUNT` and `WORKER_ACCOUNT` are both undefined or
-empty in `config.sh` (e.g., a project that does not use unattended workers),
-the authorship check is **skipped entirely** for that evaluation run. A project
-without named bot accounts has no credible way to distinguish bot commits from
-human commits by email, so the check is a no-op rather than a noise source.
-The evaluator must note: "Authorship check skipped — no bot accounts
-configured in config.sh."
+**R1.3** If `BOT_WORKER_EMAIL` and `BOT_OVERSEER_EMAIL` are both undefined or
+empty in `machine-accounts.env` (e.g., a project whose bot commit emails have
+not yet been configured), the authorship check is **skipped entirely** for
+that evaluation run. A project without configured bot email addresses has no
+credible way to distinguish bot commits from human commits by email, so the
+check is a no-op rather than a noise source. The evaluator must note:
+"Authorship check skipped — no bot commit emails configured in
+machine-accounts.env (BOT_WORKER_EMAIL and BOT_OVERSEER_EMAIL are unset)."
 
-**R1.4** Additional bot email addresses may be registered in `config.sh` under
-a `BOT_ACCOUNT_EMAILS` variable (a space-separated list). When present, the
-evaluator adds those addresses to the known-bot set without replacing the
-`OVERSIGHT_ACCOUNT`/`WORKER_ACCOUNT` entries. This is an extension point for
-projects that use additional machine accounts.
+**R1.4** `BOT_ACCOUNTS` (the space-separated username set in
+`machine-accounts.env`) is the canonical bot-identity list used by other
+framework tooling (e.g. `require_human_approval.py`). The evaluator sources
+the same file to stay consistent with the rest of the framework's bot
+detection, but uses the `_EMAIL` fields — not usernames — for the `git log`
+author-email comparison, since `git log --format="%ae"` returns email
+addresses, not GitHub usernames.
 
 ### R2 — Artifact list and per-artifact check
 
@@ -160,10 +167,10 @@ agent created the file in the working tree without committing it, which is the
 simpler form of unauthorized authorship.
 
 **R2.4** If the most recent commit's author email (`%ae`) is in the known-bot
-set (case-insensitive comparison), the evaluator must emit a **COMPLIANCE
-WARN**:
+email set (case-insensitive comparison against `BOT_WORKER_EMAIL` and
+`BOT_OVERSEER_EMAIL`), the evaluator must emit a **COMPLIANCE WARN**:
 "Governance artifact `{path}` — most recent commit authored by known bot
-account `{email}` (`{name}`). Human-only artifacts must be committed by a
+account `{bot_email}` (`{name}`). Human-only artifacts must be committed by a
 human. Flagging for human verification. Commit: {git log output, abbreviated}."
 
 **R2.5** If the most recent commit's author email is NOT in the known-bot set,
@@ -239,22 +246,24 @@ outcome.
 ## 4. Acceptance Criteria
 
 **AC1 — Bot account not configured: check skipped.**
-Given `config.sh` has no `OVERSIGHT_ACCOUNT` or `WORKER_ACCOUNT` defined (or
-both are empty), when the evaluator runs Phase 1, the authorship check is
-skipped and a note is emitted. No compliance item is added.
+Given `scripts/framework/machine-accounts.env` has no `BOT_WORKER_EMAIL` or
+`BOT_OVERSEER_EMAIL` defined (or both are empty), when the evaluator runs
+Phase 1, the authorship check is skipped and a note is emitted. No compliance
+item is added.
 
 **AC2 — Human-authored governance artifact passes.**
 Given `contract/gate-suspension.md` exists, was last committed by a git email
-not in the known-bot set, and the evaluator has the bot account emails
-configured, when Phase 1 runs, the artifact's authorship check emits no warn
-and no conditional item.
+not in the known-bot email set (i.e., not matching `BOT_WORKER_EMAIL` or
+`BOT_OVERSEER_EMAIL`), and those email fields are configured in
+`machine-accounts.env`, when Phase 1 runs, the artifact's authorship check
+emits no warn and no conditional item.
 
 **AC3 — Bot-authored governance artifact emits COMPLIANCE WARN.**
 Given `contract/gate-suspension.md` exists and was last committed by an email
-matching `WORKER_ACCOUNT`'s git email, when Phase 1 runs, the evaluator emits
-exactly one COMPLIANCE WARN naming the artifact and the bot email, and the
-recommendation is at minimum CONDITIONAL_PROCEED. A `governance-artifact-bot-
-commit` audit event is appended.
+matching `BOT_WORKER_EMAIL` in `machine-accounts.env`, when Phase 1 runs, the
+evaluator emits exactly one COMPLIANCE WARN naming the artifact and the bot
+email, and the recommendation is at minimum CONDITIONAL_PROCEED. A
+`governance-artifact-bot-commit` audit event is appended.
 
 **AC4 — Untracked governance artifact emits COMPLIANCE WARN.**
 Given `.claudetmp/oversight/step3-human-authorization.md` exists on disk but
@@ -265,9 +274,10 @@ untracked` event is emitted instead.
 
 **AC5 — Bot-authored human-authorization file produces a named conditional item.**
 Given `.claudetmp/oversight/step3-human-authorization.md` was last committed
-by a known bot email, when Phase 1 runs, the conditional item text explicitly
-mentions that the CRITICAL step authorization may not have been satisfied by a
-human (R3.3). The item names the step number and the artifact path.
+by an email matching `BOT_WORKER_EMAIL` or `BOT_OVERSEER_EMAIL`, when Phase 1
+runs, the conditional item text explicitly mentions that the CRITICAL step
+authorization may not have been satisfied by a human (R3.3). The item names
+the step number and the artifact path.
 
 **AC6 — Authorship check does not run on a non-existent artifact.**
 Given `contract/gate-suspension.md` does not exist (normal project — no
@@ -318,6 +328,18 @@ touching the artifact is checked. A human who amends a bot-authored commit or
 commits on top of it would pass this check. The check detects the most common
 case (an agent creates the file de-novo); it does not detect all cases.
 
+**NR7 — Squash-merge false positive is intentional fail-safe behavior.** Under
+squash-merge workflows, the bot that performs the squash-merge becomes the
+recorded commit author for all files in the merged branch, including any
+human-only governance artifacts that were last touched by the human in the
+feature branch. This produces a false-positive COMPLIANCE WARN: the artifact
+was human-authored, but the squash commit carries the bot's email. This
+false-positive is acceptable — WARN forces CONDITIONAL_PROCEED and requires
+human confirmation, which is the correct fail-safe direction. The human's
+confirmation resolves it. Projects that squash-merge regularly will see this
+pattern and should expect it; suppressing it would require comparing against
+the pre-squash branch history, which is out of scope for this spec.
+
 ---
 
 ## 6. Affected Artifacts
@@ -325,9 +347,9 @@ case (an agent creates the file de-novo); it does not detect all cases.
 | Artifact | Change type | Summary |
 |---|---|---|
 | `.claude/agents/oversight-evaluator.md` Phase 1 | Additive | Add R2 authorship check after existing artifact existence/field-validation checks; add R3 conditional-item generation |
-| `contract/OVERSIGHT-CONTRACT.md` §7 | Additive | Document authorship check as a new Phase 1 element (COMPLIANCE WARN severity; CONDITIONAL_PROCEED when fires); note known-bot-set resolution from config.sh |
+| `contract/OVERSIGHT-CONTRACT.md` §7 | Additive | Document authorship check as a new Phase 1 element (COMPLIANCE WARN severity; CONDITIONAL_PROCEED when fires); note known-bot-set resolution from `BOT_WORKER_EMAIL`/`BOT_OVERSEER_EMAIL` in `machine-accounts.env` |
 | `contract/OVERSIGHT-CONTRACT.md` §6a | Additive | Add `governance-artifact-bot-commit` and `governance-artifact-untracked` event types to the audit-log event catalog |
-| `scripts/framework/config.sh` | Additive | Document `BOT_ACCOUNT_EMAILS` extension variable (R1.4) in comments; no change to the variable itself if already absent |
+| `scripts/framework/machine-accounts.env` | Additive | Document `BOT_WORKER_EMAIL` and `BOT_OVERSEER_EMAIL` fields used by the evaluator's authorship check (R1.1–R1.4) |
 
 No existing required fields are renamed or removed. The evaluator's existing
 Human Authorization File Integrity section is updated to note that a partial
@@ -336,5 +358,5 @@ acknowledgment that full cryptographic forge-proofing remains an open item.
 
 ---
 
-*Status: Draft — for architect review*
+*Status: Revised — ready for architect re-review*
 *Author: pm-agent | 2026-06-17*
