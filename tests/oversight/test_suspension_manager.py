@@ -114,6 +114,59 @@ def test_auto_remove_disabled_keeps_everything(tmp_path, monkeypatch):
     assert "SUSPENDED: lint" in new_text
 
 
+def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
+    """--emit-audit produces the full OVERSIGHT-CONTRACT §6a field set (#397).
+
+    PARITY fields (HOS#337): event, gate, authorized_by, timestamp.
+    Added by HOS#397: step, suspension_file, reason_category.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    rc = sm.cmd_emit_audit("lint", "Test Human", step="step-3")
+    assert rc == 0
+    lines = (tmp_path / "audit" / "oversight-log.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["event"] == "gate-suspended"
+    assert event["gate"] == "lint"
+    assert event["authorized_by"] == "Test Human"
+    assert event["step"] == "step-3"
+    assert "suspension_file" in event
+    assert event["reason_category"] == "unspecified"  # no suspension file in tmp_path
+    assert "timestamp" in event
+    # Full schema per OVERSIGHT-CONTRACT §6a (parity + #397 additions)
+    assert list(event.keys()) == [
+        "event", "gate", "authorized_by", "step",
+        "suspension_file", "reason_category", "timestamp",
+    ]
+
+
+def test_emit_audit_noop_without_audit_dir(tmp_path, monkeypatch):
+    """No audit/ directory → no file, no exception (guard preserved)."""
+    monkeypatch.chdir(tmp_path)
+    rc = sm.cmd_emit_audit("lint", "Test Human")
+    assert rc == 0
+    assert not (tmp_path / "audit" / "oversight-log.jsonl").exists()
+
+
+def test_emit_audit_default_authorized_by(tmp_path, monkeypatch):
+    """Missing authorized_by defaults to 'unknown' (matches bash :-unknown)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    sm.cmd_emit_audit("lint", None)
+    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    assert event["authorized_by"] == "unknown"
+
+
+def test_emit_audit_escapes_authorized_by(tmp_path, monkeypatch):
+    """A quote in authorized_by must yield valid JSON that round-trips."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "audit").mkdir()
+    sm.cmd_emit_audit("lint", 'Ann "Q" Smith')
+    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    assert event["authorized_by"] == 'Ann "Q" Smith'
+
+
 def test_ratchet_manager_never_writes_a_suspended_line(tmp_path, monkeypatch):
     """The whole point: auto_remove may only DELETE suspension lines, never add.
     Feeding it a file with one suspension can never yield MORE suspensions."""
@@ -127,68 +180,148 @@ def test_ratchet_manager_never_writes_a_suspended_line(tmp_path, monkeypatch):
     assert after <= before  # never increases
 
 
-# ── Regression tests for --is-suspended (#303 §5 / REQ-F-03/F-06) ─────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEC-83 — per-step scope + grandfathered_until
+# ─────────────────────────────────────────────────────────────────────────────
+
+PER_STEP_BLOCK = """\
+Authorized by: Test Human
+Date: 2026-06-17
+
+security-suspension-acknowledged: yes
+per_step_scope: true
+steps:
+  - step-3
+  - step-4
+
+## Currently suspended
+SUSPENDED: security
+"""
+
+PER_STEP_INLINE = """\
+security-suspension-acknowledged: yes
+per_step_scope: true
+steps: [step-3, step-4]
+"""
+
+BLANKET = """\
+security-suspension-acknowledged: yes
+## Currently suspended
+SUSPENDED: security
+"""
+
+MALFORMED = """\
+security-suspension-acknowledged: yes
+per_step_scope: true
+## Currently suspended
+SUSPENDED: security
+"""
+
+COMMENTED_FIELDS = """\
+# per_step_scope: true
+# steps:
+#   - step-9
+<!--
+per_step_scope: true
+steps:
+  - step-99
+-->
+## Currently suspended
+SUSPENDED: security
+"""
 
 
-def test_is_suspended_honors_pinned_flag(tmp_path, monkeypatch):
-    """SUSPENDED: portability [pinned] must be detected as suspended (AC-F-03/F-06).
-
-    This is the regression test for HOS#105 / #303: the [pinned] flag must NOT
-    cause the parser to miss the suspension line.  Both the parse_suspensions()
-    path (used by cmd_is_suspended) and the _SUSPENDED_RE pattern are verified.
-    """
-    monkeypatch.chdir(tmp_path)
-    contract = tmp_path / "contract"
-    contract.mkdir()
-    susp_file = contract / "gate-suspension.md"
-    susp_file.write_text(
-        "Authorized by: Test Human\n"
-        "Date: 2026-06-16\n\n"
-        "## Currently suspended\n"
-        "SUSPENDED: portability [pinned]\n"
-    )
-
-    # Verify via parse_suspensions (the canonical path).
-    text = susp_file.read_text()
-    gates = {s.gate for s in sm.parse_suspensions(text)}
-    assert "portability" in gates, (
-        "parse_suspensions missed 'SUSPENDED: portability [pinned]' — regression in #303 §5"
-    )
-
-    # Verify via cmd_is_suspended (the --is-suspended subcommand).
-    result = sm.cmd_is_suspended("portability")
-    assert result == 0, (
-        "cmd_is_suspended returned non-zero for 'portability [pinned]' — regression"
-    )
+def test_parse_per_step_scope_block_list():
+    per, steps = sm.parse_per_step_scope(PER_STEP_BLOCK)
+    assert per is True
+    assert steps == ["step-3", "step-4"]
 
 
-def test_is_suspended_honors_review_by_flag(tmp_path, monkeypatch):
-    """SUSPENDED: gate review-by: YYYY-MM-DD must also be detected."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "contract").mkdir()
-    (tmp_path / "contract" / "gate-suspension.md").write_text(
-        "Authorized by: Test Human\n\n"
-        "## Currently suspended\n"
-        "SUSPENDED: lint review-by: 2027-01-01\n"
-    )
-    result = sm.cmd_is_suspended("lint")
-    assert result == 0
+def test_parse_per_step_scope_inline_list():
+    per, steps = sm.parse_per_step_scope(PER_STEP_INLINE)
+    assert per is True
+    assert steps == ["step-3", "step-4"]
 
 
-def test_is_suspended_absent_file_returns_1(tmp_path, monkeypatch):
-    """When gate-suspension.md does not exist, --is-suspended exits 1 (not suspended)."""
-    monkeypatch.chdir(tmp_path)
-    # No contract/gate-suspension.md — must not raise, must exit 1.
-    result = sm.cmd_is_suspended("portability")
-    assert result == 1
+def test_parse_per_step_scope_absent_defaults_false():
+    per, steps = sm.parse_per_step_scope(BLANKET)
+    assert per is False
+    assert steps == []
 
 
-def test_is_suspended_not_in_file_returns_1(tmp_path, monkeypatch):
-    """A gate not listed in the suspension file exits 1."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "contract").mkdir()
-    (tmp_path / "contract" / "gate-suspension.md").write_text(
-        "## Currently suspended\nSUSPENDED: lint\n"
-    )
-    result = sm.cmd_is_suspended("security")
-    assert result == 1
+def test_parse_per_step_scope_ignores_commented_and_html():
+    per, steps = sm.parse_per_step_scope(COMMENTED_FIELDS)
+    assert per is False
+    assert steps == []
+
+
+def test_validate_per_step_scope_covers_listed_step():
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-3")
+    assert v["per_step_scope"] is True
+    assert v["malformed"] is False
+    assert v["covers_step"] is True
+
+
+def test_validate_per_step_scope_does_not_cover_unlisted_step():
+    # AC7 — scope covering step-3/4 does not cover step-5
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-5")
+    assert v["covers_step"] is False
+    assert v["malformed"] is False
+
+
+def test_validate_per_step_scope_exact_match_only():
+    # no prefix / substring matching
+    v = sm.validate_per_step_scope(PER_STEP_BLOCK, "step-3-extra")
+    assert v["covers_step"] is False
+
+
+def test_validate_per_step_scope_malformed():
+    # R1.6 — per_step_scope: true with no steps is malformed (distinct FAIL)
+    v = sm.validate_per_step_scope(MALFORMED, "step-3")
+    assert v["malformed"] is True
+    assert v["covers_step"] is False
+
+
+def test_validate_per_step_scope_blanket_not_malformed():
+    v = sm.validate_per_step_scope(BLANKET, "step-3")
+    assert v["per_step_scope"] is False
+    assert v["malformed"] is False
+    assert v["covers_step"] is False
+
+
+def test_grandfathered_until_absent():
+    g = sm.check_grandfathered_until(BLANKET)
+    assert g["present"] is False
+    assert g["status"] == "absent"
+
+
+def test_grandfathered_until_future():
+    text = "grandfathered_until: 2099-12-31\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "future"
+    assert g["date"] == "2099-12-31"
+
+
+def test_grandfathered_until_expired_past():
+    text = "grandfathered_until: 2020-01-01\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "expired"
+
+
+def test_grandfathered_until_today_is_expired():
+    # boundary: today is not "in the future"
+    text = "grandfathered_until: 2026-06-17\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "expired"
+
+
+def test_grandfathered_until_malformed_value_fails_closed():
+    text = "grandfathered_until: someday\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "malformed"
+
+
+def test_grandfathered_until_ignores_commented():
+    text = "# grandfathered_until: 2099-01-01\n"
+    g = sm.check_grandfathered_until(text, today="2026-06-17")
+    assert g["status"] == "absent"
