@@ -1,9 +1,10 @@
 # Requirements Spec — Issue #373: Task-Class Deterministic Risk-Tier Floor
 
 **Document type:** Requirements specification
-**Status:** Draft — for architect review
+**Status:** REVISED — ready for architect re-review
 **Issue:** #373
 **Date:** 2026-06-17
+**Revised:** 2026-06-17
 **Author:** pm-agent
 
 ---
@@ -44,7 +45,10 @@ This spec covers exactly two artifacts:
 
 2. **`scripts/oversight/run_validators.sh`** — extended to accept and pass through a
    `--task-class <class>` argument so the caller (the risk-assessor agent or a human running
-   the script directly) can supply task-class context to `rn_calculator.py`.
+   the script directly) can supply task-class context to `rn_calculator.py`. The shell
+   script performs the git/gh detection (R1a/R1b) as a pre-step and passes the result
+   to `rn_calculator.py` via `--task-class`. The detection logic is NOT duplicated inside
+   the Python validator.
 
 No other validators, no schema weights, and no tier-threshold constants in `schema.py` are
 in scope.
@@ -87,26 +91,41 @@ error) must not cause the validator to fail — treat as unknown and continue.
 
 ### R2 — Apply the floor
 
-When the task class is `refactor` or `chore` and the tier computed from the RN score is
-`LOW`, the output tier must be raised to `MEDIUM`. The floor applies only when the
-computed tier is `LOW`; it does not lower a tier that is already `MEDIUM`, `HIGH`, or
-`CRITICAL`.
+`rn_calculator.py` computes an **RN-local tier** from its own normalized `score` (0.0–1.0)
+using the same thresholds defined in `schema.py` `TIER_THRESHOLDS`: score < 0.30 → LOW,
+0.30 ≤ score < 0.55 → MEDIUM, 0.55 ≤ score < 0.78 → HIGH, score ≥ 0.78 → CRITICAL.
 
-When the task class is `feat` or `fix`, no floor is applied; the computed tier from the RN
-score is emitted unchanged.
+The floor is applied to that **RN-local tier only**. `rn_calculator.py` does NOT modify
+`summary.json`'s tier — the composite tier remains the risk-assessor agent's
+responsibility, computed downstream from the weighted composite of all validator scores.
 
-### R3 — Log the source
+When the task class is `refactor` or `chore` and the RN-local tier is `LOW`, the floor
+is applied: the RN-local tier is raised to `MEDIUM`. The floor does not lower a tier
+that is already `MEDIUM`, `HIGH`, or `CRITICAL`.
 
-The validator output JSON must record, in the `raw_value` object, three additional fields:
+When the task class is `feat` or `fix`, no floor is applied; the RN-local tier is emitted
+unchanged.
+
+### R3 — Log the source and floor outcome
+
+The validator output JSON must record, in the `raw_value` object, five additional fields:
 
 - `task_class`: the detected task class string (`"feat"`, `"fix"`, `"refactor"`, `"chore"`)
   or `null` if unknown.
 - `task_class_source`: one of `"commit_prefix"`, `"github_label"`, or `null` (if task class
   is unknown or was not applied).
-- `floor_applied`: boolean — `true` if R2 raised the tier from `LOW` to `MEDIUM`, `false`
-  otherwise.
+- `floor_applied`: boolean — `true` if R2 raised the RN-local tier, `false` otherwise.
+- `pre_floor_tier`: the RN-local tier before floor logic ran (`"LOW"`, `"MEDIUM"`, `"HIGH"`,
+  or `"CRITICAL"`), or `null` if task class was unknown (floor was never evaluated).
+- `post_floor_tier`: the RN-local tier after floor logic ran — equals `pre_floor_tier` when
+  no floor was applied, `"MEDIUM"` when the floor raised a `"LOW"` tier, or `null` if task
+  class was unknown.
 
-These fields must be present in the output regardless of whether the floor was applied.
+All five fields must be present in the output regardless of whether the floor was applied.
+
+The floor logic must be expressed in a thin wrapper function `apply_task_class_floor()`
+called from `main()`, not from inside `analyse_files()`. This keeps the RN calculation
+itself unmodified and testable in isolation.
 
 ### R4 — Fail open if unknown
 
@@ -147,35 +166,45 @@ that value without invoking git or `gh`. (Direct caller override is supported.)
 
 ### AC2 — Floor application (covers R2)
 
-AC2a: Given task class `refactor` and a computed RN tier of `LOW`, the output `tier` (or
-equivalent tier field in `raw_value`) is `MEDIUM` and `floor_applied` is `true`.
+AC2a: Given task class `refactor` and an RN score that maps to RN-local tier `LOW`
+(score < 0.30), `raw_value.pre_floor_tier` is `"LOW"`, `raw_value.post_floor_tier` is
+`"MEDIUM"`, and `floor_applied` is `true`. The composite tier in `summary.json` is NOT
+modified by this validator.
 
-AC2b: Given task class `chore` and a computed RN tier of `LOW`, the output tier is `MEDIUM`
-and `floor_applied` is `true`.
+AC2b: Given task class `chore` and an RN-local tier of `LOW`, `raw_value.post_floor_tier`
+is `"MEDIUM"` and `floor_applied` is `true`.
 
-AC2c: Given task class `refactor` and a computed RN tier of `MEDIUM`, the output tier
-remains `MEDIUM` and `floor_applied` is `false`.
+AC2c: Given task class `refactor` and an RN-local tier of `MEDIUM` (score ≥ 0.30),
+`raw_value.pre_floor_tier` and `raw_value.post_floor_tier` are both `"MEDIUM"` and
+`floor_applied` is `false`.
 
-AC2d: Given task class `refactor` and a computed RN tier of `HIGH`, the output tier remains
-`HIGH` and `floor_applied` is `false`.
+AC2d: Given task class `refactor` and an RN-local tier of `HIGH` (score ≥ 0.55),
+`raw_value.pre_floor_tier` and `raw_value.post_floor_tier` are both `"HIGH"` and
+`floor_applied` is `false`.
 
-AC2e: Given task class `feat` and a computed RN tier of `LOW`, the output tier remains
-`LOW` and `floor_applied` is `false`.
+AC2e: Given task class `feat` and an RN-local tier of `LOW`, `raw_value.post_floor_tier`
+is `"LOW"` and `floor_applied` is `false`.
 
-AC2f: Given task class `fix` and a computed RN tier of `LOW`, the output tier remains `LOW`
-and `floor_applied` is `false`.
+AC2f: Given task class `fix` and an RN-local tier of `LOW`, `raw_value.post_floor_tier`
+is `"LOW"` and `floor_applied` is `false`.
 
 ### AC3 — Log fields (covers R3)
 
 AC3a: The `raw_value` object in the validator JSON output always contains the keys
-`task_class`, `task_class_source`, and `floor_applied`, regardless of whether a floor was
-applied.
+`task_class`, `task_class_source`, `floor_applied`, `pre_floor_tier`, and `post_floor_tier`,
+regardless of whether a floor was applied.
 
-AC3b: When the floor is applied, `floor_applied` is `true` and `task_class_source` is one
-of `"commit_prefix"` or `"github_label"`.
+AC3b: When the floor is applied, `floor_applied` is `true`, `task_class_source` is one of
+`"commit_prefix"` or `"github_label"`, `pre_floor_tier` is `"LOW"`, and `post_floor_tier`
+is `"MEDIUM"`.
 
-AC3c: When the floor is not applied because task class is unknown, all three fields are
-`null`, `null`, and `false` respectively.
+AC3c: When the floor is not applied because task class is unknown, `task_class` is `null`,
+`task_class_source` is `null`, `floor_applied` is `false`, `pre_floor_tier` is `null`, and
+`post_floor_tier` is `null`.
+
+AC3d: When task class is known but no floor was applied (tier was already MEDIUM or above,
+or task class is `feat`/`fix`), `pre_floor_tier` and `post_floor_tier` are both the
+un-floored RN-local tier string (e.g. `"MEDIUM"`, `"HIGH"`), and `floor_applied` is `false`.
 
 ### AC4 — Fail open (covers R4)
 
@@ -207,23 +236,32 @@ The following are explicitly out of scope and must not be built as part of this 
   for its final tier ruling.
 - **No new required validator arguments.** `--task-class` is optional in both
   `rn_calculator.py` and `run_validators.sh`; existing call sites require no change.
+- **No environment variable propagation.** `--task-class` is a CLI argument only.
+  `rn_calculator.py` does not read `TASK_CLASS` or any other environment variable to
+  infer task class. Future validators that need task-class context must receive it
+  through their own CLI arguments, not through a shared environment variable.
+- **No git or gh invocations inside rn_calculator.py.** The R1a/R1b detection logic
+  (reading git commit subjects, calling `gh` for issue labels) is performed exclusively
+  as a shell pre-step in `run_validators.sh`, not inside the Python validator. The
+  Python validator receives task class only via `--task-class`.
 
 ---
 
-## 6. Open Questions
+## 6. Architect Rulings (resolved)
 
-None. The architect should rule on the following implementation decisions immediately upon
-receiving this spec:
+The following implementation decisions were submitted as open questions and ruled upon by
+the architect (REQUEST_CHANGES response, 2026-06-17). All three rulings have been
+incorporated into the spec above.
 
-- Whether the floor should be expressed inside `rn_calculator.py`'s `analyse_files()` return
-  path or in a thin wrapper function called by `main()`, to keep the RN calculation itself
-  unmodified.
-- Whether `run_validators.sh` should forward `--task-class` to `rn_calculator.py` only, or
-  also make it available as an environment variable for future validators to consume.
-- Whether the `gh` fallback (R1b) should be attempted in the same process as `rn_calculator.py`
-  or delegated to a shell pre-step in `run_validators.sh` that sets `TASK_CLASS` in the
-  environment before invoking the validator.
+**OQ-1 (floor logic placement):** Floor logic must live in a thin wrapper function
+`apply_task_class_floor()` called from `main()`, not inside `analyse_files()`. The RN
+calculation itself remains unmodified and testable in isolation. — Incorporated in R3.
 
-These are implementation decisions, not requirements gaps. The behavior specified in
-Sections 3 and 4 must be preserved regardless of which implementation path the architect
-chooses.
+**OQ-2 (CLI arg vs. env var):** `--task-class` is a CLI argument only; no environment
+variable propagation. `rn_calculator.py` does not read `TASK_CLASS` from the environment.
+— Incorporated in §2 and §5 non-requirements.
+
+**OQ-3 (git/gh detection location):** The R1a/R1b detection (git commit subject + `gh`
+issue label lookup) is performed as a shell pre-step in `run_validators.sh`, not inside
+`rn_calculator.py`. The Python validator receives only the resolved `--task-class` value.
+— Incorporated in §2 and §5 non-requirements.
