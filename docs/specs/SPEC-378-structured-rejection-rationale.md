@@ -1,6 +1,6 @@
 # SPEC-378: Structured Rejection Rationale and Gate Suspension Schema
 
-**Status:** REVISED — ready for architect re-review
+**Status:** REVISED — ready for architect re-review (pass 3)
 **Issue:** #378
 **Author:** pm-agent
 **Date:** 2026-06-17
@@ -26,10 +26,10 @@ HOS already requires zero-reader-context legibility for escalations (the ESCALAT
 
 This spec covers:
 
-1. **Overseer protocol** (`oversight-orchestrator.md`): when the overseer emits a HUMAN_REQUIRED escalation comment or a pr-bounced event, it must include structured rationale fields (`reason_category` enum + `summary` sentence) in that comment or event payload.
+1. **Overseer protocol** (`overseer.md`): when the overseer emits a HUMAN_REQUIRED escalation comment or a pr-bounced event, it must include structured rationale fields (`reason_category` enum + `summary` sentence) in that comment or event payload.
 2. **Contract amendment** (`contract/OVERSIGHT-CONTRACT.md`): the contract must document the structured rationale fields as a required element of HUMAN_REQUIRED and pr-bounced disposition comments, and the extended audit-log event schema.
 3. **Gate-suspension schema** (`contract/gate-suspension.template.md`): the suspension file must gain a `reason_category` field alongside the existing prose `Reason:` field.
-4. **Audit log** (`audit/oversight-log.jsonl` event catalog): the existing `pr-bounced` and any HUMAN_REQUIRED audit events must be extended to include `reason_category` and `summary` fields. No new event type is introduced.
+4. **Audit log** (`audit/oversight-log.jsonl` event catalog): the existing `pr-bounced` event must be extended by adding `reason_category` and `summary` fields. A new `human-required` event type is added to the catalog for HUMAN_REQUIRED disposition audit entries — this is an additive catalog extension (a new event name for a disposition the overseer already performs but does not yet log structurally).
 
 This spec does NOT cover:
 
@@ -46,33 +46,43 @@ This spec does NOT cover:
 
 The overseer has two non-merge dispositions: **HUMAN_REQUIRED** (escalation comment posted to the PR, PR left open and labeled `needs-human`) and **pr-bounced** (worker is notified to rework, PR left open). When either disposition fires, the overseer must include structured rationale fields in the disposition comment or event payload.
 
-**R1.1** When posting a HUMAN_REQUIRED escalation comment to the PR, the overseer must include the following structured fields in that comment:
+**R1.1** When posting a HUMAN_REQUIRED escalation comment to the PR, the overseer must append `reason_category` and `summary` as additional structured sections to the existing §8.2 escalation comment format. The §8.2 format requires five elements in order: (1) problem + risk + background, (2) options with pros/cons, (3) recommendation + justification, (4) token estimate + blast-radius summary, (5) default-deny deadline if applicable. This requirement adds two fields after those five elements:
 
 ```markdown
-## HOS Disposition: Human Review Required
 **Reason category:** <FINDINGS_NOT_RESOLVED | ESCALATION | HUMAN_REQUIRED | OTHER>
 **Summary:** <one sentence — what the decisive blocker was>
-**Items requiring action:** <bulleted list of unresolved items>
 ```
 
-**R1.2** When emitting a pr-bounced event (returning the PR to the worker), the overseer must include the same structured fields in the bounce comment posted to the PR:
+A HUMAN_REQUIRED comment missing the five §8.2 elements is already a malformed escalation per the overseer protocol. A HUMAN_REQUIRED comment missing the two new fields defined here is additionally non-compliant with this spec.
+
+**R1.2** When emitting a pr-bounced event (returning the PR to the worker), the overseer calls `record_pr_bounce()`, which posts a comment, assigns the PR to HOSWorkerTutelare, applies the `needs-ai` label, converts the PR to draft, and appends the audit event. This requirement adds `reason_category` and `summary` fields to that existing `record_pr_bounce()` comment body and its audit event payload — not a separate additional comment. The bounce comment must include:
 
 ```markdown
-## HOS Disposition: Returned for Rework
-**Reason category:** <FINDINGS_NOT_RESOLVED | ESCALATION | HUMAN_REQUIRED | OTHER>
+**Reason category:** <REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER>
 **Summary:** <one sentence — what must change before this PR can proceed>
-**Items requiring action:** <bulleted list of unresolved items>
 ```
 
-**R1.3** The `Reason category` field must use one of the four enumerated values exactly:
+These two fields are appended to whatever structured content `record_pr_bounce()` already includes in the comment body.
+
+**R1.3** The `reason_category` field uses a different enum for each disposition type, because the two dispositions describe different procedural states.
+
+For **HUMAN_REQUIRED** escalation comments (R1.1), the field must use one of:
 - `FINDINGS_NOT_RESOLVED` — one or more reviewer findings, compliance failures, or second-review findings remain unresolved after the maximum iteration budget.
 - `ESCALATION` — the oversight-evaluator issued ESCALATE and the condition requires human resolution.
 - `HUMAN_REQUIRED` — a human gate is required (CRITICAL step, merge-authority matrix) and has not been satisfied.
 - `OTHER` — any disposition reason not fitting the above; the `Summary` sentence must make the reason unambiguous.
 
+For **pr-bounced** comments via `record_pr_bounce()` (R1.2), the field must use one of:
+- `REGISTER_GAP` — one or more required sign-off register entries are absent or missing required fields; the worker must complete the register before the PR can re-enter the overseer queue.
+- `COMPLIANCE_FAILURE` — the register or evaluator compliance check identified a concrete failure (e.g. missing human-authorization artifact, failing gate result, N/A invalidated); the specific check_id(s) appear in the `failures` field of the audit event.
+- `SPEC_AMBIGUITY` — a procedural requirement could not be evaluated because the spec is ambiguous on the point; the worker should seek clarification before reworking.
+- `OTHER` — any bounce reason not fitting the above; the `Summary` sentence must make the reason unambiguous.
+
+The pr-bounced enum is distinct from the HUMAN_REQUIRED enum because a bounce is a procedural return to the worker (the `failures` field carries the specific check_id list); it is not a gate-block or an escalation to a human.
+
 **R1.4** The structured fields are additive to and must not replace the existing ESCALATE console output. The console output is for the local session; the PR comment is the durable artifact.
 
-**R1.5** This requirement applies only when the overseer is acting on a PR it previously opened (identified by the `[AI: oversight-orchestrator]` title prefix). The overseer must not post structured rationale comments to human-opened PRs.
+**R1.5** This requirement applies only when the overseer is acting on a PR it previously opened (identified by the `[AI: overseer]` title prefix). The overseer must not post structured rationale comments to human-opened PRs.
 
 ### R2 — Gate-suspension schema gains `reason_category`
 
@@ -94,26 +104,46 @@ reason_category: EMERGENCY | PLANNED_MAINTENANCE | FALSE_POSITIVE | OTHER
 
 **R2.5** Agents must not create or modify `contract/gate-suspension.md`. This is an existing invariant. R2 does not change it — the `reason_category` field is set by the human who creates the file.
 
-### R3 — oversight-log.jsonl extends existing non-merge events with rationale fields
+### R3 — oversight-log.jsonl records rationale fields on all non-merge dispositions
 
-No new event type is introduced. The existing `pr-bounced` event and any HUMAN_REQUIRED audit event in `audit/oversight-log.jsonl` must be extended to include `reason_category` and `summary` fields.
+The existing `pr-bounced` event is extended by adding `reason_category` and `summary` fields. A new `human-required` event type is added to the catalog for HUMAN_REQUIRED dispositions (see §2.4 and R3.2 for rationale). Both events carry the same two new fields so that all non-merge dispositions are queryable and categorizable in the audit trail.
 
-**R3.1** The `pr-bounced` event schema must be extended to include:
+**R3.1** The existing `pr-bounced` event in `audit/oversight-log.jsonl` (emitted by `overseer` via `record_pr_bounce()`) must be extended by adding two fields: `reason_category` and `summary`. The existing fields — `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp` — are not changed. The extended schema is:
 
 ```json
 {
   "event": "pr-bounced",
-  "timestamp": "<ISO-8601>",
   "pr": "<PR number or URL>",
-  "step": "<step id>",
-  "reason_category": "FINDINGS_NOT_RESOLVED | ESCALATION | HUMAN_REQUIRED | OTHER",
-  "summary": "<the same one-sentence summary posted to the PR comment>",
-  "agent": "oversight-orchestrator",
+  "cid": "<worker correlation id>",
+  "bounce_number": "<integer>",
+  "failures": ["<check_id>", "..."],
+  "assigned_to": "<HOSWorkerTutelare account>",
+  "repo": "<owner/repo>",
+  "timestamp": "<ISO-8601>",
+  "reason_category": "REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER",
+  "summary": "<the same one-sentence summary included in the bounce comment>",
   "comment_posted": true
 }
 ```
 
-**R3.2** When the overseer posts a HUMAN_REQUIRED escalation comment, it must also append an audit event that includes `reason_category` and `summary` fields alongside the existing `pr`, `step`, and `agent` fields. The event type for this audit entry is `human-required` (using the existing event name if one exists in the catalog, or adding it if absent — this is an additive catalog extension, not a new close-path event).
+The `reason_category` value must match the value written into the bounce comment (R1.2). The `summary` value must match the summary sentence in the bounce comment.
+
+**R3.2** When the overseer posts a HUMAN_REQUIRED escalation comment, it must also append an audit event to `audit/oversight-log.jsonl`. The `human-required` event type does not currently exist in the OVERSIGHT-CONTRACT.md §6a catalog; this spec adds it as an additive catalog extension. The event captures the structured rationale for a disposition that the overseer already performs (label `needs-human` + escalation comment) but does not yet log as a discrete audit event. The schema for this new event is:
+
+```json
+{
+  "event": "human-required",
+  "pr": "<PR number or URL>",
+  "step": "<step id>",
+  "reason_category": "FINDINGS_NOT_RESOLVED | ESCALATION | HUMAN_REQUIRED | OTHER",
+  "summary": "<the same one-sentence summary appended to the §8.2 comment>",
+  "agent": "overseer",
+  "timestamp": "<ISO-8601>",
+  "comment_posted": true
+}
+```
+
+The `reason_category` and `summary` values must match what was appended to the §8.2 escalation comment (R1.1). The contract's §6a audit-log event catalog must be updated to include this event type.
 
 **R3.3** The overseer must append the audit event after the disposition comment is confirmed posted. For pr-bounced: (1) post bounce comment, (2) confirm comment posted, (3) append audit event. For HUMAN_REQUIRED: (1) post escalation comment, (2) confirm comment posted, (3) append audit event.
 
@@ -124,10 +154,10 @@ No new event type is introduced. The existing `pr-bounced` event and any HUMAN_R
 ## 4. Acceptance Criteria
 
 **AC1 — HUMAN_REQUIRED disposition includes structured rationale.**
-Given the oversight-orchestrator has opened a PR and the overseer determines HUMAN_REQUIRED, when the escalation comment is posted to the PR, then the comment contains a `## HOS Disposition: Human Review Required` block with a valid `reason_category` enum value, a non-empty `Summary:` sentence, and an `Items requiring action:` field. The PR is left open and labeled `needs-human`.
+Given the overseer has opened a PR (identified by an `[AI: overseer]` title prefix) and determines HUMAN_REQUIRED, when the §8.2 escalation comment is posted to the PR, then the comment includes a `reason_category` field with a valid HUMAN_REQUIRED enum value and a non-empty `summary` sentence appended after the five §8.2 required elements. The PR is left open and labeled `needs-human`.
 
 **AC2 — pr-bounced disposition includes structured rationale.**
-Given the oversight-orchestrator has opened a PR and the overseer emits a pr-bounced event, when the bounce comment is posted to the PR, then the comment contains a `## HOS Disposition: Returned for Rework` block with a valid `reason_category` enum value, a non-empty `Summary:` sentence, and an `Items requiring action:` field. The PR is left open.
+Given the overseer has opened a PR and calls `record_pr_bounce()`, when the bounce comment is posted to the PR, then the comment includes a `reason_category` field with a valid pr-bounced enum value (`REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER`) and a non-empty `summary` sentence. The PR is left open, assigned to HOSWorkerTutelare, labeled `needs-ai`, and converted to draft — the existing `record_pr_bounce()` behavior. No additional separate comment is posted.
 
 **AC3 — Gate suspension file with `reason_category` is accepted; file without it emits a warning not a failure.**
 Given a new `contract/gate-suspension.md` that includes `reason_category: EMERGENCY` (or any valid enum value), when the oversight-evaluator Phase 1 runs, then the gate-suspension compliance check passes without warning. Given an existing `contract/gate-suspension.md` that lacks `reason_category`, when the oversight-evaluator runs, then it emits exactly one COMPLIANCE WARN (not a COMPLIANCE FAIL) and continues evaluation.
@@ -160,8 +190,8 @@ The following are explicitly out of scope for this spec:
 | Artifact | Change type | Summary |
 |---|---|---|
 | `contract/OVERSIGHT-CONTRACT.md` §3 | Additive | Document that gate-suspension `reason_category` is required in new files; WARN behavior for legacy files |
-| `contract/OVERSIGHT-CONTRACT.md` §6a | Additive | Extend `pr-bounced` event schema and any HUMAN_REQUIRED audit event to include `reason_category` and `summary` fields; no new event type |
+| `contract/OVERSIGHT-CONTRACT.md` §6a | Additive | Extend `pr-bounced` event schema with `reason_category` and `summary` fields; add new `human-required` event type to the catalog |
 | `contract/gate-suspension.template.md` | Additive | Add `reason_category` field with enum options and comment |
-| `.claude/agents/oversight-orchestrator.md` | Additive | Add structured rationale fields to HUMAN_REQUIRED and pr-bounced disposition comments; append extended audit events after comment is confirmed |
+| `.claude/agents/overseer.md` | Additive | Add `reason_category` and `summary` fields to `record_pr_bounce()` comment body and to the §8.2 HUMAN_REQUIRED escalation comment; append extended audit events after comment is confirmed |
 
-No new files are created by the implementation. No existing required fields are renamed or removed. No `gh pr close` call is introduced. Contract version is not bumped (additive-only change per §8).
+No new files are created by the implementation. No existing required fields are renamed or removed. No `gh pr close` call is introduced. The `human-required` event type is a new catalog entry (additive — the disposition already exists, the audit event does not). Contract version is not bumped (additive-only change per §8).
