@@ -53,7 +53,9 @@ def load_env(path: Path) -> dict[str, str]:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        val = val.strip().strip('"').strip("'")
+        # Strip inline bash comments before unquoting (e.g. KEY="val"  # comment)
+        val = re.sub(r'\s+#.*$', '', val.strip())
+        val = val.strip('"').strip("'")
         # Expand simple variable references (e.g. BOT_ACCOUNTS="${VAR1} ${VAR2}")
         val = re.sub(r"\$\{?(\w+)\}?", lambda m: result.get(m.group(1), ""), val)
         result[key] = val
