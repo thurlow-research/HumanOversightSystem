@@ -210,6 +210,28 @@ for f in fails:
 - If the referenced artifact path does not exist in the repo → **COMPLIANCE FAIL** (the trailer points to a missing file)
 - Note: in multi-agent builds the artifact may be referenced as `docs/design/TECHNICAL-DESIGN.md#section-N` rather than a `prompts/` file — both are valid
 
+**CONDITIONAL_PROCEED thread compliance (SPEC-222 R3) — runs ONLY when this step's recommendation is CONDITIONAL_PROCEED:**
+
+These checks verify that a CONDITIONAL_PROCEED step's conditional items were converted into a merge-blocking mechanism and surfaced to the human. They read the step's **process record** — the newest `audit/oversight-log.jsonl` line with `"event":"conditional_proceed"` and matching `"step": N` (catalog: contract §6a, written by oversight-orchestrator R4.3):
+
+```bash
+CP_REC=$(grep '"event":"conditional_proceed"' audit/oversight-log.jsonl 2>/dev/null \
+  | grep "\"step\":${N}\b" | tail -1)
+```
+
+- **R3.4 — ledger field present.** If `$CP_REC` is empty, OR it has no `conditional_threads_opened` field → **COMPLIANCE WARN**: "CONDITIONAL_PROCEED step {N} has no `conditional_threads_opened` field in its process record (`audit/oversight-log.jsonl`) — cannot verify thread posting." A missing field is an instrumentation gap, not a tamper signal — WARN, never FAIL. When present, read its integer value as `L` for R3.1.
+
+- **R3.3 — human-reviewer review request posted.** Read `review_requested` from `$CP_REC`. If absent or empty → **COMPLIANCE WARN**: "CONDITIONAL_PROCEED step {N} has no recorded human-reviewer review request — verify `ScottThurlow` (`HUMAN_REVIEWER`) was added as a reviewer." If a PR number is available you MAY cross-check against `gh pr view <PR> --json reviewRequests`; a recorded `review_requested` that does not appear among the PR's requested reviewers is also a WARN. WARN, not FAIL — a missing review request is a notification gap (the PR is open and visible), not a merge-gate breach.
+
+- **R3.1 — threads exist vs ledger.** Applicable ONLY when a PR number is available; if no PR context (local pre-PR run), skip and note "no PR context; thread-existence check N/A" (spec R3.4). Otherwise query the PR's review threads (`gh pr view <PR> --json reviews` or the GraphQL review-threads query) and let `U` = count of **unresolved orchestrator-posted conditional threads** observed, `Rv` = whether any resolved-thread evidence (resolution events from any account) exists on the PR.
+  - **COMPLIANCE WARN** — `U == 0` AND `L == 0`. Ambiguous state: threads may have been resolved before this run, or were never posted. State how many conditional items the verdict listed, that `U == 0` was observed, and that the ledger records `L == 0`.
+  - **COMPLIANCE FAIL (tampering signal)** — `L > 0` AND `U == 0` AND `Rv` is empty. Threads were reportedly posted but vanished with no resolution record. Escalate with COMPLIANCE FAIL, state the discrepancy (ledger count `L` vs observed thread state), and halt evaluation.
+  - Do **NOT** FAIL on unresolved threads (whether they are resolved is the human's gate + branch protection, not this gate — spec R3.3) and do **NOT** FAIL on all-resolved threads (a human resolving all threads before this run is the correct state — note "conditional items resolved" — spec R3.2). Record thread state in the output regardless.
+
+  > **No-op until SPEC-222 R1 ships.** Per-item thread posting (R1) is pending #399 + R1.5 API verification, so the orchestrator currently records `conditional_threads_opened = 0` and posts zero threads. Every CONDITIONAL_PROCEED step therefore deterministically hits the R3.1 **WARN** branch (`U == 0` AND `L == 0`); the **FAIL** (tamper) branch is unreachable until R1 writes `L > 0` and posts threads, at which point it arms automatically with no further evaluator change. The all-resolved happy-path note and the broader ledger-contradiction tamper logic are part of #399 scope.
+
+A WARN from any of these three checks does NOT change the recommendation — the step stays CONDITIONAL_PROCEED — but the WARN text must be added to the conditional items so the human sees it. The R3.1 tamper FAIL (when armed) is a hard compliance failure and flips the recommendation to ESCALATE per the rule below. Record all three results in a "CONDITIONAL_PROCEED thread compliance" subsection of the Phase 1 output.
+
 If any hard compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
 
 ---

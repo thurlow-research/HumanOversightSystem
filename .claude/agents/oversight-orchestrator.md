@@ -166,12 +166,31 @@ a resolved finding or confidence gap that automated review cannot fully clear.
 # Assert the section made it into the body before opening (CONDITIONAL_PROCEED only):
 grep -q "Human Review Required Before Merge" .claudetmp/oversight/step{N}-handoff.md \
   || { echo "ERROR: CONDITIONAL_PROCEED handoff is missing the Human Review section — do not open the PR"; exit 1; }
-gh pr create \
+PR_NUMBER=$(gh pr create \
   --title "[AI: oversight-orchestrator] Step {N}: {step name}" \
-  --body "$(cat .claudetmp/oversight/step{N}-handoff.md)"
+  --body "$(cat .claudetmp/oversight/step{N}-handoff.md)" \
+  | sed -n 's#.*/pull/\([0-9]*\).*#\1#p')
 ```
 
-**4. Print the panel command** (same as PROCEED).
+**4. Request a human review (R4.1, SPEC-222).** A CONDITIONAL_PROCEED PR carries items a human must verify before merge; request a review from the human reviewer so GitHub notifies them. The reviewer login is the framework `HUMAN_REVIEWER` (`ScottThurlow`); consumer installs read it from `machine-accounts.env:HUMAN_REVIEWER`:
+```bash
+gh pr edit "$PR_NUMBER" --add-reviewer ScottThurlow \
+  || echo "WARNING: failed to add ScottThurlow as reviewer on PR $PR_NUMBER — human-review request not sent (evaluator R3.3 will WARN)"
+```
+This does NOT block PR opening on failure — print the warning and continue. A missing review request is the evaluator's R3.3 WARN signal, not a merge-gate breach.
+
+**5. Record the process record (R4.3, SPEC-222).** Append a `conditional_proceed` event to the append-only `audit/oversight-log.jsonl` (catalog: contract §6a). This is the ledger the evaluator's CONDITIONAL_PROCEED thread-compliance checks (R3.1/R3.4) read. `$ITEM_COUNT` is the number of numbered items in the "Human Review Required Before Merge" section you appended in step 2:
+```bash
+ITEM_COUNT=$(grep -cE '^[0-9]+\. ' .claudetmp/oversight/step{N}-handoff.md)
+printf '{"event":"conditional_proceed","step":%s,"pr":%s,"conditional_items":%s,"conditional_threads_opened":%s,"review_requested":"%s","timestamp":"%s"}\n' \
+  "{N}" "${PR_NUMBER:-null}" "${ITEM_COUNT:-0}" 0 "ScottThurlow" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  >> audit/oversight-log.jsonl
+```
+`conditional_threads_opened` is `0` for now: per-item PR review threads (SPEC-222 R1) are NOT yet posted — they are pending empirical GitHub-API verification (R1.5) and human clearance (#399). The field exists now so the evaluator's R3.1/R3.4 checks have a process record to read; it becomes the true posted-thread count when R1 ships. Appending to `audit/oversight-log.jsonl` is permitted by this agent's own clean-tree guard (the staleness check above excludes `audit/`).
+
+**6. Print the panel command** (same as PROCEED).
+
+> **Not yet implemented (SPEC-222 R1 / R2 / R4.2 — pending #399 + R1.5 API verification):** posting one unresolved PR review thread per conditional item (`gh pr review --comment` vs GraphQL `addPullRequestReviewThread`), the post-open thread-count assertion, the worker no-close/no-push summary comment, and the branch-protection `required_conversation_resolution` flip. Until those ship, the conditional items are enforced by human eyes via the PR body section + review request, not by GitHub's conversation-resolution merge gate.
 
 ---
 
