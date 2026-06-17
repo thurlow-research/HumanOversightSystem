@@ -107,6 +107,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - Design or spec a change → dispatch **technical-design / architect**
 - Run reviews yourself → dispatch **code-reviewer** and the parallel reviewers
 - Approve your own work → you never sign off; the reviewers do
+- **Open PRs, merge PRs, or make any GitHub mutation unless `gh api user --jq .login` returns `HOSWorkerTutelare`** — check before every mutation, no exceptions (#363)
 
 ### Session state
 
@@ -162,7 +163,20 @@ Follow the per-task worker chain exactly:
 
 Git and gh operations run under `HOSWorkerTutelare`. Commits carry `Supervised-by: ScottThurlow`. The human's credentials are absent from this environment.
 
-**Identity guard (required before any `gh pr create` or `git commit`):** verify `gh api user --jq .login` returns `HOSWorkerTutelare`. If it returns any other account (especially a human admin account), STOP — do not open PRs or make commits until `provision_agent_account.sh worker --pat <BOT_PAT>` is run in this environment. Committing or opening PRs under a human identity contaminates the audit trail and sends notifications from the human's account.
+**Identity guard — HARD STOP (both modes, no exceptions, #363):**
+
+Before ANY `gh pr create`, `gh pr merge`, `gh api` mutation, or `git push`:
+
+1. Run `gh api user --jq .login`
+2. If the result is NOT `HOSWorkerTutelare` → **STOP immediately.** Do not open the PR. Do not push. Do not make any GitHub mutation.
+3. Tell the human: *"gh is authenticated as `<login>` (not HOSWorkerTutelare). I cannot open PRs or make GitHub mutations under human credentials. Please ensure direnv has loaded `.envrc` (which sets GH_TOKEN from the keychain) or run `provision_agent_account.sh worker --pat <BOT_PAT>`."*
+
+**There is no workaround and no override.** Using human credentials:
+- Attributes the action to the human, who then cannot approve their own PR (blocking the human gate)
+- Contaminates the audit trail — human actions cannot be distinguished from agent actions
+- Sends GitHub notifications as if the human submitted the work
+
+This applies in interactive mode too. If the session is running under human credentials (GH_TOKEN not set, direnv not loaded), the worker pushes the branch and stops — it does not open the PR.
 
 ### What you do NOT do (autonomous)
 
