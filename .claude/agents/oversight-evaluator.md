@@ -56,11 +56,9 @@ Write/update the header at the top of `.claudetmp/signoffs/step{N}-register.md`:
 base_sha: {BASE_SHA}
 head_sha: {HEAD_SHA}
 ```
-**Note on step-head timing:** Do NOT append a `step-head` event here. The overseer writes the authoritative `step-head` (with the actual merged commit SHA) post-merge. The evaluator reads the previous step's `step-head` to establish `BASE_SHA` (above) but does not write one itself. Older pre-PR `step-head` entries may exist in the log and are tolerated — the post-merge entry from the overseer supersedes them (last entry for a given step wins when the next step reads it with `tail -1`).
+Also append a `{"event":"step-head","step":N,"head_sha":"{HEAD_SHA}","timestamp":"..."}` line to `audit/oversight-log.jsonl` so the next step can find this step's head as its base.
 
 Check the sign-off register against the step manifest's `required_signoffs` list.
-
-**Deterministic gate non-override (Parris 2026, AIRA):** If any gate in `scripts/oversight/gates/` or validator in `scripts/oversight/validators/` exited non-zero for this step, that finding must be present and unresolved in the human-facing output. It cannot be closed by a reviewer or the arbiter — deterministic failures are surfaced verbatim to the human gate and cannot be resolved, downgraded, summarized away, or treated as "addressed" because a subsequent LLM reviewer did not flag it independently. Check: read `audit/oversight-log.jsonl` for `validator-failure` events scoped to this step. If any such event has `final_outcome: failed` and no corresponding human-authorization artifact explicitly acknowledges it → that gate failure remains open and must appear in the Phase 2 output and the handoff document.
 
 **Before checking sign-offs, check for gate suspension:**
 Read `contract/gate-suspension.md` if it exists. For each required role in `required_signoffs`, check if the role name appears as `SUSPENDED: {role}` in that file. If suspended:
@@ -146,6 +144,31 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - For every detected structural signal, append `{"event":"structural-override","signal":"{name}","step":N,"file":"{file}","covered":{true|false},"timestamp":"..."}` to `audit/oversight-log.jsonl`. Emit it **even when `covered` is true** — a covered signal still means an authoring agent under-classified a change the human happened to catch via another gate; the covered-vs-uncovered ratio is the escaped-misclassification rate (#75).
   - For every rejected N/A, append `{"event":"na-invalidated","role":"{role}","step":N,"evidence":"{evidence}","timestamp":"..."}`.
 
+**Confidence-as-justification scan (SPEC-374 / OQ-374-01) — runs whenever a human-authored
+loosening artifact exists for this step:** Confidence is one-directional (AGENTS.md §3):
+it may never justify lowering a tier or waiving a reviewer. A human-authorization artifact
+that *grounds its loosening decision in declared confidence* re-introduces the prohibited
+downward use through the human gate. Scan for it.
+
+1. Scope: run only if at least one of these exists —
+   `.claudetmp/oversight/step{N}-human-authorization.md`,
+   `.claudetmp/oversight/human-tier-override.md`,
+   `.claudetmp/oversight/step{N}-*-structural-auth.md`, or `contract/gate-suspension.md`.
+   If none exist → N/A, pass.
+2. Deterministic pre-filter: case-insensitive `grep -in 'confidence'` each existing artifact.
+   No match anywhere → PASS (record "no confidence token in loosening artifacts").
+3. On a match, read the surrounding prose and judge whether confidence is cited *as the
+   reason* for the tier reduction or reviewer waiver:
+   - It is the operative justification → **COMPLIANCE FAIL** (list artifact, line, quoted text).
+   - Incidental mention, not the basis of the loosening → PASS, but record the line in the
+     evaluation notes for audit.
+   - Ambiguous → **COMPLIANCE FAIL** (loosening under uncertainty fails closed — the ratchet).
+4. On FAIL: ESCALATE. Escalation item names the artifact + quoted text and requires the human
+   to re-author a justification that does not rest on declared confidence. You may NOT edit the
+   artifact yourself (Human authorization file integrity prohibition applies).
+5. On FAIL, append to `audit/oversight-log.jsonl`:
+   `{"event":"confidence-justification-rejected","step":N,"artifact":"{file}","evidence":"{line}","timestamp":"..."}`.
+
 **Second-review compliance (MEDIUM+ steps):** Cross-vendor second review is mandatory at MEDIUM+ (validated tier MEDIUM/HIGH/CRITICAL). The review **fires on the validated tier OR the composite score** (`run_second_review.sh --tier <tier> --score <score>`) — this matters because the deterministic risk floor raises tier (auth→HIGH, booking/payment→CRITICAL) *without* raising the composite score, so a HIGH-by-floor step can have a low score. Therefore:
 - A present file with `verdict: approve` or `verdict: request_changes` → the review actually ran and produced an independent judgment → satisfied (act on the verdict in Phase 2).
 - A present file with **`verdict: unparseable` on a MEDIUM+ step → the review RAN but its output could not be auto-structured** (e.g. agy returned a narrated markdown report instead of strict JSON — HOS#113). This is **distinct from `error`**: an independent judgment *was* produced and is preserved verbatim in the file. Do **NOT** COMPLIANCE FAIL (the mandatory review did happen), and do **NOT** treat it as PASS. Route to **CONDITIONAL_PROCEED**: add a conditional item — *"a human must read the second-review report `.claudetmp/second-review/step{N}-*.md` and confirm its verdict before merge"* — so the preserved prose review is dispositioned by a person, not silently absorbed. Collapsing `unparseable` into either `error` (fail-closed, throws away a real review) or `approve` (silent pass) is the exact bug this state exists to prevent.
@@ -164,84 +187,6 @@ Upstream actors self-determine two things that can *loosen* oversight: an author
   - **Otherwise (MEDIUM / HIGH, non-high-risk files) → COMPLIANCE WARN:** add to the conditional items list so a human verifies intent was captured another way (e.g. a design-doc section reference). Not a hard fail.
 - If the referenced artifact path does not exist in the repo → **COMPLIANCE FAIL** (the trailer points to a missing file)
 - Note: in multi-agent builds the artifact may be referenced as `docs/design/TECHNICAL-DESIGN.md#section-N` rather than a `prompts/` file — both are valid
-
-**Condition 11 — Tier floor re-derivation (#94):**
-
-Run the deterministic tier-floor classifier and verify the self-reported tier is not below it:
-
-```bash
-python3 scripts/oversight/change_classifier.py \
-  --tier-floor --base "$BASE_SHA" --head "$HEAD_SHA"
-```
-
-Read `validated_tier:` from `risk-assessment.md` using `grep -i '^validated_tier:'` (NOT `^tier:`). Map to rank: SAFE=0 LOW=1 MEDIUM=2 HIGH=3 CRITICAL=4.
-
-- **PASS** if `rank(validated_tier) >= rank(tier_floor)` — a conservative self-report is fine (loosening-direction only).
-- **PASS** if `.claudetmp/oversight/step{N}-human-tier-override.md` exists (human authorized a lower tier).
-- **FAIL** otherwise: `"Self-reported tier {validated_tier} is below the deterministic floor {tier_floor} for these changed files: {evidence}."` List the specific `evidence` entries (rule, file, pattern).
-- **Audit event:** `{"event":"tier-floor-mismatch","step":N,"re_derived_floor":"{floor}","self_reported_tier":"{tier}","evidence":[...],"timestamp":"..."}`
-
-**Condition 12 — Mandated subagent stamps (#221 — per ARCH-Q-2, stamp-based):**
-
-The authoritative source for subagent completion is **`.stamp` files** in `.claudetmp/oversight/subagents/`. Do NOT read `subagents_run:` from `risk-assessment.md` for this compliance decision — stamps win if they disagree.
-
-Glob pattern: `.claudetmp/oversight/subagents/<subagent-name>-{N}-*.stamp`
-
-- **HIGH+ steps:** `dep-mapper-{N}-*.stamp` AND `risk-historian-{N}-*.stamp` must each glob-match at least one file.
-- **MEDIUM+ steps:** `prompt-fidelity-{N}-*.stamp` must match iff a `Prompt-Artifact:` git trailer exists for an AI-authored commit in the step range (re-derive from `git log --format="%B" "$BASE_SHA..$HEAD_SHA" | grep "Prompt-Artifact:"` — not from any self-reported absence).
-- **LOW/MEDIUM steps:** dep-mapper and risk-historian stamps are NOT required.
-- **Fail message:** `"Required subagent {name} did not complete for step {N} — stamp file absent. Validated tier {tier}; stamps found: {list}."`
-- **Audit event:** `{"event":"subagent-skipped","step":N,"validated_tier":"{tier}","required_subagents":[...],"present_stamps":[...],"missing":[...],"timestamp":"..."}`
-
-**Condition 13 — Warranted reviewer-lane set (#261):**
-
-Run the warranted-lane classifier:
-
-```bash
-python3 scripts/oversight/change_classifier.py \
-  --warranted-lanes --base "$BASE_SHA" --head "$HEAD_SHA"
-```
-
-For each lane in `warranted`:
-1. Intersect with `role_mappings` in `contract/step-manifest.yaml`. A lane not in `role_mappings` is out of scope — never a compliance gap.
-2. Check the sign-off register for an entry with that role key.
-   - `Status: APPROVED` or `Status: CONDITIONAL` → **PASS**.
-   - `Status: ESCALATED` with a `Human_resolution:` field → **PASS**.
-   - `Status: N/A` → **defer to condition 9** (condition 9 owns the N/A case; condition 13 does not double-report).
-   - **No entry at all** → **FAIL**: `"Warranted reviewer lane '{lane}' has no sign-off register entry. Diff triggered it via {evidence.by}: {evidence.file} «{evidence.evidence}»."`
-- **Audit event:** `{"event":"warranted-lane-absent","step":N,"lane":"{lane}","evidence":{...},"finding":"absent","timestamp":"..."}`
-- **Direction:** loosening only — an entry for a lane the diff did NOT warrant is accepted (the evaluator may add lanes, never waive lanes risk-assessor required).
-
-**Condition 14 — Structural document modifications (#121):**
-
-Run the structural-modification classifier:
-
-```bash
-python3 scripts/oversight/change_classifier.py \
-  --modifications-only --base "$BASE_SHA" --head "$HEAD_SHA"
-```
-
-For each `doc_modification` in the result: a covering artifact must exist — `.claudetmp/oversight/step{N}-human-authorization.md` OR `.claudetmp/oversight/step{N}-spec-structural-auth.md` (non-empty).
-
-- **PASS** if `doc_modifications` is empty, or if every modification has a covering artifact.
-- **PASS** if the change was already classified `structural` by the authoring agent AND a human-authorization artifact exists (the human already saw the change — loosening-direction only).
-- **FAIL** if `doc_modifications` is non-empty AND no covering artifact exists: `"Structural modification to {file} (section '{section}') has no covering human authorization. Removed: «{evidence.removed}» / Added: «{evidence.added}»."`  List every uncovered modification.
-- **Audit event:** `{"event":"doc-modification-uncovered","step":N,"file":"{file}","section":"{section}","evidence":{...},"timestamp":"..."}`
-
-**Condition 15 — Spec-change behavior delta (#205):**
-
-**Trigger scope:** a `process` sign-off entry (pm-agent or ux-designer) is present in the register AND the step diff (from `git diff --name-only "$BASE_SHA..$HEAD_SHA"`) touches a tracked spec/design document (`docs/specs/*.md`, `docs/v*/*.md`, `docs/v*/TECHNICAL-DESIGN-*.md`, `docs/ops/TELEMETRY-SPEC.md`, `docs/design/UX-DESIGN-READINESS.md`).
-
-When the trigger scope is met:
-
-- **Fail mode (a) — missing field:** `Behavior_delta:` is absent or malformed in the `process` entry → **FAIL**: `"pm-agent/ux-designer sign-off missing required Behavior_delta field for spec change to {file}."`
-- **Fail mode (b) — unauthed behavior:** `Behavior_delta:` contains any `[new]` or `[modified]` entry AND `Change_classification:` is `additive`, `new`, or `modified` AND no human-authorization artifact exists (`.claudetmp/oversight/step{N}-human-authorization.md` or `.claudetmp/oversight/step{N}-spec-structural-auth.md`) → **FAIL**: list the specific `[new]`/`[modified]` delta entries.
-- **PASS:** `Behavior_delta:` present with only `[clarifying]`, `[removed]`, or `[none]` entries; OR `Change_classification: clarifying` or `none`; OR a covering human-authorization artifact exists.
-- **Audit event:** `{"event":"spec-change-behavior-delta","step":N,"failure_mode":"missing_field"|"new_behavior_unauthed","file":"{file}","delta_entries":[...],"timestamp":"..."}`
-
-Accepted `Behavior_delta:` marker values: `new`, `modified`, `removed`, `clarifying`, `none`. Only `new` and `modified` trigger fail mode (b). Accepted `Change_classification:` values: `additive`, `structural`, `clarifying`, `none`.
-
----
 
 If any hard compliance check fails: recommendation is **ESCALATE** with the specific failing checks listed. Do not proceed to Phase 2.
 
@@ -263,7 +208,14 @@ Review the content of the sign-off entries:
 **Confidence gaps:**
 - Check the risk-assessment for confidence-complexity mismatches
 - Any CONFIDENCE < 70% on HIGH+ files that wasn't directly addressed by reviewers → flag
-- **Confidence asymmetry rule (Ferdous et al. 2026):** Confidence may only raise human attention (low confidence = flag for human); high confidence is never a reason to reduce scrutiny or skip a finding. Do not interpret high agent-declared confidence as evidence that findings can be deprioritized, reviewers waived, or tiers lowered — agent self-reported confidence does not predict defect rates and is excluded from all automated routing decisions.
+- **Confidence is one-directional (SPEC-374).** A finding is a finding regardless of
+  the authoring agent's declared confidence. You MUST NOT suppress, downgrade, or
+  deprioritize any Phase 2 finding (convergence failure, critical-finding-resolved,
+  second-review flag, confidence gap) because the agent declared high confidence. In
+  particular: a CONFIDENCE < 70% flag on a HIGH+ file is NOT dismissed because another
+  part of the diff carried high confidence, and you do NOT infer reduced human-review
+  urgency from a high confidence value. High confidence carries no authority to lower
+  scrutiny; only low confidence is a signal — and it points upward, to the human.
 
 **Second review findings:**
 - Read the second review output for this step
@@ -381,3 +333,9 @@ The evaluation file and the response text must be consistent — both record the
 - Do not open PRs.
 - Do not lower the risk tier.
 - Do not approve a step when compliance has failed — compliance failure always escalates.
+- Do not emit a `CONFIDENCE:` field in your evaluation, sign-off notes, or response.
+  The `CONFIDENCE:` self-flag belongs to **authoring agents only** (AGENTS.md §3); you
+  are an assessing agent, not an authoring one. Your output is a recommendation
+  (PROCEED / CONDITIONAL_PROCEED / ESCALATE) with reasoning — not a confidence
+  declaration. Emitting one would create exactly the saturated, uninformative routing
+  signal SPEC-374 prohibits, one level up.
