@@ -242,3 +242,186 @@ def benefit_exceeds_risk(
     if security_sensitive and tier_estimate not in ("LOW", "SAFE"):
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Framing-guard (AC-381 / #391 / #466)
+#
+# Detects adversarial PR-description framing — language that attempts to steer
+# reviewer or AI risk assessment by misrepresenting the change's risk tier,
+# soliciting approval, bypassing review, or inflating confidence.
+#
+# Algorithm (SPEC-381 §3):
+#   confidence = len(matched_shipped_classes) / total_classes
+#   is_adversarial = confidence > threshold   (default 0.7)
+#   total_classes = 4 shipped + unique caller-supplied class names
+#
+# Patterns are pre-compiled at import time. Caller may EXTEND the pattern list
+# via context["framing_patterns"] / context["framing_pattern_classes"] but
+# may NOT remove or replace shipped patterns.
+# ---------------------------------------------------------------------------
+
+# v1 shipped pattern list — 4 classes, pre-compiled at import time.
+# Each entry: (class_name, compiled_pattern)
+_FRAMING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # Class 1: risk-tier steering — characterises the change's risk as low
+    ("risk-tier steering", re.compile(
+        r"\b(low[- ]risk|this\s+is\s+safe|this\s+change\s+is\s+safe|change\s+is\s+safe"
+        r"|safe\s+change|it\s+is\s+safe|mark\s+.{0,20}(?:low[- ]risk|safe)"
+        r"|trivial\s+change|harmless\s+change)\b",
+        re.IGNORECASE,
+    )),
+    # Class 2: approval solicitation — explicitly requests or asserts approval
+    ("approval solicitation", re.compile(
+        r"\b(auto[- ]?approve|please\s+approve|approve\s+this|mark\s+.{0,30}approved"
+        r"|it\s+is\s+approved|this\s+is\s+approved|change\s+is\s+approved"
+        r"|safe\s+to\s+(?:merge|deploy|land|ship)|lgtm\b|ship\s+it)\b",
+        re.IGNORECASE,
+    )),
+    # Class 3: review-bypass — attempts to skip review steps
+    ("review-bypass", re.compile(
+        r"\b(no\s+review\s+(?:needed|required|necessary)|skip\s+(?:the\s+)?review"
+        r"|bypass\s+review|review\s+not\s+needed|no\s+(?:security\s+)?review\s+(?:needed|required"
+        r"|necessary)|no\s+need\s+to\s+review|does\s+not\s+need\s+(?:a\s+)?review)\b",
+        re.IGNORECASE,
+    )),
+    # Class 4: confidence inflation — inflates reviewer/AI confidence in the change
+    ("confidence inflation", re.compile(
+        r"\b(obviously\s+(?:safe|correct|fine|harmless)|trivially\s+correct"
+        r"|clearly\s+(?:safe|correct|fine|harmless|obvious)"
+        r"|no\s+possible\s+(?:issue|security\s+issue|risk|problem)"
+        r"|cannot\s+(?:possibly\s+)?(?:break|fail|cause)\b"
+        r"|100\s*%\s+safe|guaranteed\s+safe)\b",
+        re.IGNORECASE,
+    )),
+]
+
+# Names of the four shipped classes (used to compute the denominator)
+_SHIPPED_CLASS_NAMES: tuple[str, ...] = tuple(cls for cls, _ in _FRAMING_PATTERNS)
+
+# Default confidence threshold — above this, the description is adversarial
+_FRAMING_DEFAULT_THRESHOLD: float = 0.7
+
+
+@dataclass
+class FramingVerdict:
+    """Result of classify_framing()."""
+    is_adversarial: bool
+    confidence: float
+    redacted_description: Optional[str]
+    reason: str
+
+
+def classify_framing(
+    pr_description: Optional[str],
+    context: dict,
+) -> FramingVerdict:
+    """
+    Classify a PR description for adversarial framing.
+
+    Args:
+        pr_description: The PR description text to analyse (str or None).
+        context: Optional overrides:
+            "confidence_threshold" (float, default 0.7): above this → adversarial.
+            "framing_patterns" (list[str]): additional regex strings (compiled
+                at call time, skipped if malformed — shipped defaults always run).
+            "framing_pattern_classes" (list[str]): class names for each additional
+                pattern (parallel list; defaults to "caller-supplied" if shorter).
+
+    Returns:
+        FramingVerdict with all four fields populated. Never raises.
+    """
+    # Resolve threshold — fall back to default on any non-numeric value
+    raw_threshold = context.get("confidence_threshold", _FRAMING_DEFAULT_THRESHOLD)
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError):
+        threshold = _FRAMING_DEFAULT_THRESHOLD
+
+    # Guard empty / None input
+    if not pr_description:
+        return FramingVerdict(
+            is_adversarial=False,
+            confidence=0.0,
+            redacted_description=None,
+            reason="no description",
+        )
+
+    text: str = pr_description
+
+    # --- Build the active pattern set ---
+    # Start with shipped defaults (immutable; caller cannot remove them)
+    active_patterns: list[tuple[str, re.Pattern[str]]] = list(_FRAMING_PATTERNS)
+
+    caller_patterns: list[str] = context.get("framing_patterns", []) or []
+    caller_classes: list[str] = context.get("framing_pattern_classes", []) or []
+
+    for idx, raw_pat in enumerate(caller_patterns):
+        try:
+            compiled = re.compile(raw_pat, re.IGNORECASE)
+        except re.error:
+            # Malformed caller regex — skip it; shipped defaults are unaffected
+            continue
+        cls_name = (
+            caller_classes[idx]
+            if idx < len(caller_classes)
+            else "caller-supplied"
+        )
+        active_patterns.append((cls_name, compiled))
+
+    # --- Score: count distinct classes that have at least one match ---
+    matched_classes: set[str] = set()
+    matched_spans: list[tuple[int, int]] = []  # for redaction
+
+    for cls_name, pattern in active_patterns:
+        for m in pattern.finditer(text):
+            matched_classes.add(cls_name)
+            matched_spans.append((m.start(), m.end()))
+
+    # Confidence = matched shipped classes / total unique class count
+    # (caller-supplied classes expand the denominator)
+    all_class_names: set[str] = {cls for cls, _ in active_patterns}
+    total_classes = max(len(all_class_names), 1)
+    matched_shipped = matched_classes & set(_SHIPPED_CLASS_NAMES)
+    # Count caller classes separately so that the shipped fraction is exact
+    # but caller classes that match also contribute to confidence
+    matched_count = len(matched_shipped) + len(matched_classes - set(_SHIPPED_CLASS_NAMES))
+    confidence = matched_count / total_classes
+
+    is_adversarial = confidence > threshold
+
+    # --- Reason ---
+    if not matched_classes:
+        reason = (
+            f"No framing patterns matched. confidence={confidence:.3f}"
+        )
+    else:
+        sorted_classes = sorted(matched_classes)
+        reason = (
+            f"Matched classes: {', '.join(sorted_classes)}. "
+            f"confidence={confidence:.3f}"
+        )
+
+    # --- Redaction (only when adversarial) ---
+    redacted_description: Optional[str] = None
+    if is_adversarial and matched_spans:
+        # Merge overlapping/adjacent spans, then replace right-to-left to
+        # preserve character offsets
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(matched_spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        result = list(text)
+        for start, end in reversed(merged):
+            result[start:end] = list("[FRAMING REDACTED]")
+        redacted_description = "".join(result)
+
+    return FramingVerdict(
+        is_adversarial=is_adversarial,
+        confidence=confidence,
+        redacted_description=redacted_description,
+        reason=reason,
+    )
