@@ -203,7 +203,7 @@ marker=hos-orchestrator
    `ps -p <pid> -o command=` → `cmd`.
    **O18 resolution — exact match pattern:** the holder is a legitimate orchestrator iff `cmd` contains **both** the orchestrator script basename `hos_orchestrator.sh` **and** the marker token `hos-orchestrator`. Concretely:
    `printf '%s' "$cmd" | grep -q 'hos_orchestrator\.sh' && printf '%s' "$cmd" | grep -q 'hos-orchestrator'`.
-   The orchestrator guarantees the marker is present in its own command line by `exec`-ing with an argv element `hos-orchestrator` (e.g. the cron line runs `hos_orchestrator.sh hos-orchestrator`), so `ps -o command=` shows both tokens. Rationale: basename-only is too broad (a developer running the script by hand, an editor, a grep of the path would false-match the bare path; requiring the explicit `hos-orchestrator` argv marker plus the script name makes a recycled-PID collision astronomically unlikely while surviving path variations across machines).
+   The orchestrator guarantees the marker is present in its own command line by `exec`-ing with an argv element `hos-orchestrator` **and the class flag** (e.g. the worker cron line runs `hos_orchestrator.sh hos-orchestrator --class worker`), so `ps -o command=` shows both tokens. The `--class` flag is required so each invocation knows which credential set and role to use (see §11a below). Rationale: basename-only is too broad (a developer running the script by hand, an editor, a grep of the path would false-match the bare path; requiring the explicit `hos-orchestrator` argv marker plus the script name makes a recycled-PID collision astronomically unlikely while surviving path variations across machines).
 3. **HUNG check (R7.5.5 — takes precedence over alive):** read `started`; if `now - started > orchestrator_lock_timeout` → HUNG. (See note below: ADR-3 splits this from `max_task_runtime`.) HUNG ⇒ reclaim **AND fire the dead-man's-switch / page** (R11.5); never silently reclaim a HUNG lock.
 4. **Stale (dead OR command-mismatch, and not within timeout):** `rm -rf "$HOS_LOCK_DIR"`; retry acquire **once** from the jitter step; log `stale-lock-reclaim`.
 5. **Alive AND command-match AND not hung:** legitimate holder → **abort this run**, wait for next cron window; log `lock-contention`.
@@ -555,6 +555,30 @@ R13.4 (activation first gate), R8.4 (hos-halt file, path, protected surface, hea
 
 ---
 
+## 11a. Deployment — two-cronjob model  (AGENT-IDENTITY.md §7 · ADR-3)
+
+**Worker and overseer run as separate cronjobs** on different credential sets and at staggered intervals. This is a direct consequence of `AGENT-IDENTITY.md §7` (two identity classes, separate credential contexts) applied to the cron deployment:
+
+```cron
+# Worker — opens branches/PRs, runs the build chain; authenticated as HOSWorkerTutelare
+0,30 * * * *  /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class worker
+
+# Overseer — reviews, approves, merges within ceiling; authenticated as HOSOversightTutelare
+15,45 * * * *  /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class overseer
+```
+
+**The 15-minute stagger is intentional:** the worker fires first and may claim work, open branches, and spawn per-task workers that run the build chain. By the time the overseer fires 15 minutes later, queued PRs are likely ready for review. Each cronjob sources its own credential env (worker PAT / overseer PAT) before invoking the orchestrator.
+
+**`--class` is mandatory in argv** for two reasons:
+1. `hos_orchestrator.sh` uses it to load the correct `gh` auth context and `git` identity (sourced from `machine-accounts.env`).
+2. It appears in `ps -o command=` output, making the O18 liveness check class-aware — a worker lock cannot be mistaken for an overseer lock and vice versa. The O18 match pattern therefore checks `hos_orchestrator.sh` + `hos-orchestrator` as before; the `--class` value is carried along automatically.
+
+**Machine lock is still machine-global** (shared `/tmp/hos-worker.lock` across both classes, O17). This means at most one orchestrator — worker OR overseer — runs its probe→claim→dispatch cycle at any moment. The 15-minute stagger makes contention rare; when it does occur the incumbent completes and the other waits for the next window.
+
+**`--class overseer` gate ordering note:** the overseer orchestrator runs the same gate order as the worker (activation → hos-halt → machine lock → config → probe), but its probe looks for *reviewable* PRs (open `hos/auto/*` branches with completed gate results) rather than new inbound issues. `merge_authority.py` is the decision layer; the overseer never opens new PRs.
+
+---
+
 ## 12. self-review-source  (T12 · §3.2 · O6 · O9 · O10-flagged)
 
 ### Responsibility
@@ -645,94 +669,8 @@ First action on any found work; fails toward the human. Classify (confidence flo
 - **Full canonical `hos-*` label set provisioned at T2 onboarding (the exact `gh label create` list):** `hos-coordination`, `hos-claimed`, `hos-in-progress`, `hos-budget-gated`, `hos-embargo`, `hos-autowork-authorized`, `suppression-expired`. This is the complete, authoritative provisioning set — matches the PRD R6.2 canonical label set. **Reuse (do not recreate):** `needs-ai`, `needs-human` (existing hyphen-case repo labels). T2 creates the `hos-*` set per repo on opt-in via `gh label create`.
 - **`hos-halt` is NOT in the provisioned set — it is a FILE, never a label (R8.4, binding).** T2 MUST NOT run `gh label create hos-halt`. The kill switch is a committed file on the protected surface (§11 hos-halt contract); creating an `hos-halt` *label* would create the false impression that the label is the switch and is explicitly forbidden. There is no visual-marker label exception — do not create it in any form.
 
-### Framing-guard subsection  (SPEC-381 · #391 — merged here by architect ruling 2026-06-16)
-
-**Ruling:** SPEC-381 (reviewer framing guard) does NOT create a new module. The framing-guard
-logic ships as the function `classify_framing()` inside this `triage.py` module. This subsection
-is the authoritative technical contract for that function.
-
-**Function signature:**
-```python
-def classify_framing(
-    pr_description: str,
-    context: dict,
-) -> FramingVerdict:
-```
-
-**Return type:**
-```python
-@dataclass
-class FramingVerdict:
-    is_adversarial: bool           # True when confidence > threshold (default 0.7)
-    confidence: float              # 0.0–1.0; proportion of pattern classes with a match
-    redacted_description: str | None  # sanitized PR description if is_adversarial; else None
-    reason: str                    # human-readable explanation of findings
-```
-
-**Inputs:**
-- `pr_description` — the raw PR description string from the GitHub API. Treated as **untrusted
-  framing** (P9, Mitropoulos et al. 2026). Never trusted at face value regardless of author.
-- `context` — optional per-call overrides:
-  - `context["confidence_threshold"]` (float, default 0.7): the threshold above which
-    `is_adversarial` is set True.
-  - `context["framing_patterns"]` (list[str] of regex strings, optional): caller-supplied
-    additional patterns; the shipped default pattern list is always included and cannot be
-    removed by the caller (narrow-only principle, SPEC-381 §3 C2).
-
-**Algorithm:**
-1. **Pattern matching (per shipped + caller-supplied list):** compile the v1 pattern list
-   (case-insensitive) covering four classes: risk-tier steering, approval solicitation,
-   review-bypass, confidence inflation. Run each compiled pattern against `pr_description`.
-   Record which pattern classes have at least one match.
-
-2. **Confidence scoring:** `confidence = matched_classes / total_classes`. With the v1
-   four-class list: 1 match → 0.25, 2 → 0.50, 3 → 0.75, 4 → 1.0. Caller-supplied patterns
-   are bucketed into the nearest existing class or counted as a fifth class if they introduce
-   a genuinely new category (caller controls classification metadata via `context`).
-
-3. **Adversarial determination:** `is_adversarial = (confidence > threshold)`.
-   Default threshold is 0.7, so the default fires at ≥ 3 of 4 classes matched. A single
-   pattern match (confidence = 0.25) is a partial signal, not adversarial by default.
-
-4. **Redaction (when `is_adversarial` is True):** for each matched span in
-   `pr_description`, replace the matched substring with `[FRAMING REDACTED]`. Preserve all
-   other content — diff references, linked issue numbers, bug descriptions, code snippets.
-   Set `redacted_description` to the result. When `is_adversarial` is False, set
-   `redacted_description = None`.
-
-5. **Reason assembly:** assemble a human-readable string naming the matched pattern classes
-   and the matched snippets (up to 3 examples per class). Always state the confidence score
-   and whether the threshold was crossed.
-
-**v1 shipped pattern list (authoritative for test baseline):**
-
-| Class | Example patterns (case-insensitive regex) |
-|---|---|
-| risk-tier steering | `\bmark\s+(?:this\|it)\s+as\s+(?:low\|medium\|safe\|approved?)\b`, `\bthis\s+is\s+(?:a\s+)?(?:safe\|low.risk)\b`, `\blow.risk\s+change\b` |
-| approval solicitation | `\bauto.?approve\b`, `\bsafe\s+to\s+(?:merge\|approve\|deploy)\b`, `\bapprove\s+this\b` |
-| review-bypass | `\bno\s+review\s+(?:needed\|required)\b`, `\bskip\s+review\b`, `\bno\s+security\s+review\b` |
-| confidence inflation | `\bobviously\s+safe\b`, `\btrivially\s+correct\b`, `\bno\s+possible\s+(?:security\s+)?issue\b` |
-
-**Integration contract — `risk-assessor` caller:**
-- `risk-assessor` calls `classify_framing(pr_description, context)` before constructing
-  reviewer prompts, on every PR.
-- If `FramingVerdict.is_adversarial` is True: pass `redacted_description` (not the original)
-  to all reviewer prompts; append `FRAMING_DETECTED: <reason>` to the inspection brief.
-- If `is_adversarial` is False but `confidence > 0` (partial match): pass the original
-  description unchanged; append `FRAMING_PARTIAL: <reason>` to the brief.
-- Framing detection is NOT a tier override. The SPEC-374 confidence-asymmetry rule applies:
-  `classify_framing()` is a signal to reviewers, not a gate that lowers risk tier.
-
-**Failure handling:**
-- Empty or None `pr_description` → return `FramingVerdict(is_adversarial=False, confidence=0.0, redacted_description=None, reason="no description")`. Never raise.
-- A pattern that fails to compile (bad regex from `context["framing_patterns"]`) → log the error, skip that pattern, continue. Never let a bad caller-supplied pattern suppress the shipped defaults.
-
-**Stdlib only.** No third-party imports. Same constraint as the rest of `triage.py`.
-
-**Test requirements (AC-381-3):** unit tests cover ≥ 20 labeled cases: true adversarial (single class, multi-class, threshold boundary), true benign, partial matches that do not cross the threshold. Test corpus lives in `scripts/automation/fixtures/framing_patterns.jsonl` as `{text, expected_is_adversarial, expected_confidence_approx}` entries.
-
 ### Requirements implemented
-R5.1, R5.2.1, R5.2.2, R5.3.1–R5.3.4, R5.4.1–R5.4.4, R3.1.1 (verification artifact by class), O19 (CODEOWNERS lookup + edge cases), O20 (label names + T2), SPEC-381 C4/C5 (framing guard function + risk-assessor integration).
+R5.1, R5.2.1, R5.2.2, R5.3.1–R5.3.4, R5.4.1–R5.4.4, R3.1.1 (verification artifact by class), O19 (CODEOWNERS lookup + edge cases), O20 (label names + T2).
 
 ---
 
