@@ -56,20 +56,19 @@ echo "=== Validation stamp check ==="
 echo ""
 
 # ── 1. Check stamp exists and is committed ────────────────────────────────────
-if [[ ! -f "$STAMP_FILE" ]]; then
-    fail "Stamp file not found: $STAMP_FILE"
-    echo ""
-    echo "  Run scripts/framework/run_framework_validation.sh and commit the stamp"
-    echo "  before pushing. The stamp proves all validation phases were run."
-    exit 1
+# Temporary: stamps are gitignored (#422) while a proper non-conflict anchoring
+# mechanism is designed. When the stamp is not tracked in git, skip this check
+# rather than failing — the check cannot be meaningful without a committed anchor.
+if [[ ! -f "$STAMP_FILE" ]] || ! git ls-files --error-unmatch "$STAMP_FILE" &>/dev/null 2>&1; then
+    echo "  SKIP: Validation stamp is not tracked in git (gitignored per #422)."
+    echo "        Stamp check skipped until anchoring mechanism is redesigned."
+    exit 0
 fi
 
 STAMP_COMMIT=$(git log -1 --format="%H" -- "$STAMP_FILE" 2>/dev/null || true)
 if [[ -z "$STAMP_COMMIT" ]]; then
-    fail "Stamp file exists but has not been committed: $STAMP_FILE"
-    echo ""
-    echo "  git add $STAMP_FILE && git commit"
-    exit 1
+    echo "  SKIP: Stamp file exists but has not been committed — skipping (#422)."
+    exit 0
 fi
 
 STAMP_TIME=$(git log -1 --format="%ct" -- "$STAMP_FILE")

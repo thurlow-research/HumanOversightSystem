@@ -36,3 +36,7 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 .envrc
+
+# Validation stamps — tracked per branch, causes merge conflicts (#422)
+# TODO: redesign anchoring mechanism, see issue #422
+scripts/framework/validation-stamps/
