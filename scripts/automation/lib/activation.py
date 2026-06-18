@@ -1,179 +1,223 @@
 """
-activation.py — Runtime activation helpers for the HOS autonomous worker.
+Operator-local activation gate for the HOS automation loop (R13.4).
 
-verify_bot_identity() guards against a common operator mistake: running the
-worker in a shell where a human admin's `gh` session is still active.  If the
-active gh identity isn't the expected bot account, commits and PRs would be
-attributed to the human, contaminating the audit trail and sending notifications
-from their account.
+The activation file (~/.hos/<repo-id>/ACTIVE) is the FIRST check on every
+cron wake.  If absent, unreadable, empty, or token-mismatched → OFF.
+ZERO other activity — no probe, no GitHub API call, no model invocation.
 
-derive_repo_id_from_path() and is_in_scope() implement the §312 repo-scope
-assertion: the worker calls is_in_scope(target, session_repo_id) before acting
-on any file/PR/issue it did not itself create this session. False only when the
-target PROVABLY resolves to a different repo — bare relative paths and
-indeterminate inputs are safe-direction True (cannot prove a crossing).
+The two-key enable (activation AND repo authorization in governance config)
+means the loop cannot self-enable: changing the committed governance config
+requires a human-approved PR (CODEOWNERS-gated), and the local activation
+file is outside the repo and never committed.
 """
 
-import logging
+import os
 import re
 import subprocess
+import uuid
+from pathlib import Path
 from typing import Optional
 
 
-def verify_bot_identity(bot_username: str, repo_root=None) -> bool:
-    """
-    Verify that gh is currently authenticated as bot_username.
+# ---------------------------------------------------------------------------
+# repo-id slug derivation (MF-4 — single source of truth)
+# ---------------------------------------------------------------------------
 
-    Returns True if authenticated as the expected bot, False otherwise.
-    Logs a warning if the active account is a human (non-bot) account.
-
-    Args:
-        bot_username: The expected GitHub login for the bot account
-                      (e.g. "HOSWorkerTutelare").
-        repo_root:    Unused; reserved for future per-repo gh-host lookup.
+def _normalize_remote_url(url: str) -> tuple[str, str]:
     """
+    Extract (owner, repo) from an HTTPS or SSH GitHub remote URL.
+
+    Handles:
+      https://github.com/owner/repo.git
+      git@github.com:owner/repo.git
+      https://github.com/owner/repo
+    Returns (owner, repo) both lowercased, repo without .git suffix.
+    """
+    url = url.strip()
+
+    # SSH form: git@github.com:owner/repo.git
+    ssh_match = re.match(r"git@github\.com:([^/]+)/(.+?)(?:\.git)?$", url, re.IGNORECASE)
+    if ssh_match:
+        return ssh_match.group(1).lower(), ssh_match.group(2).lower()
+
+    # HTTPS form: https://github.com/owner/repo[.git]
+    https_match = re.match(
+        r"https?://github\.com/([^/]+)/(.+?)(?:\.git)?/?$", url, re.IGNORECASE
+    )
+    if https_match:
+        return https_match.group(1).lower(), https_match.group(2).lower()
+
+    raise ValueError(f"Cannot derive owner/repo from remote URL: {url!r}")
+
+
+def derive_repo_id(repo_root: Optional[str | Path] = None) -> str:
+    """
+    Derive the <repo-id> slug for the given repo root (or cwd).
+
+    Algorithm (MF-4):
+    1. git remote get-url origin
+    2. Normalize to (owner, repo) — strip scheme/host, strip .git
+    3. Lowercase; join with '-'
+
+    Example:
+      https://github.com/thurlow-research/HumanOversightSystem.git
+      → "thurlow-research-humanoversightsystem"
+    """
+    cwd = str(repo_root) if repo_root else None
     result = subprocess.run(
-        ["gh", "api", "user", "--jq", ".login"],
-        capture_output=True, text=True, check=False
+        ["git", "remote", "get-url", "origin"],
+        capture_output=True, text=True, check=False,
+        cwd=cwd,
     )
     if result.returncode != 0:
-        logging.warning(
-            "verify_bot_identity: 'gh api user' failed (exit %d). "
-            "Is gh installed and authenticated?",
-            result.returncode,
+        raise RuntimeError(
+            f"Could not read git remote origin: {result.stderr.strip()}"
         )
-        return False
-    current = result.stdout.strip()
-    if current.lower() != bot_username.lower():
-        logging.warning(
-            "Identity mismatch: gh is authenticated as '%s' but expected '%s'. "
-            "PRs and commits will be attributed to the wrong account. "
-            "Run: provision_agent_account.sh %s --pat <BOT_PAT>",
-            current,
-            bot_username,
-            "worker" if "worker" in bot_username.lower() else "overseer",
-        )
-        return False
-    return True
+    remote_url = result.stdout.strip()
+    owner, repo = _normalize_remote_url(remote_url)
+    return f"{owner}-{repo}"
 
 
-# ── Repo-scope assertion helpers (§312) ───────────────────────────────────────
-# Normalization rule (PRD R6.1 / R13.4): lowercase owner and repo, strip .git,
-# no trailing slash.  ONE canonical algorithm shared by both functions so there
-# is never a second, divergent slug path in this module.
+# ---------------------------------------------------------------------------
+# Machine-token resolution (fail-closed at every branch)
+# ---------------------------------------------------------------------------
 
-_GITHUB_URL_RE = re.compile(
-    r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.#?\s]+)",
-    re.IGNORECASE,
-)
-_OWNER_REPO_REF_RE = re.compile(
-    r"^(?P<owner>[A-Za-z0-9_.\-]+)/(?P<repo>[A-Za-z0-9_.\-]+)(?:#\d+)?$"
-)
+def _hos_dir(repo_id: str) -> Path:
+    return Path.home() / ".hos" / repo_id
 
 
-def _normalize_slug(owner: str, repo: str) -> str:
-    """Return the canonical lowercased owner/repo slug, strip trailing .git."""
-    repo = repo.rstrip("/")
-    if repo.endswith(".git"):
-        repo = repo[:-4]
-    return f"{owner.lower()}/{repo.lower()}"
-
-
-def derive_repo_id_from_path(path: str) -> Optional[str]:
+def _resolve_machine_token(repo_id: str) -> Optional[str]:
     """
-    Derive the canonical <owner>/<repo> repo-id slug from a file path OR a
-    GitHub URL/reference, using the SAME normalization as the cid/slug
-    derivation (R6.1, R13.4): lowercase owner/repo, no trailing slash.
+    Resolve the ONE canonical machine token per the R13.4 contract.
 
-    Resolution order:
-      1. If `path` is a github.com URL or an `<owner>/<repo>#<n>` reference,
-         extract owner/repo directly and normalize to lowercase.
-      2. If `path` is a filesystem path, resolve to absolute, walk up to the
-         nearest enclosing git work-tree, read `git -C <root> remote get-url
-         origin`, and derive the slug from that remote.
-      3. If neither yields a repo, return None.
+    1. If MACHINE-TOKEN exists and is readable and non-empty → return UUID from it.
+    2. If MACHINE-TOKEN exists but empty or unreadable → return None (OFF).
+    3. If MACHINE-TOKEN absent → return hostname -f.
 
-    Returns the lowercased `<owner>/<repo>` slug, or None when the repo cannot
-    be determined.  Never raises.
+    Returns None to signal OFF.  Never returns an empty string.
+    """
+    machine_token_path = _hos_dir(repo_id) / "MACHINE-TOKEN"
+
+    if machine_token_path.exists():
+        # MACHINE-TOKEN present — must be readable and non-empty.
+        try:
+            content = machine_token_path.read_text(encoding="utf-8").strip()
+        except (OSError, PermissionError):
+            return None  # Unreadable → OFF.
+        if not content:
+            return None  # Empty → OFF (interrupted hos activate --uuid).
+        return content
+
+    # MACHINE-TOKEN absent → use hostname -f.
+    result = subprocess.run(
+        ["hostname", "-f"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None  # Cannot resolve hostname → OFF.
+    return result.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Activation check (R13.4 · R13.2)
+# ---------------------------------------------------------------------------
+
+def check_activation(repo_root: Optional[str | Path] = None) -> bool:
+    """
+    The very first gate on every cron wake.
+
+    Returns True (ACTIVE) only if BOTH conditions hold:
+      1. ~/.hos/<repo-id>/ACTIVE is a readable, non-empty file.
+      2. Its trimmed content byte-equals the canonical machine token.
+
+    Any other outcome — absent, unreadable, empty, mismatch — → False (OFF).
+    NEVER raises; all failure paths return False.
     """
     try:
-        # (1) GitHub URL or owner/repo#N reference
-        url_m = _GITHUB_URL_RE.search(path)
-        if url_m:
-            return _normalize_slug(url_m.group("owner"), url_m.group("repo"))
+        repo_id = derive_repo_id(repo_root)
+    except (RuntimeError, ValueError, OSError):
+        return False
 
-        ref_m = _OWNER_REPO_REF_RE.match(path.strip())
-        if ref_m:
-            return _normalize_slug(ref_m.group("owner"), ref_m.group("repo"))
+    active_path = _hos_dir(repo_id) / "ACTIVE"
 
-        # (2) Filesystem path — walk up to the nearest git work-tree root, then
-        # read the origin remote URL and parse it as a GitHub URL.
-        import os
-        candidate = os.path.abspath(path)
-        # Walk up from the path itself (not just its parent) so a bare file path
-        # like "src/foo.py" that doesn't exist still resolves via CWD.
-        if not os.path.exists(candidate):
-            candidate = os.getcwd()
-        # Find the git root by walking upward.
-        check = candidate if os.path.isdir(candidate) else os.path.dirname(candidate)
-        git_root: Optional[str] = None
-        while True:
-            if os.path.isdir(os.path.join(check, ".git")):
-                git_root = check
-                break
-            parent = os.path.dirname(check)
-            if parent == check:
-                break
-            check = parent
-
-        if git_root is None:
-            # Fall back to asking git directly — handles worktrees / submodules.
-            r = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, check=False
-            )
-            if r.returncode == 0:
-                git_root = r.stdout.strip()
-
-        if git_root:
-            r = subprocess.run(
-                ["git", "-C", git_root, "remote", "get-url", "origin"],
-                capture_output=True, text=True, check=False
-            )
-            if r.returncode == 0:
-                remote_url = r.stdout.strip()
-                url_m2 = _GITHUB_URL_RE.search(remote_url)
-                if url_m2:
-                    return _normalize_slug(url_m2.group("owner"), url_m2.group("repo"))
-
-        return None
-    except Exception:
-        # Must never raise — return None for any indeterminate input.
-        return None
-
-
-def is_in_scope(target: str, session_repo_id: str) -> bool:
-    """
-    Return False if `target` resolves to a DIFFERENT repo-id than
-    `session_repo_id`; True otherwise.
-
-    target: a file path, a github.com URL, or an `<owner>/<repo>#<n>` reference.
-    session_repo_id: the session scope slug (lowercased <owner>/<repo>),
-                     derived once at session start from
-                     git remote get-url origin.
-
-    Semantics (fail-toward-pushback only when scope is PROVABLY different):
-      - derive_repo_id_from_path(target) == session_repo_id  -> True (in scope)
-      - derive returns a DIFFERENT, non-None slug             -> False (cross-repo)
-      - derive returns None (indeterminate)                    -> True
-        (cannot prove a crossing; do not block on a guess — a bare relative path
-        inside the current tree is the common case and must not trip the guard)
-    """
+    # Condition 1: file must exist, be readable, and non-empty.
+    if not active_path.is_file():
+        return False
     try:
-        target_id = derive_repo_id_from_path(target)
-        if target_id is None:
-            # Cannot determine; safe direction is True (no provable crossing).
-            return True
-        return target_id == session_repo_id.lower()
-    except Exception:
-        return True
+        file_token = active_path.read_text(encoding="utf-8").strip()
+    except (OSError, PermissionError):
+        return False
+    if not file_token:
+        return False
+
+    # Condition 2: single equality against the canonical machine token.
+    canonical = _resolve_machine_token(repo_id)
+    if canonical is None:
+        return False
+
+    return file_token == canonical
+
+
+# ---------------------------------------------------------------------------
+# hos activate / hos deactivate helpers (R13.4 — operator CLI)
+# ---------------------------------------------------------------------------
+
+def activate(
+    repo_root: Optional[str | Path] = None,
+    use_uuid: bool = False,
+    verify_orchestrator: bool = True,
+) -> str:
+    """
+    Write ~/.hos/<repo-id>/ACTIVE with the canonical machine token.
+
+    With use_uuid=False (default): writes hostname -f and creates no sidecar.
+    With use_uuid=True: generates a UUID, writes it to both MACHINE-TOKEN
+    and ACTIVE (for operators with unstable hostnames).
+    With verify_orchestrator=True (default): raises RuntimeError if
+    scripts/automation/hos_orchestrator.sh is absent or not executable —
+    prevents activating a setup where the cron target doesn't exist yet.
+    Pass verify_orchestrator=False to skip this check (e.g. during build).
+
+    Returns the repo-id slug for confirmation.
+    Raises RuntimeError on any failure (e.g. cannot resolve git remote).
+    """
+    if verify_orchestrator:
+        root = Path(repo_root).resolve() if repo_root else Path.cwd()
+        orchestrator = root / "scripts" / "automation" / "hos_orchestrator.sh"
+        if not orchestrator.is_file() or not os.access(str(orchestrator), os.X_OK):
+            raise RuntimeError(
+                f"hos_orchestrator.sh not found or not executable at {orchestrator} — "
+                "build Phase C first, or pass verify_orchestrator=False to skip"
+            )
+
+    repo_id = derive_repo_id(repo_root)
+    hos_dir = _hos_dir(repo_id)
+    hos_dir.mkdir(parents=True, exist_ok=True)
+
+    if use_uuid:
+        token = str(uuid.uuid4())
+        machine_token_path = hos_dir / "MACHINE-TOKEN"
+        machine_token_path.write_text(token + "\n", encoding="utf-8")
+    else:
+        result = subprocess.run(
+            ["hostname", "-f"], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError("Cannot resolve hostname -f for activation token")
+        token = result.stdout.strip()
+
+    active_path = hos_dir / "ACTIVE"
+    active_path.write_text(token + "\n", encoding="utf-8")
+    return repo_id
+
+
+def deactivate(repo_root: Optional[str | Path] = None) -> str:
+    """
+    Remove ~/.hos/<repo-id>/ACTIVE.
+
+    Returns the repo-id slug for confirmation.
+    Idempotent — does not raise if the file is already absent.
+    """
+    repo_id = derive_repo_id(repo_root)
+    active_path = _hos_dir(repo_id) / "ACTIVE"
+    active_path.unlink(missing_ok=True)
+    return repo_id
