@@ -34,6 +34,13 @@
 
 set -euo pipefail
 
+# Resolve the repo root from the script's own location so the validation_logic.py
+# delegation works regardless of the caller's cwd (SPEC-334). The ledger paths
+# stay cwd-relative (OUT_DIR), preserving the existing --record/--reset contract.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATION_LOGIC="$ROOT/scripts/oversight/validation_logic.py"
+
 AGENTS_DIR=".claude/agents"
 DOCS_DIR="docs"
 OUT_DIR=".claudetmp/framework"
@@ -80,10 +87,9 @@ EXTRA_REVIEW_FILES=""
 if [[ "${1:-}" == "--record" ]]; then
     mkdir -p "$OUT_DIR"
     _files="${2:?--record needs FILES}"; _cls="${3:?--record needs CLASS}"; _disp="${4:?--record needs DISPOSITION}"
-    _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    _json_files=$(printf '%s' "$_files" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"", (i>1?",":""), $i}}')
-    printf '{"files":[%s],"class":"%s","disposition":"%s","ts":"%s"}\n' \
-        "$_json_files" "$_cls" "$_disp" "$_ts" >> "$LEDGER"
+    # Ledger write delegated to validation_logic.py (SPEC-334 binding 4).
+    python3 "$VALIDATION_LOGIC" record \
+        --ledger "$LEDGER" --files "$_files" --class "$_cls" --disposition "$_disp" >/dev/null
     echo "Recorded to external-review ledger: [$_files] $_cls → $_disp"
     exit 0
 fi
@@ -389,116 +395,12 @@ fi
 echo ""
 
 # ── Finalize verdict header (ledger-aware: verdict keyed on NEW findings) ────
-python3 - "$OUTFILE" "$LEDGER" <<'PYEOF'
-import json, re, sys
-
-path, ledger_path = sys.argv[1], sys.argv[2]
-try:
-    content = open(path).read()
-except Exception:
-    sys.exit(0)
-
-
-def _brace_objects(text):
-    """String-aware extraction of every balanced {...} that parses as JSON —
-    tolerant of prose the model emits inside/around the ```json fence (agy and
-    codex both prepend commentary), and of braces inside JSON strings."""
-    out, n, i = [], len(text), 0
-    while i < n:
-        if text[i] != "{":
-            i += 1
-            continue
-        depth, in_str, esc, j = 0, False, False, i
-        while j < n:
-            c = text[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-            elif c == '"':
-                in_str = True
-            elif c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        out.append(json.loads(text[i:j + 1]))
-                    except Exception:
-                        pass
-                    break
-            j += 1
-        i = j + 1
-    return out
-
-
-def extract_objects(text):
-    objs = []
-    for m in re.finditer(r"```json(.*?)```", text, re.DOTALL):
-        objs.extend(o for o in _brace_objects(m.group(1))
-                    if "findings" in o or "attacks" in o or "verdict" in o)
-    if not objs:
-        objs.extend(o for o in _brace_objects(text)
-                    if "findings" in o or "attacks" in o)
-    return objs
-
-
-# Dedup ledger: fingerprint = (sorted files, finding-class). agy uses `category`,
-# codex uses `type`; either is the class.
-seen = set()
-try:
-    for line in open(ledger_path):
-        line = line.strip()
-        if not line:
-            continue
-        e = json.loads(line)
-        seen.add((tuple(sorted(e.get("files", []))), e.get("class", "")))
-except FileNotFoundError:
-    pass
-
-
-def fingerprint(f):
-    files = f.get("files") or ([f["file"]] if f.get("file") else [])
-    return (tuple(sorted(files)), f.get("category") or f.get("type") or "")
-
-
-blocks = extract_objects(content)
-severities = ["critical", "high", "blocking", "warning", "medium", "low", "none"]
-highest = "none"
-blocking_count = new_blocking = 0
-
-for data in blocks:
-    for f in data.get("findings", []) + data.get("attacks", []):
-        sev = str(f.get("severity", "low")).lower()
-        try:
-            if severities.index(sev) < severities.index(highest):
-                highest = sev
-        except ValueError:
-            pass
-        if sev in ("critical", "high", "blocking"):
-            blocking_count += 1
-            if fingerprint(f) not in seen:
-                new_blocking += 1
-
-# Verdict keyed on NEW (un-ledgered) blocking findings: convergence = "zero
-# non-noise", not zero findings (external review is non-deterministic).
-if not blocks:
-    verdict = "error"
-elif new_blocking > 0:
-    verdict = "request_changes"
-else:
-    verdict = "approve"
-
-new_content = re.sub(r'^verdict: pending$',       f'verdict: {verdict}', content, flags=re.M)
-new_content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', new_content, flags=re.M)
-new_content = re.sub(r'^blocking_count: 0$',      f'blocking_count: {blocking_count}', new_content, flags=re.M)
-new_content = re.sub(r'^new_blocking_count: 0$',  f'new_blocking_count: {new_blocking}', new_content, flags=re.M)
-open(path, 'w').write(new_content)
-print(f"  verdict={verdict} highest_severity={highest} blocking={blocking_count} new={new_blocking}")
-PYEOF
+# Dedup fingerprinting + verdict aggregation delegated to validation_logic.py
+# (SPEC-334). --strict-empty: an empty parse yields verdict=error here (agents
+# behavior, binding 7). The pass-cap / exit-code decision stays in this shell
+# below (binding 3) — the module never emits verdict exit codes.
+python3 "$VALIDATION_LOGIC" process \
+    --file "$OUTFILE" --ledger "$LEDGER" --strict-empty
 
 # ── Print summary ────────────────────────────────────────────────────────────
 echo ""
