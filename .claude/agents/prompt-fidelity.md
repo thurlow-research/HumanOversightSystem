@@ -58,18 +58,3 @@ Do not populate Fidelity, Gaps, or Additions for either NYI case.
 
 - Fidelity gaps → risk-assessor (who includes them in the inspection brief for code-reviewer)
 - Missing prompt artifact → report to human; cannot assess fidelity without the artifact
-
-## On completion — write a stamp file (ARCH-Q-2)
-
-After returning your fidelity report to risk-assessor (whether `PASS`, `WARN`, `FAIL`, or `NYI`), write a completion stamp as your final action. Write the stamp even on `NYI` — the stamp records that the subagent ran and produced a result (the evaluator's condition 12 checks existence only; the NYI status is informational in the report content):
-
-```bash
-mkdir -p .claudetmp/oversight/subagents
-TS=$(date -u +%Y%m%dT%H%M%S)
-STEP="${STEP:-unknown}"  # risk-assessor must pass the step number as $STEP
-printf '{"subagent":"prompt-fidelity","step":"%s","cid":"%s","completed_at":"%s"}\n' \
-  "$STEP" "${CID:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  > ".claudetmp/oversight/subagents/prompt-fidelity-${STEP}-${TS}.stamp"
-```
-
-The stamp path `.claudetmp/oversight/subagents/prompt-fidelity-<step>-<ts>.stamp` is what the oversight-evaluator globs for condition 12 compliance. Do NOT write the stamp if the subagent was not actually invoked (e.g. risk-assessor decided the step was below MEDIUM — independent attestation is the entire point of ARCH-Q-2).
