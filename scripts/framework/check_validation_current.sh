@@ -27,6 +27,9 @@
 
 set -euo pipefail
 
+# Temporary validation-stamp bypass — must be revisited by this date (#422/#464)
+STAMP_BYPASS_DISABLED_UNTIL="2026-12-31"
+
 STAMP_FILE="scripts/framework/validation-stamps/all-phases.stamp"
 
 # ── Excluded path prefixes ────────────────────────────────────────────────────
@@ -58,7 +61,16 @@ echo ""
 # ── 1. Check stamp exists and is committed ────────────────────────────────────
 # Temporary: stamps gitignored (#422) — skip check instead of failing
 if [[ ! -f "$STAMP_FILE" ]] || ! git ls-files --error-unmatch "$STAMP_FILE" &>/dev/null 2>&1; then
-    echo "  SKIP: Stamp gitignored per #422 — check skipped until redesigned."
+    echo "  ⚠ BYPASS ACTIVE: Validation stamp check is disabled (gitignored per #422/#433)."
+    echo "    This bypass expires: ${STAMP_BYPASS_DISABLED_UNTIL}"
+    # Warn loudly if the bypass has expired
+    TODAY=$(date -u +%Y-%m-%d)
+    if [[ "$TODAY" > "$STAMP_BYPASS_DISABLED_UNTIL" ]]; then
+        echo "  FAIL: Validation stamp bypass has EXPIRED (${STAMP_BYPASS_DISABLED_UNTIL})."
+        echo "        Resolve #422 before continuing. Do not silently extend this bypass."
+        exit 1
+    fi
+    echo "    Redesign tracked in issue #422. Do not extend this bypass without human authorization."
     exit 0
 fi
 
