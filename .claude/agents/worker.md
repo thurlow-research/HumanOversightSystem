@@ -247,7 +247,7 @@ When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reaso
 
 7. The originating reviewer (the reviewer whose register entry carries `Out_of_scope_commits:`) must re-review the updated diff and remove the field (or set it to `none`) and update their `Status:` before you re-submit. Do NOT modify the originating reviewer's register entry yourself — only the originating reviewer may clear it.
 
-8. After the originating reviewer clears the flag, re-run step 8.9 and re-submit the current PR.
+8. After the originating reviewer clears the flag, re-run step 8.9 and re-submit the current PR. You do NOT write the `out-of-scope-commit / resolved` audit event yourself — the overseer emits it (with `resolution: cherry-pick-pr-opened` and `cross_branch_pr` set to your cross-branch PR number) when it confirms the flag is resolved at the pre-merge gate. Make sure the cross-branch PR number is discoverable from the current PR (reference it in the re-entry note) so the overseer can populate `cross_branch_pr`.
 
 **Option B — Human authorization via GitHub issue:**
 

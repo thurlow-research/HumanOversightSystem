@@ -223,6 +223,8 @@ a resolved finding or confidence gap that automated review cannot fully clear.
 1. **{file:line}** — {specific description of what to check and why}
 2. ...
 
+**Each item above has a corresponding unresolved review thread. Merge is blocked until all threads are resolved.** (R1.3, SPEC-222)
+
 *These are in addition to panel findings, which will be posted as review threads.*
 ```
 
@@ -244,18 +246,62 @@ gh pr edit "$PR_NUMBER" --add-reviewer ScottThurlow \
 ```
 This does NOT block PR opening on failure — print the warning and continue. A missing review request is the evaluator's R3.3 WARN signal, not a merge-gate breach.
 
-**5. Record the process record (R4.3, SPEC-222).** Append a `conditional_proceed` event to the append-only `audit/oversight-log.jsonl` (catalog: contract §6a). This is the ledger the evaluator's CONDITIONAL_PROCEED thread-compliance checks (R3.1/R3.4) read. `$ITEM_COUNT` is the number of numbered items in the "Human Review Required Before Merge" section you appended in step 2:
+**5. Post one unresolved PR review thread per conditional item (R1, SPEC-222).** Each conditional item becomes a GitHub review *thread* — the only PR comment surface the `required_conversation_resolution` branch-protection rule blocks merge on.
+
+> **R1.5 API finding (verified before implementing R1):** `gh pr review --comment` does NOT create a thread the merge gate blocks on. It posts `POST .../pulls/{n}/reviews` with a summary `body` and no `comments[]`, producing a *review* with no `PullRequestReviewThread` — no `isResolved` state, no "Resolve conversation" button, so it never blocks merge. Only diff-anchored review comments / the GraphQL `addPullRequestReviewThread` mutation create resolvable, merge-blocking threads. Per R1.5's explicit escape clause, this path uses GraphQL `addPullRequestReviewThread`. (Full analysis: `docs/v0.4.0/TECHNICAL-DESIGN-222-cp-thread-posting.md` §1.)
+
+Review threads must anchor to a file, so each conditional thread is anchored at FILE level on the first file in the PR diff (deterministic, in-diff, semantically neutral); the item's own `{file:line}` reference stays in the thread body. Post one thread per item — never combine items:
 ```bash
 ITEM_COUNT=$(grep -cE '^[0-9]+\. ' .claudetmp/oversight/step{N}-handoff.md)
+PR_NODE_ID=$(gh pr view "$PR_NUMBER" --json id --jq '.id')
+ANCHOR_PATH=$(gh pr view "$PR_NUMBER" --json files --jq '.files[0].path')
+POSTED=0
+WHY="This item was a resolved finding or confidence gap that automated review could not fully clear, so a human must confirm it before merge."
+while IFS= read -r ITEM; do
+  BODY="$ITEM
+
+$WHY
+
+Resolution options:
+- APPROVE — \"I have read this item; it does not block merge.\"
+- REQUEST CHANGES — \"This item reveals a problem; do not merge.\"
+- CLOSE WITHOUT MERGING — \"Abandon this change.\"
+
+To resolve: confirm this item has been reviewed. Resolve this thread by replying with one of the options above. Do not dismiss without replying. The overseer will check before any auto-merge attempt."
+  if gh api graphql -f query='
+    mutation($prId:ID!, $path:String!, $body:String!) {
+      addPullRequestReviewThread(input:{
+        pullRequestId:$prId, path:$path, subjectType:FILE, body:$body
+      }) { thread { id isResolved } }
+    }' -f prId="$PR_NODE_ID" -f path="$ANCHOR_PATH" -f body="$BODY" >/dev/null; then
+    POSTED=$((POSTED + 1))
+  else
+    echo "WARNING: failed to post conditional thread for item: $ITEM"
+  fi
+done < <(grep -E '^[0-9]+\. ' .claudetmp/oversight/step{N}-handoff.md)
+
+# Post-open assertion (R1.4): every item must have a thread, or halt.
+if [ "$POSTED" -ne "$ITEM_COUNT" ]; then
+  echo "ERROR: posted $POSTED conditional threads but expected $ITEM_COUNT — the CONDITIONAL_PROCEED merge gate is under-enforced on PR $PR_NUMBER. Halting; resolve the discrepancy before proceeding."
+  exit 1
+fi
+```
+
+**6. Post the worker summary comment (R4.2, SPEC-222).** Distinct from the conditional threads, post one summary comment addressed to the worker account stating the thread count and the no-close/no-push instruction:
+```bash
+gh pr comment "$PR_NUMBER" --body "@HOSWorkerTutelare — this PR has $POSTED unresolved conditional thread(s). The HOSWorkerTutelare account must not close or re-push this branch until a human resolves all threads." \
+  || echo "WARNING: failed to post worker summary comment on PR $PR_NUMBER"
+```
+
+**7. Record the process record (R4.3, SPEC-222).** Append a `conditional_proceed` event to the append-only `audit/oversight-log.jsonl` (catalog: contract §6a). This is the ledger the evaluator's CONDITIONAL_PROCEED thread-compliance checks (R3.1/R3.4) read. `$POSTED` is the true count of threads successfully posted in step 5:
+```bash
 printf '{"event":"conditional_proceed","step":%s,"pr":%s,"conditional_items":%s,"conditional_threads_opened":%s,"review_requested":"%s","timestamp":"%s"}\n' \
-  "{N}" "${PR_NUMBER:-null}" "${ITEM_COUNT:-0}" 0 "ScottThurlow" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  "{N}" "${PR_NUMBER:-null}" "${ITEM_COUNT:-0}" "${POSTED:-0}" "ScottThurlow" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   >> audit/oversight-log.jsonl
 ```
-`conditional_threads_opened` is `0` for now: per-item PR review threads (SPEC-222 R1) are NOT yet posted — they are pending empirical GitHub-API verification (R1.5) and human clearance (#399). The field exists now so the evaluator's R3.1/R3.4 checks have a process record to read; it becomes the true posted-thread count when R1 ships. Appending to `audit/oversight-log.jsonl` is permitted by this agent's own clean-tree guard (the staleness check above excludes `audit/`).
+`conditional_threads_opened` is now the real posted-thread count (R1.4/R3.1: it must equal `conditional_items` after a clean run; a mismatch is the evaluator's R3.1 tamper signal). Appending to `audit/oversight-log.jsonl` is permitted by this agent's own clean-tree guard (the staleness check above excludes `audit/`).
 
-**6. Print the panel command** (same as PROCEED).
-
-> **Not yet implemented (SPEC-222 R1 / R2 / R4.2 — pending #399 + R1.5 API verification):** posting one unresolved PR review thread per conditional item (`gh pr review --comment` vs GraphQL `addPullRequestReviewThread`), the post-open thread-count assertion, the worker no-close/no-push summary comment, and the branch-protection `required_conversation_resolution` flip. Until those ship, the conditional items are enforced by human eyes via the PR body section + review request, not by GitHub's conversation-resolution merge gate.
+**8. Print the panel command** (same as PROCEED).
 
 ---
 

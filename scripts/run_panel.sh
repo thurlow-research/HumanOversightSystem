@@ -587,6 +587,37 @@ PYEOF
 fi
 info "convergence (SPEC-78): tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} ledger=${PANEL_LEDGER}"
 
+# ── SPEC-78 OQ-2 (#400, human-cleared): per-finding ledger flags for thread suppression ─
+# Pre-pass: for each arbiter finding (in arbiter.json .findings order — the SAME order the
+# POST loop iterates FINDINGS), emit "1" if its fingerprint is already in the per-PR ledger,
+# else "0". The mapping (file -> file, lens -> category) is IDENTICAL to the new_blocking
+# heredoc above (technical-design §2.1/§5) so the suppressed set ≡ the ledgered set.
+# Fail-open: any error → all "0" (nothing suppressed; every finding posts). A ledger/
+# fingerprint failure must never silently drop a finding from the PR.
+LEDGERED_FLAGS=()
+if [[ -f "$_VL_PY" ]]; then
+    _flags_raw="$(python3 - <<PYEOF 2>>"$RUN_DIR/errors.log" || true
+import json, sys, os
+sys.path.insert(0, os.path.dirname("$_VL_PY"))
+from validation_logic import load_ledger, fingerprint
+
+ledger = load_ledger("$PANEL_LEDGER")
+try:
+    with open("$RUN_DIR/arbiter.json") as fh:
+        findings = json.load(fh).get("findings", [])
+except Exception:
+    sys.exit(0)
+
+for f in findings:
+    fp_finding = {"file": f.get("file", ""), "category": f.get("lens", "")}
+    print("1" if fingerprint(fp_finding) in ledger else "0")
+PYEOF
+)"
+    while IFS= read -r _flag; do
+        [[ -n "$_flag" ]] && LEDGERED_FLAGS+=("$_flag")
+    done <<< "$_flags_raw"
+fi
+
 # ── POST — one line-level thread per finding, then one summary comment ──────────
 # Line threads (review comments on the diff) are what the resolution gate enforces;
 # the summary is a plain issue comment for the human's overview.
@@ -598,8 +629,14 @@ post_thread() {  # $1=path $2=line $3=body  → 0 on success
 
 UNANCHORED=""   # findings we couldn't pin to a diff line → folded into the summary
 POSTED=0
+SUPPRESSED_COUNT=0   # SPEC-78 OQ-2: findings skipped because already in the per-PR ledger
+FI=0                 # finding index into LEDGERED_FLAGS (FINDINGS iteration order)
 if (( FCOUNT > 0 )); then
   while IFS= read -r row; do
+    # SPEC-78 OQ-2 (#400): suppress posting a thread for a finding already in the ledger.
+    # The flag array is in arbiter.json .findings order == FINDINGS order (technical-design §3.1).
+    _ledgered="${LEDGERED_FLAGS[$FI]:-0}"
+    FI=$((FI+1))
     file=$(jq -r '.file // ""' <<<"$row")
     line=$(jq -r '.line // 0'  <<<"$row")
     sev=$(jq -r '.severity // "tier3"' <<<"$row")
@@ -610,6 +647,15 @@ if (( FCOUNT > 0 )); then
     sugg=$(jq -r '.suggestion // ""' <<<"$row")
     ctier=$(jq -r '.corroboration_tier // 2' <<<"$row")
     cby=$(jq -r '.corroborated_by // 1' <<<"$row")
+    if [[ "$_ledgered" == "1" ]]; then
+      SUPPRESSED_COUNT=$((SUPPRESSED_COUNT+1))
+      if (( DRY_RUN )); then
+        echo -e "  ${YELLOW}[dry-run] suppressed (ledgered)${RESET} $file:$line  [$sev/$lens] $title"
+      else
+        skip "suppressed (ledgered): $file:$line [$sev/$lens] $title — already triaged on a prior pass"
+      fi
+      continue
+    fi
     if [[ "$ctier" == "1" ]]; then
       clabel="Tier 1 — cross-vendor confirmed (corroborated by $cby reviewers)"
     else
@@ -640,7 +686,7 @@ TIER2_FINDINGS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" render-tier -
 SUMMARY_BODY=$(cat <<EOF
 ## 🔭 Oversight panel — verdict
 
-**Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT
+**Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads · $SUPPRESSED_COUNT suppressed (ledgered)) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT
 
 $SUMMARY
 EOF
@@ -682,12 +728,13 @@ else
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} · raw archive: $RUN_DIR"
+echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} · suppressed=${SUPPRESSED_COUNT} · raw archive: $RUN_DIR"
 echo ""
 
 # SPEC-78: write panel-verdict.json for oversight-evaluator (new_blocking_count field).
-printf '{"new_blocking_count":%s,"tier1_count":%s,"ledger":"%s","pr":%s}\n' \
-    "${NEW_BLOCKING_COUNT}" "${TIER1_COUNT}" "${PANEL_LEDGER}" "${PR}" \
+# SPEC-78 OQ-2 (#400): suppressed_count records ledgered findings not re-posted as threads.
+printf '{"new_blocking_count":%s,"tier1_count":%s,"suppressed_count":%s,"ledger":"%s","pr":%s}\n' \
+    "${NEW_BLOCKING_COUNT}" "${TIER1_COUNT}" "${SUPPRESSED_COUNT:-0}" "${PANEL_LEDGER}" "${PR}" \
     > "$RUN_DIR/panel-verdict.json"
 
 # SPEC-78 R4: exit 3 (escalation) when there are un-ledgered blocking findings
