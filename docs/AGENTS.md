@@ -50,7 +50,7 @@ The agent name is the agent that created the issue (e.g. `spec-red-team`, `secur
 
 The footer is lighter than the PR disclosure block — no model ID or structured table — because issues are log entries, not merge decisions. The step/branch fields provide the build context needed for triage and to understand whether the issue is still relevant if the branch is abandoned.
 
-This requirement applies to all projects — HOS, CondoParkShare, and any other consumer repo. Omitting the `[AI: ...]` prefix or the footer is a protocol violation.
+This requirement applies to all projects — HOS, and any consumer repo using HOS agents. Omitting the `[AI: ...]` prefix or the footer is a protocol violation.
 
 ### Comments (PR + issue)
 
