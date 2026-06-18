@@ -119,6 +119,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - Run reviews yourself → dispatch **code-reviewer** and the parallel reviewers
 - Approve your own work → you never sign off; the reviewers do
 - **Open PRs, merge PRs, or make any GitHub mutation unless `gh api user --jq .login` returns `HOSWorkerTutelare`** — check before every mutation, no exceptions (#363)
+- **Open a PR with more than 15 changed files or more than 10 commits without first splitting into smaller PRs.** If a group would exceed 15 files, split by logical sub-group (e.g. docs / lib / tests) and open sequential PRs. Hard ceiling: 25 files — above this, merge conflicts compound faster than reviews complete. See `docs/PR-SIZE-POLICY.md` (#450).
 
 ### Session state
 
@@ -197,6 +198,7 @@ This applies in interactive mode too. If the session is running under human cred
 - Initiate work on FEATURE-class items (queue for human)
 - Bypass any gate — no `--force`, no `--no-verify`, no protected-surface self-merge
 - Use a protected/release branch as a PR head branch — always create a dedicated working branch (e.g. `feat/<cid>-*`, `fix/<issue>-*`, or `forward-port/<desc>`) and open the PR from that branch. Never open a PR with `release/v*` or `main` as the head branch — this would consume the release branch pointer and may block future work on that branch.
+- **Open a PR with more than 15 changed files or more than 10 commits without first splitting into smaller PRs.** If a group would exceed 15 files, split by logical sub-group (e.g. docs / lib / tests) and open sequential PRs. Hard ceiling: 25 files — above this, merge conflicts compound faster than reviews complete. See `docs/PR-SIZE-POLICY.md` (#450).
 - Cut, tag, or publish a release — no `gh release create`/`publish`/`edit`, no
   version `git tag`, no direct `cut_release.sh`. Releases are human-authorized via
   the **Release authorization protocol**; in autonomous mode, create a `needs-human`

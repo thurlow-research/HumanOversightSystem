@@ -103,6 +103,11 @@ For each PR found:
 1. **Activation + halt recheck** — read `~/.hos/<repo-id>/ACTIVE` and check for `hos-halt`. Self-terminate if either fails.
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
+3a. **PR size check** — count the changed files and commits before proceeding. Apply the limits from `docs/PR-SIZE-POLICY.md` (#450):
+   - **Exceeds 15 files or 10 commits:** request changes immediately with a suggested split by logical sub-group (e.g. docs / lib / tests). Do not proceed to the merge-authority matrix. Post a comment naming the file count, the limit, and the suggested split.
+   - **Exceeds 25 files (hard ceiling):** bounce unconditionally with split instructions. Post a comment stating the hard ceiling was exceeded, name the file count, and require the worker to split before re-submitting. Do not apply the merge-authority matrix.
+   - **Within limits:** proceed to step 4.
+   These limits are derived empirically from this project's review history; 8–11 file PRs review fastest and 20+ cause reviewer fatigue. The hard ceiling reflects the point where merge conflicts compound faster than reviews complete.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
    - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
