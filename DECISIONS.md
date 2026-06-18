@@ -433,7 +433,7 @@ Author-supplied natural-language framing (PR title, description, commit message,
 
 **Rationale:** Mitropoulos et al. 2026 (Zotero X7EN6DXZ) demonstrated a 100% attack success rate at getting vulnerability-reintroducing PRs accepted across 17 CVEs in 10 real open-source projects by adversarially crafting PR framing. The attacker refines locally against a clone of the pipeline (asymmetric advantage); redacting PR metadata and adding an anti-framing instruction restored correct detection in all cases. The defense is cheap (a prompt instruction and a context-construction choice) but must be explicit — without it, reviewer agents are vulnerable to this class of attack by default. This is a supply-chain attack on the oversight mechanism itself: a reviewer that can be socially engineered through author-supplied prose weakens every other correctness guarantee at the boundary where a human would have relied on it most. See `research/findings/adversarial-framing-attack-on-reviewer-agents.md`.
 
-### D51 — 2026-06-17: Agent front-matter is fully HOS-canonical on upgrade (#240)
+### D54 — 2026-06-17: Agent front-matter is fully HOS-canonical on upgrade (#240)
 
 **Problem.** On upgrade, `hos_install.sh` replaces agent file front-matter with the HOS-template version. This silently reverts any consumer edits to fields like `model` or `tools`.
 

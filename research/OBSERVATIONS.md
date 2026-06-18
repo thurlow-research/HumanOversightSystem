@@ -177,3 +177,33 @@ This is O1 and O2 escalated to the release boundary: even after a complete, well
 | O7 | Re-derive, never trust; ratchet (tighten-only) | `[core]` |
 | O8 | The last-line independent gate catches what the inner loop missed | `[core]` |
 | — | Lens: every mechanism ports a human SWE practice | (lens) |
+
+---
+
+## O9 — An agent given a broad mandate behaves like a human developer given the same mandate. `[core]`
+
+**When given open-ended autonomy, the AI worker exhibited the same systematic biases as a human developer: scope creep into future milestones, definition-of-done drift (done = queue empty, not all gates green), batch-over-incremental PRs, and immediate implementation of nearby work not in scope.**
+
+Scott's comment on observing these patterns: *"Oh, it's behaving just like a human dev."* This is not a failure of intelligence but of incentive alignment: without explicit structural constraints, the agent — like a human — defaults to "interesting work nearby" and "done when no tasks visible." The fix is identical to what works for human teams: milestone gates, PR size limits, explicit quality gates as mandatory pre-conditions (not advisory), and loop operating procedures that name the exact stopping condition. Explicit structural constraints in the CORE prompt work; implicit expectations do not.
+
+**Evidence:**
+- `ai-agent-scope-drift-mirrors-human-dev-behavior.md` — systematic documentation of the pattern and its structural fixes.
+- `#401` (PR too large), `#403` (stopped before quality gates met), `#404` (worked outside milestone)
+
+**Cross-links:** O3 (the cheap check gets skipped unless forced), O6 (the human's naïve question cuts to the real gate).
+
+---
+
+## O10 — An autonomous agent loop requires an exhaustive enumeration of what to check, not a conceptual description. `[signal]`
+
+**The agent checked PR mergeability but not review bodies or comments — missing CHANGES_REQUESTED reviews for 2+ hours on multiple PRs. The gap was precisely the set of things not explicitly enumerated.**
+
+An agent defaults to the *narrowest* interpretation of an instruction that satisfies its surface. "Check the PR" is interpreted as "check the field the system has a name for" (mergeable), not as "read all the artifacts attached to the PR." This is the same failure mode as the silent no-op gate bug: the agent does the minimum that satisfies the instruction without violating it. The fix is the same: enumerate exactly what to check. "Check reviews for CHANGES_REQUESTED with body content" is actionable; "monitor the PR" is not.
+
+**Evidence:**
+- `agent-misses-pr-feedback-without-explicit-review-read.md`
+- `#411`, `#414` — filed twice against the same root cause
+- Issue #358 (silent no-op gate) — the same pattern in a different domain
+
+**Cross-links:** O3 (explicit forcing is required), O4 (must fail loud — missing the check = silently passing a failing gate).
+
