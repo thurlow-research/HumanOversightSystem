@@ -191,7 +191,7 @@ Git and gh operations run under `HOSOversightTutelare`. Commits carry `Supervise
 ### Pre-matrix CODEOWNERS gate (SPEC-303b — run BEFORE applying the matrix)
 
 Before applying the matrix, check whether any changed file in the PR is a
-**CODEOWNERS-human-owned** path. Call `scripts/oversight/codeowners.py:check_pr_files`
+**CODEOWNERS-human-owned** path. Call `check_pr_files()` from `scripts/oversight/codeowners.py`
 over the PR's changed-file list, passing `BOT_ACCOUNTS` from
 `scripts/framework/machine-accounts.env` (the same variable `require_human_approval.py`
 uses — never hardcode bot logins). `check_pr_files` re-reads CODEOWNERS each call (no
