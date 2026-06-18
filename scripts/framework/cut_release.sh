@@ -29,6 +29,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Correctness-sensitive decisions (semver bump, authored-notes gate, asset
+# verification) live in Python so they are unit-testable — shell only launches them
+# and captures the result (#335). Prefer the oversight venv, else system python3.
+PYBIN="$REPO_ROOT/scripts/oversight/.venv/bin/python"
+[[ -x "$PYBIN" ]] || PYBIN="python3"
+RELEASE_LOGIC="$REPO_ROOT/scripts/oversight/release_logic.py"
+
 # ── Colours ───────────────────────────────────────────────────────────────────
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"; RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
@@ -109,16 +116,9 @@ LATEST_TAG="$(git tag -l 'v*' --sort=-v:refname | head -1 || true)"
 info "latest tag: ${LATEST_TAG:-<none>}"
 
 if [[ -z "$VERSION" ]]; then
-  base="${LATEST_TAG:-v0.0.0}"; base="${base#v}"
-  IFS='.' read -r MA MI PA <<<"$base"
-  MA="${MA:-0}"; MI="${MI:-0}"; PA="${PA:-0}"
-  case "$BUMP" in
-    major) MA=$((MA+1)); MI=0; PA=0 ;;
-    minor) MI=$((MI+1)); PA=0 ;;
-    patch) PA=$((PA+1)) ;;
-    *) err "invalid --bump: $BUMP"; exit 2 ;;
-  esac
-  VERSION="v${MA}.${MI}.${PA}"
+  if ! VERSION="$("$PYBIN" "$RELEASE_LOGIC" bump-version --tag "${LATEST_TAG:-}" --bump "$BUMP")"; then
+    err "invalid --bump: $BUMP"; exit 2
+  fi
 fi
 [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { err "version must be semver vX.Y.Z: got '$VERSION'"; exit 2; }
 if git rev-parse "$VERSION" &>/dev/null; then err "tag $VERSION already exists"; exit 1; fi
@@ -129,7 +129,7 @@ ok "release version: ${BOLD}$VERSION${RESET}"
 # not just GitHub's auto-generated PR list. Patch releases may use auto-notes. (#190)
 _notes_path="docs/releases/${VERSION}.md"
 if [[ "$BUMP" == "minor" || "$BUMP" == "major" || "$VERSION" =~ \.0$ ]]; then
-  if [[ ! -s "$_notes_path" ]] || [[ "$(grep -cv '^[[:space:]]*$' "$_notes_path" 2>/dev/null)" -lt 5 ]]; then
+  if ! "$PYBIN" "$RELEASE_LOGIC" check-notes --path "$_notes_path"; then
     err "minor/major release ${VERSION} requires AUTHORED release notes at ${_notes_path}"
     err "  (it is missing or too short). Write them, commit, and re-run."
     err "  Patch releases may use GitHub auto-generated notes."
@@ -253,14 +253,19 @@ else
     exit 1
   fi
   # Verify every expected asset actually uploaded before flipping to published.
-  got="$(gh release view "$VERSION" --json assets -q '.assets[].name' 2>/dev/null | tr '\n' ' ')"
-  for n in "${ASSET_NAMES[@]}" SHA256SUMS; do
-    case " $got " in
-      *" $n "*) : ;;
-      *) gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
-         err "asset '$n' missing after upload — cleaned up draft + tag. Re-run."; exit 1 ;;
-    esac
-  done
+  # gh STAYS in shell (#335); its output is split into argv and the set-membership
+  # decision is made in Python. Portable read loop (no mapfile — bash 3.2).
+  GOT=()
+  while IFS= read -r _ln; do [[ -n "$_ln" ]] && GOT+=("$_ln"); done \
+    < <(gh release view "$VERSION" --json assets -q '.assets[].name' 2>/dev/null)
+  MISSING="$("$PYBIN" "$RELEASE_LOGIC" verify-assets \
+    --expected "${ASSET_NAMES[@]}" SHA256SUMS \
+    --uploaded ${GOT[@]+"${GOT[@]}"})"
+  if [[ -n "$MISSING" ]]; then
+    gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
+    err "asset(s) missing after upload: $(echo "$MISSING" | tr '\n' ' ')— cleaned up draft + tag. Re-run."
+    exit 1
+  fi
   # Atomic-ish publish: all assets verified present, now make it visible.
   # --latest (for a non-prerelease) ensures /releases/latest/ resolves to it, so
   # the docs' /latest/download/ install URLs work immediately. (#97)

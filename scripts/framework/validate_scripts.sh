@@ -34,6 +34,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Resolve validation_logic.py from the repo root so the delegation works
+# regardless of the caller's cwd (SPEC-334); ledger paths stay cwd-relative.
+VALIDATION_LOGIC="$ROOT/scripts/oversight/validation_logic.py"
 OUT_DIR=".claudetmp/framework"
 LEDGER="$OUT_DIR/scripts-review-ledger.jsonl"
 PASS_COUNT_FILE="$OUT_DIR/scripts-review-pass-count"
@@ -50,9 +53,9 @@ SKIP_CODEX=false
 if [[ "${1:-}" == "--record" ]]; then
     mkdir -p "$OUT_DIR"
     _files="${2:?--record needs FILES}"; _cls="${3:?--record needs CLASS}"; _disp="${4:?--record needs DISPOSITION}"
-    _json_files=$(printf '%s' "$_files" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"",(i>1?",":""),$i}}')
-    _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
-    printf '{"files":[%s],"class":"%s","disposition":"%s","ts":"%s"}\n' "$_json_files" "$_cls" "$_disp" "$_ts" >> "$LEDGER"
+    # Ledger write delegated to validation_logic.py (SPEC-334 binding 4).
+    python3 "$VALIDATION_LOGIC" record \
+        --ledger "$LEDGER" --files "$_files" --class "$_cls" --disposition "$_disp" >/dev/null
     echo "Recorded to scripts-review ledger: [$_files] $_cls → $_disp"
     exit 0
 fi
@@ -175,40 +178,20 @@ if ! $SKIP_AGY && command -v agy >/dev/null 2>&1;   then echo "Running agy scrip
 if ! $SKIP_CODEX && command -v codex >/dev/null 2>&1; then echo "Running codex scripts review..."; run_reviewer "codex" codex; fi
 
 # ── Aggregate verdict (ledger-aware: gate on NEW un-ledgered blocking) ─────────
-python3 - "$OUTFILE" "$LEDGER" "$MAX_PASSES" "$PASS_NUM" <<'PYEOF'
-import json, re, sys
-path, ledger_path, maxp, passn = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-content = open(path).read()
-sev = ["critical","blocking","high","warning","none"]
-def rank(s):
-    s = "blocking" if s in ("critical","high") else s
-    return sev.index(s) if s in sev else len(sev)
-seen=set()
-try:
-    for line in open(ledger_path):
-        e=json.loads(line); seen.add((tuple(sorted(e.get("files",[]))), e.get("class","")))
-except Exception: pass
-def fp(f): return (tuple(sorted(f.get("files",[]))), f.get("category",""))
-blocking=new=0; highest="none"
-for blk in re.findall(r'```json\s*(.*?)```', content, re.DOTALL):
-    try: data=json.loads(blk[blk.index('{'):])
-    except Exception: continue
-    for f in data.get("findings",[]):
-        s=str(f.get("severity","warning")).lower()
-        if s in ("blocking","critical","high"):
-            blocking+=1
-            if rank(s)<rank(highest): highest=s
-            if fp(f) not in seen: new+=1
-verdict = "request_changes" if new>0 else "approve"
-content=re.sub(r'^verdict: pending$',f'verdict: {verdict}',content,flags=re.M)
-content=re.sub(r'^highest_severity: none$',f'highest_severity: {highest}',content,flags=re.M)
-content=re.sub(r'^blocking_count: 0$',f'blocking_count: {blocking}',content,flags=re.M)
-content=re.sub(r'^new_blocking_count: 0$',f'new_blocking_count: {new}',content,flags=re.M)
-open(path,'w').write(content)
-print(f"  verdict={verdict} highest_severity={highest} blocking={blocking} new={new}")
-sys.exit(0 if new==0 else (3 if passn>=maxp else 1))
-PYEOF
-rc=$?
+# Dedup fingerprinting + verdict aggregation delegated to validation_logic.py
+# (SPEC-334). No --strict-empty here: an empty parse → approve/exit-0 (scripts
+# compat, binding 7). The canonical 7-rank severity ordering applies — critical/
+# high are no longer collapsed to blocking, so highest_severity now reports the
+# true rank (AC-1). The pass-cap exit-code decision moves into this shell below
+# (binding 3) — the module never emits verdict exit codes.
+python3 "$VALIDATION_LOGIC" process \
+    --file "$OUTFILE" --ledger "$LEDGER"
+
+NEW=$(grep '^new_blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')
+if   [[ "${NEW:-0}" -eq 0 ]];             then rc=0   # converged — zero NEW blocking
+elif [[ "$PASS_NUM" -ge "$MAX_PASSES" ]]; then rc=3   # pass cap hit, NEW remain → escalate
+else                                           rc=1   # NEW remain, under cap → fail/retry
+fi
 
 echo ""
 echo "Output: $OUTFILE"
