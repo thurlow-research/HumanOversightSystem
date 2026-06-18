@@ -212,6 +212,11 @@ _check "require_code_owner_reviews" \
   "required_pull_request_reviews.require_code_owner_reviews" "true"
 _check "required_approving_review_count" \
   "required_pull_request_reviews.required_approving_review_count" "1"
+# required_conversation_resolution is a top-level field (not nested under
+# required_pull_request_reviews). Verifies the SPEC-222 R2 thread-blocking gate is live —
+# CONDITIONAL_PROCEED review threads only block merge when this is true.
+_check "required_conversation_resolution" \
+  "required_conversation_resolution" "true"
 
 echo ""
 ok "Branch protection setup complete."
