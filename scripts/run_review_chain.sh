@@ -8,7 +8,17 @@
 #
 # Usage:
 #   ./scripts/run_review_chain.sh [--tier LOW|MEDIUM|HIGH|CRITICAL] [--pr <number>]
-#                                 [--step <n>] [--dry-run] [--help]
+#                                 [--step <n>] [--since-tag|--since-main]
+#                                 [--dry-run] [--help] [-- <files...>]
+#
+# Changed-file input modes (mutually exclusive), in priority order:
+#   1. Explicit paths   bare positional args, or after `--` — passed to validators as-is
+#   2. --since-main     auto-detect via `git diff origin/main..HEAD --name-only`
+#   3. --since-tag      auto-detect via `git diff <last-tag>..HEAD --name-only`;
+#                       falls back to HEAD~1..HEAD (with a warning) when no tag exists
+#   Default when no paths and no --since-* flag: --since-tag.
+#   --since-tag and --since-main cannot be combined. All changed files are passed
+#   unfiltered; the validators handle file-type filtering themselves.
 #
 # Tier resolution order:
 #   1. --tier flag (explicit override)
@@ -50,6 +60,7 @@ TIER_ARG=""
 PR_NUM=""
 STEP_ARG=""
 DRY_RUN=0
+SINCE_MODE=""   # "" | tag | main — auto-detect mode for changed files (SPEC-360)
 EXTRA_VALIDATOR_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +69,14 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--tier requires a value (LOW|MEDIUM|HIGH|CRITICAL)"
       TIER_ARG="$(echo "$2" | tr '[:lower:]' '[:upper:]')"
       shift 2 ;;
+    --since-tag)
+      [[ -z "$SINCE_MODE" ]] || die "--since-tag and --since-main are mutually exclusive"
+      SINCE_MODE="tag"
+      shift ;;
+    --since-main)
+      [[ -z "$SINCE_MODE" ]] || die "--since-tag and --since-main are mutually exclusive"
+      SINCE_MODE="main"
+      shift ;;
     --pr)
       [[ $# -ge 2 ]] || die "--pr requires a PR number"
       PR_NUM="$2"
@@ -70,7 +89,7 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift ;;
     --help|-h)
-      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     --)
       shift; EXTRA_VALIDATOR_ARGS+=("$@"); break ;;
@@ -82,6 +101,55 @@ while [[ $# -gt 0 ]]; do
       shift ;;
   esac
 done
+
+# ── Auto-detect changed files (SPEC-360) ──────────────────────────────────────
+# Resolves a concrete diff range (never a bare symbolic HEAD) and appends the
+# changed file paths to EXTRA_VALIDATOR_ARGS. Validators do their own type
+# filtering, so the list is passed unfiltered. Logs the mode used and the count.
+autodetect_files() {
+  local mode="$1" base head files n
+  head="$(git rev-parse --verify --quiet HEAD || true)"
+  [[ -n "$head" ]] || die "auto-detect: cannot resolve HEAD — run inside a git repo or pass explicit file paths"
+
+  if [[ "$mode" == "main" ]]; then
+    base="$(git rev-parse --verify --quiet origin/main || true)"
+    [[ -n "$base" ]] || die "auto-detect: cannot resolve origin/main (no remote?) — use explicit paths or --since-tag"
+    info "auto-detect mode: since-main (git diff ${base:0:8}..${head:0:8})"
+  else
+    # mode == tag (also the default)
+    local tag
+    tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+    if [[ -n "$tag" ]]; then
+      base="$(git rev-parse --verify --quiet "${tag}^{commit}" || true)"
+      [[ -n "$base" ]] || die "auto-detect: tag '$tag' could not be resolved to a commit"
+      info "auto-detect mode: since-tag (tag=$tag → ${base:0:8}..HEAD)"
+    else
+      warn "no git tag reachable from HEAD — falling back to HEAD~1..HEAD"
+      base="$(git rev-parse --verify --quiet HEAD~1 || true)"
+      [[ -n "$base" ]] || die "auto-detect: cannot resolve HEAD~1 (shallow clone or single commit) — re-run with explicit file paths"
+      info "auto-detect mode: since-tag (fallback ${base:0:8}..HEAD)"
+    fi
+  fi
+
+  files="$(git diff --name-only "$base" "$head")"
+  n="$(printf '%s\n' "$files" | grep -c . || true)"
+  if [[ "$n" -eq 0 ]]; then
+    warn "auto-detect: diff range was empty (0 changed files) — validators will run with no file arguments"
+    return 0
+  fi
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && EXTRA_VALIDATOR_ARGS+=("$f")
+  done <<< "$files"
+  info "auto-detect: $n changed file(s) detected"
+}
+
+# Engage auto-detection only when no explicit paths were given. Explicit paths
+# always win; a --since-* flag passed alongside explicit paths is ignored.
+if [[ ${#EXTRA_VALIDATOR_ARGS[@]} -eq 0 ]]; then
+  autodetect_files "${SINCE_MODE:-tag}"
+elif [[ -n "$SINCE_MODE" ]]; then
+  warn "--since-$SINCE_MODE ignored: explicit file paths were provided"
+fi
 
 # ── Resolve tier ──────────────────────────────────────────────────────────────
 resolve_tier() {
