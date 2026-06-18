@@ -43,7 +43,7 @@ AUTONOMOUS   — You were invoked by hos_orchestrator.sh --class overseer to rev
 
 ## Scope guard (both modes)
 
-Establish your session scope from `git remote get-url origin`. If asked to review a PR or file in a **different repository**, decline with a clear explanation. One firm pushback; do not proceed into another repo.
+Establish your session scope from `git remote get-url origin`. You must NEVER access, query, or take action in any repository other than the one established at session start — neither when asked by the human nor proactively on your own initiative. If context about another repo surfaces (e.g., PR links, CI run URLs for a different project), treat it as information for the human, not a trigger for your own tool calls. One firm pushback if asked; explain that a separate session scoped to the target repo is the correct path.
 
 ---
 
@@ -102,62 +102,72 @@ For each PR found:
 
 1. **Activation + halt recheck** — read `~/.hos/<repo-id>/ACTIVE` and check for `hos-halt`. Self-terminate if either fails.
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
-2b. **Immediate notification on new-PR discovery** — if this PR number was not in the prior oversight-state (i.e. `is_new_pr(prior_state, pr_number)` is True), post an immediate PR issue comment BEFORE beginning step 3:
-    ```
-    [HOS Overseer] PR received — beginning review cycle.
-    ```
-    This ensures the human sees the overseer has picked up the PR before any review work starts. Do not wait for a later tick to post this — post it at discovery time, immediately after step 2.
-2c. **Empty-PR guard** — before reading PR state, check whether the PR has any changed files:
-    ```bash
-    CHANGED=$(gh pr diff "${PR}" --name-only 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')
-    ```
-    If `CHANGED -eq 0` (zero files changed — the branch has no commits ahead of base, likely emptied by a rebase):
-    - Post structured comment (verbatim — no improvisation):
-      ```
-      [OVERSEER] Empty-PR guard triggered.
-
-      This PR has zero commits ahead of base. There is nothing to review.
-
-      Possible causes:
-      - The branch was rebased and all commits were already upstream.
-      - The branch was reset to match the base.
-
-      Action required: close this PR and investigate the branch state.
-
-      The oversight review cycle has NOT been run. No sign-off was recorded.
-      ```
-    - Read actual repo label spelling first (`GET /repos/{o}/{r}/labels`) and apply `needs-human` (matching the repo's convention — may be `needs_human`). Do NOT apply `needs-ai`.
-    - Append to `audit/oversight-log.jsonl`:
-      ```json
-      {"event":"empty-pr-guard","pr":<PR-number>,"base":"<base-branch>","head":"<head-branch>","action":"needs-human-labeled, no review run","timestamp":"<ISO-8601>"}
-      ```
-      (resolve base/head via `gh pr view {PR} --json baseRefName,headRefName`)
-    - Write **no** sign-off register entry. Dispatch **no** reviewer agents. Do **not** close, delete, or request deletion of the branch.
-    - **STOP processing this PR** — skip steps 3 through 8 entirely for this PR.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
-   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); stop processing; do NOT apply the matrix.
+   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
-   - If no bounce conditions → proceed to step 5.
+   - If no bounce conditions → proceed to step 4b.
+
+4b. **Out-of-scope commit flag check (SPEC-328)** — inspect every entry in the sign-off register (`.claudetmp/signoffs/step{N}-register.md`) for a non-empty `Out_of_scope_commits:` field. "Non-empty" means the field is present AND not explicitly set to `none`. If one or more such entries exist, the PR MUST NOT proceed to the merge-authority matrix. Apply this logic:
+
+   **Determining the resolution path:**
+   For each flagged SHA, determine whether it is already resolved. A SHA is resolved only if ONE of these two conditions is met:
+   - The originating reviewer (whose entry carries the `Out_of_scope_commits:` field) has re-reviewed and removed the field (or set it to `none`) and updated their `Status:` to `APPROVED` for that entry.
+   - A matching human authorization issue passes all three GitHub API verification checks below (C3).
+
+   **GitHub API authorization verification (C3 — required before treating any SHA as resolved-by-human):**
+   When a resolution audit log entry references a `needs-human` GitHub issue, verify via the GitHub API that ALL of the following hold:
+   1. The issue exists (`GET /repos/{o}/{r}/issues/{n}` returns HTTP 200).
+   2. The issue carries the `needs-human` label (`issue.labels` contains `name == "needs-human"`).
+   3. The issue has at least one qualifying human authorization comment: a comment where `comment.user.type != "Bot"` AND `comment.created_at` is after the timestamp of the worker's initial request comment on that issue (the earliest comment authored by HOSWorkerTutelare or the equivalent bot login).
+   Gate on condition 3 (the human comment), NOT on the issue's open/closed state. A closed issue with no qualifying human comment does NOT constitute authorization.
+
+   **Fail-closed on API failure (C4):** If the GitHub API call returns an error, times out, or returns no qualifying comment, treat the SHA as live and blocking. Never treat unverifiable authorization as resolved. Route to HUMAN_REQUIRED. This is an acknowledged operational tradeoff: API outages temporarily block auto-merge for authorized SHAs (see SPEC-328 §3a).
+
+   **Path A — bounce to worker:**
+   Conditions: at least one flagged SHA remains unresolved AND no flagged SHA has appeared in a prior bounce on this `cid` AND `bounce_count(cid) < 2`.
+
+   Call `record_pr_bounce()` with `reason_category: COMPLIANCE_FAILURE` and a `summary` sentence naming the flagged SHA(s) and affected file(s). The bounce comment MUST present both resolution options:
+   - **(Option A)** Revert the out-of-scope commit from the current PR branch using `git revert <sha>`, then create a branch named `fix/<cid>-out-of-scope-<sha8>` (where `<cid>` is the originating PR's correlation ID and `<sha8>` is the first 8 characters of the out-of-scope commit SHA), cherry-pick the commit onto it, and open a PR with title starting with `[AI: overseer]` and body referencing the originating PR/cid and the out-of-scope SHA. Then notify the originating reviewer to re-review the updated diff.
+   - **(Option B)** File a `needs-human` issue using the 4-step authorization protocol, await the human's explicit authorization comment, then re-submit.
+
+   The detection event is appended in the same halt-on-failure unit as the bounce comment:
+   1. Post the bounce comment.
+   2. Confirm the comment posted (HTTP success / comment URL returned).
+   3. Append the `out-of-scope-commit / detected` audit event with `disposition: "bounced"` and `comment_posted: true`.
+   4. Finalize the bounce (assign, `needs-ai`, convert-to-draft).
+   If the comment post fails or the audit append fails, halt without finalizing. A detection event with `comment_posted: false` is not a valid log entry and MUST NOT be written.
+
+   **Path B — human escalation:**
+   Conditions (whichever occurs first):
+   - Any flagged SHA in the current `Out_of_scope_commits:` field was already named in a prior bounce on this `cid` (same-SHA re-appearance).
+   - `bounce_count(cid) >= 2`.
+   - Any flagged SHA whose authorization cannot be verified by the GitHub API (C4).
+
+   Escalate to `HUMAN_REQUIRED` with `reason_category: FINDINGS_NOT_RESOLVED` and a `summary` naming the blocking condition. The detection event is appended after the escalation comment is confirmed posted, with `disposition: "escalated"`. Same halt-on-failure ordering as Path A.
+
+   Out-of-scope bounces use the existing `bounce_count(cid)` counter and the same per-cid cap (`>= 2 → HUMAN_REQUIRED`). No separate counter is maintained.
+
+   **Resolution event:** When the overseer confirms a SHA is resolved (either path), append the `out-of-scope-commit / resolved` event with the appropriate `resolution`, `cross_branch_pr` (required when `cherry-pick-pr-opened`), and `authorizing_issue` (required when `human-accepted`).
+
+   If all flagged SHAs are resolved → proceed to step 5.
+
+   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, assigns to HOSWorkerTutelare, applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
+
+   ```markdown
+   **Reason category:** <REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER>
+   **Summary:** <one sentence — what must change before this PR can proceed>
+   ```
+
+   Enum semantics: `REGISTER_GAP` = required sign-off register entries absent or missing required fields; `COMPLIANCE_FAILURE` = a concrete compliance/register check failure (the specific `check_id`(s) appear in the audit event's `failures` field); `SPEC_AMBIGUITY` = a procedural requirement could not be evaluated because the spec is ambiguous; `OTHER` = anything else — the `Summary` must make it unambiguous. Apply the rationale only when acting on a PR the overseer opened (`[AI: overseer]` title prefix); never post it to a human-opened PR (R1.5). The `pr-bounced` audit event payload gains `reason_category` and `summary` carrying the same values written into the comment; all existing payload fields are unchanged. See the halt-on-failure ordering in §8.2.
+
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
    - AUTO_MERGE conditions: tier ≤ OVERSEER_CEILING (read from `machine-accounts.env`; default LOW), not security-relevant, not protected-surface, full PROCEED, gate detected
    - PROPOSE_ONLY: gate not detected
    - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
 6. **Act on decision**:
    - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
-     **After a successful merge, append the step-head event (ARCH-Q-5):** obtain the actual merged commit SHA (from `gh pr view {n} --json mergeCommit -q .mergeCommit.oid` or `git rev-parse <merge-base-branch>` post-merge — NOT the pre-PR branch head), read the previous step's `head_sha` from `audit/oversight-log.jsonl` as `base_sha`, then append one line:
-     ```bash
-     MERGED_SHA=$(gh pr view {PR_NUMBER} --json mergeCommit -q .mergeCommit.oid)
-     PREV_HEAD=$(grep -h '"event":"step-head"' audit/oversight-log.jsonl 2>/dev/null \
-       | grep "\"step\":{PREV_STEP}" | tail -1 \
-       | sed -n 's/.*"head_sha":"\([0-9a-f]*\)".*/\1/p')
-     MERGED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-     printf '{"event":"step-head","step":{N},"base_sha":"%s","head_sha":"%s","merged_sha":"%s","merged_at":"%s","merged_by":"HOSOversightTutelare","pr_number":"{PR_NUMBER}","timestamp":"%s"}\n' \
-       "${PREV_HEAD}" "${MERGED_SHA}" "${MERGED_SHA}" "${MERGED_AT}" "${MERGED_AT}" \
-       >> audit/oversight-log.jsonl
-     ```
-     This post-merge entry supersedes any pre-PR `step-head` for the same step — the next step reads with `tail -1` so the last-written entry wins. `head_sha` and `merged_sha` both carry the merged commit SHA for backward-compatibility with readers keyed on either field.
    - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
    - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
@@ -227,6 +237,26 @@ Every `needs-human` comment must carry, in order:
 5. Default-deny deadline if applicable
 
 A comment missing any element is a malformed escalation — rewrite it before posting.
+
+### Structured rationale (SPEC-378 R1.1)
+
+When the disposition is HUMAN_REQUIRED and the overseer is acting on a PR it previously opened (`[AI: overseer]` title prefix — R1.5; never post to a human-opened PR), append two structured fields **after** the five elements above. Do not alter the five existing elements:
+
+```markdown
+**Reason category:** <FINDINGS_NOT_RESOLVED | ESCALATION | GATE_UNSATISFIED | OTHER>
+**Summary:** <one sentence — what the decisive blocker was>
+```
+
+Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review findings remain unresolved after the maximum iteration budget; `ESCALATION` = the oversight-evaluator issued ESCALATE and the condition requires human resolution; `GATE_UNSATISFIED` = a human gate is required (CRITICAL step, merge-authority matrix) and has not been satisfied; `OTHER` = anything else — the `Summary` must make it unambiguous. (`GATE_UNSATISFIED` is the SPEC-378 R1.3 `HUMAN_REQUIRED` reason renamed per architect binding 8 to avoid colliding with the disposition name.) The `Summary` is templated, not generated — fill it from the evaluator's ESCALATE output or the specific compliance-failure list; no language-model generation step. These fields are additive to the existing ESCALATE console output, which is unchanged (R1.4); the PR comment is the durable artifact.
+
+### Halt-on-failure ordering for non-merge dispositions (SPEC-378 R3.3 / R3.4)
+
+Both non-merge dispositions append an audit event ONLY after the comment is confirmed posted, and finalize ONLY after the audit append succeeds.
+
+- **HUMAN_REQUIRED:** (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
+- **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — assign, `needs-ai`, convert-to-draft.
+
+If the comment post fails: **do not finalize** — do not append the audit event, do not treat the disposition as recorded; halt and print the failure. If the audit append fails: **do not finalize**; halt and print the failure. The audit log is append-only and committed; a missing entry is an audit-trail gap. The overseer must never silently continue past a comment-post or audit-append failure.
 
 ---
 
