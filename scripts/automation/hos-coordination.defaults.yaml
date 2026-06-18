@@ -1,0 +1,60 @@
+# HOS Unattended Worker — Shipped Defaults (Layer 1)
+#
+# THIS FILE IS FRAMEWORK-OWNED. Do not edit for per-deployment configuration.
+# Place per-repo governance config in PROJECT/hos-coordination.yaml (layer 2a).
+# Operator activation lives at ~/.hos/<repo-id>/ACTIVE (layer R13.4), not here.
+#
+# All keys use hyphen-case here. The resolver normalizes them to underscore
+# attributes immediately on load — downstream code never sees hyphen-case keys.
+#
+# enabled: false  — The framework source ships fully inert.
+#   A repo with only this file present does nothing.
+#   Opt-in requires enabled: true in the committed, CODEOWNERS-gated
+#   PROJECT/hos-coordination.yaml AND the operator activation file.
+
+customer: ""
+enabled: false
+protocol-version: "1.0"
+mode: propose-only
+requester-allowlist: []
+security-sensitive-paths:
+  - "audit/**"
+  - "**/auth/**"
+  - "scripts/oversight/gates/**"
+
+thresholds:
+  per-task-tokens: 150000
+  window-budget-tokens: 1500000
+  approval-timeout: "12h"
+  triage-confidence-floor: 0.75
+
+cadence:
+  floor: "15m"
+  ceiling: "24h"
+
+self-review:
+  cadence: weekly
+  cross-vendor: true
+
+severity-triage:
+  scheme: P0-P3
+  fix-order: highest-first
+
+claim:
+  timeout: "45m"
+  heartbeat: "15m"
+
+orchestrator-lock-timeout: "20m"
+
+breakers:
+  per-issue-failures: 3
+  blast-radius:
+    prs: 5
+    issues: 10
+    files: 25
+  dead-man: "6h"
+  max-task-runtime: "4h"
+
+suppression:
+  default-ttl: "90d"
+  nag-lead-days: 14
