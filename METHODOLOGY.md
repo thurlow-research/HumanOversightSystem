@@ -169,6 +169,44 @@ The composite then maps to a tier via fixed thresholds:
 
 The pipeline has three tiers with different cadences: an **inner development loop** that repeats with every incremental prompt, a **transition phase** that runs once per feature before the PR opens, and an **outer loop** that runs once per PR. Conflating them is the most common source of accumulated technical debt in AI-assisted development.
 
+```mermaid
+flowchart LR
+    A([Spec phase\nspec-red-team]) --> B
+
+    subgraph B [Inner loop — repeats per change]
+        direction TB
+        B1[Prompt] --> B2[Author + self-flag]
+        B2 --> B3[Blocking gates]
+        B3 --> B4[Risk scoring\nrun_validators.sh]
+        B4 --> B5[Internal review chain]
+        B5 --> B6{Clean?}
+        B6 -- No --> B1
+        B6 -- Yes --> B7[Capture prompt artifact\nMEDIUM+]
+    end
+
+    B --> C
+
+    subgraph C [Transition phase — once per feature]
+        direction TB
+        C1[Commit with provenance\ntrailers] --> C2[System tests]
+        C2 --> C3[Second review\nagy / codex]
+        C3 --> C4[oversight-evaluator\nPhase 1 + Phase 2]
+        C4 --> C5[oversight-orchestrator\nwrites panel-context.md\nand handoff.md]
+        C5 --> C6{Recommendation}
+        C6 -- PROCEED / CONDITIONAL --> C7[Open PR]
+        C6 -- ESCALATE --> H([Human\ndecision])
+    end
+
+    C7 --> D
+
+    subgraph D [Outer loop — once per PR]
+        direction TB
+        D1[CI cheap gates\nlint · types · unit tests] --> D2[AI panel\nreads panel-context.md only]
+        D2 --> D3[Human gate\nresolve panel threads]
+        D3 --> D4[Merge → audit\noversight-log.jsonl]
+    end
+```
+
 > **Theoretical model vs. current implementation.** This section describes the pipeline as designed — the invariants that must hold and the logical sequence in which they should be enforced. In the ideal implementation, each step runs inside a controlled pipeline that gates the next step automatically. See the [implementation note](#implementation-note) at the end of this section for how the current implementation approximates those invariants today.
 
 ### Inner development loop (repeats N times per feature)
@@ -214,6 +252,27 @@ Each prompt-to-verify cycle must leave the codebase in a working state before th
 │                     the prompt artifact. [✅]               │
 │                                                             │
 │  └──────── back to 1 for next incremental change ──────────┘
+```
+
+**Agent dispatch sequence — one inner loop cycle:**
+
+```mermaid
+graph TD
+    P[Prompt issued] --> CO[coder\nwrites code + self-flags]
+    CO --> GA[Gates\nlint · type-check · secret scan · bandit HIGH]
+    GA -- gate fails --> CO
+    GA -- gates pass --> VA[run_validators.sh\n12 signal dimensions → composite score]
+    VA --> RA[risk-assessor\nvalidates tier · produces inspection brief]
+    RA --> PF[prompt-fidelity\nMEDIUM+ only]
+    RA --> DM[dep-mapper\nHIGH+ only]
+    RA --> RH[risk-historian\nHIGH+ only]
+    PF --> CR[code-reviewer\ngates parallel reviewers]
+    DM --> CR
+    RH --> CR
+    CR -- changes requested --> CO
+    CR -- approved --> PR[Parallel reviewers\nsecurity · privacy · ui · a11y\nops · reliability · infra]
+    PR --> UT[unit-test]
+    UT --> REG[Sign-off register\nentry written]
 ```
 
 ### Definition of Done (inner loop step)
