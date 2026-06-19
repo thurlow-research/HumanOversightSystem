@@ -110,7 +110,7 @@ For each PR found:
    These limits are derived empirically from this project's review history; 8–11 file PRs review fastest and 20+ cause reviewer fatigue. The hard ceiling reflects the point where merge conflicts compound faster than reviews complete.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
-   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to HOSWorkerTutelare + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
+   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to hos-worker-hos[bot] + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
    - If no bounce conditions → proceed to step 4b.
 
@@ -125,7 +125,7 @@ For each PR found:
    When a resolution audit log entry references a `needs-human` GitHub issue, verify via the GitHub API that ALL of the following hold:
    1. The issue exists (`GET /repos/{o}/{r}/issues/{n}` returns HTTP 200).
    2. The issue carries the `needs-human` label (`issue.labels` contains `name == "needs-human"`).
-   3. The issue has at least one qualifying human authorization comment: a comment where `comment.user.type != "Bot"` AND `comment.created_at` is after the timestamp of the worker's initial request comment on that issue (the earliest comment authored by HOSWorkerTutelare or the equivalent bot login).
+   3. The issue has at least one qualifying human authorization comment: a comment where `comment.user.type != "Bot"` AND `comment.created_at` is after the timestamp of the worker's initial request comment on that issue (the earliest comment authored by hos-worker-hos[bot] or the equivalent bot login).
    Gate on condition 3 (the human comment), NOT on the issue's open/closed state. A closed issue with no qualifying human comment does NOT constitute authorization.
 
    **Fail-closed on API failure (C4):** If the GitHub API call returns an error, times out, or returns no qualifying comment, treat the SHA as live and blocking. Never treat unverifiable authorization as resolved. Route to HUMAN_REQUIRED. This is an acknowledged operational tradeoff: API outages temporarily block auto-merge for authorized SHAs (see SPEC-328 §3a).
@@ -158,7 +158,7 @@ For each PR found:
 
    If all flagged SHAs are resolved → proceed to step 5.
 
-   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, assigns to HOSWorkerTutelare, applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
+   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, assigns to hos-worker-hos[bot], applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
 
    ```markdown
    **Reason category:** <REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER>
@@ -187,7 +187,7 @@ For each PR found:
 
 ### Credentials (autonomous)
 
-Git and gh operations run under `HOSOversightTutelare`. Commits carry `Supervised-by: ScottThurlow`. The human's credentials are absent from this environment. The overseer account has PR approval rights but **not** admin bypass — branch protection gates cannot be self-bypassed.
+Git and gh operations run under `hos-overseer-hos[bot]` (GitHub App). Authenticate before each session: `source <(bootstrap/get_app_token.sh --app overseer)` — this sets `GH_TOKEN` and `HOS_BOT_LOGIN=hos-overseer-hos[bot]`. The overseer App has PR approval rights but **not** admin bypass — branch protection gates cannot be self-bypassed.
 
 ---
 
@@ -283,7 +283,7 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 |---|---|---|
 | Needs the worker | `needs-ai` | `machine-accounts.env` or default |
 | Needs human review | `needs-human` | convention |
-| Overseer bounced PR | `needs-ai` + assign to HOSWorkerTutelare | bounce protocol |
+| Overseer bounced PR | `needs-ai` + assign to hos-worker-hos[bot] | bounce protocol |
 | Budget gate blocked | `hos-budget-gated` | budget.py |
 | Embargo path | `hos-embargo` | triage |
 

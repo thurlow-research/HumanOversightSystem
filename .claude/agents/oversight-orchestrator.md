@@ -289,7 +289,7 @@ fi
 
 **6. Post the worker summary comment (R4.2, SPEC-222).** Distinct from the conditional threads, post one summary comment addressed to the worker account stating the thread count and the no-close/no-push instruction:
 ```bash
-gh pr comment "$PR_NUMBER" --body "@HOSWorkerTutelare — this PR has $POSTED unresolved conditional thread(s). The HOSWorkerTutelare account must not close or re-push this branch until a human resolves all threads." \
+gh pr comment "$PR_NUMBER" --body "@hos-worker-hos — this PR has $POSTED unresolved conditional thread(s). The hos-worker-hos[bot] account must not close or re-push this branch until a human resolves all threads." \
   || echo "WARNING: failed to post worker summary comment on PR $PR_NUMBER"
 ```
 
