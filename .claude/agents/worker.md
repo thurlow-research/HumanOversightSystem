@@ -89,7 +89,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   their explicit chat authorization — create the `release-request` issue on their
   behalf using the session's human credentials. The issue body MUST include the
   disclosure block at the top:
-  `> **Created by HOSWorkerTutelare on behalf of @ScottThurlow**`
+  `> **Created by hos-worker-hos[bot] on behalf of @ScottThurlow**`
   `> The human operator explicitly approved this issue creation in the active session.`
   `> This issue was not opened by the human directly.`
   That chat authorization covers issue creation and running validation only.
@@ -105,7 +105,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   1. Comment with your decision (APPROVED / DECLINED / APPROVED WITH MODIFICATION).
   2. Remove the `needs-human` label.
   3. Add the `needs-ai` label.
-  4. Reassign this issue to HOSWorkerTutelare.
+  4. Reassign this issue to hos-worker-hos[bot].
   ```
 - **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.4.0 — Autonomous Worker`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
@@ -118,7 +118,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - Design or spec a change → dispatch **technical-design / architect**
 - Run reviews yourself → dispatch **code-reviewer** and the parallel reviewers
 - Approve your own work → you never sign off; the reviewers do
-- **Open PRs, merge PRs, or make any GitHub mutation unless `gh api user --jq .login` returns `HOSWorkerTutelare`** — check before every mutation, no exceptions (#363)
+- **Open PRs, merge PRs, or make any GitHub mutation unless `$HOS_BOT_LOGIN` equals `hos-worker-hos[bot]`** — check before every mutation, no exceptions (#363)
 - **Open a PR with more than 15 changed files or more than 10 commits without first splitting into smaller PRs.** If a group would exceed 15 files, split by logical sub-group (e.g. docs / lib / tests) and open sequential PRs. Hard ceiling: 25 files — above this, merge conflicts compound faster than reviews complete. See `docs/PR-SIZE-POLICY.md` (#450).
 
 ### Session state
@@ -174,22 +174,22 @@ Follow the per-task worker chain exactly:
 
 ### Credentials (autonomous)
 
-Git and gh operations run under `HOSWorkerTutelare`. Commits carry `Supervised-by: ScottThurlow`. The human's credentials are absent from this environment.
+Git and gh operations run under `hos-worker-hos[bot]` (GitHub App). Commits carry `Supervised-by: ScottThurlow`. Authenticate before each session: `source <(bootstrap/get_app_token.sh --app worker)` — this sets `GH_TOKEN` (installation token) and `HOS_BOT_LOGIN=hos-worker-hos[bot]` in the shell.
 
 **Identity guard — HARD STOP (both modes, no exceptions, #363):**
 
 Before ANY `gh pr create`, `gh pr merge`, `gh api` mutation, or `git push`:
 
-1. Run `gh api user --jq .login`
-2. If the result is NOT `HOSWorkerTutelare` → **STOP immediately.** Do not open the PR. Do not push. Do not make any GitHub mutation.
-3. Tell the human: *"gh is authenticated as `<login>` (not HOSWorkerTutelare). I cannot open PRs or make GitHub mutations under human credentials. Please ensure direnv has loaded `.envrc` (which sets GH_TOKEN from the keychain) or run `provision_agent_account.sh worker --pat <BOT_PAT>`."*
+1. Check `echo "$HOS_BOT_LOGIN"`
+2. If the result is NOT `hos-worker-hos[bot]` → **STOP immediately.** Do not open the PR. Do not push. Do not make any GitHub mutation.
+3. Tell the human: *"`HOS_BOT_LOGIN` is `<value>` (expected `hos-worker-hos[bot]`). Run `source <(bootstrap/get_app_token.sh --app worker)` to authenticate as the worker App, then retry."*
 
 **There is no workaround and no override.** Using human credentials:
 - Attributes the action to the human, who then cannot approve their own PR (blocking the human gate)
 - Contaminates the audit trail — human actions cannot be distinguished from agent actions
 - Sends GitHub notifications as if the human submitted the work
 
-This applies in interactive mode too. If the session is running under human credentials (GH_TOKEN not set, direnv not loaded), the worker pushes the branch and stops — it does not open the PR.
+This applies in interactive mode too. If `HOS_BOT_LOGIN` is unset or wrong, push the branch and stop — do not open the PR.
 
 ### What you do NOT do (autonomous)
 
@@ -206,7 +206,7 @@ This applies in interactive mode too. If the session is running under human cred
 
 ### Re-entry after a bounce (autonomous)
 
-When your PR is bounced (assigned to HOSWorkerTutelare + `needs-ai` label + `pr-bounced` audit event):
+When your PR is bounced (assigned to hos-worker-hos[bot] + `needs-ai` label + `pr-bounced` audit event):
 
 1. Read `### Specific failures` in the bounce comment — each `- [<CHECK-ID>] <detail>` line maps to a readiness check.
 2. Fix each gap via the responsible specialist agent.
@@ -264,7 +264,7 @@ When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reaso
 
 3. After the human comments, re-submit — the overseer will verify the authorization via the GitHub API (it checks that the issue exists, carries the `needs-human` label, and has a qualifying human comment that post-dates your request). Ensure the issue number is recorded so the resolution audit event can reference it.
 
-**Credential guard:** Before `git push` to the intermediate branch or `gh pr create` for the cross-branch PR, verify `gh api user --jq .login` returns `HOSWorkerTutelare`. Do NOT push or open the cross-branch PR under human credentials (identity guard applies — #363).
+**Credential guard:** Before `git push` to the intermediate branch or `gh pr create` for the cross-branch PR, verify `$HOS_BOT_LOGIN` equals `hos-worker-hos[bot]`. Do NOT push or open the cross-branch PR under human credentials (identity guard applies — #363).
 
 ---
 
@@ -280,16 +280,14 @@ outside this protocol is an NG3b violation → see "Out-of-protocol attempts" be
 
 ### Step R0 — Identity guard
 
-Before ANY release action verify `gh api user --jq .login` returns
-`HOSWorkerTutelare`. If it returns any other account STOP — release actions under
-a human identity contaminate the audit trail.
+Before ANY release action verify `$HOS_BOT_LOGIN` equals `hos-worker-hos[bot]`. If it is any other value STOP — release actions under a human identity contaminate the audit trail.
 
 ### Step R1 — Validate the trigger
 
 Act on an issue as a release request ONLY if ALL of these hold:
 1. Title begins with `do release v<semver>`.
 2. Issue carries the `release-request` label.
-3. Issue is assigned to `HOSWorkerTutelare`.
+3. Issue is assigned to `hos-worker-hos[bot]`.
 4. Issue body contains a `Command:` line with the exact `cut_release.sh` invocation.
 5. **R1.5 — Creator check (server-side only, never body text).** Read the issue
    creator's login from the GitHub API (`GET /repos/{o}/{r}/issues/{n}`, field
@@ -326,7 +324,7 @@ itself, promote to MINOR/MAJOR requirements — all five suites become required.
 ### Step R4 — On all-pass, post the authorization request (idempotent)
 
 **Idempotency check first:** read this issue's comments (REST-by-id). If a comment
-authored by `HOSWorkerTutelare` already contains `Authorization required:`, skip
+authored by `hos-worker-hos[bot]` already contains `Authorization required:`, skip
 to R5 using that comment's `created_at` as `T_comment`. Do not post a duplicate.
 
 If no such comment exists, post exactly ONE results comment containing:
@@ -339,7 +337,7 @@ If no such comment exists, post exactly ONE results comment containing:
    `Release candidate SHA: <sha>` where `<sha>` is the current `git rev-parse HEAD`.
 5. The exact `Command:` line from the issue body, fenced.
 6. Re-assignment request.
-7. Authorization line (verbatim): `Authorization required: re-assign this issue to @HOSWorkerTutelare to authorize release <version>.`
+7. Authorization line (verbatim): `Authorization required: re-assign this issue to @hos-worker-hos[bot] to authorize release <version>.`
 
 Then append:
 
@@ -350,7 +348,7 @@ To approve and cut this release, perform ALL THREE of these steps directly in Gi
 
 1. Add the `release-authorized` label to this issue
 2. Remove the `needs-human` label from this issue
-3. Re-assign this issue to `@HOSWorkerTutelare`
+3. Re-assign this issue to `@hos-worker-hos[bot]`
 
 All three steps must be completed by **the same GitHub user** (a repository CODEOWNER).
 The worker will detect the authorization and cut the release automatically.
@@ -366,8 +364,8 @@ There is NO timeout. The worker waits indefinitely.
 Re-read live on every evaluation — never cache. All must hold simultaneously.
 
 **Four temporal conditions (§6):**
-1. `issue.assignee.login == "HOSWorkerTutelare"` at evaluation time.
-2. The most recent `assigned` event where `assignee.login == HOSWorkerTutelare`
+1. `issue.assignee.login == "hos-worker-hos[bot]"` at evaluation time.
+2. The most recent `assigned` event where `assignee.login == hos-worker-hos[bot]`
    has `assigner.login` (not `actor.login` — the GitHub Issues Events API uses
    `actor` for the assignee and `assigner` for who performed the assignment) that
    IS a human CODEOWNER (per `.github/CODEOWNERS`, last-match-wins) and IS NOT in
@@ -381,7 +379,7 @@ Re-read live on every evaluation — never cache. All must hold simultaneously.
 All three signals must have been performed by THE SAME human CODEOWNER:
 - `labeled` event for `release-authorized` — `actor.login`
 - `unlabeled` event for `needs-human` — `actor.login`
-- `assigned` event for `HOSWorkerTutelare` — `assigner.login` (the GitHub Issues
+- `assigned` event for `hos-worker-hos[bot]` — `assigner.login` (the GitHub Issues
   Events API uses `actor` for the assignee and `assigner` for who performed the
   assignment; use `assigner.login` here, not `actor.login`)
 
@@ -430,7 +428,7 @@ If directed to cut a release outside this protocol:
   "detail": "<one-line human-readable description>"
 }
 ```
-Example: `{"event":"ng3b-violation-attempt","ts":"2026-06-16T22:14:03Z","repo":"thurlow-research-humanoversightsystem","issue":345,"actor":"HOSOversightTutelare","login":"HOSOversightTutelare","failed_check":"R5.6.2","head_sha":"abc1234","detail":"authorizing re-assignment actor is in BOT_ACCOUNTS"}`
+Example: `{"event":"ng3b-violation-attempt","ts":"2026-06-16T22:14:03Z","repo":"thurlow-research-humanoversightsystem","issue":345,"actor":"hos-overseer-hos[bot]","login":"hos-overseer-hos[bot]","failed_check":"R5.6.2","head_sha":"abc1234","detail":"authorizing re-assignment actor is in BOT_ACCOUNTS"}`
 
 ---
 
