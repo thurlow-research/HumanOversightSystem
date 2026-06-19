@@ -255,7 +255,7 @@ verdict. This gate only ever ADDS a human gate; it never removes one.
 | ≤ OVERSEER_CEILING | No | No | PROCEED | No | PROPOSE_ONLY |
 | ≤ OVERSEER_CEILING | Yes | Any | Any | Any | **HUMAN_REQUIRED** |
 | ≤ OVERSEER_CEILING | Any | Yes | Any | Any | **HUMAN_REQUIRED** |
-| HIGH/CRITICAL | Any | Any | Any | Any | **HUMAN_REQUIRED** |
+| CRITICAL | Any | Any | Any | Any | **HUMAN_REQUIRED** |
 | Any | Any | Any | CONDITIONAL/ESCALATE | Any | **HUMAN_REQUIRED** |
 | Above OVERSEER_CEILING | Any | Any | Any | Any | **HUMAN_REQUIRED** |
 
