@@ -234,12 +234,14 @@ class TestCheckPrFiles:
         assert matched == ["contract/x"]
 
     def test_bot_accounts_from_env_default(self, tmp_path, monkeypatch):  # AC-6
+        # Updated for GitHub App auth (#547): defaults are now App bot handles.
+        NEW_BOTS = {"hos-worker-hos[bot]", "hos-overseer-hos[bot]", "copilot[bot]"}
         monkeypatch.delenv("BOT_ACCOUNTS", raising=False)
-        _write_codeowners(tmp_path, "/auto/ @HOSWorkerTutelare\n")
-        # default bots include HOSWorkerTutelare → bot-only → not flagged
+        _write_codeowners(tmp_path, "/auto/ @hos-worker-hos[bot]\n")
+        # default bots include hos-worker-hos[bot] → bot-only → not flagged
         req, matched, _ = check_pr_files(["auto/x"], tmp_path, bot_accounts=None)
         assert req is False
-        assert set(DEFAULT_BOT_ACCOUNTS) == BOTS
+        assert set(DEFAULT_BOT_ACCOUNTS) == NEW_BOTS
 
     def test_bot_accounts_from_env_override(self, tmp_path, monkeypatch):  # AC-6
         monkeypatch.setenv("BOT_ACCOUNTS", "somebot")
