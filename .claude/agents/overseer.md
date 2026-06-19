@@ -192,13 +192,20 @@ For each PR found:
    Enum semantics: `REGISTER_GAP` = required sign-off register entries absent or missing required fields; `COMPLIANCE_FAILURE` = a concrete compliance/register check failure (the specific `check_id`(s) appear in the audit event's `failures` field); `SPEC_AMBIGUITY` = a procedural requirement could not be evaluated because the spec is ambiguous; `OTHER` = anything else — the `Summary` must make it unambiguous. Apply the rationale only when acting on a PR the overseer opened (`[AI: overseer]` title prefix); never post it to a human-opened PR (R1.5). The `pr-bounced` audit event payload gains `reason_category` and `summary` carrying the same values written into the comment; all existing payload fields are unchanged. See the halt-on-failure ordering in §8.2.
 
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
-   - AUTO_MERGE conditions: tier ≤ OVERSEER_CEILING (read from `machine-accounts.env`; default LOW), not security-relevant, not protected-surface, full PROCEED, gate detected
-   - PROPOSE_ONLY: gate not detected
-   - HUMAN_REQUIRED: anything above ceiling, security-relevant, protected-surface, or CONDITIONAL/ESCALATE verdict
+
+   **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
+   - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
+   - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection
+   - **DIRTY (findings unresolved, bounce conditions, out-of-scope commits)** → file issues, post blocking comment, do NOT approve or merge
+   - **PROPOSE_ONLY (gate not detected)** → see step 6 PROPOSE_ONLY handling below
+
+   **Validation stamp checks — DISABLED until v0.5.0 (#552):** The stamp CI gate has too many false positives in the concurrent-PR workflow. The gitignore bypass (#561) already exits 0 (SKIP) for all stamp checks. Do not re-enable until the content-hash redesign (#552) ships. Reference the stamp trust model in #552 for what the redesign will enforce.
+
 6. **Act on decision**:
-   - AUTO_MERGE → (1) POST approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all gates passed."}`), then (2) PUT merge (`{"merge_method":"squash"}`). Both calls are required — approve without merging leaves the PR open and defeats the purpose. Log both actions to ledger. If the merge call fails (e.g. branch protection not satisfied), do NOT retry silently — post a comment explaining the failure and label `needs-human`.
-   - HUMAN_REQUIRED → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation)
-   - PROPOSE_ONLY → gate not yet detected (DEP[#152-followup]: `require-tier-ceiling` status check must be registered as a required check in branch protection — see `setup_branch_protection.sh`). Leave PR open; post a comment: "Overseer would auto-merge this PR but the tier-ceiling gate is not yet registered as a required status check. Run `setup_branch_protection.sh` to enable autonomous merging, then re-request review." Label `needs-ai`.
+   - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. Log both actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
+   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; on next cycle, if ScottThurlow has approved, merge immediately.
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation).
+   - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered. Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
     2. For PR N: re-read its current reviews (`GET /repos/{o}/{r}/pulls/{n}/reviews`).
