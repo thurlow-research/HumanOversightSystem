@@ -70,9 +70,9 @@ This PRD generalizes that proven behaviour into a first-class, configurable HOS 
 
 > **Deployment: two separate cronjobs, staggered 15 minutes apart.** Worker and overseer run as independent cron entries on their respective credential sets:
 > ```cron
-> # Worker — opens branches/PRs, runs the build chain (as HOSWorkerTutelare)
+> # Worker — opens branches/PRs, runs the build chain (as hos-worker-hos[bot])
 > 0,30 * * * *   /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class worker
-> # Overseer — reviews, approves, merges within ceiling (as HOSOversightTutelare)
+> # Overseer — reviews, approves, merges within ceiling (as hos-overseer-hos[bot])
 > 15,45 * * * *  /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class overseer
 > ```
 > The 15-minute stagger means the worker picks up and builds work; the overseer fires when PRs are ready to evaluate. The machine lock (`/tmp/hos-worker.lock`) is still machine-global — at most one orchestrator (worker OR overseer) holds the probe→dispatch critical section at any moment. See tech design §11a for the full deployment spec.

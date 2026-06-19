@@ -100,7 +100,7 @@ def test_copilot_bot_approved_is_not_human():
     """
     import os
     # Simulate sourcing machine-accounts.env: set BOT_ACCOUNTS in the environment
-    os.environ["BOT_ACCOUNTS"] = "HOSWorkerTutelare HOSOversightTutelare copilot[bot]"
+    os.environ["BOT_ACCOUNTS"] = "hos-worker-hos[bot] hos-overseer-hos[bot] copilot[bot]"
     try:
         # Load the bot set from env exactly as require_human_approval.py does (L182).
         bot_accounts = set(os.environ.get("BOT_ACCOUNTS", "").split())
@@ -119,7 +119,7 @@ def test_copilot_bot_approved_is_not_human():
 def test_copilot_bot_approved_does_not_block_human_approval():
     """When both copilot[bot] and a human approve, the human approval stands."""
     import os
-    os.environ["BOT_ACCOUNTS"] = "HOSWorkerTutelare HOSOversightTutelare copilot[bot]"
+    os.environ["BOT_ACCOUNTS"] = "hos-worker-hos[bot] hos-overseer-hos[bot] copilot[bot]"
     try:
         bot_accounts = set(os.environ.get("BOT_ACCOUNTS", "").split())
         reviews = [

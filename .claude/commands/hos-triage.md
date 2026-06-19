@@ -38,7 +38,7 @@ When invoked, the worker should:
 
 1. Read the issue: `gh issue view <number> --repo thurlow-research/HumanOversightSystem`
 2. Apply `scripts/automation/lib/triage.py` classification logic
-3. Check: does the issue have `needs-ai` label? Is it assigned to HOSWorkerTutelare?
+3. Check: does the issue have `needs-ai` label? Is it assigned to `hos-worker-hos[bot]`?
 4. Check: is there an open PR already covering this issue? (avoid duplicate work)
 5. Report the classification and proposed disposition
 6. If AUTOWORK: confirm with human (via /hos-build-step or direct action) then proceed

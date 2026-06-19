@@ -39,7 +39,7 @@ _SPEC.loader.exec_module(rtc)
 # Helpers
 # ---------------------------------------------------------------------------
 
-_OVERSEER = "HOSOversightTutelare"
+_OVERSEER = "hos-overseer-hos[bot]"
 _CEILING = "LOW"
 
 _APPROVED_REVIEW = [{"state": "APPROVED", "user": {"login": _OVERSEER}}]
@@ -132,8 +132,8 @@ def test_missing_env_fails_closed(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_overseer_has_approved_case_insensitive():
-    reviews = [{"state": "APPROVED", "user": {"login": "HOSOversightTutelare"}}]
-    assert rtc.overseer_has_approved(reviews, "hosoversighttutelare")
+    reviews = [{"state": "APPROVED", "user": {"login": "HOS-OVERSEER-HOS[BOT]"}}]
+    assert rtc.overseer_has_approved(reviews, "hos-overseer-hos[bot]")
 
 
 def test_overseer_dismissed_not_approved():
@@ -168,12 +168,12 @@ def test_load_env_parses_quoted_values(tmp_path):
     env_file = tmp_path / "machine-accounts.env"
     env_file.write_text(
         '# comment\n'
-        'BOT_OVERSEER_USERNAME="HOSOversightTutelare"\n'
+        'BOT_OVERSEER_USERNAME="hos-overseer-hos[bot]"\n'
         "OVERSEER_CEILING='LOW'\n"
         "TIER_CEILING_CHECK_NAME=require-tier-ceiling\n"
     )
     result = rtc.load_env(env_file)
-    assert result["BOT_OVERSEER_USERNAME"] == "HOSOversightTutelare"
+    assert result["BOT_OVERSEER_USERNAME"] == "hos-overseer-hos[bot]"
     assert result["OVERSEER_CEILING"] == "LOW"
     assert result["TIER_CEILING_CHECK_NAME"] == "require-tier-ceiling"
 
