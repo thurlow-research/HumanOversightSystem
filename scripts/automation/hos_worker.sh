@@ -58,6 +58,27 @@ done
 
 _log "starting class=$AGENT_CLASS owner=$OWNER repo=$REPO_NAME issue=${ISSUE_NUMBER:-n/a} cid=${CID:-tbd}"
 
+# ── GitHub App auth (#590) ────────────────────────────────────────────────────
+# hos_worker.sh is spawned detached by hos_orchestrator.sh and needs its own
+# token. Tokens expire after 1 hour; the heartbeat loop refreshes before expiry.
+BOOTSTRAP_SCRIPT="$REPO_ROOT/bootstrap/get_app_token.sh"
+if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
+  _err "bootstrap/get_app_token.sh not found — cannot authenticate as bot"
+  exit 1
+fi
+_refresh_app_token() {
+  source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") 2>/dev/null \
+    || _warn "token refresh failed — GH_TOKEN may be stale"
+}
+_refresh_app_token
+
+EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
+if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
+  _err "Identity guard: HOS_BOT_LOGIN='$HOS_BOT_LOGIN' (expected '$EXPECTED_LOGIN') — exiting"
+  exit 1
+fi
+_log "authenticated as $HOS_BOT_LOGIN"
+
 # ── Halt / activation check helper ───────────────────────────────────────────
 _check_still_active() {
   # Returns 0 if active, 1 if should stop
@@ -97,6 +118,7 @@ _start_heartbeat() {
   (
     while true; do
       sleep 900  # 15 minutes
+      _refresh_app_token  # renew before the 1-hour token expiry (#590)
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
       _py "
 import sys
