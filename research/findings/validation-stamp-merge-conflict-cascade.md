@@ -27,14 +27,37 @@ Using a shared tracked file for this creates a write-conflict surface proportion
 
 Stamp directory added to `.gitignore`; CI check modified to skip (exit 0) when untracked. This eliminates conflicts but disables validation enforcement entirely.
 
-## Design options (see #422)
+## Design options (see #552)
 
 | Option | Description | Trade-off |
 |--------|-------------|-----------|
 | A | Branch-scoped stamp paths (`validation-stamps/<branch>.stamp`) | Eliminates conflict; proliferation cleanup needed |
-| B | SHA-anchored stamp (records HEAD SHA, not timestamp) | No timestamp comparison; no conflict; requires check redesign |
+| B | Content-hash-anchored stamp (filename = SHA256 of validated files) | No conflict; no rebase invalidation; requires check redesign |
 | C | PR metadata field (not a tracked file) | No git conflict; requires CI infrastructure change |
+
+## Chosen approach — Option B (content-hash anchoring) (#552)
+
+**Decision recorded 2026-06-19.** Implemented as `#552` in v0.5.0.
+
+Stamp filename = `validation-stamps/phase1-<sha256>.stamp` where the hash covers
+all `.claude/agents/*.md` files. The CI check recomputes the current hash and
+checks whether that named stamp file is tracked in git.
+
+**Why this eliminates both problems:**
+1. **Conflict**: identical content → identical filename → git sees no conflict (both
+   branches have the same file). Different content → different filenames → different
+   files → no conflict by definition.
+2. **Rebase invalidation**: hash depends on file *contents*, not commit timestamps.
+   Rebased commits have new timestamps but unchanged content → same hash → same
+   stamp filename → stamp still valid.
+
+**Known tradeoff:** Non-agent-file PRs (e.g. pure validator script changes) pass CI
+without re-validating agent structure. Accepted as correct — agent structure did not
+change. Confirmed by architect before implementation per #552.
+
+**Cleanup:** Old stamp files accumulate as agent content evolves. A step in
+`cut_release.sh` removes all stamps except the current one.
 
 ## Lesson for HOS design
 
-CI artifact anchoring must account for concurrent PR workflows. A single shared tracked file is appropriate for sequential (one PR at a time) workflows but fails at scale. Stamp anchoring should use branch-scoped or PR-scoped artifacts, or anchor to immutable git object SHAs rather than mutable file timestamps.
+CI artifact anchoring must account for concurrent PR workflows. A single shared tracked file is appropriate for sequential (one PR at a time) workflows but fails at scale. Stamp anchoring should use content-addressed artifacts: identical content produces identical identifiers, so concurrent PRs validating the same state never conflict, and PRs validating different states produce independent artifacts that coexist without collision.
