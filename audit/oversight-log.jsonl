@@ -11,3 +11,4 @@
 {"event":"suspension-census","active_suspensions":0,"suspended_gates":[],"timestamp":"2026-06-16T18:24:50Z"}
 {"event":"structural-override","signal":"new-external-dependency","step":"B","file":"pyproject.toml","covered":false,"timestamp":"2026-06-16T18:25:34Z"}
 {"event":"na-invalidated","role":"security","step":"B","evidence":"tests/framework/test_pack_install.py matched security domain file rule (*.py); security N/A is not credible","timestamp":"2026-06-16T18:25:34Z"}
+{"event":"pr-reviewed","pr":543,"branch":"feat/v050-542-app-token-bootstrap","head_sha":"unknown","validator_tier":"LOW","validator_score":0.0056,"static_check":"PASS","test_result":"pre-existing-failure-on-main","code_review":"FINDING","security_review":"FINDING","findings_count":6,"issues_filed":[544,545,546,547,548,549],"decision":"DIRTY-DO-NOT-MERGE","auth_note":"running-as-ScottThurlow-bot-token-unavailable","timestamp":"2026-06-19T01:20:53Z"}
