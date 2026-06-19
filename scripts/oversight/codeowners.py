@@ -37,7 +37,8 @@ CODEOWNERS_LOCATIONS = (
 )
 
 # Spec default when BOT_ACCOUNTS is unset (SPEC-303b R5 / §2.3).
-DEFAULT_BOT_ACCOUNTS = ("HOSOversightTutelare", "HOSWorkerTutelare")
+# Updated for GitHub App auth (#547): old PAT machine accounts retired.
+DEFAULT_BOT_ACCOUNTS = ("hos-worker-hos[bot]", "hos-overseer-hos[bot]", "copilot[bot]")
 
 
 def load_codeowners(repo_root) -> str | None:

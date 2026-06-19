@@ -16,8 +16,8 @@
 #   --help, -h     Show this help and exit
 #
 # Environment overrides:
-#   OVERSIGHT_ACCOUNT  overseer bot login to exclude  (default: HOSOversightTutelare)
-#   WORKER_ACCOUNT     worker  bot login to exclude   (default: HOSWorkerTutelare)
+#   OVERSIGHT_ACCOUNT  overseer bot login to exclude  (default: hos-overseer-hos[bot])
+#   WORKER_ACCOUNT     worker  bot login to exclude   (default: hos-worker-hos[bot])
 #   GH_API_DELAY_MS    inter-PR API delay in ms       (default: 200)
 #
 # Output: tab-separated rows  PR_NUMBER<TAB>STATUS<TAB>DETAILS
@@ -56,8 +56,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Account / config resolution ───────────────────────────────────────────────
-OVERSIGHT_ACCOUNT="${OVERSIGHT_ACCOUNT:-HOSOversightTutelare}"
-WORKER_ACCOUNT="${WORKER_ACCOUNT:-HOSWorkerTutelare}"
+OVERSIGHT_ACCOUNT="${OVERSIGHT_ACCOUNT:-hos-overseer-hos[bot]}"
+WORKER_ACCOUNT="${WORKER_ACCOUNT:-hos-worker-hos[bot]}"
 GH_API_DELAY_MS="${GH_API_DELAY_MS:-200}"
 # Bot logins excluded from "human reply" — overseer, worker, and CI bot.
 BOTS_JSON="$(printf '["%s","%s","github-actions[bot]"]' "$OVERSIGHT_ACCOUNT" "$WORKER_ACCOUNT")"

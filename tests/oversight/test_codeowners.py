@@ -16,7 +16,7 @@ from codeowners import (
     requires_human_approval,
 )
 
-BOTS = {"HOSOversightTutelare", "HOSWorkerTutelare"}
+BOTS = {"hos-worker-hos[bot]", "hos-overseer-hos[bot]", "copilot[bot]"}  # GitHub App handles (#547)
 
 
 # ── load_codeowners — file location priority (§2.1) ──────────────────────────
@@ -146,7 +146,7 @@ class TestRequiresHumanApproval:
         assert reason == "human CODEOWNERS owner: @ScottThurlow"
 
     def test_bot_only(self):  # AC-3
-        entries = parse_codeowners("/auto/ @HOSWorkerTutelare\n")
+        entries = parse_codeowners("/auto/ @hos-worker-hos[bot]\n")
         req, reason = requires_human_approval("auto/x.txt", entries, BOTS)
         assert req is False
         assert reason == "bot-only CODEOWNERS entry"
@@ -159,13 +159,13 @@ class TestRequiresHumanApproval:
 
     def test_team_checked_before_human_and_bot(self):
         # mixed bot + team → team gate fires
-        entries = parse_codeowners("/x/ @HOSWorkerTutelare @org/team\n")
+        entries = parse_codeowners("/x/ @hos-worker-hos[bot] @org/team\n")
         req, reason = requires_human_approval("x/f", entries, BOTS)
         assert req is True
         assert reason.startswith("team-owned path:")
 
     def test_mixed_human_and_bot_gates_on_human(self):
-        entries = parse_codeowners("/x/ @HOSWorkerTutelare @alice\n")
+        entries = parse_codeowners("/x/ @hos-worker-hos[bot] @alice\n")
         req, reason = requires_human_approval("x/f", entries, BOTS)
         assert req is True
         assert reason == "human CODEOWNERS owner: @alice"
@@ -178,7 +178,7 @@ class TestRequiresHumanApproval:
 
     def test_empty_bot_set_treats_all_as_human(self):
         # AC-6 degradation: no known bots → every owner is human
-        entries = parse_codeowners("/x/ @HOSWorkerTutelare\n")
+        entries = parse_codeowners("/x/ @hos-worker-hos[bot]\n")
         req, _ = requires_human_approval("x/f", entries, set())
         assert req is True
 
@@ -216,7 +216,7 @@ class TestCheckPrFiles:
         assert "@ScottThurlow" in reason
 
     def test_bot_only_not_flagged(self, tmp_path):  # AC-3
-        _write_codeowners(tmp_path, "/auto/ @HOSWorkerTutelare\n")
+        _write_codeowners(tmp_path, "/auto/ @hos-worker-hos[bot]\n")
         req, matched, _ = check_pr_files(["auto/x.txt"], tmp_path, BOTS)
         assert req is False
         assert matched == []
@@ -234,22 +234,24 @@ class TestCheckPrFiles:
         assert matched == ["contract/x"]
 
     def test_bot_accounts_from_env_default(self, tmp_path, monkeypatch):  # AC-6
+        # Updated for GitHub App auth (#547): defaults are now App bot handles.
+        NEW_BOTS = {"hos-worker-hos[bot]", "hos-overseer-hos[bot]", "copilot[bot]"}
         monkeypatch.delenv("BOT_ACCOUNTS", raising=False)
-        _write_codeowners(tmp_path, "/auto/ @HOSWorkerTutelare\n")
-        # default bots include HOSWorkerTutelare → bot-only → not flagged
+        _write_codeowners(tmp_path, "/auto/ @hos-worker-hos[bot]\n")
+        # default bots include hos-worker-hos[bot] → bot-only → not flagged
         req, matched, _ = check_pr_files(["auto/x"], tmp_path, bot_accounts=None)
         assert req is False
-        assert set(DEFAULT_BOT_ACCOUNTS) == BOTS
+        assert set(DEFAULT_BOT_ACCOUNTS) == NEW_BOTS
 
     def test_bot_accounts_from_env_override(self, tmp_path, monkeypatch):  # AC-6
         monkeypatch.setenv("BOT_ACCOUNTS", "somebot")
-        _write_codeowners(tmp_path, "/auto/ @HOSWorkerTutelare\n")
-        # HOSWorkerTutelare is no longer a bot → treated as human → flagged
+        _write_codeowners(tmp_path, "/auto/ @hos-worker-hos[bot]\n")
+        # BOT_ACCOUNTS override to "somebot" → hos-worker-hos[bot] not in set → treated as human → flagged
         req, _, _ = check_pr_files(["auto/x"], tmp_path, bot_accounts=None)
         assert req is True
 
     def test_reread_each_call_no_cache(self, tmp_path):  # B3
-        _write_codeowners(tmp_path, "/x/ @HOSWorkerTutelare\n")
+        _write_codeowners(tmp_path, "/x/ @hos-worker-hos[bot]\n")
         req1, _, _ = check_pr_files(["x/f"], tmp_path, BOTS)
         assert req1 is False
         # mutate CODEOWNERS between calls — must be re-read

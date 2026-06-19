@@ -53,7 +53,7 @@ _PROPOSE_ONLY_DEP = GateDetectionResult(
     ),
 )
 
-DEFAULT_OVERSEER_HANDLE = "HOSOversightTutelare"
+DEFAULT_OVERSEER_HANDLE = "hos-overseer-hos[bot]"  # GitHub App; updated from PAT account (#547)
 
 
 def _dep_ceiling_check_present(owner: str, repo: str) -> bool:
@@ -251,7 +251,7 @@ def decide_merge_authority(
     security_relevant: bool = False,
     agent_class: str = "worker",     # "worker" | "overseer"
     overseer_handle: str = DEFAULT_OVERSEER_HANDLE,
-    worker_handle: str = "HOSWorkerTutelare",
+    worker_handle: str = "hos-worker-hos[bot]",  # GitHub App; updated from PAT account (#547)
     overseer_ceiling: RiskTier = RiskTier.LOW,
     default_branch: str = "main",
     repo_root: str = ".",

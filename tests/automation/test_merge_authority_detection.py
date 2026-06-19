@@ -98,9 +98,10 @@ class TestDetectServerSideGate:
 
     def test_propose_only_when_overseer_in_bypass_users(self):
         # enforce_admins=False so bypass_users is actually checked.
+        # Updated for GitHub App auth (#547): default overseer handle is now App bot.
         protection = _make_protection(
             enforce_admins=False,
-            bypass_users=[{"login": "HOSOversightTutelare"}],
+            bypass_users=[{"login": "hos-overseer-hos[bot]"}],
         )
         with _patch_dep(True), _patch_protection(protection):
             result = detect_server_side_gate(OWNER, REPO)
