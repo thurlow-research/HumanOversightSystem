@@ -82,8 +82,8 @@ For the owner set of the matched entry:
 
 `bot_accounts` is a `set[str]` supplied by the caller. The values are GitHub login
 strings. For comparison, a CODEOWNERS owner token may carry a leading `@`; the bot
-membership test strips the leading `@` before comparing (so `@HOSOversightTutelare`
-matches a `bot_accounts` entry of `HOSOversightTutelare`). Email-form owners
+membership test strips the leading `@` before comparing (so `@hos-overseer-hos[bot]`
+matches a `bot_accounts` entry of `hos-overseer-hos[bot]`). Email-form owners
 (`user@example.com`) are treated as human owners (they are never bot logins).
 
 ---

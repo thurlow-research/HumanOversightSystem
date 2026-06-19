@@ -226,7 +226,7 @@ label name from `scripts/framework/machine-accounts.env` (the existing labels
 protocol in overseer.md). The `GET /repos/{o}/{r}/issues/{n}/comments` call returns
 a paginated list; the overseer must follow pagination to examine all comments. If
 the worker's initial request comment timestamp is not available from the issue itself,
-the earliest comment with `user.login == HOSWorkerTutelare` (or equivalent bot login)
+the earliest comment with `user.login == hos-worker-hos[bot]` (or equivalent bot login)
 serves as the T_request anchor.
 
 **Partial authorization (R2.5):** An authorization issue that covers only a subset

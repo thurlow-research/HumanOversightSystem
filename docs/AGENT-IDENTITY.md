@@ -176,7 +176,7 @@ I can apply the branch-protection rules via `gh api` once the accounts exist.
 5. Authorize me to configure branch protection (or do it yourself per §9).
 
 **I (agent) build — once the accounts exist:**
-1. `scripts/.../provision_agent_account.sh` — configures a checkout's `git` + `gh` to operate as a given bot (creds passed in; account creation stays manual). In the `setup_clis.sh` style (colours, idempotent, `doctor`).
+1. `bootstrap/get_app_token.sh` — generates a GitHub App installation token (RS256 JWT → installation ID → 1-hour bearer token). Exports `GH_TOKEN` and `HOS_BOT_LOGIN` into the caller's shell. Usage: `source <(bootstrap/get_app_token.sh --app worker|overseer)`. Config lives at `~/.config/hos/apps.env` (App IDs + PEM paths — never committed).
 2. `branch-protection` setup script (`gh api`) implementing §9, + a doc of the settings.
 3. The `Supervised-by:` trailer convention, wired into the commit/PR templates and AGENTS.md disclosure.
 4. Reframe **#151** → "achieved via the #152 identity split"; update the METHODOLOGY threat-model note (the human gate is now forge-proof via identity separation, with the residual being repo-config tampering — a loud, auditable act).
@@ -185,7 +185,7 @@ I can apply the branch-protection rules via `gh api` once the accounts exist.
 ## 10a. This is for building HOS **and** for HOS consumers
 
 The two-account identity model is needed in **both** contexts: HOS's own development *and* every project that installs HOS. So the deliverables are **framework-level, consumer-facing, and parameterized per repo/owner** — not one-off HOS-internal scripts:
-- `provision_agent_account.sh` takes the class (`worker`/`overseer`), the bot's creds, and the target repo — so a consumer runs the same tool to wire up *their* two bots.
+- `bootstrap/get_app_token.sh` takes `--app worker` or `--app overseer` and reads `~/.config/hos/apps.env` — so a consumer runs the same tool after registering their own GitHub Apps and storing the PEM + App ID.
 - A **setup guide** ("Create your two machine accounts and configure HOS"): the click-path to create `hos-worker`/`hos-overseer` on github.com, generate the PATs, set branch protection, and point each agent context at the right account. This ships in `docs/` and is referenced from QUICKSTART/SETUP, because account creation is the one manual step every consumer hits.
 - The branch-protection-as-code script applies the §9 rules to *any* repo, so consumers get the tiered-approval gate without hand-configuring it.
 
@@ -200,9 +200,9 @@ Implemented (the load-bearing **server-side** half of §5.1 — the protected-su
 - `scripts/framework/require_human_approval.py` + `.github/workflows/require-human-approval.yml` — a status check (runs in CI, outside the agents' reach) that **fails any PR touching a protected surface without a human approval** (human = approver not in `BOT_ACCOUNTS`). Unit-tested in `tests/framework/test_require_human_approval.py`.
 - `scripts/framework/gen_codeowners.sh` → `.github/CODEOWNERS` — the static half; protected surfaces → human owner, generated from the same list so the two can't drift. (Replaces the old blanket `* @OWNER`: non-protected paths may now be overseer-approved.)
 - `scripts/framework/machine-accounts.env` — bot handles + `OVERSEER_CEILING`.
-- `docs/MACHINE-ACCOUNTS-SETUP.md` — the §10a consumer-facing setup guide (accounts → PATs → collaborators → config → branch protection).
+- `docs/MACHINE-ACCOUNTS-SETUP.md` — the §10a consumer-facing setup guide (⚠️ **partially stale as of 2026-06-19**: describes PAT machine accounts; GitHub App setup covered in `bootstrap/get_app_token.sh` and `scripts/framework/machine-accounts.env`; full doc update tracked in #577).
 
-These ship **inert** — they enforce nothing until the human enables branch protection (setup guide Step 5). Still to build (#152 follow-ups): the **risk-tier-vs-ceiling** status check (the dynamic above-ceiling→human gate), `provision_agent_account.sh`, the branch-protection-as-code script, and the `Supervised-by:` trailer convention.
+These ship **inert** — they enforce nothing until the human enables branch protection (setup guide Step 5). Still to build (#152 follow-ups): the **risk-tier-vs-ceiling** status check (the dynamic above-ceiling→human gate), the branch-protection-as-code script (`provision_agent_account.sh` was superseded by `bootstrap/get_app_token.sh` in v0.4.0), and the `Supervised-by:` trailer convention.
 
 ## 11. Open questions to resolve before Phase 0
 

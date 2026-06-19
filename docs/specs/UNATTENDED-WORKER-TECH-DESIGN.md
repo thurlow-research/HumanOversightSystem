@@ -6,7 +6,7 @@
 
 **Target stack:** bash (macOS bash 3.2 floor — **no `flock`**) + Python 3.10+ stdlib-first, matching `scripts/framework/` and `scripts/oversight/` conventions (colours, idempotency, `doctor`, stdlib-only where possible; `schema.py`-style result envelopes for scored signals).
 
-**Scope note:** this is the #254 unattended-worker design. The #152 completion follow-ups (the risk-tier-vs-ceiling status check; `provision_agent_account.sh`; branch-protection-as-code) are a **separate small track** per `AGENT-IDENTITY.md §10b`. They are a hard **dependency** of T10/merge-authority detection (R9.1.1 re-checks the overseer's bypass standing, which that track configures), but they are **not designed here**. Where this design depends on them, it is called out as `DEP[#152-followup]`.
+**Scope note:** this is the #254 unattended-worker design. The #152 completion follow-ups (the risk-tier-vs-ceiling status check; branch-protection-as-code) are a **separate small track** (`provision_agent_account.sh` was superseded by `bootstrap/get_app_token.sh`) per `AGENT-IDENTITY.md §10b`. They are a hard **dependency** of T10/merge-authority detection (R9.1.1 re-checks the overseer's bypass standing, which that track configures), but they are **not designed here**. Where this design depends on them, it is called out as `DEP[#152-followup]`.
 
 ---
 
@@ -560,10 +560,10 @@ R13.4 (activation first gate), R8.4 (hos-halt file, path, protected surface, hea
 **Worker and overseer run as separate cronjobs** on different credential sets and at staggered intervals. This is a direct consequence of `AGENT-IDENTITY.md §7` (two identity classes, separate credential contexts) applied to the cron deployment:
 
 ```cron
-# Worker — opens branches/PRs, runs the build chain; authenticated as HOSWorkerTutelare
+# Worker — opens branches/PRs, runs the build chain; authenticated as hos-worker-hos[bot]
 0,30 * * * *  /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class worker
 
-# Overseer — reviews, approves, merges within ceiling; authenticated as HOSOversightTutelare
+# Overseer — reviews, approves, merges within ceiling; authenticated as hos-overseer-hos[bot]
 15,45 * * * *  /path/to/scripts/automation/hos_orchestrator.sh hos-orchestrator --class overseer
 ```
 
@@ -755,7 +755,7 @@ Ordered so each task's dependencies are already built. Foundation first (correct
 | O19 (CODEOWNERS lookup) | **Resolved** — §13: parse `.github/CODEOWNERS`, last-match-wins, team/wildcard/uncovered edge cases fail-closed. |
 | O20 (label names + T2) | **Resolved** — §13: `hos-autowork-authorized` confirmed; full `hos-*` set + T2 provisioning; no `hos-halt` label. |
 | **O10 (won't-fix human-only classes)** | **NOT decided — flagged for human.** §12: mechanism built (default `security/privacy/license`); `HUMAN-DECISION-REQUIRED: O10`. |
-| #152 follow-ups (tier-vs-ceiling check, `provision_agent_account.sh`) | **Out of scope** (separate track, AGENT-IDENTITY §10b); declared as `DEP[#152-followup]` in §10. |
+| #152 follow-ups (tier-vs-ceiling check) | **Out of scope** (`provision_agent_account.sh` superseded by `bootstrap/get_app_token.sh`) (separate track, AGENT-IDENTITY §10b); declared as `DEP[#152-followup]` in §10. |
 | **SPEC-TODO (spec editor): `per_customer_api_budget` missing from §8.3 + §13 YAML** | **Flagged in §5** — add a §8.3 row + §13 YAML key (default 300 calls / 1h / customer). Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |
 | **SPEC-TODO (spec editor): `pin_max` missing from §8.3 + §13 YAML** | **Flagged in §5** — add a §8.3 row + §13 YAML key (default 72h). Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |
 | **SPEC-TODO (spec editor): `estimation:` constants block missing from §13 YAML** | **Flagged in §9** — add the `thresholds.estimation` block (BASE 40k/8k/15k/30k, multipliers, 1.25 floor, K=20) to §13 YAML + a §8.3 note. Doc gap, no behavior change. PROTOCOL edit NOT done by this design task. |

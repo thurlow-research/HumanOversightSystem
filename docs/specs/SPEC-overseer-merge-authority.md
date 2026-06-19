@@ -70,7 +70,7 @@ The reviewer request is what causes GitHub to notify the human.
 After posting the threads and requesting the review, the overseer must post a
 single summary comment on the PR (distinct from the review threads) with:
 - Count of conditional threads opened.
-- Instruction to HOSWorkerTutelare: "This PR has N unresolved conditional
+- Instruction to hos-worker-hos[bot]: "This PR has N unresolved conditional
   threads. The worker must not close or re-push this branch until a human
   resolves all threads."
 

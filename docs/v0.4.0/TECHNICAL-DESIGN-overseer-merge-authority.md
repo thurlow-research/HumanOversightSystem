@@ -186,12 +186,12 @@ from the threads:
 ```
 [HOS Overseer] CONDITIONAL_PROCEED — {N} unresolved conditional thread(s) opened.
 
-@HOSWorkerTutelare: this PR has {N} unresolved conditional thread(s). Do NOT
+@hos-worker-hos[bot]: this PR has {N} unresolved conditional thread(s). Do NOT
 close or re-push this branch until a human resolves all threads.
 ```
 
 The worker account name comes from `machine-accounts.env` (the `@`-mention
-target — read it, do not hardcode `HOSWorkerTutelare`).
+target — read it, do not hardcode `hos-worker-hos[bot]`).
 
 **Ledger field (R1.6).** The orchestrator's ledger record for this action gains:
 

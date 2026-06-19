@@ -202,7 +202,7 @@ Before treating any flagged SHA as resolved-by-human, verify via `gh api` ALL of
 2. Carries `needs-human` — `issue.labels` contains `name == "needs-human"`.
 3. Qualifying human comment — `GET /repos/{o}/{r}/issues/{n}/comments` has ≥1 comment with
    `user.type != "Bot"` AND `created_at` after the worker's initial request comment
-   (earliest comment by `HOSWorkerTutelare` / the bot login). Follow pagination.
+   (earliest comment by `hos-worker-hos[bot]` / the bot login). Follow pagination.
 
 Gate on condition 3, NOT on open/closed state. A closed issue with no qualifying human
 comment is NOT authorization.
@@ -260,8 +260,7 @@ Resolution is a separate standalone event, appended by the overseer at gate conf
    the resolution event — the overseer emits it at the gate (§1). Surface the cross-branch
    PR number in the re-entry note so the overseer can populate `cross_branch_pr`.
 
-Credential guard: before any push / `gh pr create`, confirm `gh api user --jq .login` is
-`HOSWorkerTutelare` (identity guard, #363).
+Credential guard: before any push / `gh pr create`, confirm `$HOS_BOT_LOGIN` equals `hos-worker-hos[bot]` (identity guard, #363).
 
 ### 5.2 Option B — human authorization issue (R2.5)
 File a `needs-human` issue with the 4-step protocol + standard "How to authorize" footer:

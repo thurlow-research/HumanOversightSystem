@@ -306,7 +306,7 @@ Condition 16 is a timing correction, not a Phase-1 FAIL. See §5 below. The eval
 
 **Added — overseer merge-confirmation step (the overseer's autonomous step 6, after AUTO_MERGE success):** append one line to `audit/oversight-log.jsonl`:
 ```json
-{"event": "step-head", "step": N, "base_sha": "<prev step head_sha>", "head_sha": "<merged_sha>", "merged_sha": "<merged_sha>", "merged_at": "<ISO-8601>", "merged_by": "HOSOversightTutelare", "pr_number": "<n>", "timestamp": "<ISO-8601>"}
+{"event": "step-head", "step": N, "base_sha": "<prev step head_sha>", "head_sha": "<merged_sha>", "merged_sha": "<merged_sha>", "merged_at": "<ISO-8601>", "merged_by": "hos-overseer-hos[bot]", "pr_number": "<n>", "timestamp": "<ISO-8601>"}
 ```
 
 **Contract on the SHA:** `merged_sha`/`head_sha` is the **actual merged commit SHA** after the squash merge — obtained from the merge result (`gh pr merge` output or `git rev-parse <branch>` post-merge), NOT the pre-PR branch head. `base_sha` is the previous step's `head_sha`. `merged_at` is when the merge happened; `timestamp` is when this log line was written.
