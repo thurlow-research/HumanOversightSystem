@@ -97,7 +97,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   signal (R5) regardless of mode. Chat never authorizes the final cut.**
 - **Track build progress.** After each significant step, update `.claudetmp/session-state.md` with: active branch, current build step, what's done, what's next, open blockers.
 - **Run the inner-loop test suite** (`./scripts/framework/run_tests_inner_loop.sh`) after any code change before marking a step complete.
-- **On every loop, actively read all open PR feedback** — not just `mergeable` status. For each open PR, check: (1) CI check statuses (`statusCheckRollup`) — any FAILURE must be investigated and fixed immediately; (2) all PR comments including overseer feedback requesting worker action; (3) formal reviews. Checking only `mergeable: CONFLICTING` misses CI failures and overseer requests that have been waiting for action. (#411)
+- **On every loop, actively read all open PR feedback** — not just `mergeable` status. For each open PR authored by `hos-worker-hos[bot]`, read: (1) formal reviews via `GET /pulls/{n}/reviews` — any `CHANGES_REQUESTED` state must be addressed immediately; (2) all comments via `GET /issues/{n}/comments` — overseer threads requesting action appear here, not in reviews; (3) CI check statuses. Checking only `mergeable: CONFLICTING` misses CHANGES_REQUESTED reviews and overseer comment threads — the root cause of the v0.4.0 missed-feedback incidents. See the AUTONOMOUS mode Loop-start precheck for the required API order. (#550, #551)
 - **Run the full test suite including coverage** (`./scripts/framework/run_tests.sh`) before declaring a loop or sprint complete. The 80% coverage gate must pass — if it fails, add tests and iterate. Do NOT stop work while any quality gate is red. (#402, #403)
 - **When filing a `needs-human` issue, always append this "How to authorize" block** (#405):
   ```
@@ -150,6 +150,42 @@ At the end of any turn that makes significant progress, write or update `.claude
 ### Who invokes you
 
 `hos_orchestrator.sh --class worker` after the probe finds a work item. You receive a structured work item: owner, repo, issue number, pre-computed cid.
+
+### Loop-start precheck (run before every new task pick) (#550, #551)
+
+**Before picking any new work item, check the state of all open PRs you authored.**
+This step runs at the top of every autonomous loop iteration — before the per-task chain.
+
+**Required order:**
+
+1. **List open PRs** (REST, never GraphQL):
+   ```
+   gh api "repos/{owner}/{repo}/pulls?state=open&per_page=20"
+   ```
+   Filter to PRs where `user.login == hos-worker-hos[bot]`.
+
+2. **For each open PR — read reviews AND comments:**
+   ```
+   gh api "repos/{owner}/{repo}/pulls/{number}/reviews"
+   gh api "repos/{owner}/{repo}/issues/{number}/comments"
+   ```
+   Read both. `mergeable: CONFLICTING` alone is not sufficient — it misses
+   CHANGES_REQUESTED reviews and overseer comment threads requesting action.
+
+3. **Routing:**
+   - Any PR has `state: CHANGES_REQUESTED` (formal review) **or** an overseer
+     comment requesting worker action → address that PR before picking new work.
+     Fix the listed gaps, push a new commit, then STOP this iteration.
+   - All open PRs are approved/clean (no blocking state) → STOP. Wait for the
+     overseer to merge before picking new work.
+   - No open PRs → proceed to the per-task chain below.
+
+**Why:** Checking only `mergeable` status misses CHANGES_REQUESTED reviews and
+overseer comment threads that have been waiting for action — the root cause of
+the v0.4.0 missed-feedback incidents (#550). Reading review bodies and all comments
+is non-negotiable on every loop iteration.
+
+---
 
 ### What you do
 
