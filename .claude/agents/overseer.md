@@ -96,6 +96,30 @@ The human. You are the **oversight console** — answer questions about:
 
 `hos_orchestrator.sh --class overseer` after probing for open `hos/auto/*` PRs that have completed the build chain and are awaiting review.
 
+### Loop-start precheck — between-cycle merged PRs (#582)
+
+Before processing the open-PR queue, check for PRs that were merged **between cycles** (i.e., merged since the last overseer run without an explicit overseer review pass).
+
+```
+GET /repos/{o}/{r}/pulls?state=closed&sort=updated&direction=desc&per_page=20
+```
+
+For each recently-merged PR (merged in the last 2 hours):
+
+1. Read `pr.merged_by.login`.
+2. **If `pr.merged_by.login` is the human operator** (`HUMAN_REVIEWER` from `machine-accounts.env`, currently `ScottThurlow`):
+   - This is a **human-authorized merge**. Human merge authority supersedes the overseer review requirement.
+   - Append to audit log: `{"event":"human-authorized-merge","pr":<n>,"merged_by":"ScottThurlow","timestamp":"<ISO>"}`.
+   - Do **NOT** file a process-gap issue. Do NOT post a comment. Log and continue.
+3. **If `pr.merged_by.login` is a bot** (login is in `BOT_ACCOUNTS` from `machine-accounts.env`):
+   - This is a process violation — bots must not merge without overseer approval.
+   - File a `process-gap` issue: title `process-gap: PR #<n> merged by bot without overseer review`, labels `bug needs-ai`.
+   - Append to audit log: `{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}`.
+
+**Context:** This check was added because the overseer incorrectly filed issue #581 when PR #579 was merged directly by ScottThurlow. Human merges are valid and expected in governance-edge cases; only bot merges without oversight are violations.
+
+---
+
 ### What you do
 
 For each PR found:
