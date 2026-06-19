@@ -71,7 +71,7 @@ The overseer must check register completeness before applying the merge-authorit
 
 ### 4.2 Bounce action (REQ-O-06)
 
-On bounce: post structured comment → assign PR to HOSWorkerTutelare → label needs-ai → convert to draft (maintainer role makes this reliable) → append pr-bounced event to audit log.
+On bounce: post structured comment → assign PR to hos-worker-hos[bot] → label needs-ai → convert to draft (maintainer role makes this reliable) → append pr-bounced event to audit log.
 
 Do NOT close the PR, close the branch, or increment the failure counter.
 
@@ -99,7 +99,7 @@ If the same cid has been bounced >= 2 times: escalate to human (needs-human + §
 ## 5. pr-bounced Audit Event
 
 ```json
-{"event":"pr-bounced","pr":318,"cid":"a1b2c3d4","bounce_number":1,"failures":["REQ-W-05"],"assigned_to":"HOSWorkerTutelare","repo":"thurlow-research/HOS","timestamp":"2026-06-16T19:04:11Z"}
+{"event":"pr-bounced","pr":318,"cid":"a1b2c3d4","bounce_number":1,"failures":["REQ-W-05"],"assigned_to":"hos-worker-hos[bot]","repo":"thurlow-research/HOS","timestamp":"2026-06-16T19:04:11Z"}
 ```
 
 ---

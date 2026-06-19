@@ -104,7 +104,7 @@ fi
 # CODEOWNERS model (#329): require_code_owner_reviews: true ensures protected
 # surfaces (scripts/framework/protected_surfaces.txt) require @ScottThurlow.
 # Non-protected paths have NO CODEOWNERS entry — so any collaborator (including
-# HOSOversightTutelare with Maintainer role) can satisfy the code-owner
+# hos-overseer-hos[bot] with Maintainer role) can satisfy the code-owner
 # requirement for those paths. The catch-all `* @ScottThurlow` must NEVER be
 # added; it would block the overseer from merging any PR.
 

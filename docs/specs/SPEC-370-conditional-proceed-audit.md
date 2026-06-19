@@ -79,8 +79,8 @@ items. This is a heuristic check, not a definitive determination.
 earliest timestamp of the CONDITIONAL_PROCEED event for that PR.
 
 Non-bot is defined as: the comment author is not the overseer account (as named by
-`OVERSIGHT_ACCOUNT` env variable, defaulting to `HOSOversightTutelare`) and not the
-worker account (`WORKER_ACCOUNT` env variable, defaulting to `HOSWorkerTutelare`).
+`OVERSIGHT_ACCOUNT` env variable, defaulting to `hos-overseer-hos[bot]`) and not the
+worker account (`WORKER_ACCOUNT` env variable, defaulting to `hos-worker-hos[bot]`).
 
 The heuristic may produce false negatives (human replied to something else, not the
 conditional items) and false positives (human replied with a dismissal comment, not an

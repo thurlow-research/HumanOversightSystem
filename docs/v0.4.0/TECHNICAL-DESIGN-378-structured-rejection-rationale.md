@@ -132,7 +132,7 @@ same sentence). All seven existing payload fields (`pr`, `cid`, `bounce_number`,
 - This is NOT a separate, additional comment. The two fields are appended to the
   existing single bounce comment body (AC2, R1.2).
 - `record_pr_bounce()` still performs all five existing actions (comment, assign
-  to HOSWorkerTutelare, `needs-ai`, convert-to-draft, append audit). The change
+  to hos-worker-hos[bot], `needs-ai`, convert-to-draft, append audit). The change
   adds two fields to two of those five (the comment body and the audit payload).
 - The `>= 2` bounce-count branch (overseer.md step 4a) escalates to human via
   the §8.2 path instead — that path is governed by R1.1, not R1.2.
@@ -218,7 +218,7 @@ and `summary`. Existing key fields are unchanged. The canonical extended schema
   "cid": "<worker correlation id>",
   "bounce_number": "<integer>",
   "failures": ["<check_id>", "..."],
-  "assigned_to": "<HOSWorkerTutelare account>",
+  "assigned_to": "hos-worker-hos[bot]",
   "repo": "<owner/repo>",
   "timestamp": "<ISO-8601>",
   "reason_category": "REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER",

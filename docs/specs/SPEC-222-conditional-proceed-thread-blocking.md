@@ -128,7 +128,7 @@ This verification must be completed before any R1 implementation is submitted fo
 is a valid `--base` target when the orchestrator opens a PR) must have the following
 GitHub branch protection rule enabled:
 
-- "Require a minimum number of approvals" set to 1, with the approver being `HOSOversightTutelare`
+- "Require a minimum number of approvals" set to 1, with the approver being `hos-overseer-hos[bot]`
   or the human reviewer (`HUMAN_REVIEWER` from `machine-accounts.env`).
 - "Require conversation resolution before merging" enabled.
 
@@ -214,7 +214,7 @@ GitHub to notify the human.
 single summary comment on the PR (distinct from the conditional threads) addressed to the
 worker account. The comment must state:
 - Count of conditional threads opened.
-- Instruction: "This PR has N unresolved conditional threads. The HOSWorkerTutelare
+- Instruction: "This PR has N unresolved conditional threads. The hos-worker-hos[bot]
   account must not close or re-push this branch until a human resolves all threads."
 
 **R4.3** The ledger record for the overseer's action on a CONDITIONAL_PROCEED PR must include
@@ -262,7 +262,7 @@ a `conditional_threads_opened` field with the integer count of threads successfu
 | AC-3 | Each thread body contains the four required elements from R1.2, in order |
 | AC-4 | The PR body "Human Review Required Before Merge" section is present AND includes the note directing the reviewer to the threads |
 | AC-5 | The human reviewer account (`HUMAN_REVIEWER`) receives a review request on every CONDITIONAL_PROCEED PR |
-| AC-6 | The worker summary comment is posted; it states the thread count and the no-close/no-push instruction to HOSWorkerTutelare |
+| AC-6 | The worker summary comment is posted; it states the thread count and the no-close/no-push instruction to hos-worker-hos[bot] |
 | AC-7 | The ledger entry includes `conditional_threads_opened` with the correct integer count |
 | AC-8 | A PROCEED-verdict PR opens no conditional threads |
 | AC-9 | Posting N conditional items results in exactly N threads posted; if any `gh pr review` call fails, the orchestrator halts and reports the discrepancy |

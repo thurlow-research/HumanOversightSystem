@@ -12,7 +12,7 @@
 cat PROJECT/hos-coordination.yaml   # must contain: enabled: true
 
 # 2. Activate on this machine (creates ~/.hos/<repo-id>/ACTIVE)
-./scripts/framework/provision_agent_account.sh worker --pat "$WORKER_PAT"
+source <(bootstrap/get_app_token.sh --app worker)  # exports GH_TOKEN + HOS_BOT_LOGIN
 ./scripts/automation/lib/activation.py  # or:
 python3 -c "
 import sys; sys.path.insert(0, '.')
@@ -24,9 +24,9 @@ print(f'Activated: {repo_id}')
 # 3. Set up the cron (as the operator, not as root)
 crontab -e
 # Add:
-# Worker — opens branches/PRs (as HOSWorkerTutelare)
+# Worker — opens branches/PRs (as hos-worker-hos[bot])
 0,30 * * * *  cd /path/to/repo && bash scripts/automation/hos_orchestrator.sh hos-orchestrator --class worker >> /tmp/hos-worker.log 2>&1
-# Overseer — reviews/merges (as HOSOversightTutelare)  
+# Overseer — reviews/merges (as hos-overseer-hos[bot])  
 15,45 * * * *  cd /path/to/repo && bash scripts/automation/hos_orchestrator.sh hos-orchestrator --class overseer >> /tmp/hos-overseer.log 2>&1
 ```
 
@@ -74,7 +74,7 @@ git rm PROJECT/hos-halt && git commit -m "chore: remove hos-halt" && git push
 ## Verify status
 
 ```bash
-./scripts/framework/provision_agent_account.sh doctor
+# verify: echo $HOS_BOT_LOGIN  (should be hos-worker-hos[bot] or hos-overseer-hos[bot])
 python3 -c "
 import sys; sys.path.insert(0, '.')
 from scripts.automation.lib.activation import check_activation, derive_repo_id

@@ -15,7 +15,7 @@ RISK: MEDIUM | CONFIDENCE: HIGH | Change class: additive
 | Question | Decision |
 |---|---|
 | Q1 — CONDITIONAL_PROCEED | Surface conditional items as `## Conditional items` section in PR body; matrix already routes to HUMAN_REQUIRED |
-| Q2 — Bounce routing | Leave PR open; assign to HOSWorkerTutelare; label needs-ai; post bounce comment; convert to draft (HOSOversightTutelare is maintainer — reliable, not best-effort); do NOT close |
+| Q2 — Bounce routing | Leave PR open; assign to hos-worker-hos[bot]; label needs-ai; post bounce comment; convert to draft (hos-overseer-hos[bot] is maintainer — reliable, not best-effort); do NOT close |
 | Q3 — Gate timing | Autonomous sequence: 8=build chain, 8.5=evaluator dispatch, 8.9=deterministic gate, 9=PR |
 | Q4 — Interactive | Gate AND human confirmation, in that order; failing gate → no "open anyway" |
 | Q5 — Failure cap | Verified: record_task_failure() is sole increment path; bounce path never calls it; regression test added |
@@ -82,7 +82,7 @@ Sequence: comment POST → assign POST → label POST → draft-convert PATCH (t
 ## pr-bounced audit event schema
 
 ```json
-{"event":"pr-bounced","pr":318,"cid":"a1b2c3d4","bounce_number":1,"failures":["REQ-W-05","REQ-W-13"],"assigned_to":"HOSWorkerTutelare","repo":"thurlow-research/HOS","timestamp":"2026-06-16T19:04:11Z"}
+{"event":"pr-bounced","pr":318,"cid":"a1b2c3d4","bounce_number":1,"failures":["REQ-W-05","REQ-W-13"],"assigned_to":"hos-worker-hos[bot]","repo":"thurlow-research/HOS","timestamp":"2026-06-16T19:04:11Z"}
 ```
 Appended with compact JSON separators. File created if absent.
 
