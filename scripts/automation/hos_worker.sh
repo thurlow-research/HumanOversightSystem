@@ -89,12 +89,15 @@ TOKEN_FILE="$(mktemp /tmp/hos-token-XXXXXX.env)"
 trap 'rm -f "$TOKEN_FILE"' EXIT
 
 _write_token_file() {
-  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE" 2>/dev/null \
-    || _warn "token write failed — continuing with current token"
+  # #596: no 2>/dev/null — surface write failures; callers handle return value
+  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE" \
+    || { _err "token write failed — credentials may be stale"; return 1; }
 }
 _source_token_file() {
-  # Source fresh token into current (main) shell
-  [[ -s "$TOKEN_FILE" ]] && source "$TOKEN_FILE" 2>/dev/null || true
+  # Source fresh token into current (main) shell; log but continue on failure
+  if [[ -s "$TOKEN_FILE" ]]; then
+    source "$TOKEN_FILE" || _warn "failed to source token file"
+  fi
 }
 _write_token_file  # write initial token
 
