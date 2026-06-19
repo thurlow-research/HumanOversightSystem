@@ -396,7 +396,7 @@ class TestDecideMergeAuthority:
         oversight_verdict="PROCEED",
         changed_files=["src/foo.py"],
         pr_title="fix: something small",
-        pr_author="HOSWorkerTutelare",
+        pr_author="hos-worker-hos[bot]",
         agent_class="overseer",
         overseer_ceiling=RiskTier.LOW,
     )
@@ -453,7 +453,7 @@ class TestDecideMergeAuthority:
     def test_self_approval_blocked(self, tmp_path):
         with _patch_gate(True):
             result = decide_merge_authority(
-                **{**self.BASE, "pr_author": "HOSOversightTutelare"},
+                **{**self.BASE, "pr_author": "hos-overseer-hos[bot]"},
                 repo_root=str(tmp_path),
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED

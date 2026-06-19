@@ -33,7 +33,7 @@ Example: "Run /hos-review-pr on PR #395."
 
 When invoked, the overseer should:
 
-1. **Identity check**: verify `gh api user --jq .login` returns `HOSOversightTutelare`
+1. **Identity check**: verify `$HOS_BOT_LOGIN` equals `hos-overseer-hos[bot]` (GitHub App tokens cannot call `GET /user` — use the env var set by `bootstrap/get_app_token.sh --app overseer`)
 2. Read the PR: `gh pr view <number>`
 3. Check for `panel-context.md`: `.claudetmp/oversight/step<N>-panel-context.md`
 4. If panel hasn't run: run `./scripts/run_panel.sh <number>`

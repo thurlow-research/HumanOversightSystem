@@ -56,9 +56,23 @@ echo "=== Validation stamp check ==="
 echo ""
 
 # ── 1. Check stamp exists and is committed ────────────────────────────────────
-# Temporary: stamps gitignored (#422) — skip check instead of failing
+# Temporary bypass: stamps gitignored (#422) — skip check instead of failing.
+# This bypass MUST be removed by STAMP_BYPASS_DISABLED_UNTIL or #552 redesign,
+# whichever comes first. After that date CI exits 1 (FAIL) to force resolution.
+STAMP_BYPASS_DISABLED_UNTIL="2026-12-31"
+_bypass_expiry=$(date -d "$STAMP_BYPASS_DISABLED_UNTIL" +%s 2>/dev/null \
+    || python3 -c "import time,calendar; print(calendar.timegm(time.strptime('$STAMP_BYPASS_DISABLED_UNTIL','%Y-%m-%d')))" 2>/dev/null || echo 0)
+_now=$(date -u +%s)
+if [[ "$_now" -gt "$_bypass_expiry" ]]; then
+    echo "════════════════════════════════════════════"
+    echo "  FAIL: Stamp bypass EXPIRED on $STAMP_BYPASS_DISABLED_UNTIL."
+    echo "  The gitignore bypass for validation stamps must be resolved."
+    echo "  Implement #552 (content-hash stamps) or re-authorize with a new date."
+    echo "════════════════════════════════════════════"
+    exit 1
+fi
 if [[ ! -f "$STAMP_FILE" ]] || ! git ls-files --error-unmatch "$STAMP_FILE" &>/dev/null 2>&1; then
-    echo "  SKIP: Stamp gitignored per #422 — check skipped until redesigned."
+    echo "  SKIP: Stamp gitignored per #422 — check skipped (bypass expires $STAMP_BYPASS_DISABLED_UNTIL)."
     exit 0
 fi
 

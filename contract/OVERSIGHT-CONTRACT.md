@@ -425,7 +425,7 @@ The two non-merge dispositions carry structured rationale (SPEC-378). The `reaso
   "cid": "<worker correlation id>",
   "bounce_number": "<integer>",
   "failures": ["<check_id>", "..."],
-  "assigned_to": "<HOSWorkerTutelare account>",
+  "assigned_to": "<hos-worker-hos[bot]>",
   "repo": "<owner/repo>",
   "timestamp": "<ISO-8601>",
   "reason_category": "REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER",
