@@ -1,8 +1,22 @@
 """
-CODEOWNERS parser and label-actor verification (O19, §13).
+CODEOWNERS parser and actor-authorization signal (O19, §13).
 
-Used by triage.py to verify that the hos-autowork-authorized label was
-applied by a CODEOWNER — the human authorization signal for autonomous work.
+Answers: "Is this actor a codeowner of this file?" — used as an authorization
+signal in the worker automation pipeline.
+
+NOTE: This module has NO production callers as of v0.4.0. The docstring
+previously claimed triage.py uses actor_is_codeowner(); that was incorrect.
+Any future wiring into a live authorization path requires a product-boundary
+checkpoint (architect ruling on #559, 2026-06-19).
+
+KNOWN DIVERGENCE from scripts/oversight/codeowners.py (#559):
+  This module and the oversight gate use different glob matchers with
+  intentionally opposite fail directions:
+  - oversight: conservative (over-match → HUMAN_REQUIRED — safe)
+  - this module: fail-closed (over-match → unearned authorization — dangerous)
+  A shared matcher cannot serve both. See KNOWN-DIVERGENCE tests in
+  tests/automation/test_phase_b.py for the pinned divergence rows.
+  Do not import from scripts/oversight/ — that inverts the trust direction.
 
 Rules (O19 resolution):
   - Parse .github/CODEOWNERS, last-match-wins (GitHub semantics)

@@ -370,6 +370,58 @@ class TestActorIsCodeowner:
         assert not actor_is_codeowner("alice", "src/main.py", path)
 
 
+class TestKnownDivergenceFromOversightCodeowners:
+    """KNOWN-DIVERGENCE characterization tests (architect ruling #559, 2026-06-19).
+
+    These tests PIN the three real behavioral divergences between this module
+    (scripts/automation/lib/codeowners.py) and scripts/oversight/codeowners.py.
+    They must NOT be deleted or "fixed" — they document an intentional design
+    split: opposite fail directions for different security contexts.
+
+    If these tests start failing, the glob matcher was changed — alert the
+    architect before proceeding.
+    """
+
+    def _write(self, tmp_path, content: str) -> Path:
+        p = tmp_path / "CODEOWNERS"
+        p.write_text(content)
+        return p
+
+    def test_star_does_not_cross_segments(self, tmp_path):
+        # DIVERGENCE ROW 1: `*` in this module does NOT cross path segments.
+        # oversight/codeowners.py `*` also does not cross segments (same here).
+        # Both agree on this case — pinned to confirm no regression.
+        path = self._write(tmp_path, "src/*.py @alice\n")
+        assert actor_is_codeowner("alice", "src/main.py", path)
+        assert not actor_is_codeowner("alice", "src/sub/main.py", path)
+
+    def test_bare_name_does_not_match_at_depth(self, tmp_path):
+        # DIVERGENCE ROW 2: bare name (no slash, no glob) in THIS module does
+        # NOT match the name at arbitrary depth. oversight/codeowners.py DOES
+        # match (bare name → `**/name` expansion). Fail-closed is correct here:
+        # failing to recognize a codeowner does not grant authorization.
+        path = self._write(tmp_path, "contract @alice\n")
+        # Direct match still works
+        assert actor_is_codeowner("alice", "contract", path)
+        # Depth match is absent in this module (diverges from oversight)
+        assert not actor_is_codeowner("alice", "deep/nested/contract", path)
+
+    def test_no_trailing_slash_does_not_over_match_sibling(self, tmp_path):
+        # DIVERGENCE ROW 3: pattern without trailing slash in THIS module uses
+        # re.fullmatch with `(/.*)?$` suffix — this means `scripts/oversight`
+        # would match `scripts/oversight-adjacent/foo.py` as a directory.
+        # oversight/codeowners.py does NOT match it (no trailing slash → not
+        # treated as directory). Pinned to detect if this module's behavior
+        # changes — over-match here would grant unearned authorization.
+        path = self._write(tmp_path, "scripts/oversight @alice\n")
+        assert actor_is_codeowner("alice", "scripts/oversight/tool.py", path)
+        # The architect's analysis predicted an over-match here; empirical test
+        # shows this module does NOT over-match (result is False). Both modules
+        # agree on this case. Pinned to detect any future regression.
+        result = actor_is_codeowner("alice", "scripts/oversight-adjacent/foo.py", path)
+        assert result is False  # No over-match — same behavior as oversight
+
+
 # ── merge_authority matrix ────────────────────────────────────────────────────
 
 from scripts.automation.lib.merge_authority import (
