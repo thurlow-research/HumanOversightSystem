@@ -89,6 +89,8 @@ if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
   _err "bootstrap/get_app_token.sh not found at $BOOTSTRAP_SCRIPT — run hos_bootstrap.sh first"
   exit 1
 fi
+# #595: unset before source to prevent caller-env injection into identity guard
+unset HOS_BOT_LOGIN
 # shellcheck source=../../bootstrap/get_app_token.sh
 source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
   || { _err "Failed to obtain GitHub App token for --class $AGENT_CLASS"; exit 1; }

@@ -67,10 +67,13 @@ if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
   exit 1
 fi
 _refresh_app_token() {
-  source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") 2>/dev/null \
-    || _warn "token refresh failed — GH_TOKEN may be stale"
+  # #595: unset before source to prevent caller-env injection into identity guard
+  unset HOS_BOT_LOGIN
+  # #594: no 2>/dev/null — surface renewal failures loudly
+  source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
+    || { _err "token refresh failed — cannot continue with expired credentials"; return 1; }
 }
-_refresh_app_token
+_refresh_app_token || exit 1
 
 EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
 if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
@@ -78,6 +81,22 @@ if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
   exit 1
 fi
 _log "authenticated as $HOS_BOT_LOGIN"
+
+# #593: token refresh in heartbeat subshell cannot propagate to parent process.
+# Refresh must happen in the main process. We write the token to a temp file so
+# the parent can re-source it at each refresh interval.
+TOKEN_FILE="$(mktemp /tmp/hos-token-XXXXXX.env)"
+trap 'rm -f "$TOKEN_FILE"' EXIT
+
+_write_token_file() {
+  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE" 2>/dev/null \
+    || _warn "token write failed — continuing with current token"
+}
+_source_token_file() {
+  # Source fresh token into current (main) shell
+  [[ -s "$TOKEN_FILE" ]] && source "$TOKEN_FILE" 2>/dev/null || true
+}
+_write_token_file  # write initial token
 
 # ── Halt / activation check helper ───────────────────────────────────────────
 _check_still_active() {
@@ -118,7 +137,8 @@ _start_heartbeat() {
   (
     while true; do
       sleep 900  # 15 minutes
-      _refresh_app_token  # renew before the 1-hour token expiry (#590)
+      # #593: write fresh token to shared file; parent sources it before API calls
+      _write_token_file
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
       _py "
 import sys
