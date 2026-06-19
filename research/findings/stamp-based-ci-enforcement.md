@@ -98,8 +98,24 @@ CI check runs in ~6 seconds. No AI models invoked. The entire check is a git log
 
 ---
 
+## Known limitation — concurrent PR conflict cascade
+
+The timestamp-based anchoring described above fails under concurrent PR workflows.
+When multiple branches simultaneously commit stamps and one merges to main, all
+other branches' stamps are invalidated by rebase (rebased commit timestamps become
+newer than the stamp). This required 15+ manual conflict resolutions during v0.4.0.
+
+**Temp workaround (active):** stamp directory gitignored; CI check skips when stamp
+untracked. Tracked by time-box issue #561 (expires 2026-12-31).
+
+**Redesign (#552, v0.5.0):** Switch to content-hash-anchored stamps — stamp filename
+= SHA256 of validated file contents. Eliminates both the conflict and the rebase
+invalidation. See `validation-stamp-merge-conflict-cascade.md` for full analysis
+and chosen design.
+
 ## Related findings
 
 - `tooling-drift-in-validation-pipelines.md` — what happens when the tools the stamp depends on change their APIs
 - `self-governance-recursion.md` — the framework governing its own development, of which this CI check is a component
 - `cross-vendor-review-finds-real-bugs.md` — the local validation phases that the stamp represents
+- `validation-stamp-merge-conflict-cascade.md` — cascade problem statement, design options, and chosen approach
