@@ -81,6 +81,27 @@ fi
 
 _log "starting class=$AGENT_CLASS"
 
+# ── GitHub App auth (#590) ────────────────────────────────────────────────────
+# Must run before any GitHub API call. Exports GH_TOKEN (installation token)
+# and HOS_BOT_LOGIN (e.g. hos-worker-hos[bot]) into this shell.
+BOOTSTRAP_SCRIPT="$REPO_ROOT/bootstrap/get_app_token.sh"
+if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
+  _err "bootstrap/get_app_token.sh not found at $BOOTSTRAP_SCRIPT — run hos_bootstrap.sh first"
+  exit 1
+fi
+# #595: unset before source to prevent caller-env injection into identity guard
+unset HOS_BOT_LOGIN
+# shellcheck source=../../bootstrap/get_app_token.sh
+source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
+  || { _err "Failed to obtain GitHub App token for --class $AGENT_CLASS"; exit 1; }
+
+EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
+if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
+  _err "Identity guard failed: HOS_BOT_LOGIN='$HOS_BOT_LOGIN' (expected '$EXPECTED_LOGIN')"
+  exit 1
+fi
+_log "authenticated as $HOS_BOT_LOGIN"
+
 # ── Python helper ─────────────────────────────────────────────────────────────
 PYTHON="${HOS_PYTHON:-python3}"
 _py() {

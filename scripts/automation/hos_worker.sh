@@ -58,6 +58,49 @@ done
 
 _log "starting class=$AGENT_CLASS owner=$OWNER repo=$REPO_NAME issue=${ISSUE_NUMBER:-n/a} cid=${CID:-tbd}"
 
+# ── GitHub App auth (#590) ────────────────────────────────────────────────────
+# hos_worker.sh is spawned detached by hos_orchestrator.sh and needs its own
+# token. Tokens expire after 1 hour; the heartbeat loop refreshes before expiry.
+BOOTSTRAP_SCRIPT="$REPO_ROOT/bootstrap/get_app_token.sh"
+if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
+  _err "bootstrap/get_app_token.sh not found — cannot authenticate as bot"
+  exit 1
+fi
+_refresh_app_token() {
+  # #595: unset before source to prevent caller-env injection into identity guard
+  unset HOS_BOT_LOGIN
+  # #594: no 2>/dev/null — surface renewal failures loudly
+  source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
+    || { _err "token refresh failed — cannot continue with expired credentials"; return 1; }
+}
+_refresh_app_token || exit 1
+
+EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
+if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
+  _err "Identity guard: HOS_BOT_LOGIN='$HOS_BOT_LOGIN' (expected '$EXPECTED_LOGIN') — exiting"
+  exit 1
+fi
+_log "authenticated as $HOS_BOT_LOGIN"
+
+# #593: token refresh in heartbeat subshell cannot propagate to parent process.
+# Refresh must happen in the main process. We write the token to a temp file so
+# the parent can re-source it at each refresh interval.
+TOKEN_FILE="$(mktemp /tmp/hos-token-XXXXXX.env)"
+trap 'rm -f "$TOKEN_FILE"' EXIT
+
+_write_token_file() {
+  # #596: no 2>/dev/null — surface write failures; callers handle return value
+  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE" \
+    || { _err "token write failed — credentials may be stale"; return 1; }
+}
+_source_token_file() {
+  # Source fresh token into parent shell. #597: callers need to handle failure.
+  if [[ -s "$TOKEN_FILE" ]]; then
+    source "$TOKEN_FILE" || { _warn "failed to source token file — GH_TOKEN may be stale"; return 1; }
+  fi
+}
+_write_token_file  # write initial token
+
 # ── Halt / activation check helper ───────────────────────────────────────────
 _check_still_active() {
   # Returns 0 if active, 1 if should stop
@@ -97,6 +140,8 @@ _start_heartbeat() {
   (
     while true; do
       sleep 900  # 15 minutes
+      # #593: write fresh token to shared file; parent sources it before API calls
+      _write_token_file
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
       _py "
 import sys
@@ -176,6 +221,8 @@ print(json.dumps({'title': issue.get('title',''), 'body': issue.get('body',''),
   BODY=$(printf '%s' "$ISSUE_DATA"  | "$PYTHON" -c "import sys,json; print(json.load(sys.stdin)['body'][:2000])" 2>/dev/null || echo "")
   LABELS=$(printf '%s' "$ISSUE_DATA" | "$PYTHON" -c "import sys,json; print(','.join(json.load(sys.stdin)['labels']))" 2>/dev/null || echo "")
 
+  # Refresh token from file written by heartbeat (#597)
+  _source_token_file || true
   # Triage
   _log "triage"
   TRIAGE_RESULT=$(_py "
@@ -275,6 +322,8 @@ release_claim('$OWNER', '$REPO_NAME', $ISSUE_NUMBER, '$CID', '$INSTANCE_ID', '$W
   fi
 
   # Build chain — run the HOS oversight pipeline
+  # Refresh token — heartbeat may have written a newer one (#597)
+  _source_token_file || true
   _log "build chain: run_validators.sh + risk-assessor"
   BRANCH="hos/auto/$CID"
 
@@ -354,6 +403,8 @@ print(json.dumps({'title': pr.get('title',''), 'author': pr.get('user',{}).get('
   CHANGED=$(printf '%s' "$PR_DATA"    | "$PYTHON" -c "import sys,json; print(' '.join(json.load(sys.stdin).get('changed_files',[])))" 2>/dev/null || echo "")
 
   # Merge authority decision (R9.1.1: re-detect gate immediately before merge)
+  # Refresh token before merge decision — token must be current (#597)
+  _source_token_file || true
   _log "merge authority decision"
   DECISION=$(_py "
 import sys
