@@ -53,6 +53,10 @@ case "$APP_ROLE" in
     *)  err "--app must be 'worker' or 'overseer'" ;;
 esac
 
+# ── Input validation (#545, #548) ─────────────────────────────────────────────
+[[ -n "${HOS_REPO_OWNER:-}" ]] || err "HOS_REPO_OWNER not set in apps.env (e.g. HOS_REPO_OWNER=thurlow-research)"
+[[ "$APP_ID" =~ ^[0-9]+$ ]]   || err "APP_ID must be numeric, got: $APP_ID"
+[[ "$PEM_PATH" == "${HOME}/.config/hos/"* ]] || err "PEM_PATH must be under ~/.config/hos/, got: $PEM_PATH"
 [[ -f "$PEM_PATH" ]] || err "PEM not found: $PEM_PATH"
 
 # ── JWT generation (RS256 via openssl — no Python crypto dep) ─────────────────
@@ -63,7 +67,8 @@ generate_jwt() {
 
     header=$(printf '{"alg":"RS256","typ":"JWT"}' \
         | openssl base64 -A | tr '+/' '-_' | tr -d '=')
-    payload=$(printf '{"iat":%d,"exp":%d,"iss":%d}' \
+    # GitHub requires iss as a string, not an integer (#546)
+    payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' \
         $((now - 60)) $((now + 600)) "$app_id" \
         | openssl base64 -A | tr '+/' '-_' | tr -d '=')
 
@@ -87,16 +92,15 @@ INSTALL_RESPONSE=$(curl -sf \
     "https://api.github.com/app/installations") \
     || err "Failed to reach /app/installations — check App ID and PEM"
 
-INSTALL_ID=$(python3 - <<EOF
+# Pipe via stdin to avoid shell-expanding untrusted API JSON into a string literal (#544)
+INSTALL_ID=$(printf '%s' "$INSTALL_RESPONSE" | python3 -c "
 import json, sys
-installs = json.loads("""${INSTALL_RESPONSE}""")
-for i in installs:
-    if i.get("account", {}).get("login") == "${HOS_REPO_OWNER}":
-        print(i["id"])
+owner = '${HOS_REPO_OWNER}'
+for i in json.loads(sys.stdin.read()):
+    if i.get('account', {}).get('login') == owner:
+        print(i['id'])
         sys.exit(0)
-print("")
-EOF
-)
+")
 
 [[ -n "$INSTALL_ID" ]] || err "No installation found for ${HOS_REPO_OWNER} — install the App on the repo at github.com/settings/apps"
 
@@ -109,13 +113,14 @@ TOKEN_RESPONSE=$(curl -sf -X POST \
     "https://api.github.com/app/installations/${INSTALL_ID}/access_tokens") \
     || err "Failed to get installation token"
 
-TOKEN=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d['token'])" <<< "$TOKEN_RESPONSE")
-EXPIRES=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('expires_at','unknown'))" <<< "$TOKEN_RESPONSE")
+TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d['token'])")
+EXPIRES=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('expires_at','unknown'))")
+TOKEN_RESPONSE=""  # clear raw response — contains token (#549)
 
 [[ -n "$TOKEN" ]] || err "Empty token in response"
 
 ok "${APP_ROLE} token obtained (expires: ${EXPIRES})"
 
 # ── Output (sourced into caller's shell) ──────────────────────────────────────
-printf 'export GH_TOKEN=%s\n'      "$TOKEN"
-printf 'export HOS_BOT_LOGIN=%s\n' "$BOT_LOGIN"
+printf "export GH_TOKEN='%s'\n"      "$TOKEN"
+printf "export HOS_BOT_LOGIN='%s'\n" "$BOT_LOGIN"
