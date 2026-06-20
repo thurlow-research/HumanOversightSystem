@@ -38,8 +38,9 @@ done
 [[ -f "$APPS_ENV" ]] || err "~/.config/hos/apps.env not found — run hos_bootstrap.sh first"
 
 # ── #633: verify apps.env permissions before sourcing ─────────────────────────
-_env_mode=$(stat -f "%OLp" "$APPS_ENV" 2>/dev/null || stat -c "%a" "$APPS_ENV" 2>/dev/null || echo "unknown")
-if [[ "$_env_mode" != "600" && "$_env_mode" != "400" && "$_env_mode" != "unknown" ]]; then
+# #645: fail-closed — if stat fails (no stat available), error rather than allow unverified permissions
+_env_mode=$(stat -f "%OLp" "$APPS_ENV" 2>/dev/null || stat -c "%a" "$APPS_ENV" 2>/dev/null)     || err "Cannot verify apps.env permissions — stat unavailable. Manually confirm: chmod 600 $APPS_ENV"
+if [[ "$_env_mode" != "600" && "$_env_mode" != "400" ]]; then
     err "apps.env has permissions $_env_mode (expected 600). Run: chmod 600 $APPS_ENV"
 fi
 
@@ -64,7 +65,8 @@ esac
 [[ -n "${HOS_REPO_OWNER:-}" ]] || err "HOS_REPO_OWNER not set in apps.env (e.g. HOS_REPO_OWNER=thurlow-research)"
 [[ "$APP_ID" =~ ^[0-9]+$ ]]   || err "APP_ID must be numeric, got: $APP_ID"
 # #633: resolve symlinks before prefix check to block path traversal
-_resolved_pem=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$PEM_PATH" 2>/dev/null || echo "$PEM_PATH")
+# #644: fail-closed — if python3 unavailable we cannot safely resolve symlinks
+_resolved_pem=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$PEM_PATH")     || err "python3 required to resolve PEM_PATH symlinks safely (CWE-59). Install python3 or verify $PEM_PATH is not a symlink."
 [[ "$_resolved_pem" == "${HOME}/.config/hos/"* ]] || err "PEM_PATH must resolve under ~/.config/hos/, got: $_resolved_pem"
 [[ -f "$PEM_PATH" ]] || err "PEM not found: $PEM_PATH"
 
