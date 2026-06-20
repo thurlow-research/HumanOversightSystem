@@ -501,7 +501,7 @@ ${extra_instructions}
 Review this diff for:
 1. Logic errors, off-by-one errors, incorrect conditions, missing edge cases
 2. Spec adherence gaps — requirements that appear unimplemented or wrong
-3. Django-specific risks: race conditions (missing select_for_update), N+1 queries, cross-tenant data leaks
+3. Stack-specific risks: race conditions, N+1 queries, cross-tenant data leaks (see PROJECT_STACK in config.sh)
 4. Missing error handling required by the spec
 
 Do NOT comment on style, formatting, or repeat obvious design decisions.
@@ -597,7 +597,7 @@ Probe for:
 - Input validation gaps (boundary values, nulls, type coercion)
 - Race conditions in concurrent booking scenarios
 - Authentication bypass paths
-- CSRF on state-changing HTMX endpoints
+- CSRF on state-changing endpoints
 - Injection: SQL, template, shell
 - TOTP replay or bypass
 
