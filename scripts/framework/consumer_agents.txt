@@ -17,6 +17,9 @@
 # One agent slug per line (no .md). Blank lines and `#` comments ignored.
 
 # ── Oversight layer ──────────────────────────────────────────────────────────
+# Role-identity agents (required for cron personality and validate_setup.sh — #652)
+worker
+overseer
 risk-assessor
 dep-mapper
 risk-historian

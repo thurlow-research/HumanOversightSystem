@@ -1545,6 +1545,16 @@ else
   dry_run "Would sync $HOS_SOURCE/scripts/oversight/ → $TARGET_REPO/scripts/oversight/"
 fi
 
+# ── bootstrap/ — auth scripts and setup tooling (#653) ───────────────────────
+echo ""
+info "bootstrap/ — auth and setup scripts"
+run mkdir -p "$TARGET_REPO/bootstrap"
+cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/bootstrap/get_app_token.sh"   "bootstrap/get_app_token.sh (GitHub App auth)"
+# validate_setup.sh: install if present (added v0.4.0)
+[[ -f "$HOS_SOURCE/bootstrap/validate_setup.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/validate_setup.sh"     "$TARGET_REPO/bootstrap/validate_setup.sh"     "bootstrap/validate_setup.sh (setup health check)" || true
+# apps.env.template: install if present so consumers have a discoverable starting point
+[[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
+
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
 echo ""
 info "Core governance documents"
