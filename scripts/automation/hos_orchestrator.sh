@@ -221,7 +221,7 @@ from scripts.automation.lib.github import _run_gh
 import subprocess, re
 remote = subprocess.run(['git', '-C', '$REPO_ROOT', 'remote', 'get-url', 'origin'],
                        capture_output=True, text=True).stdout.strip()
-m = re.match(r'(?:https://github\.com/|git@github\.com:)([^/]+)/(.+?)(?:\.git)?$$', remote, re.I)
+m = re.match(r'(?:https://github\.com/|git@github\.com:)([^/]+)/(.+?)(?:\.git)?\$', remote, re.I)
 if not m: print('[]'); sys.exit(0)
 owner, repo = m.group(1).lower(), m.group(2).lower()
 prs = _run_gh([f'/repos/{owner}/{repo}/pulls?state=open&per_page=20']) or []
@@ -281,8 +281,8 @@ print(json.dumps(candidates))
     exit 0
   fi
 
-  # Spawn one overseer worker per PR
-  printf '%s' "$CANDIDATES_JSON" | "$PYTHON" - <<'PYEOF'
+  # Spawn one overseer worker per PR — pass SCRIPT_DIR so os.path.join resolves correctly (#codex4)
+  printf '%s' "$CANDIDATES_JSON" | SCRIPT_DIR="$SCRIPT_DIR" "$PYTHON" - <<'PYEOF'
 import sys, json, subprocess, os
 candidates = json.load(sys.stdin)
 script = os.path.join(os.environ.get('SCRIPT_DIR', '.'), 'hos_worker.sh')
@@ -342,9 +342,9 @@ print(json.dumps([
     exit 0
   fi
 
-  # Spawn one worker per candidate
+  # Spawn one worker per candidate — export CUSTOMER so worker's BudgetGate gets it (#codex3)
   SCRIPT_DIR_EXPORT="$SCRIPT_DIR"
-  printf '%s' "$CANDIDATES_JSON" | SCRIPT_DIR="$SCRIPT_DIR_EXPORT" "$PYTHON" - <<PYEOF
+  printf '%s' "$CANDIDATES_JSON" | SCRIPT_DIR="$SCRIPT_DIR_EXPORT" CUSTOMER="$CUSTOMER" "$PYTHON" - <<PYEOF
 import sys, json, subprocess, os
 candidates = json.load(sys.stdin)
 script = os.path.join(os.environ.get('SCRIPT_DIR', '.'), 'hos_worker.sh')
