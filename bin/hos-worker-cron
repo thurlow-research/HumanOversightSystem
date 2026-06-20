@@ -38,10 +38,17 @@ if ! source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker 2>/dev/null);
   exit 0
 fi
 
-if [[ "$HOS_BOT_LOGIN" != "hos-worker-hos[bot]" ]]; then
-  echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"
-  _audit cycle-preflight-fail "reason=identity_guard_$HOS_BOT_LOGIN"
-  exit 0
+# #699: HOS_EXPECTED_BOT_LOGIN is exported by get_app_token.sh (= BOT_LOGIN from apps.env)
+# Verifies auth produced the expected bot identity, without needing a separate env var
+if [[ -z "${HOS_EXPECTED_BOT_LOGIN:-}" ]]; then
+  echo "$LOG_PREFIX IDENTITY GUARD FAILED: HOS_EXPECTED_BOT_LOGIN not set (get_app_token.sh failed?)"
+  _audit cycle-preflight-fail "reason=identity_guard_expected_unset"
+  exit 1
+fi
+if [[ "$HOS_BOT_LOGIN" != "$HOS_EXPECTED_BOT_LOGIN" ]]; then
+  echo "$LOG_PREFIX IDENTITY GUARD FAILED: got=$HOS_BOT_LOGIN expected=$HOS_EXPECTED_BOT_LOGIN"
+  _audit cycle-preflight-fail "reason=identity_guard_mismatch"
+  exit 1
 fi
 
 # Log cycle start
