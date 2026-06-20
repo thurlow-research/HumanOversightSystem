@@ -13,16 +13,11 @@
 set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
 LOG_PREFIX="[hos-worker-cron] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-AUDIT_LOG="$REPO_ROOT/audit/oversight-log.jsonl"
-NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-# ── Audit helper ──────────────────────────────────────────────────────────────
+# ── Audit helper — delegates to cycle_log.py for correct JSON escaping (#658) ──
 _audit() {
-  local event="$1" extra="${2:-}"
-  local entry="{\"event\":\"$event\",\"role\":\"worker\",\"timestamp\":\"$NOW\""
-  [[ -n "$extra" ]] && entry="$entry,$extra"
-  entry="$entry}"
-  echo "$entry" >> "$AUDIT_LOG" 2>/dev/null || true
+  local event="$1"; shift
+  (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
 # Jitter — spread runs within the window to avoid thundering herd
@@ -32,25 +27,25 @@ sleep $((RANDOM % 60))
 export HOS_REQUIRE_PREFLIGHT=1
 if ! bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet 2>/dev/null; then
   echo "$LOG_PREFIX PREFLIGHT FAILED — not starting loop"
-  _audit "cycle-preflight-fail" "\"reason\":\"validate_setup failed\""
+  _audit cycle-preflight-fail reason=validate_setup_failed
   exit 0
 fi
 
 # Auth
 if ! source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker 2>/dev/null); then
   echo "$LOG_PREFIX AUTH FAILED — not starting loop"
-  _audit "cycle-preflight-fail" "\"reason\":\"auth failed\""
+  _audit cycle-preflight-fail reason=auth_failed
   exit 0
 fi
 
 if [[ "$HOS_BOT_LOGIN" != "hos-worker-hos[bot]" ]]; then
   echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"
-  _audit "cycle-preflight-fail" "\"reason\":\"identity guard: $HOS_BOT_LOGIN\""
+  _audit cycle-preflight-fail "reason=identity_guard_$HOS_BOT_LOGIN"
   exit 0
 fi
 
 # Log cycle start
-_audit "cycle-start" "\"bot\":\"$HOS_BOT_LOGIN\""
+_audit cycle-start "bot=$HOS_BOT_LOGIN"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting loop"
 
 # Run one LOOP iteration — Claude logs cycle-stop/pick/pr-opened from within the session
