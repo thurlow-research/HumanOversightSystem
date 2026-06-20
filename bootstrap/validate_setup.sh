@@ -72,7 +72,7 @@ fi
 REMOTE=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || echo "")
 if [[ -z "$REMOTE" ]]; then
   fail "No git remote configured — is this a proper clone?"
-elif [[ -n "${HOS_EXPECTED_REMOTE:-}" ]] && ! echo "$REMOTE" | grep -q "$HOS_EXPECTED_REMOTE"; then
+elif [[ -n "${HOS_EXPECTED_REMOTE:-}" ]] && ! echo "$REMOTE" | grep -qF -- "$HOS_EXPECTED_REMOTE"; then
   echo "  WARN: remote is $REMOTE (expected $HOS_EXPECTED_REMOTE)" >&2
   ok "Git remote: $REMOTE (no match against HOS_EXPECTED_REMOTE)"
 else
