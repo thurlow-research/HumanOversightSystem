@@ -42,6 +42,7 @@ fi
 # ── Argument forwarding ───────────────────────────────────────────────────────
 # All arguments are forwarded verbatim to each gate script.
 # Each gate decides independently how to interpret them.
+# bash 3.2: "${arr[@]}" on empty array triggers unbound under set -u; use safe expansion
 GATE_ARGS=("$@")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ for script in "${GATE_SCRIPTS[@]}"; do
 
     # Run the gate; capture exit code without aborting the runner.
     gate_rc=0
-    bash "$script" "${GATE_ARGS[@]}" || gate_rc=$?
+    bash "$script" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"} || gate_rc=$?
 
     # A failed non-suspended gate causes the overall runner to fail.
     if [[ $gate_rc -ne 0 && "$suspended" == "false" ]]; then

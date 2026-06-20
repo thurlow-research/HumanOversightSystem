@@ -91,9 +91,15 @@ if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
 fi
 # #595: unset before source to prevent caller-env injection into identity guard
 unset HOS_BOT_LOGIN
+# Use temp-file pattern: source <(...) silently discards producer exit code (bash semantics).
+# Writing to a file lets us check get_app_token.sh's real exit status first.
+_app_token_tmp="$(mktemp)"
+trap 'rm -f "$_app_token_tmp"' EXIT
+"$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$_app_token_tmp" \
+  || { _err "Failed to obtain GitHub App token for --class $AGENT_CLASS"; rm -f "$_app_token_tmp"; exit 1; }
 # shellcheck source=../../bootstrap/get_app_token.sh
-source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
-  || { _err "Failed to obtain GitHub App token for --class $AGENT_CLASS"; exit 1; }
+source "$_app_token_tmp"
+rm -f "$_app_token_tmp"; unset _app_token_tmp
 
 EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
 if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then

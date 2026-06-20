@@ -69,9 +69,13 @@ fi
 _refresh_app_token() {
   # #595: unset before source to prevent caller-env injection into identity guard
   unset HOS_BOT_LOGIN
-  # #594: no 2>/dev/null — surface renewal failures loudly
-  source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
-    || { _err "token refresh failed — cannot continue with expired credentials"; return 1; }
+  # Use temp-file pattern: source <(...) silently discards producer exit code (bash semantics).
+  # This ensures get_app_token.sh failures are detected before sourcing.
+  local _tmp; _tmp="$(mktemp)"
+  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$_tmp" \
+    || { _err "token refresh failed — cannot continue with expired credentials"; rm -f "$_tmp"; return 1; }
+  source "$_tmp"
+  rm -f "$_tmp"
 }
 # #641: retry on transient network failure at startup (3 attempts, exponential backoff)
 for _attempt in 1 2 3; do
