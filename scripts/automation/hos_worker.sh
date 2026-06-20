@@ -218,13 +218,13 @@ print(state.name)
   INSTANCE_ID=$(_py "import uuid; print(str(uuid.uuid4()))")
   _log "claiming issue #$ISSUE_NUMBER"
 
-  # Check failure cap
+  # Check failure cap — #678: fail-closed (crash → treat as poisoned, skip this CID)
   POISONED=$(_py "
 import sys
 sys.path.insert(0, '$REPO_ROOT')
 from scripts.automation.lib.breakers import is_poisoned
 print('1' if is_poisoned('$CID', repo_root='$REPO_ROOT') else '0')
-") || POISONED="0"
+") || POISONED="1"
   if [ "$POISONED" = "1" ]; then
     _warn "cid=$CID has exceeded failure cap — abandoning"
     exit 0
@@ -336,6 +336,7 @@ signals = EstimationSignals(triage_class=os.environ['HOS_TRIAGE_CLASS'],
 print(estimate_tokens(signals, '$CUSTOMER', '$REPO_ROOT'))
 " 2>/dev/null) || ESTIMATE="40000"
 
+  # #678: fail-closed — gate crash blocks spawn, doesn't silently allow it
   BUDGET_OK=$(_py "
 import sys
 sys.path.insert(0, '$REPO_ROOT')
@@ -343,7 +344,7 @@ from scripts.automation.lib.budget import BudgetGate
 gate = BudgetGate(150000, 1500000, '$CUSTOMER', '$REPO_ROOT')
 dec = gate.evaluate('spawn', int('$ESTIMATE'))
 print('1' if dec.allowed else '0')
-" 2>/dev/null) || BUDGET_OK="1"
+" 2>/dev/null) || BUDGET_OK="0"
 
   if [ "$BUDGET_OK" != "1" ]; then
     _log "budget gate blocked — creating permission request"
