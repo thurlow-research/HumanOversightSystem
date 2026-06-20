@@ -391,9 +391,9 @@ if [[ -n "$STEP" ]]; then
     mkdir -p "$_artifact_dir"
     _artifact_path="$_artifact_dir/summary.json"
 
-    # Atomically write the committed artifact (temp-then-mv — prevents partial reads)
+    # Atomically write: Python writes to tmp, then mv into final path (#725)
     _artifact_tmp="$(mktemp "${_artifact_dir}/summary.XXXXXX")"
-    "$PYTHON" - "$OUT_DIR/summary.json" "$_artifact_path" \
+    "$PYTHON" - "$OUT_DIR/summary.json" "$_artifact_tmp" \
         "$_committed_head" "$_head_sha_source" "$STEP" <<'PYEOF'
 import json, sys, datetime
 src, dst, head_sha, head_sha_source, step = sys.argv[1:]
@@ -408,6 +408,6 @@ artifact = {
 }
 open(dst, "w").write(json.dumps(artifact, indent=2))
 PYEOF
-    rm -f "$_artifact_tmp"
+    mv "$_artifact_tmp" "$_artifact_path"
     echo "Committed artifact: $_artifact_path (head_sha_source=$_head_sha_source)"
 fi
