@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# bin/hos-overseer-cron — cron overseer launcher
+#
+# Preflight + auth + one oversight cycle via claude --print, then exits.
+#
+# Cron entry (overseer at :07/:22/:37/:52, offset from worker):
+#   7,22,37,52 * * * * /path/to/repo/bin/hos-overseer-cron
+
+set -euo pipefail
+REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+LOG_PREFIX="[hos-overseer-cron] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+sleep $((RANDOM % 60))
+
+export HOS_REQUIRE_PREFLIGHT=1
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet \
+  || { echo "$LOG_PREFIX PREFLIGHT FAILED — not starting"; exit 0; }
+
+source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app overseer 2>/dev/null) \
+  || { echo "$LOG_PREFIX AUTH FAILED — not starting"; exit 0; }
+[[ "$HOS_BOT_LOGIN" == "hos-overseer-hos[bot]" ]] \
+  || { echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"; exit 0; }
+
+echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting oversight cycle"
+
+exec claude --print "$(cat "$REPO_ROOT/bootstrap/overseer-cron-prompt.md" 2>/dev/null \
+  || echo '---\n**Role: HOS Overseer Agent | autonomous cron invocation**\nReview open PRs.')"

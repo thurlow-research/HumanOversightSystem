@@ -35,7 +35,6 @@ htmlcov/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.envrc
 
 # Validation stamps — causes merge conflicts (#422), redesign in progress
 scripts/framework/validation-stamps/
