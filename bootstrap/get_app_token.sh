@@ -142,5 +142,6 @@ TOKEN_RESPONSE=""  # clear raw response — contains token (#549)
 ok "${APP_ROLE} token obtained (expires: ${EXPIRES})"
 
 # ── Output (sourced into caller's shell) ──────────────────────────────────────
-printf "export GH_TOKEN='%s'\n"      "$TOKEN"
-printf "export HOS_BOT_LOGIN='%s'\n" "$BOT_LOGIN"
+printf "export GH_TOKEN='%s'\n"              "$TOKEN"
+printf "export HOS_BOT_LOGIN='%s'\n"         "$BOT_LOGIN"
+printf "export HOS_EXPECTED_BOT_LOGIN='%s'\n" "$BOT_LOGIN"  # #699: cron identity guard
