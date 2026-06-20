@@ -108,6 +108,18 @@ _py() {
   PYTHONPATH="$REPO_ROOT" "$PYTHON" -c "$@"
 }
 
+# ── Preflight validation (#618) ──────────────────────────────────────────────
+# Verify specialist agents, bootstrap scripts, and config exist before any
+# GitHub API call. Zero token cost on failure — exits immediately.
+_log "preflight: validating setup"
+VALIDATE_SCRIPT="$REPO_ROOT/bootstrap/validate_setup.sh"
+if [[ -f "$VALIDATE_SCRIPT" ]]; then
+  bash "$VALIDATE_SCRIPT" --repo "$REPO_ROOT" --quiet     || { _err "Preflight failed — aborting. Run bootstrap/validate_setup.sh to diagnose."; exit 1; }
+  _log "preflight: PASS"
+else
+  _warn "bootstrap/validate_setup.sh not found — skipping preflight (install it from #609)"
+fi
+
 # ── Step 0: git pull --ff-only (#300) ─────────────────────────────────────────
 _log "step 0: git pull --ff-only"
 if ! git -C "$REPO_ROOT" pull --ff-only --quiet 2>&1; then
@@ -191,6 +203,36 @@ CUSTOMER=$(printf '%s' "$CONFIG_JSON" | "$PYTHON" -c "import sys,json; d=json.lo
 MODE=$(printf '%s' "$CONFIG_JSON" | "$PYTHON" -c "import sys,json; d=json.load(sys.stdin); print(d['mode'])" 2>/dev/null || echo "propose-only")
 
 _log "config: customer=$CUSTOMER mode=$MODE"
+
+# ── Step 4.5: worker-PR check before probe (#618) ────────────────────────────
+# Check for open worker-authored PRs with CHANGES_REQUESTED or overseer comment
+# threads before probing for new work. Prevents opening new work when existing
+# PRs need attention (#550, #551 — loop-start precheck for orchestrator).
+if [ "$AGENT_CLASS" = "worker" ]; then
+  _log "step 4.5: check open worker PRs before probe"
+  OPEN_PRS=$(_py "
+import sys, json
+sys.path.insert(0, '$REPO_ROOT')
+from scripts.automation.lib.github import _run_gh
+import subprocess, re
+remote = subprocess.run(['git', '-C', '$REPO_ROOT', 'remote', 'get-url', 'origin'],
+                       capture_output=True, text=True).stdout.strip()
+m = re.match(r'(?:https://github\.com/|git@github\.com:)([^/]+)/(.+?)(?:\.git)?$$', remote, re.I)
+if not m: print('[]'); sys.exit(0)
+owner, repo = m.group(1).lower(), m.group(2).lower()
+prs = _run_gh([f'/repos/{owner}/{repo}/pulls?state=open&per_page=20']) or []
+worker_prs = [p for p in prs if isinstance(p, dict) and p.get('user', {}).get('login', '') == 'hos-worker-hos[bot]']
+print(json.dumps(worker_prs))
+" 2>/dev/null) || OPEN_PRS="[]"
+
+  PR_COUNT=$(printf '%s' "$OPEN_PRS" | "$PYTHON" -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+  if [[ "$PR_COUNT" -gt 0 ]]; then
+    _log "step 4.5: $PR_COUNT open worker PR(s) found — skipping probe, worker should address PRs first"
+    release_lock
+    exit 0
+  fi
+  _log "step 4.5: no open worker PRs — proceeding to probe"
+fi
 
 # ── Step 5: probe ─────────────────────────────────────────────────────────────
 _log "step 5: probe (class=$AGENT_CLASS)"
