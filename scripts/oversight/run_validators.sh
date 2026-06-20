@@ -76,7 +76,7 @@ fi
 # Filter to existing Python files
 PY_FILES=()
 ALL_FILES=()
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do  # bash 3.2: unguarded expansion crashes on empty array
     ALL_FILES+=("$f")
     [[ "$f" == *.py && -f "$f" ]] && PY_FILES+=("$f")
 done
