@@ -80,7 +80,7 @@ for _attempt in 1 2 3; do
     _warn "token refresh attempt $_attempt failed, retrying in $((5 * _attempt * _attempt))s..."
     sleep $((5 * _attempt * _attempt))
   else
-    _err "token refresh failed after 3 attempts — check network and credentials"
+    _err "token refresh failed after 3 attempts — check network and credentials"; exit 1
   fi
 done
 
@@ -166,7 +166,7 @@ _start_heartbeat() {
       # #637: timeout prevents hung get_app_token.sh from blocking heartbeat self-termination
       timeout 60 "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE.new" 2>/dev/null \
         && mv "$TOKEN_FILE.new" "$TOKEN_FILE" \
-        || _warn "heartbeat: token refresh timed out or failed — continuing with existing token"
+        || { rm -f "$TOKEN_FILE.new"; _warn "heartbeat: token refresh timed out or failed — continuing with existing token"; }
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
       _py "
 import sys
