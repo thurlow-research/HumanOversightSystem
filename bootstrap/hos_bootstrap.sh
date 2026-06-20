@@ -249,6 +249,18 @@ else
   for c in agy codex; do command -v "$c" &>/dev/null && ok "$c present" || warn "$c not installed"; done
 fi
 
+# ── 5a. HOS runtime state directories (#628) ─────────────────────────────────
+# Wakeup signals and last-run timestamps live here (not in the project repo).
+header "5a. HOS runtime state directories"
+_HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
+for _d in "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run"; do
+  if $DRY_RUN; then
+    dry_run "Would create: $_d"
+  else
+    mkdir -p "$_d" && ok "$_d" || warn "Could not create $_d — wakeup/backoff will not function"
+  fi
+done
+
 # ── 5. Verify required tooling (do NOT claim success on a failed install) ─────
 # Installs above mostly warn on failure; re-verify the REQUIRED tools here and
 # fail closed so the summary can't say "complete" when a prerequisite is missing.
