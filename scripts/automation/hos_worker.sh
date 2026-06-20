@@ -73,7 +73,16 @@ _refresh_app_token() {
   source <("$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS") \
     || { _err "token refresh failed — cannot continue with expired credentials"; return 1; }
 }
-_refresh_app_token || exit 1
+# #641: retry on transient network failure at startup (3 attempts, exponential backoff)
+for _attempt in 1 2 3; do
+  _refresh_app_token && break
+  if [[ $_attempt -lt 3 ]]; then
+    _warn "token refresh attempt $_attempt failed, retrying in $((5 * _attempt * _attempt))s..."
+    sleep $((5 * _attempt * _attempt))
+  else
+    _err "token refresh failed after 3 attempts — check network and credentials"; exit 1
+  fi
+done
 
 EXPECTED_LOGIN="hos-${AGENT_CLASS}-hos[bot]"
 if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
@@ -85,19 +94,32 @@ _log "authenticated as $HOS_BOT_LOGIN"
 # #593: token refresh in heartbeat subshell cannot propagate to parent process.
 # Refresh must happen in the main process. We write the token to a temp file so
 # the parent can re-source it at each refresh interval.
-TOKEN_FILE="$(mktemp /tmp/hos-token-XXXXXX.env)"
-trap 'rm -f "$TOKEN_FILE"' EXIT
+# #629: use private 0700 directory — prevents symlink attacks and world-listing of /tmp
+TOKEN_DIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/hos-XXXXXX")"
+chmod 700 "$TOKEN_DIR"
+TOKEN_FILE="$TOKEN_DIR/token.env"
+trap 'rm -rf "$TOKEN_DIR"' EXIT
 
 _write_token_file() {
-  # #596: no 2>/dev/null — surface write failures; callers handle return value
-  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE" \
-    || { _err "token write failed — credentials may be stale"; return 1; }
+  # #596: no 2>/dev/null — surface failures loudly
+  # #635: write to staging file then atomic mv — prevents partial-read TOCTOU
+  local _staging="$TOKEN_FILE.new"
+  "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$_staging" \
+    || { _err "token write failed — credentials may be stale"; rm -f "$_staging"; return 1; }
+  [[ -s "$_staging" ]] || { _err "token write produced empty file"; rm -f "$_staging"; return 1; }
+  mv "$_staging" "$TOKEN_FILE"  # POSIX-atomic on same filesystem
 }
 _source_token_file() {
   # Source fresh token into parent shell. #597: callers need to handle failure.
-  if [[ -s "$TOKEN_FILE" ]]; then
-    source "$TOKEN_FILE" || { _warn "failed to source token file — GH_TOKEN may be stale"; return 1; }
+  # #638/#639: distinguish missing file from empty file; log both
+  if [[ ! -f "$TOKEN_FILE" ]]; then
+    _warn "_source_token_file: token file missing — GH_TOKEN not refreshed"
+    return 1
+  elif [[ ! -s "$TOKEN_FILE" ]]; then
+    _warn "_source_token_file: token file is empty — GH_TOKEN not refreshed"
+    return 1
   fi
+  source "$TOKEN_FILE" || { _warn "failed to source token file — GH_TOKEN may be stale"; return 1; }
 }
 _write_token_file  # write initial token
 
@@ -141,7 +163,10 @@ _start_heartbeat() {
     while true; do
       sleep 900  # 15 minutes
       # #593: write fresh token to shared file; parent sources it before API calls
-      _write_token_file
+      # #637: timeout prevents hung get_app_token.sh from blocking heartbeat self-termination
+      timeout 60 "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE.new" 2>/dev/null \
+        && mv "$TOKEN_FILE.new" "$TOKEN_FILE" \
+        || { rm -f "$TOKEN_FILE.new"; _warn "heartbeat: token refresh timed out or failed — continuing with existing token"; }
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
       _py "
 import sys
@@ -222,7 +247,7 @@ print(json.dumps({'title': issue.get('title',''), 'body': issue.get('body',''),
   LABELS=$(printf '%s' "$ISSUE_DATA" | "$PYTHON" -c "import sys,json; print(','.join(json.load(sys.stdin)['labels']))" 2>/dev/null || echo "")
 
   # Refresh token from file written by heartbeat (#597)
-  _source_token_file || true
+  _source_token_file || _warn '_source_token_file failed — GH_TOKEN may be stale'
   # Triage
   _log "triage"
   TRIAGE_RESULT=$(_py "
@@ -323,7 +348,7 @@ release_claim('$OWNER', '$REPO_NAME', $ISSUE_NUMBER, '$CID', '$INSTANCE_ID', '$W
 
   # Build chain — run the HOS oversight pipeline
   # Refresh token — heartbeat may have written a newer one (#597)
-  _source_token_file || true
+  _source_token_file || _warn '_source_token_file failed — GH_TOKEN may be stale'
   _log "build chain: run_validators.sh + risk-assessor"
   BRANCH="hos/auto/$CID"
 
@@ -404,7 +429,7 @@ print(json.dumps({'title': pr.get('title',''), 'author': pr.get('user',{}).get('
 
   # Merge authority decision (R9.1.1: re-detect gate immediately before merge)
   # Refresh token before merge decision — token must be current (#597)
-  _source_token_file || true
+  _source_token_file || _warn '_source_token_file failed — GH_TOKEN may be stale'
   _log "merge authority decision"
   DECISION=$(_py "
 import sys
