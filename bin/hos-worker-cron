@@ -51,6 +51,14 @@ if [[ "$HOS_BOT_LOGIN" != "$HOS_EXPECTED_BOT_LOGIN" ]]; then
   exit 1
 fi
 
+# #701: Inner-loop test gate — zero-token check before spending any Claude budget.
+# Failing tests here mean the framework is broken; no point starting a session.
+if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
+  echo "$LOG_PREFIX INNER-LOOP TESTS FAILED — not starting loop (fix test failures first)"
+  _audit cycle-preflight-fail reason=inner_loop_tests_failed
+  exit 1
+fi
+
 # Log cycle start
 _audit cycle-start "bot=$HOS_BOT_LOGIN"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting loop"
