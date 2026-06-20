@@ -1857,7 +1857,8 @@ STALE
         _pruned=0; _skipped=0
         for _p in "${_orphans[@]}"; do
           case "$_p" in .claude/agents/*) continue ;; esac   # already handled by stale-archive
-          _prior_sha="$(awk -F '\t' -v p="$_p" '$1==p{print $2; exit}' "$_manifest_file")"
+          # #679: schema v2 = path\tWHOLE\tsha256 — sha256 is $3, not $2
+          _prior_sha="$(awk -F '\t' -v p="$_p" '$1==p{print $3; exit}' "$_manifest_file")"
           _cur_sha="$(_sha256 "$TARGET_REPO/$_p")"
           if [[ -z "$_prior_sha" ]]; then
             warn "  keep $_p — can't verify it's unmodified (legacy manifest); review/remove manually."; _skipped=$((_skipped+1)); continue
