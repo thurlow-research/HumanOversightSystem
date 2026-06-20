@@ -198,8 +198,17 @@ _handle_contention() {
 # ---------------------------------------------------------------------------
 release_lock() {
     if [ -n "$_HOS_LOCK_DIR" ] && [ -d "$_HOS_LOCK_DIR" ]; then
-        rm -rf "$_HOS_LOCK_DIR"
-        _hos_log "released lock at $_HOS_LOCK_DIR (pid=$$)"
+        # #677: only the process that won the lock may release it.
+        # A loser has _HOS_LOCK_DIR set (from resolve_lock_dir) but never wrote meta,
+        # so its EXIT trap must not delete the winner's directory.
+        local meta_pid
+        meta_pid="$(_read_meta_pid 2>/dev/null)"
+        if [ "$meta_pid" = "$$" ]; then
+            rm -rf "$_HOS_LOCK_DIR"
+            _hos_log "released lock at $_HOS_LOCK_DIR (pid=$$)"
+        else
+            _hos_log "release_lock: skipped — not owner (owner=$meta_pid, us=$$)"
+        fi
     fi
 }
 
