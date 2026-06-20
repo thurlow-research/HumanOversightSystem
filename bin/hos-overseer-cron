@@ -18,8 +18,12 @@ bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet \
 
 source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app overseer 2>/dev/null) \
   || { echo "$LOG_PREFIX AUTH FAILED — not starting"; exit 0; }
-[[ "$HOS_BOT_LOGIN" == "hos-overseer-hos[bot]" ]] \
-  || { echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"; exit 0; }
+# #696: read expected login from apps.env, not hardcoded to HOS repo bot name
+EXPECTED_LOGIN="${HOS_OVERSEER_BOT_LOGIN:-}"
+[[ -n "$EXPECTED_LOGIN" ]] \
+  || { echo "$LOG_PREFIX IDENTITY GUARD FAILED: HOS_OVERSEER_BOT_LOGIN not set in apps.env"; exit 1; }
+[[ "$HOS_BOT_LOGIN" == "$EXPECTED_LOGIN" ]] \
+  || { echo "$LOG_PREFIX IDENTITY GUARD FAILED: got=$HOS_BOT_LOGIN expected=$EXPECTED_LOGIN"; exit 1; }
 
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting oversight cycle"
 

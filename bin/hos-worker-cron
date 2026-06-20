@@ -38,10 +38,17 @@ if ! source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker 2>/dev/null);
   exit 0
 fi
 
-if [[ "$HOS_BOT_LOGIN" != "hos-worker-hos[bot]" ]]; then
-  echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"
-  _audit cycle-preflight-fail "reason=identity_guard_$HOS_BOT_LOGIN"
-  exit 0
+# #696: read expected login from apps.env, not hardcoded to HOS repo bot name
+EXPECTED_LOGIN="${HOS_WORKER_BOT_LOGIN:-}"
+if [[ -z "$EXPECTED_LOGIN" ]]; then
+  echo "$LOG_PREFIX IDENTITY GUARD FAILED: HOS_WORKER_BOT_LOGIN not set in apps.env"
+  _audit cycle-preflight-fail "reason=identity_guard_bot_login_unset"
+  exit 1
+fi
+if [[ "$HOS_BOT_LOGIN" != "$EXPECTED_LOGIN" ]]; then
+  echo "$LOG_PREFIX IDENTITY GUARD FAILED: got=$HOS_BOT_LOGIN expected=$EXPECTED_LOGIN"
+  _audit cycle-preflight-fail "reason=identity_guard_mismatch"
+  exit 1
 fi
 
 # Log cycle start

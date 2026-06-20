@@ -25,7 +25,8 @@ err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 APP_ROLE=""
-APPS_ENV="${HOME}/.config/hos/apps.env"
+# #697: HOS_CONFIG_DIR allows project-level config (e.g. ~/Code/CPS/.config/hos)
+APPS_ENV="${HOS_CONFIG_DIR:-${HOME}/.config/hos}/apps.env"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -35,7 +36,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$APP_ROLE" ]] || err "--app required (worker or overseer)"
-[[ -f "$APPS_ENV" ]] || err "~/.config/hos/apps.env not found — run hos_bootstrap.sh first"
+[[ -f "$APPS_ENV" ]] || err "apps.env not found at $APPS_ENV — run hos_bootstrap.sh or set HOS_CONFIG_DIR"
 
 # ── #633: verify apps.env permissions before sourcing ─────────────────────────
 # #645: fail-closed — if stat fails (no stat available), error rather than allow unverified permissions
@@ -67,7 +68,9 @@ esac
 # #633: resolve symlinks before prefix check to block path traversal
 # #644: fail-closed — if python3 unavailable we cannot safely resolve symlinks
 _resolved_pem=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$PEM_PATH")     || err "python3 required to resolve PEM_PATH symlinks safely (CWE-59). Install python3 or verify $PEM_PATH is not a symlink."
-[[ "$_resolved_pem" == "${HOME}/.config/hos/"* ]] || err "PEM_PATH must resolve under ~/.config/hos/, got: $_resolved_pem"
+# #697: validate against the same base as APPS_ENV (project-level or global)
+_config_base="${HOS_CONFIG_DIR:-${HOME}/.config/hos}"
+[[ "$_resolved_pem" == "${_config_base}/"* ]] || err "PEM_PATH must resolve under ${_config_base}/, got: $_resolved_pem"
 [[ -f "$PEM_PATH" ]] || err "PEM not found: $PEM_PATH"
 
 # ── JWT generation (RS256 via openssl — no Python crypto dep) ─────────────────
