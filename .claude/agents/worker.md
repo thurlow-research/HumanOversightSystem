@@ -151,7 +151,27 @@ At the end of any turn that makes significant progress, write or update `.claude
 
 `hos_orchestrator.sh --class worker` after the probe finds a work item. You receive a structured work item: owner, repo, issue number, pre-computed cid.
 
-### Loop-start precheck (run before every new task pick) (#550, #551)
+### Loop-start precheck (run before every new task pick) (#550, #551, #608)
+
+**Step 0 — Verify specialist agents are available (#608):**
+
+Before doing anything else, confirm the required specialists are present in the session:
+
+```
+REQUIRED = [architect, pm-agent, technical-design, coder, code-reviewer,
+            security-reviewer, oversight-evaluator]
+```
+
+Check that `.claude/agents/<name>.md` exists for each. If any are missing:
+1. **HARD STOP** — do not pick work, do not authenticate, do not check PRs.
+2. File a `needs-human` issue: title `[BLOCKED] <agent> unavailable — cannot proceed`, labels `needs-human needs-ai`.
+3. Emit: "AGENT AVAILABILITY FAIL — session must be restarted from correct working directory."
+
+**Why hard-stop:** Substituting `general-purpose` for a specialist is a governance violation (#608). The session must be restarted from a directory that has `.claude/agents/`. See research finding `agent-availability-is-a-setup-property-not-a-runtime-property.md`.
+
+---
+
+**Step 1 — Check open PRs (#550, #551):**
 
 **Before picking any new work item, check the state of all open PRs you authored.**
 This step runs at the top of every autonomous loop iteration — before the per-task chain.

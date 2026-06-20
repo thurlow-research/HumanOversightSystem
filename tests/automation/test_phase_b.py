@@ -325,6 +325,30 @@ class TestBenefitExceedsRisk:
 from scripts.automation.lib.codeowners import find_owners, actor_is_codeowner
 
 
+def test_no_cross_import_from_oversight_codeowners():
+    """Enforce the architect's ruling (#559): automation must NOT import from oversight.
+
+    Importing scripts.oversight.codeowners into the automation library would
+    invert the worker→overseer trust direction. This test fails if that import
+    is ever introduced, making the boundary machine-enforceable. (#617)
+    """
+    import importlib
+    import scripts.automation.lib.codeowners as automation_mod
+
+    source = importlib.util.find_spec("scripts.automation.lib.codeowners").origin
+    with open(source) as f:
+        source_text = f.read()
+
+    assert "scripts.oversight" not in source_text, (
+        "scripts/automation/lib/codeowners.py must not import from scripts/oversight/. "
+        "Doing so inverts the worker→overseer trust direction — see architect ruling on #559."
+    )
+    assert "oversight.codeowners" not in source_text, (
+        "scripts/automation/lib/codeowners.py must not import oversight.codeowners. "
+        "See architect ruling on #559 and research finding on trust-direction split."
+    )
+
+
 class TestFindOwners:
     def _write_codeowners(self, tmp_path, content: str) -> Path:
         path = tmp_path / "CODEOWNERS"
