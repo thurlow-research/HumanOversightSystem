@@ -20,6 +20,7 @@ GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*" >&2; }
 info() { echo -e "  ${CYAN}→${RESET}  $*" >&2; }
+warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -35,6 +36,12 @@ done
 
 [[ -n "$APP_ROLE" ]] || err "--app required (worker or overseer)"
 [[ -f "$APPS_ENV" ]] || err "~/.config/hos/apps.env not found — run hos_bootstrap.sh first"
+
+# ── #633: verify apps.env permissions before sourcing ─────────────────────────
+_env_mode=$(stat -f "%OLp" "$APPS_ENV" 2>/dev/null || stat -c "%a" "$APPS_ENV" 2>/dev/null || echo "unknown")
+if [[ "$_env_mode" != "600" && "$_env_mode" != "400" && "$_env_mode" != "unknown" ]]; then
+    err "apps.env has permissions $_env_mode (expected 600). Run: chmod 600 $APPS_ENV"
+fi
 
 # shellcheck source=/dev/null
 source "$APPS_ENV"
@@ -56,7 +63,9 @@ esac
 # ── Input validation (#545, #548) ─────────────────────────────────────────────
 [[ -n "${HOS_REPO_OWNER:-}" ]] || err "HOS_REPO_OWNER not set in apps.env (e.g. HOS_REPO_OWNER=thurlow-research)"
 [[ "$APP_ID" =~ ^[0-9]+$ ]]   || err "APP_ID must be numeric, got: $APP_ID"
-[[ "$PEM_PATH" == "${HOME}/.config/hos/"* ]] || err "PEM_PATH must be under ~/.config/hos/, got: $PEM_PATH"
+# #633: resolve symlinks before prefix check to block path traversal
+_resolved_pem=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$PEM_PATH" 2>/dev/null || echo "$PEM_PATH")
+[[ "$_resolved_pem" == "${HOME}/.config/hos/"* ]] || err "PEM_PATH must resolve under ~/.config/hos/, got: $_resolved_pem"
 [[ -f "$PEM_PATH" ]] || err "PEM not found: $PEM_PATH"
 
 # ── JWT generation (RS256 via openssl — no Python crypto dep) ─────────────────
@@ -85,17 +94,19 @@ JWT=$(generate_jwt "$APP_ID" "$PEM_PATH")
 
 # ── Get installation ID for HOS_REPO_OWNER ────────────────────────────────────
 info "Looking up installation for ${HOS_REPO_OWNER}..."
-INSTALL_RESPONSE=$(curl -sf \
+# #636: add curl timeouts — no --connect-timeout causes indefinite hang on network failure
+INSTALL_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${JWT}" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations") \
-    || err "Failed to reach /app/installations — check App ID and PEM"
+    || err "Failed to reach /app/installations — check App ID, PEM, and network. If both are correct, verify system clock is synchronized (ntpd/chronyc): clock skew >60s causes JWT rejection. (#636, #640)"
 
-# Pipe via stdin to avoid shell-expanding untrusted API JSON into a string literal (#544)
-INSTALL_ID=$(printf '%s' "$INSTALL_RESPONSE" | python3 -c "
-import json, sys
-owner = '${HOS_REPO_OWNER}'
+# #630: pass HOS_REPO_OWNER via environment variable, not string interpolation.
+# Interpolating into a Python -c string allows injection if value contains quotes.
+INSTALL_ID=$(printf '%s' "$INSTALL_RESPONSE" | HOS_REPO_OWNER="$HOS_REPO_OWNER" python3 -c "
+import json, sys, os
+owner = os.environ['HOS_REPO_OWNER']
 for i in json.loads(sys.stdin.read()):
     if i.get('account', {}).get('login') == owner:
         print(i['id'])
@@ -106,12 +117,16 @@ for i in json.loads(sys.stdin.read()):
 
 # ── Get installation token ────────────────────────────────────────────────────
 info "Fetching installation token (installation: ${INSTALL_ID})..."
-TOKEN_RESPONSE=$(curl -sf -X POST \
+# #636: curl timeouts on token fetch too
+TOKEN_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 -X POST \
     -H "Authorization: Bearer ${JWT}" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations/${INSTALL_ID}/access_tokens") \
-    || err "Failed to get installation token"
+    || err "Failed to get installation token — check network. If App ID and PEM are correct, verify system clock synchronization. (#636, #640)"
+
+# #634: clear JWT immediately — it is valid for 10 min and must not persist in env
+JWT=""
 
 TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d['token'])")
 EXPIRES=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('expires_at','unknown'))")
