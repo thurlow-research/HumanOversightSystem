@@ -97,15 +97,31 @@ generate_jwt() {
 info "Generating JWT for ${APP_ROLE} (app_id: ${APP_ID})..."
 JWT=$(generate_jwt "$APP_ID" "$PEM_PATH")
 
-# ── Get installation ID for HOS_REPO_OWNER ────────────────────────────────────
-info "Looking up installation for ${HOS_REPO_OWNER}..."
+# ── Verify App identity via API + get installations ───────────────────────────
+# #631: derive BOT_LOGIN from GET /app (API-authoritative), not from apps.env.
+# Both calls use the same JWT — consolidate into one network round-trip.
+info "Verifying App identity and looking up installation for ${HOS_REPO_OWNER}..."
 # #636: add curl timeouts — no --connect-timeout causes indefinite hang on network failure
+APP_INFO=$(curl -sf --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${JWT}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/app") \
+    || err "Failed to reach /app — check App ID, PEM, and network. Verify system clock is synchronized (ntpd/chronyc): clock skew >60s causes JWT rejection. (#636, #640)"
+
+# Derive bot login from app slug — authoritative, not from apps.env (#631)
+_api_slug=$(printf '%s' "$APP_INFO" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('slug',''))" 2>/dev/null) || _api_slug=""
+if [[ -n "$_api_slug" ]]; then
+    BOT_LOGIN="${_api_slug}[bot]"
+fi
+# If /app call returned an empty slug (shouldn't happen), fall back to apps.env value already set above.
+
 INSTALL_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${JWT}" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "https://api.github.com/app/installations") \
-    || err "Failed to reach /app/installations — check App ID, PEM, and network. If both are correct, verify system clock is synchronized (ntpd/chronyc): clock skew >60s causes JWT rejection. (#636, #640)"
+    || err "Failed to reach /app/installations — check App ID, PEM, and network. (#636, #640)"
 
 # #630: pass HOS_REPO_OWNER via environment variable, not string interpolation.
 # Interpolating into a Python -c string allows injection if value contains quotes.
@@ -130,8 +146,8 @@ TOKEN_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 -X POST \
     "https://api.github.com/app/installations/${INSTALL_ID}/access_tokens") \
     || err "Failed to get installation token — check network. If App ID and PEM are correct, verify system clock synchronization. (#636, #640)"
 
-# #634: clear JWT immediately — it is valid for 10 min and must not persist in env
-JWT=""
+# #632/#634: unset JWT immediately — it is valid for 10 min and must not linger in shell state
+unset JWT
 
 TOKEN=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d['token'])")
 EXPIRES=$(printf '%s' "$TOKEN_RESPONSE" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('expires_at','unknown'))")
@@ -142,6 +158,9 @@ TOKEN_RESPONSE=""  # clear raw response — contains token (#549)
 ok "${APP_ROLE} token obtained (expires: ${EXPIRES})"
 
 # ── Output (sourced into caller's shell) ──────────────────────────────────────
+# #632: GH_TOKEN is exported into env so `gh` can inherit it — child-process exposure
+# is an accepted trade-off for the current architecture. Tracked for v0.5.0 explicit-passing
+# refactor (#632). Do NOT add further secrets to this export list.
 printf "export GH_TOKEN='%s'\n"              "$TOKEN"
 printf "export HOS_BOT_LOGIN='%s'\n"         "$BOT_LOGIN"
-printf "export HOS_EXPECTED_BOT_LOGIN='%s'\n" "$BOT_LOGIN"  # #699: cron identity guard
+printf "export HOS_EXPECTED_BOT_LOGIN='%s'\n" "$BOT_LOGIN"  # #699: cron identity guard; API-verified via #631
