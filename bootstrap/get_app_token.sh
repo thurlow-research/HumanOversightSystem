@@ -111,10 +111,10 @@ APP_INFO=$(curl -sf --connect-timeout 10 --max-time 30 \
 
 # Derive bot login from app slug — authoritative, not from apps.env (#631)
 _api_slug=$(printf '%s' "$APP_INFO" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('slug',''))" 2>/dev/null) || _api_slug=""
-if [[ -n "$_api_slug" ]]; then
-    BOT_LOGIN="${_api_slug}[bot]"
-fi
-# If /app call returned an empty slug (shouldn't happen), fall back to apps.env value already set above.
+# #710: empty slug is not a safe fallback — it means the API response was malformed.
+# Fail closed rather than silently re-enabling the apps.env circular dependency.
+[[ -n "$_api_slug" ]] || err "GET /app returned empty slug — cannot verify bot identity. Check network and GitHub API availability. (#631, #710)"
+BOT_LOGIN="${_api_slug}[bot]"
 
 INSTALL_RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${JWT}" \
