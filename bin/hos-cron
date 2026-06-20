@@ -110,7 +110,8 @@ if ! bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet 2
 fi
 
 # ── Auth (tempfile pattern — source <() fails in minimal cron env) ───────────
-_auth_tmp=$(mktemp)
+# #720: mktemp in private dir — shared /tmp exposes token in race window
+_auth_tmp=$(mktemp -p "$_HOS_DIR")
 if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app "$ROLE" > "$_auth_tmp" 2>/dev/null; then
   rm -f "$_auth_tmp"
   echo "$LOG_PREFIX AUTH FAILED"
