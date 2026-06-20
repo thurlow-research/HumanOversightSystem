@@ -1571,32 +1571,42 @@ if [[ -f "$HOS_SOURCE/bin/hos-trim-logs" ]]; then
 fi
 
 # Generate prompt files — substitute available values, leave bot logins as placeholders
+# #723: use python3 str.replace (not sed) — repo URL may contain | which breaks sed -e "s|...|
 _cron_repo_url="$(git -C "$TARGET_REPO" remote get-url origin 2>/dev/null \
   | sed 's|git@github.com:||; s|https://github.com/||; s|\.git$||' || echo "__OWNER__/__REPO__")"
 _cron_worker_dir="$TARGET_REPO"
 _cron_overseer_dir="$TARGET_REPO"
 
-if [[ -f "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" ]] && ! $DRY_RUN; then
-  sed \
-    -e "s|thurlow-research/HumanOversightSystem|${_cron_repo_url}|g" \
-    -e "s|/Users/sthurlow/Code/HOS/Worker|${_cron_worker_dir}|g" \
-    -e "s|hos-worker-hos\[bot\]|__WORKER_BOT_LOGIN__|g" \
-    "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
-    > "$TARGET_REPO/bootstrap/worker-cron-prompt.md"
-  ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)"
-elif $DRY_RUN; then
-  dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
-fi
+_subst_prompt() {
+  local src="$1" dst="$2" role="$3" dir="$4" bot_placeholder="$5"
+  [[ -f "$src" ]] || return 0
+  python3 - "$src" "$dst" \
+    "thurlow-research/HumanOversightSystem" "$_cron_repo_url" \
+    "/Users/sthurlow/Code/HOS/${role^}" "$dir" \
+    "hos-${role}-hos[bot]" "$bot_placeholder" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
+content = open(src).read()
+for old, new in pairs:
+    content = content.replace(old, new)
+open(dst, 'w').write(content)
+PYEOF
+}
 
-if [[ -f "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" ]] && ! $DRY_RUN; then
-  sed \
-    -e "s|thurlow-research/HumanOversightSystem|${_cron_repo_url}|g" \
-    -e "s|/Users/sthurlow/Code/HOS/Overseer|${_cron_overseer_dir}|g" \
-    -e "s|hos-overseer-hos\[bot\]|__OVERSEER_BOT_LOGIN__|g" \
-    "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
-    > "$TARGET_REPO/bootstrap/overseer-cron-prompt.md"
-  ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)"
-elif $DRY_RUN; then
+if ! $DRY_RUN; then
+  _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
+    "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
+    "worker" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
+    && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
+    || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
+  _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
+    "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
+    "overseer" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
+    && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
+    || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+else
+  dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
   dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
 fi
 
