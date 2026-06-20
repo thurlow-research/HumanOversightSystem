@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# bin/hos-worker — interactive HOS worker session launcher
+#
+# Runs preflight, authenticates as the worker bot, then opens Claude.
+# Use this to start an interactive session. For cron use: bin/hos-worker-cron
+#
+# Usage: hos-worker  (from the repo root, or via direnv PATH_add bin)
+
+set -euo pipefail
+REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+
+# Preflight — fail fast before spending any tokens
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" \
+  || { echo "Preflight failed — fix setup before starting a session"; exit 1; }
+
+# Auth
+source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker) \
+  || { echo "Authentication failed"; exit 1; }
+[[ "$HOS_BOT_LOGIN" == "hos-worker-hos[bot]" ]] \
+  || { echo "Identity guard failed: $HOS_BOT_LOGIN"; exit 1; }
+
+echo "Authenticated as $HOS_BOT_LOGIN — starting Claude..."
+exec claude --dangerously-skip-permissions

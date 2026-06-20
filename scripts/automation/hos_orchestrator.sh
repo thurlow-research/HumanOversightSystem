@@ -117,7 +117,11 @@ if [[ -f "$VALIDATE_SCRIPT" ]]; then
   bash "$VALIDATE_SCRIPT" --repo "$REPO_ROOT" --quiet     || { _err "Preflight failed — aborting. Run bootstrap/validate_setup.sh to diagnose."; exit 1; }
   _log "preflight: PASS"
 else
-  _warn "bootstrap/validate_setup.sh not found — skipping preflight (install it from #609)"
+  if [[ "${HOS_REQUIRE_PREFLIGHT:-0}" == "1" ]]; then
+    _err "validate_setup.sh not found and HOS_REQUIRE_PREFLIGHT=1 — aborting (#651)"
+    exit 1
+  fi
+  _warn "bootstrap/validate_setup.sh not found — skipping preflight (set HOS_REQUIRE_PREFLIGHT=1 in production, #651)"
 fi
 
 # ── Step 0: git pull --ff-only (#300) ─────────────────────────────────────────

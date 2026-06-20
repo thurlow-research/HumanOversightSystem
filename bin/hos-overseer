@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# bin/hos-overseer — interactive HOS overseer session launcher
+#
+# Runs preflight, authenticates as the overseer bot, then opens Claude.
+# Use this to start an interactive oversight session.
+
+set -euo pipefail
+REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" \
+  || { echo "Preflight failed — fix setup before starting a session"; exit 1; }
+
+source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app overseer) \
+  || { echo "Authentication failed"; exit 1; }
+[[ "$HOS_BOT_LOGIN" == "hos-overseer-hos[bot]" ]] \
+  || { echo "Identity guard failed: $HOS_BOT_LOGIN"; exit 1; }
+
+echo "Authenticated as $HOS_BOT_LOGIN — starting Claude..."
+exec claude --dangerously-skip-permissions

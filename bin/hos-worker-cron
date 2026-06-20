@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# bin/hos-worker-cron — cron worker launcher
+#
+# Preflight + auth + one LOOP iteration via claude --print, then exits.
+# This is the script the OS cron entry calls directly by path.
+# Cron does not have direnv PATH, so reference by absolute path.
+#
+# Cron entry (worker at :00/:15/:30/:45, with jitter):
+#   0,15,30,45 * * * * /path/to/repo/bin/hos-worker-cron
+#
+# The script adds up to 60s of jitter to spread load within each 15-min window.
+
+set -euo pipefail
+REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+LOG_PREFIX="[hos-worker-cron] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+# Jitter — spread runs within the window to avoid thundering herd
+sleep $((RANDOM % 60))
+
+# Preflight — zero token cost if setup is broken
+export HOS_REQUIRE_PREFLIGHT=1
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet \
+  || { echo "$LOG_PREFIX PREFLIGHT FAILED — not starting loop"; exit 0; }
+
+# Auth
+source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker 2>/dev/null) \
+  || { echo "$LOG_PREFIX AUTH FAILED — not starting loop"; exit 0; }
+[[ "$HOS_BOT_LOGIN" == "hos-worker-hos[bot]" ]] \
+  || { echo "$LOG_PREFIX IDENTITY GUARD FAILED: $HOS_BOT_LOGIN"; exit 0; }
+
+echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting loop"
+
+# Run one LOOP iteration
+exec claude --print "$(cat "$REPO_ROOT/bootstrap/worker-cron-prompt.md" 2>/dev/null \
+  || echo '---\n**Role: HOS Worker Agent | autonomous cron invocation**\nRun the LOOP.')"
