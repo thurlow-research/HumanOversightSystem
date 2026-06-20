@@ -51,9 +51,14 @@ export HOS_REQUIRE_PREFLIGHT=1
 bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet \
   || { echo "$LOG_PREFIX PREFLIGHT FAILED — not starting"; exit 0; }
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app overseer 2>/dev/null) \
-  || { echo "$LOG_PREFIX AUTH FAILED — not starting"; exit 0; }
+# ── Auth — temp-file pattern (source <() unreliable in minimal cron env) ──────
+_auth_tmp=$(mktemp)
+if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app overseer > "$_auth_tmp" 2>/dev/null; then
+  rm -f "$_auth_tmp"
+  echo "$LOG_PREFIX AUTH FAILED — not starting"
+  exit 0
+fi
+source "$_auth_tmp"; rm -f "$_auth_tmp"
 
 # #699: HOS_EXPECTED_BOT_LOGIN exported by get_app_token.sh
 [[ -n "${HOS_EXPECTED_BOT_LOGIN:-}" ]] \

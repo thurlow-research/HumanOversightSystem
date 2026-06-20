@@ -53,11 +53,16 @@ if ! bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet 2
   exit 0
 fi
 
-if ! source <("$REPO_ROOT/bootstrap/get_app_token.sh" --app worker 2>/dev/null); then
+# Temp-file pattern — source <() is unreliable in minimal cron environments
+# (process substitution requires /dev/fd which may be absent). See hos_worker.sh.
+_auth_tmp=$(mktemp)
+if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app worker > "$_auth_tmp" 2>/dev/null; then
+  rm -f "$_auth_tmp"
   echo "$LOG_PREFIX AUTH FAILED — not starting loop"
   _audit cycle-preflight-fail reason=auth_failed
   exit 0
 fi
+source "$_auth_tmp"; rm -f "$_auth_tmp"
 
 if [[ -z "${HOS_EXPECTED_BOT_LOGIN:-}" ]]; then
   echo "$LOG_PREFIX IDENTITY GUARD FAILED: HOS_EXPECTED_BOT_LOGIN not set"
