@@ -66,6 +66,16 @@ if [[ ! -f "$BOOTSTRAP_SCRIPT" ]]; then
   _err "bootstrap/get_app_token.sh not found — cannot authenticate as bot"
   exit 1
 fi
+# Portable timeout: prefer system timeout, fall back to gtimeout (coreutils on macOS via brew)
+# GNU timeout is not present on macOS by default; bare `timeout` silently fails heartbeat refresh.
+if command -v timeout &>/dev/null; then
+  _TIMEOUT_BIN="timeout"
+elif command -v gtimeout &>/dev/null; then
+  _TIMEOUT_BIN="gtimeout"
+else
+  _TIMEOUT_BIN=""  # no timeout available — run without time cap
+  _warn "timeout/gtimeout not found — heartbeat token refresh runs without a time limit"
+fi
 _refresh_app_token() {
   # #595: unset before source to prevent caller-env injection into identity guard
   unset HOS_BOT_LOGIN
@@ -168,7 +178,8 @@ _start_heartbeat() {
       sleep 900  # 15 minutes
       # #593: write fresh token to shared file; parent sources it before API calls
       # #637: timeout prevents hung get_app_token.sh from blocking heartbeat self-termination
-      timeout 60 "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE.new" 2>/dev/null \
+      # Use portable _TIMEOUT_BIN (GNU timeout not on macOS by default)
+      ${_TIMEOUT_BIN:+$_TIMEOUT_BIN 60} "$BOOTSTRAP_SCRIPT" --app "$AGENT_CLASS" > "$TOKEN_FILE.new" 2>/dev/null \
         && mv "$TOKEN_FILE.new" "$TOKEN_FILE" \
         || { rm -f "$TOKEN_FILE.new"; _warn "heartbeat: token refresh timed out or failed — continuing with existing token"; }
       _check_still_active || { _log "heartbeat: activation/halt → self-terminating"; kill $$ 2>/dev/null; exit 0; }
