@@ -265,13 +265,14 @@ print(json.dumps({'title': issue.get('title',''), 'body': issue.get('body',''),
   _source_token_file || _warn '_source_token_file failed — GH_TOKEN may be stale'
   # Triage
   _log "triage"
-  TRIAGE_RESULT=$(_py "
-import sys, json
+  # #668: pass user-controlled strings via env vars, never interpolated into Python source
+  TRIAGE_RESULT=$(HOS_TITLE="$TITLE" HOS_BODY="$BODY" HOS_LABELS="$LABELS" _py "
+import sys, json, os
 sys.path.insert(0, '$REPO_ROOT')
 from scripts.automation.lib.triage import triage
-title = '''$TITLE'''
-body = '''$BODY'''
-labels = [l for l in '$LABELS'.split(',') if l]
+title  = os.environ['HOS_TITLE']
+body   = os.environ['HOS_BODY']
+labels = [l for l in os.environ['HOS_LABELS'].split(',') if l]
 result = triage(title, body, labels=labels)
 print(json.dumps({'class': result.triage_class.value, 'confidence': result.confidence,
                   'autonomous': result.autonomous, 'embargo': result.embargo,
@@ -325,11 +326,13 @@ release_claim('$OWNER', '$REPO_NAME', $ISSUE_NUMBER, '$CID', '$INSTANCE_ID', '$W
 
   # Budget gate (estimate before build chain)
   _log "budget gate"
-  ESTIMATE=$(_py "
-import sys
+  # #668: HOS_BODY via env — triple-quote injection vector
+  ESTIMATE=$(HOS_BODY="$BODY" HOS_TRIAGE_CLASS="$TRIAGE_CLASS" _py "
+import sys, os
 sys.path.insert(0, '$REPO_ROOT')
 from scripts.automation.lib.budget import estimate_tokens, EstimationSignals
-signals = EstimationSignals(triage_class='$TRIAGE_CLASS', issue_body_chars=len('''$BODY'''))
+signals = EstimationSignals(triage_class=os.environ['HOS_TRIAGE_CLASS'],
+                            issue_body_chars=len(os.environ['HOS_BODY']))
 print(estimate_tokens(signals, '$CUSTOMER', '$REPO_ROOT'))
 " 2>/dev/null) || ESTIMATE="40000"
 
@@ -383,12 +386,13 @@ release_claim('$OWNER', '$REPO_NAME', $ISSUE_NUMBER, '$CID', '$INSTANCE_ID', '$W
   PR_TITLE="[AI: hos-worker] Auto: $TITLE (auto/$CID)"
   PR_BODY="Automated work item for issue #$ISSUE_NUMBER.\ncid: $CID\n\nThis PR was opened by the HOS unattended worker.\nTriaged as: $TRIAGE_CLASS"
 
-  PR_NUM=$(_py "
-import sys
+  # #668: PR_TITLE derived from $TITLE (user-controlled) — pass via env
+  PR_NUM=$(HOS_PR_TITLE="$PR_TITLE" HOS_PR_BODY="$PR_BODY" _py "
+import sys, os
 sys.path.insert(0, '$REPO_ROOT')
 from scripts.automation.lib.merge_authority import open_draft_pr
 pr_num = open_draft_pr('$OWNER', '$REPO_NAME', '$BRANCH',
-    '''$PR_TITLE''', '''$PR_BODY''', labels=['needs-ai'])
+    os.environ['HOS_PR_TITLE'], os.environ['HOS_PR_BODY'], labels=['needs-ai'])
 print(pr_num or '')
 " 2>/dev/null) || PR_NUM=""
 
@@ -446,17 +450,18 @@ print(json.dumps({'title': pr.get('title',''), 'author': pr.get('user',{}).get('
   # Refresh token before merge decision — token must be current (#597)
   _source_token_file || _warn '_source_token_file failed — GH_TOKEN may be stale'
   _log "merge authority decision"
-  DECISION=$(_py "
-import sys
+  # #680: PR_TITLE/PR_AUTHOR/CHANGED are GitHub-controlled — pass via env (CWE-78)
+  DECISION=$(HOS_PR_TITLE="$PR_TITLE" HOS_PR_AUTHOR="$PR_AUTHOR" HOS_CHANGED="$CHANGED" _py "
+import sys, os
 sys.path.insert(0, '$REPO_ROOT')
 from scripts.automation.lib.merge_authority import decide_merge_authority, RiskTier, MergeDecision
 result = decide_merge_authority(
     owner='$OWNER', repo='$REPO_NAME', pr_number=$PR_NUMBER,
     risk_tier=RiskTier.LOW,  # overseer reads from risk-assessor output in full pipeline
     oversight_verdict='PROCEED',
-    changed_files='$CHANGED'.split(),
-    pr_title='$PR_TITLE',
-    pr_author='$PR_AUTHOR',
+    changed_files=os.environ['HOS_CHANGED'].split(),
+    pr_title=os.environ['HOS_PR_TITLE'],
+    pr_author=os.environ['HOS_PR_AUTHOR'],
     agent_class='overseer',
     repo_root='$REPO_ROOT',
 )
