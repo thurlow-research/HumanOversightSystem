@@ -1555,6 +1555,61 @@ cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/boots
 # apps.env.template: install if present so consumers have a discoverable starting point
 [[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
 
+# ── bin/ — cron launcher scripts (#715, #717) ─────────────────────────────────
+# Install hos-cron (parameterized launcher) and hos-trim-logs.
+# Prompt files are generated with project-specific values substituted.
+echo ""
+info "bin/ — cron launcher scripts"
+run mkdir -p "$TARGET_REPO/bin"
+if [[ -f "$HOS_SOURCE/bin/hos-cron" ]]; then
+  cp_framework_file "$HOS_SOURCE/bin/hos-cron"       "$TARGET_REPO/bin/hos-cron"       "bin/hos-cron (cron launcher)"
+  $DRY_RUN || chmod +x "$TARGET_REPO/bin/hos-cron"
+fi
+if [[ -f "$HOS_SOURCE/bin/hos-trim-logs" ]]; then
+  cp_framework_file "$HOS_SOURCE/bin/hos-trim-logs"  "$TARGET_REPO/bin/hos-trim-logs"  "bin/hos-trim-logs (log rotation)"
+  $DRY_RUN || chmod +x "$TARGET_REPO/bin/hos-trim-logs"
+fi
+
+# Generate prompt files — substitute available values, leave bot logins as placeholders
+# #723: use python3 str.replace (not sed) — repo URL may contain | which breaks sed -e "s|...|
+_cron_repo_url="$(git -C "$TARGET_REPO" remote get-url origin 2>/dev/null \
+  | sed 's|git@github.com:||; s|https://github.com/||; s|\.git$||' || echo "__OWNER__/__REPO__")"
+_cron_worker_dir="$TARGET_REPO"
+_cron_overseer_dir="$TARGET_REPO"
+
+_subst_prompt() {
+  local src="$1" dst="$2" role="$3" dir="$4" bot_placeholder="$5"
+  [[ -f "$src" ]] || return 0
+  python3 - "$src" "$dst" \
+    "thurlow-research/HumanOversightSystem" "$_cron_repo_url" \
+    "/Users/sthurlow/Code/HOS/${role^}" "$dir" \
+    "hos-${role}-hos[bot]" "$bot_placeholder" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
+content = open(src).read()
+for old, new in pairs:
+    content = content.replace(old, new)
+open(dst, 'w').write(content)
+PYEOF
+}
+
+if ! $DRY_RUN; then
+  _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
+    "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
+    "worker" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
+    && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
+    || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
+  _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
+    "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
+    "overseer" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
+    && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
+    || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+else
+  dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
+  dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
+fi
+
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
 echo ""
 info "Core governance documents"
@@ -1994,6 +2049,22 @@ echo ""
   echo ""
   echo "  5. Review the audit trail:"
   echo "       cat audit/oversight-log.jsonl | jq 'select(.event==\"sign-off\")'"
+  echo ""
+  echo "  6. Set up autonomous cron agents (#715, #717):"
+  echo "       a. Edit the generated prompt files and replace __*_BOT_LOGIN__ placeholders:"
+  echo "            $TARGET_REPO/bootstrap/worker-cron-prompt.md"
+  echo "            $TARGET_REPO/bootstrap/overseer-cron-prompt.md"
+  echo "       b. Add your project to ~/.config/hos/projects.conf:"
+  echo "            __PROJECT___config_dir=<path-to-your-project>/.config/hos"
+  echo "            __PROJECT___worker_root=$TARGET_REPO"
+  echo "            __PROJECT___overseer_root=$TARGET_REPO"
+  echo "       c. Add to crontab (crontab -e) — adjust schedule and PATH as needed:"
+  echo "            # Worker (every 5 min):"
+  echo "            1,6,11,16,21,26,31,36,41,46,51,56 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role worker  --project __PROJECT__ >> /tmp/hos-worker-__PROJECT__.log 2>&1"
+  echo "            # Overseer (every 5 min, 3 min offset):"
+  echo "            4,9,14,19,24,29,34,39,44,49,54,59 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role overseer --project __PROJECT__ >> /tmp/hos-overseer-__PROJECT__.log 2>&1"
+  echo "            # Weekly log trim:"
+  echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
   echo ""
 
 echo "  Docs: CLAUDE.md · ARCHITECTURE.md · contract/OVERSIGHT-CONTRACT.md"
