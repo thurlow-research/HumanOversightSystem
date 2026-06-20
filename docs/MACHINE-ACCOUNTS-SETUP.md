@@ -113,3 +113,43 @@ a valid release-preparation request; `release-authorized` is one of the three
 required authorization signals (add this label + remove `needs-human` + re-assign
 to the worker, ALL by the same human CODEOWNER). See `worker.md` Release
 authorization protocol.
+
+---
+
+## Step 8 — Configure cron schedules *(human; one-time per machine)* (#642)
+
+Add the following entries to the operator's crontab (`crontab -e`):
+
+```crontab
+# HOS Worker — fires at :00, :15, :30, :45 of every hour
+0,15,30,45 * * * * /path/to/project/Worker/bin/hos-worker-cron >> /tmp/hos-worker.log 2>&1
+
+# HOS Overseer — fires at :07, :22, :37, :52 (offset 7 min from worker)
+7,22,37,52 * * * * /path/to/project/Overseer/bin/hos-overseer-cron >> /tmp/hos-overseer.log 2>&1
+```
+
+**Why the 7-minute offset:** The worker opens PRs; the overseer needs time to see them. A 7-minute gap gives the worker a window to complete its cycle before the overseer's next check, reducing empty overseer cycles.
+
+**Replace `/path/to/project/`** with the actual project parent path (e.g. `/Users/you/Code/CPS`). The `bin/` scripts handle preflight, auth, and jitter automatically.
+
+**Verify setup before adding to crontab:**
+```bash
+cd /path/to/project/Worker
+bash bootstrap/validate_setup.sh --repo .
+```
+
+---
+
+## apps.env template
+
+A template with all required fields is provided at `bootstrap/apps.env.template`.
+Copy it to the project-level config directory and fill in your values:
+
+```bash
+cd /path/to/project                          # project parent (e.g. ~/Code/CPS)
+mkdir -p .config/hos
+cp Worker/bootstrap/apps.env.template .config/hos/apps.env
+chmod 600 .config/hos/apps.env
+# Edit .config/hos/apps.env — replace all <PLACEHOLDER> values
+bash Worker/bootstrap/validate_setup.sh --repo Worker/
+```
