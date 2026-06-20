@@ -43,7 +43,7 @@ The correct pattern: run a shell-level preflight check **before Claude is invoke
 
 ```bash
 # bootstrap/validate_setup.sh
-REQUIRED_AGENTS=(architect pm-agent technical-design coder code-reviewer security-reviewer oversight-evaluator)
+REQUIRED_AGENTS=(architect pm-agent technical-design coder code-reviewer security-reviewer oversight-evaluator worker overseer)
 for agent in "${REQUIRED_AGENTS[@]}"; do
   [[ -f ".claude/agents/${agent}.md" ]] || { echo "SETUP FAIL: ${agent} missing"; exit 1; }
 done

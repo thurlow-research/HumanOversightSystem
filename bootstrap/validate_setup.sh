@@ -66,13 +66,17 @@ else
 fi
 
 # ── 4. Git repo sanity ────────────────────────────────────────────────────────
+# Verify a git remote exists. If HOS_EXPECTED_REMOTE is set, also verify the
+# remote matches — useful for HOS self-development but intentionally optional
+# so consumer projects with their own remotes pass without false warnings.
 REMOTE=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || echo "")
-if echo "$REMOTE" | grep -q "thurlow-research/HumanOversightSystem"; then
-  ok "Git remote: $REMOTE"
-elif [[ -z "$REMOTE" ]]; then
-  fail "No git remote — is this a real clone of thurlow-research/HumanOversightSystem?"
+if [[ -z "$REMOTE" ]]; then
+  fail "No git remote configured — is this a proper clone?"
+elif [[ -n "${HOS_EXPECTED_REMOTE:-}" ]] && ! echo "$REMOTE" | grep -q "$HOS_EXPECTED_REMOTE"; then
+  echo "  WARN: remote is $REMOTE (expected $HOS_EXPECTED_REMOTE)" >&2
+  ok "Git remote: $REMOTE (no match against HOS_EXPECTED_REMOTE)"
 else
-  echo "  WARN: remote is $REMOTE (expected thurlow-research/HumanOversightSystem)" >&2
+  ok "Git remote: $REMOTE"
 fi
 
 echo "=== Preflight PASSED ==="
