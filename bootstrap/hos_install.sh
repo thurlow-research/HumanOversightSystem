@@ -1580,16 +1580,27 @@ _cron_overseer_dir="$TARGET_REPO"
 _subst_prompt() {
   local src="$1" dst="$2" role="$3" dir="$4" bot_placeholder="$5"
   [[ -f "$src" ]] || return 0
+  # Derive the source working-directory path from the prompt template itself
+  # rather than hardcoding a developer-specific home path (#731). The
+  # 'WORKING DIRECTORY:' line is a stable contract at the top of every
+  # cron-prompt template; reading it here makes the substitution correct on any
+  # contributor's HOS clone and keeps this installer free of machine-specific
+  # absolute paths (portability gate). An empty match is guarded in Python so a
+  # malformed template degrades to "leave the path unchanged" instead of
+  # corrupting the output.
+  local from_dir
+  from_dir="$(sed -n 's/^WORKING DIRECTORY:[[:space:]]*//p' "$src" | head -n1)"
   python3 - "$src" "$dst" \
     "thurlow-research/HumanOversightSystem" "$_cron_repo_url" \
-    "/Users/sthurlow/Code/HOS/${role^}" "$dir" \
+    "$from_dir" "$dir" \
     "hos-${role}-hos[bot]" "$bot_placeholder" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
 content = open(src).read()
 for old, new in pairs:
-    content = content.replace(old, new)
+    if old:
+        content = content.replace(old, new)
 open(dst, 'w').write(content)
 PYEOF
 }
