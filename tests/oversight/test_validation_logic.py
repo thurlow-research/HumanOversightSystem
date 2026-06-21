@@ -188,6 +188,52 @@ def test_empty_non_strict_is_approve(tmp_path):
     assert result["new_blocking_count"] == 0
 
 
+# ── compute_verdict: reviewer error block fails closed (#670) ─────────────────
+def test_error_verdict_block_gates(tmp_path):
+    # A reviewer timeout emits {"verdict":"error","findings":[]}: zero findings,
+    # but it must NOT approve — the reviewer never reviewed.
+    ledger = str(tmp_path / "ledger.jsonl")
+    blocks = [{"verdict": "error", "findings": []}]
+    result = compute_verdict(blocks, ledger)
+    assert result["verdict"] == "request_changes"
+    assert result["new_blocking_count"] == 1
+    assert result["highest_severity"] == "blocking"
+
+
+def test_error_verdict_block_not_dedup_silenced(tmp_path):
+    # An error block has no stable fingerprint, so a populated ledger can never
+    # silence it — it always counts as NEW blocking.
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({"files": [], "class": "", "disposition": "noise"}) + "\n")
+    blocks = [{"verdict": "error", "findings": []}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["verdict"] == "request_changes"
+    assert result["new_blocking_count"] == 1
+
+
+def test_error_block_alongside_clean_block_still_gates(tmp_path):
+    # One reviewer approves cleanly, the other errored out: the aggregate must
+    # gate on the error rather than approve on the clean half.
+    ledger = str(tmp_path / "ledger.jsonl")
+    blocks = [
+        {"verdict": "approve", "findings": []},
+        {"verdict": "error", "findings": []},
+    ]
+    result = compute_verdict(blocks, ledger)
+    assert result["verdict"] == "request_changes"
+    assert result["new_blocking_count"] == 1
+
+
+def test_approve_verdict_block_does_not_gate(tmp_path):
+    # A clean block with a non-error verdict and no blocking findings approves —
+    # the error gating must not fire on ordinary verdicts.
+    ledger = str(tmp_path / "ledger.jsonl")
+    blocks = [{"verdict": "approve", "findings": []}]
+    result = compute_verdict(blocks, ledger)
+    assert result["verdict"] == "approve"
+    assert result["new_blocking_count"] == 0
+
+
 # ── load_ledger tolerance (spec R1) ───────────────────────────────────────────
 def test_load_ledger_missing_file(tmp_path):
     assert load_ledger(str(tmp_path / "nope.jsonl")) == set()
