@@ -107,6 +107,15 @@ fi
 # hos-overseer-hos[bot] with Maintainer role) can satisfy the code-owner
 # requirement for those paths. The catch-all `* @ScottThurlow` must NEVER be
 # added; it would block the overseer from merging any PR.
+#
+# STATUS-CHECK CONTEXTS (#737): each string in required_status_checks.contexts
+# below MUST equal a workflow job `name:` — that is the string GitHub reports as
+# the status-check context, NOT the workflow's top-level display name. If they
+# drift, the required context never appears, stays permanently "expected", and
+# every merge returns HTTP 405 even though the gates run green. Producers:
+#   require-human-approval  ← .github/workflows/require-human-approval.yml
+#   require-tier-ceiling    ← .github/workflows/require-tier-ceiling.yml
+# tests/framework/test_branch_protection_contexts.py enforces this invariant.
 
 PAYLOAD="$(cat <<JSON
 {

@@ -34,7 +34,13 @@ permissions:
 
 jobs:
   require-tier-ceiling:
-    name: Overseer tier-ceiling gate
+    # The job `name` IS the status-check context GitHub reports to branch
+    # protection. It MUST equal the required context in
+    # scripts/framework/setup_branch_protection.sh (`require-tier-ceiling`),
+    # or the required context stays permanently "expected" and every merge
+    # returns HTTP 405 while the gate appears green (#737). Keep these in sync;
+    # tests/framework/test_branch_protection_contexts.py enforces it.
+    name: require-tier-ceiling
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (TRUSTED base — never the PR head)
