@@ -192,6 +192,43 @@ class TestHolderInspection:
         assert "rc=0" in result.stdout
 
 
+class TestSecondsSinceIso:
+    """#671: _seconds_since_iso must work on any host (BSD date, GNU date, or python3).
+
+    The original used only macOS `date -j -f`, which fails silently on Linux —
+    leaving `elapsed` empty so the hung-lock reclaim never fired. These tests pin
+    the cross-platform contract directly, independent of which date(1) is present.
+    """
+
+    def test_returns_nonempty_elapsed_for_valid_timestamp(self):
+        """A valid ISO-8601 UTC timestamp yields a non-empty, numeric elapsed."""
+        result = _bash_run(
+            "_seconds_since_iso 2020-01-01T00:00:00Z; echo \"rc=$?\""
+        )
+        assert "rc=0" in result.stdout
+        elapsed = result.stdout.splitlines()[0].strip()
+        assert elapsed != "", "elapsed must not be empty (the #671 silent-fail bug)"
+        assert int(elapsed) > 0
+
+    def test_recent_timestamp_yields_small_elapsed(self):
+        """Elapsed since 'now' should be near zero, never empty."""
+        result = _bash_run(dedent("""\
+            now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            _seconds_since_iso "$now"
+            echo "rc=$?"
+        """))
+        assert "rc=0" in result.stdout
+        elapsed = int(result.stdout.splitlines()[0].strip())
+        assert 0 <= elapsed < 60
+
+    def test_malformed_timestamp_returns_failure(self):
+        """Unparseable input must return non-zero (all parsers fail) — not empty success."""
+        result = _bash_run(
+            "_seconds_since_iso not-a-timestamp; echo \"rc=$?\""
+        )
+        assert "rc=1" in result.stdout
+
+
 class TestTrap:
     def test_trap_releases_lock_on_exit(self, tmp_path):
         """setup_lock_trap ensures the lock is removed on EXIT."""

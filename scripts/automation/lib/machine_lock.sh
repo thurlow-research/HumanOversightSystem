@@ -94,13 +94,30 @@ _is_holder_alive() {
 
 # ---------------------------------------------------------------------------
 # _seconds_since_iso — seconds elapsed since an ISO-8601 UTC timestamp
-# (bash 3.2 compatible via date)
+# (bash 3.2 compatible; portable across BSD/macOS, GNU/Linux)
 # ---------------------------------------------------------------------------
+# #671: the original used only macOS `date -j -f`, which fails silently on
+# GNU/Linux (returns non-zero, empty output). That left `elapsed` empty and the
+# hung-lock reclaim path never fired on Linux. Try each epoch parser in turn —
+# BSD date, GNU date, then python3 — so the result is non-empty on any host
+# with at least one of them. Mirrors the idiom in check_validation_current.sh.
 _seconds_since_iso() {
     local iso="$1"
     local then_epoch now_epoch
-    # macOS date -j -f <format> <value> +%s
-    then_epoch="$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" '+%s' 2>/dev/null)" || return 1
+    # 1) BSD/macOS: date -j -f <format> <value> +%s.
+    #    TZ=UTC is REQUIRED: the trailing 'Z' in the format is matched as a
+    #    literal, so BSD date would otherwise parse the value in local time and
+    #    skew the result by the machine's UTC offset (negative west of UTC,
+    #    masking hung locks). _write_meta stamps with `date -u`, so parse as UTC.
+    then_epoch="$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" '+%s' 2>/dev/null)"
+    # 2) GNU/Linux: date -u -d <value> +%s (accepts ISO-8601 directly)
+    [ -z "$then_epoch" ] && then_epoch="$(date -u -d "$iso" '+%s' 2>/dev/null)"
+    # 3) Portable backstop: python3 (calendar.timegm parses the UTC timestamp)
+    [ -z "$then_epoch" ] && then_epoch="$(python3 -c \
+        "import calendar,time,sys; print(calendar.timegm(time.strptime(sys.argv[1],'%Y-%m-%dT%H:%M:%SZ')))" \
+        "$iso" 2>/dev/null)"
+    # All parsers failed (or input malformed): signal failure to the caller.
+    [ -z "$then_epoch" ] && return 1
     now_epoch="$(date -u '+%s')"
     echo $(( now_epoch - then_epoch ))
 }
