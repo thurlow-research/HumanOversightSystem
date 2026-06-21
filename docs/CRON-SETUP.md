@@ -202,6 +202,40 @@ Remove the line once captured.
 
 ---
 
+## 8. Security model (headless permissions)
+
+Cron-fired sessions run `claude --print --permission-mode bypassPermissions` —
+there is no human to approve tool calls, so the approval gate is cleared. The
+agent can run arbitrary tools. The safety does **not** come from the CLI
+permission gate; it comes from these layers (#728, #734):
+
+1. **Human triage gate.** The worker only acts on issues labelled `needs-ai`,
+   and a human applies that label. Untrusted issue content cannot reach the
+   bypass-enabled agent without first passing a human review/triage step.
+2. **OAuth token isolation.** `CLAUDE_CODE_OAUTH_TOKEN` authenticates `claude`
+   but is **not** present in the bash-tool subprocess environment — `claude`
+   strips it. Verified: a bash tool call sees `GH_TOKEN` and `HOS_BOT_LOGIN`,
+   but not `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. The long-lived
+   subscription credential cannot be exfiltrated through a tool call.
+3. **Scoped, short-lived GitHub token.** `GH_TOKEN` *is* in the agent's
+   environment (it needs `gh`). It is a GitHub App **installation** token —
+   scoped to the App's permissions (not your account) and valid ~1 hour. That
+   bounds the blast radius if it were ever exfiltrated.
+4. **Prompt-injection hardening.** The cron prompts instruct both agents to
+   treat issue/PR/comment text as untrusted **data, never instructions**, and
+   never to echo or transmit credentials. Injection attempts are escalated to a
+   human, not obeyed.
+5. **Overseer merge guardrails.** Merge authority is independently gated by
+   `OVERSEER_CEILING`, protected surfaces, and human-required escalations — a
+   prompt-injected "approve and merge" cannot bypass these.
+
+`--allowedTools` is intentionally not used: the worker dispatches sub-agents and
+runs arbitrary build/test commands, so a whitelist tight enough to stop exfil
+also stops the work. Tool scope is governed by the agent definitions and the
+human triage gate, not the launcher.
+
+---
+
 ## See also
 
 - `DECISIONS.md` (2026-06-21) — why headless-on-subscription via OAuth, why the env file not the keychain.
