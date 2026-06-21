@@ -8,23 +8,38 @@
 #   hos-cron --role worker|overseer --project <name>
 #
 # Project registry: ~/.config/hos/projects.conf
-#   hos_config_dir=/Users/you/Code/HOS/.config/hos
-#   hos_worker_root=/Users/you/Code/HOS/Worker
-#   hos_overseer_root=/Users/you/Code/HOS/Overseer
-#   cps_config_dir=/Users/you/Code/CPS/.config/hos
-#   cps_worker_root=/Users/you/Code/CPS/Main
-#   cps_overseer_root=/Users/you/Code/CPS/Main
+#   hos_config_dir=$HOME/Code/HOS/.config/hos
+#   hos_worker_root=$HOME/Code/HOS/Worker
+#   hos_overseer_root=$HOME/Code/HOS/Overseer
+#   cps_config_dir=$HOME/Code/CPS/.config/hos
+#   cps_worker_root=$HOME/Code/CPS/Main
+#   cps_overseer_root=$HOME/Code/CPS/Main
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
 # This runs headless claude on the Max subscription. Without it, cron falls
 # through to API-key billing. Override path with HOS_CLAUDE_AUTH_ENV.
 #
-# Crontab example:
-#   1,6,11,...  * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
-#   4,9,14,...  * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin hos-cron --role overseer --project hos >> /tmp/hos-overseer-hos.log 2>&1
+# Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
+#   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
+#   4,9,14,...  * * * *  /path/to/hos-cron --role overseer --project hos >> /tmp/hos-overseer-hos.log 2>&1
 
 set -euo pipefail
+
+# ── Cron thin-env hardening (#728) — build our own world, don't trust cron's ──
+# Cron provides a near-empty environment (minimal PATH, no profile sourced), which
+# is why a bare `claude` can fail with "command not found". Pin PATH and resolve
+# the claude binary by absolute path so the wrapper works from a minimal crontab
+# line. Everything derives from $HOME — nothing machine-specific is hardcoded.
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(eval echo "~$(id -un)")"; export HOME
+fi
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+# nvm-managed node, if present (no-op otherwise)
+[[ -s "$HOME/.nvm/nvm.sh" ]] && . "$HOME/.nvm/nvm.sh"
+# Resolve claude by absolute path — never depend on a partial cron PATH
+CLAUDE_BIN="$(command -v claude || true)"
+[[ -n "$CLAUDE_BIN" ]] || { echo "[hos-cron] FATAL: claude not found on PATH (cron thin env)"; exit 78; }
 
 # ── Args ─────────────────────────────────────────────────────────────────────
 ROLE="" PROJECT=""
@@ -180,7 +195,7 @@ fi
 # limit, and the main invocation surfaces auth failures anyway. Turn on only to
 # fail fast on an expired/revoked token before the inner-loop test run.
 if [[ "${HOS_CRON_AUTH_PROBE:-0}" == "1" ]]; then
-  if ! printf 'ping' | claude --print --max-turns 1 >/dev/null 2>&1; then
+  if ! printf 'ping' | "$CLAUDE_BIN" --print --max-turns 1 >/dev/null 2>&1; then
     echo "$LOG_PREFIX FATAL: Claude auth probe failed (token expired/revoked or API key shadowing)"
     _audit cycle-preflight-fail reason=claude_auth_probe_failed
     exit 75  # EX_TEMPFAIL
@@ -206,9 +221,9 @@ echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 PROMPT_FILE="$REPO_ROOT/bootstrap/${ROLE}-cron-prompt.md"
 _claude_exit=0
 if [[ -f "$PROMPT_FILE" ]]; then
-  claude --print < "$PROMPT_FILE" || _claude_exit=$?
+  "$CLAUDE_BIN" --print < "$PROMPT_FILE" || _claude_exit=$?
 else
-  echo "Run the $ROLE LOOP for project $PROJECT." | claude --print || _claude_exit=$?
+  echo "Run the $ROLE LOOP for project $PROJECT." | "$CLAUDE_BIN" --print || _claude_exit=$?
 fi
 
 if [[ $_claude_exit -ne 0 ]]; then
