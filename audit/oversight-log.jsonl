@@ -12,3 +12,7 @@
 {"event":"structural-override","signal":"new-external-dependency","step":"B","file":"pyproject.toml","covered":false,"timestamp":"2026-06-16T18:25:34Z"}
 {"event":"na-invalidated","role":"security","step":"B","evidence":"tests/framework/test_pack_install.py matched security domain file rule (*.py); security N/A is not credible","timestamp":"2026-06-16T18:25:34Z"}
 {"event":"pr-reviewed","pr":543,"branch":"feat/v050-542-app-token-bootstrap","head_sha":"unknown","validator_tier":"LOW","validator_score":0.0056,"static_check":"PASS","test_result":"pre-existing-failure-on-main","code_review":"FINDING","security_review":"FINDING","findings_count":6,"issues_filed":[544,545,546,547,548,549],"decision":"DIRTY-DO-NOT-MERGE","auth_note":"running-as-ScottThurlow-bot-token-unavailable","timestamp":"2026-06-19T01:20:53Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-21T03:00:16Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-21T03:01:27Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-21T03:20:39Z", "reason": "queue-731-738-then-cut"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-21T03:21:51Z", "bot": "hos-worker-hos[bot] project=hos"}
