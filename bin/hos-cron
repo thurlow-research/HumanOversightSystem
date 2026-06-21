@@ -48,6 +48,10 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bi
 CLAUDE_BIN="$(command -v claude || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "[hos-cron] FATAL: claude not found on PATH (cron thin env)"; exit 78; }
 
+# Deterministic git credentials (#738) — sourced now, applied after auth below.
+# shellcheck source=lib/git-credentials.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/git-credentials.sh"
+
 # ── Args ─────────────────────────────────────────────────────────────────────
 ROLE="" PROJECT=""
 while [[ $# -gt 0 ]]; do
@@ -174,6 +178,21 @@ if [[ "$HOS_BOT_LOGIN" != "$HOS_EXPECTED_BOT_LOGIN" ]]; then
   echo "$LOG_PREFIX IDENTITY GUARD FAILED: got=$HOS_BOT_LOGIN expected=$HOS_EXPECTED_BOT_LOGIN"
   _audit cycle-preflight-fail reason=identity_guard_mismatch
   exit 1
+fi
+
+# ── Deterministic git credentials (#738) ─────────────────────────────────────
+# Make `git push` work regardless of the host's credential helper, which is
+# interactive-oriented and unreachable from the cron thin-env. Configure the
+# already-authenticated `gh` as git's github.com helper for THIS session only —
+# no file written, developer's global ~/.gitconfig untouched, and the exported
+# env is inherited by the headless claude subprocess (so pushes inside the agent
+# need no inline workaround). GH_TOKEN is supplied over gh's stdin protocol, not
+# materialized into any URL/argv/file (#734). Must run AFTER auth is sourced so
+# gh can authenticate. See bin/lib/git-credentials.sh for the mechanism.
+if ! hos_configure_git_credentials; then
+  echo "$LOG_PREFIX FATAL: could not configure git credentials (gh not found)"
+  _audit cycle-preflight-fail reason=git_credentials_unconfigured
+  exit 78  # EX_CONFIG
 fi
 
 # ── Claude Code subscription auth (#728) — cron-safe subscription OAuth ──────
