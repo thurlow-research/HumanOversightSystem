@@ -26,6 +26,7 @@
 #   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap)
 #   HOS_CRON_AUTH_PROBE   1 = run a model auth probe before work (default 0; costs a turn)
 #   HOS_IDLE_INTERVAL     idle-backoff threshold in seconds (default 1800)
+#   HOS_CRON_JITTER_MAX   max startup jitter in seconds (default 60; 0 disables)
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
@@ -118,7 +119,11 @@ _audit() {
 }
 
 # ── Jitter ────────────────────────────────────────────────────────────────────
-sleep $((RANDOM % 60))
+# Spread concurrent fires so multiple projects don't stampede git/auth at once.
+# Override to 0 in tests (and any deterministic context) — mirrors machine_lock's
+# HOS_LOCK_JITTER_MAX. Guard the modulo: `% 0` would be a divide-by-zero error.
+_JITTER_MAX="${HOS_CRON_JITTER_MAX:-60}"
+[[ "$_JITTER_MAX" -gt 0 ]] && sleep $(( RANDOM % _JITTER_MAX ))
 
 # ── Wakeup / idle backoff ─────────────────────────────────────────────────────
 if [[ -f "$_WAKEUP_FILE" ]]; then
