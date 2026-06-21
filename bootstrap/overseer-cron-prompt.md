@@ -3,12 +3,14 @@
 
 WORKING DIRECTORY: /Users/sthurlow/Code/HOS/Overseer
 
-AUTHENTICATE:
+ENVIRONMENT (already done by the bin/hos-cron launcher — do NOT repeat):
+The launcher has already: synced main, authenticated (`GH_TOKEN` and
+`HOS_BOT_LOGIN` are exported in your environment), and passed the identity guard.
+Do not re-authenticate or `source` the token script — `gh` already works as the bot.
+
+IDENTITY (verify, don't re-auth):
 ```bash
-git -C /Users/sthurlow/Code/HOS/Overseer fetch origin main --quiet
-git -C /Users/sthurlow/Code/HOS/Overseer pull origin main --ff-only --quiet
-source <(bootstrap/get_app_token.sh --app overseer 2>/dev/null)
-[ "$HOS_BOT_LOGIN" = "hos-overseer-hos[bot]" ] || echo "WARN: bot auth failed"
+[ "$HOS_BOT_LOGIN" = "hos-overseer-hos[bot]" ] || { echo "IDENTITY GUARD FAILED"; exit 1; }
 ```
 
 GITHUB API — REST only.

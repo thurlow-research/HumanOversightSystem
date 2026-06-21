@@ -17,8 +17,15 @@
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
-# This runs headless claude on the Max subscription. Without it, cron falls
+# This runs headless claude on the user's Claude subscription. Without it, cron falls
 # through to API-key billing. Override path with HOS_CLAUDE_AUTH_ENV.
+#
+# Env overrides:
+#   HOS_CLAUDE_AUTH_ENV   path to the OAuth token file (default ~/.config/hos/claude-auth.env)
+#   HOS_CRON_MAX_SECONDS  wall-clock cap on the claude session (default 1800; 0 disables)
+#   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap)
+#   HOS_CRON_AUTH_PROBE   1 = run a model auth probe before work (default 0; costs a turn)
+#   HOS_IDLE_INTERVAL     idle-backoff threshold in seconds (default 1800)
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
@@ -169,8 +176,8 @@ if [[ "$HOS_BOT_LOGIN" != "$HOS_EXPECTED_BOT_LOGIN" ]]; then
   exit 1
 fi
 
-# ── Claude Code subscription auth (#728) — cron-safe Max OAuth ───────────────
-# Headless `claude --print` runs on the Max subscription via CLAUDE_CODE_OAUTH_TOKEN.
+# ── Claude Code subscription auth (#728) — cron-safe subscription OAuth ──────
+# Headless `claude --print` runs on the user's Claude subscription via CLAUDE_CODE_OAUTH_TOKEN.
 # Without it, resolution falls through to API-key billing (the keychain credential
 # is unreachable from cron). Source the 0600 token file, then unset any API key
 # that would shadow the OAuth token and force per-token billing.
@@ -191,7 +198,7 @@ if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
 fi
 
 # Optional model-spawning auth probe (opt-in via HOS_CRON_AUTH_PROBE=1). Default
-# OFF: a probe spends a model turn on every active fire against the weekly Max
+# OFF: a probe spends a model turn on every active fire against the weekly subscription
 # limit, and the main invocation surfaces auth failures anyway. Turn on only to
 # fail fast on an expired/revoked token before the inner-loop test run.
 if [[ "${HOS_CRON_AUTH_PROBE:-0}" == "1" ]]; then
@@ -215,18 +222,55 @@ fi
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 
+# ── Per-fire bounds (#728 Task 2) ─────────────────────────────────────────────
+# Headless fires draw from the same weekly subscription rate limit as interactive use, and
+# a hung/runaway autonomous session could burn it. The always-on bound is a
+# WALL-CLOCK timeout — it kills a stuck session without truncating legitimate
+# turn-by-turn pipeline work (a low --max-turns would leave a half-done task).
+#   HOS_CRON_MAX_SECONDS  wall-clock cap (default 1800 = 30m); 0 disables.
+#   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap).
+# NOTE: --allowedTools is intentionally NOT set. The worker dispatches sub-agents
+# (architect/coder/reviewers) and edits files; CLI-level tool restriction is the
+# wrong layer and would silently break autonomous work. Tool scope is governed by
+# the agent definitions and the LOOP prompt, not the launcher.
+HOS_CRON_MAX_SECONDS="${HOS_CRON_MAX_SECONDS:-1800}"
+# Portable timeout (GNU `timeout` absent on macOS; `gtimeout` via coreutils)
+if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
+elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"
+else _TIMEOUT_BIN=""; fi
+
+# Headless cron sessions have no human to approve tool calls. bypassPermissions
+# clears the approval gate so the agent can run gh/git/bash unattended. The safety
+# net is the GitHub App's scoped permissions + the overseer's merge guardrails
+# (OVERSEER_CEILING, protected surfaces, human-required escalations) — NOT the CLI
+# permission gate. Chosen over --dangerously-skip-permissions, which refuses to run
+# as root and needs a separate enable flag (friction on unattended Linux servers).
+_claude_cmd=("$CLAUDE_BIN" --print --permission-mode bypassPermissions)
+[[ -n "${HOS_CRON_MAX_TURNS:-}" ]] && _claude_cmd+=(--max-turns "$HOS_CRON_MAX_TURNS")
+_run_claude() {  # stdin is inherited → passed through to claude
+  if [[ -n "$_TIMEOUT_BIN" && "$HOS_CRON_MAX_SECONDS" != "0" ]]; then
+    "$_TIMEOUT_BIN" "$HOS_CRON_MAX_SECONDS" "${_claude_cmd[@]}"
+  else
+    [[ -z "$_TIMEOUT_BIN" ]] && echo "$LOG_PREFIX WARN: no timeout/gtimeout — claude runs unbounded"
+    "${_claude_cmd[@]}"
+  fi
+}
+
 # ── Invoke Claude — stdin pipe avoids '---' being parsed as a CLI flag ───────
 # Capture the real exit code: under `set -e`, a bare failing command in an if-body
 # would abort the script before `$?` is read, so guard with `|| _claude_exit=$?`.
 PROMPT_FILE="$REPO_ROOT/bootstrap/${ROLE}-cron-prompt.md"
 _claude_exit=0
 if [[ -f "$PROMPT_FILE" ]]; then
-  "$CLAUDE_BIN" --print < "$PROMPT_FILE" || _claude_exit=$?
+  _run_claude < "$PROMPT_FILE" || _claude_exit=$?
 else
-  echo "Run the $ROLE LOOP for project $PROJECT." | "$CLAUDE_BIN" --print || _claude_exit=$?
+  echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
 fi
 
-if [[ $_claude_exit -ne 0 ]]; then
+if [[ $_claude_exit -eq 124 ]]; then
+  echo "$LOG_PREFIX claude TIMED OUT after ${HOS_CRON_MAX_SECONDS}s — session killed (no last-run written; will retry next fire)"
+  _audit cycle-claude-timeout "limit=$HOS_CRON_MAX_SECONDS"
+elif [[ $_claude_exit -ne 0 ]]; then
   echo "$LOG_PREFIX claude exited $_claude_exit — if auth-related, refresh the token: 'claude setup-token' → $_CLAUDE_AUTH_ENV"
   _audit cycle-claude-fail "exit=$_claude_exit"
 fi

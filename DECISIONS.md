@@ -19,15 +19,15 @@ This repo is the **system** and its single source of truth. Real apps (`tutelare
 - **Layer 2 — independent review (multiple agents)** 🔧: cross-vendor reviewers check the author's work, scaled by risk, ending in a human gate. Rationale: an AI is poor at catching its *own* class of mistakes — independence decorrelates errors.
 
 ### D4. The AIs and why cross-vendor
-- Claude (Max 20×): Opus = author; Haiku = triage/cheap review; Sonnet = arbiter.
-- OpenAI (ChatGPT Pro) via `codex`: independent reviewer / adversary at high risk.
-- Google (Gemini Pro) via `agy` (Antigravity): independent cross-vendor reviewer + breadth lens.
+- Claude (subscription): Opus = author; Haiku = triage/cheap review; Sonnet = arbiter.
+- OpenAI (ChatGPT) via `codex`: independent reviewer / adversary at high risk.
+- Google (Gemini) via `agy` (Antigravity): independent cross-vendor reviewer + breadth lens.
 - GitHub Copilot (free): supplemental native PR review at medium risk and up.
 
 Rule: **Opus authors, so Opus never reviews its own output.** At the highest risk the *independent* votes must be cross-vendor; same-vendor Claude tiers assist but don't count as the independent check.
 
 ### D5. Subscriptions, not API → the panel runs locally
-Max / ChatGPT Pro / Gemini Pro are **app/CLI subscriptions, not API keys.** To use the quota we pay for, each reviewer runs through its subscription-authenticated CLI. Those CLIs auth interactively (browser OAuth on the local machine), which CI can't hold — so the cross-vendor panel runs from a **local** command and posts findings to the PR, while CI handles deterministic gates + Copilot. Rejected: paying metered API to run the panel in CI (double-pays the subscriptions).
+Claude / ChatGPT / Gemini are **app/CLI subscriptions, not API keys.** To use the quota we pay for, each reviewer runs through its subscription-authenticated CLI. Those CLIs auth interactively (browser OAuth on the local machine), which CI can't hold — so the cross-vendor panel runs from a **local** command and posts findings to the PR, while CI handles deterministic gates + Copilot. Rejected: paying metered API to run the panel in CI (double-pays the subscriptions).
 
 ### D6. Risk model and the scrutiny dial
 Risk levels LOW / MEDIUM / HIGH / CRITICAL (per `AGENTS.md`) set how much scrutiny a change gets (self-flag/spot-check → cross-vendor reviewer + Copilot → security lens + line-by-line → adversary + blast radius + mandatory human). A **deterministic floor** (path globs, dep-manifest changes, diff size, coverage) the author can *raise* but can only *lower* with a second agent's or the human's concurrence.
@@ -70,13 +70,13 @@ The cross-vendor review panel (Layer 2, pipeline steps 7–10) is now specified.
 - **D15c — Trigger: manual first, hook later.** Ship as a manual local command (`./scripts/run_panel.sh [PR#]`); add an automatic trigger (git hook / `gh` alias / post-push) once the flow is proven. Lets us iterate without surprise CLI spend.
 - **D15d — Findings I/O: best-effort JSON now, retry if flaky.** Ask each reviewer for a JSON findings schema and parse best-effort (tolerate prose wrapping); add re-prompt-on-parse-failure only if it proves unreliable in practice.
 
-**Reviewer roster by risk (Opus is author → never reviews; refined by D18):** MEDIUM → 1 cross-vendor reviewer = **`agy`** (Antigravity's large context + breadth lens; conserves scarce ChatGPT Pro quota), lens: correctness. HIGH → `agy` (correctness) + `codex` (security) + `codex` (adversary/red-team), line-by-line. CRITICAL → same roster + blast-radius required + mandatory human gate. **Triage** = deterministic floor ∪ author `AI-Risk` trailer, confirmed/raised by **Haiku**; **arbiter** = **Sonnet** (synthesizes; not itself the independent check).
+**Reviewer roster by risk (Opus is author → never reviews; refined by D18):** MEDIUM → 1 cross-vendor reviewer = **`agy`** (Antigravity's large context + breadth lens; conserves scarce OpenAI subscription quota), lens: correctness. HIGH → `agy` (correctness) + `codex` (security) + `codex` (adversary/red-team), line-by-line. CRITICAL → same roster + blast-radius required + mandatory human gate. **Triage** = deterministic floor ∪ author `AI-Risk` trailer, confirmed/raised by **Haiku**; **arbiter** = **Sonnet** (synthesizes; not itself the independent check).
 
 ### D16. Copilot is the always-on baseline floor — on *every* PR (incl. LOW)
 
 We want an AI code review on **all** PRs, not just MEDIUM+. The right tool for that floor is **GitHub Copilot**, not a Claude model:
 
-- **Copilot reviews every PR automatically, in CI, for free of our subscription quotas.** It runs GitHub-native (repo ruleset / auto-request), so it covers even LOW changes that the local cross-vendor panel deliberately skips — without us driving it from `run_panel.sh` or spending Max/ChatGPT/Gemini quota. This *supersedes* the earlier "Copilot = supplemental, MEDIUM+ only" framing (D4): Copilot is now the **floor**, the cross-vendor panel is the **escalation**.
+- **Copilot reviews every PR automatically, in CI, for free of our subscription quotas.** It runs GitHub-native (repo ruleset / auto-request), so it covers even LOW changes that the local cross-vendor panel deliberately skips — without us driving it from `run_panel.sh` or spending Claude/ChatGPT/Gemini subscription quota. This *supersedes* the earlier "Copilot = supplemental, MEDIUM+ only" framing (D4): Copilot is now the **floor**, the cross-vendor panel is the **escalation**.
 - **Why not Sonnet as the everyday reviewer?** Reaffirming D4: Opus is the author, so **no Claude model can be the independent check** — same-vendor review correlates errors. Sonnet stays **arbiter-only** (synthesizes the cross-vendor reviews; never casts one). The independent votes remain `agy` / `codex`.
 - **Plan/cost (pilot):** **Copilot Pro at $10/mo** includes automatic code review on all PRs (Pro or Pro+ required; in an enabled repo Copilot reviews PRs regardless of author license). The metered constraint — not the $10 — is the premium-request quota: from **2026-06-01** each review costs a **13× multiplier** (~13 premium requests) and consumes GitHub Actions minutes, so Pro's ~300/mo allowance ≈ **~20+ PR reviews/month** (ample for a solo pilot; Pro+ at $39/mo if it ever exceeds that). Sources: GitHub Copilot docs/pricing + the 2026-04-27 changelog.
 
@@ -445,15 +445,15 @@ Author-supplied natural-language framing (PR title, description, commit message,
 
 ---
 
-## 2026-06-21 — Cron runs headless Claude on the Max subscription via OAuth token (#728)
+## 2026-06-21 — Cron runs headless Claude on the user's Claude subscription via OAuth token (#728)
 
-**Decision.** `bin/hos-cron` authenticates headless `claude --print` against the Max
-subscription using an explicit `CLAUDE_CODE_OAUTH_TOKEN`, sourced from a 0600 env
+**Decision.** `bin/hos-cron` authenticates headless `claude --print` against the user's
+Claude subscription using an explicit `CLAUDE_CODE_OAUTH_TOKEN`, sourced from a 0600 env
 file at `~/.config/hos/claude-auth.env` (generated by `claude setup-token`). The
 wrapper unsets `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` before invoking claude.
 
 **Misdiagnosis corrected.** An earlier brief concluded headless `claude --print`
-*must* bill pay-as-you-go API credits and that Max only covers interactive use.
+*must* bill pay-as-you-go API credits and that the subscription only covers interactive use.
 That was wrong. Headless runs on the subscription when given an OAuth token. The
 "Credit balance is too low" failure was the cron resolving to API-key billing
 (against an empty API account) because: (a) the live OAuth credential lives in the
@@ -471,14 +471,14 @@ wrapper independent of `~/.claude/.claude.json` (which kept getting stripped of
 **Also fixed.** Portable mkdir overlap-lock (macOS has no `flock`) with PID-liveness
 stale reclaim; a latent `set -e` bug where `_claude_exit=$?` could never capture a
 real claude failure; opt-in auth probe (`HOS_CRON_AUTH_PROBE=1`, default off to
-respect the weekly Max rate limit).
+respect the weekly subscription rate limit).
 
 **Rejected.** Adding API credits / setting `ANTHROPIC_API_KEY` in crontab (pays
 off-subscription, unnecessary). Rewriting the worker to call the Anthropic API/SDK
 directly (a custom client on subscription creds is a third-party app, hard-blocked
-from Max limits). Passing `--bare` (ignores the OAuth token, demands an API key).
+from subscription limits). Passing `--bare` (ignores the OAuth token, demands an API key).
 
 **Consequences.** Token from `claude setup-token` is valid ~1 year and does not
 auto-refresh; expiry surfaces as a claude non-zero exit with a refresh hint in the
-log. Headless fires draw from the same weekly Max rate limit as interactive use, so
+log. Headless fires draw from the same weekly subscription rate limit as interactive use, so
 idle-backoff suppression (#628) is load-bearing for cost control.

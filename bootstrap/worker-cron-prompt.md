@@ -3,18 +3,15 @@
 
 WORKING DIRECTORY: /Users/sthurlow/Code/HOS/Worker
 
-PREFLIGHT:
-```bash
-bash /Users/sthurlow/Code/HOS/Worker/bootstrap/validate_setup.sh --repo /Users/sthurlow/Code/HOS/Worker --quiet
-```
-If exits non-zero: emit "PREFLIGHT FAILED" and stop.
+ENVIRONMENT (already done by the bin/hos-cron launcher — do NOT repeat):
+The launcher has already: synced main (git fetch + ff-only pull), authenticated
+(`GH_TOKEN` and `HOS_BOT_LOGIN` are exported in your environment), passed the
+identity guard, and run the inner-loop test suite. Do not re-run preflight,
+re-authenticate, or `source` the token script — `gh` already works as the bot.
 
-AUTHENTICATE:
+IDENTITY (verify, don't re-auth):
 ```bash
-git -C /Users/sthurlow/Code/HOS/Worker fetch origin main --quiet
-git -C /Users/sthurlow/Code/HOS/Worker pull origin main --ff-only --quiet
-source <(bootstrap/get_app_token.sh --app worker 2>/dev/null)
-[ "$HOS_BOT_LOGIN" = "hos-worker-hos[bot]" ] || echo "WARN: bot auth failed"
+[ "$HOS_BOT_LOGIN" = "hos-worker-hos[bot]" ] || { echo "IDENTITY GUARD FAILED"; exit 1; }
 ```
 
 GITHUB API — REST only. FORBIDDEN: gh pr list, gh issue list, gh pr view --json.
