@@ -153,7 +153,7 @@ JSON_SCHEMA='Return JSON only — no prose outside the JSON block:
 } > "$OUTFILE"
 
 run_reviewer() {  # name, cli-kind
-    local name="$1" kind="$2" prompt out rc=0
+    local name="$1" kind="$2" prompt out rc=0 body reason
     prompt="${LENS}
 
 ${KNOWN}
@@ -167,8 +167,28 @@ ${JSON_SCHEMA/REVIEWER/$name}"
         agy)   run_capped "$AI_REVIEW_TIMEOUT" "$out" agy --sandbox -p "$prompt" || rc=$? ;;
         codex) printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" codex exec || rc=$? ;;
     esac
-    { echo "## ${name} — scripts lens"; echo '```json'; cat "$out" 2>/dev/null; echo '```'; echo ""; } >> "$OUTFILE"
+    body=$(cat "$out" 2>/dev/null)
     rm -f "$out"
+
+    # Fail-closed on a reviewer that hung, errored, or produced empty/whitespace
+    # output (#669). run_capped's rc was previously discarded, so a timeout (124)
+    # or nonzero exit left an empty $out that parsed to zero findings → approve →
+    # exit 0 (silent fail-open). Now: the REQUIRED Opus lane (the deterministic
+    # gate) synthesizes a BLOCKING finding so a hung/erroring reviewer cannot
+    # converge to PASS — even if an optional 3P lane is clean. agy/codex are
+    # optional 3P: a failure there is recorded as a non-blocking error (matching
+    # validate_agents.sh's hang-guard) and the review continues.
+    if [[ $rc -ne 0 || -z "${body//[[:space:]]/}" ]]; then
+        reason=$([[ $rc -eq 124 ]] && echo "timed out after ${AI_REVIEW_TIMEOUT}s" || echo "failed (rc=$rc) or produced empty output")
+        if [[ "$kind" == "opus" ]]; then
+            echo "  ERROR: required ${name} reviewer ${reason} — recording as BLOCKING (fail-closed, #669)" >&2
+            body='{"reviewer":"'"$name"'","lens":"scripts","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:'"$name"'>"],"description":"Required Opus scripts reviewer '"$reason"'; treated as a blocking finding so a hung/erroring deterministic reviewer cannot silently converge to PASS (#669).","fix":"Re-run validate_scripts.sh; if the failure recurs, investigate the reviewer hang/timeout before trusting the gate."}],"verdict":"request_changes","summary":"Required reviewer '"$reason"' — fail-closed (#669)."}'
+        else
+            echo "  WARN: ${name} reviewer ${reason} — recorded as error, continuing" >&2
+            body='{"reviewer":"'"$name"'","lens":"scripts","findings":[],"verdict":"error","summary":"'"$name"' '"$reason"' (hang guard)."}'
+        fi
+    fi
+    { echo "## ${name} — scripts lens"; echo '```json'; echo "$body"; echo '```'; echo ""; } >> "$OUTFILE"
 }
 
 echo "Collecting ${#FILES[@]} script(s) for review (pass ${PASS_NUM}/${MAX_PASSES})..."
@@ -179,18 +199,26 @@ if ! $SKIP_CODEX && command -v codex >/dev/null 2>&1; then echo "Running codex s
 
 # ── Aggregate verdict (ledger-aware: gate on NEW un-ledgered blocking) ─────────
 # Dedup fingerprinting + verdict aggregation delegated to validation_logic.py
-# (SPEC-334). No --strict-empty here: an empty parse → approve/exit-0 (scripts
-# compat, binding 7). The canonical 7-rank severity ordering applies — critical/
-# high are no longer collapsed to blocking, so highest_severity now reports the
-# true rank (AC-1). The pass-cap exit-code decision moves into this shell below
-# (binding 3) — the module never emits verdict exit codes.
+# (SPEC-334). --strict-empty (#669): an empty/malformed parse → verdict=error, NOT
+# approve. The old "no --strict-empty / empty→approve" scripts compat was a
+# fail-open bug — a reviewer that hung or errored produced zero findings and exit 0.
+# The canonical 7-rank severity ordering applies — critical/high are no longer
+# collapsed to blocking, so highest_severity reports the true rank (AC-1). The
+# pass-cap exit-code decision stays in this shell (binding 3) — the module never
+# emits verdict exit codes.
 python3 "$VALIDATION_LOGIC" process \
-    --file "$OUTFILE" --ledger "$LEDGER"
+    --file "$OUTFILE" --ledger "$LEDGER" --strict-empty
 
+VERDICT=$(grep '^verdict:' "$OUTFILE" | head -1 | awk '{print $2}')
 NEW=$(grep '^new_blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')
-if   [[ "${NEW:-0}" -eq 0 ]];             then rc=0   # converged — zero NEW blocking
-elif [[ "$PASS_NUM" -ge "$MAX_PASSES" ]]; then rc=3   # pass cap hit, NEW remain → escalate
-else                                           rc=1   # NEW remain, under cap → fail/retry
+# Converge ONLY on an explicit approve (zero NEW blocking AND the reviewers
+# actually produced parseable output). Reading new_blocking_count alone was the
+# fail-open: an empty parse leaves it 0 even though verdict=error (#669). Any
+# non-approve verdict — request_changes (NEW blocking) or error (empty/malformed) —
+# is non-converged and fails closed.
+if   [[ "$VERDICT" == "approve" ]];       then rc=0   # converged — zero NEW blocking, real output
+elif [[ "$PASS_NUM" -ge "$MAX_PASSES" ]]; then rc=3   # pass cap hit, still non-converged → escalate
+else                                           rc=1   # non-converged, under cap → fail/retry
 fi
 
 echo ""
@@ -198,8 +226,11 @@ echo "Output: $OUTFILE"
 if [[ $rc -eq 0 ]]; then
     echo "  PASS — converged (zero NEW blocking script findings)"
 elif [[ $rc -eq 3 ]]; then
-    echo "  ESCALATE — pass cap ($MAX_PASSES) hit, still NEW blocking. A human decides (fix / file / accept)."
+    echo "  ESCALATE — pass cap ($MAX_PASSES) hit, still non-converged (verdict=${VERDICT:-?}). A human decides (fix / file / accept)."
     echo "  Triage, then: $0 --record \"file.sh\" <class> <fixed|filed:#N|residual>; re-run."
+elif [[ "$VERDICT" == "error" ]]; then
+    echo "  SCRIPT-REVIEW FAIL — reviewer output empty/malformed (verdict=error, pass $PASS_NUM/$MAX_PASSES)."
+    echo "  A required reviewer likely hung or errored; the gate fails closed (#669). Re-run; investigate if it recurs."
 else
     echo "  SCRIPT-REVIEW FAIL — NEW blocking findings (pass $PASS_NUM/$MAX_PASSES). Triage + record, re-run."
 fi
