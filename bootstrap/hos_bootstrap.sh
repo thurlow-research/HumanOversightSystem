@@ -200,6 +200,23 @@ install_scancode() {
 }
 install_scancode
 
+# ── 2b. timeout binary — cron per-fire wall-clock bound (#728) ───────────────
+# bin/hos-cron caps each claude session with `timeout`/`gtimeout`. Linux ships
+# `timeout` in coreutils by default; macOS needs `gtimeout` via `brew coreutils`.
+header "2b. timeout binary (coreutils)"
+if command -v timeout &>/dev/null || command -v gtimeout &>/dev/null; then
+  ok "timeout available ($(command -v timeout || command -v gtimeout))"
+else
+  case "$OS-$PKG_MGR" in
+    macos-brew) info "Installing coreutils (provides gtimeout) via brew..."; run "brew install coreutils 2>/dev/null || true" ;;
+    linux-*)    warn "no timeout found — install coreutils (it normally ships with the base system)" ;;
+    *)          warn "no timeout/gtimeout — bin/hos-cron will run claude unbounded (no per-fire wall-clock cap)" ;;
+  esac
+  command -v timeout &>/dev/null || command -v gtimeout &>/dev/null \
+    && ok "timeout now available" \
+    || warn "timeout still unavailable — cron sessions run unbounded until coreutils is installed"
+fi
+
 # ── 3. GitHub CLI (gh) ────────────────────────────────────────────────────────
 header "3. GitHub CLI (gh)"
 if command -v gh &>/dev/null; then

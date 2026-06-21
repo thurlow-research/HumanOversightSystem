@@ -27,9 +27,9 @@
 #
 # Tools (subscription / browser auth — NOT API keys):
 #   node@22  via nvm                       (runtime for the npm CLIs)
-#   claude   @anthropic-ai/claude-code     (Claude Max)
-#   codex    @openai/codex                 (ChatGPT Pro)
-#   agy      Antigravity CLI (Go binary)   (Gemini Pro / Google) [replaces gemini-cli]
+#   claude   @anthropic-ai/claude-code     (Claude subscription)
+#   codex    @openai/codex                 (ChatGPT subscription)
+#   agy      Antigravity CLI (Go binary)   (Gemini / Google) [replaces gemini-cli]
 #   gh       GitHub CLI                    (PR ops + Copilot PR review)
 #
 # Idempotent: re-running skips anything already installed/authenticated.
@@ -157,7 +157,7 @@ authed_gh()     { gh auth status >/dev/null 2>&1; }
 # ── Interactive sign-in (fires up a browser session) ──────────────────────────
 auth_claude() {
   if authed_claude; then ok "claude already authenticated"; return; fi
-  warn "claude: launching browser sign-in (Claude Max)..."
+  warn "claude: launching browser sign-in (Claude subscription)..."
   claude auth login || true
   authed_claude && ok "claude authenticated" || err "claude auth incomplete — re-run: $0 auth"
 }
@@ -170,7 +170,7 @@ auth_gh() {
 auth_codex() {
   command -v codex >/dev/null 2>&1 || { err "codex not installed — run: $0 install"; return; }
   if authed_codex; then ok "codex already authenticated"; return; fi
-  warn "codex: launching 'Sign in with ChatGPT' (ChatGPT Pro)..."
+  warn "codex: launching 'Sign in with ChatGPT' (ChatGPT subscription)..."
   codex login || true            # verified: codex 0.135 — 'codex login' / 'codex login status'
   authed_codex && ok "codex authenticated" || err "codex auth incomplete — re-run: $0 auth"
 }
@@ -191,8 +191,8 @@ auth_agy() {
 phase_install() {
   echo -e "${BOLD}Install — Node 22 + agent CLIs${RESET}"
   install_node
-  install_npm_tool claude "@anthropic-ai/claude-code" "claude (Claude Max)"
-  install_npm_tool codex  "@openai/codex"             "codex (ChatGPT Pro)"
+  install_npm_tool claude "@anthropic-ai/claude-code" "claude (Claude subscription)"
+  install_npm_tool codex  "@openai/codex"             "codex (ChatGPT subscription)"
   install_agy
   install_gh
 }
