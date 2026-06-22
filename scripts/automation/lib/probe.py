@@ -10,6 +10,15 @@ Key constraints:
   - Probe runs ONLY after activation + hos-halt pass (gate ordering, §11)
   - Per-customer API-call quota: default 300 calls / rolling 1h (O15)
   - Round-robin + staggered start times across repos (R12.2, O15)
+
+Probe strategies (#619):
+  - STRATEGY_HOS_COORDINATION (default): consumer repos — open issues labeled
+    hos-coordination, with actor verification (R4.1.4). Use for all customer
+    deployments.
+  - STRATEGY_MILESTONE: HOS self-development — open issues in a GitHub milestone
+    with needs-ai label. No actor verification; milestone assignment is the
+    authorization. Enables the orchestrator to serve as the coordinator for HOS
+    self-development, unblocking eventual LOOP retirement.
 """
 
 from __future__ import annotations
@@ -47,6 +56,10 @@ API_WINDOW_HOURS = 1.0
 
 # Priority-pin max duration before escalating to needs-human (R10.4)
 PIN_MAX_HOURS = 72
+
+# Probe strategy identifiers (#619)
+STRATEGY_HOS_COORDINATION = "hos-coordination"
+STRATEGY_MILESTONE = "milestone"
 
 
 @dataclass
@@ -241,19 +254,31 @@ def probe_repo(
     owner: str,
     repo: str,
     repo_id: str,
-    requester_allowlist: list[str],
+    requester_allowlist: list[str] = (),
     floor_minutes: int = 15,
     ceiling_hours: int = 24,
     api_budget: int = DEFAULT_API_BUDGET_PER_HOUR,
     customer: str = "",
     repo_root: str = ".",
+    probe_strategy: str = STRATEGY_HOS_COORDINATION,
+    milestone: Optional[int] = None,
 ) -> list[WorkCandidate]:
     """
     Probe a single repo for work candidates. Returns a list of WorkCandidate items.
 
     Never calls Search API. Respects per-customer API quota.
     Blast-radius pre-check runs before any API call (cheap local read).
+
+    probe_strategy: STRATEGY_HOS_COORDINATION (default) or STRATEGY_MILESTONE.
+    milestone: GitHub milestone number; required when probe_strategy=STRATEGY_MILESTONE.
+    requester_allowlist: allowlisted actors for hos-coordination strategy; unused
+        for milestone strategy.
     """
+    if probe_strategy == STRATEGY_MILESTONE and milestone is None:
+        raise ValueError(
+            "milestone is required when probe_strategy=STRATEGY_MILESTONE"
+        )
+
     # Blast-radius pre-check (R11.2) — read the rolling-24h ledger
     if customer:
         blast = sum_window_blast_radius(customer, window_hours=24.0, repo_root=repo_root)
@@ -284,52 +309,87 @@ def probe_repo(
             pass
 
     candidates: list[WorkCandidate] = []
-
-    # REST probe: open issues labeled hos-coordination updated recently
     since = state.last_poll or ""
-    query = f"/repos/{owner}/{repo}/issues?state=open&labels=hos-coordination&per_page=50"
-    if since:
-        query += f"&since={since}"
+    activity_found = False
 
-    try:
-        issues = _run_gh([query]) or []
-        _record_api_call(repo_id, count=1, repo_root=repo_root)
-    except GitHubError:
-        return candidates
-
-    activity_found = bool(issues)
-
-    for issue in issues:
-        issue_number = issue.get("number")
-        if not issue_number:
-            continue
-
-        # Verify the hos-coordination label was applied by an allowed actor (R4.1.4)
-        actor = _verify_label_actor(
-            owner, repo, issue_number,
-            "hos-coordination", requester_allowlist,
+    if probe_strategy == STRATEGY_MILESTONE:
+        # Milestone strategy: query by milestone number + needs-ai label.
+        # No actor verification — milestone assignment is the authorization signal.
+        query = (
+            f"/repos/{owner}/{repo}/issues"
+            f"?state=open&milestone={milestone}&labels=needs-ai&per_page=50"
         )
-        _record_api_call(repo_id, count=1, repo_root=repo_root)
+        if since:
+            query += f"&since={since}"
 
-        if actor is None:
-            continue  # Label applied by non-allowlisted actor — skip
+        try:
+            issues = _run_gh([query]) or []
+            _record_api_call(repo_id, count=1, repo_root=repo_root)
+        except GitHubError:
+            return candidates
 
-        labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
-        candidates.append(WorkCandidate(
-            owner=owner,
-            repo=repo,
-            issue_number=issue_number,
-            issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
-            labels=labels,
-            actor=actor,
-        ))
+        activity_found = bool(issues)
+
+        for issue in issues:
+            issue_number = issue.get("number")
+            if not issue_number:
+                continue
+            labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
+            candidates.append(WorkCandidate(
+                owner=owner,
+                repo=repo,
+                issue_number=issue_number,
+                issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
+                labels=labels,
+                actor=None,  # milestone strategy — no individual actor
+            ))
+
+    else:
+        # hos-coordination strategy (default): actor verification required (R4.1.4)
+        query = (
+            f"/repos/{owner}/{repo}/issues"
+            f"?state=open&labels=hos-coordination&per_page=50"
+        )
+        if since:
+            query += f"&since={since}"
+
+        try:
+            issues = _run_gh([query]) or []
+            _record_api_call(repo_id, count=1, repo_root=repo_root)
+        except GitHubError:
+            return candidates
+
+        activity_found = bool(issues)
+
+        for issue in issues:
+            issue_number = issue.get("number")
+            if not issue_number:
+                continue
+
+            # Verify the hos-coordination label was applied by an allowed actor (R4.1.4)
+            actor = _verify_label_actor(
+                owner, repo, issue_number,
+                "hos-coordination", requester_allowlist,
+            )
+            _record_api_call(repo_id, count=1, repo_root=repo_root)
+
+            if actor is None:
+                continue  # Label applied by non-allowlisted actor — skip
+
+            labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
+            candidates.append(WorkCandidate(
+                owner=owner,
+                repo=repo,
+                issue_number=issue_number,
+                issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
+                labels=labels,
+                actor=actor,
+            ))
 
     # Update cadence state
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if activity_found:
         state.backoff_level = 0
-        if state.pinned is False:
-            pass  # Reset already handled
     else:
         state.backoff_level = min(state.backoff_level + 1, 10)
 
