@@ -26,6 +26,7 @@ from typing import Optional
 from scripts.automation.lib.github import (
     GitHubError,
     get_branch_protection,
+    post_comment,
     _run_gh,
 )
 
@@ -482,11 +483,7 @@ def route_embargo(
         "until coordinated disclosure is complete. Thank you for the report."
     )
     try:
-        _run_gh([
-            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
-            "--method", "POST",
-            "--field", f"body={ack_body}",
-        ])
+        post_comment(owner, repo, issue_number, ack_body)
         _run_gh([
             f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
             "--method", "POST",
