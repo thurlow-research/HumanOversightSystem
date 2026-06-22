@@ -62,6 +62,32 @@ If inner-loop tests fail: fix the failures before opening a PR. Do NOT open a PR
 
 **Step 5:** Open PR (≤15 files, ≤10 commits), then STOP.
 
+**PR attribution (AGENTS.md §Pull Request Attribution — never omit):**
+
+- **Title prefix:** `[AI: hos-worker-hos[bot]]` — e.g., `[AI: hos-worker-hos[bot]] fix: stale claim detection (#754)`
+- **Body:** the `## 🤖 AI-Submitted Pull Request` block must appear before all other content:
+  ```markdown
+  ## 🤖 AI-Submitted Pull Request
+
+  This PR was **created and submitted by AI**. A human did not manually write or submit this PR.
+
+  | | |
+  |---|---|
+  | **Submitted by** | `hos-worker-hos[bot]` |
+  | **Model** | `claude-sonnet-4-6` |
+  | **Submitted** | YYYY-MM-DD |
+  | **Human review required** | yes — overseer reviews; human authorization required for MEDIUM+ risk |
+  ```
+
+**Commit trailers (every commit with AI-generated code, no exceptions):**
+```
+Prompt-Artifact: none (LOW risk)
+AI-Model: claude-sonnet-4-6
+AI-Risk: LOW
+Supervised-by: ScottThurlow
+```
+Adjust `AI-Risk` to the actual risk tier. For MEDIUM+, set `Prompt-Artifact` to the artifact path.
+
 IDENTITY GUARD: `[ "$HOS_BOT_LOGIN" = "hos-worker-hos[bot]" ] || exit 1`
 
 Emit turn header: `---\n**Role: HOS Worker Agent | <UTC timestamp>**`

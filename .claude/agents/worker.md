@@ -230,13 +230,13 @@ Follow the per-task worker chain exactly:
 8.5. **Oversight-evaluator dispatch** — dispatch `oversight-evaluator`. Produces a verdict (PROCEED / CONDITIONAL_PROCEED / ESCALATE) written to `.claudetmp/signoffs/`. Do not open a PR before this verdict exists.
 8.7. **Inner-loop test gate (blocks PR creation, #701)** — run `bash scripts/framework/run_tests_inner_loop.sh`. This is a HARD GATE: exit non-zero → do NOT open a PR. Fix all test failures, then re-run until passing. Do NOT skip this step or open a PR with failing tests. ("It compiled" is not sufficient — the test suite is the minimum bar for professional confidence in the code.)
 8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
-9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0.
+9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0. **Attribution (AGENTS.md §Pull Request Attribution — never omit):** prefix the title with `[AI: hos-worker-hos[bot]]`; prepend the `## 🤖 AI-Submitted Pull Request` metadata block to the body before all other content (submitted-by, model, date, human-review note — exact format in AGENTS.md §Pull Request Attribution).
 9b. **Doc currency check** — if the work modified documented behavior, post a note in the PR description listing which docs need updating. The overseer's merge decision requires docs to be current — a PR whose behavior differs from its documentation will not be auto-merged.
 10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label.
 
 ### Credentials (autonomous)
 
-Git and gh operations run under `hos-worker-hos[bot]` (GitHub App). Commits carry `Supervised-by: ScottThurlow`. Authenticate before each session: `source <(bootstrap/get_app_token.sh --app worker)` — this sets `GH_TOKEN` (installation token) and `HOS_BOT_LOGIN=hos-worker-hos[bot]` in the shell.
+Git and gh operations run under `hos-worker-hos[bot]` (GitHub App). Commits must carry the full trailer set: `Prompt-Artifact`, `AI-Model`, `AI-Risk`, and `Supervised-by: ScottThurlow` (see AGENTS.md §Git Commit Trailer Convention for exact format). Authenticate before each session: `source <(bootstrap/get_app_token.sh --app worker)` — this sets `GH_TOKEN` (installation token) and `HOS_BOT_LOGIN=hos-worker-hos[bot]` in the shell.
 
 **Identity guard — HARD STOP (both modes, no exceptions, #363):**
 
