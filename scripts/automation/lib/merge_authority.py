@@ -32,24 +32,45 @@ from scripts.automation.lib.github import (
 logger = logging.getLogger(__name__)
 
 
-def has_human_approval(reviews: list[dict], human_reviewer: str = "ScottThurlow") -> bool:
+def _find_human_approval(
+    reviews: list[dict],
+    human_reviewer: str = "ScottThurlow",
+    head_sha: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Find the first APPROVED review from the authorized human reviewer.
+
+    If head_sha is provided, only a review whose commit_id matches head_sha
+    counts — a stale approval from before a later push is rejected (defends
+    the push-after-approval race; see issue #741 safety condition 2).
+    """
+    for review in reviews:
+        if (review.get("state") == "APPROVED" and
+                review.get("user", {}).get("login", "").lower() == human_reviewer.lower()):
+            if head_sha is not None and review.get("commit_id") != head_sha:
+                continue  # Stale approval — not for the current head
+            return review
+    return None
+
+
+def has_human_approval(
+    reviews: list[dict],
+    human_reviewer: str = "ScottThurlow",
+    head_sha: Optional[str] = None,
+) -> bool:
     """
     Check if PR has an APPROVED review from the specified human.
 
     Args:
         reviews: List of PR review dicts from GitHub API (GET /pulls/{n}/reviews).
         human_reviewer: GitHub login of the authorized human reviewer.
+        head_sha: If provided, only an approval on this exact commit counts.
+            An approval from before a later push is rejected (issue #741).
 
     Returns:
-        True if any review has state == "APPROVED" and is from the human_reviewer.
+        True if a qualifying APPROVED review exists from the human_reviewer.
     """
-    if not reviews:
-        return False
-    for review in reviews:
-        if (review.get("state") == "APPROVED" and
-            review.get("user", {}).get("login", "").lower() == human_reviewer.lower()):
-            return True
-    return False
+    return _find_human_approval(reviews, human_reviewer, head_sha) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +298,7 @@ def decide_merge_authority(
     repo_root: str = ".",
     reviews: list[dict] = None,      # PR reviews from GitHub API; enables human-approval override
     human_reviewer: str = "ScottThurlow",  # Human who can approve protected-surface PRs
+    head_sha: Optional[str] = None,  # Current PR head SHA; stale approvals (wrong SHA) are rejected
 ) -> MergeAuthorityResult:
     """
     Decide what the automation may do with this PR.
@@ -284,12 +306,21 @@ def decide_merge_authority(
     R9.1.1: calls detect_server_side_gate immediately before merge decision —
     never trusts a cached result.
 
-    Issue #589: If decision would be HUMAN_REQUIRED due to protected-surface
-    and human has approved, override to AUTO_MERGE (human approval satisfies
-    the protected-surface gate).
+    Issues #589 / #741: If decision would be HUMAN_REQUIRED due to a
+    protected-surface or security-relevant flag, and a verified human maintainer
+    has already approved the PR on the current head SHA, the authorization
+    condition is satisfied — the overseer may execute the merge as mechanical
+    delivery of that human decision.  The authorship-separation and server-side
+    gate checks still run.  The audit reason records the authorizing maintainer
+    and the approved SHA.
     """
     if reviews is None:
         reviews = []
+
+    # Tracks the human-authorization string for the audit trail when a human
+    # approval satisfies the protected-surface or security-relevant gate.
+    human_auth_reason: Optional[str] = None
+
     # No-release guard (NG3b)
     if _is_release_related(pr_title, changed_files):
         return MergeAuthorityResult(
@@ -324,18 +355,39 @@ def decide_merge_authority(
             labels_to_add=["needs-human"],
         )
 
-    # Security-relevant → human regardless of tier
+    # Security-relevant: requires human approval.  If a verified human has
+    # already approved the current head SHA, authorization is satisfied and
+    # the overseer may execute the merge (#741).
     if security_relevant:
-        return MergeAuthorityResult(
-            decision=MergeDecision.HUMAN_REQUIRED,
-            reason="Security-relevant change — human approval required",
-            labels_to_add=["needs-human"],
-        )
+        approval = _find_human_approval(reviews, human_reviewer, head_sha)
+        if approval:
+            approver = approval.get("user", {}).get("login", human_reviewer)
+            approved_sha = approval.get("commit_id", "unknown")
+            human_auth_reason = f"human authorization (approval by {approver} on {approved_sha})"
+            logger.info(
+                "Security-relevant PR has human approval from %s on %s; overseer may execute merge",
+                approver, approved_sha,
+            )
+        else:
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason="Security-relevant change — human approval required",
+                labels_to_add=["needs-human"],
+            )
 
-    # Protected surface → check for human approval (Issue #589)
+    # Protected surface: requires human approval.  Same treatment as
+    # security-relevant — a verified maintainer approval on the current head
+    # satisfies the authorization condition (#589, #741).
     if _touches_protected_surface(changed_files, repo_root):
-        if has_human_approval(reviews, human_reviewer):
-            logger.info(f"Protected-surface PR has human approval from {human_reviewer}; allowing auto-merge")
+        approval = _find_human_approval(reviews, human_reviewer, head_sha)
+        if approval:
+            approver = approval.get("user", {}).get("login", human_reviewer)
+            approved_sha = approval.get("commit_id", "unknown")
+            human_auth_reason = f"human authorization (approval by {approver} on {approved_sha})"
+            logger.info(
+                "Protected-surface PR has human approval from %s on %s; overseer may execute merge",
+                approver, approved_sha,
+            )
         else:
             return MergeAuthorityResult(
                 decision=MergeDecision.HUMAN_REQUIRED,
@@ -359,13 +411,17 @@ def decide_merge_authority(
             reason=f"Server-side gate not detected ({gate.reason})",
         )
 
+    merge_reason = (
+        f"Auto-merge approved: tier={risk_tier.name}, "
+        f"ceiling={overseer_ceiling.name}, verdict=PROCEED, "
+        f"gate=detected"
+    )
+    if human_auth_reason:
+        merge_reason += f"; merged by overseer under {human_auth_reason}"
+
     return MergeAuthorityResult(
         decision=MergeDecision.AUTO_MERGE,
-        reason=(
-            f"Auto-merge approved: tier={risk_tier.name}, "
-            f"ceiling={overseer_ceiling.name}, verdict=PROCEED, "
-            f"gate=detected"
-        ),
+        reason=merge_reason,
     )
 
 
