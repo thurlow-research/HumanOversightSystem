@@ -281,6 +281,9 @@ def _verify_authorship_separation(
 # Main decision function
 # ---------------------------------------------------------------------------
 
+_HUMAN_GATE_LABELS = frozenset({"needs-human", "hos-halt"})
+
+
 def decide_merge_authority(
     owner: str,
     repo: str,
@@ -300,6 +303,7 @@ def decide_merge_authority(
     reviews: list[dict] = None,      # PR reviews from GitHub API; enables human-approval override
     human_reviewer: str = "ScottThurlow",  # Human who can approve protected-surface PRs
     head_sha: Optional[str] = None,  # Current PR head SHA; stale approvals (wrong SHA) are rejected
+    pr_labels: list[str] = None,     # Labels on the PR; needs-human/hos-halt block AUTO_MERGE (#756)
 ) -> MergeAuthorityResult:
     """
     Decide what the automation may do with this PR.
@@ -321,6 +325,17 @@ def decide_merge_authority(
     # Tracks the human-authorization string for the audit trail when a human
     # approval satisfies the protected-surface or security-relevant gate.
     human_auth_reason: Optional[str] = None
+
+    # Hard pre-merge label guard (#756): needs-human and hos-halt are blocking
+    # regardless of risk tier, protected-surface status, or any other signal.
+    if pr_labels:
+        blocking = _HUMAN_GATE_LABELS & {lbl.lower() for lbl in pr_labels}
+        if blocking:
+            label_str = ", ".join(sorted(blocking))
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason=f"PR carries blocking label(s) [{label_str}] — human authorization required (#756)",
+            )
 
     # No-release guard (NG3b)
     if _is_release_related(pr_title, changed_files):
