@@ -534,6 +534,64 @@ class TestDecideMergeAuthority:
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
 
+    def test_protected_surface_without_human_approval(self, tmp_path):
+        # Create protected_surfaces.txt to mark .claude/agents/worker.md as protected
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".claude/agents/worker.md"]},
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "needs-human" in result.labels_to_add
+
+    def test_protected_surface_with_human_approval_allows_auto_merge(self, tmp_path):
+        # Create protected_surfaces.txt
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        # Human approval review
+        human_review = [
+            {
+                "state": "APPROVED",
+                "user": {"login": "ScottThurlow"},
+            }
+        ]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".claude/agents/worker.md"]},
+                repo_root=str(tmp_path),
+                reviews=human_review,
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_protected_surface_ignores_non_human_approvals(self, tmp_path):
+        # Create protected_surfaces.txt
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        # Approval from a bot, not the human
+        bot_review = [
+            {
+                "state": "APPROVED",
+                "user": {"login": "hos-overseer-hos[bot]"},
+            }
+        ]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".claude/agents/worker.md"]},
+                repo_root=str(tmp_path),
+                reviews=bot_review,
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
 
 class TestRiskTierEnum:
     def test_ordering(self):

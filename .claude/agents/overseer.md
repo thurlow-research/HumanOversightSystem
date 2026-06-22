@@ -206,6 +206,16 @@ For each PR found:
 
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
 
+   **Issue #589 — human approval override for protected surfaces:**
+   Before calling `decide_merge_authority()`, fetch the PR's reviews via:
+   ```
+   GET /repos/{o}/{r}/pulls/{n}/reviews
+   ```
+   Pass the reviews list to `decide_merge_authority(..., reviews=<reviews_list>)`.
+   If the PR touches a protected surface and has an APPROVED review from HUMAN_REVIEWER
+   (ScottThurlow), the function will allow auto-merge (bypassing the human-gate).
+   Log this as `human-approval-detected` in the audit trail.
+
    **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
    - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
    - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection

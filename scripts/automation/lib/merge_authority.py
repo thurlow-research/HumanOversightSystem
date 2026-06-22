@@ -32,6 +32,26 @@ from scripts.automation.lib.github import (
 logger = logging.getLogger(__name__)
 
 
+def has_human_approval(reviews: list[dict], human_reviewer: str = "ScottThurlow") -> bool:
+    """
+    Check if PR has an APPROVED review from the specified human.
+
+    Args:
+        reviews: List of PR review dicts from GitHub API (GET /pulls/{n}/reviews).
+        human_reviewer: GitHub login of the authorized human reviewer.
+
+    Returns:
+        True if any review has state == "APPROVED" and is from the human_reviewer.
+    """
+    if not reviews:
+        return False
+    for review in reviews:
+        if (review.get("state") == "APPROVED" and
+            review.get("user", {}).get("login", "").lower() == human_reviewer.lower()):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Re-export from B4 detection half
 # ---------------------------------------------------------------------------
@@ -255,13 +275,21 @@ def decide_merge_authority(
     overseer_ceiling: RiskTier = RiskTier.LOW,
     default_branch: str = "main",
     repo_root: str = ".",
+    reviews: list[dict] = None,      # PR reviews from GitHub API; enables human-approval override
+    human_reviewer: str = "ScottThurlow",  # Human who can approve protected-surface PRs
 ) -> MergeAuthorityResult:
     """
     Decide what the automation may do with this PR.
 
     R9.1.1: calls detect_server_side_gate immediately before merge decision —
     never trusts a cached result.
+
+    Issue #589: If decision would be HUMAN_REQUIRED due to protected-surface
+    and human has approved, override to AUTO_MERGE (human approval satisfies
+    the protected-surface gate).
     """
+    if reviews is None:
+        reviews = []
     # No-release guard (NG3b)
     if _is_release_related(pr_title, changed_files):
         return MergeAuthorityResult(
@@ -304,13 +332,16 @@ def decide_merge_authority(
             labels_to_add=["needs-human"],
         )
 
-    # Protected surface → human regardless of tier
+    # Protected surface → check for human approval (Issue #589)
     if _touches_protected_surface(changed_files, repo_root):
-        return MergeAuthorityResult(
-            decision=MergeDecision.HUMAN_REQUIRED,
-            reason="PR touches a protected surface — human approval required",
-            labels_to_add=["needs-human"],
-        )
+        if has_human_approval(reviews, human_reviewer):
+            logger.info(f"Protected-surface PR has human approval from {human_reviewer}; allowing auto-merge")
+        else:
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason="PR touches a protected surface — human approval required",
+                labels_to_add=["needs-human"],
+            )
 
     # Authorship backstop (R9.1.4)
     if pr_author and not _verify_authorship_separation(pr_author, overseer_handle, worker_handle):
