@@ -224,7 +224,7 @@ PANEL_LEDGER=".ai-local/panel/pr${PR}-ledger.jsonl"
 
 # SPEC-78: post-parse dispatch for --record and --reset (C4/C5/C6).
 # Resolved here because PR is now known. These short-circuit before any review runs.
-_VL_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/validation_logic.py"
+_VL_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/validation_logic.py"
 [[ -f "$_VL_PY" ]] || _VL_PY="scripts/oversight/validation_logic.py"
 if [[ "$_PANEL_SUBCMD" == "record" ]]; then
     [[ -z "$_REC_FILES" || -z "$_REC_CLASS" || -z "$_REC_DISP" ]] && {

@@ -93,7 +93,7 @@ for agent in risk-assessor dep-mapper risk-historian oversight-evaluator oversig
 done
 
 # Key scripts
-CONTEXT+=$(build_section "install.sh"                                    "install.sh")
+CONTEXT+=$(build_section "scripts/framework/install.sh"                  "scripts/framework/install.sh")
 CONTEXT+=$(build_section "scripts/run_second_review.sh"                  "scripts/run_second_review.sh")
 CONTEXT+=$(build_section "scripts/run_red_team.sh"                       "scripts/run_red_team.sh")
 CONTEXT+=$(build_section "scripts/oversight/run_validators.sh"            "scripts/oversight/run_validators.sh")
