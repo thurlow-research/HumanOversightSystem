@@ -73,7 +73,7 @@ if [[ -z "$BOOTSTRAP_SHA" || -z "$FIXES_SHA" ]]; then
         scripts/run_second_review.sh \
         scripts/run_red_team.sh \
         scripts/run_panel.sh \
-        install.sh \
+        scripts/framework/install.sh \
         .claude/agents/oversight-evaluator.md \
         .claude/agents/risk-assessor.md \
         contract/OVERSIGHT-CONTRACT.md \
@@ -86,7 +86,7 @@ else
         scripts/run_second_review.sh \
         scripts/run_red_team.sh \
         scripts/run_panel.sh \
-        install.sh \
+        scripts/framework/install.sh \
         .claude/agents/oversight-evaluator.md \
         .claude/agents/risk-assessor.md \
         contract/OVERSIGHT-CONTRACT.md \

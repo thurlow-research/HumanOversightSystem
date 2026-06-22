@@ -682,14 +682,14 @@ else
     run mkdir -p "$(dirname "$_subst_config")"
     [[ -f "$_subst_config" ]] || printf '# HOS project config — values substituted into .claude/agents/*.md\n' > "$_subst_config"
   fi
-  for _n in "${_names[@]}"; do
+  for _n in "${_names[@]+"${_names[@]}"}"; do
     if [[ -f "$_subst_config" ]] && grep -qE "^${_n}=" "$_subst_config" 2>/dev/null; then continue; fi
     if $DRY_RUN; then dry_run "Would append ${_n}=\"\" to config.sh"; else printf '%s=""\n' "$_n" >> "$_subst_config"; fi
     _appended+=("$_n")
   done
 
   # Build perl substitutions: env override > config.sh value. Missing → leave token.
-  for _n in "${_names[@]}"; do
+  for _n in "${_names[@]+"${_names[@]}"}"; do
     _val="${!_n:-}"
     if [[ -z "$_val" && -f "$_subst_config" ]]; then
       _val=$(grep -E "^${_n}=" "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//')
@@ -858,7 +858,7 @@ PYEOF
 
     # Write the marked disk image: migrate the flat file first, then inject PROJECT body
     if [[ -f "$_REGIONS_PY_BF" ]]; then
-      local _marked_tmp; _marked_tmp="$(mktemp "${TMPDIR:-/tmp}/hos-bf.XXXXXX.md")"
+      local _marked_tmp; _marked_tmp="$(mktemp "${TMPDIR:-/tmp}/hos-bf.XXXXXX")"
       python3 "$_REGIONS_PY_BF" migrate "$_agent_md" --ships yes > "$_marked_tmp" 2>/dev/null || true
       if [[ -s "$_marked_tmp" ]]; then
         cp "$_marked_tmp" "$_agent_md"
@@ -1425,7 +1425,7 @@ if [[ -f "$_manifest" ]]; then
   # installer doesn't scaffold, so it shouldn't warn here).
   [[ ${#_appended[@]} -gt 0 ]] && warn "Added new placeholder key(s) to config.sh: ${_appended[*]}"
   _remaining=()
-  for _n in "${_names[@]}"; do
+  for _n in "${_names[@]+"${_names[@]}"}"; do
     grep -rqE "\{${_n}\}" "$TARGET_REPO/.claude/agents" 2>/dev/null && _remaining+=("$_n")
   done
   if [[ ${#_remaining[@]} -gt 0 ]]; then

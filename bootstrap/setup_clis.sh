@@ -49,7 +49,9 @@ ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
 skip() { echo -e "  ${YELLOW}–${RESET}  $*"; }
 info() { echo -e "  ${CYAN}→${RESET}  $*"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
-err()  { echo -e "  ${RED}✘${RESET}  $*"; }
+err()  { echo -e "  ${RED}✘${RESET}  $*"; ERRORS=$((ERRORS + 1)); }
+
+ERRORS=0
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 MODE="all"
@@ -250,6 +252,10 @@ case "$MODE" in
   all)     phase_install; phase_auth; phase_smoke; doctor ;;
 esac
 echo ""
+if [[ $ERRORS -gt 0 ]]; then
+  echo -e "  ${RED}✘${RESET}  ${ERRORS} error(s) — see above. Machine is NOT ready."
+  exit 1
+fi
 echo -e "${GREEN}${BOLD}Done (${MODE}).${RESET}"
 [[ "$MODE" == "all" || "$MODE" == "install" ]] && \
   echo "  Next: ./setup_clis.sh auth   (then)   ./setup_clis.sh smoke"
