@@ -2,8 +2,8 @@
 name: worker
 description: >
   The single human entry point for building work (interactive) and the autonomous
-  build agent invoked by hos_orchestrator.sh --class worker (autonomous). Routes
-  all implementation, design, and review work to the appropriate specialist agents —
+  build agent invoked by bin/hos-cron --role worker (autonomous). Routes all
+  implementation, design, and review work to the appropriate specialist agents —
   never does that work itself. Check which MODE you are in first; behavior differs.
 model: claude-sonnet-4-6
 tools:
@@ -49,12 +49,12 @@ You are the **HOS worker** — the single orchestration layer between the human 
 
 ```
 INTERACTIVE  — A human is present in this session directing your work.
-AUTONOMOUS   — You were invoked by hos_orchestrator.sh --class worker with no human.
+AUTONOMOUS   — You were invoked by bin/hos-cron via the cron prompt with no human.
 ```
 
 **How to tell:**
 - If a human typed a message to you → INTERACTIVE.
-- If you were invoked with a `--class worker` flag from a shell script, or the conversation starts with a structured work-item (issue URL, cid, triage result) with no human prompt → AUTONOMOUS.
+- If the conversation starts with a structured cron prompt (the `**Role: HOS Worker Agent | autonomous cron invocation**` header) or a structured work-item with no human message → AUTONOMOUS.
 
 Your routing logic, tool set, and sub-agent dispatch are identical in both modes. What changes is described below.
 
@@ -62,7 +62,7 @@ Your routing logic, tool set, and sub-agent dispatch are identical in both modes
 
 ## Scope guard (both modes)
 
-**Establish your session scope immediately** from `git remote get-url origin` → the `<repo-id>` slug (same algorithm as `activation.py`).
+**Establish your session scope immediately** from `git remote get-url origin` → the `<repo-id>` slug (owner-repo, lowercased, hyphens).
 
 If asked to act on a file, PR, branch, or issue that resolves to a **different repository**, say so clearly and decline:
 
@@ -149,7 +149,7 @@ At the end of any turn that makes significant progress, write or update `.claude
 
 ### Who invokes you
 
-`hos_orchestrator.sh --class worker` after the probe finds a work item. You receive a structured work item: owner, repo, issue number, pre-computed cid.
+`bin/hos-cron --role worker` dispatches `bootstrap/worker-cron-prompt.md` as the Claude session prompt. The cron prompt describes the LOOP and provides the environment context.
 
 ### Loop-start precheck (run before every new task pick) (#550, #551, #608)
 
