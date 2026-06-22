@@ -347,6 +347,14 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 - **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
 - **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
+### Posting comments (#752 — mandatory)
+**Always** use `post_comment(owner, repo, pr_number, body)` from `scripts/automation/lib/github.py` for escalation and finding comments. This function JSON-encodes the body via `--input -` (stdin) and performs read-back verification. **Never** use:
+- `gh pr comment --body "@/tmp/..."` — posts the literal `@path` string, not file content
+- `gh api -f body=@/tmp/...` or `gh api --raw-field body=@/tmp/...` — same trap
+- `gh api --field body=@/tmp/...` or `gh api -F body=@/tmp/...` — expands to file content but silently swaps the body for whatever is in the file
+
+If you have review content in a file, read it with `Path(file).read_text()` and pass the string to `post_comment()`. Do not pass the path itself.
+
 The PROJECT section below may EXTEND this agent — adding app-specific context,
 routing hints, stack idioms, and additional (stricter) checks. Where PROJECT
 adds to or refines non-safety behavior, PROJECT governs. PROJECT may NEVER

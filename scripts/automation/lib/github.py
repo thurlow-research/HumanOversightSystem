@@ -23,7 +23,12 @@ class RateLimitError(GitHubError):
     """Raised when the rate limit is hit and retry budget is exhausted."""
 
 
-def _run_gh(args: list[str], retries: int = 3, backoff_base: float = 2.0) -> Any:
+def _run_gh(
+    args: list[str],
+    retries: int = 3,
+    backoff_base: float = 2.0,
+    stdin_json: Optional[dict[str, Any]] = None,
+) -> Any:
     """
     Run a `gh api` command and return the parsed JSON response.
 
@@ -33,11 +38,22 @@ def _run_gh(args: list[str], retries: int = 3, backoff_base: float = 2.0) -> Any
 
     Never calls `gh search` — callers that need Search must go through a
     separate, explicitly-named surface (none exists here by design).
+
+    stdin_json: if provided, serialised as JSON and piped via --input -.
+    Use this for POST/PATCH bodies so that @path strings are NEVER expanded
+    by the gh CLI's --field type-coercion (the root cause of #752).
     """
+    stdin_input: Optional[str] = None
+    base_cmd = ["gh", "api", "--include"]
+    if stdin_json is not None:
+        base_cmd += ["--input", "-"]
+        stdin_input = json.dumps(stdin_json)
+
     for attempt in range(retries + 1):
         try:
             result = subprocess.run(
-                ["gh", "api", "--include"] + args,
+                base_cmd + args,
+                input=stdin_input,
                 capture_output=True, text=True, check=False
             )
         except FileNotFoundError:
@@ -207,3 +223,51 @@ def get_branch_protection(
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
     """GET /repos/{owner}/{repo} — basic repo metadata."""
     return _run_gh([f"/repos/{owner}/{repo}"])
+
+
+def post_comment(
+    owner: str,
+    repo: str,
+    issue_or_pr_number: int,
+    body: str,
+    *,
+    verify: bool = True,
+) -> dict[str, Any]:
+    """
+    POST a comment to an issue or PR thread, safe against @path expansion (#752).
+
+    Uses JSON-encoded body via --input - (stdin) so that a body string starting
+    with '@/' is never misinterpreted by gh's --field type-coercion as a file
+    path.  This is the canonical helper for all escalation / finding comments.
+
+    If verify=True (default), reads back the posted comment and raises
+    GitHubError if the stored body starts with '@/' — catching any future
+    regression where an @path literal slips through instead of file content.
+
+    Returns the created comment object (contains at least 'id' and 'html_url').
+    Raises GitHubError on any failure, including a failed read-back.
+    """
+    result = _run_gh(
+        [f"/repos/{owner}/{repo}/issues/{issue_or_pr_number}/comments", "--method", "POST"],
+        stdin_json={"body": body},
+    )
+    if result is None:
+        raise GitHubError("post_comment: GitHub returned no response for POST")
+
+    if verify:
+        comment_id = result.get("id")
+        if comment_id is None:
+            raise GitHubError("post_comment: response missing 'id' — cannot verify")
+        readback = _run_gh([f"/repos/{owner}/{repo}/issues/comments/{comment_id}"])
+        if readback is None:
+            raise GitHubError(
+                f"post_comment: read-back of comment {comment_id} returned None"
+            )
+        stored_body: str = readback.get("body", "")
+        if stored_body.startswith("@/"):
+            raise GitHubError(
+                f"post_comment: comment {comment_id} body starts with '@/' — "
+                "@path literal was stored instead of file content (#752)"
+            )
+
+    return result

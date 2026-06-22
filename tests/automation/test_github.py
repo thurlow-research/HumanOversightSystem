@@ -20,6 +20,7 @@ from scripts.automation.lib.github import (
     get_repo,
     list_issue_comments,
     list_pulls,
+    post_comment,
 )
 
 
@@ -142,3 +143,86 @@ class TestNoSearchApi:
         assert search_names == [], (
             f"github.py must not expose a Search surface — found: {search_names}"
         )
+
+
+class TestPostComment:
+    """Regression tests for #752 — @path literal in comment body.
+
+    The critical invariant: post_comment must never use --field or --raw-field
+    for the body, because gh's -F flag expands '@/path' to file content and
+    -f flag silently posts the literal '@/path' string. Both are wrong.
+    Instead we use --input - (JSON via stdin), where '@' is inert.
+    """
+
+    def test_uses_stdin_json_not_field_flag(self):
+        """post_comment must pipe JSON via --input -, never --field body=..."""
+        body = "## Escalation\n\nHuman review required."
+        post_result = {"id": 99, "body": body, "html_url": "https://github.com/o/r/issues/1#issuecomment-99"}
+        readback_result = {"id": 99, "body": body}
+
+        captured_calls = []
+
+        def fake_run(cmd, **kwargs):
+            captured_calls.append((cmd, kwargs))
+            if "--input" in cmd:
+                return _make_result(201, post_result)
+            return _make_result(200, readback_result)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = post_comment("o", "r", 1, body)
+
+        assert result["id"] == 99
+        post_call_cmd, post_call_kwargs = captured_calls[0]
+        assert "--input" in post_call_cmd, "must use --input flag (JSON via stdin)"
+        assert not any("--field" in str(a) or "--raw-field" in str(a) for a in post_call_cmd), (
+            "must not use --field or --raw-field for body"
+        )
+        assert post_call_kwargs.get("input") == json.dumps({"body": body}), (
+            "body must be JSON-encoded in stdin"
+        )
+
+    def test_detects_at_path_literal_in_readback(self):
+        """If GitHub stores '@/path' literally, post_comment raises GitHubError (#752)."""
+        at_path_body = "@/tmp/pr751-review.md"
+        post_result = {"id": 42, "body": at_path_body}
+        readback_result = {"id": 42, "body": at_path_body}
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                _make_result(201, post_result),
+                _make_result(200, readback_result),
+            ]
+            with pytest.raises(GitHubError, match="#752"):
+                post_comment("o", "r", 751, at_path_body)
+
+    def test_normal_body_succeeds(self):
+        """post_comment returns the comment object when body is stored correctly."""
+        body = "HUMAN_REQUIRED — escalating for review."
+        post_result = {"id": 7, "body": body, "html_url": "https://github.com/o/r/issues/1#issuecomment-7"}
+        readback_result = {"id": 7, "body": body}
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                _make_result(201, post_result),
+                _make_result(200, readback_result),
+            ]
+            result = post_comment("o", "r", 1, body)
+        assert result["id"] == 7
+
+    def test_verify_false_skips_readback(self):
+        """With verify=False, only one API call is made (no read-back GET)."""
+        body = "quick comment"
+        post_result = {"id": 5, "body": body}
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = _make_result(201, post_result)
+            result = post_comment("o", "r", 1, body, verify=False)
+
+        assert mock_run.call_count == 1
+        assert result["id"] == 5
+
+    def test_raises_when_post_returns_none(self):
+        """GitHubError raised if POST returns no response."""
+        with patch("subprocess.run", return_value=_make_result(404)):
+            with pytest.raises(GitHubError, match="no response"):
+                post_comment("o", "r", 1, "body")
