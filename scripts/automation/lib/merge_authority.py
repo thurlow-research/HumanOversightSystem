@@ -10,6 +10,7 @@ Matrix (R9.1 — authoritative):
   Auto-merge iff ALL of:
     (tier ≤ MEDIUM) AND (not security-relevant) AND (not protected-surface)
     AND (full PROCEED from oversight-evaluator) AND (server-side gate detected, re-checked)
+    AND (verified human approval on current head SHA — universal, #757)
 
   class=worker  → NEVER merges (opens PRs only)
   class=overseer → may merge iff matrix permits AND below OVERSEER_CEILING
@@ -311,13 +312,13 @@ def decide_merge_authority(
     R9.1.1: calls detect_server_side_gate immediately before merge decision —
     never trusts a cached result.
 
-    Issues #589 / #741: If decision would be HUMAN_REQUIRED due to a
-    protected-surface or security-relevant flag, and a verified human maintainer
-    has already approved the PR on the current head SHA, the authorization
-    condition is satisfied — the overseer may execute the merge as mechanical
-    delivery of that human decision.  The authorship-separation and server-side
-    gate checks still run.  The audit reason records the authorizing maintainer
-    and the approved SHA.
+    Issues #589 / #741 / #757: Every merge requires a verified human approval
+    on the current head SHA — no bot-only merge is allowed.  For PRs that are
+    security-relevant or touch a protected surface, the human approval is
+    checked early (and the PR routes to HUMAN_REQUIRED if absent).  For all
+    other PRs the universal assertion (#757) fires last, after the server-side
+    gate re-check (R9.1.1).  The audit reason always records the authorizing
+    maintainer and the approved SHA.
     """
     if reviews is None:
         reviews = []
@@ -427,13 +428,32 @@ def decide_merge_authority(
             reason=f"Server-side gate not detected ({gate.reason})",
         )
 
+    # Universal human-authorization assertion (#757): every merge — regardless
+    # of tier, surface, or security flag — requires a verified human approval
+    # on the current head SHA.  Security-relevant and protected-surface paths
+    # already set human_auth_reason above; the general path needs this check.
+    if not human_auth_reason:
+        approval = _find_human_approval(reviews, human_reviewer, head_sha)
+        if approval:
+            approver = approval.get("user", {}).get("login", human_reviewer)
+            approved_sha = approval.get("commit_id", "unknown")
+            human_auth_reason = f"human authorization (approval by {approver} on {approved_sha})"
+        else:
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason=(
+                    "Merge requires verified human approval on current head SHA — "
+                    "none found (#757)"
+                ),
+                labels_to_add=["needs-human"],
+            )
+
     merge_reason = (
         f"Auto-merge approved: tier={risk_tier.name}, "
         f"ceiling={overseer_ceiling.name}, verdict=PROCEED, "
         f"gate=detected"
     )
-    if human_auth_reason:
-        merge_reason += f"; merged by overseer under {human_auth_reason}"
+    merge_reason += f"; merged by overseer under {human_auth_reason}"
 
     return MergeAuthorityResult(
         decision=MergeDecision.AUTO_MERGE,
