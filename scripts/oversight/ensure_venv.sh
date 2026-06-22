@@ -59,6 +59,12 @@ fi
 
 export VENV VENV_BIN OVERSIGHT_PYTHON
 
+# Drop marker file for cron validation check (project-specific venv)
+REPO_ROOT="$(cd "$_ENSURE_VENV_DIR/../.." && pwd)"
+REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
+mkdir -p ~/.hos/setup-validation 2>/dev/null || true
+touch ~/.hos/setup-validation/oversight-venv-${REPO_HASH} 2>/dev/null || true
+
 # When executed directly (not sourced): print venv status and exit.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "Oversight venv : $VENV"
