@@ -38,12 +38,12 @@ gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20
 ```
 For each open PR authored by this worker: read all reviews AND comments. CHANGES_REQUESTED → fix, push, STOP. All approved/clean → STOP. No open PRs → Step 2.
 
-**Step 2 — Pick next v0.4.1 needs-ai issue:**
+**Step 2 — Pick next v0.4.2 needs-ai issue:**
 ```bash
-gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=7&labels=needs-ai&per_page=30" \
+gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=8&labels=needs-ai&per_page=30" \
   --jq '.[] | select(.labels | map(.name) | contains(["needs-human"]) | not) | "#\(.number) \(.title)"'
 ```
-Pick lowest-numbered non-blocked. Skip #557.
+Pick lowest-numbered non-blocked.
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
 
