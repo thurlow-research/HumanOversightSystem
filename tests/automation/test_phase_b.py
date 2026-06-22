@@ -483,9 +483,13 @@ class TestDecideMergeAuthority:
         assert result.decision == MergeDecision.PROPOSE_ONLY
 
     def test_auto_merge_when_all_conditions_met(self, tmp_path):
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc"}]
         with _patch_gate(True):
-            result = decide_merge_authority(**self.BASE, repo_root=str(tmp_path))
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="abc",
+            )
         assert result.decision == MergeDecision.AUTO_MERGE
+        assert "approval by ScottThurlow" in result.reason
 
     def test_high_tier_requires_human(self, tmp_path):
         with _patch_gate(True):
@@ -700,21 +704,27 @@ class TestDecideMergeAuthority:
 
     def test_no_blocking_labels_does_not_block(self, tmp_path):
         """Unrelated labels do not trigger the label guard (#756)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha1"}]
         with _patch_gate(True):
             result = decide_merge_authority(
                 **self.BASE,
                 pr_labels=["needs-ai", "process-gap"],
                 repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="sha1",
             )
         assert result.decision == MergeDecision.AUTO_MERGE
 
     def test_empty_label_list_does_not_block(self, tmp_path):
         """Empty pr_labels list behaves the same as omitting the parameter (#756)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha2"}]
         with _patch_gate(True):
             result = decide_merge_authority(
                 **self.BASE,
                 pr_labels=[],
                 repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="sha2",
             )
         assert result.decision == MergeDecision.AUTO_MERGE
 
@@ -727,6 +737,55 @@ class TestDecideMergeAuthority:
                 repo_root=str(tmp_path),
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    # -- Universal human-approval assertion (#757) ----------------------------
+
+    def test_no_human_approval_blocks_even_low_risk(self, tmp_path):
+        """A LOW-risk PROCEED PR with no reviews is blocked by the universal gate (#757)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(**self.BASE, repo_root=str(tmp_path))
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "needs-human" in result.labels_to_add
+        assert "#757" in result.reason
+
+    def test_bot_approval_does_not_satisfy_universal_gate(self, tmp_path):
+        """An approval from the overseer bot is not a qualifying human approval (#757)."""
+        bot_review = [{"state": "APPROVED", "user": {"login": "hos-overseer-hos[bot]"}, "commit_id": "sha"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=bot_review, head_sha="sha",
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_stale_approval_blocked_by_universal_gate(self, tmp_path):
+        """An approval on a previous SHA is rejected as stale even for a LOW-risk PR (#757)."""
+        stale_review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "old"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=stale_review, head_sha="new",
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_current_sha_approval_satisfies_universal_gate(self, tmp_path):
+        """A verified human approval on the current head SHA allows AUTO_MERGE (#757)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "deadbeef"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="deadbeef",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+        assert "approval by ScottThurlow on deadbeef" in result.reason
+
+    def test_universal_gate_audit_trail_in_reason(self, tmp_path):
+        """AUTO_MERGE reason always records the authorizing human and SHA (#757)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "c0ffee"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="c0ffee",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+        assert "ScottThurlow" in result.reason
+        assert "c0ffee" in result.reason
 
 
 class TestRiskTierEnum:
