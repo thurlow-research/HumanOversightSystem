@@ -27,12 +27,15 @@ GITHUB API — REST only.
 
 LOOP:
 
-**Step 0 — Between-cycle merge audit:**
+**Step 0 — Between-cycle merge audit (#758: use detail endpoint — list endpoint always returns merged_by=null):**
 ```bash
-gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=closed&sort=updated&direction=desc&per_page=20" \
-  --jq '.[] | select(.merged_at != null) | "#\(.number) merged_by=\(.merged_by.login) \(.merged_at)"'
+for pr in $(gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=closed&sort=updated&direction=desc&per_page=20" \
+              --jq '.[] | select(.merged_at != null) | .number'); do
+  gh api "repos/thurlow-research/HumanOversightSystem/pulls/$pr" \
+    --jq '"#\(.number) merged_by=\(.merged_by.login // "null") type=\(.merged_by.type // "?") \(.merged_at)"'
+done
 ```
-For each PR merged in the last 2 hours: if `merged_by` is a bot → file `process-gap` issue. If human → log `human-authorized-merge` to audit and continue. Do NOT file issues for human merges.
+For each PR merged in the last 2 hours: if `merged_by` is a bot (type=Bot) → file `process-gap` issue. If human → log `human-authorized-merge` to audit and continue. Do NOT file issues for human merges.
 
 **Step 1 — Review open PRs:**
 ```bash
