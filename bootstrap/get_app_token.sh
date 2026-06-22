@@ -40,7 +40,7 @@ done
 
 # ── #633: verify apps.env permissions before sourcing ─────────────────────────
 # #645: fail-closed — if stat fails (no stat available), error rather than allow unverified permissions
-_env_mode=$(stat -c "%a" "$APPS_ENV" 2>/dev/null || stat -f "%OLp" "$APPS_ENV" 2>/dev/null)     || err "Cannot verify apps.env permissions — stat unavailable. Manually confirm: chmod 600 $APPS_ENV"
+_env_mode=$(stat -f "%OLp" "$APPS_ENV" 2>/dev/null || stat -c "%a" "$APPS_ENV" 2>/dev/null)     || err "Cannot verify apps.env permissions — stat unavailable. Manually confirm: chmod 600 $APPS_ENV"
 if [[ "$_env_mode" != "600" && "$_env_mode" != "400" ]]; then
     err "apps.env has permissions $_env_mode (expected 600). Run: chmod 600 $APPS_ENV"
 fi
