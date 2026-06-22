@@ -68,10 +68,10 @@ Settings → Branches → protect `main`:
 - ☑ **Require a pull request before merging** → **≥1 approving review**
 - ☑ **Dismiss stale approvals** on new commits
 - ☑ **Require review from Code Owners**  ← makes `.github/CODEOWNERS` (protected surfaces → human) binding
-- ☑ **Require status checks to pass** → add **`require-human-approval`** (and your existing checks, e.g. `Validation stamps current`)
+- ☑ **Require status checks to pass** → add **`require-overseer-approval`**, **`require-human-approval`**, **`require-tier-ceiling`** (and any existing checks, e.g. `Validation stamps current`)
 - ☑ **Do not allow bypassing the above settings** *(this disables `--admin` for the bots; the human, as the only Admin, retains it)*
 
-Result: a worker PR needs an overseer-or-human approval; a **protected-surface or above-ceiling** PR needs a **human** approval that no bot can provide.
+Result: every PR requires overseer approval; a **protected-surface or above-ceiling** PR additionally requires a **human** approval that no bot can provide. Admin bypass: repo admin may use GitHub's "Merge without waiting for requirements" override — explicit, logged, intentional.
 
 ## Step 6 — Regenerate CODEOWNERS for your owner  *(consumers)*
 
@@ -88,9 +88,9 @@ so the two never drift. Commit it.
 | Boundary | Mechanism | Strength |
 |---|---|---|
 | worker can't approve its own PR | GitHub "no self-approval" + worker has no approval grant | structural |
-| worker PR needs overseer/human | branch protection: ≥1 approving review | server-side |
+| **every PR → overseer must review** | `require-overseer-approval` status check (#621) | **server-side** |
 | **protected surface → human** | `require-human-approval` status check **+** CODEOWNERS | **server-side (the §5.1 determination-honesty gate)** |
-| above overseer ceiling → human | risk-tier status check *(next increment — #152 follow-up)* | server-side |
+| above overseer ceiling → human | `require-tier-ceiling` status check | server-side |
 | no bot `--admin` bypass | "Do not allow bypassing" + bots lack Admin | server-side |
 
 The protected-surface gate is the load-bearing one: it's the place the controls
