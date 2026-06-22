@@ -16,3 +16,20 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-21T03:01:27Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-21T03:20:39Z", "reason": "queue-731-738-then-cut"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-21T03:21:51Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-preflight-fail", "role": "worker", "timestamp": "2026-06-22T03:40:24Z", "reason": "inner_loop_tests_failed"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T03:50:33Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-preflight-fail", "role": "worker", "timestamp": "2026-06-22T03:50:34Z", "reason": "inner_loop_tests_failed"}
+{"event": "cycle-preflight-fail", "role": "worker", "timestamp": "2026-06-22T04:10:53Z", "reason": "inner_loop_tests_failed"}
+{"event": "cycle-preflight-fail", "role": "worker", "timestamp": "2026-06-22T04:17:31Z", "reason": "inner_loop_tests_failed"}
+{"event": "cycle-preflight-fail", "role": "worker", "timestamp": "2026-06-22T04:28:20Z", "reason": "inner_loop_tests_failed"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T04:34:24Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T04:50:04Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T04:51:32Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:00:08Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:01:37Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:10:23Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:11:52Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:20:43Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:22:13Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:31:00Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:32:27Z", "bot": "hos-worker-hos[bot] project=hos"}

@@ -312,6 +312,9 @@ if [[ -n "$DEGRADED" ]]; then
   warn "Machine bootstrap complete WITH DEGRADED CAPABILITY: $DEGRADED"
 else
   ok "Machine bootstrap complete."
+  # Drop marker file for cron validation check
+  mkdir -p ~/.hos/setup-validation 2>/dev/null || true
+  touch ~/.hos/setup-validation/bootstrap 2>/dev/null || true
 fi
 echo ""
 echo -e "  ${BOLD}Next:${RESET} install HOS into a project from a validated release:"

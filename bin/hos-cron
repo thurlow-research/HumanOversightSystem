@@ -125,6 +125,22 @@ _audit() {
 _JITTER_MAX="${HOS_CRON_JITTER_MAX:-60}"
 [[ "$_JITTER_MAX" -gt 0 ]] && sleep $(( RANDOM % _JITTER_MAX ))
 
+# ── Environment validation ("cow patty" markers) ───────────────────────────────
+# Check for successful previous setup runs. If markers are missing, log a warning
+# but proceed anyway (fail-open). Markers are dropped by hos_bootstrap.sh and
+# scripts/oversight/ensure_venv.sh on successful completion.
+_validate_env() {
+  local missing=0
+  [[ -f "$HOME/.hos/setup-validation/bootstrap" ]] \
+    || { echo "$LOG_PREFIX ⚠ bootstrap marker missing (run: ./bootstrap/hos_bootstrap.sh)"; missing=1; }
+  REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
+  [[ -f "$HOME/.hos/setup-validation/oversight-venv-${REPO_HASH}" ]] \
+    || { echo "$LOG_PREFIX ⚠ oversight-venv marker missing (run: ./scripts/oversight/ensure_venv.sh)"; missing=1; }
+  [[ $missing -eq 0 ]] && echo "$LOG_PREFIX ✓ environment validated"
+  return 0  # fail-open: don't block on missing markers
+}
+_validate_env
+
 # ── Wakeup / idle backoff ─────────────────────────────────────────────────────
 if [[ -f "$_WAKEUP_FILE" ]]; then
   _wakeup_reason=$(python3 -c "
