@@ -21,6 +21,7 @@ docs/AGENT-IDENTITY.md
 METHODOLOGY.md
 docs/FABERIX-ROLES.md
 docs/CROSS-REPO-CONDUCT.md
+bin/**
 bootstrap/**
 scripts/framework/**
 scripts/oversight/gates/**
