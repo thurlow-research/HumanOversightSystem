@@ -216,6 +216,31 @@ For each PR found:
    (ScottThurlow), the function will allow auto-merge (bypassing the human-gate).
    Log this as `human-approval-detected` in the audit trail.
 
+   **Issue #761 — idempotency guard and requested-reviewer gate:**
+   Also pass these two additional parameters every time you call `decide_merge_authority()`:
+
+   **`requested_reviewers`** — read `pr.requested_reviewers` from the PR object (already
+   fetched in step 3; each element has a `login` field). Extract the list of logins:
+   ```python
+   requested_reviewers = [u["login"] for u in pr.get("requested_reviewers", [])]
+   ```
+   Pass `requested_reviewers=<list>` to `decide_merge_authority()`. If HUMAN_REVIEWER
+   (`ScottThurlow`) is still in the list (pending, not yet reviewed), the function returns
+   HUMAN_REQUIRED — the outstanding request is an implicit gate.
+
+   **`prior_overseer_decision`** — scan the PR's issue comments for an earlier HUMAN_REQUIRED
+   decision by this overseer:
+   ```
+   GET /repos/{o}/{r}/issues/{n}/comments
+   ```
+   Find the most recent comment where `comment.user.login == HOS_BOT_LOGIN` (the overseer's
+   login, e.g. `hos-overseer-hos[bot]`) AND the comment body contains the string
+   `**Decision: HUMAN_REQUIRED**` (the canonical decision header the overseer writes).
+   If such a comment exists, pass `prior_overseer_decision="HUMAN_REQUIRED"` to
+   `decide_merge_authority()`. Otherwise pass `prior_overseer_decision=None`.
+   The function will block AUTO_MERGE unless a qualifying human approval on the current
+   head SHA has been recorded since that prior comment — preventing silent decision downgrades.
+
    **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
    - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
    - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection

@@ -305,6 +305,8 @@ def decide_merge_authority(
     human_reviewer: str = "ScottThurlow",  # Human who can approve protected-surface PRs
     head_sha: Optional[str] = None,  # Current PR head SHA; stale approvals (wrong SHA) are rejected
     pr_labels: list[str] = None,     # Labels on the PR; needs-human/hos-halt block AUTO_MERGE (#756)
+    prior_overseer_decision: Optional[str] = None,  # "HUMAN_REQUIRED" if a prior cycle decided so (#761)
+    requested_reviewers: Optional[list[str]] = None,  # Pending human review requests on the PR (#761)
 ) -> MergeAuthorityResult:
     """
     Decide what the automation may do with this PR.
@@ -336,6 +338,34 @@ def decide_merge_authority(
             return MergeAuthorityResult(
                 decision=MergeDecision.HUMAN_REQUIRED,
                 reason=f"PR carries blocking label(s) [{label_str}] — human authorization required (#756)",
+            )
+
+    # Idempotency guard (#761): a prior overseer cycle decided HUMAN_REQUIRED.
+    # Only a verified human approval on the current head SHA may clear this —
+    # the overseer must not silently downgrade a prior decision in a later cycle.
+    if prior_overseer_decision == "HUMAN_REQUIRED":
+        if not _find_human_approval(reviews, human_reviewer, head_sha):
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason=(
+                    "Prior overseer decision was HUMAN_REQUIRED; no qualifying human approval "
+                    f"found on head SHA — escalating to {human_reviewer} (#761)"
+                ),
+                labels_to_add=["needs-human"],
+            )
+
+    # Requested-reviewer gate (#761): an outstanding review request from the
+    # authorized human reviewer is an implicit HUMAN_REQUIRED signal — the PR
+    # author or a prior overseer cycle explicitly routed the PR for human review.
+    if requested_reviewers:
+        if any(r.lower() == human_reviewer.lower() for r in requested_reviewers):
+            return MergeAuthorityResult(
+                decision=MergeDecision.HUMAN_REQUIRED,
+                reason=(
+                    f"PR has an outstanding review request from {human_reviewer} — "
+                    "human review is pending (#761)"
+                ),
+                labels_to_add=["needs-human"],
             )
 
     # No-release guard (NG3b)

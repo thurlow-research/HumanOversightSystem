@@ -787,6 +787,164 @@ class TestDecideMergeAuthority:
         assert "ScottThurlow" in result.reason
         assert "c0ffee" in result.reason
 
+    # ── Idempotency guard (#761) ───────────────────────────────────────────────
+
+    def test_prior_human_required_blocks_auto_merge(self, tmp_path):
+        """Prior HUMAN_REQUIRED decision prevents AUTO_MERGE without human approval (#761)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                prior_overseer_decision="HUMAN_REQUIRED",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "#761" in result.reason
+        assert "needs-human" in result.labels_to_add
+
+    def test_prior_human_required_cleared_by_verified_approval(self, tmp_path):
+        """Verified human approval on current head SHA clears a prior HUMAN_REQUIRED (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha42"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                prior_overseer_decision="HUMAN_REQUIRED",
+                reviews=review,
+                head_sha="sha42",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_prior_human_required_stale_approval_still_blocks(self, tmp_path):
+        """Stale approval (wrong head SHA) does not clear a prior HUMAN_REQUIRED (#761)."""
+        stale_review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "old"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                prior_overseer_decision="HUMAN_REQUIRED",
+                reviews=stale_review,
+                head_sha="new",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_prior_none_does_not_trigger_idempotency_gate(self, tmp_path):
+        """No prior decision (None) does not trigger the idempotency gate (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha761a"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                prior_overseer_decision=None,
+                reviews=review,
+                head_sha="sha761a",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_prior_auto_merge_does_not_trigger_idempotency_gate(self, tmp_path):
+        """A prior AUTO_MERGE decision does not trigger the idempotency gate (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha761b"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                prior_overseer_decision="AUTO_MERGE",
+                reviews=review,
+                head_sha="sha761b",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    # ── Requested-reviewer gate (#761) ────────────────────────────────────────
+
+    def test_pending_human_reviewer_request_blocks(self, tmp_path):
+        """Outstanding review request from the human reviewer blocks AUTO_MERGE (#761)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                requested_reviewers=["ScottThurlow"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "#761" in result.reason
+        assert "needs-human" in result.labels_to_add
+
+    def test_pending_human_reviewer_request_case_insensitive(self, tmp_path):
+        """Requested-reviewer check is case-insensitive (#761)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                requested_reviewers=["scottthurlow"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_non_human_reviewer_request_does_not_block(self, tmp_path):
+        """A requested reviewer that is not the human reviewer does not block (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha761c"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                requested_reviewers=["hos-worker-hos[bot]"],
+                reviews=review,
+                head_sha="sha761c",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_empty_requested_reviewers_does_not_block(self, tmp_path):
+        """Empty requested_reviewers list does not block (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha761d"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                requested_reviewers=[],
+                reviews=review,
+                head_sha="sha761d",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_none_requested_reviewers_does_not_block(self, tmp_path):
+        """None requested_reviewers (omitted) does not block (#761)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha761e"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                requested_reviewers=None,
+                reviews=review,
+                head_sha="sha761e",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    # ── Protected-surface: docs/releases and .hos-release (#761) ──────────────
+
+    def test_docs_releases_is_protected_surface(self, tmp_path):
+        """docs/releases/** in protected_surfaces.txt gates release-notes PRs (#761)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("docs/releases/**\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": ["docs/releases/v0.4.1-release-notes.md"]},
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "needs-human" in result.labels_to_add
+
+    def test_hos_release_file_is_protected_surface(self, tmp_path):
+        """.hos-release in protected_surfaces.txt blocks autonomous release-tag changes (#761)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".hos-release\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".hos-release"]},
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
 
 class TestRiskTierEnum:
     def test_ordering(self):
