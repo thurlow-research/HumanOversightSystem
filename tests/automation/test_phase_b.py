@@ -666,6 +666,68 @@ class TestDecideMergeAuthority:
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
 
+    def test_needs_human_label_blocks_auto_merge(self, tmp_path):
+        """PR carrying needs-human label must not auto-merge, regardless of risk tier (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=["needs-human"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "needs-human" in result.reason
+
+    def test_hos_halt_label_blocks_auto_merge(self, tmp_path):
+        """PR carrying hos-halt label must not auto-merge (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=["hos-halt"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "hos-halt" in result.reason
+
+    def test_label_guard_beats_low_risk_tier(self, tmp_path):
+        """needs-human label overrides even a LOW-tier PROCEED verdict (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=["needs-ai", "needs-human"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_no_blocking_labels_does_not_block(self, tmp_path):
+        """Unrelated labels do not trigger the label guard (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=["needs-ai", "process-gap"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_empty_label_list_does_not_block(self, tmp_path):
+        """Empty pr_labels list behaves the same as omitting the parameter (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=[],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_label_guard_is_case_insensitive(self, tmp_path):
+        """Label matching is case-insensitive (#756)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                pr_labels=["Needs-Human"],
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
 
 class TestRiskTierEnum:
     def test_ordering(self):
