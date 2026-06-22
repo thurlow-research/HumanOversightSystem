@@ -23,8 +23,8 @@ Two named agents serve as the runtime entry points for the entire HOS pipeline:
 
 | Agent | Invoke when | Modes |
 |---|---|---|
-| **`worker`** | Starting a coding session, picking up a build step, or running the autonomous build loop | `INTERACTIVE` (human present) · `AUTONOMOUS` (cron, `hos_orchestrator.sh --class worker`) |
-| **`overseer`** | Querying PR/risk status, or running the autonomous review/merge loop | `INTERACTIVE` (human querying) · `AUTONOMOUS` (cron, `hos_orchestrator.sh --class overseer`) |
+| **`worker`** | Starting a coding session, picking up a build step, or running the autonomous build loop | `INTERACTIVE` (human present) · `AUTONOMOUS` (cron, `bin/hos-cron --role worker`) |
+| **`overseer`** | Querying PR/risk status, or running the autonomous review/merge loop | `INTERACTIVE` (human querying) · `AUTONOMOUS` (cron, `bin/hos-cron --role overseer`) |
 
 Both agents identify their mode at the start of every session and adjust their behavior accordingly. Both enforce repo scope — they will push back if asked to act on a different repository. **The `worker` is the correct entry point for any new session.**
 

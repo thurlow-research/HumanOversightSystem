@@ -4,7 +4,6 @@ multi_customer. Shell script syntax checks for orchestrator + worker.
 """
 
 import json
-import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -248,56 +247,3 @@ class TestProbeWithIsolation:
         ):
             result = probe_with_isolation("o", "r", "o-r", [], repo_root=str(tmp_path))
         assert result == []
-
-
-# ── Shell script syntax checks ────────────────────────────────────────────────
-
-ORCHESTRATOR = Path(__file__).parent.parent.parent / "scripts" / "automation" / "hos_orchestrator.sh"
-WORKER = Path(__file__).parent.parent.parent / "scripts" / "automation" / "hos_worker.sh"
-
-
-class TestShellSyntax:
-    def test_orchestrator_bash_syntax(self):
-        result = subprocess.run(
-            ["bash", "-n", str(ORCHESTRATOR)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f"Syntax error: {result.stderr}"
-
-    def test_worker_bash_syntax(self):
-        result = subprocess.run(
-            ["bash", "-n", str(WORKER)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f"Syntax error: {result.stderr}"
-
-    def test_orchestrator_requires_class_arg(self):
-        result = subprocess.run(
-            ["bash", str(ORCHESTRATOR), "hos-orchestrator"],
-            capture_output=True, text=True, timeout=5,
-            env={"HOME": "/tmp", "PATH": "/usr/bin:/bin"},
-        )
-        # Should exit with error (missing --class)
-        assert result.returncode != 0 or "class" in result.stderr.lower()
-
-    def test_orchestrator_contains_gate_order_markers(self):
-        """Orchestrator script contains all required gate-order steps (§11)."""
-        content = ORCHESTRATOR.read_text()
-        for marker in [
-            "step 0",          # git pull (#300)
-            "step 1",          # activation check
-            "step 2",          # hos-halt check
-            "step 3",          # machine lock
-            "step 4",          # config resolve
-            "step 5",          # probe
-            "hos-orchestrator", # O18 argv marker
-            "--class",         # two-cronjob class flag
-        ]:
-            assert marker in content, f"Missing gate marker: {marker!r}"
-
-    def test_worker_contains_heartbeat_recheck(self):
-        """Worker script rechecks activation + halt at every heartbeat."""
-        content = WORKER.read_text()
-        assert "_check_still_active" in content
-        assert "hos-halt" in content
-        assert "heartbeat" in content.lower()
