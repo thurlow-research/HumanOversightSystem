@@ -592,6 +592,80 @@ class TestDecideMergeAuthority:
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
 
+    def test_protected_surface_stale_approval_blocked(self, tmp_path):
+        """Approval on a previous commit SHA (pre-push) is rejected as stale (#741)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        stale_review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "oldsha"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".claude/agents/worker.md"]},
+                repo_root=str(tmp_path),
+                reviews=stale_review,
+                head_sha="newsha",
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_protected_surface_current_sha_allows_auto_merge(self, tmp_path):
+        """Approval on the current head SHA is accepted; reason includes audit trail (#741)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc123"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": [".claude/agents/worker.md"]},
+                repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="abc123",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+        assert "approval by ScottThurlow on abc123" in result.reason
+
+    def test_security_relevant_with_human_approval_allows_auto_merge(self, tmp_path):
+        """Security-relevant PR is mergeable once a human has approved (#741)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha123"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                security_relevant=True,
+                repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="sha123",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+        assert "approval by ScottThurlow on sha123" in result.reason
+
+    def test_security_relevant_stale_approval_blocked(self, tmp_path):
+        """Stale approval on a security-relevant PR is rejected (#741)."""
+        stale_review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "old"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                security_relevant=True,
+                repo_root=str(tmp_path),
+                reviews=stale_review,
+                head_sha="new",
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_security_relevant_no_approval_still_requires_human(self, tmp_path):
+        """Security-relevant PR with no reviews still requires human (#741 unchanged path)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                security_relevant=True,
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
 
 class TestRiskTierEnum:
     def test_ordering(self):
