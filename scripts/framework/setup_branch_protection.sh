@@ -23,7 +23,7 @@
 # What this sets (§9):
 #   Required PR reviews: ≥1 approving review, CODEOWNERS enforcement,
 #   dismiss stale on push, NO bypass actors for bots.
-#   Required status checks: require-human-approval (the CI gate).
+#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling.
 #   Enforce admins: OFF — you (admin) retain bypass ability when needed.
 #   Restrictions: only bots + humans who are collaborators may push.
 
@@ -113,15 +113,16 @@ fi
 # the status-check context, NOT the workflow's top-level display name. If they
 # drift, the required context never appears, stays permanently "expected", and
 # every merge returns HTTP 405 even though the gates run green. Producers:
-#   require-human-approval  ← .github/workflows/require-human-approval.yml
-#   require-tier-ceiling    ← .github/workflows/require-tier-ceiling.yml
+#   require-overseer-approval ← .github/workflows/require-overseer-approval.yml
+#   require-human-approval    ← .github/workflows/require-human-approval.yml
+#   require-tier-ceiling      ← .github/workflows/require-tier-ceiling.yml
 # tests/framework/test_branch_protection_contexts.py enforces this invariant.
 
 PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-human-approval", "require-tier-ceiling"]
+    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -157,7 +158,7 @@ echo "    require_code_owner_reviews      : true   (protected paths → human CO
 echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
-echo "  Required status checks            : require-human-approval, require-tier-ceiling"
+echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling"
 echo "  enforce_admins                    : false  (admin/human retains emergency bypass)"
 echo "  allow_force_pushes                : false"
 echo "  allow_deletions                   : false"
