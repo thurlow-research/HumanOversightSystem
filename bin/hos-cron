@@ -95,7 +95,8 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
 IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
-mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks"
+mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache"
+_HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
 
 # ── Overlap lock (#728) — portable mkdir mutex (macOS has no flock) ──────────
 # One hos-cron run per (role, project) at a time. Lightweight overlap guard,
@@ -119,6 +120,49 @@ _audit() {
   local event="$1"; shift
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
+
+# ── Pre-jitter dependency check (fail-closed, marker-cached) ─────────────────
+# Fail fast before the jitter sleep if the oversight venv or pytest are missing.
+# A 7-day marker file caches a successful check; its key encodes REPO_ROOT so a
+# repo move invalidates it and triggers a re-check automatically.
+_pre_jitter_deps_check() {
+  local _hash
+  if command -v md5sum &>/dev/null; then
+    _hash=$(printf '%s' "$REPO_ROOT" | md5sum | cut -d' ' -f1)
+  elif command -v md5 &>/dev/null; then
+    _hash=$(printf '%s' "$REPO_ROOT" | md5)
+  else
+    _hash=$(printf '%s' "$REPO_ROOT" | cksum | awk '{print $1}')
+  fi
+  local _marker="$_HOS_CACHE_DIR/deps-${_hash}"
+
+  if [[ -f "$_marker" ]]; then
+    local _now; _now=$(date +%s)
+    local _mtime
+    if ! _mtime=$(stat -c %Y "$_marker" 2>/dev/null); then
+      _mtime=$(stat -f %m "$_marker" 2>/dev/null || echo 0)
+    fi
+    if [[ $(( _now - _mtime )) -lt 604800 ]]; then
+      return 0  # cache hit — skip validation this cycle
+    fi
+    echo "$LOG_PREFIX deps-cache stale — re-validating environment"
+  fi
+
+  local _venv_dir="$REPO_ROOT/scripts/oversight/.venv"
+  if [[ ! -x "$_venv_dir/bin/python" ]]; then
+    echo "$LOG_PREFIX FATAL: oversight venv missing at $_venv_dir — run: bash $REPO_ROOT/scripts/oversight/ensure_venv.sh"
+    _audit cycle-preflight-fail reason=oversight_venv_missing
+    exit 78
+  fi
+  if [[ ! -x "$_venv_dir/bin/pytest" ]]; then
+    echo "$LOG_PREFIX FATAL: pytest missing from oversight venv — run: bash $REPO_ROOT/scripts/oversight/ensure_venv.sh"
+    _audit cycle-preflight-fail reason=oversight_pytest_missing
+    exit 78
+  fi
+
+  touch "$_marker" 2>/dev/null || true
+}
+_pre_jitter_deps_check
 
 # ── Jitter ────────────────────────────────────────────────────────────────────
 # Spread concurrent fires so multiple projects don't stampede git/auth at once.
