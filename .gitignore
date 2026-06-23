@@ -38,3 +38,8 @@ htmlcov/
 
 # Validation stamps — causes merge conflicts (#422), redesign in progress
 scripts/framework/validation-stamps/
+
+# Audit logs — append-only operational files that cause merge conflicts when
+# included in feature PRs. Synced to main via GitHub Actions (#861).
+audit/oversight-log.jsonl
+audit/overnight-loop-log.md

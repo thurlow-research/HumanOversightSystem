@@ -36,7 +36,15 @@ LOOP:
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:60])"'
 ```
-For each open PR authored by this worker: read all reviews AND comments. CHANGES_REQUESTED → fix, push, STOP. All approved/clean → STOP. No open PRs → Step 2.
+For each open PR authored by this worker:
+1. **Check merge status first:**
+   ```bash
+   gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" --jq '.mergeable'
+   ```
+   If `CONFLICTING`: identify the commits unique to this branch (not already in main), cherry-pick them onto a new local branch cut from current main, then force-push to the **same remote branch name** so the existing PR updates in place. If the unique delta cannot be cleanly applied, close the PR with a comment explaining the conflict and open a fresh PR from main with only the unique commits.
+2. CHANGES_REQUESTED → fix, push, STOP.
+3. All approved/clean → STOP.
+4. No open PRs → Step 2.
 
 **Step 2 — Pick next @@TARGET_RELEASE@@ needs-ai issue:**
 ```bash
