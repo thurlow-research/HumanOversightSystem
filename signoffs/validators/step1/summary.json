@@ -1,10 +1,10 @@
 {
-  "head_sha": "9e77dc8f91a65ef8bb80aee029749f3b61676d9f",
+  "head_sha": "6f0ad40872e1c0b549fb8a0c83abdf9b9f3ac829",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-23T07:05:31Z",
-  "composite_score": 0.1491,
+  "written_at": "2026-06-23T10:37:12Z",
+  "composite_score": 0.0515,
   "tier": "LOW",
   "validator_count": 12,
   "successful_validators": 11,
@@ -26,12 +26,11 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 673,
+        "changed_lines": 1634,
         "changed_files": 10,
         "floor_rule_fired": "changed_lines",
-        "domain_count": 5,
+        "domain_count": 4,
         "domains_detected": [
-          "audit",
           "other",
           "bootstrap",
           "docs",
@@ -46,7 +45,7 @@
       "weight": 0.0,
       "evidence": [],
       "checklist_items": [
-        "Consider splitting into focused PRs: changes span 5 domains (threshold 3); domains: audit, other, bootstrap, docs, scripts"
+        "Consider splitting into focused PRs: changes span 4 domains (threshold 3); domains: other, bootstrap, docs, scripts"
       ],
       "findings": [],
       "error": null,
@@ -101,102 +100,11 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.85,
+      "score": 0.045,
       "raw_value": {
-        "issue_count": 14,
-        "issues": [
-          {
-            "number": 807,
-            "title": "bug: ensure_venv.sh marker trusted forever \u2014 broken venv after Python upgrade or path change goes undetected",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 806,
-            "title": "bug: hos_bootstrap.sh never writes ~/.hos/setup-validation/bootstrap marker \u2014 hos-cron warns on every cycle",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 805,
-            "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 744,
-            "title": "governance(gap): bin/ (cron launchers) is not a protected surface despite being control-defining",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 738,
-            "title": "bug: bin/hos-cron must configure git credentials deterministically (don't rely on the machine's git credential helper)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 734,
-            "title": "security(#733): bypassPermissions + no allowedTools + CLAUDE_CODE_OAUTH_TOKEN in env \u2014 prompt injection can exfiltrate OAuth token",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 731,
-            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
-            "label": "bug",
-            "file": "bootstrap/worker-cron-prompt.md"
-          },
-          {
-            "number": 730,
-            "title": "hardening(#729): parse CLAUDE_CODE_OAUTH_TOKEN with grep/cut instead of sourcing entire env file",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 728,
-            "title": "fix: bin/hos-cron \u2014 headless Max subscription auth via CLAUDE_CODE_OAUTH_TOKEN",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 720,
-            "title": "fix(#718): mktemp in hos-cron should use private dir \u2014 shared /tmp exposes auth token window",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 717,
-            "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 590,
-            "title": "[HIGH] Wire GitHub App auth into hos_orchestrator.sh and hos_worker.sh",
-            "label": "bug",
-            "file": "bootstrap/hos_bootstrap.sh"
-          },
-          {
-            "number": 545,
-            "title": "bug(#543): HOS_REPO_OWNER unbound variable crashes get_app_token.sh",
-            "label": "bug",
-            "file": "bootstrap/hos_bootstrap.sh"
-          },
-          {
-            "number": 339,
-            "title": "field-report: oversight venv shebangs break after repo path change \u2014 no auto-detect/rebuild",
-            "label": "bug",
-            "file": "scripts/oversight/ensure_venv.sh"
-          }
-        ],
+        "issue_count": 0,
+        "issues": [],
         "churn": {
-          "bin/hos-cron": 10,
-          "bootstrap/hos_bootstrap.sh": 10,
-          "bootstrap/worker-cron-prompt.md": 7,
-          "docs/CRON-SETUP.md": 3,
-          "docs/planning/README.md": 1,
-          "scripts/oversight/ensure_venv.sh": 5,
           "tests/automation/test_bootstrap_markers.py": 1,
           "tests/automation/test_ensure_venv.py": 1,
           "tests/automation/test_hos_cron.py": 3
@@ -204,90 +112,8 @@
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
-      "evidence": [
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #807: bug: ensure_venv.sh marker trusted forever \u2014 broken venv after Python upgrade or path change goes undetected",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #806: bug: hos_bootstrap.sh never writes ~/.hos/setup-validation/bootstrap marker \u2014 hos-cron warns on every cycle",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #805: bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #744: governance(gap): bin/ (cron launchers) is not a protected surface despite being control-defining",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #738: bug: bin/hos-cron must configure git credentials deterministically (don't rely on the machine's git credential helper)",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #734: security(#733): bypassPermissions + no allowedTools + CLAUDE_CODE_OAUTH_TOKEN in env \u2014 prompt injection can exfiltrate OAuth token",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/worker-cron-prompt.md",
-          "line": 0,
-          "message": "[bug] #731: bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #730: hardening(#729): parse CLAUDE_CODE_OAUTH_TOKEN with grep/cut instead of sourcing entire env file",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #728: fix: bin/hos-cron \u2014 headless Max subscription auth via CLAUDE_CODE_OAUTH_TOKEN",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #720: fix(#718): mktemp in hos-cron should use private dir \u2014 shared /tmp exposes auth token window",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "high churn: 10 commits in 90 days",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_bootstrap.sh",
-          "line": 0,
-          "message": "high churn: 10 commits in 90 days",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/worker-cron-prompt.md",
-          "line": 0,
-          "message": "high churn: 7 commits in 90 days",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "14 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "hos-cron: 10 commits in 90 days \u2014 high churn may indicate persistent complexity."
-      ],
+      "evidence": [],
+      "checklist_items": [],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -303,7 +129,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 9,
+          "files_checked": 3,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -404,11 +230,11 @@
         "high_risk_functions": [],
         "function_count": 62,
         "parse_errors": [],
-        "task_class": "fix",
+        "task_class": "chore",
         "task_class_source": "commit_prefix",
-        "floor_applied": false,
+        "floor_applied": true,
         "pre_floor_tier": "LOW",
-        "post_floor_tier": "LOW"
+        "post_floor_tier": "MEDIUM"
       },
       "weight": 0.18,
       "evidence": [
@@ -948,7 +774,7 @@
         }
       ],
       "error": null,
-      "tier_floor": null
+      "tier_floor": "MEDIUM"
     },
     {
       "dimension": "static_analysis",
