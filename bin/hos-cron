@@ -613,16 +613,25 @@ if [[ $_claude_exit -eq 0 ]]; then
   # Backoff applies only when the previous run was idle — if work was done,
   # the next fire proceeds immediately to pick up remaining issues.
   _outcome="idle"
-  if [[ "$ROLE" == "worker" && -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
+  if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
     _run_start_iso=$(python3 -c "
 import datetime, sys
 print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
 " "$_run_start_epoch" 2>/dev/null || echo "")
     if [[ -n "$_run_start_iso" ]]; then
-      _new_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=all&sort=created&direction=desc&per_page=10" \
-        --jq "[.[] | select(.user.login == \"$HOS_BOT_LOGIN\" and .created_at >= \"$_run_start_iso\")] | length" \
-        2>/dev/null || echo "")
-      [[ "${_new_prs:-0}" -gt 0 ]] && _outcome="did-work"
+      if [[ "$ROLE" == "worker" ]]; then
+        # Worker: did work = new PRs opened by the bot since run start
+        _new_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=all&sort=created&direction=desc&per_page=10" \
+          --jq "[.[] | select(.user.login == \"$HOS_BOT_LOGIN\" and .created_at >= \"$_run_start_iso\")] | length" \
+          2>/dev/null || echo "")
+        [[ "${_new_prs:-0}" -gt 0 ]] && _outcome="did-work"
+      elif [[ "$ROLE" == "overseer" ]]; then
+        # Overseer: did work = any PRs merged by the bot since run start
+        _merged=$(gh api "repos/${_REPO_SLUG}/pulls?state=closed&sort=updated&direction=desc&per_page=10" \
+          --jq "[.[] | select(.merged_by.login == \"$HOS_BOT_LOGIN\" and .merged_at != null and .merged_at >= \"$_run_start_iso\")] | length" \
+          2>/dev/null || echo "")
+        [[ "${_merged:-0}" -gt 0 ]] && _outcome="did-work"
+      fi
     fi
   fi
   echo "$_outcome" > "$_LAST_RUN_STATUS_FILE"
