@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
+CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
 
 case "${1:-}" in

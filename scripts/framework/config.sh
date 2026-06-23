@@ -11,21 +11,21 @@
 # consumer project repos, installed via scripts/framework/install.sh.
 
 # ── Project identity ─────────────────────────────────────────────────────────
-PROJECT_NAME="HumanOversightSystem"
-PROJECT_STACK="(framework source — not a specific application stack)"
+export PROJECT_NAME="HumanOversightSystem"
+export PROJECT_STACK="(framework source — not a specific application stack)"
 
 # ── Non-agent tokens ─────────────────────────────────────────────────────────
-PROJECT_NON_AGENT_TOKENS=""
+export PROJECT_NON_AGENT_TOKENS=""
 
 # ── External agents ──────────────────────────────────────────────────────────
 # Pipeline agents documented in docs/AGENTS.md but installed only in consumer
 # projects. They are valid escalation targets in framework agents (e.g.
 # ux-designer escalates to ui-reviewer) but do not have .md files in this repo.
-EXTERNAL_AGENTS="pm-agent|architect|technical-design|coder|code-reviewer|security-reviewer|privacy-reviewer|ui-reviewer|a11y-reviewer|infra-reviewer|unit-test|system-test|deploy-verify"
+export EXTERNAL_AGENTS="pm-agent|architect|technical-design|coder|code-reviewer|security-reviewer|privacy-reviewer|ui-reviewer|a11y-reviewer|infra-reviewer|unit-test|system-test|deploy-verify"
 
 # ── Design pack ───────────────────────────────────────────────────────────────
 # HOS has no design pack — it's a framework, not a product.
-DESIGN_PACK_PATH=""
+export DESIGN_PACK_PATH=""
 
 # ── Extra review files ────────────────────────────────────────────────────────
-EXTRA_REVIEW_FILES=""
+export EXTRA_REVIEW_FILES=""

@@ -54,6 +54,7 @@ warn()    { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 err()     { echo -e "  ${RED}✘${RESET}  $*"; }
 header()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
 dry_run() { echo -e "  ${YELLOW}[dry]${RESET} $*"; }
+# shellcheck disable=SC2294
 run() { if $DRY_RUN; then dry_run "$@"; else eval "$@"; fi; }
 
 ERRORS=0

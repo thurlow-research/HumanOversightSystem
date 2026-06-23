@@ -516,7 +516,8 @@ cp_framework_file() {
 
 # ── Helper: ensure line present in file (append if missing) ───────────────────
 ensure_line() {
-  local file="$1" line="$2" label="${3:-$line}"
+  local file="$1" line="$2"
+  local label="${3:-$line}"
   if [[ -f "$file" ]] && grep -qF "$line" "$file" 2>/dev/null; then
     skip ".gitignore: $label already present"
   else
@@ -528,7 +529,8 @@ ensure_line() {
 
 # ── Helper: ensure line NOT present (warn if it is) ───────────────────────────
 ensure_not_ignored() {
-  local file="$1" line="$2" label="${3:-$line}"
+  local file="$1" line="$2"
+  local label="${3:-$line}"
   # grep -v '^#' strips comment lines before searching — avoids false positives
   if [[ -f "$file" ]] && grep -v '^#' "$file" 2>/dev/null | grep -qF "$line"; then
     warn ".gitignore has '$line' — $label should be committed, not ignored"

@@ -30,7 +30,7 @@
 set -euo pipefail
 
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
-RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
+BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
 info() { echo -e "  ${CYAN}→${RESET}  $*"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
