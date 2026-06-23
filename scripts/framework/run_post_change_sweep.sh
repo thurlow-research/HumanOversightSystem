@@ -135,7 +135,8 @@ done <<< "$CHANGED"
 # ── Print routing plan ───────────────────────────────────────────────────────
 print_domain() {
     local label="$1"
-    local key=$(echo "$label" | tr '-' '_')
+    local key
+    key=$(echo "$label" | tr '-' '_')
     local files
     files=$(get_domain "$key")
     if [[ -n "$files" ]]; then

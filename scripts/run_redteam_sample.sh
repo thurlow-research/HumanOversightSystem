@@ -77,13 +77,21 @@ fi
 # Use git SHA bytes as entropy source — reproducible without Date.now()
 ACTUAL_N=$(( POOL_SIZE < SAMPLE_N ? POOL_SIZE : SAMPLE_N ))
 SAMPLE=()
-declare -A SEEN
+
+# Bash-3.2-portable dedup helper: check if $1 is already in SAMPLE.
+_sha_in_sample() {
+    local _s
+    for _s in ${SAMPLE[@]+"${SAMPLE[@]}"}; do
+        [[ "$_s" == "$1" ]] && return 0
+    done
+    return 1
+}
 
 # Pseudo-random selection using SHA suffix as sort key
 while IFS= read -r sha; do
-    [[ -z "$sha" || "${SEEN[$sha]+x}" ]] && continue
+    [[ -z "$sha" ]] && continue
+    _sha_in_sample "$sha" && continue
     SAMPLE+=("$sha")
-    SEEN["$sha"]=1
     [[ ${#SAMPLE[@]} -ge $ACTUAL_N ]] && break
 done < <(printf '%s\n' "${LOW_COMMITS[@]}" | \
     awk '{print substr($0,length($0)-3)" "$0}' | sort | awk '{print $2}')

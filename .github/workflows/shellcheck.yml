@@ -1,0 +1,52 @@
+name: Shellcheck
+
+# Static analysis of all *.sh files with shellcheck --shell=bash.
+# Findings block the PR (#768).
+#
+# shellcheck is available on all GitHub-hosted ubuntu runners — no install step
+# needed. The workflow checks out the PR head (not pull_request_target) because
+# shellcheck only READS source files; it does not execute them, so there is no
+# code-execution attack surface that would require the trusted-base model.
+#
+# To baseline existing findings: add "# shellcheck disable=SCxxxx" at the
+# relevant line, or create a .shellcheckrc at the repo root.
+
+on:
+  pull_request:
+    branches: [main, "release/v*"]
+    paths:
+      - '**.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+
+      - name: Run shellcheck on all *.sh files
+        run: |
+          set -euo pipefail
+          echo "=== shellcheck $(shellcheck --version | head -1) ==="
+          # Collect all .sh files, excluding venvs and node_modules.
+          mapfile -t SH_FILES < <(find . -type f -name '*.sh' \
+            -not -path './.git/*' \
+            -not -path './.venv/*' \
+            -not -path './scripts/oversight/.venv/*' \
+            -not -path './node_modules/*' | sort)
+
+          if [[ ${#SH_FILES[@]} -eq 0 ]]; then
+            echo "No .sh files found — nothing to check."
+            exit 0
+          fi
+
+          echo "Checking ${#SH_FILES[@]} file(s)..."
+          # --shell=bash: treat all files as bash even if shebang differs.
+          # --severity=warning: report warning+ findings (info is suppressed).
+          # --format=gcc: file:line:col: severity: message (readable in CI logs).
+          shellcheck --shell=bash --severity=warning --format=gcc "${SH_FILES[@]}"
+          echo "shellcheck: all files clean"

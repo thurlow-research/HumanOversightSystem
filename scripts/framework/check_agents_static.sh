@@ -201,7 +201,6 @@ for canonical in "${DOC_CANONICALS[@]}"; do
     all_refs=$(grep -rl "$basename_only" "$AGENTS_DIR" 2>/dev/null || true)
     while IFS= read -r ref_file; do
         [[ -z "$ref_file" ]] && continue
-        agent_self=$(grep -m1 '^name:' "$ref_file" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
         # Find lines with backtick-quoted bare basename (no directory component before it)
         wrong=$(grep -n "\`${basename_only}\`" "$ref_file" \
                 | grep -v "$canonical" \

@@ -69,7 +69,6 @@ PASS_COUNT_FILE="$OUT_DIR/self-review-pass-count"
 
 PROJECT_NAME="(unnamed project)"
 PROJECT_STACK="(unspecified stack)"
-DESIGN_PACK_PATH=""
 EXTRA_REVIEW_FILES=""
 # shellcheck source=/dev/null
 [[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh

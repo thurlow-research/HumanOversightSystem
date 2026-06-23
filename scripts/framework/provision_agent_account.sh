@@ -83,12 +83,10 @@ resolve_bot_identity() {
     worker)
       BOT_USERNAME="$BOT_WORKER_USERNAME"
       BOT_EMAIL="${BOT_WORKER_EMAIL:-${BOT_WORKER_USERNAME}@users.noreply.github.com}"
-      BOT_ROLE="worker"
       ;;
     overseer)
       BOT_USERNAME="$BOT_OVERSEER_USERNAME"
       BOT_EMAIL="${BOT_OVERSEER_EMAIL:-${BOT_OVERSEER_USERNAME}@users.noreply.github.com}"
-      BOT_ROLE="overseer"
       ;;
     *) die "Unknown class: $class" ;;
   esac

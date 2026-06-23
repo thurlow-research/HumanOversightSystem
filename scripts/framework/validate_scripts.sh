@@ -98,7 +98,7 @@ collect_scripts() {
     if $CHANGED_ONLY; then
         while IFS= read -r f; do
             [[ -f "$f" ]] || continue
-            case "$f" in bootstrap/*.sh|scripts/*.sh|scripts/*/*.sh|scripts/oversight/*.py|scripts/oversight/*/*.py) files+=("$f") ;; esac
+            case "$f" in bootstrap/*.sh|scripts/*.sh|scripts/oversight/*.py) files+=("$f") ;; esac
         done < <(git diff --name-only "$BASE_REF" 2>/dev/null || true)
     fi
     if [[ ${#files[@]} -eq 0 ]]; then
@@ -210,7 +210,6 @@ python3 "$VALIDATION_LOGIC" process \
     --file "$OUTFILE" --ledger "$LEDGER" --strict-empty
 
 VERDICT=$(grep '^verdict:' "$OUTFILE" | head -1 | awk '{print $2}')
-NEW=$(grep '^new_blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')
 # Converge ONLY on an explicit approve (zero NEW blocking AND the reviewers
 # actually produced parseable output). Reading new_blocking_count alone was the
 # fail-open: an empty parse leaves it 0 even though verdict=error (#669). Any
