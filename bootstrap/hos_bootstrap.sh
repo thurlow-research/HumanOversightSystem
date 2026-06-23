@@ -313,7 +313,11 @@ if [[ -n "$DEGRADED" ]]; then
   warn "Machine bootstrap complete WITH DEGRADED CAPABILITY: $DEGRADED"
 else
   ok "Machine bootstrap complete."
-  # Drop marker file for cron validation check
+fi
+# Drop marker regardless of DEGRADED state — DEGRADED means optional tools are
+# missing, not that the bootstrap failed.  The marker is NOT written when
+# ERRORS > 0 because exit 1 fires before reaching this point.
+if ! $DRY_RUN; then
   mkdir -p ~/.hos/setup-validation 2>/dev/null || true
   touch ~/.hos/setup-validation/bootstrap 2>/dev/null || true
 fi

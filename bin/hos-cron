@@ -135,11 +135,15 @@ _validate_env() {
   local missing=0
   [[ -f "$HOME/.hos/setup-validation/bootstrap" ]] \
     || { echo "$LOG_PREFIX ⚠ bootstrap marker missing (run: ./bootstrap/hos_bootstrap.sh)"; missing=1; }
-  REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
-  [[ -f "$HOME/.hos/setup-validation/oversight-venv-${REPO_HASH}" ]] \
-    || { echo "$LOG_PREFIX ⚠ oversight-venv marker missing (run: ./scripts/oversight/ensure_venv.sh)"; missing=1; }
+  # Call ensure_venv.sh to verify (and auto-repair) the oversight venv rather than
+  # trusting the cached marker alone.  A broken venv (e.g. after a Python upgrade)
+  # is detected and rebuilt here so validators can run this cycle.
+  if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet 2>/dev/null; then
+    echo "$LOG_PREFIX ⚠ oversight-venv broken or missing — validators will not run"
+    missing=1
+  fi
   [[ $missing -eq 0 ]] && echo "$LOG_PREFIX ✓ environment validated"
-  return 0  # fail-open: don't block on missing markers
+  return 0  # fail-open: don't block on broken/missing venv
 }
 _validate_env
 
