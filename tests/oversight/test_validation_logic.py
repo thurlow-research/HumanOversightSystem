@@ -276,3 +276,92 @@ def test_record_appends_one_line(tmp_path):
     assert entry["class"] == "x"
     assert entry["disposition"] == "noise"
     assert entry["ts"].endswith("Z")
+
+
+# ── _cmd_process: preserve existing request_changes verdict (#683) ────────────
+def test_cmd_process_preserves_request_changes_with_medium_findings(tmp_path):
+    """A reviewer's explicit request_changes (medium findings only) must not be
+    laundered into approve by compute_verdict's new_blocking_count==0 logic.
+    regression test for #683."""
+    import importlib.util as _ilu
+    import sys as _sys
+    vl = validation_logic  # already imported at module level
+
+    ledger = str(tmp_path / "ledger.jsonl")
+    # Simulate the second-review output file AFTER second_review_logic.py aggregate
+    # has already set verdict: request_changes for a medium-only reviewer response.
+    reviewer_json = json.dumps({
+        "reviewer": "agy",
+        "verdict": "request_changes",
+        "findings": [{"severity": "medium", "file": "foo.py", "line": 1,
+                      "finding": "medium issue", "why": "why", "suggestion": "fix"}],
+    })
+    content = (
+        "# Second Review — Step 3\n"
+        "Score: 0.35 | Timestamp: 20260623T000000\n"
+        "verdict: request_changes\n"   # already set by aggregate
+        "reviewed_range: abc..def\n"
+        "highest_severity: medium\n"
+        "unresolved_findings: 0\n"
+        "blocking_count: 0\n"
+        "new_blocking_count: 0\n"
+        "\n"
+        "## agy — Correctness + Spec Adherence\n"
+        "```json\n" + reviewer_json + "\n```\n"
+    )
+    outfile = tmp_path / "step3-review.md"
+    outfile.write_text(content)
+
+    # Call _cmd_process via the CLI shim (argparse namespace).
+    import argparse
+    args = argparse.Namespace(
+        file=str(outfile),
+        ledger=ledger,
+        strict_empty=False,
+        func=vl._cmd_process,
+    )
+    rc = vl._cmd_process(args)
+    assert rc == 0
+
+    result_text = outfile.read_text()
+    # verdict must remain request_changes (not laundered to approve)
+    assert "verdict: request_changes" in result_text
+    assert "verdict: approve" not in result_text
+    # new_blocking_count must be non-zero to signal the blocking intent
+    assert "new_blocking_count: 0\n" not in result_text
+
+
+def test_cmd_process_does_not_preserve_approve_when_compute_agrees(tmp_path):
+    """When aggregate set verdict: approve and compute_verdict also approves,
+    the approve verdict is preserved unchanged (#683 — no regression on clean path)."""
+    vl = validation_logic
+    ledger = str(tmp_path / "ledger.jsonl")
+    reviewer_json = json.dumps({
+        "reviewer": "agy",
+        "verdict": "approve",
+        "findings": [],
+    })
+    content = (
+        "# Second Review — Step 3\n"
+        "Score: 0.35 | Timestamp: 20260623T000000\n"
+        "verdict: approve\n"
+        "reviewed_range: abc..def\n"
+        "highest_severity: none\n"
+        "unresolved_findings: 0\n"
+        "blocking_count: 0\n"
+        "new_blocking_count: 0\n"
+        "\n"
+        "## agy — Correctness + Spec Adherence\n"
+        "```json\n" + reviewer_json + "\n```\n"
+    )
+    outfile = tmp_path / "step3-review.md"
+    outfile.write_text(content)
+    import argparse
+    args = argparse.Namespace(
+        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+    )
+    rc = vl._cmd_process(args)
+    assert rc == 0
+    result_text = outfile.read_text()
+    assert "verdict: approve" in result_text
+    assert "verdict: request_changes" not in result_text

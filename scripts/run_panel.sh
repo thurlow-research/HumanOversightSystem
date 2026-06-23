@@ -469,13 +469,20 @@ log_context_advisory() {  # $1=reviewer  $2=response-text
 RESPONSES_JSON="[]"
 for spec in "${ROSTER[@]}"; do
   tool="${spec%%:*}"; lens="${spec##*:}"
-  if [[ "$tool" != "ipcheck" ]] && ! command -v "$tool" >/dev/null 2>&1; then warn "skip $spec — $tool not on PATH"; continue; fi
+  if [[ "$tool" != "ipcheck" ]] && ! command -v "$tool" >/dev/null 2>&1; then
+    die "$tool not on PATH — required reviewer for risk $RISK (install via scripts/setup_clis.sh) (#682)"
+  fi
   info "reviewing: ${BOLD}$tool${RESET} · lens=$lens"
   tool_findings="[]"
   ci=0
   for chunk in "${CHUNKS[@]}"; do
     ci=$((ci+1))
-    raw="$(call_model "$tool" "$(build_review_prompt "$lens" "$chunk")")" || raw='{"findings":[]}'
+    raw="$(call_model "$tool" "$(build_review_prompt "$lens" "$chunk")")" || {
+      if [[ "$tool" != "ipcheck" ]]; then
+        die "$tool invocation failed for lens=$lens chunk $ci of ${#CHUNKS[@]} — required reviewer for risk $RISK; see $RUN_DIR/errors.log (#682)"
+      fi
+      raw='{"findings":[]}'
+    }
     printf '%s' "$raw" > "$RUN_DIR/${tool}-${lens}-chunk${ci}.raw.txt"
     log_context_advisory "$tool" "$raw"
     f="$(printf '%s' "$raw" | python3 "$PANEL_LOGIC" extract-json | jq -c '.findings // []' 2>/dev/null || echo '[]')"
