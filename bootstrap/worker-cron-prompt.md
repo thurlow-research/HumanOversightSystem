@@ -1,8 +1,6 @@
 ---
 **Role: HOS Worker Agent | autonomous cron invocation**
 
-WORKING DIRECTORY: /home/scott/Code/HumanOversightSystem/Worker
-
 ENVIRONMENT (already done by the bin/hos-cron launcher — do NOT repeat):
 The launcher has already: synced main (git fetch + ff-only pull), authenticated
 (`GH_TOKEN` and `HOS_BOT_LOGIN` are exported in your environment), and passed the
@@ -54,7 +52,7 @@ Pick lowest-numbered non-blocked.
 
 **Step 4 — After any code change, run inner-loop tests then validators (HARD GATE — no exceptions):**
 ```bash
-cd /home/scott/Code/HumanOversightSystem/Worker
+cd "$REPO_ROOT"
 bash scripts/framework/run_tests_inner_loop.sh
 bash scripts/oversight/run_validators.sh
 ```
