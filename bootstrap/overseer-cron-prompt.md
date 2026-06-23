@@ -37,6 +37,14 @@ done
 ```
 For each PR merged in the last 2 hours: if `merged_by` is a bot (type=Bot) → file `process-gap` issue. If human → log `human-authorized-merge` to audit and continue. Do NOT file issues for human merges.
 
+**Step 0b — Release-gate deep validation (#695):**
+```bash
+MILESTONE="${HOS_TARGET_MILESTONE_NUMBER:-}"
+gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&labels=release-request&milestone=${MILESTONE}&per_page=10" \
+  --jq '.[] | select(.labels | map(.name) | contains(["release-authorized"]) | not) | "#\(.number) \(.title)"'
+```
+If an open `release-request` issue with no `release-authorized` label exists in the current milestone: run the release-gate deep validation protocol (see `overseer.md` §Release-gate deep validation). Read all step `summary.json` artifacts from main, check tiers and findings, verify sign-off register completeness, post CLEARANCE or ESCALATE on the issue, log `release-gate-validation` event to `audit/oversight-log.jsonl`. Process at most one release-gate issue per cycle. Then proceed to Step 1.
+
 **Step 1 — Review open PRs:**
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" \
