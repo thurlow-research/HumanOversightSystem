@@ -21,12 +21,14 @@
 # through to API-key billing. Override path with HOS_CLAUDE_AUTH_ENV.
 #
 # Env overrides:
-#   HOS_CLAUDE_AUTH_ENV   path to the OAuth token file (default ~/.config/hos/claude-auth.env)
-#   HOS_CRON_MAX_SECONDS  wall-clock cap on the claude session (default 1800; 0 disables)
-#   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap)
-#   HOS_CRON_AUTH_PROBE   1 = run a model auth probe before work (default 0; costs a turn)
-#   HOS_IDLE_INTERVAL     idle-backoff threshold in seconds (default 1800)
-#   HOS_CRON_JITTER_MAX   max startup jitter in seconds (default 60; 0 disables)
+#   HOS_CLAUDE_AUTH_ENV         path to the OAuth token file (default ~/.config/hos/claude-auth.env)
+#   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables)
+#   HOS_CRON_MAX_TURNS          optional --max-turns backstop (default unset = no cap)
+#   HOS_CRON_AUTH_PROBE         1 = run a model auth probe before work (default 0; costs a turn)
+#   HOS_IDLE_INTERVAL           idle-backoff threshold in seconds (default 1800)
+#   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
+#   HOS_TARGET_RELEASE          override the active release title (e.g. v0.4.2); default from projects.conf
+#   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
@@ -249,6 +251,37 @@ if [[ "${HOS_CRON_AUTH_PROBE:-0}" == "1" ]]; then
   fi
 fi
 
+# ── Target milestone resolution (#780) ────────────────────────────────────────
+# Resolve the active release and milestone number so cron prompts never embed a
+# literal milestone=<N>. Source of truth: projects.conf target_release key (or
+# HOS_TARGET_RELEASE env override). Milestone number derived via REST API so
+# rolling to the next release is a single config change, no prompt edit.
+HOS_TARGET_RELEASE="${HOS_TARGET_RELEASE:-$(_conf_val target_release)}"
+if [[ -n "$HOS_TARGET_RELEASE" ]]; then
+  if [[ -z "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
+    _github_repo=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+      | sed -E 's|.*github\.com[:/]([^/]+/[^.]+)(\.git)?$|\1|')
+    if [[ -z "$_github_repo" ]]; then
+      echo "$LOG_PREFIX FATAL: cannot derive GitHub repo from git remote (needed for milestone resolution)"
+      _audit cycle-preflight-fail reason=milestone_repo_unresolvable
+      exit 78
+    fi
+    HOS_TARGET_MILESTONE_NUMBER=$(gh api "repos/${_github_repo}/milestones?state=all&per_page=100" \
+      --jq ".[] | select(.title == \"${HOS_TARGET_RELEASE}\" or (.title | startswith(\"${HOS_TARGET_RELEASE} \"))) | .number" \
+      2>/dev/null | head -1)
+    if [[ -z "$HOS_TARGET_MILESTONE_NUMBER" ]]; then
+      echo "$LOG_PREFIX FATAL: milestone '${HOS_TARGET_RELEASE}' not found in ${_github_repo} — set ${PROJECT}_target_release in $PROJECTS_CONF"
+      _audit cycle-preflight-fail reason=milestone_not_found
+      exit 78
+    fi
+  fi
+  export HOS_TARGET_RELEASE HOS_TARGET_MILESTONE_NUMBER
+  echo "$LOG_PREFIX target: ${HOS_TARGET_RELEASE} → milestone #${HOS_TARGET_MILESTONE_NUMBER}"
+else
+  [[ "$ROLE" == "worker" ]] \
+    && echo "$LOG_PREFIX WARN: ${PROJECT}_target_release not set in $PROJECTS_CONF — prompt will not have milestone substituted"
+fi
+
 # ── Inner-loop tests (worker only) ───────────────────────────────────────────
 if [[ "$ROLE" == "worker" ]]; then
   if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
@@ -299,10 +332,19 @@ _run_claude() {  # stdin is inherited → passed through to claude
 # ── Invoke Claude — stdin pipe avoids '---' being parsed as a CLI flag ───────
 # Capture the real exit code: under `set -e`, a bare failing command in an if-body
 # would abort the script before `$?` is read, so guard with `|| _claude_exit=$?`.
+# Prompts may contain @@TARGET_RELEASE@@ / @@MILESTONE_NUMBER@@ placeholders (#780);
+# substitute them now if the target is resolved. sed targets only those sentinel
+# strings, so other shell variables in the prompt markdown are never expanded.
 PROMPT_FILE="$REPO_ROOT/bootstrap/${ROLE}-cron-prompt.md"
 _claude_exit=0
 if [[ -f "$PROMPT_FILE" ]]; then
-  _run_claude < "$PROMPT_FILE" || _claude_exit=$?
+  if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
+    sed -e "s/@@TARGET_RELEASE@@/${HOS_TARGET_RELEASE}/g" \
+        -e "s/@@MILESTONE_NUMBER@@/${HOS_TARGET_MILESTONE_NUMBER}/g" \
+        "$PROMPT_FILE" | _run_claude || _claude_exit=$?
+  else
+    _run_claude < "$PROMPT_FILE" || _claude_exit=$?
+  fi
 else
   echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
 fi

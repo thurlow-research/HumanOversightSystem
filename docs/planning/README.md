@@ -29,3 +29,11 @@ When a new issue is filed, triage it to the appropriate release:
 - The GitHub milestone is the machine-readable version; planning docs are the human-readable rationale.
 - The worker updates planning docs when issues are filed, milestones change, or open decisions resolve.
 - Humans author the theme and bucket structure. Workers fill in the issue table and triage new issues per the criteria above.
+
+## Active milestone config
+
+The worker's active target milestone is **not** hardcoded in any prompt. It is
+set in `~/.config/hos/projects.conf` as `<project>_target_release=<title>` (e.g.
+`hos_target_release=v0.4.2`). `bin/hos-cron` resolves the milestone number via
+the REST API at each cycle start. To roll to the next release, change one line in
+`projects.conf` — see `docs/CRON-SETUP.md §3` for the full procedure.
