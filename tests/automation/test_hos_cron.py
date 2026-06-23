@@ -30,6 +30,7 @@ Individual tests then perturb exactly one input to drive a single branch.
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -112,6 +113,15 @@ class CronEnv:
             self.repo / "scripts" / "oversight" / "ensure_venv.sh",
             "#!/usr/bin/env bash\n"
             'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
+        )
+        # fake oversight venv — satisfies the pre-jitter dependency check
+        _write_exec(
+            self.repo / "scripts" / "oversight" / ".venv" / "bin" / "python",
+            "#!/usr/bin/env bash\nexit 0\n",
+        )
+        _write_exec(
+            self.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest",
+            "#!/usr/bin/env bash\nexit 0\n",
         )
 
         # ── HOME config: project registry + claude OAuth (#728) ──
@@ -427,3 +437,71 @@ class TestValidateEnv:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "oversight-venv" not in r.stdout
         assert "✓ environment validated" in r.stdout
+
+
+# ─────────────────────── Pre-jitter dependency check ─────────────────────────
+class TestPreJitterDepsCheck:
+    def test_missing_venv_exits_78_before_jitter(self, cron):
+        """No oversight venv python → exit 78 before jitter sleep (fail-closed)."""
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        r = cron.run()
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert "oversight venv missing" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_missing_pytest_exits_78_before_jitter(self, cron):
+        """pytest missing from venv → exit 78 before jitter sleep."""
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest").unlink()
+        r = cron.run()
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert "pytest missing" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_successful_check_writes_marker(self, cron):
+        """Successful deps check writes a marker file in validation-cache."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        cache_dir = cron.state / "validation-cache"
+        assert any(cache_dir.glob("deps-*")), "successful check must write deps marker"
+
+    def test_fresh_marker_skips_validation_after_venv_removed(self, cron):
+        """Once a fresh marker exists, removing the venv no longer causes exit 78."""
+        # First run: succeeds and writes marker
+        r1 = cron.run()
+        assert r1.returncode == 0, r1.stdout + r1.stderr
+        cache_dir = cron.state / "validation-cache"
+        assert any(cache_dir.glob("deps-*"))
+        # Remove venv python to simulate broken environment
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        # Clear bookkeeping state so idle backoff doesn't fire on the second run
+        if cron.claude_log.exists():
+            cron.claude_log.unlink()
+        if cron.last_run_file.exists():
+            cron.last_run_file.unlink()
+        # Second run: marker is fresh → validation skipped → cycle proceeds
+        r2 = cron.run()
+        assert r2.returncode == 0, r2.stdout + r2.stderr
+        assert cron.claude_ran()
+
+    def test_stale_marker_triggers_revalidation_and_fails(self, cron):
+        """A marker older than 7 days triggers re-validation; missing venv → exit 78."""
+        # Run once to get the marker written
+        r1 = cron.run()
+        assert r1.returncode == 0, r1.stdout + r1.stderr
+        cache_dir = cron.state / "validation-cache"
+        markers = list(cache_dir.glob("deps-*"))
+        assert markers
+        # Make the marker appear 8 days old
+        old_time = time.time() - (8 * 24 * 3600)
+        for m in markers:
+            os.utime(str(m), (old_time, old_time))
+        # Remove venv so re-validation finds a missing dependency
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        if cron.claude_log.exists():
+            cron.claude_log.unlink()
+        if cron.last_run_file.exists():
+            cron.last_run_file.unlink()
+        # Re-run: stale marker → revalidation → venv missing → exit 78
+        r2 = cron.run()
+        assert r2.returncode == 78, r2.stdout + r2.stderr
+        assert "oversight venv missing" in r2.stdout
