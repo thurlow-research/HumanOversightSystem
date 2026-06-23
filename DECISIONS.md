@@ -482,3 +482,19 @@ from subscription limits). Passing `--bare` (ignores the OAuth token, demands an
 auto-refresh; expiry surfaces as a claude non-zero exit with a refresh hint in the
 log. Headless fires draw from the same weekly subscription rate limit as interactive use, so
 idle-backoff suppression (#628) is load-bearing for cost control.
+
+---
+
+## 2026-06-23 — Audit log sync bot: dedicated `hos-auditsync-hos` GitHub App
+
+**Decision.** Audit log files (`audit/oversight-log.jsonl`, `audit/overnight-loop-log.md`) are gitignored from feature PRs and synced to main via a GitHub Actions workflow using a dedicated `hos-auditsync-hos` GitHub App. The app holds the Ruleset bypass for direct push to main.
+
+**Rejected alternatives.**
+- *`hos-overseer-hos` bypass*: expands the overseer's authority beyond its intended scope; the overseer's merge authority should always flow through the PR review process.
+- *`hos-worker-hos` bypass*: same concern.
+- *`github-actions[bot]`*: does not appear in either classic branch protection or Ruleset bypass UI.
+- *PAT*: commits would show as the human owner, muddying the audit trail.
+
+**Naming.** `hos-auditsync-hos` follows the `hos-*-hos` convention so each consumer repo gets its own scoped app instance.
+
+**Consequences.** The app needs `Contents: read & write` on the target repo only. Secrets `HOS_AUDIT_SYNC_APP_ID` and `HOS_AUDIT_SYNC_PRIVATE_KEY` must be stored per-repo. The workflow uses `actions/create-github-app-token` to generate a short-lived installation token each run. The cron machine pushes audit files to the unprotected `audit-log` branch; the workflow reads from there and commits only those two files to main.
