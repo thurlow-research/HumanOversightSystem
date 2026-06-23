@@ -50,7 +50,15 @@ If an open `release-request` issue with no `release-authorized` label exists in 
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" \
   --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:70])"'
 ```
-For each open PR: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
+For each open PR, **before running the full review chain**, check actionability:
+```bash
+gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" \
+  --jq '"mergeable=\(.mergeable) draft=\(.draft)"'
+```
+- If `mergeable == "CONFLICTING"`: skip this PR entirely. Do NOT review, comment, or open audit PRs for it — it cannot be merged until the author rebases. Log the skip as a single-line note only.
+- If `draft == true`: skip this PR entirely.
+- If `mergeable == null`: GitHub has not yet computed the merge status — treat as actionable and proceed.
+- Otherwise: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
 
 **Step 2 — STOP.** One review cycle per cron invocation.
 

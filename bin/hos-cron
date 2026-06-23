@@ -369,6 +369,22 @@ if [[ "$ROLE" == "worker" ]]; then
   fi
 fi
 
+# ── Overseer: skip cycle if no open PRs exist ────────────────────────────────
+# Conflicting PRs are filtered inside the overseer prompt; this guard avoids
+# burning a Claude turn when there is simply nothing to review.
+if [[ "$ROLE" == "overseer" ]]; then
+  _gh_repo=$(git -C "$REPO_ROOT" remote get-url origin \
+    | sed 's|.*github\.com[:/]\(.*\)\.git|\1|;s|.*github\.com[:/]\(.*\)|\1|')
+  _open_pr_count=$(gh api "repos/${_gh_repo}/pulls?state=open&per_page=1" \
+    --jq 'length' 2>/dev/null || echo "")
+  if [[ "$_open_pr_count" == "0" ]]; then
+    echo "$LOG_PREFIX no open PRs — skipping cycle"
+    _audit cycle-skip reason=no_open_prs
+    date +%s > "$_LAST_RUN_FILE"
+    exit 0
+  fi
+fi
+
 # ── Cycle start ───────────────────────────────────────────────────────────────
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
