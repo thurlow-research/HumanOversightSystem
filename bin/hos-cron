@@ -86,7 +86,7 @@ REPO_ROOT="$(_conf_val ${ROLE}_root)"
 [[ -n "$REPO_ROOT" ]] \
   || { echo "hos-cron: no ${PROJECT}_${ROLE}_root in $PROJECTS_CONF"; exit 1; }
 
-export HOS_CONFIG_DIR
+export HOS_CONFIG_DIR REPO_ROOT
 
 LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -250,6 +250,10 @@ fi
 git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
 git -C "$REPO_ROOT" pull origin main --ff-only --quiet 2>/dev/null || true
 
+# ── Repo slug — shared by halt check, PR routing, and milestone resolution ────
+_REPO_SLUG="${HOS_REPO_SLUG:-$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+  | sed -E 's|.*github\.com[:/]([^/]+/[^.]+)(\.git)?$|\1|' || echo "")}"
+
 # ── Preflight ─────────────────────────────────────────────────────────────────
 export HOS_REQUIRE_PREFLIGHT=1
 if ! bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --quiet 2>/dev/null; then
@@ -329,6 +333,48 @@ if [[ "${HOS_CRON_AUTH_PROBE:-0}" == "1" ]]; then
   fi
 fi
 
+# ── Halt check (#793) — skip cycle if a hos-halt issue is open ───────────────
+if [[ -n "$_REPO_SLUG" ]]; then
+  _HALT_COUNT=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=hos-halt&per_page=1" \
+    --jq 'length' 2>/dev/null || echo "0")
+  _HALT_COUNT="${_HALT_COUNT:-0}"
+  if [[ "$_HALT_COUNT" -gt 0 ]]; then
+    echo "$LOG_PREFIX HALT: open hos-halt issue detected — skipping cycle"
+    _audit cycle-skip reason=hos-halt
+    exit 0
+  fi
+fi
+
+# ── Agent availability check (#794) — fail-closed on missing agent files ──────
+_AGENTS_LIST="$REPO_ROOT/scripts/framework/consumer_agents.txt"
+if [[ -f "$_AGENTS_LIST" ]]; then
+  _missing_agents=()
+  while IFS= read -r _agent_slug; do
+    [[ -z "$_agent_slug" || "$_agent_slug" == \#* ]] && continue
+    [[ -f "$REPO_ROOT/.claude/agents/${_agent_slug}.md" ]] \
+      || _missing_agents+=("$_agent_slug")
+  done < "$_AGENTS_LIST"
+  if [[ ${#_missing_agents[@]} -gt 0 ]]; then
+    echo "$LOG_PREFIX AGENT AVAILABILITY FAIL: missing ${_missing_agents[*]}"
+    _audit cycle-preflight-fail reason=agent_availability
+    if [[ -n "$_REPO_SLUG" ]]; then
+      _aa_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+        --jq '[.[] | select(.title | startswith("[BLOCKED] agent unavailable"))] | length' \
+        2>/dev/null || echo "0")
+      _aa_existing="${_aa_existing:-0}"
+      if [[ "$_aa_existing" == "0" ]]; then
+        gh issue create \
+          --repo "$_REPO_SLUG" \
+          --title "[BLOCKED] agent unavailable — ${ROLE} halted (missing: ${_missing_agents[*]})" \
+          --label "needs-human,needs-ai" \
+          --body "Required agent files missing from \`$REPO_ROOT/.claude/agents/\`: \`${_missing_agents[*]}\`. ${ROLE} cannot launch. Re-run \`hos_install.sh\` or restore the missing files." \
+          2>/dev/null || true
+      fi
+    fi
+    exit 1
+  fi
+fi
+
 # ── Target milestone resolution (#780) ────────────────────────────────────────
 # Resolve the active release and milestone number so cron prompts never embed a
 # literal milestone=<N>. Source of truth: projects.conf target_release key (or
@@ -337,18 +383,16 @@ fi
 HOS_TARGET_RELEASE="${HOS_TARGET_RELEASE:-$(_conf_val target_release)}"
 if [[ -n "$HOS_TARGET_RELEASE" ]]; then
   if [[ -z "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
-    _github_repo=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
-      | sed -E 's|.*github\.com[:/]([^/]+/[^.]+)(\.git)?$|\1|')
-    if [[ -z "$_github_repo" ]]; then
+    if [[ -z "$_REPO_SLUG" ]]; then
       echo "$LOG_PREFIX FATAL: cannot derive GitHub repo from git remote (needed for milestone resolution)"
       _audit cycle-preflight-fail reason=milestone_repo_unresolvable
       exit 78
     fi
-    HOS_TARGET_MILESTONE_NUMBER=$(gh api "repos/${_github_repo}/milestones?state=all&per_page=100" \
+    HOS_TARGET_MILESTONE_NUMBER=$(gh api "repos/${_REPO_SLUG}/milestones?state=all&per_page=100" \
       --jq ".[] | select(.title == \"${HOS_TARGET_RELEASE}\" or (.title | startswith(\"${HOS_TARGET_RELEASE} \"))) | .number" \
       2>/dev/null | head -1)
     if [[ -z "$HOS_TARGET_MILESTONE_NUMBER" ]]; then
-      echo "$LOG_PREFIX FATAL: milestone '${HOS_TARGET_RELEASE}' not found in ${_github_repo} — set ${PROJECT}_target_release in $PROJECTS_CONF"
+      echo "$LOG_PREFIX FATAL: milestone '${HOS_TARGET_RELEASE}' not found in ${_REPO_SLUG} — set ${PROJECT}_target_release in $PROJECTS_CONF"
       _audit cycle-preflight-fail reason=milestone_not_found
       exit 78
     fi
@@ -366,6 +410,40 @@ if [[ "$ROLE" == "worker" ]]; then
     echo "$LOG_PREFIX INNER-LOOP TESTS FAILED"
     _audit cycle-preflight-fail reason=inner_loop_tests_failed
     exit 1
+  fi
+fi
+
+# ── PR routing (#791) — skip Claude if all worker PRs are awaiting human merge ─
+# Avoid burning a Claude session just to discover there's nothing to do. If every
+# open bot PR already has an APPROVED review with no CHANGES_REQUESTED, Claude
+# would immediately STOP after Step 1 — skip the launch and stamp last-run so
+# idle backoff applies normally.
+if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
+  _OPEN_PR_NUMS=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
+    --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | .number" 2>/dev/null || echo "")
+  if [[ -n "$_OPEN_PR_NUMS" ]]; then
+    _PR_ROUTING="awaiting-merge"
+    while IFS= read -r _pr_num; do
+      [[ -z "$_pr_num" ]] && continue
+      _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
+        --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
+      _pr_cr="${_pr_cr:-0}"
+      if [[ "$_pr_cr" -gt 0 ]]; then _PR_ROUTING="needs-fix"; break; fi
+      _pr_ap=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
+        --jq '[.[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
+      _pr_ap="${_pr_ap:-0}"
+      if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
+    done <<< "$_OPEN_PR_NUMS"
+    if [[ "$_PR_ROUTING" == "awaiting-merge" ]]; then
+      _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
+      echo "$LOG_PREFIX all ${_pr_count} open PR(s) awaiting human merge — skipping Claude launch"
+      _audit cycle-skip reason=awaiting-merge
+      printf '{"reason":"worker-cycle-skip","project":"%s","timestamp":"%s"}\n' \
+        "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        > "$_HOS_DIR/wakeup/overseer"
+      date +%s > "$_LAST_RUN_FILE"
+      exit 0
+    fi
   fi
 fi
 
@@ -415,14 +493,21 @@ _run_claude() {  # stdin is inherited → passed through to claude
 # strings, so other shell variables in the prompt markdown are never expanded.
 PROMPT_FILE="$REPO_ROOT/bootstrap/${ROLE}-cron-prompt.md"
 _claude_exit=0
-if [[ -f "$PROMPT_FILE" ]]; then
+# #805: inject WORKING DIRECTORY from $REPO_ROOT so prompt files never embed a
+# machine-specific path. Prepended as the first line so Claude sees it before
+# any other content regardless of the prompt file's structure.
+_build_prompt() {
+  printf 'WORKING DIRECTORY: %s\n\n' "$REPO_ROOT"
   if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
     sed -e "s/@@TARGET_RELEASE@@/${HOS_TARGET_RELEASE}/g" \
         -e "s/@@MILESTONE_NUMBER@@/${HOS_TARGET_MILESTONE_NUMBER}/g" \
-        "$PROMPT_FILE" | _run_claude || _claude_exit=$?
+        "$PROMPT_FILE"
   else
-    _run_claude < "$PROMPT_FILE" || _claude_exit=$?
+    cat "$PROMPT_FILE"
   fi
+}
+if [[ -f "$PROMPT_FILE" ]]; then
+  _build_prompt | _run_claude || _claude_exit=$?
 else
   echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
 fi
