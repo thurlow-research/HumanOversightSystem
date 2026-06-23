@@ -79,9 +79,37 @@ class CronEnv:
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
 
-        # gh stub — only needs to be found by `command -v gh` (#738 helper string
-        # is never actually invoked without a real push).
-        _write_exec(self.bindir / "gh", "#!/usr/bin/env bash\nexit 0\n")
+        # gh stub — configurable via HOS_TEST_* env vars so individual tests can
+        # exercise halt-check, agent-availability, and PR-routing paths without
+        # needing a real GitHub API.  Matches on argument substrings; unknown calls
+        # fall through to exit 0 (safe default for non-targeted invocations).
+        _write_exec(
+            self.bindir / "gh",
+            "#!/usr/bin/env bash\n"
+            'ARGS="$*"\n'
+            'case "$ARGS" in\n'
+            # Halt check: issues?labels=hos-halt
+            '  *"labels=hos-halt"*)\n'
+            '    echo "${HOS_TEST_HALT_COUNT:-0}" ;;\n'
+            # Agent availability: needs-human blocked issues count
+            '  *"labels=needs-human"*)\n'
+            '    echo "${HOS_TEST_NEEDS_HUMAN_BLOCKED:-0}" ;;\n'
+            # PR list (open bot PRs) — outputs one PR number per line
+            '  *"pulls?state=open"*)\n'
+            '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
+            # PR reviews — CHANGES_REQUESTED count
+            '  *"reviews"*"CHANGES_REQUESTED"*)\n'
+            '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
+            # PR reviews — APPROVED count
+            '  *"reviews"*"APPROVED"*)\n'
+            '    echo "${HOS_TEST_PR_AP:-1}" ;;\n'
+            'esac\n'
+            # issue create — just confirm and exit
+            'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
+            '  echo "https://github.com/test/repo/issues/999"\n'
+            'fi\n'
+            "exit 0\n",
+        )
 
         # ── fake repo with the launcher's downstream dependencies stubbed ──
         _write_exec(
@@ -168,6 +196,9 @@ class CronEnv:
             "HOS_CRON_MAX_SECONDS": "0",     # don't wrap claude stub in `timeout`
             "HOS_IDLE_INTERVAL": "1800",
             "HOS_TEST_CLAUDE_LOG": str(self.claude_log),
+            # Provide a synthetic repo slug so gh-API checks have a target without
+            # needing a real git remote configured in the temporary repo directory.
+            "HOS_REPO_SLUG": "test-org/test-repo",
         }
         if env_overrides:
             env.update(env_overrides)
@@ -180,6 +211,19 @@ class CronEnv:
             argv, capture_output=True, text=True, timeout=timeout,
             check=False, env=env,
         )
+
+    def add_agent_files(self, *slugs: str) -> None:
+        """Create .claude/agents/<slug>.md stubs for the given agent slugs."""
+        for slug in slugs:
+            p = self.repo / ".claude" / "agents" / f"{slug}.md"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"# {slug}\n")
+
+    def set_consumer_agents(self, *slugs: str) -> None:
+        """Write a consumer_agents.txt with only the given slugs (no comments)."""
+        f = self.repo / "scripts" / "framework" / "consumer_agents.txt"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(slugs) + "\n")
 
     def claude_ran(self) -> bool:
         return self.claude_log.exists()
@@ -559,3 +603,216 @@ class TestSuspension:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "[SUSPENDED]" not in r.stdout
         assert cron.claude_ran()
+
+
+# ───────────────────────────── Halt check (#793) ─────────────────────────────
+class TestHaltCheck:
+    def test_halt_issue_present_skips_claude(self, cron):
+        """Open hos-halt issue → cycle exits 0, Claude not launched."""
+        r = cron.run(env_overrides={"HOS_TEST_HALT_COUNT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "HALT" in r.stdout
+        assert "hos-halt" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_halt_issue_present_logs_audit_event(self, cron):
+        """cycle-skip reason=hos-halt is emitted (even if _audit silently fails)."""
+        r = cron.run(env_overrides={"HOS_TEST_HALT_COUNT": "2"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.claude_ran()
+
+    def test_no_halt_issue_proceeds(self, cron):
+        """No halt issues → cycle runs normally."""
+        r = cron.run(env_overrides={"HOS_TEST_HALT_COUNT": "0"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "HALT" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_halt_check_api_error_proceeds(self, cron):
+        """gh API failure → treats as 0 halt issues (fail-open), proceeds."""
+        # Simulate no _REPO_SLUG so the gh call is skipped entirely.
+        r = cron.run(env_overrides={"HOS_REPO_SLUG": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "HALT" not in r.stdout
+        assert cron.claude_ran()
+
+
+# ─────────────────────── Agent availability check (#794) ─────────────────────
+class TestAgentAvailability:
+    def test_no_agents_list_proceeds(self, cron):
+        """No consumer_agents.txt → check skipped, cycle runs normally."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "AGENT AVAILABILITY" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_all_agents_present_proceeds(self, cron):
+        """All listed agents exist → cycle runs normally."""
+        cron.set_consumer_agents("worker", "overseer", "coder")
+        cron.add_agent_files("worker", "overseer", "coder")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "AGENT AVAILABILITY" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_missing_agent_exits_one(self, cron):
+        """One agent missing → exit 1, Claude not launched."""
+        cron.set_consumer_agents("worker", "coder")
+        cron.add_agent_files("worker")  # coder missing
+        r = cron.run()
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "AGENT AVAILABILITY FAIL" in r.stdout
+        assert "coder" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_missing_agent_files_needs_human_issue_filed(self, cron):
+        """Missing agents with no existing blocked issue → issue create called."""
+        cron.set_consumer_agents("coder")
+        # coder agent file absent; stub reports 0 existing blocked issues
+        r = cron.run(env_overrides={"HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"})
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.claude_ran()
+
+    def test_missing_agent_duplicate_issue_guard(self, cron):
+        """Existing blocked issue → no second issue create (duplicate guard)."""
+        cron.set_consumer_agents("coder")
+        # Stub reports 1 existing blocked issue → should NOT create another
+        r = cron.run(env_overrides={"HOS_TEST_NEEDS_HUMAN_BLOCKED": "1"})
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.claude_ran()
+
+    def test_comments_and_blanks_in_agents_list_ignored(self, cron):
+        """Comment lines and blank lines in consumer_agents.txt are skipped."""
+        f = cron.repo / "scripts" / "framework" / "consumer_agents.txt"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("# a comment\n\nworker\n\n# another comment\n")
+        cron.add_agent_files("worker")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.claude_ran()
+
+
+# ──────────────────────────── PR routing skip (#791) ─────────────────────────
+class TestPRRoutingSkip:
+    def test_no_open_prs_launches_claude(self, cron):
+        """No open bot PRs → no routing skip, Claude launched."""
+        r = cron.run(env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_awaiting_merge_skips_claude(self, cron):
+        """One open PR with APPROVED and no CHANGES_REQUESTED → skip launch."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting human merge" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_awaiting_merge_drops_overseer_wakeup(self, cron):
+        """Skipped cycle still signals overseer so it can act on the ready PR."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.wakeup_overseer.exists(), "overseer wakeup must be dropped"
+        payload = cron.wakeup_overseer.read_text()
+        assert "worker-cycle-skip" in payload
+
+    def test_awaiting_merge_stamps_last_run(self, cron):
+        """Skipped cycle stamps last-run so idle backoff applies normally."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.last_run_file.exists(), "last-run must be stamped on skip"
+
+    def test_changes_requested_launches_claude(self, cron):
+        """PR with CHANGES_REQUESTED → worker must fix, Claude is launched."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "1",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_unapproved_pr_launches_claude(self, cron):
+        """PR with no approvals yet → not 'awaiting merge', Claude launched."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "0",  # not yet approved
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_overseer_role_not_subject_to_pr_routing(self, cron):
+        """PR routing skip applies only to worker — overseer always launches."""
+        r = cron.run(role="overseer", env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting" not in r.stdout
+        assert cron.claude_ran()
+
+
+# ──────────────────────── Working directory injection (#805) ──────────────────
+class TestWorkingDirectoryInjection:
+    def test_prompt_file_prepended_with_working_directory(self, cron):
+        """When a prompt file exists, it is piped with WORKING DIRECTORY prepended."""
+        # Write a minimal worker-cron-prompt.md; capture stdin via claude stub.
+        prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("hello from prompt\n")
+        # Override claude stub to capture its stdin to a file.
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        stdin_text = stdin_capture.read_text()
+        assert stdin_text.startswith("WORKING DIRECTORY:"), (
+            "First line must be the injected WORKING DIRECTORY"
+        )
+        assert str(cron.repo) in stdin_text, "Injected path must match REPO_ROOT"
+        assert "hello from prompt" in stdin_text
+
+    def test_no_hardcoded_paths_in_worker_prompt(self):
+        """worker-cron-prompt.md must contain no absolute paths (regression guard)."""
+        prompt = (
+            Path(__file__).parent.parent.parent
+            / "bootstrap" / "worker-cron-prompt.md"
+        ).read_text()
+        import re
+        hardcoded = re.findall(r'(?:^|\s)(/(?:home|Users)/\S+)', prompt, re.MULTILINE)
+        assert not hardcoded, (
+            f"Hardcoded absolute paths found in worker-cron-prompt.md: {hardcoded}"
+        )
+
+    def test_no_hardcoded_paths_in_overseer_prompt(self):
+        """overseer-cron-prompt.md must contain no absolute paths (regression guard)."""
+        prompt = (
+            Path(__file__).parent.parent.parent
+            / "bootstrap" / "overseer-cron-prompt.md"
+        ).read_text()
+        import re
+        hardcoded = re.findall(r'(?:^|\s)(/(?:home|Users)/\S+)', prompt, re.MULTILINE)
+        assert not hardcoded, (
+            f"Hardcoded absolute paths found in overseer-cron-prompt.md: {hardcoded}"
+        )
