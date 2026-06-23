@@ -15,3 +15,17 @@
 {"event": "human-authorized-merge", "pr": 869, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 870, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 867, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T21:45:59Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T21:46:03Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "human-authorized-merge", "pr": 871, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:40:59Z"}
+{"event": "cycle-start", "role": "overseer", "timestamp": "2026-06-23T21:46:10Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "pr-review", "pr": 872, "decision": "ESCALATE", "tier": "LOW", "blockers": ["require-overseer-approval-self-review-blocked"], "comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/872#issuecomment-4783778347", "label_applied": "needs-human", "reason": "Overseer cannot self-approve its own audit log PR; admin merge required", "timestamp": "2026-06-23T21:47:00Z"}
+{"event": "cycle-end", "role": "overseer", "timestamp": "2026-06-23T21:47:05Z", "prs_reviewed": [872], "bot": "hos-overseer-hos[bot]"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T22:05:51Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T22:05:55Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"human-authorized-merge","pr":871,"merged_by":"ScottThurlow","timestamp":"2026-06-23T22:06:10Z"}
+{"event":"human-authorized-merge","pr":870,"merged_by":"ScottThurlow","timestamp":"2026-06-23T22:06:10Z"}
+{"event":"human-authorized-merge","pr":869,"merged_by":"ScottThurlow","timestamp":"2026-06-23T22:06:10Z"}
+{"event":"human-authorized-merge","pr":867,"merged_by":"ScottThurlow","timestamp":"2026-06-23T22:06:10Z"}
+{"event":"human-required","pr":874,"reason_category":"GATE_UNSATISFIED","summary":"Validator artifact HEAD SHA stale after rebase (6f0ad40 vs 05c872d) and CODEOWNERS gate fires on bin/hos-cron and .github/workflows/ — requires ScottThurlow approval and fresh validator artifact","comment_url":"https://github.com/thurlow-research/HumanOversightSystem/pull/874#issuecomment-4783929363","timestamp":"2026-06-23T22:06:10Z"}
+{"event":"pr-review","pr":872,"decision":"HUMAN_REQUIRED","detail":"overseer-self-approval-blocked — prior ESCALATE comment already posted, still awaiting ScottThurlow action, no new developments this cycle","timestamp":"2026-06-23T22:06:10Z"}
