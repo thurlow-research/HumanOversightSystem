@@ -155,3 +155,27 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T16:03:09Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T16:11:00Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T16:13:19Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T18:05:09Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T18:05:11Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{
+  "timestamp": "2026-06-23T18:05:44Z",
+  "event": "human-authorized-merge",
+  "pr": "#854",
+  "merged_by": "ScottThurlow",
+  "actor_type": "User",
+  "note": "human merge — no action required"
+}
+{
+  "timestamp": "2026-06-23T18:05:44Z",
+  "event": "human-authorized-merge",
+  "pr": "#851",
+  "merged_by": "ScottThurlow",
+  "actor_type": "User",
+  "note": "human merge — no action required"
+}
+{"timestamp":"2026-06-23T18:05:44Z","event":"pr-reviewed","pr":"#858","decision":"CANNOT_REVIEW_SELF_AUTHORED","reason":"overseer cannot review its own PRs; content=audit/oversight-log.jsonl (not CODEOWNERS-protected); mergeable_state=dirty; added ScottThurlow as reviewer; comment_id=4782150976"}
+{"timestamp":"2026-06-23T18:05:44Z","event":"pr-reviewed","pr":"#857","decision":"NO_CHANGE","reason":"self-authored+dirty; already commented 17:51Z (id=4781968264); ScottThurlow in requested_reviewers; no change since last cycle"}
+{"timestamp":"2026-06-23T18:05:44Z","event":"pr-reviewed","pr":"#856","decision":"STATUS_UPDATE","reason":"approved by ScottThurlow+overseer at HEAD 11e48cd4; mergeable_state=dirty; worker must rebase; status update comment_id=4782153884; require-overseer-approval CI FAILURE is stale (the bug this PR fixes); needs rebase to re-enter review"}
+{"timestamp":"2026-06-23T18:05:44Z","event":"pr-reviewed","pr":"#855","decision":"NO_CHANGE","reason":"self-authored+dirty; ScottThurlow approved at HEAD c4eb2deb; already commented 17:51Z (id=4781972025); no change since last cycle"}
+{"timestamp":"2026-06-23T18:05:44Z","event":"pr-reviewed","pr":"#852","decision":"NO_CHANGE","reason":"HUMAN_REQUIRED (protected surface bin/+bootstrap/); no human approval; dirty; already commented 17:52Z (id=4781972762); no change since last cycle"}
+{"timestamp":"2026-06-23T18:05:44Z","event":"overseer-cycle-complete","cycle":"2026-06-23T18:05Z","prs_reviewed":5,"actions_taken":{"comments_posted":2,"reviewer_requests":1,"merges":0},"merge_audit":{"prs_in_window":["#854","#851"],"all_human_merges":true,"process_gap_issues_filed":0},"release_gate":{"issues_checked":0,"result":"clear"},"summary":"#858 cannot-review-self (reviewer requested); #857/#855 no-change; #856 status-update (approved, dirty, worker-rebase-needed); #852 no-change (HUMAN_REQUIRED unchanged)"}
