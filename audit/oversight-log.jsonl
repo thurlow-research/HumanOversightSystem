@@ -33,3 +33,12 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:22:13Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:31:00Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:32:27Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "human-authorized-merge", "pr": 808, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T02:06:18Z", "title": "[AI: hos-worker-hos[bot]] fix: ship bin/lib/, .github/workflows/, and scripts/framework/ consumer tools (#769)", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "human-authorized-merge", "pr": 803, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T02:05:11Z", "title": "[AI: hos-worker-hos[bot]] feat: bash portability gate + shellcheck CI (#768)", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "human-authorized-merge", "pr": 800, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T00:53:36Z", "title": "[AI: hos-worker-hos[bot]] fix: release-artifact guard, idempotency check, requested-reviewer gate (#761)", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "human-authorized-merge", "pr": 801, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T00:53:20Z", "title": "[AI: hos-worker-hos[bot]] fix: django_check.sh fail-closed when no Python found (#764)", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "process-gap-already-reported", "pr": 802, "merged_by": "hos-overseer-hos[bot]", "existing_issues": [809, 804], "note": "bot-merge on #802 already flagged by prior cycles", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "overseer-cycle-start", "role": "overseer", "timestamp": "2026-06-23T02:16:07Z", "bot": "hos-overseer-hos[bot]"}
+{"event": "merge-audit-completed", "prs_in_window": [808, 803, 800, 801, 802], "human_merges": [808, 803, 800, 801], "bot_merges": [802], "bot_merge_already_reported": true, "existing_issues": [809, 804], "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "pr-reviewed", "pr": 810, "decision": "APPROVED", "overseer_assessment": "HIGH", "worker_self_flag": "LOW", "protected_surfaces_hit": [".github/workflows/**", "bootstrap/**"], "action": "escalated-to-human", "reviewer_requested": "ScottThurlow", "require_overseer_approval": "SUCCESS", "require_tier_ceiling": "SUCCESS", "require_human_approval": "FAIL-awaiting-human", "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 1, "prs_auto_merged": 0, "prs_escalated": 1, "timestamp": "2026-06-23T02:16:07Z"}
