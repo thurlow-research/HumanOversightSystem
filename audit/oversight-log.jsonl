@@ -1,0 +1,17 @@
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T20:05:55Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"human-authorized-merge","pr":866,"merged_by":"ScottThurlow","timestamp":"2026-06-23T20:14:25Z"}
+{"event":"human-authorized-merge","pr":863,"merged_by":"ScottThurlow","timestamp":"2026-06-23T20:14:25Z"}
+{"event":"human-required","pr":867,"reason":"codeowners_gate","matched_paths":["bin/hos-cron"],"codeowners_entry":"/bin/ @ScottThurlow","ci_checks":{"require-tier-ceiling":"success","require-human-approval":"failure"},"comment_id":4783057005,"comment_url":"https://github.com/thurlow-research/HumanOversightSystem/pull/867#issuecomment-4783057005","timestamp":"2026-06-23T20:14:25Z"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T20:45:43Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"human-authorized-merge","pr":870,"merged_by":"ScottThurlow","merged_at":"2026-06-23T20:40:04Z","timestamp":"2026-06-23T20:45:47Z"}
+{"event":"human-authorized-merge","pr":867,"merged_by":"ScottThurlow","merged_at":"2026-06-23T20:18:47Z","timestamp":"2026-06-23T20:45:47Z"}
+{"event":"human-authorized-merge","pr":866,"merged_by":"ScottThurlow","merged_at":"2026-06-23T19:52:49Z","timestamp":"2026-06-23T20:45:47Z"}
+{"event":"pr-review","pr":869,"decision":"HUMAN_REQUIRED","tier":"LOW","blockers":["validator-sha-mismatch","codeowners-gate","merge-conflict"],"comment_url":"https://github.com/thurlow-research/HumanOversightSystem/pull/869#issuecomment-4783338033","timestamp":"2026-06-23T20:45:47Z"}
+{"event":"cycle-end","role":"overseer","timestamp":"2026-06-23T20:45:47Z","prs_reviewed":[869],"bot":"hos-overseer-hos[bot]"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T20:55:23Z", "reason": "worker-cycle-skip"}
+{"event": "cycle-skip", "role": "worker", "timestamp": "2026-06-23T20:55:26Z", "reason": "no_open_prs"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T21:25:40Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "human-required", "pr": 871, "decision": "HUMAN_REQUIRED", "trigger": "codeowners-gate (SPEC-303b)", "codeowners_file_found": true, "matched_paths": ["bin/hos-cron"], "codeowners_reason": "CODEOWNERS-human-owned paths: bin/hos-cron (human CODEOWNERS owner: @ScottThurlow)", "protected_surface_match": "bin/**", "reason_category": null, "summary": null, "comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/871#issuecomment-4783628425", "timestamp": "2026-06-23T21:30:23Z"}
+{"event": "human-authorized-merge", "pr": 869, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
+{"event": "human-authorized-merge", "pr": 870, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
+{"event": "human-authorized-merge", "pr": 867, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
