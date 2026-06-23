@@ -36,3 +36,10 @@ scripts/oversight/validators/schema.py
 # by merging a change to its own enable/budget/allowlist or to the kill switch.
 PROJECT/hos-coordination.yaml
 PROJECT/hos-halt
+
+# Release artifacts (#761). Releases are always human-approved (NG3b).
+# Adding these as a server-side protected-surface guard backs up the behavioral
+# NG3b rule in overseer.md so that even if the title/content heuristic misses,
+# the protected-surface gate enforces HUMAN_REQUIRED.
+docs/releases/**
+.hos-release
