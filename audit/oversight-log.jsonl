@@ -1,4 +1,0 @@
-{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T20:05:55Z", "bot": "hos-overseer-hos[bot] project=hos"}
-{"event":"human-authorized-merge","pr":866,"merged_by":"ScottThurlow","timestamp":"2026-06-23T20:14:25Z"}
-{"event":"human-authorized-merge","pr":863,"merged_by":"ScottThurlow","timestamp":"2026-06-23T20:14:25Z"}
-{"event":"human-required","pr":867,"reason":"codeowners_gate","matched_paths":["bin/hos-cron"],"codeowners_entry":"/bin/ @ScottThurlow","ci_checks":{"require-tier-ceiling":"success","require-human-approval":"failure"},"comment_id":4783057005,"comment_url":"https://github.com/thurlow-research/HumanOversightSystem/pull/867#issuecomment-4783057005","timestamp":"2026-06-23T20:14:25Z"}
