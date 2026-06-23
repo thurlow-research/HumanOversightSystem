@@ -46,19 +46,8 @@ gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&labels=rel
 If an open `release-request` issue with no `release-authorized` label exists in the current milestone: run the release-gate deep validation protocol (see `overseer.md` §Release-gate deep validation). Read all step `summary.json` artifacts from main, check tiers and findings, verify sign-off register completeness, post CLEARANCE or ESCALATE on the issue, log `release-gate-validation` event to `audit/oversight-log.jsonl`. Process at most one release-gate issue per cycle. Then proceed to Step 1.
 
 **Step 1 — Review open PRs:**
-```bash
-gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" \
-  --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:70])"'
-```
-For each open PR, **before running the full review chain**, check actionability:
-```bash
-gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" \
-  --jq '"mergeable=\(.mergeable) draft=\(.draft)"'
-```
-- If `mergeable == "CONFLICTING"`: skip this PR entirely. Do NOT review, comment, or open audit PRs for it — it cannot be merged until the author rebases. Log the skip as a single-line note only.
-- If `draft == true`: skip this PR entirely.
-- If `mergeable == null`: GitHub has not yet computed the merge status — treat as actionable and proceed.
-- Otherwise: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
+
+The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. For each PR number in that list: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
 
 **Step 2 — STOP.** One review cycle per cron invocation.
 

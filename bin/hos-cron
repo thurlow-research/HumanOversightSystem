@@ -369,20 +369,46 @@ if [[ "$ROLE" == "worker" ]]; then
   fi
 fi
 
-# ── Overseer: skip cycle if no open PRs exist ────────────────────────────────
-# Conflicting PRs are filtered inside the overseer prompt; this guard avoids
-# burning a Claude turn when there is simply nothing to review.
+# ── Overseer: pre-filter actionable PRs before invoking Claude ───────────────
+# Deterministically check each open PR's merge status via the detail endpoint
+# (the list endpoint returns mergeable=null until GitHub computes it lazily).
+# Only non-conflicting, non-draft PRs are passed to the overseer. If none exist,
+# skip the Claude invocation entirely — no AI turn wasted on an unmergeable queue.
+_HOS_ACTIONABLE_PRS=""   # space-separated "#N" list injected into overseer prompt
+_HOS_SKIPPED_PRS=""      # for logging only
 if [[ "$ROLE" == "overseer" ]]; then
   _gh_repo=$(git -C "$REPO_ROOT" remote get-url origin \
     | sed 's|.*github\.com[:/]\(.*\)\.git|\1|;s|.*github\.com[:/]\(.*\)|\1|')
-  _open_pr_count=$(gh api "repos/${_gh_repo}/pulls?state=open&per_page=1" \
-    --jq 'length' 2>/dev/null || echo "")
-  if [[ "$_open_pr_count" == "0" ]]; then
+  _open_pr_nums=$(gh api "repos/${_gh_repo}/pulls?state=open&per_page=20" \
+    --jq '.[].number' 2>/dev/null || true)
+  if [[ -z "$_open_pr_nums" ]]; then
     echo "$LOG_PREFIX no open PRs — skipping cycle"
     _audit cycle-skip reason=no_open_prs
     date +%s > "$_LAST_RUN_FILE"
     exit 0
   fi
+  for _pr_num in $_open_pr_nums; do
+    _detail=$(gh api "repos/${_gh_repo}/pulls/${_pr_num}" \
+      --jq '{m: .mergeable, d: .draft}' 2>/dev/null || echo '{"m":null,"d":false}')
+    _m=$(printf '%s' "$_detail" | python3 -c \
+      "import json,sys; print(json.load(sys.stdin).get('m') or 'null')" 2>/dev/null || echo "null")
+    _d=$(printf '%s' "$_detail" | python3 -c \
+      "import json,sys; print(json.load(sys.stdin).get('d', False))" 2>/dev/null || echo "False")
+    if [[ "$_m" == "CONFLICTING" || "$_d" == "True" ]]; then
+      _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS} #${_pr_num}(${_m})"
+    else
+      _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS} #${_pr_num}"
+    fi
+  done
+  _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS# }"
+  _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS# }"
+  if [[ -z "$_HOS_ACTIONABLE_PRS" ]]; then
+    echo "$LOG_PREFIX all open PRs are conflicting/draft (${_HOS_SKIPPED_PRS}) — skipping cycle"
+    _audit cycle-skip reason=no_actionable_prs "skipped=${_HOS_SKIPPED_PRS}"
+    date +%s > "$_LAST_RUN_FILE"
+    exit 0
+  fi
+  echo "$LOG_PREFIX actionable: ${_HOS_ACTIONABLE_PRS} | skipped: ${_HOS_SKIPPED_PRS:-none}"
 fi
 
 # ── Cycle start ───────────────────────────────────────────────────────────────
@@ -427,17 +453,27 @@ _run_claude() {  # stdin is inherited → passed through to claude
 # Capture the real exit code: under `set -e`, a bare failing command in an if-body
 # would abort the script before `$?` is read, so guard with `|| _claude_exit=$?`.
 # Prompts may contain @@TARGET_RELEASE@@ / @@MILESTONE_NUMBER@@ placeholders (#780);
-# substitute them now if the target is resolved. sed targets only those sentinel
-# strings, so other shell variables in the prompt markdown are never expanded.
+# substitute them now if the target is resolved. For the overseer, also prepend the
+# pre-filtered PR list so Claude doesn't re-check mergeability (#852).
 PROMPT_FILE="$REPO_ROOT/bootstrap/${ROLE}-cron-prompt.md"
 _claude_exit=0
 if [[ -f "$PROMPT_FILE" ]]; then
-  if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
-    sed -e "s/@@TARGET_RELEASE@@/${HOS_TARGET_RELEASE}/g" \
-        -e "s/@@MILESTONE_NUMBER@@/${HOS_TARGET_MILESTONE_NUMBER}/g" \
-        "$PROMPT_FILE" | _run_claude || _claude_exit=$?
+  # Apply milestone substitution if available; otherwise pass prompt raw.
+  _get_prompt() {
+    if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
+      sed -e "s/@@TARGET_RELEASE@@/${HOS_TARGET_RELEASE}/g" \
+          -e "s/@@MILESTONE_NUMBER@@/${HOS_TARGET_MILESTONE_NUMBER}/g" \
+          "$PROMPT_FILE"
+    else
+      cat "$PROMPT_FILE"
+    fi
+  }
+  if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
+    { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
+          "$_HOS_ACTIONABLE_PRS" "${_HOS_SKIPPED_PRS:-none}"; \
+      _get_prompt; } | _run_claude || _claude_exit=$?
   else
-    _run_claude < "$PROMPT_FILE" || _claude_exit=$?
+    _get_prompt | _run_claude || _claude_exit=$?
   fi
 else
   echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
