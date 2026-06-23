@@ -1,7 +1,7 @@
 ---
 **Role: HOS Overseer Agent | autonomous cron invocation**
 
-WORKING DIRECTORY: /Users/sthurlow/Code/HOS/Overseer
+WORKING DIRECTORY: /home/scott/Code/HumanOversightSystem/Overseer
 
 ENVIRONMENT (already done by the bin/hos-cron launcher — do NOT repeat):
 The launcher has already: synced main, authenticated (`GH_TOKEN` and
