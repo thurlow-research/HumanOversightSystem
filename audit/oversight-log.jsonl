@@ -15,3 +15,13 @@
 {"event": "human-authorized-merge", "pr": 869, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 870, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 867, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T22:55:35Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T22:55:40Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "human-authorized-merge", "pr": 874, "merged_by": "ScottThurlow", "merged_by_type": "User", "merged_at": "2026-06-23T22:54:06Z", "timestamp": "2026-06-23T22:56:29Z"}
+{"event": "human-authorized-merge", "pr": 872, "merged_by": "ScottThurlow", "merged_by_type": "User", "merged_at": "2026-06-23T22:49:18Z", "timestamp": "2026-06-23T22:56:29Z"}
+{"event": "human-authorized-merge", "pr": 871, "merged_by": "ScottThurlow", "merged_by_type": "User", "merged_at": "2026-06-23T21:40:59Z", "timestamp": "2026-06-23T22:56:29Z"}
+{"event": "cycle-start", "role": "overseer", "timestamp": "2026-06-23T22:59:05Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "pr-review", "pr": 877, "decision": "HUMAN_REQUIRED", "tier": "LOW", "blockers": ["validator-sha-mismatch", "overseer-conflict-of-interest", "merge-conflict"], "summary": "Audit log PR — overseer cannot self-review; artifact head_sha 6f0ad40 ≠ PR HEAD da0e663; mergeable_state=dirty", "comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/877#issuecomment-4784193321", "label_verified": "needs-human", "timestamp": "2026-06-23T22:59:05Z"}
+{"event": "pr-review-no-new-comment", "pr": 876, "decision": "HUMAN_REQUIRED", "reason": "HEAD unchanged since prior cycle comment (22:43Z); prior review stands at https://github.com/thurlow-research/HumanOversightSystem/pull/876#issuecomment-4784110593", "timestamp": "2026-06-23T22:59:05Z"}
+{"event": "pr-review-no-new-comment", "pr": 875, "decision": "HUMAN_REQUIRED", "reason": "HEAD unchanged since prior cycle comment (22:43Z); prior review stands at https://github.com/thurlow-research/HumanOversightSystem/pull/875#issuecomment-4784113005", "timestamp": "2026-06-23T22:59:05Z"}
+{"event": "cycle-end", "role": "overseer", "timestamp": "2026-06-23T22:59:05Z", "prs_reviewed": [877, 876, 875], "bot": "hos-overseer-hos[bot]"}
