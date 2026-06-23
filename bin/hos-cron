@@ -590,6 +590,7 @@ if [[ -f "$PROMPT_FILE" ]]; then
       _build_prompt; } | _run_claude || _claude_exit=$?
   else
     _build_prompt | _run_claude || _claude_exit=$?
+  fi
 else
   echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
 fi

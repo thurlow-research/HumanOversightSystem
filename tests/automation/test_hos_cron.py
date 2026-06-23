@@ -91,6 +91,9 @@ class CronEnv:
             # Halt check: issues?labels=hos-halt
             '  *"labels=hos-halt"*)\n'
             '    echo "${HOS_TEST_HALT_COUNT:-0}" ;;\n'
+            # Context: next work candidates (needs-ai issues, not needs-human)
+            '  *"labels=needs-ai"*)\n'
+            '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
             # Agent availability: needs-human blocked issues count
             '  *"labels=needs-human"*)\n'
             '    echo "${HOS_TEST_NEEDS_HUMAN_BLOCKED:-0}" ;;\n'
@@ -816,3 +819,84 @@ class TestWorkingDirectoryInjection:
         assert not hardcoded, (
             f"Hardcoded absolute paths found in overseer-cron-prompt.md: {hardcoded}"
         )
+
+
+# ─────────────────────── Pre-computed cycle context (#792) ─────────────────────
+class TestCycleContextBlock:
+    """_build_context() appends a pre-computed block to the Claude prompt (#792)."""
+
+    def _setup_stdin_capture(self, cron: CronEnv) -> Path:
+        """Replace claude stub to capture its stdin; write a minimal prompt file."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("## Worker step instructions\n")
+        return stdin_capture
+
+    def test_context_block_present_no_open_prs(self, cron):
+        """0 open bot PRs → context block header present and 'None.' shown."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "Pre-computed cycle context" in context
+        assert "None." in context
+
+    def test_context_block_one_open_pr(self, cron):
+        """1 open bot PR → context block shows that PR number."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        # PR_AP=0: unapproved → routing marks needs-attention → Claude launched
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_AP": "0",
+            "HOS_TEST_PR_CR": "0",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "Pre-computed cycle context" in context
+        assert "856" in context
+        assert "None." not in context
+
+    def test_context_block_three_open_prs(self, cron):
+        """3 open bot PRs → context block lists all three numbers."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856 857 858",
+            "HOS_TEST_PR_AP": "0",
+            "HOS_TEST_PR_CR": "0",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "Pre-computed cycle context" in context
+        assert "856" in context
+        assert "857" in context
+        assert "858" in context
+
+    def test_context_block_follows_prompt_content(self, cron):
+        """Context block is appended after the prompt file content, not before it."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        prompt_pos = context.find("## Worker step instructions")
+        ctx_pos = context.find("Pre-computed cycle context")
+        assert prompt_pos >= 0, "prompt file content must be present"
+        assert ctx_pos >= 0, "context block must be present"
+        assert prompt_pos < ctx_pos, "context block must follow prompt content"
+
+    def test_context_block_absent_when_routing_skips_claude(self, cron):
+        """All PRs awaiting merge → routing skips Claude launch; no context delivered."""
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_AP": "1",
+            "HOS_TEST_PR_CR": "0",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "awaiting human merge" in r.stdout
+        assert not cron.claude_ran()

@@ -31,25 +31,30 @@ TRIAGE RULE (for new issues): v0.4.1=blocking/severe breaks v0.4.0; v0.5.0=quali
 LOOP:
 
 **Step 1 — Check open PRs:**
+Context pre-computed — see "Open bot PRs" in the context block at the bottom of this prompt. For each open PR authored by this worker: read all reviews AND comments. CHANGES_REQUESTED → fix, push, STOP. All approved/clean → STOP. No open PRs → Step 2.
+
+Fallback (if context block is absent):
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:60])"'
 ```
 For each open PR authored by this worker:
 1. **Check merge status first:**
    ```bash
-   gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" --jq '.mergeable'
+   gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" --jq '.mergeable_state'
    ```
-   If `CONFLICTING`: identify the commits unique to this branch (not already in main), cherry-pick them onto a new local branch cut from current main, then force-push to the **same remote branch name** so the existing PR updates in place. If the unique delta cannot be cleanly applied, close the PR with a comment explaining the conflict and open a fresh PR from main with only the unique commits.
+   If `dirty` (conflict): identify the commits unique to this branch (not already in main), cherry-pick them onto a new local branch cut from current main, then force-push to the **same remote branch name** so the existing PR updates in place. If the unique delta cannot be cleanly applied, close the PR with a comment explaining the conflict and open a fresh PR from main with only the unique commits.
 2. CHANGES_REQUESTED → fix, push, STOP.
 3. All approved/clean → STOP.
 4. No open PRs → Step 2.
 
 **Step 2 — Pick next @@TARGET_RELEASE@@ needs-ai issue:**
+Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. Pick lowest-numbered non-blocked.
+
+Fallback (if context block is absent):
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=30" \
   --jq '.[] | select(.labels | map(.name) | contains(["needs-human"]) | not) | "#\(.number) \(.title)"'
 ```
-Pick lowest-numbered non-blocked.
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
 
