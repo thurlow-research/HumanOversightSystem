@@ -421,6 +421,11 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
     _PR_ROUTING="awaiting-merge"
     while IFS= read -r _pr_num; do
       [[ -z "$_pr_num" ]] && continue
+      # Check mergeable first via detail endpoint — a CONFLICTING PR must be
+      # fixed before anything else, even if it has prior APPROVED reviews (#867).
+      _pr_mergeable=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
+        --jq '.mergeable // "null"' 2>/dev/null || echo "null")
+      if [[ "$_pr_mergeable" == "CONFLICTING" ]]; then _PR_ROUTING="needs-fix"; break; fi
       _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
         --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
       _pr_cr="${_pr_cr:-0}"
