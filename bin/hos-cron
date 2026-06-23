@@ -151,6 +151,42 @@ _audit() {
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
+# ── Audit log sync (#861) ─────────────────────────────────────────────────────
+# Push audit/oversight-log.jsonl and audit/overnight-loop-log.md to the
+# unprotected `audit-log` branch. A GitHub Actions workflow reads from that
+# branch and commits only those files to main, keeping feature PRs free of
+# append-only conflicts while maintaining an auditable sync path.
+_sync_audit_logs() {
+  local _repo="$1"
+  local _files=()
+  [[ -f "$_repo/audit/oversight-log.jsonl"   ]] && _files+=("audit/oversight-log.jsonl")
+  [[ -f "$_repo/audit/overnight-loop-log.md" ]] && _files+=("audit/overnight-loop-log.md")
+  [[ ${#_files[@]} -eq 0 ]] && return 0
+
+  local _tmp_branch="_audit-sync-$$"
+  (
+    cd "$_repo"
+    git fetch origin audit-log main --quiet 2>/dev/null || git fetch origin main --quiet 2>/dev/null || return 0
+    local _base
+    git ls-remote --exit-code origin audit-log &>/dev/null \
+      && _base="origin/audit-log" || _base="origin/main"
+    git checkout -b "$_tmp_branch" "$_base" --quiet 2>/dev/null || return 0
+    local _changed=0
+    for _f in "${_files[@]}"; do
+      git add -f "$_f" 2>/dev/null
+      git diff --cached --quiet "$_f" 2>/dev/null || _changed=1
+    done
+    if [[ "$_changed" -eq 1 ]]; then
+      git commit -m "chore(audit): sync logs $(date -u '+%Y-%m-%dT%H:%M:%SZ')" --quiet
+      git push origin HEAD:audit-log --quiet 2>/dev/null \
+        && echo "$LOG_PREFIX audit logs pushed to audit-log branch" \
+        || echo "$LOG_PREFIX WARN: audit-log push failed (will retry next cycle)"
+    fi
+    git checkout - --quiet 2>/dev/null || true
+    git branch -D "$_tmp_branch" --quiet 2>/dev/null || true
+  )
+}
+
 # ── Pre-jitter dependency check (fail-closed, marker-cached) ─────────────────
 # Fail fast before the jitter sleep if the oversight venv or pytest are missing.
 # A 7-day marker file caches a successful check; its key encodes REPO_ROOT so a
@@ -638,6 +674,7 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
     echo "$LOG_PREFIX outcome: idle"
   fi
 fi
+_sync_audit_logs "$REPO_ROOT"
 
 # Signal the other agent
 if [[ "$ROLE" == "worker" ]]; then
