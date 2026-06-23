@@ -152,6 +152,9 @@ class CronEnv:
     def wakeup_overseer(self) -> Path:
         return self.state / "wakeup" / "overseer"
 
+    def suspend_file(self, project="hos") -> Path:
+        return self.state / "suspend" / project
+
     def run(self, *args, env_overrides=None, role="worker", project="hos",
             timeout=30) -> subprocess.CompletedProcess:
         """Invoke the real bin/hos-cron with the stubbed world."""
@@ -505,3 +508,54 @@ class TestPreJitterDepsCheck:
         r2 = cron.run()
         assert r2.returncode == 78, r2.stdout + r2.stderr
         assert "oversight venv missing" in r2.stdout
+
+
+# ──────────────────────────── Suspension (#778) ──────────────────────────────
+class TestSuspension:
+    """Suspension check exits cleanly before lock acquisition."""
+
+    def test_suspended_project_exits_0_without_claude(self, cron):
+        """Marker present → exit 0, Claude never invoked."""
+        import json
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[SUSPENDED]" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_suspended_project_logs_clear_hint(self, cron):
+        """Log message includes the --clear hint so the operator knows how to resume."""
+        import json
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
+        r = cron.run()
+        assert "--clear" in r.stdout
+
+    def test_suspended_until_future_exits_0(self, cron):
+        """Marker with future --until date → still suspended."""
+        import json
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z", "until": "2099-12-31"}))
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[SUSPENDED]" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_suspended_until_past_removes_marker_and_runs(self, cron):
+        """Marker with expired --until → marker removed, cycle proceeds normally."""
+        import json
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-01-01T00:00:00Z", "until": "2026-01-02"}))
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "expired" in r.stdout
+        assert not cron.suspend_file().exists()
+        assert cron.claude_ran()
+
+    def test_no_marker_runs_normally(self, cron):
+        """No suspend marker → normal cycle, Claude invoked."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[SUSPENDED]" not in r.stdout
+        assert cron.claude_ran()

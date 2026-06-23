@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# bin/hos-suspend — pause/resume a HOS project cron cycle without touching the crontab
+#
+# Usage:
+#   hos-suspend --project <name> [--until YYYY-MM-DD] [--reason <text>]
+#   hos-suspend --project <name> --clear
+#   hos-suspend --list
+#
+# While a project is suspended, bin/hos-cron exits cleanly (exit 0) without
+# running any work. Use --until to set an expiration date; the marker is removed
+# automatically on the next cron fire after that date.
+#
+# Marker location: ${HOS_STATE_DIR:-$HOME/.hos}/suspend/<project>
+# Marker format: JSON with suspended_at, reason (optional), until (optional).
+#
+# Project registry: ~/.config/hos/projects.conf (same as hos-cron)
+
+set -euo pipefail
+
+PROJECTS_CONF="${HOME}/.config/hos/projects.conf"
+_HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
+_SUSPEND_DIR="$_HOS_DIR/suspend"
+
+_usage() {
+  cat >&2 <<'EOF'
+Usage:
+  hos-suspend --project <name> [--until YYYY-MM-DD] [--reason <text>]
+  hos-suspend --project <name> --clear
+  hos-suspend --list
+EOF
+  exit 1
+}
+
+_project_known() {
+  local project="$1"
+  [[ -f "$PROJECTS_CONF" ]] && grep -q "^${project}_" "$PROJECTS_CONF"
+}
+
+# Parse args
+ACTION="" PROJECT="" UNTIL="" REASON=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --project) PROJECT="$2"; shift 2 ;;
+    --until)   UNTIL="$2";   shift 2 ;;
+    --reason)  REASON="$2";  shift 2 ;;
+    --clear)   ACTION="clear"; shift ;;
+    --list)    ACTION="list";  shift ;;
+    -h|--help) _usage ;;
+    *) echo "hos-suspend: unknown option: $1" >&2; _usage ;;
+  esac
+done
+
+# Validate --until format when given
+if [[ -n "$UNTIL" ]] && ! [[ "$UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+  echo "hos-suspend: --until must be YYYY-MM-DD, got: '$UNTIL'" >&2
+  exit 1
+fi
+
+[[ -z "$ACTION" ]] && ACTION="suspend"
+
+# ── list ──────────────────────────────────────────────────────────────────────
+if [[ "$ACTION" == "list" ]]; then
+  mkdir -p "$_SUSPEND_DIR"
+  _found=0
+  for _marker in "$_SUSPEND_DIR"/*; do
+    [[ -f "$_marker" ]] || continue
+    _found=1
+    _project="$(basename "$_marker")"
+    _info=$(python3 -c "
+import json, sys, datetime
+try:
+    d = json.load(open(sys.argv[1]))
+    until = d.get('until', '')
+    reason = d.get('reason', '')
+    since = d.get('suspended_at', '')
+    if until:
+        today = datetime.date.today().isoformat()
+        status = 'EXPIRED (until ' + until + ')' if today > until else 'until ' + until
+    else:
+        status = 'indefinite'
+    parts = [status]
+    if reason:
+        parts.append('reason=' + repr(reason))
+    if since:
+        parts.append('since=' + since)
+    print('  '.join(parts))
+except Exception as e:
+    print('(unreadable: ' + str(e) + ')')
+" "$_marker" 2>/dev/null || echo "(unreadable)")
+    echo "$_project: $_info"
+  done
+  [[ "$_found" -eq 0 ]] && echo "(no projects suspended)"
+  exit 0
+fi
+
+# All other actions require --project
+[[ -n "$PROJECT" ]] || { echo "hos-suspend: --project required" >&2; _usage; }
+
+# ── clear ─────────────────────────────────────────────────────────────────────
+if [[ "$ACTION" == "clear" ]]; then
+  mkdir -p "$_SUSPEND_DIR"
+  _MARKER="$_SUSPEND_DIR/$PROJECT"
+  if [[ -f "$_MARKER" ]]; then
+    rm -f "$_MARKER"
+    echo "hos-suspend: project '$PROJECT' resumed (suspension marker removed)"
+  else
+    echo "hos-suspend: project '$PROJECT' was not suspended"
+  fi
+  exit 0
+fi
+
+# ── suspend ───────────────────────────────────────────────────────────────────
+if ! _project_known "$PROJECT"; then
+  if [[ ! -f "$PROJECTS_CONF" ]]; then
+    echo "hos-suspend: WARNING: $PROJECTS_CONF not found — cannot validate project name" >&2
+  else
+    echo "hos-suspend: unknown project '$PROJECT' (not found in $PROJECTS_CONF)" >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "$_SUSPEND_DIR"
+_MARKER="$_SUSPEND_DIR/$PROJECT"
+_NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+python3 -c "
+import json, sys
+now, reason, until, path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+data = {'suspended_at': now}
+if reason:
+    data['reason'] = reason
+if until:
+    data['until'] = until
+with open(path, 'w') as f:
+    json.dump(data, f)
+    f.write('\n')
+" "$_NOW" "$REASON" "$UNTIL" "$_MARKER"
+
+msg="hos-suspend: project '$PROJECT' suspended"
+[[ -n "$UNTIL" ]] && msg="$msg (until $UNTIL)"
+[[ -n "$REASON" ]] && msg="$msg — $REASON"
+echo "$msg"
