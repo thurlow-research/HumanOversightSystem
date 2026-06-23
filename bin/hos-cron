@@ -421,11 +421,12 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
     _PR_ROUTING="awaiting-merge"
     while IFS= read -r _pr_num; do
       [[ -z "$_pr_num" ]] && continue
-      # Check mergeable first via detail endpoint — a CONFLICTING PR must be
-      # fixed before anything else, even if it has prior APPROVED reviews (#867).
-      _pr_mergeable=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-        --jq '.mergeable // "null"' 2>/dev/null || echo "null")
-      if [[ "$_pr_mergeable" == "CONFLICTING" ]]; then _PR_ROUTING="needs-fix"; break; fi
+      # Check mergeable_state first via detail endpoint — a conflicting PR must
+      # be fixed before anything else, even if it has prior APPROVED reviews
+      # (#867). REST API uses mergeable_state="dirty" not "CONFLICTING" (GraphQL).
+      _pr_ms=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
+        --jq '.mergeable_state' 2>/dev/null || echo "unknown")
+      if [[ "$_pr_ms" == "dirty" ]]; then _PR_ROUTING="needs-fix"; break; fi
       _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
         --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
       _pr_cr="${_pr_cr:-0}"
@@ -466,13 +467,13 @@ if [[ "$ROLE" == "overseer" ]]; then
   fi
   for _pr_num in $_open_pr_nums; do
     _detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-      --jq '{m: .mergeable, d: .draft}' 2>/dev/null || echo '{"m":null,"d":false}')
-    _m=$(printf '%s' "$_detail" | python3 -c \
-      "import json,sys; print(json.load(sys.stdin).get('m') or 'null')" 2>/dev/null || echo "null")
+      --jq '{ms: .mergeable_state, d: .draft}' 2>/dev/null || echo '{"ms":"unknown","d":false}')
+    _ms=$(printf '%s' "$_detail" | python3 -c \
+      "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
     _d=$(printf '%s' "$_detail" | python3 -c \
       "import json,sys; print(json.load(sys.stdin).get('d', False))" 2>/dev/null || echo "False")
-    if [[ "$_m" == "CONFLICTING" || "$_d" == "True" ]]; then
-      _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS} #${_pr_num}(${_m})"
+    if [[ "$_ms" == "dirty" || "$_d" == "True" ]]; then
+      _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS} #${_pr_num}(${_ms})"
     else
       _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS} #${_pr_num}"
     fi
@@ -487,6 +488,7 @@ if [[ "$ROLE" == "overseer" ]]; then
   fi
   echo "$LOG_PREFIX actionable: ${_HOS_ACTIONABLE_PRS} | skipped: ${_HOS_SKIPPED_PRS:-none}"
 fi
+
 
 # ── Cycle start ───────────────────────────────────────────────────────────────
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT"
@@ -543,7 +545,44 @@ _build_prompt() {
   else
     cat "$PROMPT_FILE"
   fi
+  _build_context
 }
+
+# #792: pre-compute cycle context (open bot PRs + next work candidates) so the
+# agent skips the Step 1/2 discovery API calls and proceeds directly to decisions.
+# Fail-open: any section that errors is silently omitted; never abort the launch.
+_build_context() {
+  printf '\n## Pre-computed cycle context — %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  printf '### Open bot PRs\n'
+  if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
+    _ctx_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
+      --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | \"#\(.number) \(.title | .[0:70]) [\(.labels | map(.name) | join(\",\"))]\"" \
+      2>/dev/null || echo "")
+    if [[ -n "$_ctx_prs" ]]; then
+      printf '%s\n' "$_ctx_prs"
+    else
+      printf 'None.\n'
+    fi
+  else
+    printf '(repo slug not available)\n'
+  fi
+
+  printf '\n'
+
+  if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
+    printf '### Next work candidates (%s, needs-ai, not needs-human)\n' "${HOS_TARGET_RELEASE:-active milestone}"
+    _ctx_issues=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=10" \
+      --jq '.[] | select(.labels | map(.name) | contains(["needs-human"]) | not) | "#\(.number) \(.title)"' \
+      2>/dev/null | head -5 || echo "")
+    if [[ -n "$_ctx_issues" ]]; then
+      printf '%s\n' "$_ctx_issues"
+    else
+      printf '(none available or fetch failed)\n'
+    fi
+  fi
+}
+
 if [[ -f "$PROMPT_FILE" ]]; then
   if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
     { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
@@ -551,7 +590,6 @@ if [[ -f "$PROMPT_FILE" ]]; then
       _build_prompt; } | _run_claude || _claude_exit=$?
   else
     _build_prompt | _run_claude || _claude_exit=$?
-  fi
 else
   echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
 fi
