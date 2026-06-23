@@ -45,7 +45,7 @@ If an open `release-request` issue with no `release-authorized` label exists in 
 
 **Step 1 — Review open PRs:**
 
-The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. For each PR number in that list: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
+The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt. For each PR number in the preamble list: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
 
 **Step 2 — STOP.** One review cycle per cron invocation.
 
