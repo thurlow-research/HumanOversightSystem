@@ -59,8 +59,17 @@
 
 set -euo pipefail
 
-# Load project .env if present (for threshold overrides)
-[[ -f .env ]] && set -o allexport && source .env && set +o allexport 2>/dev/null || true
+# Read threshold overrides from .env without executing it as shell.
+# Only the two specific keys are extracted via grep/cut (strict numeric regex).
+# Sourcing a repo-local .env would execute author-controlled shell before review,
+# defeating the gate's purpose (HOS#765).
+if [[ -f .env ]]; then
+    _val=$(grep -E '^OVERSIGHT_AGY_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1)
+    [[ -n "$_val" ]] && OVERSIGHT_AGY_THRESHOLD="$_val"
+    _val=$(grep -E '^OVERSIGHT_CODEX_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1)
+    [[ -n "$_val" ]] && OVERSIGHT_CODEX_THRESHOLD="$_val"
+    unset _val
+fi
 
 # Thresholds — override via environment
 AGY_THRESHOLD="${OVERSIGHT_AGY_THRESHOLD:-0.30}"

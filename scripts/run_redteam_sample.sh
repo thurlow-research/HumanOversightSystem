@@ -16,8 +16,6 @@
 
 set -euo pipefail
 
-[[ -f .env ]] && set -o allexport && source .env && set +o allexport 2>/dev/null || true
-
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
