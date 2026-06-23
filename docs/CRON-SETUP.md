@@ -77,18 +77,49 @@ logs a clear "refresh the token" hint; re-run `claude setup-token`.
 machine-local registry. Create `~/.config/hos/projects.conf`:
 
 ```ini
-# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root
-hos_config_dir=$HOME/Code/HOS/.config/hos
-hos_worker_root=$HOME/Code/HOS/Worker
-hos_overseer_root=$HOME/Code/HOS/Overseer
+# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release
+hos_config_dir=/home/scott/Code/HumanOversightSystem/.config/hos
+hos_worker_root=/home/scott/Code/HumanOversightSystem/Worker
+hos_overseer_root=/home/scott/Code/HumanOversightSystem/Overseer
+hos_target_release=v0.4.2
 
-cps_config_dir=$HOME/Code/CPS/.config/hos
-cps_worker_root=$HOME/Code/CPS/Main
-cps_overseer_root=$HOME/Code/CPS/Main
+cps_config_dir=/home/scott/Code/CondoParkShare/.config/hos
+cps_worker_root=/home/scott/Code/CondoParkShare/Worker
+cps_overseer_root=/home/scott/Code/CondoParkShare/Overseer
+cps_target_release=v1.0.0
 ```
 
-Use real absolute paths (expand `$HOME` yourself — this file is not shell-sourced
-for expansion). `chmod 600` it.
+Use real absolute paths — this file is not shell-sourced, so `$HOME` is not
+expanded; write the full path. `chmod 600` it.
+
+### Active target release (`target_release`)
+
+The `<project>_target_release` key tells the worker which GitHub milestone is
+currently active. `bin/hos-cron` resolves the milestone **number** from the
+milestone **title** via the REST API, so the number is never stored or duplicated.
+
+**To roll to the next release:** change the one `target_release` line in
+`projects.conf` — no prompt edits required.
+
+```ini
+# Before (working on v0.4.2):
+hos_target_release=v0.4.2
+
+# After rolling to v0.4.3:
+hos_target_release=v0.4.3
+```
+
+The launcher will look up `v0.4.3`'s milestone number at the next cron fire and
+substitute it into the worker prompt automatically. A `FATAL: milestone not found`
+error means either the release title doesn't match a GitHub milestone title exactly,
+or the milestone hasn't been created yet.
+
+**Override without changing the file** (useful for testing):
+```bash
+HOS_TARGET_RELEASE=v0.4.3 HOS_IDLE_INTERVAL=0 bin/hos-cron --role worker --project hos
+```
+
+Set `HOS_TARGET_MILESTONE_NUMBER` alongside to skip the REST lookup entirely.
 
 Each project also needs its GitHub App credentials at `<config_dir>/apps.env`
 (see `docs/MACHINE-ACCOUNTS-SETUP.md`).
