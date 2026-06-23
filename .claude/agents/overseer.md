@@ -120,6 +120,56 @@ For each recently-merged PR (merged in the last 2 hours):
 
 ---
 
+### Release-gate deep validation (#695)
+
+When an open `release-request` issue with no `release-authorized` label exists in the current
+milestone, the overseer performs a deep artifact validation pass across all build steps before
+posting clearance. This is distinct from the per-PR §3b artifact presence check — it
+interprets content and completeness across the full milestone, reading from the main branch
+(merged artifacts only).
+
+**Step discovery:** For each merged PR in the milestone (`GET /repos/{o}/{r}/pulls?state=closed&milestone=<N>&per_page=100`), determine the step number from the `signoffs/validators/step{N}/` directory. Collect all unique step numbers N that have any artifact on main.
+
+**Per-step artifact validation:** For each step N:
+1. Read `signoffs/validators/step{N}/summary.json` from main (`git show origin/main:signoffs/validators/step{N}/summary.json`).
+2. **Present check:** if the file is missing → flag `missing_artifact step{N}`.
+3. **Tier check:** if `tier` is `HIGH` or `CRITICAL` → flag `high_tier step{N} (tier=<value>, score=<composite_score>)`.
+4. **Finding sweep:** for each entry in `results` where `findings` is non-empty and any finding carries `severity` = `CRITICAL` or `HIGH` → flag `unresolved_finding step{N} dimension=<dim>`.
+5. **Validator coverage:** if `successful_validators` < `validator_count - 2` → flag `validator_failures step{N} ({successful}/{total})`.
+
+**Sign-off register completeness:** For each step N:
+1. Read `.claudetmp/signoffs/step{N}-register.md` from main (`git show origin/main:.claudetmp/signoffs/step{N}-register.md`).
+2. Required roles: `code-review`, `security`, `privacy`.
+3. For each required role: if no entry exists with `Status: APPROVED` → flag `incomplete_register step{N} role=<role>`.
+
+**Decision:**
+- **CLEARANCE** (no flags raised across all steps): post on the release-request issue:
+  ```markdown
+  ## Overseer Release-Gate Clearance
+
+  Deep artifact validation passed across {N} build steps.
+
+  | Check | Result |
+  |---|---|
+  | Artifact presence | ✅ all steps present |
+  | Risk tier | ✅ no HIGH/CRITICAL steps |
+  | Finding sweep | ✅ no unresolved blocking findings |
+  | Sign-off register | ✅ required roles present and approved |
+
+  This gate does NOT authorize the release cut — human authorization (`release-authorized`
+  label from ScottThurlow) is still required per NG3b.
+  ```
+- **ESCALATE** (any flag raised): enumerate all flags in the post (step number + condition); add `needs-human` label if not already present; do NOT post clearance. Follow §8.2 escalation format.
+
+**Audit log:** Regardless of decision, append to `audit/oversight-log.jsonl` AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2):
+```json
+{"event":"release-gate-validation","release":"<milestone title>","decision":"<CLEARANCE|ESCALATE>","steps_checked":[<N>...],"flags":[<flag strings>],"timestamp":"<ISO8601>"}
+```
+
+Process at most one release-gate issue per cron cycle.
+
+---
+
 ### What you do
 
 For each PR found:
