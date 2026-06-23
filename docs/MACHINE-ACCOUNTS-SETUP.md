@@ -62,18 +62,62 @@ In the overseer's working copy, the same with the overseer identity + PAT. The
 human's own clone keeps the human identity. The point: each actor's commits and
 approvals carry its own identity, so the audit trail is real.
 
-## Step 5 — Enable enforcement in branch protection  *(human; the switch-on)*
+## Step 5 — Create the `hos-auditsync-hos` GitHub App  *(human; one-time per repo)*
 
-Settings → Branches → protect `main`:
-- ☑ **Require a pull request before merging** → **≥1 approving review**
-- ☑ **Dismiss stale approvals** on new commits
-- ☑ **Require review from Code Owners**  ← makes `.github/CODEOWNERS` (protected surfaces → human) binding
-- ☑ **Require status checks to pass** → add **`require-overseer-approval`**, **`require-human-approval`**, **`require-tier-ceiling`** (and any existing checks, e.g. `Validation stamps current`)
-- ☑ **Do not allow bypassing the above settings** *(this disables `--admin` for the bots; the human, as the only Admin, retains it)*
+Audit log files (`audit/oversight-log.jsonl`, `audit/overnight-loop-log.md`) are gitignored from feature PRs and synced to main via a GitHub Actions workflow after each cron cycle. That workflow pushes directly to main, bypassing the PR requirement — which requires a dedicated app with a Ruleset bypass. A separate app (not the worker or overseer) is used to keep each bot's authority scoped to its own role. See #861 and #862.
 
-Result: every PR requires overseer approval; a **protected-surface or above-ceiling** PR additionally requires a **human** approval that no bot can provide. Admin bypass: repo admin may use GitHub's "Merge without waiting for requirements" override — explicit, logged, intentional.
+### 5a — Create the app
 
-## Step 6 — Regenerate CODEOWNERS for your owner  *(consumers)*
+1. Go to **https://github.com/settings/apps/new**
+2. **GitHub App name**: `hos-auditsync-hos`
+3. **Homepage URL**: your repo URL
+4. **Webhook**: uncheck **Active**
+5. **Repository permissions**: set **Contents** to `Read & write`; everything else `No access`
+6. **Where can this be installed**: `Only on this account`
+7. Click **Create GitHub App**
+8. Note the **App ID** on the next page
+9. Scroll to **Private keys** → **Generate a private key** → save the `.pem` file
+
+### 5b — Install the app on the repo
+
+1. On the app settings page, click **Install App**
+2. Install on your account → **Only select repositories** → choose this repo → **Install**
+
+### 5c — Store secrets
+
+In the repo: **Settings → Secrets and variables → Actions**:
+- `HOS_AUDIT_SYNC_APP_ID` — the numeric App ID from 5a
+- `HOS_AUDIT_SYNC_PRIVATE_KEY` — the full `.pem` contents (including header/footer lines)
+
+## Step 6 — Enable enforcement via Ruleset  *(human; the switch-on)*
+
+Use a **Ruleset** rather than classic branch protection — Rulesets support installed GitHub Apps (like `hos-auditsync-hos`) in the bypass list, which classic rules do not.
+
+**Settings → Rules → New ruleset → New branch ruleset:**
+
+| Field | Value |
+|---|---|
+| Ruleset name | `main-protection` |
+| Enforcement status | Active |
+| Target branches | Include by pattern: `main` |
+
+**Bypass list** → Add bypass → search `hos-auditsync-hos` → set mode **Always**.
+
+**Rules** — enable:
+- ☑ **Restrict deletions**
+- ☑ **Require a pull request before merging**
+  - Required approving reviews: **1**
+  - ☑ Dismiss stale reviews on new commits
+  - ☑ Require review from Code Owners
+  - ☑ Require conversation resolution before merging
+- ☑ **Require status checks to pass** → add `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`
+- ☑ **Block force pushes**
+
+Click **Create**, then delete the classic branch protection rule at **Settings → Branches**.
+
+Result: every PR requires overseer approval; protected-surface or above-ceiling PRs require human approval. `hos-auditsync-hos` can push audit logs directly to main; all other actors go through the PR flow.
+
+## Step 7 — Regenerate CODEOWNERS for your owner  *(consumers)*
 
 ```sh
 ./scripts/framework/gen_codeowners.sh @your-username   # defaults to the repo owner
@@ -99,7 +143,7 @@ own say-so. See `research/findings/actor-identity-vs-determination-honesty.md`.
 
 ---
 
-## Step 7 — Create the release-authorization labels *(human; one-time)*
+## Step 8 — Create the release-authorization labels *(human; one-time)*
 
 ```sh
 gh label create release-request    --color B60205 \
@@ -116,7 +160,7 @@ authorization protocol.
 
 ---
 
-## Step 8 — Configure cron schedules *(human; one-time per machine)* (#642)
+## Step 9 — Configure cron schedules *(human; one-time per machine)* (#642)
 
 Add the following entries to the operator's crontab (`crontab -e`):
 
