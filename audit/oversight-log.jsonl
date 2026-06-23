@@ -101,6 +101,27 @@
 {"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 1, "prs_auto_merged": 0, "prs_escalated": 1, "timestamp": "2026-06-23T02:16:07Z"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:30:07Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:31:36Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:35:25Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:35:27Z", "bot": "hos-overseer-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:40:39Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:42:06Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:42:10Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T03:05:47Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T03:05:49Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T03:25:59Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T03:26:00Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T03:35:12Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T03:35:14Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T03:55:56Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T03:55:57Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T04:15:58Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T04:16:00Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T04:55:12Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T04:55:13Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "overseer-cycle-start", "role": "overseer", "timestamp": "2026-06-23T05:10:50Z", "bot": "hos-overseer-hos[bot]"}
+{"event": "merge-audit-completed", "prs_in_window": [812, 810, 811], "human_merges": [810, 811], "bot_merges": [812], "bot_merge_already_reported": true, "existing_issues": [813], "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "human-authorized-merge", "pr": 810, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T04:20:57Z", "title": "[AI: hos-worker-hos[bot]] feat(#601): add label-swap slash commands for issue handoff workflow", "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "human-authorized-merge", "pr": 811, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T02:43:37Z", "title": "chore/overseer-audit-2026-06-23T02Z", "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "process-gap-already-reported", "pr": 812, "merged_by": "hos-overseer-hos[bot]", "existing_issues": [813], "note": "bot-merge on #812 already flagged by prior cycle (issue #813)", "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "pr-reviewed", "pr": 815, "decision": "APPROVED", "overseer_assessment": "MEDIUM", "worker_self_flag": "LOW", "codeowners_paths_hit": ["/scripts/framework/cut_release.sh"], "codeowners_owner": "@ScottThurlow", "action": "escalated-to-human", "reviewer_requested": "ScottThurlow", "escalation_comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/815#issuecomment-4775791113", "require_overseer_approval": "SUCCESS", "require_tier_ceiling": "SUCCESS", "require_human_approval": "FAIL-awaiting-human", "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 1, "prs_auto_merged": 0, "prs_escalated": 1, "timestamp": "2026-06-23T05:10:50Z"}
