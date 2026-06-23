@@ -155,3 +155,4 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T16:03:09Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T16:11:00Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T16:13:19Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "validator-stamp", "role": "worker", "timestamp": "2026-06-23T18:28:00Z", "pr": "856", "head_sha": "c22b929", "composite_score": 0.0938, "tier": "LOW", "validator_count": 4}

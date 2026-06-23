@@ -1,40 +1,25 @@
 {
-  "head_sha": "6f0ad40872e1c0b549fb8a0c83abdf9b9f3ac829",
+  "head_sha": "c22b9295ba6276073f60d292d37f540821283693",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-23T10:37:12Z",
-  "composite_score": 0.0515,
+  "written_at": "2026-06-23T18:30:35Z",
+  "composite_score": 0.0938,
   "tier": "LOW",
-  "validator_count": 12,
-  "successful_validators": 11,
+  "validator_count": 4,
+  "successful_validators": 4,
   "results": [
-    {
-      "dimension": "complexity",
-      "score": 0.0,
-      "raw_value": {
-        "error": "radon not installed"
-      },
-      "weight": 0.08,
-      "evidence": [],
-      "checklist_items": [],
-      "findings": [],
-      "error": "radon not installed \u2014 run: pip install radon",
-      "tier_floor": null
-    },
     {
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 1634,
-        "changed_files": 10,
-        "floor_rule_fired": "changed_lines",
-        "domain_count": 4,
+        "changed_lines": 13,
+        "changed_files": 4,
+        "floor_rule_fired": null,
+        "domain_count": 2,
         "domains_detected": [
           "other",
-          "bootstrap",
-          "docs",
-          "scripts"
+          "audit"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -44,55 +29,6 @@
       },
       "weight": 0.0,
       "evidence": [],
-      "checklist_items": [
-        "Consider splitting into focused PRs: changes span 4 domains (threshold 3); domains: other, bootstrap, docs, scripts"
-      ],
-      "findings": [],
-      "error": null,
-      "tier_floor": "HIGH"
-    },
-    {
-      "dimension": "function_metrics",
-      "score": 0.0161,
-      "raw_value": {
-        "total_functions": 62,
-        "long_functions": 2,
-        "high_param_count": 0,
-        "deeply_nested": 0,
-        "many_return_paths": 0
-      },
-      "weight": 0.07,
-      "evidence": [
-        {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 54,
-          "message": "__init__(): lines=74",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 53,
-          "message": "__init__(): lines=61",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "__init__() \u2014 61 lines: can this be decomposed into smaller units?",
-        "__init__() \u2014 74 lines: can this be decomposed into smaller units?"
-      ],
-      "findings": [],
-      "error": null,
-      "tier_floor": null
-    },
-    {
-      "dimension": "hallucination_surface",
-      "score": 0.0,
-      "raw_value": {
-        "version_sensitive_count": 0,
-        "findings": []
-      },
-      "weight": 0.06,
-      "evidence": [],
       "checklist_items": [],
       "findings": [],
       "error": null,
@@ -100,20 +36,55 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.045,
+      "score": 0.25,
       "raw_value": {
-        "issue_count": 0,
-        "issues": [],
+        "issue_count": 2,
+        "issues": [
+          {
+            "number": 795,
+            "title": "bug: stale FAILURE check runs block merge despite both approvals present and newer runs succeeding",
+            "label": "bug",
+            "file": ".github/workflows/require-human-approval.yml"
+          },
+          {
+            "number": 621,
+            "title": "fix: require-overseer-approval status check \u2014 prevent human approval from bypassing overseer review",
+            "label": "bug",
+            "file": ".github/workflows/require-overseer-approval.yml"
+          }
+        ],
         "churn": {
-          "tests/automation/test_bootstrap_markers.py": 1,
-          "tests/automation/test_ensure_venv.py": 1,
-          "tests/automation/test_hos_cron.py": 3
+          ".github/workflows/require-human-approval.yml": 5,
+          ".github/workflows/require-overseer-approval.yml": 4,
+          ".github/workflows/require-tier-ceiling.yml": 3
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
-      "evidence": [],
-      "checklist_items": [],
+      "evidence": [
+        {
+          "file": ".github/workflows/require-human-approval.yml",
+          "line": 0,
+          "message": "[bug] #795: bug: stale FAILURE check runs block merge despite both approvals present and newer runs succeeding",
+          "severity": "medium"
+        },
+        {
+          "file": ".github/workflows/require-overseer-approval.yml",
+          "line": 0,
+          "message": "[bug] #621: fix: require-overseer-approval status check \u2014 prevent human approval from bypassing overseer review",
+          "severity": "medium"
+        },
+        {
+          "file": ".github/workflows/require-human-approval.yml",
+          "line": 0,
+          "message": "high churn: 5 commits in 90 days",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "2 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "require-human-approval.yml: 5 commits in 90 days \u2014 high churn may indicate persistent complexity."
+      ],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -157,639 +128,6 @@
       "findings": [],
       "error": null,
       "tier_floor": null
-    },
-    {
-      "dimension": "n1_queries",
-      "score": 0.0,
-      "raw_value": {
-        "candidate_count": 0,
-        "locations": []
-      },
-      "weight": 0.08,
-      "evidence": [],
-      "checklist_items": [],
-      "findings": [],
-      "error": null,
-      "tier_floor": null
-    },
-    {
-      "dimension": "portability",
-      "score": 0.0,
-      "raw_value": {
-        "finding_count": 0
-      },
-      "weight": 0.06,
-      "evidence": [],
-      "checklist_items": [],
-      "findings": [],
-      "error": null,
-      "tier_floor": null
-    },
-    {
-      "dimension": "prompt_ambiguity",
-      "score": 0.25,
-      "raw_value": {
-        "ambiguity_score": 0.25,
-        "fidelity_surface_score": 0.0,
-        "ambiguity_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
-        ],
-        "fidelity_signals": [],
-        "process_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
-        ],
-        "missing_artifacts": [
-          "tests/automation/test_bootstrap_markers.py",
-          "tests/automation/test_ensure_venv.py",
-          "tests/automation/test_hos_cron.py"
-        ],
-        "files_with_artifacts": 0
-      },
-      "weight": 0.07,
-      "evidence": [
-        {
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 0,
-          "message": "3 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "3 file(s) missing prompt artifacts: test_bootstrap_markers.py, test_ensure_venv.py, test_hos_cron.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
-      ],
-      "findings": [],
-      "error": null,
-      "tier_floor": null
-    },
-    {
-      "dimension": "risk_number",
-      "score": 0.15,
-      "raw_value": {
-        "max_rn": 3.0,
-        "mean_rn": 0.15,
-        "high_risk_functions": [],
-        "function_count": 62,
-        "parse_errors": [],
-        "task_class": "chore",
-        "task_class_source": "commit_prefix",
-        "floor_applied": true,
-        "pre_floor_tier": "LOW",
-        "post_floor_tier": "MEDIUM"
-      },
-      "weight": 0.18,
-      "evidence": [
-        {
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 105,
-          "message": "RN=3.0 \u2014 run()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 145,
-          "message": "RN=3.0 \u2014 run()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 134,
-          "message": "RN=2.0 \u2014 run()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 128,
-          "message": "RN=1.0 \u2014 marker_exists()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 34,
-          "message": "RN=0.0 \u2014 _write_exec()",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "run:112 \u2014 can this condition be both true and false as expected?",
-        "run:112 \u2014 are all branches (including implicit else) handled?",
-        "run:122 \u2014 can this condition be both true and false as expected?",
-        "run:122 \u2014 are all branches (including implicit else) handled?",
-        "run:126 \u2014 can this condition be both true and false as expected?",
-        "run:126 \u2014 are all branches (including implicit else) handled?",
-        "run:159 \u2014 can this condition be both true and false as expected?",
-        "run:159 \u2014 are all branches (including implicit else) handled?",
-        "run:162 \u2014 can this condition be both true and false as expected?",
-        "run:162 \u2014 are all branches (including implicit else) handled?",
-        "run:140 \u2014 can this condition be both true and false as expected?",
-        "run:140 \u2014 are all branches (including implicit else) handled?",
-        "run:143 \u2014 can this condition be both true and false as expected?",
-        "run:143 \u2014 are all branches (including implicit else) handled?"
-      ],
-      "findings": [
-        {
-          "function": "run",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 105,
-          "risk_number": 3.0,
-          "top_statements": [
-            {
-              "line": 112,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 122,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 126,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 145,
-          "risk_number": 3.0,
-          "top_statements": [
-            {
-              "line": 159,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 162,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "run",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 134,
-          "risk_number": 2.0,
-          "top_statements": [
-            {
-              "line": 140,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 143,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "marker_exists",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 128,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 130,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "_write_exec",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 34,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "__init__",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 48,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 102,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "bootstrap",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 135,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_successful_bootstrap_writes_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 141,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_degraded_bootstrap_also_writes_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 152,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_dry_run_does_not_write_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 168,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_old_python_errors_before_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 179,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_write_exec",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 38,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "__init__",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 53,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "create_fake_venv",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 115,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "venv_env",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 151,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_healthy_venv_exits_zero",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 157,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_healthy_venv_writes_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 163,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_venv_created_and_smoke_passes_writes_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 169,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_quiet_flag_suppresses_stdout",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 176,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_triggers_rebuild",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 188,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_marker_written_after_rebuild",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 197,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_no_marker_before_repair",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 205,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_rebuild_also_fails_exits_nonzero",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 217,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_rebuild_also_fails_no_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 222,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_write_exec",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 44,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "__init__",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 54,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "lock_dir",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 130,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "last_run_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 134,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "wakeup_worker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 138,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "wakeup_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 142,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "claude_ran",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 171,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "claude_record",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 174,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "cron",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 179,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_role_and_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 185,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_args_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 190,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_invalid_role_rejected",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 196,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_unknown_flag_shows_usage",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 201,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_unknown_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 209,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_role_root_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 214,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_resolved_project_proceeds_past_registry",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 222,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_live_holder_makes_second_invocation_exit_zero",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 232,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_stale_dead_pid_lock_is_reclaimed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 241,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pid_written_is_the_launcher_pid",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 249,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_file_is_consumed_and_cycle_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 266,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_recent_last_run_triggers_idle_backoff",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 276,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_stale_last_run_polls_and_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 286,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_claude_auth_env_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 298,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_empty_oauth_token_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 305,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_api_key_unset_before_claude_invoke",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 312,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_login_mismatch_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 325,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_expected_login_unset_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 331,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_matching_login_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 338,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_claude_resolved_by_absolute_path_from_minimal_path",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 347,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pinned_path_includes_standard_bins",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 360,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_written_on_success",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 374,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_not_written_when_claude_fails",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 380,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_dropped_to_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 389,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_absent_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 400,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_present_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 406,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 415,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_healthy_venv_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 421,
-          "risk_number": 0.0,
-          "top_statements": []
-        }
-      ],
-      "error": null,
-      "tier_floor": "MEDIUM"
-    },
-    {
-      "dimension": "static_analysis",
-      "score": 0.0,
-      "raw_value": {
-        "bandit_medium_count": 0,
-        "semgrep_count": 0
-      },
-      "weight": 0.15,
-      "evidence": [],
-      "checklist_items": [],
-      "findings": [],
-      "error": null,
-      "tier_floor": null
     }
-  ],
-  "tier_floor": "HIGH"
+  ]
 }
