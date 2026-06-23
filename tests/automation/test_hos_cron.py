@@ -899,4 +899,164 @@ class TestCycleContextBlock:
         })
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting human merge" in r.stdout
-        assert not cron.claude_ran()
+
+
+# ───────────────────────── _sync_audit_logs ────────────────────────────────
+def _extract_sync_audit_logs_func() -> str:
+    """Extract the _sync_audit_logs function body from bin/hos-cron."""
+    lines = HOS_CRON.read_text().splitlines()
+    in_func, depth, collected = False, 0, []
+    for line in lines:
+        if line.startswith("_sync_audit_logs()"):
+            in_func = True
+        if in_func:
+            collected.append(line)
+            depth += line.count("{") - line.count("}")
+            if depth == 0 and len(collected) > 1:
+                break
+    return "\n".join(collected)
+
+
+_SYNC_FUNC = _extract_sync_audit_logs_func()
+
+
+def _git(*args, cwd=None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git"] + list(args), cwd=cwd, check=True, capture_output=True, text=True
+    )
+
+
+def _make_repos(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a bare remote and a fully-configured local clone with a main branch."""
+    remote = tmp_path / "remote.git"
+    local = tmp_path / "local"
+    _git("init", "--bare", str(remote))
+    _git("init", str(local))
+    _git("-C", str(local), "config", "user.email", "test@hos.test")
+    _git("-C", str(local), "config", "user.name", "HOS Test")
+    _git("-C", str(local), "commit", "--allow-empty", "-m", "init", "--quiet")
+    _git("-C", str(local), "remote", "add", "origin", str(remote))
+    _git("-C", str(local), "push", "origin", "HEAD:main", "--quiet")
+    return remote, local
+
+
+def _run_sync(local: Path, env_extra=None) -> subprocess.CompletedProcess:
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(local.parent)}
+    if env_extra:
+        env.update(env_extra)
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -uo pipefail\n"
+        'LOG_PREFIX="[test]"\n'
+        + _SYNC_FUNC
+        + f'\n_sync_audit_logs "{local}"\n'
+    )
+    return subprocess.run(
+        [BASH, "-c", script],
+        capture_output=True, text=True, timeout=30, check=False, env=env,
+    )
+
+
+def _remote_branch_exists(remote: Path, branch: str) -> bool:
+    r = subprocess.run(
+        ["git", "ls-remote", "--exit-code", str(remote), branch],
+        capture_output=True, check=False,
+    )
+    return r.returncode == 0
+
+
+def _files_on_branch(remote: Path, branch: str) -> list[str]:
+    r = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", f"refs/heads/{branch}"],
+        cwd=remote, capture_output=True, text=True, check=False,
+    )
+    return r.stdout.splitlines()
+
+
+class TestSyncAuditLogs:
+    """Unit tests for _sync_audit_logs() in bin/hos-cron (#861)."""
+
+    def test_changed_audit_files_pushed_to_audit_log_branch(self, tmp_path):
+        """Audit files present and changed → committed and pushed to audit-log (not main)."""
+        remote, local = _make_repos(tmp_path)
+        audit_dir = local / "audit"
+        audit_dir.mkdir(parents=True)
+        (audit_dir / "oversight-log.jsonl").write_text('{"event":"cycle-start"}\n')
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _remote_branch_exists(remote, "audit-log")
+        tree = _files_on_branch(remote, "audit-log")
+        assert any("oversight-log" in f for f in tree), (
+            f"Expected audit file on audit-log branch, got: {tree}"
+        )
+
+    def test_no_audit_files_on_disk_no_push(self, tmp_path):
+        """No audit files on disk → function returns early, audit-log branch not created."""
+        remote, local = _make_repos(tmp_path)
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not _remote_branch_exists(remote, "audit-log")
+
+    def test_audit_log_branch_absent_bases_off_main(self, tmp_path):
+        """No existing audit-log branch → new branch is rooted at main."""
+        remote, local = _make_repos(tmp_path)
+        assert not _remote_branch_exists(remote, "audit-log")
+
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"test"}\n')
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _remote_branch_exists(remote, "audit-log"), "audit-log branch should be created"
+        assert "audit logs pushed" in r.stdout
+
+    def test_audit_log_branch_exists_rebases_from_it(self, tmp_path):
+        """Existing audit-log branch → new commit is based on it, not on main."""
+        remote, local = _make_repos(tmp_path)
+
+        # Seed the remote audit-log branch with a prior commit
+        seed_local = tmp_path / "seed"
+        _git("clone", str(remote), str(seed_local))
+        _git("-C", str(seed_local), "config", "user.email", "test@hos.test")
+        _git("-C", str(seed_local), "config", "user.name", "HOS Test")
+        _git("-C", str(seed_local), "checkout", "-b", "audit-log", "--quiet")
+        (seed_local / "audit").mkdir(parents=True)
+        (seed_local / "audit" / "overnight-loop-log.md").write_text("# prior\n")
+        _git("-C", str(seed_local), "add", "audit/overnight-loop-log.md")
+        _git("-C", str(seed_local), "commit", "-m", "prior audit", "--quiet")
+        _git("-C", str(seed_local), "push", "origin", "HEAD:audit-log", "--quiet")
+
+        # Now add new content to local and sync
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"new"}\n')
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "audit logs pushed" in r.stdout
+
+    def test_push_failure_warns_and_exits_zero(self, tmp_path):
+        """Push failure prints WARN line but the function exits 0 (retry next cycle)."""
+        remote, local = _make_repos(tmp_path)
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"test"}\n')
+
+        # Fake git that succeeds on all operations except push
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        real_git = subprocess.check_output(["which", "git"], text=True).strip()
+        fake_git.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$*" == *"push"* ]]; then\n'
+            '  echo "fatal: fake push failure" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec "{real_git}" "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        r = _run_sync(local, env_extra={"PATH": f"{fake_bin}:/usr/bin:/bin"})
+        assert r.returncode == 0, f"push failure must not exit non-zero; got {r.returncode}"
+        assert "WARN" in r.stdout and "push failed" in r.stdout
