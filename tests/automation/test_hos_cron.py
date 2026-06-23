@@ -106,6 +106,13 @@ class CronEnv:
             self.repo / "scripts" / "framework" / "run_tests_inner_loop.sh",
             "#!/usr/bin/env bash\nexit 0\n",
         )
+        # ensure_venv.sh stub: exit 0 by default (healthy venv); override with
+        # HOS_TEST_ENSURE_VENV_EXIT to simulate a broken venv.
+        _write_exec(
+            self.repo / "scripts" / "oversight" / "ensure_venv.sh",
+            "#!/usr/bin/env bash\n"
+            'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
+        )
 
         # ── HOME config: project registry + claude OAuth (#728) ──
         conf = self.home / ".config" / "hos" / "projects.conf"
@@ -386,3 +393,37 @@ class TestPostCycleBookkeeping:
         payload = cron.wakeup_overseer.read_text()
         assert "worker-cycle-complete" in payload
         assert '"project":"hos"' in payload
+
+
+# ──────────────────────────── _validate_env ─────────────────────────────────
+class TestValidateEnv:
+    def test_bootstrap_marker_absent_warns(self, cron):
+        """Missing bootstrap marker → warning in output."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "bootstrap marker missing" in r.stdout
+
+    def test_bootstrap_marker_present_no_warn(self, cron):
+        """Bootstrap marker present → no bootstrap warning."""
+        marker_dir = cron.home / ".hos" / "setup-validation"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "bootstrap").touch()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "bootstrap marker missing" not in r.stdout
+
+    def test_broken_venv_warns(self, cron):
+        """ensure_venv.sh exits non-zero → cron logs oversight-venv warning."""
+        r = cron.run(env_overrides={"HOS_TEST_ENSURE_VENV_EXIT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr  # fail-open: cron still runs
+        assert "oversight-venv broken or missing" in r.stdout
+
+    def test_healthy_venv_no_warn(self, cron):
+        """ensure_venv.sh exits 0 → no oversight-venv warning."""
+        marker_dir = cron.home / ".hos" / "setup-validation"
+        marker_dir.mkdir(parents=True)
+        (marker_dir / "bootstrap").touch()
+        r = cron.run()  # default HOS_TEST_ENSURE_VENV_EXIT=0
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "oversight-venv" not in r.stdout
+        assert "✓ environment validated" in r.stdout
