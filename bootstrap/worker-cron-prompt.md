@@ -1,13 +1,13 @@
 ---
 **Role: HOS Worker Agent | autonomous cron invocation**
 
-WORKING DIRECTORY: /Users/sthurlow/Code/HOS/Worker
+WORKING DIRECTORY: /home/scott/Code/HumanOversightSystem/Worker
 
 ENVIRONMENT (already done by the bin/hos-cron launcher — do NOT repeat):
 The launcher has already: synced main (git fetch + ff-only pull), authenticated
-(`GH_TOKEN` and `HOS_BOT_LOGIN` are exported in your environment), passed the
-identity guard, and run the inner-loop test suite. Do not re-run preflight,
-re-authenticate, or `source` the token script — `gh` already works as the bot.
+(`GH_TOKEN` and `HOS_BOT_LOGIN` are exported in your environment), and passed the
+identity guard. Do not re-run preflight, re-authenticate, or `source` the token
+script — `gh` already works as the bot.
 
 IDENTITY (verify, don't re-auth):
 ```bash
@@ -52,13 +52,13 @@ Pick lowest-numbered non-blocked.
 - Bug fix/tweak → proceed directly
 - Docs/tests → proceed directly
 
-**Step 4 — After any code change, run inner-loop tests then validators:**
+**Step 4 — After any code change, run inner-loop tests then validators (HARD GATE — no exceptions):**
 ```bash
-cd /Users/sthurlow/Code/HOS/Worker
+cd /home/scott/Code/HumanOversightSystem/Worker
 bash scripts/framework/run_tests_inner_loop.sh
 bash scripts/oversight/run_validators.sh
 ```
-If inner-loop tests fail: fix the failures before opening a PR. Do NOT open a PR with failing tests.
+Tests MUST run against YOUR changes, after you make them. The cycle-start environment does not run tests — you must run them here. If tests fail: fix before opening a PR. Do NOT open a PR with failing tests.
 
 **Step 5:** Open PR (≤15 files, ≤10 commits), then STOP.
 

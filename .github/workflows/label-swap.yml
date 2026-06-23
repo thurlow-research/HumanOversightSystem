@@ -1,0 +1,105 @@
+name: Label-swap slash commands
+
+# Slash-command interface for the needs-human / needs-ai label workflow (#601).
+# Three commands:
+#   /approve [note]  CODEOWNERS only — needs-human → needs-ai
+#   /decline         CODEOWNERS only — needs-human → wontfix + close
+#   /handoff         Bot accounts only — needs-ai → needs-human
+#
+# SECURITY: issue_comment events run from the DEFAULT BRANCH, not the
+# commenter's branch, so the CODEOWNERS file and machine-accounts.env
+# read here are the repo-owner-controlled versions. No PR-authored code is
+# executed. The commenter is identified by `github.event.comment.user.login`,
+# which is set by GitHub — not by the comment body.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label-swap:
+    name: label-swap
+    runs-on: ubuntu-latest
+    # Only run on actual issue comments (not PR review comments).
+    # Guard on slash prefix so unrelated comments skip the checkout entirely.
+    if: ${{ !github.event.issue.pull_request && startsWith(github.event.comment.body, '/') }}
+    steps:
+      - name: Checkout (TRUSTED default branch — reads CODEOWNERS + machine-accounts.env)
+        uses: actions/checkout@v4
+
+      - name: Execute slash command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # Extract command (first word of first line) and optional note.
+          FIRST_LINE=$(printf '%s' "$COMMENT_BODY" | head -1)
+          CMD=$(printf '%s' "$FIRST_LINE" | awk '{print $1}')
+          NOTE="${FIRST_LINE#"$CMD"}"
+          NOTE="${NOTE# }"
+
+          case "$CMD" in
+            /approve|/decline)
+              # Parse individual CODEOWNERS users (not @org/team refs — those
+              # contain a '/' in the token and won't match ^@word$ in awk).
+              CODEOWNERS_USERS=$(awk 'NF && !/^#/ {
+                for (i=1; i<=NF; i++) {
+                  if ($i ~ /^@[A-Za-z0-9_-]+$/) {
+                    sub(/^@/, "", $i)
+                    print $i
+                  }
+                }
+              }' .github/CODEOWNERS | sort -u | tr '\n' ' ')
+
+              if [[ -z "${CODEOWNERS_USERS// /}" ]]; then
+                echo "ERROR: no individual users found in .github/CODEOWNERS" >&2
+                exit 1
+              fi
+
+              if [[ " $CODEOWNERS_USERS " != *" $COMMENTER "* ]]; then
+                gh issue comment "$ISSUE_NUMBER" --body \
+                  "❌ \`$CMD\` is restricted to CODEOWNERS members. @${COMMENTER} is not authorized."
+                exit 0
+              fi
+
+              if [[ "$CMD" == "/approve" ]]; then
+                gh issue edit "$ISSUE_NUMBER" --remove-label "needs-human" --add-label "needs-ai" 2>/dev/null || true
+                BODY="✅ /approve — \`needs-human\` → \`needs-ai\` (authorized by @${COMMENTER})."
+                [[ -n "$NOTE" ]] && BODY="${BODY}  Note: ${NOTE}"
+                gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+              else
+                gh issue edit "$ISSUE_NUMBER" --remove-label "needs-human" --add-label "wontfix" 2>/dev/null || true
+                gh issue close "$ISSUE_NUMBER" 2>/dev/null || true
+                gh issue comment "$ISSUE_NUMBER" --body \
+                  "🚫 /decline — issue closed as \`wontfix\` (authorized by @${COMMENTER})."
+              fi
+              ;;
+
+            /handoff)
+              # shellcheck disable=SC1091
+              source scripts/framework/machine-accounts.env
+
+              if [[ " ${BOT_ACCOUNTS:-} " != *" $COMMENTER "* ]]; then
+                gh issue comment "$ISSUE_NUMBER" --body \
+                  "❌ \`/handoff\` is restricted to registered bot accounts. @${COMMENTER} is not authorized."
+                exit 0
+              fi
+
+              gh issue edit "$ISSUE_NUMBER" --remove-label "needs-ai" --add-label "needs-human" 2>/dev/null || true
+              gh issue comment "$ISSUE_NUMBER" --body \
+                "🔁 /handoff — \`needs-ai\` → \`needs-human\` (escalated by @${COMMENTER})."
+              ;;
+
+            *)
+              # Unrecognized slash command — ignore.
+              exit 0
+              ;;
+          esac
