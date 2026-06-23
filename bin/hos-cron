@@ -94,7 +94,6 @@ LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
-_LAST_RUN_STATUS_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}-outcome"
 IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
 mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
@@ -239,12 +238,11 @@ elif [[ -f "$_LAST_RUN_FILE" ]]; then
   _last=$(cat "$_LAST_RUN_FILE" 2>/dev/null || echo 0)
   _now=$(date +%s)
   _elapsed=$(( _now - _last ))
-  _last_outcome=$(cat "$_LAST_RUN_STATUS_FILE" 2>/dev/null || echo "did-work")
-  if [[ "$_elapsed" -lt "$IDLE_INTERVAL" && "$_last_outcome" == "idle" ]]; then
-    echo "$LOG_PREFIX idle backoff — ${_elapsed}s since last idle run (threshold ${IDLE_INTERVAL}s)"
+  if [[ "$_elapsed" -lt "$IDLE_INTERVAL" ]]; then
+    echo "$LOG_PREFIX idle backoff — ${_elapsed}s since last run (threshold ${IDLE_INTERVAL}s)"
     exit 0
   fi
-  echo "$LOG_PREFIX running — ${_elapsed}s since last run (previous outcome: ${_last_outcome})"
+  echo "$LOG_PREFIX idle poll — ${_elapsed}s since last run"
 fi
 # Timestamp written only after successful Claude exit (#711)
 
@@ -609,10 +607,10 @@ fi
 # ── Post-cycle bookkeeping ────────────────────────────────────────────────────
 if [[ $_claude_exit -eq 0 ]]; then
   date +%s > "$_LAST_RUN_FILE"
-  # Detect whether the worker produced work (new PRs opened since run start).
-  # Backoff applies only when the previous run was idle — if work was done,
-  # the next fire proceeds immediately to pick up remaining issues.
-  _outcome="idle"
+  # If work was done this cycle, drop a self-wakeup so the next cron fire bypasses
+  # the idle backoff and picks up any remaining items without waiting IDLE_INTERVAL.
+  # Reuses the existing wakeup mechanism — no new file type needed.
+  _did_work=0
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
     _run_start_iso=$(python3 -c "
 import datetime, sys
@@ -620,22 +618,25 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 " "$_run_start_epoch" 2>/dev/null || echo "")
     if [[ -n "$_run_start_iso" ]]; then
       if [[ "$ROLE" == "worker" ]]; then
-        # Worker: did work = new PRs opened by the bot since run start
         _new_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=all&sort=created&direction=desc&per_page=10" \
           --jq "[.[] | select(.user.login == \"$HOS_BOT_LOGIN\" and .created_at >= \"$_run_start_iso\")] | length" \
-          2>/dev/null || echo "")
-        [[ "${_new_prs:-0}" -gt 0 ]] && _outcome="did-work"
+          2>/dev/null || echo "0")
+        [[ "${_new_prs:-0}" -gt 0 ]] && _did_work=1
       elif [[ "$ROLE" == "overseer" ]]; then
-        # Overseer: did work = any PRs merged by the bot since run start
         _merged=$(gh api "repos/${_REPO_SLUG}/pulls?state=closed&sort=updated&direction=desc&per_page=10" \
           --jq "[.[] | select(.merged_by.login == \"$HOS_BOT_LOGIN\" and .merged_at != null and .merged_at >= \"$_run_start_iso\")] | length" \
-          2>/dev/null || echo "")
-        [[ "${_merged:-0}" -gt 0 ]] && _outcome="did-work"
+          2>/dev/null || echo "0")
+        [[ "${_merged:-0}" -gt 0 ]] && _did_work=1
       fi
     fi
   fi
-  echo "$_outcome" > "$_LAST_RUN_STATUS_FILE"
-  echo "$LOG_PREFIX outcome: $_outcome"
+  if [[ "$_did_work" -eq 1 ]]; then
+    printf '{"reason":"self-wakeup-more-work","timestamp":"%s"}\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$_WAKEUP_FILE"
+    echo "$LOG_PREFIX outcome: did-work — self-wakeup dropped"
+  else
+    echo "$LOG_PREFIX outcome: idle"
+  fi
 fi
 
 # Signal the other agent
