@@ -487,6 +487,40 @@ elif [[ $_claude_exit -ne 0 ]]; then
   _audit cycle-claude-fail "exit=$_claude_exit"
 fi
 
+# ── Sync audit logs directly to main (no PR) ─────────────────────────────────
+# audit/oversight-log.jsonl and audit/overnight-loop-log.md are gitignored so
+# they never appear in feature PRs and never cause merge conflicts (#854).
+# Instead, push them directly to main here after every cycle via a throwaway
+# branch. No branch protection on main; push failures warn and retry next cycle.
+_sync_audit_logs() {
+  local _repo="$1"
+  local _files=()
+  [[ -f "$_repo/audit/oversight-log.jsonl"   ]] && _files+=("audit/oversight-log.jsonl")
+  [[ -f "$_repo/audit/overnight-loop-log.md" ]] && _files+=("audit/overnight-loop-log.md")
+  [[ ${#_files[@]} -eq 0 ]] && return 0
+
+  local _tmp_branch="_audit-sync-$$"
+  (
+    cd "$_repo"
+    git fetch origin main --quiet 2>/dev/null || return 0
+    git checkout -b "$_tmp_branch" origin/main --quiet 2>/dev/null || return 0
+    local _changed=0
+    for _f in "${_files[@]}"; do
+      git add -f "$_f" 2>/dev/null
+      git diff --cached --quiet "$_f" 2>/dev/null || _changed=1
+    done
+    if [[ "$_changed" -eq 1 ]]; then
+      git commit -m "chore(audit): sync logs $(date -u '+%Y-%m-%dT%H:%M:%SZ') [skip ci]" --quiet
+      git push origin HEAD:main --quiet 2>/dev/null \
+        && echo "$LOG_PREFIX audit logs synced to main" \
+        || echo "$LOG_PREFIX WARN: audit log push failed (will retry next cycle)"
+    fi
+    git checkout - --quiet 2>/dev/null || true
+    git branch -D "$_tmp_branch" --quiet 2>/dev/null || true
+  )
+}
+_sync_audit_logs "$REPO_ROOT"
+
 # ── Post-cycle bookkeeping ────────────────────────────────────────────────────
 [[ $_claude_exit -eq 0 ]] && date +%s > "$_LAST_RUN_FILE"
 
