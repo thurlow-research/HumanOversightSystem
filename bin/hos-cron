@@ -95,8 +95,38 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
 IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
-mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache"
+mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
+
+# ── Project suspension check (#778) — early exit before lock ─────────────────
+# bin/hos-suspend writes a JSON marker to $_HOS_DIR/suspend/<project>. When
+# present, skip this cycle cleanly. An optional "until" field auto-expires the
+# marker: remove it on the first fire after the expiration date so cron resumes
+# automatically without needing a manual --clear.
+_SUSPEND_FILE="$_HOS_DIR/suspend/$PROJECT"
+if [[ -f "$_SUSPEND_FILE" ]]; then
+  _until=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get('until', ''))
+except Exception:
+    print('')
+" "$_SUSPEND_FILE" 2>/dev/null || echo "")
+  if [[ -n "$_until" ]]; then
+    _today=$(date -u '+%Y-%m-%d')
+    if [[ "$_today" > "$_until" ]]; then
+      rm -f "$_SUSPEND_FILE"
+      echo "$LOG_PREFIX suspension expired (was until $_until) — resuming"
+    else
+      echo "$LOG_PREFIX [SUSPENDED] project $PROJECT suspended until $_until (use: hos-suspend --project $PROJECT --clear)"
+      exit 0
+    fi
+  else
+    echo "$LOG_PREFIX [SUSPENDED] project $PROJECT suspended indefinitely (use: hos-suspend --project $PROJECT --clear)"
+    exit 0
+  fi
+fi
 
 # ── Overlap lock (#728) — portable mkdir mutex (macOS has no flock) ──────────
 # One hos-cron run per (role, project) at a time. Lightweight overlap guard,
