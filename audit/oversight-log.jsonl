@@ -33,6 +33,63 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:22:13Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:31:00Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:32:27Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T05:50:25Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T05:51:54Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T06:11:01Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T06:12:30Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T06:20:54Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T06:22:23Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T06:30:23Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T06:31:53Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T18:11:42Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T18:21:00Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T18:22:31Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T18:30:38Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T18:32:09Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T18:40:27Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T18:42:01Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T18:50:15Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T18:51:45Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T19:10:55Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T19:12:28Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T19:30:17Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T19:31:47Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T20:00:58Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T20:02:29Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T20:20:20Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T20:21:49Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T20:40:26Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T20:41:55Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T21:00:37Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T21:02:06Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T21:20:40Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T21:22:09Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T21:40:12Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T21:41:40Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T21:50:29Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T21:52:01Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T22:10:37Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T22:12:07Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T22:20:43Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T22:22:12Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T22:50:45Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T22:52:15Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T23:10:56Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T23:12:24Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-22T23:40:49Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-22T23:42:16Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T00:00:43Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T00:02:11Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T00:30:53Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T00:32:21Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T01:00:58Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T01:02:26Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T01:10:52Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T01:12:19Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T01:30:37Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T01:32:05Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:00:57Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:02:26Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "human-authorized-merge", "pr": 808, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T02:06:18Z", "title": "[AI: hos-worker-hos[bot]] fix: ship bin/lib/, .github/workflows/, and scripts/framework/ consumer tools (#769)", "timestamp": "2026-06-23T02:16:07Z"}
 {"event": "human-authorized-merge", "pr": 803, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T02:05:11Z", "title": "[AI: hos-worker-hos[bot]] feat: bash portability gate + shellcheck CI (#768)", "timestamp": "2026-06-23T02:16:07Z"}
 {"event": "human-authorized-merge", "pr": 800, "merged_by": "ScottThurlow", "merged_at": "2026-06-23T00:53:36Z", "title": "[AI: hos-worker-hos[bot]] fix: release-artifact guard, idempotency check, requested-reviewer gate (#761)", "timestamp": "2026-06-23T02:16:07Z"}
@@ -42,3 +99,8 @@
 {"event": "merge-audit-completed", "prs_in_window": [808, 803, 800, 801, 802], "human_merges": [808, 803, 800, 801], "bot_merges": [802], "bot_merge_already_reported": true, "existing_issues": [809, 804], "timestamp": "2026-06-23T02:16:07Z"}
 {"event": "pr-reviewed", "pr": 810, "decision": "APPROVED", "overseer_assessment": "HIGH", "worker_self_flag": "LOW", "protected_surfaces_hit": [".github/workflows/**", "bootstrap/**"], "action": "escalated-to-human", "reviewer_requested": "ScottThurlow", "require_overseer_approval": "SUCCESS", "require_tier_ceiling": "SUCCESS", "require_human_approval": "FAIL-awaiting-human", "timestamp": "2026-06-23T02:16:07Z"}
 {"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 1, "prs_auto_merged": 0, "prs_escalated": 1, "timestamp": "2026-06-23T02:16:07Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:30:07Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:31:36Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T02:40:39Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:42:06Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T02:42:10Z", "bot": "hos-worker-hos[bot] project=hos"}
