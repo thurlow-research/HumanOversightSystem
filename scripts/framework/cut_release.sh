@@ -35,6 +35,7 @@ cd "$REPO_ROOT"
 PYBIN="$REPO_ROOT/scripts/oversight/.venv/bin/python"
 [[ -x "$PYBIN" ]] || PYBIN="python3"
 RELEASE_LOGIC="$REPO_ROOT/scripts/oversight/release_logic.py"
+RELEASE_ARTIFACT_LOGIC="$REPO_ROOT/scripts/oversight/release_artifact_logic.py"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"; RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
@@ -185,6 +186,33 @@ else
       exit 1
     fi
     ok "validation passed — clear to release"
+  fi
+fi
+
+# ── Release-gate deep artifact validation (#695) ─────────────────────────────
+# Sweep ALL committed step artifacts (signoffs/validators/step{N}/summary.json)
+# and sign-off stamps for this release. This is separate from the per-PR §3b
+# lightweight presence+SHA check — that stays as-is on every PR review. Here
+# we look at risk tiers, blocking findings, and sign-off completeness across
+# every build step before authorizing a release.
+hdr "3b. Release artifact validation"
+_artval_manifest_arg=()
+[[ -f "contract/step-manifest.yaml" ]] && _artval_manifest_arg=(--manifest "contract/step-manifest.yaml")
+if $DRY_RUN; then
+  info "[dry] would run: $PYBIN $RELEASE_ARTIFACT_LOGIC validate --repo-root . ${_artval_manifest_arg[*]:-} --version $VERSION --log-to audit/oversight-log.jsonl"
+else
+  _artval_rc=0
+  "$PYBIN" "$RELEASE_ARTIFACT_LOGIC" validate \
+    --repo-root . \
+    ${_artval_manifest_arg[@]+"${_artval_manifest_arg[@]}"} \
+    --version "$VERSION" \
+    --log-to audit/oversight-log.jsonl || _artval_rc=$?
+  if [[ "$_artval_rc" -eq 1 ]]; then
+    err "Release artifact validation ESCALATED — human review required."
+    err "Resolve the flagged issues (or obtain human authorization) before cutting the release."
+    exit 1
+  elif [[ "$_artval_rc" -gt 1 ]]; then
+    warn "Release artifact validation could not complete (exit $_artval_rc) — proceeding with warning."
   fi
 fi
 
