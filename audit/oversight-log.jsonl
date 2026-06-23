@@ -125,6 +125,8 @@
 {"event": "process-gap-already-reported", "pr": 812, "merged_by": "hos-overseer-hos[bot]", "existing_issues": [813], "note": "bot-merge on #812 already flagged by prior cycle (issue #813)", "timestamp": "2026-06-23T05:10:50Z"}
 {"event": "pr-reviewed", "pr": 815, "decision": "APPROVED", "overseer_assessment": "MEDIUM", "worker_self_flag": "LOW", "codeowners_paths_hit": ["/scripts/framework/cut_release.sh"], "codeowners_owner": "@ScottThurlow", "action": "escalated-to-human", "reviewer_requested": "ScottThurlow", "escalation_comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/815#issuecomment-4775791113", "require_overseer_approval": "SUCCESS", "require_tier_ceiling": "SUCCESS", "require_human_approval": "FAIL-awaiting-human", "timestamp": "2026-06-23T05:10:50Z"}
 {"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 1, "prs_auto_merged": 0, "prs_escalated": 1, "timestamp": "2026-06-23T05:10:50Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T05:20:29Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T05:21:58Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T05:35:19Z", "reason": "worker-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T05:35:20Z", "bot": "hos-overseer-hos[bot] project=hos"}
 {"event": "cycle-start", "role": "overseer", "bot": "hos-overseer-hos[bot]", "timestamp": "2026-06-23T05:35:49Z"}
@@ -136,3 +138,13 @@
 {"event": "pr-merged", "role": "overseer", "pr": 815, "title": "feat: release-gate deep artifact validation (#695)", "human_authorized_by": "ScottThurlow", "merge_method": "squash", "sha": "82e7b54c", "branch_updated": true, "timestamp": "2026-06-23T05:45:30Z"}
 {"event": "pr-reviewed", "role": "overseer", "pr": 817, "decision": "HUMAN_REQUIRED", "validator_score": 0.31, "tier": "MEDIUM", "codeowners_paths_hit": ["/bin/", "/bootstrap/"], "codeowners_owner": "@ScottThurlow", "action": "overseer-approved-escalated-to-human", "reviewer_requested": "ScottThurlow", "label_applied": "needs-human", "timestamp": "2026-06-23T05:45:30Z"}
 {"event": "overseer-cycle-complete", "role": "overseer", "open_prs_reviewed": 3, "prs_auto_merged": 2, "prs_escalated": 1, "process_gap_duplicate_filed": 1, "timestamp": "2026-06-23T05:46:00Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T05:50:13Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T05:51:41Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T06:10:35Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T06:12:04Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T07:00:10Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T07:02:36Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T07:30:59Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T07:33:22Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T07:50:56Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T07:53:19Z", "bot": "hos-worker-hos[bot] project=hos"}
