@@ -1,0 +1,39 @@
+# Consumer-facing framework files shipped to project installs (non-agent, non-oversight).
+#
+# Single source of truth for BOTH the install copy-loop AND .hos-manifest enumeration
+# in bootstrap/hos_install.sh (mirrors consumer_agents.txt for agents). Edit here once;
+# both the copy-loop and the manifest follow (#769).
+#
+# NOT listed here (deliberately):
+#   - scripts/oversight/ — shipped via rsync, tracked via `find` in the manifest
+#   - .claude/agents/ — governed by consumer_agents.txt
+#   - .github/CODEOWNERS, .github/pull_request_template.md — handled by their own
+#     installer section (also tracked directly in enumerate_framework_files)
+#   - Internal HOS-dev tooling (must stay OUT of consumer installs):
+#       cut_release.sh, validate_*.sh, check_agents_static.sh,
+#       check_validation_current.sh, strip_internal_paths.sh,
+#       run_framework_validation.sh, run_tests_release.sh
+#
+# One file path per line (relative to repo root). Blank lines and # comments ignored.
+
+# ── bin/ — cron launcher and its dependencies (#715, #717, #769) ─────────────────
+bin/hos-cron
+bin/hos-trim-logs
+bin/lib/git-credentials.sh
+
+# ── .github/workflows/ — required CI status-check producers (#769) ───────────────
+# These produce the status-check contexts that setup_branch_protection.sh requires.
+# Without them a consumer's branch protection has required checks that never report,
+# permanently blocking every PR.
+.github/workflows/require-human-approval.yml
+.github/workflows/require-overseer-approval.yml
+.github/workflows/require-tier-ceiling.yml
+.github/workflows/validation-check.yml
+
+# ── scripts/framework/ — consumer-facing governance tools (#769) ─────────────────
+scripts/framework/gen_codeowners.sh
+scripts/framework/protected_surfaces.txt
+scripts/framework/provision_agent_account.sh
+scripts/framework/run_post_change_sweep.sh
+scripts/framework/run_tests_inner_loop.sh
+scripts/framework/setup_branch_protection.sh

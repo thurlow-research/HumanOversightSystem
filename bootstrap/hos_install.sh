@@ -1557,20 +1557,28 @@ cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/boots
 # apps.env.template: install if present so consumers have a discoverable starting point
 [[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
 
-# ── bin/ — cron launcher scripts (#715, #717) ─────────────────────────────────
-# Install hos-cron (parameterized launcher) and hos-trim-logs.
-# Prompt files are generated with project-specific values substituted.
+# ── framework consumer files — bin/, .github/workflows/, scripts/framework/ (#769) ──
+# Ship-set declared in scripts/framework/framework_consumer_files.txt — the single
+# source of truth for BOTH the install copy-loop and .hos-manifest (mirrors the
+# consumer_agents.txt pattern for agents). Covers: all of bin/ (incl. bin/lib/),
+# .github/workflows/ required-check producers, and consumer-facing scripts/framework/
+# tools. Before #769 the bin/lib/ dependency and all workflows were missing from
+# consumer installs, breaking the cron launcher on first run.
 echo ""
-info "bin/ — cron launcher scripts"
-run mkdir -p "$TARGET_REPO/bin"
-if [[ -f "$HOS_SOURCE/bin/hos-cron" ]]; then
-  cp_framework_file "$HOS_SOURCE/bin/hos-cron"       "$TARGET_REPO/bin/hos-cron"       "bin/hos-cron (cron launcher)"
-  $DRY_RUN || chmod +x "$TARGET_REPO/bin/hos-cron"
-fi
-if [[ -f "$HOS_SOURCE/bin/hos-trim-logs" ]]; then
-  cp_framework_file "$HOS_SOURCE/bin/hos-trim-logs"  "$TARGET_REPO/bin/hos-trim-logs"  "bin/hos-trim-logs (log rotation)"
-  $DRY_RUN || chmod +x "$TARGET_REPO/bin/hos-trim-logs"
-fi
+info "bin/ and framework consumer files"
+_fc_list="$HOS_SOURCE/scripts/framework/framework_consumer_files.txt"
+[[ -f "$_fc_list" ]] || fail "framework_consumer_files.txt missing from source — incomplete HOS release"
+while IFS= read -r _fc; do
+  _fc="${_fc%%#*}"; _fc="$(echo "$_fc" | xargs || true)"
+  [[ -z "$_fc" ]] && continue
+  [[ -f "$HOS_SOURCE/$_fc" ]] || { warn "framework_consumer_files.txt: $HOS_SOURCE/$_fc not found — skipping"; continue; }
+  cp_framework_file "$HOS_SOURCE/$_fc" "$TARGET_REPO/$_fc" "$_fc"
+  # Executables in bin/ without .sh suffix need explicit chmod+x (cp_framework_file
+  # only does .sh; hos-cron, hos-trim-logs, and git-credentials.sh all need +x).
+  case "$_fc" in
+    bin/*) $DRY_RUN || chmod +x "$TARGET_REPO/$_fc" ;;
+  esac
+done < "$_fc_list"
 
 # Generate prompt files — substitute available values, leave bot logins as placeholders
 # #723: use python3 str.replace (not sed) — repo URL may contain | which breaks sed -e "s|...|
@@ -1785,9 +1793,19 @@ enumerate_framework_files() {
       [[ -d scripts/oversight ]] && find scripts/oversight -type f \
           ! -path '*/.venv/*' ! -path '*/__pycache__/*' ! -name '*.pyc' 2>/dev/null
       for _f in AGENTS.md METHODOLOGY.md contract/OVERSIGHT-CONTRACT.md \
+          .github/CODEOWNERS .github/pull_request_template.md \
           scripts/run_panel.sh scripts/run_second_review.sh scripts/run_red_team.sh \
           scripts/review_self.sh scripts/reverify_self.sh scripts/capture_prompt.sh \
           scripts/prompt_audit.sh; do [[ -f "$_f" ]] && echo "$_f"; done
+      # Files listed in framework_consumer_files.txt (bin/, .github/workflows/,
+      # scripts/framework/ consumer tools) — single source of truth (#769).
+      if [[ -f scripts/framework/framework_consumer_files.txt ]]; then
+        while IFS= read -r _fc; do
+          _fc="${_fc%%#*}"; _fc="$(echo "$_fc" | xargs || true)"
+          [[ -z "$_fc" ]] && continue
+          [[ -f "$_fc" ]] && echo "$_fc"
+        done < scripts/framework/framework_consumer_files.txt
+      fi
     } | LC_ALL=C sort -u | while IFS= read -r _f; do printf '%s\tWHOLE\t%s\n' "$_f" "$(_sha256 "$_f")"; done )
 }
 
