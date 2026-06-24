@@ -72,7 +72,7 @@ section "2. docs/AGENTS.md agent name coverage"
 if [[ -f "$DOCS_AGENTS" ]]; then
     # Extract backtick-quoted names on lines starting with ### N. `name`
     while IFS= read -r line; do
-        agent=$(echo "$line" | grep -oE '\`[a-z][a-z0-9_-]+\`' | head -1 | tr -d '`')
+        agent=$(echo "$line" | grep -oE '`[a-z][a-z0-9_-]+`' | head -1 | tr -d '`')
         [[ -z "$agent" ]] && continue
         # Skip agents declared as external (live in consumer projects, not locally)
         if [[ -n "$EXTERNAL_AGENTS" ]] && echo "$agent" | grep -qE "^($EXTERNAL_AGENTS)$"; then
@@ -108,6 +108,7 @@ docs/ops/TELEMETRY-SPEC.md
 contract/step-manifest.yaml
 contract/gate-suspension.md
 audit/oversight-log.jsonl
+audit/overnight-loop-log.md
 scripts/framework/config.sh"
 
 # The Python filter is called WITHOUT the output-doc list so that an output-doc
