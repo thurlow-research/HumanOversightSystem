@@ -314,21 +314,21 @@ class TestMigrationVisitor:
         tree = ast.parse(src)
         v = _MigrationVisitor()
         v.visit(tree)
-        assert "AddField" in v.operations
+        assert any(op == "AddField" for op, _ in v.operations)
 
     def test_remove_field_detected(self):
         src = "operations = [migrations.RemoveField(model_name='x', name='y')]"
         tree = ast.parse(src)
         v = _MigrationVisitor()
         v.visit(tree)
-        assert "RemoveField" in v.operations
+        assert any(op == "RemoveField" for op, _ in v.operations)
 
     def test_run_python_detected(self):
         src = "ops = [migrations.RunPython(forwards, backwards)]"
         tree = ast.parse(src)
         v = _MigrationVisitor()
         v.visit(tree)
-        assert "RunPython" in v.operations
+        assert any(op == "RunPython" for op, _ in v.operations)
 
 
 class TestCheckAddFieldNullable:

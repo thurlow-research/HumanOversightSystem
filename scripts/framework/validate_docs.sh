@@ -320,6 +320,8 @@ for block in blocks:
         if sev in ("critical", "high", "blocking"):
             blocking_count += 1
 
+if blocking_count > 0:
+    request_changes = True
 verdict = "request_changes" if request_changes else "approve"
 if not blocks:
     verdict = "error"
