@@ -18,3 +18,6 @@
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T23:20:42Z", "reason": "overseer-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T23:23:07Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-24T00:03:07Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-24T00:20:37Z", "reason": "self-wakeup-more-work"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-24T00:23:02Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "worker-cycle-complete", "role": "worker", "timestamp": "2026-06-24T00:33:35Z", "issue": 850, "branch": "fix/stale-commit-detection-850", "pr": 879, "action": "pushed integration layer: pre_pr_stale_check.py CLI + worker-cron-prompt Step 4b"}
