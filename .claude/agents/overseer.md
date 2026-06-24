@@ -178,14 +178,30 @@ For each PR found:
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 3a. **PR size check** — count the changed files and commits before proceeding. Apply the limits from `docs/PR-SIZE-POLICY.md` (#450):
-3b. **Validator artifact check (#555)** — read `signoffs/validators/step{N}/summary.json` from the PR branch (where N is the step number from the cid or step manifest). Verify:
+3b. **Validator artifact check (#555, updated #880)** — read `signoffs/validators/step{N}/summary.json` from the PR branch (where N is the step number from the cid or step manifest). Verify using an ancestry-based algorithm rather than exact HEAD equality (the exact-equality check was broken by non-code tail commits such as audit-log syncs):
+
+   **Algorithm:**
    1. The file exists (artifact present).
-   2. `head_sha` matches the PR's current HEAD commit (`GET /repos/{o}/{r}/pulls/{n}` → `head.sha`).
-   3. `head_sha_source` is present and is either `"step_range"` or `"git_head_fallback"` (any other value or absent → schema error).
+   2. Find `artifact_commit` — the commit that last wrote the artifact file:
+      `git log -1 --format="%H" -- signoffs/validators/step{N}/summary.json`
+      If this returns empty, the artifact was never committed → treat as absent.
+   3. Verify `artifact.head_sha == git rev-parse <artifact_commit>^`
+      (the validators ran on the commit immediately before the artifact was committed).
+   4. Verify `artifact_commit` is an ancestor of PR HEAD:
+      `git merge-base --is-ancestor <artifact_commit> <pr_head_sha>`
+      This ensures the artifact was not removed and re-added after the fact.
+   5. Verify no code files were modified between `artifact_commit` and PR HEAD.
+      Get the diff: `git diff --name-only <artifact_commit> <pr_head_sha>`
+      Exempt files (not code): `audit/oversight-log.jsonl`, `audit/overnight-loop-log.md`,
+      and any path under `audit/automation/`. If any non-exempt file appears in the
+      diff, the artifact is stale (code changed after artifact was written).
+   6. `head_sha_source` is present and is either `"step_range"` or `"git_head_fallback"` (schema check unchanged).
 
    **Fail-close rules (all route to HUMAN_REQUIRED / GATE_UNSATISFIED):**
-   - Artifact absent: detail = `"validator artifact missing for step N"`
-   - Head SHA mismatch: detail = `"validator artifact head_sha <artifact_sha> != PR HEAD <pr_head_sha>"`
+   - Artifact absent or artifact_commit not found: detail = `"validator artifact missing for step N"`
+   - `head_sha` != parent of artifact commit: detail = `"validator artifact head_sha <artifact_sha> != parent of artifact commit <artifact_commit_parent>"`
+   - Artifact commit not ancestor of PR HEAD: detail = `"validator artifact commit <artifact_commit_short> not an ancestor of PR HEAD <pr_head_sha_short>"`
+   - Stale artifact (non-exempt code files modified after artifact commit): detail = `"validator artifact is stale: <N> non-exempt file(s) modified after artifact commit"`
    - Schema error (missing/unrecognized `head_sha_source`): detail = `"validator artifact schema error: head_sha_source missing or unrecognized"`
 
    **Do not proceed to step 4 if any fail-close rule fires.**
