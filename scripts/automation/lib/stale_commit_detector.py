@@ -107,8 +107,10 @@ def find_redundant_in_main(base: str = "main", head: str = "HEAD") -> list[str]:
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        logger.warning("git cherry %s %s failed: %s", base, head, result.stderr.strip())
-        return []
+        raise RuntimeError(
+            f"git cherry {base} {head} failed (rc={result.returncode}): "
+            f"{result.stderr.strip()} — cannot determine which commits are already in {base}"
+        )
 
     redundant = []
     for line in result.stdout.splitlines():
@@ -153,6 +155,13 @@ def find_redundant_in_open_prs(
     if not open_prs:
         return {}
 
+    if not isinstance(open_prs, list):
+        logger.warning(
+            "Unexpected type from PR listing API: %s — skipping open-PR stale check",
+            type(open_prs).__name__,
+        )
+        return {}
+
     for pr in open_prs:
         pr_number = pr.get("number")
         if pr_number is None:
@@ -168,6 +177,14 @@ def find_redundant_in_open_prs(
             ) or []
         except GitHubError as exc:
             logger.warning("Could not fetch commits for PR #%s: %s", pr_number, exc)
+            continue
+
+        if not isinstance(pr_commits, list):
+            logger.warning(
+                "Unexpected commits response for PR #%s: got %s — skipping",
+                pr_number,
+                type(pr_commits).__name__,
+            )
             continue
 
         overlap = [
