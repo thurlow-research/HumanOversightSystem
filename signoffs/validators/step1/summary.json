@@ -1,10 +1,10 @@
 {
-  "head_sha": "d92db5aae1276f7061441b8257839ce8398f31b9",
+  "head_sha": "99c7d0992dde71eff7837accc14b561fd3997804",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-24T07:25:52Z",
-  "composite_score": 0.2156,
+  "written_at": "2026-06-24T17:13:21Z",
+  "composite_score": 0.0,
   "tier": "LOW",
   "validator_count": 4,
   "successful_validators": 4,
@@ -13,13 +13,13 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 20,
+        "changed_lines": 86,
         "changed_files": 2,
         "floor_rule_fired": null,
         "domain_count": 2,
         "domains_detected": [
           "audit",
-          "scripts"
+          "docs"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -36,77 +36,18 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.575,
+      "score": 0.0,
       "raw_value": {
-        "issue_count": 4,
-        "issues": [
-          {
-            "number": 588,
-            "title": "bug(#587): worker.md backtick reference to check_pre_coder_gate.sh fails check_agents_static",
-            "label": "bug",
-            "file": "scripts/framework/check_agents_static.sh"
-          },
-          {
-            "number": 552,
-            "title": "Design: validation stamp conflict cascade; gitignore is temp fix",
-            "label": "bug",
-            "file": "scripts/framework/check_agents_static.sh"
-          },
-          {
-            "number": 284,
-            "title": "[AI: claude] CPS field report: v0.3.6 install \u2014 risk-assessor escalates to framework-only framework-validator, absent in consumers (dangling edge)",
-            "label": "bug",
-            "file": "scripts/framework/check_agents_static.sh"
-          },
-          {
-            "number": 283,
-            "title": "[AI: claude] CPS field report: v0.3.6 install ships 6 reviewer agents referencing contract/OVERSIGHT-CONTRACT.md \u2014 not installed in consumers (dangling)",
-            "label": "bug",
-            "file": "scripts/framework/check_agents_static.sh"
-          }
-        ],
+        "issue_count": 0,
+        "issues": [],
         "churn": {
-          "scripts/framework/check_agents_static.sh": 15
+          "docs/releases/v0.4.2.md": 0
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
-      "evidence": [
-        {
-          "file": "scripts/framework/check_agents_static.sh",
-          "line": 0,
-          "message": "[bug] #588: bug(#587): worker.md backtick reference to check_pre_coder_gate.sh fails check_agents_static",
-          "severity": "medium"
-        },
-        {
-          "file": "scripts/framework/check_agents_static.sh",
-          "line": 0,
-          "message": "[bug] #552: Design: validation stamp conflict cascade; gitignore is temp fix",
-          "severity": "medium"
-        },
-        {
-          "file": "scripts/framework/check_agents_static.sh",
-          "line": 0,
-          "message": "[bug] #284: [AI: claude] CPS field report: v0.3.6 install \u2014 risk-assessor escalates to framework-only framework-validator, absent in consumers (dangling edge)",
-          "severity": "medium"
-        },
-        {
-          "file": "scripts/framework/check_agents_static.sh",
-          "line": 0,
-          "message": "[bug] #283: [AI: claude] CPS field report: v0.3.6 install ships 6 reviewer agents referencing contract/OVERSIGHT-CONTRACT.md \u2014 not installed in consumers (dangling)",
-          "severity": "medium"
-        },
-        {
-          "file": "scripts/framework/check_agents_static.sh",
-          "line": 0,
-          "message": "high churn: 15 commits in 90 days",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "4 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "check_agents_static.sh: 15 commits in 90 days \u2014 high churn may indicate persistent complexity."
-      ],
+      "evidence": [],
+      "checklist_items": [],
       "findings": [],
       "error": null,
       "tier_floor": null
