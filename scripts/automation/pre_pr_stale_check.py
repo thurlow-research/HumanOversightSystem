@@ -13,6 +13,10 @@ Behaviour:
   4. If commits overlap an open PR: prints a warning and exits 1.  These cannot
      be auto-resolved — the caller must cherry-pick unique commits onto a fresh
      branch (or wait for the conflicting PR to merge).
+  5. Checks that audit-only files (audit/oversight-log.jsonl,
+     audit/overnight-loop-log.md) are NOT committed to a non-main branch (#880).
+     These files are gitignored and must only reach main via the audit-log sync
+     workflow, never via a feature PR.
 
 Usage:
   cd "$REPO_ROOT"
@@ -40,6 +44,15 @@ from scripts.automation.lib.stale_commit_detector import (
     strip_redundant_commits,
 )
 
+# Files that must NEVER appear in feature/fix branch commits (#880).
+# These are gitignored append-only operational files synced to main via GitHub
+# Actions (introduced in #861). Committing them to a feature branch shifts PR
+# HEAD past the validator artifact commit and breaks the overseer's §3b check.
+_AUDIT_ONLY_FILES: frozenset[str] = frozenset({
+    "audit/oversight-log.jsonl",
+    "audit/overnight-loop-log.md",
+})
+
 
 def _run(args: list[str]) -> str:
     """Run a subprocess and return stdout. Raises RuntimeError on failure."""
@@ -49,6 +62,47 @@ def _run(args: list[str]) -> str:
             f"{' '.join(args)} failed (rc={result.returncode}): {result.stderr.strip()}"
         )
     return result.stdout.strip()
+
+
+def check_audit_log_not_committed(branch: str, base: str = "main") -> list[str]:
+    """Return violation messages if audit-only files are committed on this branch.
+
+    Audit-only files (audit/oversight-log.jsonl, audit/overnight-loop-log.md)
+    are gitignored and must never be committed to a feature/fix branch (#880).
+    They reach main exclusively via the audit-log GitHub Actions sync workflow.
+
+    When on `main` itself, this check is skipped (returns []).
+
+    The check compares against `origin/{base}` (not local `{base}`) so a stale
+    local branch doesn't produce false positives when `origin/main` has advanced
+    past the local `main` ref. Falls back to `{base}` if `origin/{base}` is
+    not available (e.g., no remote configured).
+
+    Returns a list of human-readable violation strings; empty means clean.
+    """
+    if branch in (base, "main"):
+        return []
+
+    # Prefer origin/{base} so local-main staleness doesn't cause false positives.
+    base_ref = f"origin/{base}"
+    try:
+        _run(["git", "rev-parse", "--verify", base_ref])
+    except RuntimeError:
+        base_ref = base  # fallback: no remote available
+
+    try:
+        changed = _run(["git", "diff", "--name-only", f"{base_ref}...{branch}"])
+    except RuntimeError:
+        return []
+
+    changed_files = set(changed.splitlines()) if changed else set()
+    violations = sorted(_AUDIT_ONLY_FILES & changed_files)
+    return [
+        f"audit-only file committed to feature branch: {f!r} — "
+        "must not be committed to non-main branches (#880); "
+        "remove from last commit with: git reset HEAD~1 -- " + f
+        for f in violations
+    ]
 
 
 def parse_remote_url(url: str) -> tuple[str, str]:
@@ -101,6 +155,22 @@ def run_check(owner: str, repo: str, branch: str, base: str) -> int:
 
     Returns 0 on clean, 1 if stale commits cannot be resolved.
     """
+    # Audit-log guard (#880): fail before stale check if audit-only files
+    # have been committed to this branch — they invalidate the overseer's §3b
+    # head_sha check and must never appear in a feature PR.
+    audit_violations = check_audit_log_not_committed(branch, base)
+    if audit_violations:
+        for v in audit_violations:
+            print(f"✘ pre-pr-stale-check: {v}", file=sys.stderr)
+        print(
+            "\n✘ pre-pr-stale-check: audit-only files committed to feature branch.\n"
+            "  These files are gitignored and must only reach main via the\n"
+            "  audit-log GitHub Actions sync (introduced in #861).\n"
+            "  Drop the audit commit before opening a PR.",
+            file=sys.stderr,
+        )
+        return 1
+
     result = check_stale_commits(owner, repo, branch=branch, base=base)
 
     if result.is_clean:

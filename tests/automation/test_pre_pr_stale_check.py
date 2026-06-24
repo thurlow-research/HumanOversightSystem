@@ -1,5 +1,5 @@
 """
-Unit tests for pre_pr_stale_check.py (#850).
+Unit tests for pre_pr_stale_check.py (#850, #880).
 
 Covers:
   - parse_remote_url: HTTPS, SSH, with/without .git suffix
@@ -7,6 +7,7 @@ Covers:
   - resolve_branch: explicit arg, falls back to git
   - run_check: clean branch, auto-strip success, rebase failure,
                overlap with open PR, both overlap types
+  - check_audit_log_not_committed: audit-only file guard (#880)
 """
 
 import subprocess
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from scripts.automation.pre_pr_stale_check import (
+    check_audit_log_not_committed,
     parse_remote_url,
     resolve_branch,
     resolve_owner_repo,
@@ -262,3 +264,105 @@ class TestRunCheck:
 
         assert rc == 1
         mock_strip.assert_not_called()
+
+    def test_audit_log_on_feature_branch_returns_1_before_stale_check(self):
+        """Audit-only file committed to feature branch blocks push before stale check."""
+        with (
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_audit_log_not_committed",
+                return_value=["audit-only file committed to feature branch: 'audit/oversight-log.jsonl'"],
+            ),
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_stale_commits",
+            ) as mock_stale,
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+
+        assert rc == 1
+        mock_stale.assert_not_called()
+
+    def test_no_audit_violations_proceeds_to_stale_check(self):
+        """Clean audit state lets the stale check run normally."""
+        with (
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_audit_log_not_committed",
+                return_value=[],
+            ),
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_stale_commits",
+                return_value=_clean_result(),
+            ),
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+
+        assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# check_audit_log_not_committed
+# ---------------------------------------------------------------------------
+
+class TestCheckAuditLogNotCommitted:
+    def _mock_run(self, stdout: str):
+        """Return a mock for _run that yields the given stdout string."""
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = stdout + "\n"
+        return mock
+
+    def test_returns_empty_when_on_main(self):
+        with patch("subprocess.run") as mock_sp:
+            result = check_audit_log_not_committed("main", base="main")
+        mock_sp.assert_not_called()
+        assert result == []
+
+    def test_returns_empty_when_branch_equals_base(self):
+        with patch("subprocess.run") as mock_sp:
+            result = check_audit_log_not_committed("staging", base="staging")
+        mock_sp.assert_not_called()
+        assert result == []
+
+    def test_returns_empty_when_no_audit_files_changed(self):
+        mock_sp = self._mock_run("scripts/foo.py\ntests/bar.py")
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert result == []
+
+    def test_detects_oversight_log_committed(self):
+        mock_sp = self._mock_run(
+            "scripts/fix.py\naudit/oversight-log.jsonl"
+        )
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert len(result) == 1
+        assert "audit/oversight-log.jsonl" in result[0]
+
+    def test_detects_overnight_loop_log_committed(self):
+        mock_sp = self._mock_run("audit/overnight-loop-log.md")
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert len(result) == 1
+        assert "audit/overnight-loop-log.md" in result[0]
+
+    def test_detects_both_audit_files_committed(self):
+        mock_sp = self._mock_run(
+            "audit/oversight-log.jsonl\naudit/overnight-loop-log.md"
+        )
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert len(result) == 2
+
+    def test_returns_empty_on_git_failure(self):
+        mock_sp = MagicMock()
+        mock_sp.returncode = 128
+        mock_sp.stdout = ""
+        mock_sp.stderr = "fatal: not a git repo"
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert result == []
+
+    def test_returns_empty_when_diff_is_empty(self):
+        mock_sp = self._mock_run("")
+        with patch("subprocess.run", return_value=mock_sp):
+            result = check_audit_log_not_committed(BRANCH, base=BASE)
+        assert result == []
