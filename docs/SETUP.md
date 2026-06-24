@@ -110,7 +110,7 @@ Edit `scripts/framework/config.sh` directly at any time, or re-run `install.sh` 
    - `css/tokens.css` — CSS custom properties for every design token
    - `style-guide.html` — rendered component reference (open in a browser)
    - `feedback-states.html` — error/warning/success/info states
-3. Update the path references in `ux-designer.md` and `ui-reviewer.md` to match your actual path.
+3. Set `DESIGN_PACK_PATH` and related design paths in `scripts/framework/config.sh` — agents resolve these at runtime. Do not edit CORE or PACK regions in HOS-managed agent files directly; those edits are overwritten on upgrade.
 4. Set `DESIGN_PACK_PATH` in `config.sh` to point to your `DESIGN.md`.
 
 If you have no design system yet, `ux-designer` will create one from scratch during the initial design audit.
@@ -127,7 +127,7 @@ Invoke framework-setup-validator
 
 It will run through this checklist and report anything missing:
 - All required directories exist
-- All required agent files are present (including consumer agents and the validator agents: `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator`, and `post-change-sweep`)
+- All required agent files are present (consumer agents and `post-change-sweep`; the framework-dev validators — `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator` — are dev-pack only and absent from consumer installs)
 - Framework scripts are executable
 - `config.sh` has non-placeholder values
 - `agy` and `codex` CLIs are available (warns if not — validation still works without them, but AI review is skipped)
@@ -140,16 +140,16 @@ If everything is green: `framework-setup-validator` prints "Framework is correct
 
 ## Step 5 — Customize agents for your project
 
-Before running the project start sequence, update these agents with project-specific content:
+Before running the project start sequence, customize these agents for your project. **Edit only PROJECT regions** — CORE and PACK regions are HOS-owned and overwritten on upgrade. For path-based settings (spec file, design pack), set the variable in `scripts/framework/config.sh`; agents resolve these at runtime.
 
-| Agent | What to update |
+| Agent | What to update (PROJECT region or `config.sh`) |
 |---|---|
 | `pm-agent` | Spec file paths (`Specs/SPEC-1-pilot.md` → your spec files); pilot scope description |
 | `architect` | Stack description; deployment host/URL; ADR output path |
 | `technical-design` | Stack-specific design items (replace Django/GiST/HTMX with your equivalents) |
 | `coder` | Build order (replace §12 of SPEC-1 reference); stack conventions (replace Django idioms) |
-| `ux-designer` | Design pack file paths |
-| `ui-reviewer` | Design pack file paths; project-specific component rules |
+| `ux-designer` | Design pack paths via `config.sh` (`DESIGN_PACK_PATH`, `SPEC_FILE`) |
+| `ui-reviewer` | Design pack paths via `config.sh`; project-specific component rules in PROJECT region |
 | `infra-reviewer` | Canonical URL; deployment host; infra stack (replace Compose/Caddy checks if needed) |
 | `deploy-verify` | Production URL; alias domains; backup paths |
 
