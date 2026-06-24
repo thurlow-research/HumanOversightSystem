@@ -71,6 +71,14 @@ bash scripts/oversight/run_validators.sh
 ```
 Tests MUST run against YOUR changes, after you make them. The cycle-start environment does not run tests — you must run them here. If tests fail: fix before opening a PR. Do NOT open a PR with failing tests.
 
+**Step 4b — Pre-PR stale-commit check (HARD GATE — no exceptions):**
+Before pushing, run the stale-commit guard:
+```bash
+cd "$REPO_ROOT"
+python3 -m scripts.automation.pre_pr_stale_check
+```
+If it exits 0: proceed. If it exits 1 with "commits overlap an open PR": STOP — do NOT push or open a PR. Cherry-pick your unique commits onto a fresh branch cut from current `main`, then restart from Step 4. If it exits 1 due to a rebase conflict: STOP — comment on the issue and escalate to a human.
+
 **Step 5:** Open PR (≤15 files, ≤10 commits), then STOP.
 
 **PR attribution (AGENTS.md §Pull Request Attribution — never omit):**
