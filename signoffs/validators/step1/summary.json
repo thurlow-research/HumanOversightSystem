@@ -1,10 +1,10 @@
 {
-  "head_sha": "aa9171a42ea165adc752e783d76cc55f494a3567",
+  "head_sha": "f68594f04b7b988d4f9930a713acba1806d5d153",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-24T01:08:42Z",
-  "composite_score": 0.3231,
+  "written_at": "2026-06-24T01:17:59Z",
+  "composite_score": 0.3507,
   "tier": "MEDIUM",
   "validator_count": 12,
   "successful_validators": 11,
@@ -26,8 +26,8 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 1143,
-        "changed_files": 6,
+        "changed_lines": 2631,
+        "changed_files": 7,
         "floor_rule_fired": "changed_lines",
         "domain_count": 4,
         "domains_detected": [
@@ -53,10 +53,10 @@
     },
     {
       "dimension": "function_metrics",
-      "score": 0.0132,
+      "score": 0.019,
       "raw_value": {
-        "total_functions": 76,
-        "long_functions": 1,
+        "total_functions": 79,
+        "long_functions": 2,
         "high_param_count": 1,
         "deeply_nested": 0,
         "many_return_paths": 0
@@ -65,19 +65,26 @@
       "evidence": [
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 121,
-          "message": "find_redundant_in_open_prs(): lines=61",
+          "line": 123,
+          "message": "find_redundant_in_open_prs(): lines=76",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 99,
+          "message": "run_check(): lines=63",
           "severity": "medium"
         },
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 188,
+          "line": 205,
           "message": "check_stale_commits(): params=7",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "find_redundant_in_open_prs() \u2014 61 lines: can this be decomposed into smaller units?",
+        "find_redundant_in_open_prs() \u2014 76 lines: can this be decomposed into smaller units?",
+        "run_check() \u2014 63 lines: can this be decomposed into smaller units?",
         "check_stale_commits() \u2014 7 params: is there a missing abstraction (e.g. a config object)?"
       ],
       "findings": [],
@@ -155,10 +162,10 @@
         ],
         "churn": {
           "bootstrap/worker-cron-prompt.md": 12,
-          "scripts/automation/lib/stale_commit_detector.py": 1,
-          "scripts/automation/pre_pr_stale_check.py": 1,
+          "scripts/automation/lib/stale_commit_detector.py": 2,
+          "scripts/automation/pre_pr_stale_check.py": 2,
           "tests/automation/test_pre_pr_stale_check.py": 1,
-          "tests/automation/test_stale_commit_detector.py": 1,
+          "tests/automation/test_stale_commit_detector.py": 2,
           "audit/oversight-log.jsonl": 18
         },
         "note": "empty on new projects \u2014 accumulates value over time"
@@ -282,31 +289,31 @@
         "locations": [
           {
             "file": "scripts/automation/lib/stale_commit_detector.py",
-            "line": 157,
+            "line": 166,
             "loop_depth": 1,
             "attr": "get"
           },
           {
             "file": "scripts/automation/lib/stale_commit_detector.py",
-            "line": 160,
+            "line": 169,
             "loop_depth": 1,
             "attr": "get"
           },
           {
             "file": "scripts/automation/lib/stale_commit_detector.py",
-            "line": 162,
+            "line": 171,
             "loop_depth": 1,
             "attr": "get"
           },
           {
             "file": "scripts/automation/lib/stale_commit_detector.py",
-            "line": 174,
+            "line": 191,
             "loop_depth": 1,
             "attr": "get"
           },
           {
             "file": "scripts/automation/lib/stale_commit_detector.py",
-            "line": 176,
+            "line": 193,
             "loop_depth": 1,
             "attr": "get"
           }
@@ -316,40 +323,40 @@
       "evidence": [
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 157,
+          "line": 166,
           "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         },
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 160,
+          "line": 169,
           "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         },
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 162,
+          "line": 171,
           "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         },
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 174,
+          "line": 191,
           "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         },
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 176,
+          "line": 193,
           "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         }
       ],
       "checklist_items": [
         "N+1 candidates found \u2014 verify each ORM call inside a loop uses select_related() or prefetch_related() on the queryset that feeds the loop.",
-        "  stale_commit_detector.py:157 \u2014 .get() inside loop: is this queryset prefetched upstream?",
-        "  stale_commit_detector.py:160 \u2014 .get() inside loop: is this queryset prefetched upstream?",
-        "  stale_commit_detector.py:162 \u2014 .get() inside loop: is this queryset prefetched upstream?"
+        "  stale_commit_detector.py:166 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  stale_commit_detector.py:169 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  stale_commit_detector.py:171 \u2014 .get() inside loop: is this queryset prefetched upstream?"
       ],
       "findings": [],
       "error": null,
@@ -407,35 +414,35 @@
     },
     {
       "dimension": "risk_number",
-      "score": 0.75,
+      "score": 0.9,
       "raw_value": {
-        "max_rn": 15.0,
-        "mean_rn": 1.41,
+        "max_rn": 18.0,
+        "mean_rn": 1.52,
         "high_risk_functions": [
           "all_redundant",
           "find_redundant_in_open_prs",
           "run_check"
         ],
-        "function_count": 76,
+        "function_count": 79,
         "parse_errors": [],
-        "task_class": "chore",
+        "task_class": "fix",
         "task_class_source": "commit_prefix",
         "floor_applied": false,
-        "pre_floor_tier": "HIGH",
-        "post_floor_tier": "HIGH"
+        "pre_floor_tier": "CRITICAL",
+        "post_floor_tier": "CRITICAL"
       },
       "weight": 0.18,
       "evidence": [
         {
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 121,
-          "message": "RN=15.0 \u2014 find_redundant_in_open_prs()",
+          "line": 123,
+          "message": "RN=18.0 \u2014 find_redundant_in_open_prs()",
           "severity": "high"
         },
         {
           "file": "scripts/automation/pre_pr_stale_check.py",
           "line": 99,
-          "message": "RN=13.0 \u2014 run_check()",
+          "message": "RN=17.0 \u2014 run_check()",
           "severity": "high"
         },
         {
@@ -458,12 +465,12 @@
         }
       ],
       "checklist_items": [
-        "find_redundant_in_open_prs:162 \u2014 can this condition be both true and false as expected?",
-        "find_redundant_in_open_prs:162 \u2014 are all branches (including implicit else) handled?",
-        "find_redundant_in_open_prs:158 \u2014 can this condition be both true and false as expected?",
-        "find_redundant_in_open_prs:158 \u2014 are all branches (including implicit else) handled?",
-        "find_redundant_in_open_prs:160 \u2014 can this condition be both true and false as expected?",
-        "find_redundant_in_open_prs:160 \u2014 are all branches (including implicit else) handled?",
+        "find_redundant_in_open_prs:171 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:171 \u2014 are all branches (including implicit else) handled?",
+        "find_redundant_in_open_prs:167 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:167 \u2014 are all branches (including implicit else) handled?",
+        "find_redundant_in_open_prs:169 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:169 \u2014 are all branches (including implicit else) handled?",
         "run_check:125 \u2014 is the loop bound correct and termination guaranteed?",
         "run_check:125 \u2014 is anything mutated inside the loop that affects the iterator?",
         "run_check:115 \u2014 is the loop bound correct and termination guaranteed?",
@@ -481,23 +488,23 @@
         {
           "function": "find_redundant_in_open_prs",
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 121,
-          "risk_number": 15.0,
+          "line": 123,
+          "risk_number": 18.0,
           "top_statements": [
             {
-              "line": 162,
+              "line": 171,
               "type": "If",
               "rn": 3.0,
               "nesting_depth": 1
             },
             {
-              "line": 158,
+              "line": 167,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 1
             },
             {
-              "line": 160,
+              "line": 169,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 1
@@ -508,7 +515,7 @@
           "function": "run_check",
           "file": "scripts/automation/pre_pr_stale_check.py",
           "line": 99,
-          "risk_number": 13.0,
+          "risk_number": 17.0,
           "top_statements": [
             {
               "line": 125,
@@ -563,7 +570,7 @@
           "risk_number": 4.0,
           "top_statements": [
             {
-              "line": 116,
+              "line": 118,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 1
@@ -575,7 +582,7 @@
               "nesting_depth": 0
             },
             {
-              "line": 114,
+              "line": 116,
               "type": "For",
               "rn": 1.0,
               "nesting_depth": 0
@@ -611,17 +618,17 @@
         {
           "function": "check_stale_commits",
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 188,
+          "line": 205,
           "risk_number": 3.0,
           "top_statements": [
             {
-              "line": 211,
+              "line": 228,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 0
             },
             {
-              "line": 226,
+              "line": 243,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -709,6 +716,26 @@
           ]
         },
         {
+          "function": "test_git_failure_raises_runtime_error",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 119,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 121,
+              "type": "With",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 120,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
           "function": "resolve_branch",
           "file": "scripts/automation/pre_pr_stale_check.py",
           "line": 86,
@@ -749,6 +776,26 @@
           ]
         },
         {
+          "function": "_side_effect",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 265,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 267,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 269,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
           "function": "_run_git",
           "file": "scripts/automation/lib/stale_commit_detector.py",
           "line": 69,
@@ -765,11 +812,11 @@
         {
           "function": "strip_redundant_commits",
           "file": "scripts/automation/lib/stale_commit_detector.py",
-          "line": 245,
+          "line": 262,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 261,
+              "line": 278,
               "type": "ExceptHandler",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1071,20 +1118,6 @@
           ]
         },
         {
-          "function": "test_git_failure_returns_empty_not_raises",
-          "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 119,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 120,
-              "type": "With",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
           "function": "test_passes_base_and_head_to_git_cherry",
           "file": "tests/automation/test_stale_commit_detector.py",
           "line": 124,
@@ -1197,13 +1230,41 @@
           ]
         },
         {
-          "function": "test_multiple_overlapping_shas_in_one_pr",
+          "function": "test_non_list_pr_listing_returns_empty",
           "file": "tests/automation/test_stale_commit_detector.py",
           "line": 252,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 256,
+              "line": 253,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_non_list_pr_commits_response_skips_that_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 261,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 273,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_multiple_overlapping_shas_in_one_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 282,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 286,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1213,11 +1274,11 @@
         {
           "function": "test_clean_result_when_no_redundancies",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 292,
+          "line": 322,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 294,
+              "line": 324,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1227,11 +1288,11 @@
         {
           "function": "test_emits_audit_event_when_redundant_in_main",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 301,
+          "line": 331,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 306,
+              "line": 336,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1241,11 +1302,11 @@
         {
           "function": "test_emits_audit_event_when_redundant_in_pr",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 315,
+          "line": 345,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 320,
+              "line": 350,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1255,11 +1316,11 @@
         {
           "function": "test_skips_open_pr_check_when_disabled",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 327,
+          "line": 357,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 329,
+              "line": 359,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1269,11 +1330,11 @@
         {
           "function": "test_skips_open_pr_check_when_no_commits",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 335,
+          "line": 365,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 337,
+              "line": 367,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1283,11 +1344,11 @@
         {
           "function": "test_result_carries_correct_branch_and_base",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 341,
+          "line": 371,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 343,
+              "line": 373,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1297,11 +1358,11 @@
         {
           "function": "test_returns_true_on_success",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 356,
+          "line": 386,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 357,
+              "line": 387,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1311,11 +1372,11 @@
         {
           "function": "test_returns_false_on_conflict",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 363,
+          "line": 393,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 364,
+              "line": 394,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1325,11 +1386,11 @@
         {
           "function": "test_uses_supplied_base",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 367,
+          "line": 397,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 368,
+              "line": 398,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -1353,7 +1414,7 @@
         {
           "function": "main",
           "file": "scripts/automation/pre_pr_stale_check.py",
-          "line": 159,
+          "line": 164,
           "risk_number": 0.0,
           "top_statements": []
         },
@@ -1451,42 +1512,42 @@
         {
           "function": "_patch_sub_fns",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 272,
+          "line": 302,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_is_clean_when_no_redundancies",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 379,
+          "line": 409,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_not_clean_when_redundant_in_main",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 388,
+          "line": 418,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_not_clean_when_redundant_in_pr",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 397,
+          "line": 427,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_all_redundant_deduplicates_across_sources",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 406,
+          "line": 436,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_all_redundant_empty_when_clean",
           "file": "tests/automation/test_stale_commit_detector.py",
-          "line": 418,
+          "line": 448,
           "risk_number": 0.0,
           "top_statements": []
         }
