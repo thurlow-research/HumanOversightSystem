@@ -1,11 +1,11 @@
 {
-  "head_sha": "f68594f04b7b988d4f9930a713acba1806d5d153",
+  "head_sha": "d4da3d348ab04d7a17e66e787bb8948d67785beb",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-24T01:17:59Z",
-  "composite_score": 0.3507,
-  "tier": "MEDIUM",
+  "written_at": "2026-06-24T01:45:26Z",
+  "composite_score": 0.2868,
+  "tier": "LOW",
   "validator_count": 12,
   "successful_validators": 11,
   "results": [
@@ -26,7 +26,7 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 2631,
+        "changed_lines": 2699,
         "changed_files": 7,
         "floor_rule_fired": "changed_lines",
         "domain_count": 4,
@@ -107,28 +107,10 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.97,
+      "score": 0.4425,
       "raw_value": {
-        "issue_count": 8,
+        "issue_count": 3,
         "issues": [
-          {
-            "number": 873,
-            "title": "process-gap: branch protection ruleset blocks overseer direct-to-main audit commits",
-            "label": "bug",
-            "file": "audit/oversight-log.jsonl"
-          },
-          {
-            "number": 849,
-            "title": "bug: overseer creates duplicate audit PRs each cycle for the same blocked PR",
-            "label": "bug",
-            "file": "audit/oversight-log.jsonl"
-          },
-          {
-            "number": 842,
-            "title": "process-gap: 14 overseer audit PRs stuck \u2014 GitHub self-approval restriction blocks require-overseer-approval gate",
-            "label": "bug",
-            "file": "audit/oversight-log.jsonl"
-          },
           {
             "number": 805,
             "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
@@ -146,50 +128,19 @@
             "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
             "label": "bug",
             "file": "bootstrap/worker-cron-prompt.md"
-          },
-          {
-            "number": 218,
-            "title": "Runbook advertises audit queries no code emits (panel-run, risk-assessment events)",
-            "label": "bug",
-            "file": "audit/oversight-log.jsonl"
-          },
-          {
-            "number": 6,
-            "title": "Escaped defects from CondoParkShare Step 10: stdlib-shadowing app name (unbootable) + hardcoded macOS path in test",
-            "label": "escaped-defect",
-            "file": "audit/oversight-log.jsonl"
           }
         ],
         "churn": {
-          "bootstrap/worker-cron-prompt.md": 12,
           "scripts/automation/lib/stale_commit_detector.py": 2,
           "scripts/automation/pre_pr_stale_check.py": 2,
           "tests/automation/test_pre_pr_stale_check.py": 1,
           "tests/automation/test_stale_commit_detector.py": 2,
-          "audit/oversight-log.jsonl": 18
+          "bootstrap/worker-cron-prompt.md": 12
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
       "evidence": [
-        {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "[bug] #873: process-gap: branch protection ruleset blocks overseer direct-to-main audit commits",
-          "severity": "medium"
-        },
-        {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "[bug] #849: bug: overseer creates duplicate audit PRs each cycle for the same blocked PR",
-          "severity": "medium"
-        },
-        {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "[bug] #842: process-gap: 14 overseer audit PRs stuck \u2014 GitHub self-approval restriction blocks require-overseer-approval gate",
-          "severity": "medium"
-        },
         {
           "file": "bootstrap/worker-cron-prompt.md",
           "line": 0,
@@ -209,24 +160,6 @@
           "severity": "medium"
         },
         {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "[bug] #218: Runbook advertises audit queries no code emits (panel-run, risk-assessment events)",
-          "severity": "medium"
-        },
-        {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "[escaped-defect] #6: Escaped defects from CondoParkShare Step 10: stdlib-shadowing app name (unbootable) + hardcoded macOS path in test",
-          "severity": "high"
-        },
-        {
-          "file": "audit/oversight-log.jsonl",
-          "line": 0,
-          "message": "high churn: 18 commits in 90 days",
-          "severity": "medium"
-        },
-        {
           "file": "bootstrap/worker-cron-prompt.md",
           "line": 0,
           "message": "high churn: 12 commits in 90 days",
@@ -234,8 +167,8 @@
         }
       ],
       "checklist_items": [
-        "8 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "oversight-log.jsonl: 18 commits in 90 days \u2014 high churn may indicate persistent complexity."
+        "3 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "worker-cron-prompt.md: 12 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
       "error": null,
@@ -252,7 +185,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 6,
+          "files_checked": 5,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -425,7 +358,7 @@
         ],
         "function_count": 79,
         "parse_errors": [],
-        "task_class": "fix",
+        "task_class": "chore",
         "task_class_source": "commit_prefix",
         "floor_applied": false,
         "pre_floor_tier": "CRITICAL",
