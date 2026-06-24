@@ -1,25 +1,39 @@
 {
-  "head_sha": "99c7d0992dde71eff7837accc14b561fd3997804",
+  "head_sha": "aa7e4167e65dd4861ef8430ce0ea538b922c6ce4",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-24T17:13:21Z",
-  "composite_score": 0.0,
+  "written_at": "2026-06-24T19:53:49Z",
+  "composite_score": 0.2534,
   "tier": "LOW",
-  "validator_count": 4,
-  "successful_validators": 4,
+  "validator_count": 12,
+  "successful_validators": 11,
   "results": [
+    {
+      "dimension": "complexity",
+      "score": 0.0,
+      "raw_value": {
+        "error": "radon not installed"
+      },
+      "weight": 0.08,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": "radon not installed \u2014 run: pip install radon",
+      "tier_floor": null
+    },
     {
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 86,
-        "changed_files": 2,
+        "changed_lines": 41,
+        "changed_files": 6,
         "floor_rule_fired": null,
-        "domain_count": 2,
+        "domain_count": 3,
         "domains_detected": [
           "audit",
-          "docs"
+          "scripts",
+          "other"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -29,6 +43,48 @@
       },
       "weight": 0.0,
       "evidence": [],
+      "checklist_items": [
+        "Consider splitting into focused PRs: changes span 3 domains (threshold 3); domains: audit, scripts, other"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "function_metrics",
+      "score": 0.02,
+      "raw_value": {
+        "total_functions": 50,
+        "long_functions": 1,
+        "high_param_count": 0,
+        "deeply_nested": 1,
+        "many_return_paths": 0
+      },
+      "weight": 0.07,
+      "evidence": [
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 76,
+          "message": "analyse_files(): lines=79, nesting=4",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "analyse_files() \u2014 79 lines: can this be decomposed into smaller units?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "hallucination_surface",
+      "score": 0.0,
+      "raw_value": {
+        "version_sensitive_count": 0,
+        "findings": []
+      },
+      "weight": 0.06,
+      "evidence": [],
       "checklist_items": [],
       "findings": [],
       "error": null,
@@ -36,18 +92,37 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.0,
+      "score": 0.075,
       "raw_value": {
         "issue_count": 0,
         "issues": [],
         "churn": {
-          "docs/releases/v0.4.2.md": 0
+          "scripts/framework/validate_docs.sh": 5,
+          "scripts/framework/validate_spec_compliance.sh": 4,
+          "scripts/oversight/gates/bash_check.sh": 2,
+          "scripts/oversight/validators/migration_scorer.py": 5,
+          "tests/oversight/test_function_metrics.py": 2
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
-      "evidence": [],
-      "checklist_items": [],
+      "evidence": [
+        {
+          "file": "scripts/framework/validate_docs.sh",
+          "line": 0,
+          "message": "high churn: 5 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 0,
+          "message": "high churn: 5 commits in 90 days",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "validate_docs.sh: 5 commits in 90 days \u2014 high churn may indicate persistent complexity."
+      ],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -63,7 +138,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 1,
+          "files_checked": 5,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -83,9 +158,657 @@
       "dimension": "migration_risk",
       "score": 0.0,
       "raw_value": {
-        "note": "no migration files in changeset"
+        "files": [
+          "scripts/oversight/validators/migration_scorer.py"
+        ]
       },
       "weight": 0.12,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "n1_queries",
+      "score": 0.125,
+      "raw_value": {
+        "candidate_count": 1,
+        "locations": [
+          {
+            "file": "scripts/oversight/validators/migration_scorer.py",
+            "line": 100,
+            "loop_depth": 2,
+            "attr": "get"
+          }
+        ]
+      },
+      "weight": 0.08,
+      "evidence": [
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 100,
+          "message": "potential N+1: .get() inside loop (depth=2)",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "N+1 candidates found \u2014 verify each ORM call inside a loop uses select_related() or prefetch_related() on the queryset that feeds the loop.",
+        "  migration_scorer.py:100 \u2014 .get() inside loop: is this queryset prefetched upstream?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "portability",
+      "score": 1.0,
+      "raw_value": {
+        "finding_count": 7
+      },
+      "weight": 0.06,
+      "evidence": [
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 233,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): path = self._write('CONFIG = \"/Users/alice/config.json\"\\n')",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 242,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): path = self._write('LOG = \"/home/bob/app.log\"\\n')",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 258,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): path = self._write('CONFIG = \"/Users/alice/settings.py\"\\n')",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 267,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): 'A = \"/Users/alice/a.py\"\\n'",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 268,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): 'B = \"/Users/alice/b.py\"\\n'",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 269,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): 'C = \"/home/bob/c.py\"\\n'",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 279,
+          "message": "hardcoded user-home path (/Users/<name>/ or /home/<name>/): lines = \"\\n\".join(f'P{i} = \"/Users/alice/p{i}.py\"' for i in range(10))",
+          "severity": "high"
+        }
+      ],
+      "checklist_items": [
+        "Is every hardcoded absolute path replaceable with a relative path or importlib.resources?",
+        "If spec_from_file_location is used to dodge a naming collision, fix the root name conflict instead.",
+        "Will these tests pass on CI, Linux, and a fresh checkout?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "prompt_ambiguity",
+      "score": 0.25,
+      "raw_value": {
+        "ambiguity_score": 0.25,
+        "fidelity_surface_score": 0.0,
+        "ambiguity_signals": [
+          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+        ],
+        "fidelity_signals": [],
+        "process_signals": [
+          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+        ],
+        "missing_artifacts": [
+          "scripts/oversight/validators/migration_scorer.py",
+          "tests/oversight/test_function_metrics.py"
+        ],
+        "files_with_artifacts": 0
+      },
+      "weight": 0.07,
+      "evidence": [
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 0,
+          "message": "2 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "2 file(s) missing prompt artifacts: migration_scorer.py, test_function_metrics.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "risk_number",
+      "score": 0.85,
+      "raw_value": {
+        "max_rn": 17.0,
+        "mean_rn": 0.56,
+        "high_risk_functions": [
+          "analyse_files"
+        ],
+        "function_count": 50,
+        "parse_errors": [],
+        "task_class": "fix",
+        "task_class_source": "commit_prefix",
+        "floor_applied": false,
+        "pre_floor_tier": "CRITICAL",
+        "post_floor_tier": "CRITICAL"
+      },
+      "weight": 0.18,
+      "evidence": [
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 76,
+          "message": "RN=17.0 \u2014 analyse_files()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 58,
+          "message": "RN=2.0 \u2014 visit_Attribute()",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 157,
+          "message": "RN=1.0 \u2014 main()",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 152,
+          "message": "RN=1.0 \u2014 test_analyse_empty_file()",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 163,
+          "message": "RN=1.0 \u2014 test_analyse_simple_function()",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "analyse_files:102 \u2014 can this condition be both true and false as expected?",
+        "analyse_files:102 \u2014 are all branches (including implicit else) handled?",
+        "analyse_files:118 \u2014 can this condition be both true and false as expected?",
+        "analyse_files:118 \u2014 are all branches (including implicit else) handled?",
+        "analyse_files:99 \u2014 is the loop bound correct and termination guaranteed?",
+        "analyse_files:99 \u2014 is anything mutated inside the loop that affects the iterator?",
+        "visit_Attribute:60 \u2014 can this condition be both true and false as expected?",
+        "visit_Attribute:60 \u2014 are all branches (including implicit else) handled?",
+        "main:159 \u2014 can this condition be both true and false as expected?",
+        "main:159 \u2014 are all branches (including implicit else) handled?"
+      ],
+      "findings": [
+        {
+          "function": "analyse_files",
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 76,
+          "risk_number": 17.0,
+          "top_statements": [
+            {
+              "line": 102,
+              "type": "If",
+              "rn": 5.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 118,
+              "type": "If",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 99,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "visit_Attribute",
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 58,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 60,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "main",
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 157,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 159,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_analyse_empty_file",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 152,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 153,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_analyse_simple_function",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 163,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 170,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_long_function_raises_score",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 184,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 189,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_too_many_params_flagged",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 200,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 203,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_non_migration_files_zero_score",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 349,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 350,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_migration_file_with_remove_field_is_risky",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 363,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 371,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_migration_file_with_add_field_no_default_is_high_risk",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 382,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 394,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_multiple_critical_ops_trigger_checklist",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 407,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 416,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "__init__",
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 55,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_check_add_field_nullable",
+          "file": "scripts/oversight/validators/migration_scorer.py",
+          "line": 65,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_visit_src",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 21,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_empty_module",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 29,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_simple_function_detected",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 32,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_param_count",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 40,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_self_excluded_from_param_count",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 47,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_cls_excluded_from_param_count",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 56,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_vararg_and_kwarg_count",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 66,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_return_paths_counted",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 73,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_raise_counts_as_return_path",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 82,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_line_count_approximate",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 91,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_multiple_functions",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 100,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_stmts",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 112,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_flat_code_depth_zero",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 115,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_single_if_depth_one",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 119,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_nested_if_depth_two",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 123,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_for_loop_depth",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 127,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_try_except_depth",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 131,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_if_else_depth",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 135,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_while_loop_depth",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 146,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_analyse_no_files",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 180,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_write",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 219,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_clean_file_no_findings",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 225,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_hardcoded_home_path_flagged",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 232,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_linux_home_path_flagged",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 241,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_score_zero_for_clean",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 249,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_score_elevated_for_finding",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 257,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_multiple_findings_increase_score",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 265,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_score_capped_at_one",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 278,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_empty_file_list",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 287,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_empty_file_no_ops",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 302,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_add_field_detected",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 308,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_remove_field_detected",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 319,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_run_python_detected",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 326,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_with_null_true_not_risky",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 335,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_with_default_not_risky",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 339,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_without_null_or_default_risky",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 343,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_empty_file_list",
+          "file": "tests/oversight/test_function_metrics.py",
+          "line": 359,
+          "risk_number": 0.0,
+          "top_statements": []
+        }
+      ],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "static_analysis",
+      "score": 0.0,
+      "raw_value": {
+        "bandit_medium_count": 0,
+        "semgrep_count": 0
+      },
+      "weight": 0.15,
       "evidence": [],
       "checklist_items": [],
       "findings": [],
