@@ -15,3 +15,6 @@
 {"event": "human-authorized-merge", "pr": 869, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 870, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
 {"event": "human-authorized-merge", "pr": 867, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-23T21:30:28Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-23T23:20:42Z", "reason": "overseer-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T23:23:07Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-24T00:03:07Z", "bot": "hos-worker-hos[bot] project=hos"}
