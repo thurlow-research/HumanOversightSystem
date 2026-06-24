@@ -53,12 +53,12 @@ class _MigrationVisitor(ast.NodeVisitor):
     """Extract migration operation class names from a Django migrations file."""
 
     def __init__(self):
-        self.operations: list[str] = []
+        self.operations: list[tuple[str, int]] = []  # (op_name, lineno)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # migrations.AddField(...)  or  migrations.RunPython(...)
         if isinstance(node.value, ast.Name) and node.value.id == "migrations":
-            self.operations.append(node.attr)
+            self.operations.append((node.attr, node.lineno))
         self.generic_visit(node)
 
 
@@ -96,10 +96,10 @@ def analyse_files(file_paths: list[str]) -> dict:
             v = _MigrationVisitor()
             v.visit(tree)
 
-            for op in v.operations:
+            for op, lineno in v.operations:
                 risk, reason = _OP_RISK.get(op, ("MEDIUM", "unknown operation"))
                 # Upgrade AddField to HIGH if non-nullable without default
-                if op == "AddField" and _check_add_field_nullable(source, 0):
+                if op == "AddField" and _check_add_field_nullable(source, lineno):
                     risk = "HIGH"
                     reason = (
                         "AddField without null=True or default — "

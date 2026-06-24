@@ -146,13 +146,21 @@ try:
         # unescaped '"' chars, we are toggling in/out of a string context.
         # Skip bash-4 checks when we are inside an open multi-line string.
         # (Simple heuristic; handles the common LENS="...\n...\n..." pattern.)
-        dquote_count = line.count('"') - line.count('\\"')
-        if in_dquote:
+        #
+        # Comments are excluded from dquote tracking: a comment like
+        # '# 5" diameter pipe' must not toggle in_dquote and cause the
+        # very next real code line to be silently skipped.
+        stripped = line.lstrip()
+        if not stripped.startswith('#'):
+            dquote_count = line.count('"') - line.count('\\"')
+            if in_dquote:
+                if dquote_count % 2 == 1:
+                    in_dquote = False  # closing quote on this line
+                continue  # inside multi-line string — skip check
             if dquote_count % 2 == 1:
-                in_dquote = False  # closing quote on this line
-            continue  # inside multi-line string — skip check
-        if dquote_count % 2 == 1:
-            in_dquote = True   # opening of multi-line string; still check THIS line
+                in_dquote = True   # opening of multi-line string; still check THIS line
+        elif in_dquote:
+            continue  # comment inside an open multi-line string — still skip
         # After toggling, detect heredoc opens on this same line.
         if not in_dquote:
             m = HEREDOC_START.search(line)

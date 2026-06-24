@@ -356,6 +356,8 @@ for block in blocks:
         if sev in ("critical", "high", "blocking"):
             blocking_count += 1
 
+if blocking_count > 0:
+    non_compliant = True
 verdict = "non_compliant" if non_compliant else "compliant"
 if not blocks:
     verdict = "error"
