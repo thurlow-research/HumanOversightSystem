@@ -150,9 +150,14 @@ def run_check(owner: str, repo: str, branch: str, base: str) -> int:
         return 0
 
     print(
-        f"\n✘ pre-pr-stale-check: stale commits remain after rebase on {branch!r}.",
+        f"\n✘ pre-pr-stale-check: stale commits remain after rebase on {branch!r}:",
         file=sys.stderr,
     )
+    for sha in result2.redundant_in_main:
+        print(f"    still-in-{base}: {sha[:12]}", file=sys.stderr)
+    for pr_num, shas in result2.redundant_in_prs.items():
+        for sha in shas:
+            print(f"    still-in-PR #{pr_num}: {sha[:12]}", file=sys.stderr)
     return 1
 
 

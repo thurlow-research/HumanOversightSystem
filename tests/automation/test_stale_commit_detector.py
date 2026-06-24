@@ -116,10 +116,10 @@ class TestFindRedundantInMain:
             result = find_redundant_in_main()
         assert result == [SHA_A, SHA_B]
 
-    def test_git_failure_returns_empty_not_raises(self):
+    def test_git_failure_raises_runtime_error(self):
         with patch("subprocess.run", return_value=_git_fail("bad ref")):
-            result = find_redundant_in_main()
-        assert result == []
+            with pytest.raises(RuntimeError, match="git cherry"):
+                find_redundant_in_main()
 
     def test_passes_base_and_head_to_git_cherry(self):
         with patch("subprocess.run", return_value=_git_ok("")) as mock_run:
@@ -246,6 +246,36 @@ class TestFindRedundantInOpenPrs:
             result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
 
         # PR #42 errored out (skipped), PR #99's commits overlap → detected
+        assert "42" not in result
+        assert result.get("99") == [SHA_A]
+
+    def test_non_list_pr_listing_returns_empty(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value={"message": "API error"},
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+        assert result == {}
+
+    def test_non_list_pr_commits_response_skips_that_pr(self):
+        prs = [_pr(42), _pr(99)]
+        pr_99_commits = _make_commits([SHA_A])
+
+        def _side_effect(args):
+            url = args[0]
+            if "pulls/42/commits" in url:
+                return {"message": "unexpected dict"}
+            if "pulls/99/commits" in url:
+                return pr_99_commits
+            return prs
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
         assert "42" not in result
         assert result.get("99") == [SHA_A]
 

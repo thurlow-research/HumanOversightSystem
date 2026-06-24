@@ -1,11 +1,11 @@
 {
-  "head_sha": "6f0ad40872e1c0b549fb8a0c83abdf9b9f3ac829",
+  "head_sha": "aa9171a42ea165adc752e783d76cc55f494a3567",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-23T10:37:12Z",
-  "composite_score": 0.0515,
-  "tier": "LOW",
+  "written_at": "2026-06-24T01:08:42Z",
+  "composite_score": 0.3231,
+  "tier": "MEDIUM",
   "validator_count": 12,
   "successful_validators": 11,
   "results": [
@@ -26,15 +26,15 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 1634,
-        "changed_files": 10,
+        "changed_lines": 1143,
+        "changed_files": 6,
         "floor_rule_fired": "changed_lines",
         "domain_count": 4,
         "domains_detected": [
-          "other",
+          "audit",
           "bootstrap",
-          "docs",
-          "scripts"
+          "scripts",
+          "other"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -45,7 +45,7 @@
       "weight": 0.0,
       "evidence": [],
       "checklist_items": [
-        "Consider splitting into focused PRs: changes span 4 domains (threshold 3); domains: other, bootstrap, docs, scripts"
+        "Consider splitting into focused PRs: changes span 4 domains (threshold 3); domains: audit, bootstrap, scripts, other"
       ],
       "findings": [],
       "error": null,
@@ -53,32 +53,32 @@
     },
     {
       "dimension": "function_metrics",
-      "score": 0.0161,
+      "score": 0.0132,
       "raw_value": {
-        "total_functions": 62,
-        "long_functions": 2,
-        "high_param_count": 0,
+        "total_functions": 76,
+        "long_functions": 1,
+        "high_param_count": 1,
         "deeply_nested": 0,
         "many_return_paths": 0
       },
       "weight": 0.07,
       "evidence": [
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 54,
-          "message": "__init__(): lines=74",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 121,
+          "message": "find_redundant_in_open_prs(): lines=61",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 53,
-          "message": "__init__(): lines=61",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 188,
+          "message": "check_stale_commits(): params=7",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "__init__() \u2014 61 lines: can this be decomposed into smaller units?",
-        "__init__() \u2014 74 lines: can this be decomposed into smaller units?"
+        "find_redundant_in_open_prs() \u2014 61 lines: can this be decomposed into smaller units?",
+        "check_stale_commits() \u2014 7 params: is there a missing abstraction (e.g. a config object)?"
       ],
       "findings": [],
       "error": null,
@@ -100,20 +100,136 @@
     },
     {
       "dimension": "historical_density",
-      "score": 0.045,
+      "score": 0.97,
       "raw_value": {
-        "issue_count": 0,
-        "issues": [],
+        "issue_count": 8,
+        "issues": [
+          {
+            "number": 873,
+            "title": "process-gap: branch protection ruleset blocks overseer direct-to-main audit commits",
+            "label": "bug",
+            "file": "audit/oversight-log.jsonl"
+          },
+          {
+            "number": 849,
+            "title": "bug: overseer creates duplicate audit PRs each cycle for the same blocked PR",
+            "label": "bug",
+            "file": "audit/oversight-log.jsonl"
+          },
+          {
+            "number": 842,
+            "title": "process-gap: 14 overseer audit PRs stuck \u2014 GitHub self-approval restriction blocks require-overseer-approval gate",
+            "label": "bug",
+            "file": "audit/oversight-log.jsonl"
+          },
+          {
+            "number": 805,
+            "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+            "label": "bug",
+            "file": "bootstrap/worker-cron-prompt.md"
+          },
+          {
+            "number": 731,
+            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
+            "label": "bug",
+            "file": "bootstrap/worker-cron-prompt.md"
+          },
+          {
+            "number": 717,
+            "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
+            "label": "bug",
+            "file": "bootstrap/worker-cron-prompt.md"
+          },
+          {
+            "number": 218,
+            "title": "Runbook advertises audit queries no code emits (panel-run, risk-assessment events)",
+            "label": "bug",
+            "file": "audit/oversight-log.jsonl"
+          },
+          {
+            "number": 6,
+            "title": "Escaped defects from CondoParkShare Step 10: stdlib-shadowing app name (unbootable) + hardcoded macOS path in test",
+            "label": "escaped-defect",
+            "file": "audit/oversight-log.jsonl"
+          }
+        ],
         "churn": {
-          "tests/automation/test_bootstrap_markers.py": 1,
-          "tests/automation/test_ensure_venv.py": 1,
-          "tests/automation/test_hos_cron.py": 3
+          "bootstrap/worker-cron-prompt.md": 12,
+          "scripts/automation/lib/stale_commit_detector.py": 1,
+          "scripts/automation/pre_pr_stale_check.py": 1,
+          "tests/automation/test_pre_pr_stale_check.py": 1,
+          "tests/automation/test_stale_commit_detector.py": 1,
+          "audit/oversight-log.jsonl": 18
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
-      "evidence": [],
-      "checklist_items": [],
+      "evidence": [
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "[bug] #873: process-gap: branch protection ruleset blocks overseer direct-to-main audit commits",
+          "severity": "medium"
+        },
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "[bug] #849: bug: overseer creates duplicate audit PRs each cycle for the same blocked PR",
+          "severity": "medium"
+        },
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "[bug] #842: process-gap: 14 overseer audit PRs stuck \u2014 GitHub self-approval restriction blocks require-overseer-approval gate",
+          "severity": "medium"
+        },
+        {
+          "file": "bootstrap/worker-cron-prompt.md",
+          "line": 0,
+          "message": "[bug] #805: bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+          "severity": "medium"
+        },
+        {
+          "file": "bootstrap/worker-cron-prompt.md",
+          "line": 0,
+          "message": "[bug] #731: bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
+          "severity": "medium"
+        },
+        {
+          "file": "bootstrap/worker-cron-prompt.md",
+          "line": 0,
+          "message": "[bug] #717: fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
+          "severity": "medium"
+        },
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "[bug] #218: Runbook advertises audit queries no code emits (panel-run, risk-assessment events)",
+          "severity": "medium"
+        },
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "[escaped-defect] #6: Escaped defects from CondoParkShare Step 10: stdlib-shadowing app name (unbootable) + hardcoded macOS path in test",
+          "severity": "high"
+        },
+        {
+          "file": "audit/oversight-log.jsonl",
+          "line": 0,
+          "message": "high churn: 18 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "bootstrap/worker-cron-prompt.md",
+          "line": 0,
+          "message": "high churn: 12 commits in 90 days",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "8 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "oversight-log.jsonl: 18 commits in 90 days \u2014 high churn may indicate persistent complexity."
+      ],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -129,7 +245,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 3,
+          "files_checked": 6,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -160,14 +276,81 @@
     },
     {
       "dimension": "n1_queries",
-      "score": 0.0,
+      "score": 0.625,
       "raw_value": {
-        "candidate_count": 0,
-        "locations": []
+        "candidate_count": 5,
+        "locations": [
+          {
+            "file": "scripts/automation/lib/stale_commit_detector.py",
+            "line": 157,
+            "loop_depth": 1,
+            "attr": "get"
+          },
+          {
+            "file": "scripts/automation/lib/stale_commit_detector.py",
+            "line": 160,
+            "loop_depth": 1,
+            "attr": "get"
+          },
+          {
+            "file": "scripts/automation/lib/stale_commit_detector.py",
+            "line": 162,
+            "loop_depth": 1,
+            "attr": "get"
+          },
+          {
+            "file": "scripts/automation/lib/stale_commit_detector.py",
+            "line": 174,
+            "loop_depth": 1,
+            "attr": "get"
+          },
+          {
+            "file": "scripts/automation/lib/stale_commit_detector.py",
+            "line": 176,
+            "loop_depth": 1,
+            "attr": "get"
+          }
+        ]
       },
       "weight": 0.08,
-      "evidence": [],
-      "checklist_items": [],
+      "evidence": [
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 157,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 160,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 162,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 174,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 176,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "N+1 candidates found \u2014 verify each ORM call inside a loop uses select_related() or prefetch_related() on the queryset that feeds the loop.",
+        "  stale_commit_detector.py:157 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  stale_commit_detector.py:160 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  stale_commit_detector.py:162 \u2014 .get() inside loop: is this queryset prefetched upstream?"
+      ],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -199,23 +382,24 @@
           "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
         ],
         "missing_artifacts": [
-          "tests/automation/test_bootstrap_markers.py",
-          "tests/automation/test_ensure_venv.py",
-          "tests/automation/test_hos_cron.py"
+          "scripts/automation/lib/stale_commit_detector.py",
+          "scripts/automation/pre_pr_stale_check.py",
+          "tests/automation/test_pre_pr_stale_check.py",
+          "tests/automation/test_stale_commit_detector.py"
         ],
         "files_with_artifacts": 0
       },
       "weight": 0.07,
       "evidence": [
         {
-          "file": "tests/automation/test_bootstrap_markers.py",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
           "line": 0,
-          "message": "3 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
+          "message": "4 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "3 file(s) missing prompt artifacts: test_bootstrap_markers.py, test_ensure_venv.py, test_hos_cron.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
+        "4 file(s) missing prompt artifacts: stale_commit_detector.py, pre_pr_stale_check.py, test_pre_pr_stale_check.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
       ],
       "findings": [],
       "error": null,
@@ -223,129 +407,221 @@
     },
     {
       "dimension": "risk_number",
-      "score": 0.15,
+      "score": 0.75,
       "raw_value": {
-        "max_rn": 3.0,
-        "mean_rn": 0.15,
-        "high_risk_functions": [],
-        "function_count": 62,
+        "max_rn": 15.0,
+        "mean_rn": 1.41,
+        "high_risk_functions": [
+          "all_redundant",
+          "find_redundant_in_open_prs",
+          "run_check"
+        ],
+        "function_count": 76,
         "parse_errors": [],
         "task_class": "chore",
         "task_class_source": "commit_prefix",
-        "floor_applied": true,
-        "pre_floor_tier": "LOW",
-        "post_floor_tier": "MEDIUM"
+        "floor_applied": false,
+        "pre_floor_tier": "HIGH",
+        "post_floor_tier": "HIGH"
       },
       "weight": 0.18,
       "evidence": [
         {
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 105,
-          "message": "RN=3.0 \u2014 run()",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 121,
+          "message": "RN=15.0 \u2014 find_redundant_in_open_prs()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 99,
+          "message": "RN=13.0 \u2014 run_check()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 50,
+          "message": "RN=10.0 \u2014 all_redundant()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 94,
+          "message": "RN=4.0 \u2014 find_redundant_in_main()",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 145,
-          "message": "RN=3.0 \u2014 run()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 134,
-          "message": "RN=2.0 \u2014 run()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 128,
-          "message": "RN=1.0 \u2014 marker_exists()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 34,
-          "message": "RN=0.0 \u2014 _write_exec()",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 68,
+          "message": "RN=4.0 \u2014 resolve_owner_repo()",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "run:112 \u2014 can this condition be both true and false as expected?",
-        "run:112 \u2014 are all branches (including implicit else) handled?",
-        "run:122 \u2014 can this condition be both true and false as expected?",
-        "run:122 \u2014 are all branches (including implicit else) handled?",
-        "run:126 \u2014 can this condition be both true and false as expected?",
-        "run:126 \u2014 are all branches (including implicit else) handled?",
-        "run:159 \u2014 can this condition be both true and false as expected?",
-        "run:159 \u2014 are all branches (including implicit else) handled?",
-        "run:162 \u2014 can this condition be both true and false as expected?",
-        "run:162 \u2014 are all branches (including implicit else) handled?",
-        "run:140 \u2014 can this condition be both true and false as expected?",
-        "run:140 \u2014 are all branches (including implicit else) handled?",
-        "run:143 \u2014 can this condition be both true and false as expected?",
-        "run:143 \u2014 are all branches (including implicit else) handled?"
+        "find_redundant_in_open_prs:162 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:162 \u2014 are all branches (including implicit else) handled?",
+        "find_redundant_in_open_prs:158 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:158 \u2014 are all branches (including implicit else) handled?",
+        "find_redundant_in_open_prs:160 \u2014 can this condition be both true and false as expected?",
+        "find_redundant_in_open_prs:160 \u2014 are all branches (including implicit else) handled?",
+        "run_check:125 \u2014 is the loop bound correct and termination guaranteed?",
+        "run_check:125 \u2014 is anything mutated inside the loop that affects the iterator?",
+        "run_check:115 \u2014 is the loop bound correct and termination guaranteed?",
+        "run_check:115 \u2014 is anything mutated inside the loop that affects the iterator?",
+        "run_check:119 \u2014 is the loop bound correct and termination guaranteed?",
+        "run_check:119 \u2014 is anything mutated inside the loop that affects the iterator?",
+        "all_redundant:59 \u2014 can this condition be both true and false as expected?",
+        "all_redundant:59 \u2014 are all branches (including implicit else) handled?",
+        "all_redundant:54 \u2014 can this condition be both true and false as expected?",
+        "all_redundant:54 \u2014 are all branches (including implicit else) handled?",
+        "all_redundant:58 \u2014 is the loop bound correct and termination guaranteed?",
+        "all_redundant:58 \u2014 is anything mutated inside the loop that affects the iterator?"
       ],
       "findings": [
         {
-          "function": "run",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 105,
-          "risk_number": 3.0,
+          "function": "find_redundant_in_open_prs",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 121,
+          "risk_number": 15.0,
           "top_statements": [
-            {
-              "line": 112,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 122,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 126,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 145,
-          "risk_number": 3.0,
-          "top_statements": [
-            {
-              "line": 159,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
             {
               "line": 162,
               "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
+              "rn": 3.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 158,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 160,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
             }
           ]
         },
         {
-          "function": "run",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 134,
-          "risk_number": 2.0,
+          "function": "run_check",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 99,
+          "risk_number": 13.0,
           "top_statements": [
             {
-              "line": 140,
+              "line": 125,
+              "type": "For",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 115,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 119,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "all_redundant",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 50,
+          "risk_number": 10.0,
+          "top_statements": [
+            {
+              "line": 59,
+              "type": "If",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 54,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 58,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "find_redundant_in_main",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 94,
+          "risk_number": 4.0,
+          "top_statements": [
+            {
+              "line": 116,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 109,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
             },
             {
-              "line": 143,
+              "line": 114,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "resolve_owner_repo",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 68,
+          "risk_number": 4.0,
+          "top_statements": [
+            {
+              "line": 69,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 73,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 81,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "check_stale_commits",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 188,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 211,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 226,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -353,13 +629,133 @@
           ]
         },
         {
-          "function": "marker_exists",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 128,
+          "function": "test_exits_2_on_git_failure",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 126,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 132,
+              "type": "With",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 131,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_exits_2_on_unparseable_remote_url",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 136,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 141,
+              "type": "With",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 140,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_exits_2_on_git_failure",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 165,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 171,
+              "type": "With",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 170,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_raises_on_git_failure",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 85,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 87,
+              "type": "With",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 86,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "resolve_branch",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 86,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 87,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 91,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_side_effect",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 234,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 236,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 238,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_run_git",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 69,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 130,
+              "line": 76,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -367,414 +763,736 @@
           ]
         },
         {
-          "function": "_write_exec",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 34,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "strip_redundant_commits",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 245,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 261,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "__init__",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 48,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "_run",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 44,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 47,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 102,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "parse_remote_url",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 54,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 63,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "bootstrap",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 135,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_raises_on_unrecognised_url",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 96,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 97,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_successful_bootstrap_writes_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 141,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_raises_on_empty_string",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 100,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 101,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_degraded_bootstrap_also_writes_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 152,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_explicit_args_bypass_git",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 110,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 111,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_dry_run_does_not_write_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 168,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_falls_back_to_git_remote",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 116,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 122,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_old_python_errors_before_marker",
-          "file": "tests/automation/test_bootstrap_markers.py",
-          "line": 179,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_write_exec",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 38,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "__init__",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 53,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "create_fake_venv",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 115,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "venv_env",
-          "file": "tests/automation/test_ensure_venv.py",
+          "function": "test_returns_explicit_branch",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
           "line": 151,
-          "risk_number": 0.0,
-          "top_statements": []
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 152,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_healthy_venv_exits_zero",
-          "file": "tests/automation/test_ensure_venv.py",
+          "function": "test_falls_back_to_git",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
           "line": 157,
-          "risk_number": 0.0,
-          "top_statements": []
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 161,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_healthy_venv_writes_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 163,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_clean_branch_returns_0",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 181,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 182,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_no_venv_created_and_smoke_passes_writes_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 169,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_redundant_in_main_auto_strips_and_returns_0",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 189,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 190,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "test_quiet_flag_suppresses_stdout",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 176,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_triggers_rebuild",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 188,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_marker_written_after_rebuild",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 197,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_no_marker_before_repair",
-          "file": "tests/automation/test_ensure_venv.py",
+          "function": "test_redundant_in_main_rebase_failure_returns_1",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
           "line": 205,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 206,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_still_stale_after_rebase_returns_1",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 220,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 221,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_redundant_in_pr_returns_1_without_strip",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 235,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 236,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_redundant_in_both_returns_1_without_strip",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 250,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 252,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_returns_shas_oldest_first",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 64,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 66,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_empty_when_no_unique_commits",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 75,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 76,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_single_commit",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 80,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 81,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_returns_shas_marked_with_minus",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 96,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 98,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_empty_when_all_unique",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 102,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 104,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_empty_when_no_commits",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 108,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 109,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_all_redundant",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 113,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 115,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_git_failure_returns_empty_not_raises",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 119,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 120,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_passes_base_and_head_to_git_cherry",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 124,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 125,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_detects_sha_overlap_with_open_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 150,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 154,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_empty_when_no_overlap",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 164,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 168,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_skips_bot_own_prs",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 178,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 182,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_skips_current_branch_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 193,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 197,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_empty_when_no_open_prs",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 208,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 209,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_api_error_on_list_prs_returns_empty",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 221,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 222,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_api_error_on_pr_commits_skips_that_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 230,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 242,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_multiple_overlapping_shas_in_one_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 252,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 256,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_clean_result_when_no_redundancies",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 292,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 294,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_emits_audit_event_when_redundant_in_main",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 301,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 306,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_emits_audit_event_when_redundant_in_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 315,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 320,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_skips_open_pr_check_when_disabled",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 327,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 329,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_skips_open_pr_check_when_no_commits",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 335,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 337,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_result_carries_correct_branch_and_base",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 341,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 343,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_returns_true_on_success",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 356,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 357,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_returns_false_on_conflict",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 363,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 364,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_uses_supplied_base",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 367,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 368,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "is_clean",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 46,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_rebuild_also_fails_exits_nonzero",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 217,
+          "function": "get_branch_commits",
+          "file": "scripts/automation/lib/stale_commit_detector.py",
+          "line": 83,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_rebuild_also_fails_no_marker",
-          "file": "tests/automation/test_ensure_venv.py",
-          "line": 222,
+          "function": "main",
+          "file": "scripts/automation/pre_pr_stale_check.py",
+          "line": 159,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_write_exec",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "_clean_result",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 35,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_stale_main_result",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
           "line": 44,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "__init__",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 54,
+          "function": "_stale_pr_result",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 53,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "lock_dir",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 130,
+          "function": "_stale_both_result",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 62,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "last_run_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 134,
+          "function": "test_https_with_git_suffix",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 76,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_worker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 138,
+          "function": "test_https_without_git_suffix",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 81,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 142,
+          "function": "test_ssh_with_git_suffix",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 86,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "claude_ran",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 171,
+          "function": "test_ssh_without_git_suffix",
+          "file": "tests/automation/test_pre_pr_stale_check.py",
+          "line": 91,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "claude_record",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 174,
+          "function": "_git_ok",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 43,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "cron",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 179,
+          "function": "_git_fail",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 51,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_missing_role_and_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 185,
+          "function": "_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 137,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_no_args_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 190,
+          "function": "_make_commits",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 145,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_invalid_role_rejected",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 196,
+          "function": "test_empty_input_commits_returns_empty",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 217,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_unknown_flag_shows_usage",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 201,
+          "function": "_patch_sub_fns",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 272,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_unknown_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 209,
+          "function": "test_is_clean_when_no_redundancies",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 379,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_missing_role_root_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 214,
+          "function": "test_not_clean_when_redundant_in_main",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 388,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_resolved_project_proceeds_past_registry",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 222,
+          "function": "test_not_clean_when_redundant_in_pr",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 397,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_live_holder_makes_second_invocation_exit_zero",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 232,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_stale_dead_pid_lock_is_reclaimed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 241,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pid_written_is_the_launcher_pid",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 249,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_file_is_consumed_and_cycle_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 266,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_recent_last_run_triggers_idle_backoff",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 276,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_stale_last_run_polls_and_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 286,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_claude_auth_env_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 298,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_empty_oauth_token_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 305,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_api_key_unset_before_claude_invoke",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 312,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_login_mismatch_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 325,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_expected_login_unset_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 331,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_matching_login_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 338,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_claude_resolved_by_absolute_path_from_minimal_path",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 347,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pinned_path_includes_standard_bins",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 360,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_written_on_success",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 374,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_not_written_when_claude_fails",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 380,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_dropped_to_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 389,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_absent_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 400,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_present_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "test_all_redundant_deduplicates_across_sources",
+          "file": "tests/automation/test_stale_commit_detector.py",
           "line": 406,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_broken_venv_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 415,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_healthy_venv_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 421,
+          "function": "test_all_redundant_empty_when_clean",
+          "file": "tests/automation/test_stale_commit_detector.py",
+          "line": 418,
           "risk_number": 0.0,
           "top_statements": []
         }
       ],
       "error": null,
-      "tier_floor": "MEDIUM"
+      "tier_floor": null
     },
     {
       "dimension": "static_analysis",
