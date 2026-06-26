@@ -29,3 +29,5 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-24T19:23:06Z", "bot": "hos-worker-hos[bot] project=hos"}
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-24T19:50:05Z", "reason": "self-wakeup-more-work"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-24T19:52:34Z", "bot": "hos-worker-hos[bot] project=hos"}
+{"event": "human-authorized-merge", "pr": 898, "merged_by": "ScottThurlow", "merged_by_type": "User", "timestamp": "2026-06-26T07:22:36Z"}
+{"event": "overseer-pr-review", "role": "overseer", "timestamp": "2026-06-26T08:45:08Z", "pr": 899, "disposition": "HUMAN_REQUIRED", "action": "no-merge; no duplicate comment (state unchanged since 07:49Z correction)", "reason": "protected surface (docs/AGENTS.md, CLAUDE.md) + needs-human hard guard #756; human APPROVE present on head b8f23ca but label must be cleared by a human"}
