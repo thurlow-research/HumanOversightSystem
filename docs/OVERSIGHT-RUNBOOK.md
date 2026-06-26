@@ -121,7 +121,12 @@ Run this once before the first build step begins. These agents produce the docum
 # 2. UX designer — design pack audit against full spec
 # "Invoke ux-designer for initial design audit"
 # ux-designer reads the spec + confirmed requirements, fills all design pack gaps,
-# and writes UX-DESIGN-READINESS.md.
+# and writes UX-DESIGN-READINESS.md. The readiness document must include:
+#   - Feature-by-feature coverage summary
+#   - Additions made (token/class/copy-rule) with file and spec feature linkage
+#   - Open structural questions (unresolved brand or layout decisions)
+# The design pack is ready only when all additive gaps are filled and
+# all structural questions are answered or explicitly deferred.
 # pm-agent validates the design pack faithfully represents product intent.
 # Answer any structural brand questions it surfaces before proceeding.
 

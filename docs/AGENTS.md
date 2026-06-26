@@ -119,7 +119,10 @@ START
   3. architect     — technical feasibility review, human Q&A
                      (reads confirmed requirements + design readiness doc)
   4. ops-designer* — initial telemetry audit; produce docs/ops/TELEMETRY-SPEC.md;
-                     architect validates; required before build steps when ops complexity exists
+                     submit to architect for sign-off before any build step begins;
+                     reactive during build for ops-reviewer gaps (classifies as clarifying/
+                     additive/structural — structural gaps require architect + human
+                     authorization before writing)
 
 DESIGN
   5. technical-design ↔ architect  — iterate until design approved
@@ -505,9 +508,9 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 ### 11. `ops-designer` — Observability Authority *(optional — projects with ops complexity)*
 
 **Model:** `claude-sonnet-4-6`
-**Invoked:** At project start, after `architect` completes the ADR. Reactive during the build when `ops-reviewer` escalates a gap.
+**Invoked:** At project start, after `architect` completes the ADR. Submits the completed `TELEMETRY-SPEC.md` to `architect` for sign-off before any build step begins. Reactive during the build when `ops-reviewer` escalates a spec gap.
 
-**Role:** Authors and maintains `docs/ops/TELEMETRY-SPEC.md` — the observability contract that `ops-reviewer` enforces. Covers structured logging conventions, metric naming, distributed tracing requirements, health check requirements per dependency type, and dashboard/alerting intent. Does not implement instrumentation — records the contract for the build to follow.
+**Role:** Authors and maintains `docs/ops/TELEMETRY-SPEC.md` — the observability contract that `ops-reviewer` enforces. Covers structured logging conventions, metric naming, distributed tracing requirements, health check requirements per dependency type, and dashboard/alerting intent. Does not implement instrumentation — records the contract for the build to follow. During the build, classifies reactive spec-gap requests as **clarifying** (interpretation only), **additive** (new spec entry, no architecture change), or **structural** (new external dependency, trust-boundary change, or architecture change). Structural changes require architect sign-off and human authorization before the spec is updated.
 
 **Escalation out:** `architect` (new external dependency, trust boundary, or observability-architecture change; 2-round consultation cap then human); `pm-agent` (product-scope question surfaced while gap-filling); human (structural change unresolvable after 2 architect rounds, or unresolvable escalation — requires human authorization artifact before spec update).
 **Escalation in:** From `ops-reviewer` (spec gaps); `architect` (observability ADR inputs).
@@ -541,7 +544,7 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 **Review dimensions:** timeouts on all outbound connections, retry with exponential backoff and limit, no tight retry loops, non-idempotent operations protected from accidental retry, graceful degradation / fallback, no unbounded waits (thread pools, connection pools, queue consumers).
 
-**Escalation out:** `technical-design` (retry/timeout policy not specified in technical-design — first receiver; does **NOT** create a `spec-gap` issue directly, same as `security-reviewer`/`privacy-reviewer`); `architect` (structural reliability design — sync vs async, circuit-breaker architecture). `technical-design` revises the contract or routes product-policy questions onward.
+**Escalation out:** `technical-design` (retry/timeout policy not specified in technical-design — first receiver; does **NOT** create a `spec-gap` issue directly, same as `security-reviewer`/`privacy-reviewer`); `architect` (structural reliability design — sync vs async, circuit-breaker architecture); `ops-reviewer` (telemetry gaps on failure paths — reliability-reviewer notes these for `ops-reviewer` and does **NOT** block reliability sign-off on that lane). `technical-design` revises the contract or routes product-policy questions onward.
 **Escalation in:** From `coder` (re-review after fixes).
 
 **N/A for:** CLI tools, libraries, or any project without outbound connections to external dependencies.
@@ -691,7 +694,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Process:**
 1. Applies deterministic floor rules (e.g. auth/PII changes force HIGH tier, booking gate forces CRITICAL).
 2. Runs static and IP validators (`run_validators.sh`, `prompt_audit_risk.py`, `ip_check.py`).
-3. For MEDIUM+ steps, invokes the `prompt-fidelity` subagent. For HIGH+ steps, invokes the `dep-mapper` and `risk-historian` subagents.
+3. For MEDIUM+ steps, invokes the `prompt-fidelity` subagent (semantic prompt-vs-code comparison). For HIGH+ steps, invokes the `dep-mapper` and `risk-historian` subagents. At CRITICAL, additionally reads the relevant spec section and performs direct spec-code fidelity checks (does the code implement what the spec says?). Note: `prompt-fidelity` is NYI — it returns a non-blocking coverage gap until the semantic comparison is implemented.
 4. Synthesizes risk scores to determine the final validated tier.
 5. Produces a ranked inspection brief. Writes risk-assessment.md and required-reviewers.md (oversight-evaluator unions this list with the manifest so dynamic risk findings can add but never remove required reviewers).
 
@@ -778,9 +781,9 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 **Role:** Acts on the evaluator's recommendation to open PRs, prepare panel context, or escalate compliance/quality issues to the human.
 
 **Process:**
-1. On `PROCEED`: Writes panel context (excluding internal findings) and full handoff docs, opens the PR with AI-PR attribution, and prints the panel command.
+1. On `PROCEED`: Writes panel context (excluding internal findings) and full handoff docs, opens the PR with AI-PR attribution, and prints the panel command. After the PR merges, writes a `step-head-final` audit event with `merged:true` and the post-merge SHA.
 2. On `CONDITIONAL_PROCEED`: Same as PROCEED, but appends the "Human Review Required Before Merge" section.
-3. On `ESCALATE`: Blocks PR creation and outputs specific escalation details and instructions to the console.
+3. On `ESCALATE`: Blocks PR creation and outputs specific escalation details and instructions to the console. Writes a `step-head-final` audit event with `merged:false` so the next step has a clean base anchor.
 
 **Escalation out:** Human (on `ESCALATE` or missing human authorization).
 **Escalation in:** None.
