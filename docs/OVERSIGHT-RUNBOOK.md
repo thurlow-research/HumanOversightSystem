@@ -22,6 +22,70 @@ bash scripts/oversight/run_validators.sh parking/admin.py 2>/dev/null \
 
 ---
 
+## Autonomous Operation Layer
+
+The pipeline in this runbook can be driven two ways: by a human in an
+interactive Claude Code session, or **autonomously** by two cron agents —
+`worker` and `overseer`. Both ship in `.claude/agents/` (`worker.md`,
+`overseer.md`) and each has an INTERACTIVE mode and an AUTONOMOUS mode; the
+agent checks which mode it is in before acting.
+
+**What each does (autonomous mode):**
+
+- **`worker`** (`bin/hos-cron --role worker`) — picks the lowest-numbered open
+  `needs-ai` issue for the active milestone, runs the per-step pipeline below
+  through the specialist agents, runs the inner-loop tests and validators, and
+  hands off to `oversight-orchestrator` to open a PR. It opens PRs; it never
+  approves or merges them, and it never writes implementation work itself.
+- **`overseer`** (`bin/hos-cron --role overseer`) — reviews the open bot PRs,
+  checks the risk tier and gates against the merge-authority matrix, and either
+  **auto-merges** (tier ≤ `OVERSEER_CEILING`, default `HIGH`, non-protected
+  surface, all checks green) or escalates to **HUMAN_REQUIRED** (CRITICAL tier,
+  protected surface, or above ceiling). It evaluates and merges; it never opens
+  branches or PRs.
+
+Together they build, review, and merge LOW–HIGH risk changes end-to-end with no
+human in the loop. CRITICAL and protected-surface changes always stop at a human.
+
+**Invocation & scheduling.** `bin/hos-cron` is run from crontab on a staggered
+schedule so the two roles never collide, e.g.:
+
+```cron
+1,6,11,...  * * * *  /path/to/hos-cron --role worker   --project <name> >> /tmp/hos-worker-<name>.log 2>&1
+4,9,14,...  * * * *  /path/to/hos-cron --role overseer  --project <name> >> /tmp/hos-overseer-<name>.log 2>&1
+```
+
+**Monitoring logs.** Each cycle appends to `/tmp/hos-<role>-<project>.log`
+(the redirect target above). Cron lifecycle events are also written to the
+cycle log, and audit decisions land in `audit/oversight-log.jsonl` (synced to
+the `audit-log` branch each cycle). Tail the log to watch a cycle:
+
+```bash
+tail -f /tmp/hos-worker-<project>.log
+tail -f /tmp/hos-overseer-<project>.log
+```
+
+**Intervening.** Three controls, from softest to hardest:
+
+1. **`needs-human` ⇄ `needs-ai` handoff** — the normal channel. The overseer
+   escalates a PR by labeling its issue `needs-human`; you respond by removing
+   `needs-human`, adding `needs-ai`, and commenting your decision. Agents treat
+   the `needs-ai` label (not a bare comment) as the resume signal.
+2. **Suspend** — pause a project's cron cycles without touching the crontab:
+   `bin/hos-suspend --project <name>` (clear with `--clear`). The next cycle
+   sees the suspension marker and exits early.
+3. **Halt** — open an issue labeled `hos-halt` (#793). At the start of every
+   cycle the cron checks for an open `hos-halt` issue and skips the cycle if one
+   exists; the overseer treats removing or disabling the halt as outside its
+   authority. Close the issue to resume.
+
+For the agent rosters, model assignments, and the full pipeline diagram, see
+`docs/AGENTS.md` → *Autonomous Operation Layer*. To configure this layer (the
+`OVERSEER_CEILING` ceiling, the active-milestone/build-plan routing, and the
+`HOS_BOT_LOGIN` identity guard), see `docs/CUSTOMIZATION.md`.
+
+---
+
 ## Brownfield Onboarding — Applying HOS to an Existing Codebase
 
 > **For recommended gate re-enable order and strategic guidance**, see [`docs/BROWNFIELD-ONBOARDING.md`](BROWNFIELD-ONBOARDING.md). This section covers the mechanical steps; that document covers why and in what order.

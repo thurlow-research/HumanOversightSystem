@@ -81,7 +81,7 @@ This PR was **created and submitted by an AI agent**. A human did not manually w
 | **Submitted** | [YYYY-MM-DD] |
 | **Step / context** | [build step N or session description] |
 
-Human approval is required before merge for **MEDIUM+ risk or any protected surface** (`AGENT-IDENTITY.md §9.0`); a **LOW-risk, non-protected** change may be approved by the overseer per the branch-protection rules. Either way the merge gate decides — this PR never self-merges.
+Human approval is required before merge for **MEDIUM+ risk or any protected surface** (`AGENT-IDENTITY.md §9.0`); a change within the configured `OVERSEER_CEILING` (default `HIGH`) on a non-protected surface may be approved and merged by the **overseer** — the autonomous PR-review agent (see [Autonomous Operation Layer](#autonomous-operation-layer)) — per the branch-protection rules. Either way the merge gate decides — this PR never self-merges.
 ```
 
 3. **Commit trailers** on MEDIUM+ changes: `AI-Model:` and `AI-Risk:` in the commit message.
@@ -179,6 +179,61 @@ FRAMEWORK VALIDATION (run before committing agent/doc changes)
   framework-validator        — runs static + AI review; acts on findings
   framework-setup-validator  — confirms installation is correct in a new repo
 ```
+
+The pipeline above is the **work**. The **autonomous operation layer** is the
+cron harness that drives it end-to-end with no human at the keyboard:
+
+```
+needs-ai issue
+  → worker (cron)             — picks the next issue, runs the pipeline above
+                                via the specialist agents, opens nothing itself
+      → specialists           — pm-agent / architect / coder / reviewers / tests
+      → oversight-orchestrator — opens the PR with AI attribution
+  → overseer (cron)           — reviews the open PR, checks tier + gates
+      → AUTO_MERGE             — tier ≤ OVERSEER_CEILING, non-protected, green
+      → HUMAN_REQUIRED         — CRITICAL / protected surface / above ceiling
+                                 → needs-human issue, waits for human decision
+```
+
+See [Autonomous Operation Layer](#autonomous-operation-layer) for what each
+agent does, the interactive-vs-autonomous distinction, and escalation targets.
+
+---
+
+## Autonomous Operation Layer
+
+Two agents — `worker` and `overseer` — form HOS's **autonomous operation
+layer**. Unlike every other agent (which runs only when an orchestrating session
+calls it), these two also run unattended as cron processes launched by
+`bin/hos-cron`, and together they build, review, and merge PRs for LOW–HIGH risk
+without a human in the loop. Each has **two modes**; check which mode you are in
+before acting, because behavior differs.
+
+| | `worker` | `overseer` |
+|---|---|---|
+| **Model** | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| **Invoked by** | `bin/hos-cron --role worker` (autonomous); a human (interactive) | `bin/hos-cron --role overseer` (autonomous); a human (interactive) |
+| **INTERACTIVE mode** | Single human entry point for building work — routes the human's request to the right specialists | Answers questions about PR status, risk assessments, and pipeline state |
+| **AUTONOMOUS mode** | Picks the lowest-numbered open `needs-ai` issue, runs the build pipeline through the specialists, and hands off to `oversight-orchestrator` to open a PR | Reviews open bot PRs, applies the merge-authority matrix, and auto-merges or escalates |
+| **Does** | Orchestrates: routing, batching, build/test/review sequencing | Evaluates: risk tier, gates, protected surfaces, branch-protection approval + merge |
+| **Does NOT** | Never writes implementation/design/review work itself — always delegates | Never opens branches or PRs; only acts on artifacts the worker produced |
+| **Merge authority** | None — opens PRs only | Auto-merges up to `OVERSEER_CEILING` (default `HIGH`) when checks are green; `CRITICAL`, protected-surface, or above-ceiling → `HUMAN_REQUIRED` |
+| **Escalation target** | Files a `needs-human` issue (with the 4-step "How to authorize" footer) when blocked, an agent is unavailable, or a release requires authorization | Routes to `HUMAN_REQUIRED`: adds the human as required reviewer (CRITICAL tier) or labels `needs-human` with a §8.2 escalation comment (other reasons) |
+
+Both agents respect two safety controls every cron cycle: the **activation
+file** (`~/.hos/<repo-id>/ACTIVE`) and the **halt file** (`hos-halt`). If either
+check fails — or at any heartbeat (≤15m) — the agent self-terminates. Removing
+or disabling the halt file is outside the overseer's authority.
+
+Handoff between the layers and the human runs entirely through the
+`needs-human` ⇄ `needs-ai` label protocol (see [Human handoff
+protocol](#human-handoff-protocol--needs-human--needs-ai)): the worker labels
+its PR `needs-ai` and hands off to the overseer; the overseer escalates by
+labeling `needs-human`; a human responds by switching the label back to
+`needs-ai`. For operational guidance — monitoring cron logs and intervening —
+see `docs/OVERSIGHT-RUNBOOK.md`. For configuring this layer (the
+`OVERSEER_CEILING` override, the active-milestone/build-plan config, and the
+`HOS_BOT_LOGIN` identity guard), see `docs/CUSTOMIZATION.md`.
 
 ---
 
@@ -988,13 +1043,15 @@ oversight-orchestrator
 
 ### Quick reference — what gets copied
 
-The install copies agents from `scripts/framework/consumer_agents.txt` (the single source of truth for the installer). Current consumer agent list (24 agents):
+The install copies agents from `scripts/framework/consumer_agents.txt` (the single source of truth for the installer). Current consumer agent list (26 agents):
 
 **Pipeline agents** (core build pipeline):
 `pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `ops-designer` *(optional)*, `ops-reviewer` *(optional)*, `reliability-reviewer` *(optional)*, `infra-reviewer`, `unit-test`, `system-test`
 
-**Oversight agents** (risk scoring, second review, cross-vendor panel):
-`risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`, `post-change-sweep`
+**Oversight agents** (autonomous operation, risk scoring, second review, cross-vendor panel):
+`worker`, `overseer`, `risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`, `post-change-sweep`
+
+> **`worker` and `overseer` are the autonomous operation layer** — see [Autonomous Operation Layer](#autonomous-operation-layer). `worker` is also the single human entry point for building work in an interactive session.
 
 > **Framework-dev validators not shipped:** `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator` validate HOS itself, not a consumer's app — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding) and are not copied to consumer projects.
 
@@ -1035,7 +1092,7 @@ System prompt content
 
 ### Invoking agents
 
-In Claude Code, type `@agent-name` to invoke a specific agent, or describe what you need and Claude Code will route to the agent whose `description` field best matches. Agents are invoked by the orchestrating session — they are not autonomous background processes.
+In Claude Code, type `@agent-name` to invoke a specific agent, or describe what you need and Claude Code will route to the agent whose `description` field best matches. Most agents are invoked by an orchestrating session and do not run on their own. The exceptions are `worker` and `overseer`: in addition to their interactive modes, both run as autonomous cron processes (`bin/hos-cron --role worker` / `--role overseer`) that pick up issues, build, review, and merge PRs without a human in the loop — see [Autonomous Operation Layer](#autonomous-operation-layer).
 
 ### Project-start sequence
 
