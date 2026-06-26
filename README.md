@@ -130,7 +130,7 @@ The pipeline has three phases with different cadences:
 PROMPT → AUTHOR + SELF-FLAG → BLOCKING GATES (lint · types · secret scan)
     └──── fix failures before next prompt ──────────────────────────────┘
          ↓
-    RISK VALIDATORS (9 dimensions: complexity, N+1, migrations, IP, ...)
+    RISK VALIDATORS (12 dimensions: complexity, N+1, migrations, IP, ...)
          ↓
     RISK-ASSESSOR AGENT → composite score + inspection brief
          ↓
