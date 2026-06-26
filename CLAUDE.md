@@ -56,12 +56,16 @@ scripts/
       n1_detector.py         Django N+1 query heuristic
       migration_scorer.py    Database migration risk classification
       static_analysis.py     bandit MEDIUM findings as scored risk signal
+      diff_size.py           Change-size signal (review difficulty / blast radius); tier floor
+      portability_check.py   Stack-specific portability signals (hardcoded paths, env assumptions)
       ip_check.py            IP/provenance: license gate (ScanCode) + prompt clean-room
                              + regurgitation stub (ai-gen-code-search, Level 3)
       prompt_audit_risk.py   Prompt ambiguity + fidelity surface scoring
       hallucination_surface.py  Version-sensitive API detection
       issue_query.py         Historical bug density from GitHub issues + git churn
-      schema.py              Shared output schema, weights, tier thresholds
+      schema.py              Shared output schema, weights, tier thresholds (infra, not a dimension)
+      regions.py             Shared region/parsing helpers (infra, not a dimension)
+      brownfield.py          Brownfield scoring — present but NOT yet wired into run_validators.sh
     gates/               Blocking pre-review checks (bash)
     run_validators.sh    Orchestrate all validators (fail-closed CRITICAL if all fail)
     token_tracker.py     External CLI token usage tracking + subscription impact report
@@ -150,9 +154,10 @@ SPEC PHASE
   spec-red-team agent  →  spec-gap issues (uses agy for independence)
 
 INNER LOOP (per build step)
-  gates/*.sh           →  blocking (lint/type/secret/security-HIGH/ScanCode)
-  run_validators.sh    →  12 signal dimensions (11 scripts); fail-closed CRITICAL if all validators fail
-                          includes: rn_calculator, complexity, N+1, migrations,
+  gates/*.sh           →  blocking (lint/type/secret/security-HIGH)
+  run_validators.sh    →  12 signal dimensions (12 scripts, one each); fail-closed CRITICAL if all validators fail
+                          includes: rn_calculator, complexity, N+1, migrations, diff_size,
+                          portability_check,
                           ip_check (ScanCode license gate + prompt clean-room),
                           prompt_audit_risk (ambiguity score + fidelity surface)
   risk-assessor agent  →  composite score + inspection brief;
