@@ -73,7 +73,7 @@ HOS ships a **canonical base agent team** (16 agents: pm-agent, architect, techn
 
 **`--no-pack`** installs the bare CORE layer without any stack depth. CORE is intentionally shallow — you will need to add stack idioms yourself in the PROJECT region of each agent. Use this only if no pack fits your stack.
 
-The selected pack is recorded in `scripts/framework/config.sh` as `PACK=django` (or `PACK=none`). For the agent region model (CORE / PACK / PROJECT) and what this means for upgrades and customization, see **[CUSTOMIZATION.md](CUSTOMIZATION.md)**.
+The selected pack is recorded in `scripts/framework/config.sh` as `PACK=django` (with `--no-pack`, no `PACK=` line is recorded). For the agent region model (CORE / PACK / PROJECT) and what this means for upgrades and customization, see **[CUSTOMIZATION.md](CUSTOMIZATION.md)**.
 
 ---
 
@@ -119,22 +119,29 @@ If you have no design system yet, `ux-designer` will create one from scratch dur
 
 ## Step 4 — Verify the installation
 
-Invoke the `framework-setup-validator` agent in Claude Code:
+> **Note:** the framework-dev validator agents (`framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator`) validate HOS itself and ship **only with the planned hos-dev-pack** — they are deliberately absent from consumer installs (see `scripts/framework/consumer_agents.txt`). Do not try to invoke them in your project. Verify your install with the shipped artifacts instead:
 
+```bash
+# 1. Confirm the installed release tag was recorded
+cat .hos-release
+
+# 2. Confirm every shipped file is present (the installer enumerates them here)
+test -f .hos-manifest && echo ".hos-manifest present"
+
+# 3. Confirm all 26 agents installed
+ls .claude/agents/*.md | wc -l        # expect 26
+
+# 4. Confirm config.sh has no unfilled placeholders
+! grep -q '{[A-Z_]*}' scripts/framework/config.sh && echo "config.sh fully substituted"
+
+# 5. Confirm the shipped governance tooling is present and runnable
+test -x scripts/oversight/run_validators.sh && echo "validators present"
+test -x scripts/framework/run_tests_inner_loop.sh && echo "inner-loop tests present"
 ```
-Invoke framework-setup-validator
-```
 
-It will run through this checklist and report anything missing:
-- All required directories exist
-- All required agent files are present (consumer agents and `post-change-sweep`; the framework-dev validators — `framework-validator`, `framework-setup-validator`, `doc-validator`, `spec-compliance-validator` — are dev-pack only and absent from consumer installs)
-- Framework scripts are executable
-- `config.sh` has non-placeholder values
-- `agy` and `codex` CLIs are available (warns if not — validation still works without them, but AI review is skipped)
-- The static validator script runs successfully
-- Output directories (such as docs/pm, docs/architecture, docs/design) are writable by the agents
+If each check passes — the release tag is recorded, the manifest exists, 26 agent files are present, `config.sh` has no `{PLACEHOLDER}` tokens left, and the governance scripts are executable — the framework is correctly installed.
 
-If everything is green: `framework-setup-validator` prints "Framework is correctly installed."
+> `agy`/`codex` CLIs are optional at install time: validation and the inner-loop tests still run without them, but the cross-vendor AI review steps are skipped until they are available (see Step 0 prerequisites).
 
 ---
 
@@ -151,7 +158,7 @@ Before running the project start sequence, customize these agents for your proje
 | `ux-designer` | Design pack paths via `config.sh` (`DESIGN_PACK_PATH`, `SPEC_FILE`) |
 | `ui-reviewer` | Design pack paths via `config.sh`; project-specific component rules in PROJECT region |
 | `infra-reviewer` | Canonical URL; deployment host; infra stack (replace Compose/Caddy checks if needed) |
-| `deploy-verify` | Production URL; alias domains; backup paths |
+| `deploy-verify` *(only if your project supplies one — not shipped by HOS)* | Production URL; alias domains; backup paths |
 
 See `docs/CUSTOMIZATION.md` for detailed guidance on each agent and what to change.
 
@@ -237,7 +244,7 @@ The sweep agent categorizes your diff and drives all relevant reviews (code-revi
 ```
 your-project/
 ├── .claude/
-│   └── agents/                  ← 24 agent definition files (from consumer_agents.txt)
+│   └── agents/                  ← 26 agent definition files (from consumer_agents.txt)
 ├── docs/
 │   ├── AGENTS.md                ← pipeline documentation
 │   ├── OVERSIGHT-RUNBOOK.md     ← operational runbook
