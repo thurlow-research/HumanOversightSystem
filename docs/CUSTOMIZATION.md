@@ -199,6 +199,51 @@ When ops is configured, `ops-designer` runs after `architect` completes the ADR 
 
 ---
 
+## Configuring the autonomous operation layer
+
+`worker` and `overseer` are the two agents that run unattended as cron processes
+(`bin/hos-cron --role worker` / `--role overseer`) to build, review, and merge
+PRs without a human in the loop — see `docs/AGENTS.md` → *Autonomous Operation
+Layer* for the model and `docs/OVERSIGHT-RUNBOOK.md` for how to run and monitor
+them. Both have consumer-owned PROJECT regions, so adapting them follows the same
+*change content, not structure* rule as every other agent.
+
+### The overseer's merge ceiling — `OVERSEER_CEILING`
+
+The overseer auto-merges only up to a configured risk ceiling; anything above it
+routes to `HUMAN_REQUIRED`.
+
+- **The operative value** lives in `scripts/framework/machine-accounts.env`:
+  ```bash
+  # OVERSEER_CEILING options: LOW | MEDIUM | HIGH (never CRITICAL)
+  OVERSEER_CEILING="HIGH"
+  ```
+  Lower it to `MEDIUM` or `LOW` to require a human on more changes; it can never
+  be set to `CRITICAL` (CRITICAL always escalates).
+- **Project-specific merge policy** — protected-surface additions and any
+  customer-specific merge-policy adjustments — goes in the `HOS:PROJECT` region
+  of `.claude/agents/overseer.md`. HOS never overwrites this region.
+
+### The worker's active milestone, build plan, and routing
+
+The worker's autonomous mode picks issues for the active milestone and routes
+them through the specialists. Project-specific build context goes in the
+`HOS:PROJECT` region of `.claude/agents/worker.md`: this repo's active build
+plan, governance/config location, and any project-specific **routing
+overrides**. PROJECT may only ever make routing *stricter* (more human gates,
+lower risk thresholds, more reviewers, tighter caps) — never looser.
+
+### The identity guard — `HOS_BOT_LOGIN`
+
+Every cron cycle verifies it is running as the bot account before doing any work:
+the launcher exports `HOS_BOT_LOGIN`, and the agent hard-stops unless it matches
+the expected `hos-worker-hos[bot]` / overseer identity. This prevents a
+misconfigured cron from acting under a human's GitHub credentials. Keep the guard
+in place; configure the bot account in `scripts/framework/machine-accounts.env`
+alongside the ceiling.
+
+---
+
 ## Adding a new agent
 
 When your project needs a domain not covered by the existing agents (e.g., a data-pipeline reviewer, a mobile-specific reviewer, an ML model reviewer):
