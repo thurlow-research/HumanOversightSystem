@@ -68,50 +68,58 @@ A developer reviewing a PR does not open issues for "add a test here" or "this f
 **All issues created by agents must include `Branch:` and `PR:` fields** in the body, so the context is explicit if the branch is later abandoned or the issue outlives its original PR.
 
 ### HOS Oversight Agents
-*These live in `.claude/agents/` in this repo and are installed into target projects. They evaluate the review process itself — not the application code.*
+*These live in `.claude/agents/` in this repo. The agents in the first table ship to consumer projects — they are the oversight-layer entries in `scripts/framework/consumer_agents.txt` (the installer's single source of truth) — and evaluate the review process itself, not the application code. The agents in the second table are **framework-development-only**: they validate HOS itself and are **not** shipped to consumers. Model values are read from each agent's `model:` frontmatter (verified 2026-06-26).*
 
 | Agent | Model | Role |
 |---|---|---|
-| **risk-assessor** | Sonnet | Runs after coding, before reviewers. Applies deterministic floor rules, runs all 9 validator scripts (including `ip_check.py` and `prompt_audit_risk.py`), scores the code, validates the risk tier (can only raise), and produces a ranked inspection brief. Calls `prompt-fidelity` subagent at MEDIUM+ when prompt artifacts exist. |
-| **dep-mapper** | Sonnet | Subagent of risk-assessor at HIGH+. Generic interface: builds dependency graph for changed files (fan-in, signal connections, framework wiring). Projects override with stack-specific version (e.g. CondoParkShare provides a Django-specific dep-mapper). |
-| **risk-historian** | Haiku | Subagent of risk-assessor. Queries GitHub issues and git log for historical bug density and churn. Starts empty; accumulates value as issues are filed. |
-| **prompt-fidelity** | Sonnet | Subagent of risk-assessor at MEDIUM+ when a prompt artifact exists. Semantic comparison of prompt/design-doc to generated code: identifies unexplained additions, missing specifications, loose interpretations. Returns structured fidelity score. |
-| **spec-red-team** | Sonnet | Runs before coding begins on each build step. Uses agy adversarially to find gaming vectors, contradictions, and implicit assumptions in the spec before implementation. Creates `spec-gap` issues. |
-| **oversight-evaluator** | Sonnet | Runs after all internal reviewers have approved and system tests pass. Phase 1: compliance — sign-off register has all required entries with required fields (Status/Agent/Artifact/Iterations), prompt artifacts present on MEDIUM+ commits, human authorization file for CRITICAL steps. Phase 2: quality — convergence failures, resolved critical findings, confidence gaps. Produces: PROCEED / CONDITIONAL\_PROCEED / ESCALATE. |
-| **oversight-orchestrator** | Sonnet | Acts on evaluator's recommendation. Writes two separate files: `step{N}-panel-context.md` (structural risk signals only — no internal findings) for the panel, and `step{N}-handoff.md` (full picture) for the human/PR. ESCALATE → surfaces specific questions, PR does not open. All AI-submitted PRs include `[AI: oversight-orchestrator]` title prefix and a 🤖 attribution block. |
-| **framework-validator** | Sonnet | Runs the full 4-phase validation suite before any framework file is committed. Delegates fixes to domain owners; escalates to human for broken escalation chains. Loop exit: 3 cycles max. |
-| **framework-setup-validator** | Sonnet | Verifies a framework installation is complete — all agent files present, scripts executable, config populated. Invoked after `bootstrap/hos_install.sh` in a new project. |
-| **doc-validator** | Sonnet | Catches the omission class of documentation bug (agent file says X and Y, doc says only X). Reads `doc-patterns.md` and `decisions.md` for prior-session context. Loop exit: 3 cycles max. |
-| **spec-compliance-validator** | Sonnet | Verifies the pipeline implementation satisfies its governance spec (METHODOLOGY.md, AGENTS.md): cross-vendor independence, risk tiers, human gates, model assignments, loop exits. Checks `decisions.md` verification criteria. |
-| **post-change-sweep** | Sonnet | After any change: reads git diff, categorizes files by domain (framework/code/templates/infra/design/spec), drives all relevant agents in dependency order across parallel tracks. |
+| **worker** | `claude-sonnet-4-6` | The single human entry point for building work (interactive) and the autonomous build agent invoked by `bin/hos-cron --role worker`. Routes all implementation, design, and review work to the appropriate specialist agents — never does that work itself. |
+| **overseer** | `claude-sonnet-4-6` | Reviews PRs and makes merge decisions (autonomous); answers questions about PR status, risk assessments, and pipeline state (interactive). Never opens branches or PRs — only evaluates and acts on artifacts the worker produced. |
+| **risk-assessor** | `claude-sonnet-4-6` | Runs after coding, before reviewers. Applies deterministic floor rules, runs all validator scripts (including `ip_check.py` and `prompt_audit_risk.py`), scores the code, validates the risk tier (can only raise), and produces a ranked inspection brief. Calls `prompt-fidelity` subagent at MEDIUM+ when prompt artifacts exist. |
+| **dep-mapper** | `claude-sonnet-4-6` | Subagent of risk-assessor at HIGH+. Generic interface: builds dependency graph for changed files (fan-in, signal connections, framework wiring). Projects override with stack-specific version (e.g. CondoParkShare provides a Django-specific dep-mapper). |
+| **risk-historian** | `claude-sonnet-4-6` | Subagent of risk-assessor. Queries GitHub issues and git log for historical bug density and churn. Starts empty; accumulates value as issues are filed. |
+| **prompt-fidelity** | `claude-sonnet-4-6` | Subagent of risk-assessor at MEDIUM+ when a prompt artifact exists. Semantic comparison of prompt/design-doc to generated code: identifies unexplained additions, missing specifications, loose interpretations. Returns structured fidelity score. |
+| **spec-red-team** | `claude-sonnet-4-6` | Runs before coding begins on each build step. Uses agy adversarially to find gaming vectors, contradictions, and implicit assumptions in the spec before implementation. Creates `spec-gap` issues. |
+| **oversight-evaluator** | `claude-sonnet-4-6` | Runs after all internal reviewers have approved and system tests pass. Phase 1: compliance — sign-off register has all required entries with required fields (Status/Agent/Artifact/Iterations), prompt artifacts present on MEDIUM+ commits, human authorization file for CRITICAL steps. Phase 2: quality — convergence failures, resolved critical findings, confidence gaps. Produces: PROCEED / CONDITIONAL\_PROCEED / ESCALATE. |
+| **oversight-orchestrator** | `claude-sonnet-4-6` | Acts on evaluator's recommendation. Writes two separate files: `step{N}-panel-context.md` (structural risk signals only — no internal findings) for the panel, and `step{N}-handoff.md` (full picture) for the human/PR. ESCALATE → surfaces specific questions, PR does not open. All AI-submitted PRs include `[AI: oversight-orchestrator]` title prefix and a 🤖 attribution block. |
+| **post-change-sweep** | `claude-sonnet-4-6` | After any change: reads git diff, categorizes files by domain (framework/code/templates/infra/design/spec), drives all relevant agents in dependency order across parallel tracks. |
+
+**Framework-development-only (not shipped to consumers).** These validate HOS *itself*, not a consumer's application, and are deliberately absent from `consumer_agents.txt` — they belong to the planned `hos-dev-pack` and live in `.claude/agents/` in this source repo only.
+
+| Agent | Model | Role |
+|---|---|---|
+| **framework-validator** | `claude-sonnet-4-6` | Runs the full 4-phase validation suite before any framework file is committed. Delegates fixes to domain owners; escalates to human for broken escalation chains. Loop exit: 3 cycles max. |
+| **framework-setup-validator** | `claude-sonnet-4-6` | Verifies a framework installation is complete — all agent files present, scripts executable, config populated. Invoked after `bootstrap/hos_install.sh` in a new project. |
+| **doc-validator** | `claude-sonnet-4-6` | Catches the omission class of documentation bug (agent file says X and Y, doc says only X). Reads `doc-patterns.md` and `decisions.md` for prior-session context. Loop exit: 3 cycles max. |
+| **spec-compliance-validator** | `claude-sonnet-4-6` | Verifies the pipeline implementation satisfies its governance spec (METHODOLOGY.md, AGENTS.md): cross-vendor independence, risk tiers, human gates, model assignments, loop exits. Checks `decisions.md` verification criteria. |
 
 ### Base Project Agents
 
 **[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation of a HOS-governed project. It is a real parking management application for condo communities — residents book shared parking spaces, HOA admins configure availability, and operators manage multi-building deployments. It was built specifically to exercise the HOS framework against genuine real-world complexity: multi-tenant data isolation, authentication flows, time-based booking logic with business rule gates, and administrative portals. The goal is dual-purpose: stress-test the framework on a domain with meaningful security and correctness requirements while delivering something useful to an actual user community.
 
-The agents below are defined in CondoParkShare (and any other HOS-governed project). They implement the HOS contract — the oversight agents in this repo consume their outputs without knowing their names.
+As of v0.3.0, the 16 base agents below are **shipped by HOS** as a canonical, layered (CORE/PACK/PROJECT) base team (`scripts/framework/consumer_agents.txt`) and consumed by HOS-governed projects such as CondoParkShare — the consumer no longer hand-rolls them. They implement the HOS contract; the oversight agents in this repo consume their outputs without knowing the project's name. Projects deepen them via PACK regions (stack depth) and PROJECT regions (project specifics), and may add their own optional agents. Model values are read from each agent's `model:` frontmatter (verified 2026-06-26).
 
 **These base agents are the signal layer.** Every role below *measures or detects* something and emits a signal — the coder emits self-flags (RISK/CONFIDENCE/BLAST RADIUS), each reviewer emits a sign-off carrying findings, the test agents emit coverage/conformance results. The **oversight layer** — `risk-assessor`, `oversight-evaluator`, `oversight-orchestrator` in *this* repo — does not generate signals; it *acts* on them (aggregates, stratifies, routes, gates, escalates, audits). Several base roles (`unit-test` coverage, `code-reviewer` maintainability, `reliability-reviewer`) double as software-quality signals — a benefit of the pipeline, but the research subject is what the oversight layer does with the aggregate, not any single reviewer's finding. The signal set is extensible: a project adds reviewers/validators (#80) and the oversight layer consumes them unchanged.
 
-| Role | What it produces | Contract output |
-|---|---|---|
-| **pm-agent** | Spec clarifications, test plan sign-offs | `spec-gap` issues on escalation; sign-off register entry |
-| **architect** | ADR, design critiques | `design-concern` issues on 5-round loops; sign-off register entry |
-| **ux-designer** | Design pack authority — tokens, components, copy rules, feedback states. Proactive project-start audit + reactive gap-filling. 4th authority tier (peer to architect and pm-agent within design domain). | `docs/design/UX-DESIGN-READINESS.md` at project start; design pack updates; notifies a11y-reviewer and ui-reviewer after additive changes |
-| **technical-design** | Implementation contract (TECHNICAL-DESIGN.md) | Sign-off register entry on approval |
-| **coder** | Application code + self-flags | RISK / CONFIDENCE / BLAST RADIUS / VERIFY in output; git trailers |
-| **code-reviewer** | Correctness, idioms, design adherence | Sign-off register entry; iterates with coder |
-| **security-reviewer** | Security vulnerabilities (OWASP, threat-model) | `security-finding` issues for crit/high; sign-off register entry |
-| **privacy-reviewer** | GDPR compliance, PII handling | `privacy-finding` issues for blocking findings; sign-off register entry |
-| **ui-reviewer** | Design pack conformance — tokens, components, copy, voice/tone | Sign-off register entry; escalates gaps to ux-designer |
-| **a11y-reviewer** | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
-| **ops-designer** | Observability authority — produces `TELEMETRY-SPEC.md` at project start; fills spec gaps reactively when `ops-reviewer` escalates. Escalates structural observability architecture changes to human. | `docs/ops/TELEMETRY-SPEC.md` at project start; spec updates; notifies `ops-reviewer` after additive changes. `architect` signs off on spec. |
-| **ops-reviewer** | Telemetry spec conformance — structured logging, metrics, tracing, health checks, dashboard intent, runbook coverage per `TELEMETRY-SPEC.md`. N/A for projects without operational complexity. | Sign-off register entry; escalates spec gaps to `ops-designer` |
-| **reliability-reviewer** | Resilience review — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. N/A for projects without external dependencies. | Sign-off register entry; escalates structural reliability concerns to `architect` |
-| **infra-reviewer** | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
-| **unit-test** | Coverage % + mutant score, both configurable per project (higher is better; defaults: 80% coverage / 75% mutant score) | PR thread on coverage/mutant failures (inner loop correction); test declaration in register |
-| **system-test** | Spec flow conformance | PR thread for failures fixable in current session; `bug` issue only if failure persists across sessions or affects spec correctness beyond the current branch; sign-off register entry |
-| **deploy-verify** | Production smoke tests — TLS, DNS, services, browser | Escalates to infra-reviewer (infra) or coder (functional) |
+| Role | Model | What it produces | Contract output |
+|---|---|---|---|
+| **pm-agent** | `claude-sonnet-4-6` | Spec clarifications, test plan sign-offs | `spec-gap` issues on escalation; sign-off register entry |
+| **architect** | `claude-opus-4-8` | ADR, design critiques | `design-concern` issues on 5-round loops; sign-off register entry |
+| **ux-designer** | `claude-sonnet-4-6` | Design pack authority — tokens, components, copy rules, feedback states. Proactive project-start audit + reactive gap-filling. 4th authority tier (peer to architect and pm-agent within design domain). | `docs/design/UX-DESIGN-READINESS.md` at project start; design pack updates; notifies a11y-reviewer and ui-reviewer after additive changes |
+| **technical-design** | `claude-opus-4-8` | Implementation contract (TECHNICAL-DESIGN.md) | Sign-off register entry on approval |
+| **coder** | `claude-sonnet-4-6` | Application code + self-flags | RISK / CONFIDENCE / BLAST RADIUS / VERIFY in output; git trailers |
+| **code-reviewer** | `claude-sonnet-4-6` | Correctness, idioms, design adherence | Sign-off register entry; iterates with coder |
+| **security-reviewer** | `claude-sonnet-4-6` | Security vulnerabilities (OWASP, threat-model) | `security-finding` issues for crit/high; sign-off register entry |
+| **privacy-reviewer** | `claude-sonnet-4-6` | GDPR compliance, PII handling | `privacy-finding` issues for blocking findings; sign-off register entry |
+| **reliability-reviewer** | `claude-sonnet-4-6` | Resilience review — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. N/A for projects without external dependencies. | Sign-off register entry; escalates structural reliability concerns to `architect` |
+| **ops-reviewer** | `claude-sonnet-4-6` | Telemetry spec conformance — structured logging, metrics, tracing, health checks, dashboard intent, runbook coverage per `TELEMETRY-SPEC.md`. N/A for projects without operational complexity. | Sign-off register entry; escalates spec gaps to `ops-designer` |
+| **ui-reviewer** | `claude-sonnet-4-6` | Design pack conformance — tokens, components, copy, voice/tone | Sign-off register entry; escalates gaps to ux-designer |
+| **a11y-reviewer** | `claude-sonnet-4-6` | WCAG AA accessibility — keyboard, contrast, motion, responsiveness | Sign-off register entry; escalates token contrast failures to ux-designer |
+| **infra-reviewer** | `claude-sonnet-4-6` | Deployment config — Compose, reverse proxy, backup, env | Sign-off register entry |
+| **unit-test** | `claude-sonnet-4-6` | Coverage % + mutant score, both configurable per project (higher is better; defaults: 80% coverage / 75% mutant score) | PR thread on coverage/mutant failures (inner loop correction); test declaration in register |
+| **system-test** | `claude-sonnet-4-6` | Spec flow conformance | PR thread for failures fixable in current session; `bug` issue only if failure persists across sessions or affects spec correctness beyond the current branch; sign-off register entry |
+| **ops-designer** | `claude-sonnet-4-6` | Observability authority — produces `TELEMETRY-SPEC.md` at project start; fills spec gaps reactively when `ops-reviewer` escalates. Escalates structural observability architecture changes to human. | `docs/ops/TELEMETRY-SPEC.md` at project start; spec updates; notifies `ops-reviewer` after additive changes. `architect` signs off on spec. |
+
+> **`deploy-verify` is optional and project-supplied — not HOS-shipped.** It is absent from `consumer_agents.txt` and has no agent file in `.claude/agents/`; `ops-reviewer` consumes its output "where present." A project that needs production smoke tests (TLS, DNS, services, browser) supplies its own `deploy-verify`, which escalates to infra-reviewer (infra) or coder (functional).
 
 ### External Reviewers
 *Run via CLI, never see internal reviewer findings — independence is the value.*
