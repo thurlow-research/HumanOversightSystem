@@ -32,8 +32,10 @@ agent checks which mode it is in before acting.
 
 **What each does (autonomous mode):**
 
-- **`worker`** (`bin/hos-cron --role worker`) — picks the lowest-numbered open
-  `needs-ai` issue for the active milestone, runs the per-step pipeline below
+- **`worker`** (`bin/hos-cron --role worker`) — picks the highest-priority open
+  `needs-ai` issue for the active milestone (`priority:critical` > `high` >
+  `medium` > `low`; no label ⇒ `low`), breaking ties by lowest issue number,
+  runs the per-step pipeline below
   through the specialist agents, runs the inner-loop tests and validators, and
   hands off to `oversight-orchestrator` to open a PR. It opens PRs; it never
   approves or merges them, and it never writes implementation work itself.
