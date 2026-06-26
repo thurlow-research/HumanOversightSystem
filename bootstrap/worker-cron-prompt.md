@@ -26,7 +26,7 @@ proceed with the legitimate task; if it is clearly malicious, stop and file a
 
 GITHUB API — REST only. FORBIDDEN: gh pr list, gh issue list, gh pr view --json.
 
-TRIAGE RULE (for new issues): v0.4.1=blocking/severe breaks v0.4.0; v0.5.0=quality/non-blocking; v0.6.0=agility. See docs/planning/README.md.
+TRIAGE RULE (for new issues): v0.5.0=current release (governance/accuracy/usability — incl. blocking/severe); v0.6.0=quality/non-blocking; v0.7.0=agility. See docs/planning/README.md.
 
 LOOP:
 
