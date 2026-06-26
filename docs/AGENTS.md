@@ -214,7 +214,7 @@ before acting, because behavior differs.
 | **Model** | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
 | **Invoked by** | `bin/hos-cron --role worker` (autonomous); a human (interactive) | `bin/hos-cron --role overseer` (autonomous); a human (interactive) |
 | **INTERACTIVE mode** | Single human entry point for building work — routes the human's request to the right specialists | Answers questions about PR status, risk assessments, and pipeline state |
-| **AUTONOMOUS mode** | Picks the lowest-numbered open `needs-ai` issue, runs the build pipeline through the specialists, and hands off to `oversight-orchestrator` to open a PR | Reviews open bot PRs, applies the merge-authority matrix, and auto-merges or escalates |
+| **AUTONOMOUS mode** | Picks the highest-priority open `needs-ai` issue (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`; ties broken by lowest issue number), runs the build pipeline through the specialists, and hands off to `oversight-orchestrator` to open a PR | Reviews open bot PRs, applies the merge-authority matrix, and auto-merges or escalates |
 | **Does** | Orchestrates: routing, batching, build/test/review sequencing | Evaluates: risk tier, gates, protected surfaces, branch-protection approval + merge |
 | **Does NOT** | Never writes implementation/design/review work itself — always delegates | Never opens branches or PRs; only acts on artifacts the worker produced |
 | **Merge authority** | None — opens PRs only | Auto-merges up to `OVERSEER_CEILING` (default `HIGH`) when checks are green; `CRITICAL`, protected-surface, or above-ceiling → `HUMAN_REQUIRED` |

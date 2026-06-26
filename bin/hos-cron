@@ -608,9 +608,16 @@ _build_context() {
   printf '\n'
 
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
-    printf '### Next work candidates (%s, needs-ai, not needs-human)\n' "${HOS_TARGET_RELEASE:-active milestone}"
-    _ctx_issues=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=10" \
-      --jq '.[] | select(.labels | map(.name) | contains(["needs-human"]) | not) | "#\(.number) \(.title)"' \
+    printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"
+    # #901: order by (priority desc, number asc) via the canonical jq filter so
+    # this path and the worker-cron-prompt.md Step-2 fallback select identically.
+    # per_page=100 (GitHub's single-page max): the priority sort must see the WHOLE
+    # backlog, else a high-priority issue on a later page would be missed. A single
+    # milestone exceeding 100 open needs-ai issues is the (documented) ceiling.
+    # Fail-open: a missing/broken filter yields no section. head -5 caps display
+    # only — the worker picks the first non-blocked candidate.
+    _ctx_issues=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" \
+      --jq "$(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
       2>/dev/null | head -5 || echo "")
     if [[ -n "$_ctx_issues" ]]; then
       printf '%s\n' "$_ctx_issues"

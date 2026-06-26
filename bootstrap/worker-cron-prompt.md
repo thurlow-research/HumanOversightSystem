@@ -48,12 +48,12 @@ For each open PR authored by this worker:
 4. No open PRs → Step 2.
 
 **Step 2 — Pick next @@TARGET_RELEASE@@ needs-ai issue:**
-Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. Pick lowest-numbered non-blocked.
+Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. The list is already ordered highest-priority first (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`), then lowest issue number within a band. **Pick the first non-blocked candidate** (#901).
 
-Fallback (if context block is absent):
+Fallback (if context block is absent) — run from `$REPO_ROOT` so it uses the same canonical ordering filter as the context block (single source of truth; do not re-inline the jq):
 ```bash
-gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=30" \
-  --jq '.[] | select(.labels | map(.name) | contains(["needs-human"]) | not) | "#\(.number) \(.title)"'
+gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=100" \
+  --jq "$(cat scripts/automation/lib/next_candidates.jq)"
 ```
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
