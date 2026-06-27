@@ -91,8 +91,11 @@ class CronEnv:
             "#!/usr/bin/env bash\n"
             'ARGS="$*"\n'
             'case "$ARGS" in\n'
-            # Halt check: issues?labels=hos-halt
+            # Halt check: issues?labels=hos-halt.
+            # HOS_TEST_HALT_QUERY_FAIL simulates a gh API failure (non-zero exit)
+            # so the #912 fail-closed halt path can be exercised.
             '  *"labels=hos-halt"*)\n'
+            '    [[ -n "${HOS_TEST_HALT_QUERY_FAIL:-}" ]] && exit 1\n'
             '    echo "${HOS_TEST_HALT_COUNT:-0}" ;;\n'
             # Context: next work candidates (needs-ai issues, not needs-human)
             '  *"labels=needs-ai"*)\n'
@@ -642,13 +645,19 @@ class TestHaltCheck:
         assert "HALT" not in r.stdout
         assert cron.claude_ran()
 
-    def test_halt_check_api_error_proceeds(self, cron):
-        """gh API failure → treats as 0 halt issues (fail-open), proceeds."""
-        # Simulate no _REPO_SLUG so the gh call is skipped entirely.
+    def test_halt_check_empty_slug_fails_closed(self, cron):
+        """#912: empty repo slug → halt-state UNKNOWN → skip cycle, Claude not launched."""
         r = cron.run(env_overrides={"HOS_REPO_SLUG": ""})
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "HALT" not in r.stdout
-        assert cron.claude_ran()
+        assert "HALT CHECK UNAVAILABLE" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_halt_check_api_error_fails_closed(self, cron):
+        """#912: gh API failure → halt-state UNKNOWN → skip cycle, Claude not launched."""
+        r = cron.run(env_overrides={"HOS_TEST_HALT_QUERY_FAIL": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "HALT CHECK UNAVAILABLE" in r.stdout
+        assert not cron.claude_ran()
 
 
 # ─────────────────────── Agent availability check (#794) ─────────────────────
