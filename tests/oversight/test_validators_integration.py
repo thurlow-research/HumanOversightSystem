@@ -227,3 +227,83 @@ class TestIssueQuery:
             assert "dimension" in result
         finally:
             os.unlink(path)
+
+
+# ── migration_scorer ──────────────────────────────────────────────────────────
+
+from migration_scorer import analyse_files as mig_analyse
+
+
+_VALID_MIGRATION = textwrap.dedent("""
+    from django.db import migrations, models
+
+    class Migration(migrations.Migration):
+        operations = [
+            migrations.CreateModel(name="Widget", fields=[]),
+        ]
+""")
+
+_CRITICAL_MIGRATION = textwrap.dedent("""
+    from django.db import migrations
+
+    class Migration(migrations.Migration):
+        operations = [
+            migrations.DeleteModel(name="Widget"),
+        ]
+""")
+
+
+class TestMigrationScorer:
+    def test_no_migration_files_clean(self):
+        # A non-migration .py file is ignored → clean, no error.
+        path = _tmpfile(SIMPLE_PY)
+        try:
+            result = mig_analyse([path])
+            assert result["error"] is None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_valid_migration_scored(self):
+        path = _tmpfile(_VALID_MIGRATION, suffix="_migration.py")
+        try:
+            result = mig_analyse([path])
+            assert result["error"] is None
+            assert 0.0 <= result["score"] <= 1.0
+        finally:
+            os.unlink(path)
+
+    def test_critical_op_high_score(self):
+        path = _tmpfile(_CRITICAL_MIGRATION, suffix="_migration.py")
+        try:
+            result = mig_analyse([path])
+            assert result["error"] is None
+            assert result["score"] >= 0.78  # CRITICAL tier
+        finally:
+            os.unlink(path)
+
+    def test_all_unparseable_excludes_dimension(self):
+        # #917: an all-unparseable migration changeset must EXCLUDE itself
+        # (error set) rather than score a LOW-clean 0.15.
+        path = _tmpfile("def (:\n  syntax ??? error\n", suffix="_migration.py")
+        try:
+            result = mig_analyse([path])
+            assert result["error"] is not None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_partial_parse_failure_keeps_signal_and_flags(self):
+        # #917: one parseable + one broken migration → keep the real signal,
+        # do NOT exclude, but flag the unparseable file for review.
+        good = _tmpfile(_CRITICAL_MIGRATION, suffix="_migration.py")
+        bad = _tmpfile("def (:\n  broken\n", suffix="_migration.py")
+        try:
+            result = mig_analyse([good, bad])
+            assert result["error"] is None
+            assert result["score"] >= 0.78  # CRITICAL signal preserved
+            assert result["raw_value"]["parse_errors"]
+            assert any("could not be parsed" in c for c in result["checklist_items"])
+        finally:
+            os.unlink(good)
+            os.unlink(bad)

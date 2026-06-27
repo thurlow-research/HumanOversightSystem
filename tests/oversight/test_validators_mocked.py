@@ -126,21 +126,42 @@ class TestStaticAnalysisMocked:
     def test_run_bandit_parses_findings(self):
         mock = MagicMock(stdout=self.BANDIT_OUTPUT, returncode=0)
         with patch("static_analysis.subprocess.run", return_value=mock):
-            findings = _run_bandit(["test.py"])
+            findings, err = _run_bandit(["test.py"])
+        assert err is None
         assert len(findings) == 1
         assert findings[0]["issue_severity"] == "HIGH"
 
-    def test_run_bandit_invalid_json_returns_empty(self):
+    def test_run_bandit_invalid_json_signals_error(self):
         mock = MagicMock(stdout="not-json", returncode=0)
         with patch("static_analysis.subprocess.run", return_value=mock):
-            findings = _run_bandit(["test.py"])
+            findings, err = _run_bandit(["test.py"])
         assert findings == []
+        assert err is not None
 
-    def test_run_bandit_not_installed_returns_empty(self):
+    def test_run_bandit_not_installed_signals_error(self):
         with patch("static_analysis.subprocess.run",
                    side_effect=FileNotFoundError("bandit not found")):
-            findings = _run_bandit(["test.py"])
+            findings, err = _run_bandit(["test.py"])
         assert findings == []
+        assert err is not None
+
+    def test_analyse_bandit_not_installed_excludes_dimension(self):
+        # #917: bandit missing → error set so the aggregator EXCLUDES the
+        # highest-weight security dimension rather than scoring a clean 0.0.
+        with patch("static_analysis.subprocess.run",
+                   side_effect=FileNotFoundError("bandit not found")):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is not None
+        assert result["score"] == pytest.approx(0.0)
+
+    def test_analyse_bandit_unparseable_excludes_dimension(self):
+        # #917: bandit ran but emitted unparseable output → exclude, don't
+        # report a clean pass.
+        mock = MagicMock(stdout="not-json", returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=mock):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is not None
+        assert result["score"] == pytest.approx(0.0)
 
     def test_analyse_with_high_finding_raises_score(self):
         mock = MagicMock(stdout=self.BANDIT_OUTPUT, returncode=0)
