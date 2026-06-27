@@ -60,6 +60,9 @@ class CronEnv:
         self.claude_log = tmp_path / "claude_invocation.log"
         self.token_capture = tmp_path / "lock_pid_seen.log"
         self.ppid_capture = tmp_path / "ppid_seen.log"
+        # Records each `gh issue create` invocation so dedup/fail-closed tests
+        # (#849) can assert whether a [BLOCKED] issue was actually filed.
+        self.aa_issue_marker = tmp_path / "aa_issue_create.log"
 
         # ── claude stub: records how it was invoked, never spawns the real CLI ──
         # $0 proves thin-env resolved it by absolute path off the pinned PATH;
@@ -94,8 +97,11 @@ class CronEnv:
             # Context: next work candidates (needs-ai issues, not needs-human)
             '  *"labels=needs-ai"*)\n'
             '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
-            # Agent availability: needs-human blocked issues count
+            # Agent availability: needs-human blocked issues count.
+            # HOS_TEST_AA_QUERY_FAIL simulates a gh API failure (non-zero exit)
+            # so the #849 fail-closed dedup path can be exercised.
             '  *"labels=needs-human"*)\n'
+            '    [[ -n "${HOS_TEST_AA_QUERY_FAIL:-}" ]] && exit 1\n'
             '    echo "${HOS_TEST_NEEDS_HUMAN_BLOCKED:-0}" ;;\n'
             # PR list (open bot PRs) — outputs one PR number per line
             '  *"pulls?state=open"*)\n'
@@ -107,8 +113,9 @@ class CronEnv:
             '  *"reviews"*"APPROVED"*)\n'
             '    echo "${HOS_TEST_PR_AP:-1}" ;;\n'
             'esac\n'
-            # issue create — just confirm and exit
+            # issue create — record the invocation, then confirm and exit
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
+            f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  echo "https://github.com/test/repo/issues/999"\n'
             'fi\n'
             "exit 0\n",
@@ -230,6 +237,10 @@ class CronEnv:
 
     def claude_ran(self) -> bool:
         return self.claude_log.exists()
+
+    def aa_issue_created(self) -> bool:
+        """True if the launcher filed a [BLOCKED] agent-unavailable issue."""
+        return self.aa_issue_marker.exists()
 
     def claude_record(self) -> str:
         return self.claude_log.read_text() if self.claude_log.exists() else ""
@@ -675,6 +686,7 @@ class TestAgentAvailability:
         r = cron.run(env_overrides={"HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"})
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.claude_ran()
+        assert cron.aa_issue_created(), "expected a [BLOCKED] issue to be filed"
 
     def test_missing_agent_duplicate_issue_guard(self, cron):
         """Existing blocked issue → no second issue create (duplicate guard)."""
@@ -683,6 +695,20 @@ class TestAgentAvailability:
         r = cron.run(env_overrides={"HOS_TEST_NEEDS_HUMAN_BLOCKED": "1"})
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.claude_ran()
+        assert not cron.aa_issue_created(), "existing issue → must not file a duplicate"
+
+    def test_missing_agent_dedup_query_failure_fails_closed(self, cron):
+        """#849: a dedup-query *error* must NOT default the count to 0 and file a
+        duplicate [BLOCKED] issue (fail-open). On query failure, skip filing and
+        warn (fail-closed)."""
+        cron.set_consumer_agents("coder")
+        r = cron.run(env_overrides={"HOS_TEST_AA_QUERY_FAIL": "1"})
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.claude_ran()
+        assert not cron.aa_issue_created(), (
+            "dedup query failed → must fail closed and NOT file an issue"
+        )
+        assert "fail-closed" in r.stdout
 
     def test_comments_and_blanks_in_agents_list_ignored(self, cron):
         """Comment lines and blank lines in consumer_agents.txt are skipped."""

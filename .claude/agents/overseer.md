@@ -113,8 +113,11 @@ For each recently-merged PR (merged in the last 2 hours):
    - Do **NOT** file a process-gap issue. Do NOT post a comment. Log and continue.
 3. **If `pr.merged_by.login` is a bot** (login is in `BOT_ACCOUNTS` from `machine-accounts.env`):
    - This is a process violation — bots must not merge without overseer approval.
-   - File a `process-gap` issue: title `process-gap: PR #<n> merged by bot without overseer review`, labels `bug needs-ai`.
-   - Append to audit log: `{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}`.
+   - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#.** A merged PR stays in the rolling 2-hour window across multiple cycles; without a precheck the overseer re-files the same `process-gap` issue and re-appends the same audit line every cycle. Before filing or appending:
+     1. Query open issues: `GET /repos/{o}/{r}/issues?state=open&labels=needs-ai&per_page=100`. If any title contains `PR #<n> merged by bot` → a process-gap issue already exists for this PR; do **NOT** file a duplicate.
+     2. Grep `audit/oversight-log.jsonl` for an existing line matching `"event":"pr-merged-without-review"` with `"pr":<n>`. If present → do **NOT** append a duplicate.
+   - File a `process-gap` issue (only if step 1 found none): title `process-gap: PR #<n> merged by bot without overseer review`, labels `bug needs-ai`.
+   - Append to audit log (only if step 2 found none): `{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}`.
 
 **Context:** This check was added because the overseer incorrectly filed issue #581 when PR #579 was merged directly by ScottThurlow. Human merges are valid and expected in governance-edge cases; only bot merges without oversight are violations.
 
@@ -122,11 +125,21 @@ For each recently-merged PR (merged in the last 2 hours):
 
 ### Release-gate deep validation (#695)
 
-When an open `release-request` issue with no `release-authorized` label exists in the current
-milestone, the overseer performs a deep artifact validation pass across all build steps before
-posting clearance. This is distinct from the per-PR §3b artifact presence check — it
-interprets content and completeness across the full milestone, reading from the main branch
-(merged artifacts only).
+When an open `release-request` issue **with neither a `release-authorized` nor a `needs-human`
+label** exists in the current milestone, the overseer performs a deep artifact validation pass
+across all build steps before posting clearance. This is distinct from the per-PR §3b artifact
+presence check — it interprets content and completeness across the full milestone, reading from
+the main branch (merged artifacts only).
+
+**Idempotency (#849, no-idempotency class).** The trigger condition above is the dedup gate:
+a CLEARANCE adds no terminal label, so the issue stays selectable while awaiting the human's
+`release-authorized` — re-running validation each cycle is acceptable, but the overseer must
+**never re-post an identical clearance comment or re-append an identical audit event**. Before
+posting CLEARANCE (below), grep `audit/oversight-log.jsonl` for an existing
+`{"event":"release-gate-validation","release":"<this milestone title>","decision":"CLEARANCE"}`
+line; if one is present, the gate already cleared this release — skip the comment and the audit
+append entirely. An ESCALATE adds `needs-human`, which the trigger now excludes, so an escalated
+release-request does not re-fire until the human resolves it and removes the label.
 
 **Step discovery:** For each merged PR in the milestone (`GET /repos/{o}/{r}/pulls?state=closed&milestone=<N>&per_page=100`), determine the step number from the `signoffs/validators/step{N}/` directory. Collect all unique step numbers N that have any artifact on main.
 
@@ -143,7 +156,7 @@ interprets content and completeness across the full milestone, reading from the 
 3. For each required role: if no entry exists with `Status: APPROVED` → flag `incomplete_register step{N} role=<role>`.
 
 **Decision:**
-- **CLEARANCE** (no flags raised across all steps): post on the release-request issue:
+- **CLEARANCE** (no flags raised across all steps): first run the idempotency grep above — if this release was already cleared, skip silently. Otherwise post on the release-request issue:
   ```markdown
   ## Overseer Release-Gate Clearance
 
@@ -161,7 +174,7 @@ interprets content and completeness across the full milestone, reading from the 
   ```
 - **ESCALATE** (any flag raised): enumerate all flags in the post (step number + condition); add `needs-human` label if not already present; do NOT post clearance. Follow §8.2 escalation format.
 
-**Audit log:** Regardless of decision, append to `audit/oversight-log.jsonl` AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2):
+**Audit log:** Append to `audit/oversight-log.jsonl` AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2) — but only when a comment was actually posted this cycle. If the CLEARANCE idempotency grep above suppressed the comment (already cleared), do **not** append a duplicate audit line:
 ```json
 {"event":"release-gate-validation","release":"<milestone title>","decision":"<CLEARANCE|ESCALATE>","steps_checked":[<N>...],"flags":[<flag strings>],"timestamp":"<ISO8601>"}
 ```
