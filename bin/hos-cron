@@ -394,17 +394,26 @@ if [[ -f "$_AGENTS_LIST" ]]; then
     echo "$LOG_PREFIX AGENT AVAILABILITY FAIL: missing ${_missing_agents[*]}"
     _audit cycle-preflight-fail reason=agent_availability
     if [[ -n "$_REPO_SLUG" ]]; then
-      _aa_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
-        --jq '[.[] | select(.title | startswith("[BLOCKED] agent unavailable"))] | length' \
-        2>/dev/null || echo "0")
-      _aa_existing="${_aa_existing:-0}"
-      if [[ "$_aa_existing" == "0" ]]; then
-        gh issue create \
-          --repo "$_REPO_SLUG" \
-          --title "[BLOCKED] agent unavailable — ${ROLE} halted (missing: ${_missing_agents[*]})" \
-          --label "needs-human,needs-ai" \
-          --body "Required agent files missing from \`$REPO_ROOT/.claude/agents/\`: \`${_missing_agents[*]}\`. ${ROLE} cannot launch. Re-run \`hos_install.sh\` or restore the missing files." \
-          2>/dev/null || true
+      # #849 (no-idempotency class): fail-CLOSED dedup. A dedup-query *error*
+      # must never default the count to 0 — that fails open and files a fresh
+      # [BLOCKED] issue every cycle, flooding the queue. Only file when the
+      # query SUCCEEDS and confirms zero existing issues; on query failure,
+      # skip filing (a duplicate is worse than a deferred file — the missing
+      # agent persists, so the next cycle whose query succeeds files once).
+      if _aa_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+          --jq '[.[] | select(.title | startswith("[BLOCKED] agent unavailable"))] | length' \
+          2>/dev/null); then
+        _aa_existing="${_aa_existing:-0}"
+        if [[ "$_aa_existing" == "0" ]]; then
+          gh issue create \
+            --repo "$_REPO_SLUG" \
+            --title "[BLOCKED] agent unavailable — ${ROLE} halted (missing: ${_missing_agents[*]})" \
+            --label "needs-human,needs-ai" \
+            --body "Required agent files missing from \`$REPO_ROOT/.claude/agents/\`: \`${_missing_agents[*]}\`. ${ROLE} cannot launch. Re-run \`hos_install.sh\` or restore the missing files." \
+            2>/dev/null || true
+        fi
+      else
+        echo "$LOG_PREFIX WARN: agent-availability dedup query failed — skipping [BLOCKED] issue creation (fail-closed) to avoid duplicate filings"
       fi
     fi
     exit 1
