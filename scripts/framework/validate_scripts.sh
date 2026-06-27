@@ -34,11 +34,18 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# Resolve validation_logic.py from the repo root so the delegation works
-# regardless of the caller's cwd (SPEC-334); ledger paths stay cwd-relative.
+# Resolve repo-root-anchored paths so delegation + the committed ledger work
+# regardless of the caller's cwd (SPEC-334, #686). The PASS_COUNT_FILE and the
+# timestamped output files stay ephemeral (.claudetmp/, per-run/per-cwd); the
+# dedup ledger is now COMMITTED in-repo at scripts/framework/scripts-review-ledger.jsonl
+# so dispositions accumulate across machines and releases instead of resetting on
+# every fresh clone (#686, root cause #5 — the gate never converged because the
+# ledger lived in gitignored .claudetmp/ and reset on each machine). An empty or
+# missing ledger is an empty seen-set, so this is fail-closed-identical to the old
+# behavior on a clean checkout. HOS_SCRIPTS_REVIEW_LEDGER overrides the path (tests).
 VALIDATION_LOGIC="$ROOT/scripts/oversight/validation_logic.py"
 OUT_DIR=".claudetmp/framework"
-LEDGER="$OUT_DIR/scripts-review-ledger.jsonl"
+LEDGER="${HOS_SCRIPTS_REVIEW_LEDGER:-$ROOT/scripts/framework/scripts-review-ledger.jsonl}"
 PASS_COUNT_FILE="$OUT_DIR/scripts-review-pass-count"
 MODEL="claude-opus-4-8"
 MAX_PASSES="${SCRIPTS_REVIEW_MAX_PASSES:-3}"
@@ -51,7 +58,7 @@ SKIP_CODEX=false
 
 # ── --record / --reset (shared ledger contract with the other validators) ─────
 if [[ "${1:-}" == "--record" ]]; then
-    mkdir -p "$OUT_DIR"
+    mkdir -p "$OUT_DIR" "$(dirname "$LEDGER")"
     _files="${2:?--record needs FILES}"; _cls="${3:?--record needs CLASS}"; _disp="${4:?--record needs DISPOSITION}"
     # Ledger write delegated to validation_logic.py (SPEC-334 binding 4).
     python3 "$VALIDATION_LOGIC" record \
@@ -60,7 +67,14 @@ if [[ "${1:-}" == "--record" ]]; then
     exit 0
 fi
 if [[ "${1:-}" == "--reset" ]]; then
-    rm -f "$LEDGER" "$PASS_COUNT_FILE"; echo "scripts-review ledger + pass counter reset."; exit 0
+    # The ledger is now a COMMITTED, append-only baseline (#686). --reset starts a
+    # clean review of a genuinely new change set by TRUNCATING the ledger (the
+    # tracked file stays in place — an empty ledger is an empty seen-set, identical
+    # to a missing one) rather than deleting it, and clears the per-run pass
+    # counter. To clear the shared baseline for everyone, commit the emptied file;
+    # otherwise `git restore` it after the local run.
+    mkdir -p "$(dirname "$LEDGER")"; : > "$LEDGER"; rm -f "$PASS_COUNT_FILE"
+    echo "scripts-review ledger truncated + pass counter reset."; exit 0
 fi
 
 while [[ $# -gt 0 ]]; do

@@ -33,7 +33,9 @@ The ledger files (`external-review-ledger.jsonl`, `scripts-review-ledger.jsonl`)
 
 A fingerprint is `(tuple(sorted(files)), class_string)`. A finding is considered "seen" if its fingerprint matches any ledger entry regardless of disposition. The dedup is reliable within a vendor (the same finding re-phrased next run gets the same fingerprint) and best-effort across vendors (agy uses `category`; codex uses `type` for the same concept).
 
-The `--record FILES CLASS DISPOSITION` CLI subcommand (implemented in bash in both scripts) writes a new ledger entry. The `--reset` subcommand removes the ledger and pass-count file.
+The `--record FILES CLASS DISPOSITION` CLI subcommand (implemented in bash in both scripts) writes a new ledger entry. The `--reset` subcommand clears the ledger and pass-count file.
+
+> **#686 — `scripts-review-ledger.jsonl` is committed in-repo.** Unlike `external-review-ledger.jsonl` (which stays ephemeral under `.claudetmp/framework/`), the scripts-review ledger lives at the committed path `scripts/framework/scripts-review-ledger.jsonl` so dispositions accumulate across machines and releases instead of resetting on every fresh clone (the convergence failure in #686). Because the file is tracked, `validate_scripts.sh --reset` **truncates** it (clearing the seen-set while keeping the tracked file in place) rather than `rm`-ing it; an empty ledger is an empty seen-set, identical to a missing one. `validate_agents.sh --reset` is unchanged and still deletes its ephemeral ledger. See DECISIONS.md (2026-06-27) and TECHNICAL-DESIGN-686.
 
 ### 2b. JSON extraction — `_brace_objects` and `extract_objects`
 

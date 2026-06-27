@@ -498,3 +498,17 @@ idle-backoff suppression (#628) is load-bearing for cost control.
 **Naming.** `hos-auditsync-hos` follows the `hos-*-hos` convention so each consumer repo gets its own scoped app instance.
 
 **Consequences.** The app needs `Contents: read & write` on the target repo only. Secrets `HOS_AUDIT_SYNC_APP_ID` and `HOS_AUDIT_SYNC_PRIVATE_KEY` must be stored per-repo. The workflow uses `actions/create-github-app-token` to generate a short-lived installation token each run. The cron machine pushes audit files to the unprotected `audit-log` branch; the workflow reads from there and commits only those two files to main.
+
+## 2026-06-27 — Scripts-review dedup ledger committed in-repo (#686)
+
+**Decision.** The scripts-review convergence ledger moves from gitignored `.claudetmp/framework/scripts-review-ledger.jsonl` to the **committed** path `scripts/framework/scripts-review-ledger.jsonl`. Dispositions (`fixed`/`filed:#N`/`residual`/`noise`) now accumulate across machines and releases instead of resetting on every fresh clone. **✅ implemented** (root cause #5 of #686).
+
+**Why.** The Phase 1.6 scripts-review gate never converged at the v0.4.0 cut (10+ attempts, `--skip-validation` required). A primary driver: the ledger lived in a gitignored temp dir, so every machine/checkout started with an empty seen-set and re-litigated already-triaged findings. Committing the ledger gives the gate a durable baseline — the same mechanism that lets `validate_self.sh` converge — and structurally enables release-time pre-seeding (#686 improvement #6: the committed ledger *is* the baseline the next release starts from).
+
+**Fail-closed preservation.** An empty/missing ledger is an empty seen-set, so a clean checkout behaves identically to before. The ledger only ever *adds* to the seen-set, which can convert un-ledgered blocking findings into known ones — never the reverse. The verdict=error / hung-or-empty-reviewer path (#669/#670) is independent of ledger contents, so nothing here lets a failed reviewer converge to PASS.
+
+**`--reset` semantics.** Because the file is now tracked, `validate_scripts.sh --reset` **truncates** the ledger (clears the seen-set, keeps the tracked file) and clears the per-run pass counter, rather than deleting the file. To clear the shared baseline for everyone, commit the emptied file; otherwise `git restore` it after a local run. `HOS_SCRIPTS_REVIEW_LEDGER` overrides the path (used by tests so they never touch the committed baseline).
+
+**Ledger asymmetry (intentional).** Only the scripts-review ledger is persistent. `validate_agents.sh` / `validate_self.sh` keep their ephemeral `.claudetmp/` ledgers and their delete-on-`--reset` behavior — they review the (smaller, more stable) agent/contract surface and have not exhibited the cross-machine convergence failure. Persisting them is deferred; touching them would re-open the shared `--reset` idiom and balloon the blast radius.
+
+**Deferred (filed as follow-ups to #686).** Semantic/embedding dedup (#1), scoping the gate to product scripts via an infra-exclusion list (#2), a convergence criterion replacing the fixed 3-pass cap (#3), 2-of-3 reviewer agreement before a finding counts as new (#4), and automated release-time pre-seeding (#6). Each carries its own fail-open surface and is a separate design.
