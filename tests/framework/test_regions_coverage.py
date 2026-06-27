@@ -569,6 +569,7 @@ class TestCmdPlanDirect:
             template_file=str(tmpl),
             base_shas="{not json",
             squash=False,
+            prune=False,
             first_install=False,
         )
         result = _cmd_plan(args)
@@ -585,6 +586,7 @@ class TestCmdPlanDirect:
             template_file=str(tmpl),
             base_shas='["not", "a", "dict"]',
             squash=False,
+            prune=False,
             first_install=False,
         )
         result = _cmd_plan(args)
@@ -601,6 +603,7 @@ class TestCmdPlanDirect:
             template_file=str(good),
             base_shas="{}",
             squash=False,
+            prune=False,
             first_install=False,
         )
         result = _cmd_plan(args)
@@ -621,6 +624,7 @@ class TestCmdPlanDirect:
             template_file=str(tmpl),
             base_shas=json.dumps(base),
             squash=False,
+            prune=False,
             first_install=False,
         )
         result = _cmd_plan(args)
@@ -642,6 +646,7 @@ class TestCmdPlanDirect:
             template_file=str(tmpl_f),
             base_shas=json.dumps(base),
             squash=False,
+            prune=False,
             first_install=False,
         )
         result = _cmd_plan(args)

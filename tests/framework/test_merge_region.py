@@ -8,6 +8,7 @@ spec docs/specs/v0.3.0-base-agents-spec.md §5 + §11a/D9:
   - PROJECT → SKIP_PROJECT, short-circuiting before any sha comparison
   - base_sha is None → routed as base != disk (assume edited / unknown provenance)
   - --squash: HARDSTOP→REFRESH (row 4) and HARDSTOP→DROP (row 6)
+  - --prune: HARDSTOP→DROP (row 6) ONLY — never overwrites row-4 drift (#914)
   - a parametrized matrix so the whole table is visible at a glance
   - purity: same inputs → same output, no side effects
   - explicit regression guards: row 3 (convergent edit) must NOT clobber; row 5
@@ -91,6 +92,34 @@ def test_row6_edited_removed_squash_drop():
     assert (
         merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, removed=True, squash=True)
         == Action.DROP
+    )
+
+
+def test_row6_edited_removed_prune_drop():
+    # #914: --prune ALSO consents to dropping an edited removed region (row 6) —
+    # the region-level analogue of --prune's orphan-FILE archival.
+    assert (
+        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, removed=True, prune=True)
+        == Action.DROP
+    )
+
+
+def test_prune_does_not_overwrite_template_drift():
+    # #914 REGRESSION GUARD: --prune must NEVER convert template-side drift
+    # (row 4) into a REFRESH. Only --squash consents to overwriting a
+    # consumer-edited CORE/PACK region. --prune is orphan-drop consent, not
+    # drift-overwrite consent — so genuine drift stays a HARDSTOP under --prune.
+    assert (
+        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, prune=True) == Action.HARDSTOP
+    )
+    assert (
+        merge_region("PACK:django", base_sha=A, disk_sha=B, incoming=C, prune=True)
+        == Action.HARDSTOP
+    )
+    # Even with prune set, only --squash flips row 4.
+    assert (
+        merge_region("CORE", base_sha=A, disk_sha=B, incoming=C, prune=True, squash=True)
+        == Action.REFRESH
     )
 
 

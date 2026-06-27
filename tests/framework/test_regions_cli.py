@@ -128,6 +128,25 @@ def test_cli_plan_squash_unblocks_drift(tmp_path):
     assert _shas(new_bytes)["PROJECT"] == _shas(disk)["PROJECT"]
 
 
+def test_cli_plan_prune_does_not_unblock_drift(tmp_path):
+    # #914: --prune must NOT unblock a template-side drift HARDSTOP via the CLI
+    # (the installer passes --prune separately from --squash). Drift still exits
+    # EXIT_DRIFT under --prune alone.
+    original = _agent(core="hos original")
+    disk = _agent(core="consumer edited this")
+    template = _agent(core="hos new version")
+    base = json.dumps(_shas(original))
+
+    disk_f = _write(tmp_path, "disk.md", disk)
+    tmpl_f = _write(tmp_path, "tmpl.md", template)
+
+    r = _run("plan", disk_f, tmpl_f, "--base-shas", base, "--prune")
+    assert r.returncode == regions.EXIT_DRIFT, r.stdout + r.stderr
+    payload = json.loads(r.stdout)
+    assert payload["blocked"] is True
+    assert payload["new_bytes_b64"] is None
+
+
 def test_cli_plan_bad_base_shas_json(tmp_path):
     disk_f = _write(tmp_path, "disk.md", _agent())
     tmpl_f = _write(tmp_path, "tmpl.md", _agent())
