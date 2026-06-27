@@ -65,8 +65,9 @@ This is the thesis's central tension stated mechanically: when one agent is capa
 - `feed-the-reviewer-its-own-issue-tracker.md` — injecting the tracked-issue list into the prompt converges the reviewer by construction (2–3 new/run → 1).
 - `cost-gating-autonomous-oversight-loops.md` — decouple a cheap deterministic trigger from the expensive model call, or the always-on loop gets turned off.
 - `unenforceable-rules-need-verification-mechanisms.md` — a rule with no checkable artifact is merely advisory; the agent over-applies or substitutes its own judgment.
+- `convergence-ledger-must-persist.md` (#686) — the dedup ledger that *defines* the forced gate's reachable "pass" was stored gitignored, so it reset on every clone and the gate never converged (10+ attempts, `--skip-validation` required). Forcing a convergence gate is moot if the state that lets it converge is ephemeral; commit the ledger in-repo.
 
-**Cross-links:** O1 (the independent check is what self-certification can't replace), O4 (forcing the check is worthless if a broken check reports "all clear"), O7 (the ratchet — automation may force/tighten, only a human may relax).
+**Cross-links:** O1 (the independent check is what self-certification can't replace), O4 (forcing the check is worthless if a broken check reports "all clear"), O7 (the ratchet — automation may force/tighten, only a human may relax), O8 (the convergence architecture the ledger belongs to).
 
 ---
 
@@ -83,6 +84,10 @@ This is the dark twin of O1. If a *capable* agent's confident-wrong output is th
 - `a-gate-must-not-confuse-unreadable-with-unsafe.md` — "couldn't parse the reviewer" collapsed into "error," throwing away a real bug the reviewer had caught; four distinct outcomes must stay distinct.
 - `ci-is-blind-to-consumer-environment-failures.md` — a `command -v detect-secrets` miss silently downgraded the secret scan to a weak grep *while announcing a pass*; only a field install surfaced it.
 - `the-safety-valve-must-be-more-trustworthy-than-the-gates.md` — the mechanism that *disables* oversight had integrity bugs and skipped audit entries; it must be more auditable than the gates it disables.
+- `gate-on-computed-signal-not-self-reported-verdict.md` (#814) — two validators gated on the reviewer's self-reported `verdict` field instead of the computed `blocking_count`; a JSON listing blocking findings but tagged "approve" exited 0. One of three fail-opens the v0.4.2 pre-release pass caught (the others: a quote-context tracker that skipped real code after a quoted comment; a migration scorer pinned to line 0).
+- *(#806/#807)* — `ensure_venv.sh` now smoke-tests the oversight venv (imports radon/bandit/flake8) on **every** invocation and auto-repairs, rather than trusting a stale cached marker — the instrument re-verifies itself each run instead of believing a once-true success record.
+- *(#774)* — `hos-cron` fails *closed* (exit 78, actionable message) when the venv/pytest is missing **before** the jitter sleep, instead of silently burning 30–60s and then failing opaquely inside the test runner: declare your deps and fail loud and early.
+- **2026-06-27 pre-cut governance audit** (#703, #910–#925) — a dedicated sequential audit of the governance code found **26 adversarially-verified bugs, 21 of them fail-open or governance-bypass**, across the validators, the cron loop, the panel, and the red-team checkpoint — O4's thesis sampled at scale rather than one incident at a time. The sharper result is the meta-finding: nearly every bug violated a principle *already in this corpus*, so the gap is **enforcement, not knowledge** (see `unenforceable-rules-need-verification-mechanisms.md`, third instance). The class is dense enough that the last-line gate (O8) reliably catches what the inner-loop reviewers approve past — the case for turning the top principles into mechanical assertions (lint/CI), not just findings.
 
 **Cross-links:** O3 (forcing a check is moot if the forced check can lie clean), O2 (a silently-broken layer is functionally a missing layer), O8 (the last gate only works if it can't fail-open).
 
@@ -153,6 +158,8 @@ This is O1 and O2 escalated to the release boundary: even after a complete, well
 - `nondeterministic-review-gate-converges-on-zero-new.md` / `operationalizing-a-nondeterministic-reviewer-as-a-gate.md` — every release-gate run surfaces a genuine new governance finding; "pass" is zero-NEW, never zero.
 - `cross-vendor-review-finds-real-bugs.md` — the decorrelation mechanism the last-line gate relies on demonstrably yields real bugs.
 - **#248 / session 2026-06-15** — the v0.3.0 release gate caught a governance gaming-hole the entire inner loop passed (no finding file yet).
+- `gate-on-computed-signal-not-self-reported-verdict.md` (#814) — the v0.4.2 **pre-release** validation pass caught three independent fail-opens in the oversight machinery itself, none surfaced by the reviewers that had approved the code; the last-line gate's characteristic catch is the fail-open in the gate set.
+- *(#695 / #815)* — the last-line gate was **institutionalized**: the overseer now runs a release-gate deep validation when an open release-request issue is detected — re-reads every per-step `summary.json` from `main`, re-checks tier/severity and sign-off-register completeness for required roles, and posts CLEARANCE or ESCALATE before any release authorization. The O8 layer became standing mechanism, not a manual pass.
 
 **Cross-links:** O1 (no inner self-certification is final), O2 (a distinct last layer), O4 (it only works if it can't fail-open), O7 (its characteristic catch is a ratchet/gaming-hole defect).
 
@@ -189,8 +196,10 @@ Scott's comment on observing these patterns: *"Oh, it's behaving just like a hum
 **Evidence:**
 - `ai-agent-scope-drift-mirrors-human-dev-behavior.md` — systematic documentation of the pattern and its structural fixes.
 - `#401` (PR too large), `#403` (stopped before quality gates met), `#404` (worked outside milestone)
+- `autonomous-worker-restacks-redundant-work.md` (#850, #880) — running cycle-to-cycle, the worker branched from state already in `main`/a sibling PR and re-proposed shipped work — the failure a human dev avoids by reflexively rebasing; fixed by making "is this already done?" a mechanical, fail-closed pre-PR check (git-cherry patch-id + open-PR SHA overlap).
+- *(#901)* — the worker selected work purely by lowest issue number, so urgent items waited behind routine lower-numbered ones (the human-dev "just take the next ticket" bias); fixed with explicit `priority:*` ordering, FIFO within a band, sourced from one shared `next_candidates.jq` so both selection paths can't diverge.
 
-**Cross-links:** O3 (the cheap check gets skipped unless forced), O6 (the human's naïve question cuts to the real gate).
+**Cross-links:** O3 (the cheap check gets skipped unless forced), O6 (the human's naïve question cuts to the real gate), O1 (the loop trusts its own local state the way an agent trusts its self-report).
 
 ---
 
@@ -204,6 +213,7 @@ An agent defaults to the *narrowest* interpretation of an instruction that satis
 - `agent-misses-pr-feedback-without-explicit-review-read.md`
 - `#411`, `#414` — filed twice against the same root cause
 - Issue #358 (silent no-op gate) — the same pattern in a different domain
+- *(#867)* — the inverse of #411/#414: the worker checked PR **review state** but not **mergeable state**, so a CONFLICTING PR carrying a prior APPROVED review was routed as "awaiting-merge" and skipped. Each routing decision must enumerate *every* attached signal (mergeable **and** review **and** comments); the agent defaults to the one field the system has a name for. Fixed by checking mergeable first in the routing loop.
 
 **Cross-links:** O3 (explicit forcing is required), O4 (must fail loud — missing the check = silently passing a failing gate).
 
