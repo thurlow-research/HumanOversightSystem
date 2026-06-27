@@ -17,6 +17,15 @@ sm = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(sm)
 
 
+def _read_audit_events(root) -> list[dict]:
+    """Reconstruct the chronological event list from the per-entry records.
+
+    emit_audit writes one write-once file per event under <root>/audit/log/
+    (SPEC-888 #888 P2); the canonical read-shim concatenates them back in order.
+    """
+    return [json.loads(b) for b in sm._AUDIT_LOG.read_stream(str(root))]
+
+
 SAMPLE = """\
 Authorized by: Test Human
 Date: 2026-06-13
@@ -124,9 +133,9 @@ def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
     (tmp_path / "audit").mkdir()
     rc = sm.cmd_emit_audit("lint", "Test Human", step="step-3")
     assert rc == 0
-    lines = (tmp_path / "audit" / "oversight-log.jsonl").read_text().splitlines()
-    assert len(lines) == 1
-    event = json.loads(lines[0])
+    events = _read_audit_events(tmp_path)
+    assert len(events) == 1
+    event = events[0]
     assert event["event"] == "gate-suspended"
     assert event["gate"] == "lint"
     assert event["authorized_by"] == "Test Human"
@@ -134,19 +143,21 @@ def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
     assert "suspension_file" in event
     assert event["reason_category"] == "unspecified"  # no suspension file in tmp_path
     assert "timestamp" in event
-    # Full schema per OVERSIGHT-CONTRACT §6a (parity + #397 additions)
-    assert list(event.keys()) == [
+    # Full field set per OVERSIGHT-CONTRACT §6a (parity + #397 additions). The
+    # on-disk record is canonically key-sorted (SPEC-888), so compare as a set.
+    assert set(event.keys()) == {
         "event", "gate", "authorized_by", "step",
         "suspension_file", "reason_category", "timestamp",
-    ]
+    }
 
 
 def test_emit_audit_noop_without_audit_dir(tmp_path, monkeypatch):
-    """No audit/ directory → no file, no exception (guard preserved)."""
+    """No audit/ directory → no record, no exception (guard preserved)."""
     monkeypatch.chdir(tmp_path)
     rc = sm.cmd_emit_audit("lint", "Test Human")
     assert rc == 0
-    assert not (tmp_path / "audit" / "oversight-log.jsonl").exists()
+    assert not (tmp_path / "audit").exists()
+    assert _read_audit_events(tmp_path) == []
 
 
 def test_emit_audit_default_authorized_by(tmp_path, monkeypatch):
@@ -154,7 +165,7 @@ def test_emit_audit_default_authorized_by(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "audit").mkdir()
     sm.cmd_emit_audit("lint", None)
-    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    event = _read_audit_events(tmp_path)[0]
     assert event["authorized_by"] == "unknown"
 
 
@@ -163,7 +174,7 @@ def test_emit_audit_escapes_authorized_by(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "audit").mkdir()
     sm.cmd_emit_audit("lint", 'Ann "Q" Smith')
-    event = json.loads((tmp_path / "audit" / "oversight-log.jsonl").read_text().strip())
+    event = _read_audit_events(tmp_path)[0]
     assert event["authorized_by"] == 'Ann "Q" Smith'
 
 

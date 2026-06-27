@@ -216,11 +216,12 @@ SUMMARY_JSON="{
 
 echo "$SUMMARY_JSON" > "${OUT_DIR}/summary.json"
 
-# Append to audit log
-AUDIT_LOG="audit/oversight-log.jsonl"
-if [[ -f "$AUDIT_LOG" ]]; then
-    echo "{\"event\":\"sampling-audit\",\"timestamp\":\"${TIMESTAMP}\",\"pool_size\":${POOL_SIZE},\"sample_size\":${ACTUAL_N},\"tier_escapes\":${TIER_ESCAPES},\"escape_rate_pct\":${ESCAPE_RATE},\"recommendation\":\"${RECOMMENDATION}\"}" \
-        >> "$AUDIT_LOG"
+# Write a write-once per-entry audit record (SPEC-888 #888 P2): distinct
+# filenames mean concurrent branches never conflict on the audit trail.
+if [[ -d "audit" ]]; then
+    # shellcheck source=oversight/lib/audit_log.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/lib/audit_log.sh"
+    audit_write_event "{\"event\":\"sampling-audit\",\"timestamp\":\"${TIMESTAMP}\",\"pool_size\":${POOL_SIZE},\"sample_size\":${ACTUAL_N},\"tier_escapes\":${TIER_ESCAPES},\"escape_rate_pct\":${ESCAPE_RATE},\"recommendation\":\"${RECOMMENDATION}\"}" >/dev/null
 fi
 
 # ── Step 5: Print summary ─────────────────────────────────────────────────────

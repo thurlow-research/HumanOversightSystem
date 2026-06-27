@@ -1,10 +1,11 @@
 """
 Unit tests for cycle_log.py — structured cycle-event audit logging.
 
-Covers: JSON line shape (event/role/timestamp/kwargs), append semantics,
-argument parsing (int coercion, bare-flag → True), and the empty-args
-usage-error exit. The cron scripts call this on every cycle, so a silently
-broken JSON line would corrupt the audit trail.
+Covers: record shape (event/role/timestamp/kwargs), per-entry write semantics
+(one write-once file per event under audit/log/, SPEC-888 #888 P2), argument
+parsing (int coercion, bare-flag → True), and the empty-args usage-error exit.
+The cron scripts call this on every cycle, so a silently broken record would
+corrupt the audit trail.
 """
 
 import json
@@ -15,65 +16,84 @@ import pytest
 from scripts.automation.lib import cycle_log
 
 
+def _read_events(root: Path) -> list[dict]:
+    """Reconstruct the chronological event list from the per-entry records."""
+    return [json.loads(b) for b in cycle_log._AUDIT_LOG.read_stream(str(root))]
+
+
 class TestLogEvent:
-    def test_writes_single_json_line(self, tmp_path, monkeypatch):
-        log_file = tmp_path / "audit" / "oversight-log.jsonl"
-        monkeypatch.setattr(cycle_log, "_find_audit_log", lambda: log_file)
+    def test_writes_single_record(self, tmp_path, monkeypatch):
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
 
         cycle_log.log_event("cycle-stop", reason="pr-awaiting-review", pr=587)
 
-        lines = log_file.read_text().splitlines()
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
+        events = _read_events(tmp_path)
+        assert len(events) == 1
+        entry = events[0]
         assert entry["event"] == "cycle-stop"
         assert entry["role"] == "worker"
         assert entry["reason"] == "pr-awaiting-review"
         assert entry["pr"] == 587
 
-    def test_timestamp_is_iso_utc_z(self, tmp_path, monkeypatch):
-        log_file = tmp_path / "oversight-log.jsonl"
-        monkeypatch.setattr(cycle_log, "_find_audit_log", lambda: log_file)
+    def test_record_lands_under_month_shard(self, tmp_path, monkeypatch):
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
 
         cycle_log.log_event("cycle-pick", issue=559)
 
-        entry = json.loads(log_file.read_text().splitlines()[0])
-        ts = entry["timestamp"]
+        records = list((tmp_path / "audit" / "log").rglob("*.json"))
+        assert len(records) == 1
+        # audit/log/<YYYY>/<MM>/<ts>-cycle-pick-<hash>.json
+        rel = records[0].relative_to(tmp_path / "audit" / "log").as_posix()
+        assert rel.count("/") == 2  # <YYYY>/<MM>/<file>
+        assert "cycle-pick" in records[0].name
+
+    def test_timestamp_is_iso_utc_z(self, tmp_path, monkeypatch):
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
+
+        cycle_log.log_event("cycle-pick", issue=559)
+
+        ts = _read_events(tmp_path)[0]["timestamp"]
         # Strict ISO-8601 UTC with trailing Z, no microseconds.
         assert ts.endswith("Z")
         assert "T" in ts
         assert len(ts) == len("2026-06-21T00:00:00Z")
 
-    def test_appends_rather_than_truncates(self, tmp_path, monkeypatch):
-        log_file = tmp_path / "oversight-log.jsonl"
-        monkeypatch.setattr(cycle_log, "_find_audit_log", lambda: log_file)
+    def test_distinct_events_are_distinct_records(self, tmp_path, monkeypatch):
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
 
         cycle_log.log_event("cycle-pick", issue=1)
         cycle_log.log_event("cycle-pr-opened", pr=2, issue=1)
 
-        lines = log_file.read_text().splitlines()
-        assert len(lines) == 2
-        assert json.loads(lines[0])["event"] == "cycle-pick"
-        assert json.loads(lines[1])["event"] == "cycle-pr-opened"
+        events = _read_events(tmp_path)
+        assert {e["event"] for e in events} == {"cycle-pick", "cycle-pr-opened"}
+        # Two events → two distinct files (the conflict-free property).
+        assert len(list((tmp_path / "audit" / "log").rglob("*.json"))) == 2
 
-    def test_creates_parent_directory(self, tmp_path, monkeypatch):
-        log_file = tmp_path / "deep" / "nested" / "audit" / "log.jsonl"
-        monkeypatch.setattr(cycle_log, "_find_audit_log", lambda: log_file)
+    def test_creates_log_directory(self, tmp_path, monkeypatch):
+        # No audit/log subtree yet — write_event must create it.
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
 
         cycle_log.log_event("cycle-stop", reason="done")
 
-        assert log_file.exists()
+        assert (tmp_path / "audit" / "log").is_dir()
+        assert _read_events(tmp_path)[0]["reason"] == "done"
 
     def test_kwargs_with_special_chars_are_json_escaped(self, tmp_path, monkeypatch):
-        log_file = tmp_path / "log.jsonl"
-        monkeypatch.setattr(cycle_log, "_find_audit_log", lambda: log_file)
+        (tmp_path / "audit").mkdir()
+        monkeypatch.setattr(cycle_log, "_find_root", lambda: tmp_path)
 
         title = 'fix "quoted" thing\nwith newline'
         cycle_log.log_event("cycle-pick", title=title)
 
-        # The on-disk line must remain a single, parseable JSON record.
-        lines = log_file.read_text().splitlines()
-        assert len(lines) == 1
-        assert json.loads(lines[0])["title"] == title
+        # The record must remain a single, parseable JSON object that round-trips.
+        events = _read_events(tmp_path)
+        assert len(events) == 1
+        assert events[0]["title"] == title
 
 
 class TestParseArgs:
@@ -110,8 +130,9 @@ class TestParseArgs:
         assert exc.value.code == 1
 
 
-class TestFindAuditLog:
-    def test_returns_path_object(self):
-        result = cycle_log._find_audit_log()
+class TestFindRoot:
+    def test_returns_repo_root_with_audit_dir(self):
+        # In this repo the module sits under a tree whose root has an audit/ dir.
+        result = cycle_log._find_root()
         assert isinstance(result, Path)
-        assert result.name == "oversight-log.jsonl"
+        assert (result / "audit").is_dir()
