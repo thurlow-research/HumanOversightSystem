@@ -211,10 +211,20 @@ def _get_required_roles(manifest_data: dict) -> list[str]:
     return sorted(roles)
 
 
-def _append_audit_event(log_path: Path, event: dict) -> None:
-    """Append a JSON event line to the oversight-log.jsonl file."""
-    with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(event, separators=(",", ":")) + "\n")
+def _load_audit_log():
+    """Load the canonical per-entry audit-record helper (SPEC-888) by file path.
+
+    This module runs as a plain script under cut_release.sh (and re-execs into a
+    venv when PyYAML is missing), so load the sibling lib/ module directly rather
+    than relying on a package import.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "lib" / "audit_log.py"
+    spec = importlib.util.spec_from_file_location("hos_audit_log", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # --------------------------------------------------------------------------- #
@@ -432,7 +442,11 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         print()
         ok(f"Release artifact validation: PASS")
 
-    # ── Audit log ────────────────────────────────────────────────────────────
+    # ── Audit log (SPEC-888 per-entry record) ─────────────────────────────────
+    # --log-to is retained as the "emit an audit event" signal (cut_release still
+    # passes it); the record now lands as a write-once file under
+    # <repo-root>/audit/log/ rather than appending to the single shared JSONL,
+    # so concurrent release/PR branches never conflict on the audit trail.
     if args.log_to:
         timestamp = _now_utc()
         event = result.to_audit_event(
@@ -440,10 +454,11 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             timestamp=timestamp,
         )
         try:
-            _append_audit_event(Path(args.log_to), event)
-            ok(f"Audit event written to {args.log_to}")
-        except OSError as exc:
-            warn(f"Could not write audit event to {args.log_to}: {exc}")
+            audit_log = _load_audit_log()
+            relpath = audit_log.write_event(event, root=args.repo_root)
+            ok(f"Audit event written to audit/log/{relpath}")
+        except Exception as exc:  # best-effort: never fail the release gate on audit I/O
+            warn(f"Could not write audit event: {exc}")
 
     return 1 if result.should_escalate else 0
 

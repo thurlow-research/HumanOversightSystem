@@ -1,5 +1,10 @@
 """
-cycle_log.py — append structured cycle events to audit/oversight-log.jsonl
+cycle_log.py — write structured cycle events as per-entry audit records.
+
+Each event becomes one write-once file under audit/log/<YYYY>/<MM>/ via the
+canonical helper (scripts/oversight/lib/audit_log.py), so two branches that each
+log a cycle event never touch the same file and never merge-conflict (SPEC-888,
+#888 P2). This replaces the old append to the single audit/oversight-log.jsonl.
 
 Usage (from bash in cron/LOOP context):
   python3 -m scripts.automation.lib.cycle_log cycle-stop reason=pr-awaiting-review pr=587
@@ -16,20 +21,37 @@ Events:
 
 from __future__ import annotations
 
-import json
+import importlib.util
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _find_audit_log() -> Path:
+def _load_audit_log():
+    """Load the canonical per-entry audit-record helper by file path.
+
+    cycle_log may run as a plain script or as a module, so load the sibling
+    scripts/oversight/lib/audit_log.py directly rather than relying on the
+    package import resolving in every invocation context.
+    """
+    path = Path(__file__).resolve().parents[2] / "oversight" / "lib" / "audit_log.py"
+    spec = importlib.util.spec_from_file_location("hos_audit_log", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_AUDIT_LOG = _load_audit_log()
+
+
+def _find_root() -> Path:
+    """Repo root = nearest ancestor containing an audit/ directory (else ".")."""
     root = Path(__file__).resolve().parent
     while root != root.parent:
-        candidate = root / "audit" / "oversight-log.jsonl"
-        if candidate.parent.is_dir():
-            return candidate
+        if (root / "audit").is_dir():
+            return root
         root = root.parent
-    return Path("audit/oversight-log.jsonl")
+    return Path(".")
 
 
 def log_event(event: str, **kwargs) -> None:
@@ -39,10 +61,9 @@ def log_event(event: str, **kwargs) -> None:
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         **kwargs,
     }
-    log_path = _find_audit_log()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a") as f:
-        f.write(json.dumps(entry) + "\n")
+    # write_event derives the record's filename timestamp from entry["timestamp"],
+    # so the path and the record stay in lockstep.
+    _AUDIT_LOG.write_event(entry, root=str(_find_root()))
 
 
 def _parse_args(args: list[str]) -> tuple[str, dict]:

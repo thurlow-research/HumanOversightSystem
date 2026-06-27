@@ -456,6 +456,27 @@ def test_ac12_audit_event_escalate_records_reasons(tmp_path):
     assert len(event["escalation_reasons"]) >= 1
 
 
+def test_audit_event_written_as_per_entry_record(tmp_path):
+    """The --log-to path now writes a write-once per-entry record under
+    audit/log/ (SPEC-888 #888 P2), readable back via the canonical read-shim."""
+    audit_log = ral._load_audit_log()
+    step_dir = tmp_path / "signoffs" / "validators" / "step1"
+    _write_summary(step_dir, _make_summary(1, "LOW"))
+    result = validate_release_artifacts(tmp_path)
+    event = result.to_audit_event(version="v0.5.0", timestamp="2026-06-27T17:00:00Z")
+
+    relpath = audit_log.write_event(event, root=str(tmp_path))
+
+    # One record on disk, month-sharded, sorted lexically == chronologically.
+    records = list((tmp_path / "audit" / "log").rglob("*.json"))
+    assert len(records) == 1
+    assert relpath.endswith(".json")
+    back = [json.loads(b) for b in audit_log.read_stream(str(tmp_path))]
+    assert len(back) == 1
+    assert back[0]["event"] == "release-artifact-validation"
+    assert back[0]["version"] == "v0.5.0"
+
+
 # ── AC13 — parse error in summary.json → escalate ────────────────────────────
 
 
