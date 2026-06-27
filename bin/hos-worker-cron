@@ -85,16 +85,28 @@ fi
 _audit cycle-start "bot=$HOS_BOT_LOGIN"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting loop"
 
+# #916: capture the real exit code. Under `set -euo pipefail` a bare failing
+# `claude` aborts the script before `$?` is read, so the last-run guard and the
+# overseer wakeup below never run on a failed session — breaking the two-agent
+# handoff on exactly the cycles that most need oversight. Guard with
+# `|| _claude_exit=$?`; sibling hos-cron uses the same pattern.
+_claude_exit=0
 claude --print "$(cat "$REPO_ROOT/bootstrap/worker-cron-prompt.md" 2>/dev/null \
-  || echo '---\n**Role: HOS Worker Agent | autonomous cron invocation**\nRun the LOOP.')"
-_claude_exit=$?
+  || echo '---\n**Role: HOS Worker Agent | autonomous cron invocation**\nRun the LOOP.')" \
+  || _claude_exit=$?
+
+if [[ $_claude_exit -ne 0 ]]; then
+  echo "$LOG_PREFIX claude exited $_claude_exit — if auth-related, refresh the token"
+  _audit cycle-claude-fail "exit=$_claude_exit"
+fi
 
 # #711: write last-run only on clean exit
 if [[ $_claude_exit -eq 0 ]]; then
   date +%s > "$_LAST_RUN_FILE"
 fi
 
-# #628: signal overseer
+# #628: signal overseer — dropped unconditionally (outside the success-only path)
+# so the handoff fires even when the worker session failed (#916).
 printf '{"reason":"worker-cycle-complete","timestamp":"%s"}\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$_HOS_DIR/wakeup/overseer"
 echo "$LOG_PREFIX cycle complete (exit=$_claude_exit) — overseer wakeup signal dropped"
