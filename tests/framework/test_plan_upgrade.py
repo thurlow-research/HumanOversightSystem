@@ -187,6 +187,41 @@ def test_drop_edited_removed_region_squash_drops():
     assert "PACK:legacy" not in _shas(plan.new_bytes)
 
 
+def test_drop_edited_removed_region_prune_drops():
+    # #914: --prune (without --squash) also consents to dropping the edited
+    # removed region — the region-level analogue of orphan-FILE archival.
+    disk = _agent_with_extra_pack(core="c", legacy="consumer EDITED legacy")
+    template = _agent(core="c")
+    base = _shas(_agent_with_extra_pack(core="c", legacy="original legacy"))
+
+    plan = plan_upgrade(disk, template, base, prune=True)
+
+    assert not plan.blocked
+    assert _action(plan, "PACK:legacy") == Action.DROP
+    assert "PACK:legacy" not in _shas(plan.new_bytes)
+
+
+def test_prune_does_not_overwrite_drifted_core():
+    # #914 REGRESSION GUARD (the bug): --prune must NOT silently overwrite a
+    # consumer-edited CORE region. Template-side drift stays a HARDSTOP that
+    # blocks the whole file; only --squash consents to the overwrite.
+    disk = _agent(core="consumer EDITED this core")
+    template = _agent(core="HOS's different core")
+    base = dict(_shas(_agent(core="original HOS core")))
+
+    plan = plan_upgrade(disk, template, base, prune=True)
+
+    assert plan.blocked is True
+    assert plan.new_bytes is None
+    assert _action(plan, "CORE") == Action.HARDSTOP
+    # The consumer's edited CORE is untouched (nothing composed at all).
+    assert _shas(disk)["CORE"] == _shas(_agent(core="consumer EDITED this core"))["CORE"]
+    # --squash still flips it; --prune is strictly the weaker, scoped consent.
+    squashed = plan_upgrade(disk, template, base, squash=True)
+    assert not squashed.blocked
+    assert _action(squashed, "CORE") == Action.REFRESH
+
+
 def _agent_with_extra_pack(core="c", legacy="legacy body"):
     """A 4-region agent: CORE + PACK:django + PACK:legacy + PROJECT."""
     parts = [

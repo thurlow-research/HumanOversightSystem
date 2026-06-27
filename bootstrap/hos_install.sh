@@ -1117,10 +1117,15 @@ _first_install=false
 _AGENT_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/hos-agents.XXXXXX")"
 CLEANUP_DIRS+=("$_AGENT_STAGE")
 
-# squash consent maps from BOTH --squash and --prune (the file-orphan symmetry,
-# TD §4.5 review note: --prune is consent-to-drop for the removed-region sweep).
-_squash_flag=()
-if $SQUASH || $PRUNE; then _squash_flag=(--squash); fi
+# Consent flags map to regions.py one-to-one (#914). --squash is the STRONG
+# consent: it overwrites template-side drift (row 4 REFRESH) AND drops edited
+# removed regions (row 6 DROP). --prune is the file-orphan symmetry (TD §4.5
+# review note): consent-to-drop for the removed-region sweep ONLY — it must
+# NEVER imply --squash, or it would silently overwrite consumer-edited CORE/PACK
+# regions without the explicit drift consent (#914 regression).
+_consent_flags=()
+if $SQUASH; then _consent_flags+=(--squash); fi
+if $PRUNE;  then _consent_flags+=(--prune);  fi
 
 _planned_agents=()       # slugs that produced a writable plan (Phase B writes these)
 _blocked_report=""       # aggregated per-file drift report (only set when blocked)
@@ -1307,7 +1312,7 @@ else
     _plan_err="$_AGENT_STAGE/${agent}.plan.err"
     _plan_json="$(python3 "$_REGIONS_PY" plan "$_disk" "$_stage" \
         --base-shas "$_base_shas" \
-        ${_squash_flag[@]+"${_squash_flag[@]}"} ${_plan_first[@]+"${_plan_first[@]}"} 2>"$_plan_err")" \
+        ${_consent_flags[@]+"${_consent_flags[@]}"} ${_plan_first[@]+"${_plan_first[@]}"} 2>"$_plan_err")" \
       || _plan_rc=$?
 
     if [[ $_plan_rc -eq 4 ]]; then
