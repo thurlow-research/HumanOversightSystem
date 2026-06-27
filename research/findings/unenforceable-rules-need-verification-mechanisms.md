@@ -106,6 +106,21 @@ The third row is a weaker enforcement mechanism than the first two — the templ
 
 ---
 
+## Third instance — the recursion: the corpus's own principles are themselves unenforced rules (2026-06-27)
+
+The sharpest instance is self-referential. A sequential full-codebase governance audit ahead of the v0.5.0 cut found **26 adversarially-verified bugs**, of which **21 were fail-open or governance-bypass** — and nearly every one violated a principle *already written down in this very corpus*:
+
+- `a-guard-that-doesnt-halt-is-not-a-guard.md` — a milestone red-team checkpoint that exits 0 with zero reviewers (#911); a halt kill-switch that defaults to "not halted" on a transient API error (#912).
+- `a-gate-must-not-confuse-unreadable-with-unsafe.md` — validators scoring an unparseable/tool-absent input as a clean 0.0 instead of excluding it (#917).
+- `an-override-must-expire-or-it-becomes-the-policy.md` — a stamp gate bypassed by a hardcoded disabled-until date (folded into #552).
+- `self-classification-cannot-gate-the-human-boundary.md` — a `--risk` override that lowers a CRITICAL floor to skip the whole panel (#910).
+
+The lesson recurses one level up from where this finding started. The original instance was an **agent rule** in prose with no artifact the agent could check. This is the identical failure at the **codebase** level: a documented *finding* — a principle the team has explicitly learned and written — is, with no executable check asserting it, exactly as advisory as a prose rule with no flag file. Knowing the principle did not prevent 21 fresh violations from shipping; the principles were load-bearing in the prose and absent from the build. The gap was never knowledge — it was enforcement.
+
+**The fix shape generalizes accordingly:** the highest-value principles in this corpus need to become mechanical assertions, not just findings — a lint that rejects `|| echo "0"` / `|| true` defaulting on a governance gate's status read, a check that every validator returns `error=` (not a clean score) when its tool is absent or its input unparseable, a test that every `--risk` / override path can only *raise* a deterministic floor. **A principle without a verification mechanism is unenforceable whether its subject is an *agent* or the *oversight code itself*.** (Audit filed as #703, #910–#925; reinforces O4.)
+
+---
+
 ## Related findings
 
 - `self-governance-recursion.md` — context in which this finding was discovered
