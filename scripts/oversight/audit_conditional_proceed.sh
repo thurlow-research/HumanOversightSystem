@@ -165,6 +165,16 @@ if [[ -n "$CANDIDATES" ]]; then
 
     # Step B — merged status
     merged="$(gh api "repos/${REPO_SLUG}/pulls/${pr}" --jq '.merged' 2>/dev/null || echo "ERROR")"
+    # A transient API error must NOT be folded into NO_MERGE: unlike UNKNOWN,
+    # NO_MERGE carries no re-run signal, so a genuinely-merged CP PR would be
+    # silently dropped. Branch on the ERROR sentinel first → UNKNOWN (re-run);
+    # only an explicit non-true value is a real NO_MERGE.
+    if [[ "$merged" == "ERROR" ]]; then
+      emit "$(printf '#%s\t%s\t%s' "$pr" 'UNKNOWN' "merged-status fetch failed (rate-limit or API error); items=${items_label}")"
+      n_unknown=$((n_unknown + 1))
+      sleep "$DELAY_SEC"
+      continue
+    fi
     if [[ "$merged" != "true" ]]; then
       emit "$(printf '#%s\t%s\t%s' "$pr" 'NO_MERGE' "not merged (or not found); items=${items_label}")"
       n_nomerge=$((n_nomerge + 1))
