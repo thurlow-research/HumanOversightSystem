@@ -267,6 +267,7 @@ shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 | **[docs/QUICKSTART.md](docs/QUICKSTART.md)** | Quickstart — three commands to get a project running |
 | **[docs/SETUP.md](docs/SETUP.md)** | Installation guide — full walkthrough, configuration, project-start sequence |
 | **[docs/CUSTOMIZATION.md](docs/CUSTOMIZATION.md)** | Customization guide — adapting agents to a different stack or project |
+| **[docs/COST-MANAGEMENT.md](docs/COST-MANAGEMENT.md)** | Cost & token-efficiency strategy — the deliberate decisions that control token spend, and the trade-off each one carries |
 | **[research/](research/)** | Session logs and findings — the empirical record of what was built, what failed, and what was learned |
 
 ---
