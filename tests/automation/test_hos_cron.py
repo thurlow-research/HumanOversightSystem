@@ -144,9 +144,15 @@ class CronEnv:
             "echo \"export HOS_EXPECTED_BOT_LOGIN='${HOS_TEST_EXPECTED_BOT-" + EXPECTED_BOT + "}'\"\n"
             'echo "export GH_TOKEN=fake-token"\n',
         )
+        # inner-loop test runner stub — records each invocation so the #789
+        # cowpat tests can assert whether the cycle-start baseline actually ran,
+        # and honors HOS_TEST_INNER_LOOP_EXIT to exercise the baseline-fail path.
+        self.baseline_marker = tmp_path / "inner_loop_ran.log"
         _write_exec(
             self.repo / "scripts" / "framework" / "run_tests_inner_loop.sh",
-            "#!/usr/bin/env bash\nexit 0\n",
+            "#!/usr/bin/env bash\n"
+            f'echo "ran" >> "{self.baseline_marker}"\n'
+            'exit "${HOS_TEST_INNER_LOOP_EXIT:-0}"\n',
         )
         # ensure_venv.sh stub: exit 0 by default (healthy venv); override with
         # HOS_TEST_ENSURE_VENV_EXIT to simulate a broken venv.
@@ -237,6 +243,41 @@ class CronEnv:
         f = self.repo / "scripts" / "framework" / "consumer_agents.txt"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("\n".join(slugs) + "\n")
+
+    # ── #789 cowpat helpers ──────────────────────────────────────────────────
+    @property
+    def cowpat_file(self) -> Path:
+        """The clean-state marker the launcher reads/writes for worker-hos."""
+        return self.state / "test-clean" / "worker-hos"
+
+    def git_init_repo(self) -> str:
+        """Make the fake repo a real git repo with one commit; return HEAD SHA.
+
+        Used by the cowpat tests so `git rev-parse HEAD` / `git status` in the
+        launcher resolve. Identity is passed via -c so no global config is needed.
+        """
+        git = ["git", "-C", str(self.repo)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
+                 "-c", "commit.gpgsign=false"]
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "init"], check=True)
+        head = subprocess.run(
+            git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        )
+        return head.stdout.strip()
+
+    def write_cowpat(self, sha: str) -> None:
+        self.cowpat_file.parent.mkdir(parents=True, exist_ok=True)
+        self.cowpat_file.write_text(sha + "\n")
+
+    def make_dirty(self) -> None:
+        """Drop an untracked file so `git status --porcelain` is non-empty."""
+        (self.repo / "uncommitted.tmp").write_text("crashed mid-work\n")
+
+    def baseline_ran(self) -> bool:
+        """True if the cycle-start inner-loop test runner was invoked."""
+        return self.baseline_marker.exists()
 
     def claude_ran(self) -> bool:
         return self.claude_log.exists()
@@ -728,6 +769,110 @@ class TestAgentAvailability:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert cron.claude_ran()
+
+
+# ─────────────────── Cycle-start baseline cowpat (#789) ──────────────────────
+class TestCycleStartBaselineCowpat:
+    """The worker skips the cycle-start inner-loop baseline when the repo is
+    provably unchanged since the last green run (HEAD == cowpat, clean tree),
+    runs it otherwise, and on baseline failure files a deduplicated needs-human
+    broken-state issue instead of exiting silently.
+
+    These tests reuse the shared `labels=needs-human` gh-stub case
+    (HOS_TEST_NEEDS_HUMAN_BLOCKED / HOS_TEST_AA_QUERY_FAIL) since the
+    broken-state dedup query targets the same label; the agent-availability
+    block is skipped here (no consumer_agents.txt), so the only needs-human
+    query and issue-create come from the #789 broken-state flow.
+    """
+
+    def test_clean_repo_skips_baseline(self, cron):
+        """HEAD matches cowpat and tree is clean → baseline skipped, Claude runs."""
+        head = cron.git_init_repo()
+        cron.write_cowpat(head)
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.baseline_ran(), "clean repo must skip the cycle-start baseline"
+        assert "skipping cycle-start baseline" in r.stdout
+        assert cron.claude_ran()
+
+    def test_head_moved_runs_baseline_and_restamps_cowpat(self, cron):
+        """Cowpat SHA differs from HEAD (new commits) → baseline runs, cowpat updated."""
+        head = cron.git_init_repo()
+        cron.write_cowpat("0" * 40)  # stale SHA from an earlier green run
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.baseline_ran(), "HEAD moved → baseline must run"
+        assert cron.cowpat_file.read_text().strip() == head
+        assert cron.claude_ran()
+
+    def test_dirty_tree_runs_baseline(self, cron):
+        """HEAD matches cowpat but uncommitted files present → baseline runs."""
+        head = cron.git_init_repo()
+        cron.write_cowpat(head)
+        cron.make_dirty()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.baseline_ran(), "dirty tree → baseline must run"
+        assert cron.claude_ran()
+
+    def test_no_cowpat_runs_baseline_and_bootstraps_marker(self, cron):
+        """First run (no cowpat) → baseline runs and the marker is bootstrapped."""
+        head = cron.git_init_repo()
+        assert not cron.cowpat_file.exists()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.baseline_ran(), "no cowpat → baseline must run"
+        assert cron.cowpat_file.read_text().strip() == head
+        assert cron.claude_ran()
+
+    def test_non_git_repo_runs_baseline_without_marker(self, cron):
+        """Unresolvable HEAD (non-git REPO_ROOT) → baseline runs, no marker written."""
+        # the fixture repo is not a git repo by default
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.baseline_ran(), "unresolvable HEAD → baseline must run"
+        assert not cron.cowpat_file.exists(), "no SHA to stamp → must not write a marker"
+        assert cron.claude_ran()
+
+    def test_baseline_failure_files_broken_state_issue(self, cron):
+        """Baseline fails with no existing broken-state issue → needs-human issue
+        filed, Claude not launched, exit 1."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "1",
+            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "BASELINE TESTS FAILED" in r.stdout
+        assert cron.aa_issue_created(), "expected a broken-state needs-human issue"
+        assert not cron.claude_ran()
+
+    def test_baseline_failure_duplicate_issue_guard(self, cron):
+        """Baseline fails but a broken-state issue is already open → no duplicate."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "1",
+            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.aa_issue_created(), "existing issue → must not file a duplicate"
+        assert "already open" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_baseline_failure_dedup_query_failure_fails_closed(self, cron):
+        """A broken-state dedup-query error must NOT default the count to 0 and
+        file a fresh issue every cycle — fail closed, skip filing, warn."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "1",
+            "HOS_TEST_AA_QUERY_FAIL": "1",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.aa_issue_created(), (
+            "dedup query failed → must fail closed and NOT file an issue"
+        )
+        assert "fail-closed" in r.stdout
+        assert not cron.claude_ran()
 
 
 # ──────────────────────────── PR routing skip (#791) ─────────────────────────

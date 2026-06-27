@@ -95,7 +95,7 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
 IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
-mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend"
+mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
 
 # ── Project suspension check (#778) — early exit before lock ─────────────────
@@ -466,12 +466,67 @@ else
     && echo "$LOG_PREFIX WARN: ${PROJECT}_target_release not set in $PROJECTS_CONF — prompt will not have milestone substituted"
 fi
 
-# ── Inner-loop tests (worker only) ───────────────────────────────────────────
+# ── Inner-loop baseline (worker only) — skip when repo is known-clean (#789) ──
+# Cycle-start tests exist to establish a known-good baseline before Claude touches
+# the repo, catching a broken tree left by a previously-crashed cycle. That only
+# has value when state is UNKNOWN. When HEAD matches the last SHA at which the
+# baseline passed (the "cowpat") and the worktree is clean, nothing has changed
+# since the last green run — skip the redundant ~2–3 min suite. The pre-PR §8.7
+# gate (Claude runs tests against its own changes before any PR) is unchanged and
+# is the real safety net; this only trims the redundant cycle-start run.
 if [[ "$ROLE" == "worker" ]]; then
-  if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
-    echo "$LOG_PREFIX INNER-LOOP TESTS FAILED"
-    _audit cycle-preflight-fail reason=inner_loop_tests_failed
-    exit 1
+  _COWPAT_FILE="$_HOS_DIR/test-clean/${ROLE}-${PROJECT}"
+  _CURRENT_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+  _CLEAN_SHA=$(cat "$_COWPAT_FILE" 2>/dev/null || echo "")
+  _WORKTREE_DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || echo "")
+
+  if [[ -n "$_CURRENT_HEAD" && "$_CURRENT_HEAD" == "$_CLEAN_SHA" && -z "$_WORKTREE_DIRTY" ]]; then
+    # Known clean: HEAD unchanged since the last green baseline and no uncommitted
+    # files. Skip — Claude still runs tests before any PR (§8.7). No audit event:
+    # the steady-state skip fires every cycle and would flood the audit log.
+    echo "$LOG_PREFIX environment clean (HEAD ${_CURRENT_HEAD:0:12} matches cowpat) — skipping cycle-start baseline test run"
+  else
+    # Unknown or dirty state — no cowpat (first run), HEAD moved since the last
+    # green run, a dirty tree from a crashed cycle, or HEAD unresolvable. Run the
+    # baseline before Claude starts so it never builds on a broken tree.
+    if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
+      echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED"
+      _audit cycle-preflight-fail reason=inner_loop_tests_failed
+      # Broken-state flow (#789): rather than a silent exit, file a needs-human
+      # issue so a human can investigate/authorize a fix — the worker is halted
+      # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
+      # agent-availability guard: only file when the dedup query SUCCEEDS and
+      # confirms zero existing broken-state issues. A query error must never
+      # default the count to 0 — that would file a fresh issue every cycle and
+      # flood the queue. On query failure, skip filing; the next cycle whose
+      # query succeeds files once.
+      if [[ -n "$_REPO_SLUG" ]]; then
+        _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
+        if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+            --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
+            2>/dev/null); then
+          _bs_existing="${_bs_existing:-0}"
+          if [[ "$_bs_existing" == "0" ]]; then
+            gh issue create \
+              --repo "$_REPO_SLUG" \
+              --title "${_bs_title_prefix} — worker halted" \
+              --label "needs-human,needs-ai" \
+              --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
+              2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
+              || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
+          else
+            echo "$LOG_PREFIX broken-state issue already open — not filing a duplicate"
+          fi
+        else
+          echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+        fi
+      fi
+      exit 1
+    fi
+    # Baseline green — stamp the cowpat with the SHA just verified so the next
+    # cycle on an unchanged repo skips the redundant run. Only when HEAD resolved
+    # (a non-git or unresolvable REPO_ROOT leaves no marker → always re-runs).
+    [[ -n "$_CURRENT_HEAD" ]] && printf '%s\n' "$_CURRENT_HEAD" > "$_COWPAT_FILE"
   fi
 fi
 
