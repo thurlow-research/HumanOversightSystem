@@ -297,8 +297,11 @@ AUTHOR_RISK="$(gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/de
 [[ -n "$AUTHOR_RISK" ]] && FLOOR="$(max_risk "$FLOOR" "$AUTHOR_RISK")"
 
 if [[ -n "$RISK_OVERRIDE" ]]; then
-  RISK="$RISK_OVERRIDE"
-  info "triage: floor=$FLOOR author=${AUTHOR_RISK:-none} → forced ${BOLD}$RISK${RESET} (--risk)"
+  # An override may only RAISE the deterministic floor, never lower it — clamp to
+  # the floor like the Haiku and fallback branches, so --risk LOW cannot short-circuit
+  # the panel on a CRITICAL-floor PR (#910).
+  RISK="$(max_risk "$FLOOR" "$RISK_OVERRIDE")"
+  info "triage: floor=$FLOOR author=${AUTHOR_RISK:-none} override=$RISK_OVERRIDE → ${BOLD}$RISK${RESET} (--risk; clamped to floor)"
 elif command -v claude >/dev/null 2>&1; then
   TRIAGE_PROMPT="You are the TRIAGE agent in a code-oversight panel. Classify the risk of this PR using:
 LOW=pure UI/styling, no logic. MEDIUM=business logic/data/state/routing. HIGH=auth/input-handling/persistence/external-APIs. CRITICAL=injection/PII/payments/destructive ops.

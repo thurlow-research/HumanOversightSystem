@@ -554,3 +554,36 @@ def test_render_tier_section_defaults():
     out = render_tier_section(findings, 1)
     assert "**tier? / ?**" in out
     assert "`?:0`" in out
+
+
+# --------------------------------------------------------------------------- #
+# #910 — `--risk` override may only RAISE the deterministic floor, never lower #
+# it. The override branch in run_panel.sh must clamp to the floor like the     #
+# Haiku and fallback branches; a bare `RISK="$RISK_OVERRIDE"` lets `--risk LOW` #
+# short-circuit the cross-vendor panel on a CRITICAL-floor PR. This is a       #
+# static-source guard because the clamp lives in shell, not in panel_logic.py. #
+# --------------------------------------------------------------------------- #
+_RUN_PANEL = Path(__file__).resolve().parents[2] / "scripts" / "run_panel.sh"
+
+
+def _override_branch() -> str:
+    src = _RUN_PANEL.read_text().splitlines()
+    start = next(i for i, ln in enumerate(src) if 'if [[ -n "$RISK_OVERRIDE" ]]' in ln)
+    end = next(i for i, ln in enumerate(src[start + 1 :], start + 1) if ln.startswith("elif"))
+    return "\n".join(src[start:end])
+
+
+def test_risk_override_clamps_to_floor():
+    # The override branch must raise RISK to at least the floor via max_risk.
+    branch = _override_branch()
+    assert 'max_risk "$FLOOR" "$RISK_OVERRIDE"' in branch, (
+        "--risk override must be clamped to the deterministic floor (#910)"
+    )
+
+
+def test_risk_override_not_bare_assignment():
+    # Regression: a bare `RISK="$RISK_OVERRIDE"` reintroduces the floor bypass.
+    branch = _override_branch()
+    assert 'RISK="$RISK_OVERRIDE"' not in branch, (
+        "bare RISK=$RISK_OVERRIDE lets --risk lower the floor (#910 regression)"
+    )
