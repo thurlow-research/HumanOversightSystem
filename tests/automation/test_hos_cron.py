@@ -106,8 +106,11 @@ class CronEnv:
             '  *"labels=needs-human"*)\n'
             '    [[ -n "${HOS_TEST_AA_QUERY_FAIL:-}" ]] && exit 1\n'
             '    echo "${HOS_TEST_NEEDS_HUMAN_BLOCKED:-0}" ;;\n'
-            # PR list (open bot PRs) — outputs one PR number per line
+            # PR list (open bot PRs) — outputs one PR number per line.
+            # HOS_TEST_PR_FETCH_FAIL simulates a gh API failure (non-zero exit)
+            # so the #915 fail-closed overseer PR-fetch path can be exercised.
             '  *"pulls?state=open"*)\n'
+            '    [[ -n "${HOS_TEST_PR_FETCH_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
             # PR reviews — CHANGES_REQUESTED count
             '  *"reviews"*"CHANGES_REQUESTED"*)\n'
@@ -949,6 +952,52 @@ class TestPRRoutingSkip:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
+
+
+# ──────────────────── Overseer open-PR fetch failure (#915) ──────────────────
+class TestOverseerPRFetchFailure:
+    """A transient open-PR fetch error must NOT be misread as 'no open PRs'.
+
+    The old `$(... || true)` swallowed gh's non-zero exit into an empty result,
+    arming the 1800s idle backoff and dropping pending merge work for ~30 min on
+    an API blip. The fetch failure must skip the cycle WITHOUT stamping last-run
+    so the next cycle retries immediately, under a distinct audit reason.
+    """
+
+    @staticmethod
+    def _overseer_last_run(cron) -> Path:
+        # last_run_file is hardcoded to worker-hos; the overseer stamps overseer-hos.
+        return cron.state / "last-run" / "overseer-hos"
+
+    def test_fetch_failure_does_not_stamp_last_run(self, cron):
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not self._overseer_last_run(cron).exists(), (
+            "a fetch failure must not arm the idle backoff — next cycle must retry"
+        )
+
+    def test_fetch_failure_is_distinct_from_empty(self, cron):
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "open-PR fetch failed" in r.stdout
+        assert "no open PRs" not in r.stdout, (
+            "fetch failure must not be masked as a genuine empty-PR cycle"
+        )
+
+    def test_fetch_failure_does_not_launch_claude(self, cron):
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.claude_ran(), "no AI turn on an unfetchable PR queue"
+
+    def test_genuine_empty_pr_list_stamps_last_run(self, cron):
+        """A SUCCESSFUL fetch returning zero PRs is still a real idle cycle."""
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no open PRs" in r.stdout
+        assert self._overseer_last_run(cron).exists(), (
+            "a genuine empty-PR cycle still arms the idle backoff"
+        )
+        assert not cron.claude_ran()
 
 
 # ──────────────────────── Working directory injection (#805) ──────────────────

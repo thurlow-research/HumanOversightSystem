@@ -574,8 +574,25 @@ fi
 _HOS_ACTIONABLE_PRS=""   # space-separated "#N" list injected into overseer prompt
 _HOS_SKIPPED_PRS=""      # for logging only
 if [[ "$ROLE" == "overseer" ]]; then
-  _open_pr_nums=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
-    --jq '.[].number' 2>/dev/null || true)
+  # Capture gh's exit status separately from its output (#915). A bare
+  # `$(... || true)` swallows a transient API failure into an empty result,
+  # which the empty-check below would misread as "no open PRs" — masking the
+  # cause (logged as reason=no_open_prs), stamping _LAST_RUN_FILE and thereby
+  # arming the 1800s idle backoff, so pending review/merge work is dropped for
+  # up to 30 min on an API blip. Treat empty as "no PRs" ONLY when the fetch
+  # succeeded; on failure do NOT stamp last-run (so the next cycle retries
+  # immediately) and exit with a distinct reason. (Idle-backoff family: #711.)
+  if _open_pr_nums=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
+      --jq '.[].number' 2>/dev/null); then
+    _pr_fetch_ok=1
+  else
+    _pr_fetch_ok=0
+  fi
+  if [[ "$_pr_fetch_ok" -eq 0 ]]; then
+    echo "$LOG_PREFIX open-PR fetch failed — skipping cycle without arming idle backoff"
+    _audit cycle-skip reason=pr_fetch_unavailable
+    exit 0
+  fi
   if [[ -z "$_open_pr_nums" ]]; then
     echo "$LOG_PREFIX no open PRs — skipping cycle"
     _audit cycle-skip reason=no_open_prs
