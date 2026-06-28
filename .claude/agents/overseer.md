@@ -5,7 +5,7 @@ description: >
   and answers questions about PR status, risk assessments, and pipeline state
   (interactive). Check which MODE you are in first; behavior differs.
   Never opens branches or PRs; only evaluates and acts on artifacts the worker produced.
-model: claude-sonnet-4-6
+model: claude-opus-4-8
 tools:
   - Read
   - Bash
