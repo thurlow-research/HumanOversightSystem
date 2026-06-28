@@ -216,6 +216,37 @@ else
   fi
 fi
 
+# ── Stamp cleanup (#552) ─────────────────────────────────────────────────────
+# Remove accumulated stamp files that don't match the current agent content hash.
+# Content-hash stamps never conflict across branches, but they accumulate over
+# time as agents change. Clean up before tagging so the release has minimal noise.
+hdr "3c. Validation stamp cleanup"
+_STAMP_CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+_STAMP_DIR_ABS="$SCRIPT_DIR/validation-stamps"
+_STALE_STAMPS=()
+while IFS= read -r _sf; do
+    _bn=$(basename "$_sf")
+    case "$_bn" in
+        *.stamp)
+            if [[ "$_bn" != *"$_STAMP_CONTENT_HASH"* ]]; then
+                _STALE_STAMPS+=("$_sf")
+            fi ;;
+    esac
+done < <(git ls-files "$_STAMP_DIR_ABS" | grep '\.stamp$')
+if [[ ${#_STALE_STAMPS[@]} -eq 0 ]]; then
+    ok "no stale stamp files"
+elif $DRY_RUN; then
+    for _sf in "${_STALE_STAMPS[@]}"; do info "[dry] would remove stale stamp: $_sf"; done
+else
+    for _sf in "${_STALE_STAMPS[@]}"; do
+        git rm -f "$_sf" && ok "removed stale stamp: $_sf"
+    done
+    if [[ -n "$(git status --porcelain scripts/framework/validation-stamps/)" ]]; then
+        git commit -m "chore: clean up stale validation stamps for $VERSION release"
+        ok "committed stamp cleanup"
+    fi
+fi
+
 # ── Tag + publish + assets ────────────────────────────────────────────────────
 hdr "4. Publish release + upload bootstrap assets"
 CLEANUP=()

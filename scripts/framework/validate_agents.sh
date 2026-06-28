@@ -418,8 +418,9 @@ if [[ "$VERDICT" == "approve" ]]; then
     rm -f "$PASS_COUNT_FILE"   # converged — reset for the next change set
     STAMP_DIR="scripts/framework/validation-stamps"
     mkdir -p "$STAMP_DIR"
-    printf "validated: %s\nphase: 2-agents\nresult: pass\n" \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STAMP_DIR/phase2.stamp"
+    CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+    printf "validated_at: %s\nhash: %s\nphase: 2-agents\nresult: pass\n" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTENT_HASH" > "$STAMP_DIR/phase2-${CONTENT_HASH}.stamp"
     exit 0
 elif [[ "$PASS_NUM" -ge "$EXTERNAL_REVIEW_MAX_PASSES" ]]; then
     echo "════════════════════════════════════════════"
