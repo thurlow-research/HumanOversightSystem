@@ -585,3 +585,9 @@
 {"event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","timestamp":"2026-06-28T07:57:09Z","cycle":"2026-06-28T08:21:11Z"}
 {"event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","timestamp":"2026-06-28T06:43:59Z","cycle":"2026-06-28T08:21:11Z"}
 {"event":"overseer-decision","pr":946,"decision":"HUMAN_REQUIRED","reasons":["requested-reviewer-gate-761: ScottThurlow has pending review request","codeowners-gate-SPEC303b: .claude/agents/overseer.md and .claude/agents/pm-agent.md owned by @ScottThurlow"],"risk_tier":"LOW","changed_files":[".claude/agents/overseer.md",".claude/agents/pm-agent.md","ARCHITECTURE.md"],"informational_findings":["validator-artifact-sha-mismatch: artifact SHA aa7e4167 != pr head SHA b9a20fd4"],"action":"labeled needs-human, posted escalation comment","comment_id":4825365023,"timestamp":"2026-06-28T08:21:11Z"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T08:35:29Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T08:35:32Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","merged_by_type":"User","merged_at":"2026-06-28T07:57:09Z","timestamp":"2026-06-28T08:35:47Z"}
+{"event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","merged_by_type":"User","merged_at":"2026-06-28T06:43:59Z","timestamp":"2026-06-28T08:35:47Z"}
+{"event":"release-gate-check","result":"no-open-uncleared-release-requests","timestamp":"2026-06-28T08:35:47Z"}
+{"event":"cycle-end","role":"overseer","timestamp":"2026-06-28T08:35:47Z","prs_reviewed":0,"prs_already_escalated":["946"],"bot_merges_detected":0,"human_merges_logged":["944","945"],"release_gate":"clear"}
