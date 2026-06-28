@@ -279,8 +279,13 @@ for n in "${ASSET_NAMES[@]}"; do
   git show "$HEAD_SHA:bootstrap/$n" > "$ASSET_DIR/$n" 2>/dev/null \
     || { err "asset bootstrap/$n is not in commit ${HEAD_SHA:0:8} — commit it before releasing"; exit 2; }
 done
-( cd "$ASSET_DIR" && sha256 "${ASSET_NAMES[@]}" ) > "$ASSET_DIR/SHA256SUMS"
-UPLOAD=(); for n in "${ASSET_NAMES[@]}" SHA256SUMS; do UPLOAD+=("$ASSET_DIR/$n"); done
+# Build a deterministic framework tarball from the tagged commit and include its
+# checksum in SHA256SUMS so hos_install.sh can verify before extraction (#684).
+git archive --format=tar.gz --prefix=hos-framework/ "$HEAD_SHA" \
+  > "$ASSET_DIR/hos-framework.tar.gz" 2>/dev/null \
+  || { err "git archive failed — cannot build hos-framework.tar.gz"; exit 2; }
+( cd "$ASSET_DIR" && sha256 "${ASSET_NAMES[@]}" hos-framework.tar.gz ) > "$ASSET_DIR/SHA256SUMS"
+UPLOAD=(); for n in "${ASSET_NAMES[@]}" hos-framework.tar.gz SHA256SUMS; do UPLOAD+=("$ASSET_DIR/$n"); done
 
 # A pre-release is EXCLUDED from GitHub's /releases/latest/, which is exactly
 # what the install command and the docs' /latest/download/ URLs resolve against
@@ -299,7 +304,7 @@ if $DRY_RUN; then
   # ${arr[*]:-} / ${arr[@]+...} keep empty arrays safe under `set -u` on bash 3.2
   # (a non-prerelease cut has an EMPTY PRE_FLAG; a prerelease has an empty LATEST_FLAG).
   info "[dry] gh release create $VERSION --draft ${PRE_FLAG[*]:-} ${NOTES_ARG[*]:-} --target ${HEAD_SHA:0:8}"
-  for n in "${ASSET_NAMES[@]}" SHA256SUMS; do info "[dry]   asset (from commit): $n"; done
+  for n in "${ASSET_NAMES[@]}" hos-framework.tar.gz SHA256SUMS; do info "[dry]   asset (from commit): $n"; done
   info "[dry] verify assets present, then gh release edit --draft=false ${LATEST_FLAG[*]:-} (atomic publish)"
 else
   # DRAFT first: gh creates the tag + a hidden draft release and uploads assets.
@@ -318,7 +323,7 @@ else
   while IFS= read -r _ln; do [[ -n "$_ln" ]] && GOT+=("$_ln"); done \
     < <(gh release view "$VERSION" --json assets -q '.assets[].name' 2>/dev/null)
   MISSING="$("$PYBIN" "$RELEASE_LOGIC" verify-assets \
-    --expected "${ASSET_NAMES[@]}" SHA256SUMS \
+    --expected "${ASSET_NAMES[@]}" hos-framework.tar.gz SHA256SUMS \
     --uploaded ${GOT[@]+"${GOT[@]}"})"
   if [[ -n "$MISSING" ]]; then
     gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true

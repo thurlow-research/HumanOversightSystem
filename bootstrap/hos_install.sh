@@ -228,21 +228,55 @@ source_looks_valid() {  # dir -> 0 if all required paths present
 }
 VERBOSE_SRC_CHECK=false
 
+# Portable sha256 of one file (also used later for .hos-manifest entries).
+_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  else shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; fi
+}
+
 fetch_release_tarball() {  # ref dest_dir -> 0 on success
-  local ref="$1" dest="$2" tmpd tgz
+  local ref="$1" dest="$2" tmpd tgz sums verified=false
   # mktemp -d with the X-run TRAILING (BSD/macOS only substitutes a trailing run;
   # a "XXXXXX.tar.gz" template would NOT randomize on macOS → fixed predictable
   # path → collisions and stale/planted-file extraction risk).
   tmpd="$(mktemp -d "${TMPDIR:-/tmp}/hos-src.XXXXXX")" || return 1
   CLEANUP_DIRS+=("$tmpd")
-  tgz="$tmpd/src.tar.gz"
+  tgz="$tmpd/hos-framework.tar.gz"
+  sums="$tmpd/SHA256SUMS"
+  # Prefer the release asset (deterministic, checksummed) over GitHub's auto-generated
+  # archive. hos-framework.tar.gz is built by cut_release.sh from the tagged commit
+  # via git archive, so its SHA256 is stable and included in SHA256SUMS (#684).
   if command -v gh &>/dev/null; then
-    gh api "repos/${HOS_REPO}/tarball/${ref}" > "$tgz" 2>/dev/null || true
+    gh release download "$ref" --repo "$HOS_REPO" \
+      -p "hos-framework.tar.gz" -p "SHA256SUMS" -D "$tmpd" 2>/dev/null || true
   fi
-  if [[ ! -s "$tgz" ]] && command -v curl &>/dev/null; then
-    curl -fsSL "https://github.com/${HOS_REPO}/archive/refs/tags/${ref}.tar.gz" -o "$tgz" 2>/dev/null || true
+  if [[ -s "$tgz" && -s "$sums" ]]; then
+    local expected actual
+    expected="$(grep ' hos-framework\.tar\.gz$' "$sums" 2>/dev/null | awk '{print $1}')"
+    if [[ -z "$expected" ]]; then
+      warn "SHA256SUMS has no entry for hos-framework.tar.gz — refusing to extract"
+      return 1
+    fi
+    actual="$(_sha256 "$tgz")"
+    if [[ "$expected" != "$actual" ]]; then
+      warn "tarball checksum mismatch (expected $expected, got $actual) — refusing to extract"
+      return 1
+    fi
+    verified=true
   fi
-  [[ -s "$tgz" ]] || return 1
+  if ! $verified; then
+    # Fallback: GitHub auto-generated archive (no checksum); only reached for releases
+    # that predate the hos-framework.tar.gz asset (#684).
+    warn "hos-framework.tar.gz asset not available for $ref — falling back to unverified GitHub archive"
+    tgz="$tmpd/src.tar.gz"
+    if command -v gh &>/dev/null; then
+      gh api "repos/${HOS_REPO}/tarball/${ref}" > "$tgz" 2>/dev/null || true
+    fi
+    if [[ ! -s "$tgz" ]] && command -v curl &>/dev/null; then
+      curl -fsSL "https://github.com/${HOS_REPO}/archive/refs/tags/${ref}.tar.gz" -o "$tgz" 2>/dev/null || true
+    fi
+    [[ -s "$tgz" ]] || return 1
+  fi
   # Refuse archives with unsafe members before extracting (defence-in-depth even
   # though GitHub's generated archives are well-formed): absolute paths or `..`.
   if tar -tzf "$tgz" 2>/dev/null | grep -qE '^/|(^|/)\.\.(/|$)'; then
@@ -1779,12 +1813,6 @@ fi
 # a leftover .claude/agents/*.md is the real AI-confusion risk. Detection is always on
 # (non-destructive). --prune ARCHIVES them (MOVE, not delete) to a committed,
 # quarantined .hos-archive/, and only when the file is unmodified since install.
-
-# Portable sha256 of one file.
-_sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
-  else shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; fi
-}
 
 # Enumerate framework-owned NON-AGENT paths as "<path>\tWHOLE\t<sha256>" (schema
 # v2, TD §1.4). Agent .md files are NOT enumerated here — they contribute per-
