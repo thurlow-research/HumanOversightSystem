@@ -131,6 +131,15 @@ the design agent (`pm-agent`) and the overseer merge gate to Opus 4.8 — that i
 proposal, not the current state. This doc describes the current split: only `architect`
 and `technical-design` on Opus, every other agent on Sonnet.
 
+**Dynamic escalation (proposed, #63).** The split above is *static*. A separate proposal —
+[#63](https://github.com/thurlow-research/HumanOversightSystem/issues/63), designed in
+[`specs/TECHNICAL-DESIGN-63-model-escalation.md`](specs/TECHNICAL-DESIGN-63-model-escalation.md) —
+would *dynamically* escalate four review-path agents (`risk-assessor`, `security-reviewer`,
+`code-reviewer`, `oversight-evaluator`) from Sonnet to Opus 4.8 **only when the change is
+HIGH or CRITICAL tier**, keeping the LOW/MEDIUM path on Sonnet. Escalation is monotonic
+(never drops below this static floor) and is applied at invocation via `--model`, not by
+editing agent definitions. Designed, not yet implemented.
+
 **Cross-vendor decorrelation.** Later stages are covered by *different vendors* rather than
 a higher same-vendor tier: `agy` (Gemini) fires at MEDIUM+ and `codex` (OpenAI) at HIGH+
 in both the pre-PR second review (`scripts/run_second_review.sh`) and the outer panel
