@@ -591,3 +591,6 @@
 {"event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","merged_by_type":"User","merged_at":"2026-06-28T06:43:59Z","timestamp":"2026-06-28T08:35:47Z"}
 {"event":"release-gate-check","result":"no-open-uncleared-release-requests","timestamp":"2026-06-28T08:35:47Z"}
 {"event":"cycle-end","role":"overseer","timestamp":"2026-06-28T08:35:47Z","prs_reviewed":0,"prs_already_escalated":["946"],"bot_merges_detected":0,"human_merges_logged":["944","945"],"release_gate":"clear"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T08:45:43Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T08:45:46Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"cycle-end","role":"overseer","timestamp":"2026-06-28T08:46:10Z","prs_reviewed":0,"prs_already_escalated":["946"],"bot_merges_detected":0,"human_merges_logged":[],"release_gate":"clear"}
