@@ -613,3 +613,9 @@
 {"event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","merged_at":"2026-06-28T07:57:09Z","timestamp":"2026-06-28T09:46:08Z"}
 {"event":"cycle-review","pr":946,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (#756 hard block); Validation stamps current failed 08:08Z, cannot re-trigger via API (403); all other gates pass","timestamp":"2026-06-28T09:46:45Z","comment_id":4825612733}
 {"event":"cycle-complete","role":"overseer","timestamp":"2026-06-28T09:46:47Z","prs_reviewed":[946],"prs_merged":[]}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T09:55:53Z", "reason": "worker-cycle-skip"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T09:55:57Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"merge-audit","window_hours":2,"prs_checked":[945],"bot_merges":[],"human_merges":[{"pr":945,"merged_by":"ScottThurlow","merged_at":"2026-06-28T07:57:09Z","already_logged_at":"2026-06-28T09:46:08Z"}],"timestamp":"2026-06-28T09:55:57Z","note":"#945 already logged in prior cycle — no duplicate entry"}
+{"event":"release-gate-check","result":"no_open_release_requests","timestamp":"2026-06-28T09:55:58Z"}
+{"event":"cycle-review","pr":946,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (hard block #756); Validation stamps current stale failure 08:08Z (bot cannot re-trigger, 403); all other gates satisfied (human+overseer approved @ head SHA, three checks pass 09:11Z); no new comment posted (last comment 09:49Z current)","timestamp":"2026-06-28T09:55:59Z"}
+{"event":"cycle-complete","role":"overseer","timestamp":"2026-06-28T09:56:00Z","prs_reviewed":[946],"prs_merged":[]}
