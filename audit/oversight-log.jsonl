@@ -594,3 +594,8 @@
 {"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T08:45:43Z", "reason": "worker-cycle-complete"}
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T08:45:46Z", "bot": "hos-overseer-hos[bot] project=hos"}
 {"event":"cycle-end","role":"overseer","timestamp":"2026-06-28T08:46:10Z","prs_reviewed":0,"prs_already_escalated":["946"],"bot_merges_detected":0,"human_merges_logged":[],"release_gate":"clear"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T08:55:57Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T08:56:01Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"timestamp":"2026-06-28T08:56:10Z","event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","merged_by_type":"User","merged_at":"2026-06-28T07:57:09Z","cycle":"2026-06-28T08:56:10Z"}
+{"timestamp":"2026-06-28T08:56:10Z","event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","merged_by_type":"User","merged_at":"2026-06-28T06:43:59Z","cycle":"2026-06-28T08:56:10Z"}
+{"timestamp":"2026-06-28T08:56:10Z","event":"pr-review","pr":946,"decision":"HUMAN_REQUIRED","reason":"CODEOWNERS-gate and requested-reviewer-gate pending ScottThurlow approval","cycle":"2026-06-28T08:56:10Z"}
