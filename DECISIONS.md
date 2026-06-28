@@ -512,3 +512,15 @@ idle-backoff suppression (#628) is load-bearing for cost control.
 **Ledger asymmetry (intentional).** Only the scripts-review ledger is persistent. `validate_agents.sh` / `validate_self.sh` keep their ephemeral `.claudetmp/` ledgers and their delete-on-`--reset` behavior — they review the (smaller, more stable) agent/contract surface and have not exhibited the cross-machine convergence failure. Persisting them is deferred; touching them would re-open the shared `--reset` idiom and balloon the blast radius.
 
 **Deferred (filed as follow-ups to #686).** Semantic/embedding dedup (#1), scoping the gate to product scripts via an infra-exclusion list (#2), a convergence criterion replacing the fixed 3-pass cap (#3), 2-of-3 reviewer agreement before a finding counts as new (#4), and automated release-time pre-seeding (#6). Each carries its own fail-open surface and is a separate design.
+
+## 2026-06-28 — Risk-tier model escalation for reviewers, designed (#63)
+
+**Decision.** Four review-path agents — `risk-assessor`, `security-reviewer`, `code-reviewer`, `oversight-evaluator` — escalate from Sonnet 4.6 to **Opus 4.8 when the governing risk tier is HIGH or CRITICAL**; on LOW/MEDIUM they stay on their #895 static-split default (Sonnet). 🔧 **designed/planned** — see [`docs/specs/TECHNICAL-DESIGN-63-model-escalation.md`](specs/TECHNICAL-DESIGN-63-model-escalation.md). Owner-approved direction (#63, 2026-06-26).
+
+**Why.** This is the *dynamic* complement to the #895 *static* split (D-COST §4): keep the common LOW/MEDIUM path cheap on Sonnet while guaranteeing Opus-grade scrutiny exactly where an escaped defect is most expensive. Tier-triggered, deterministically — explicitly **not** a "second opinion when the agent feels stuck" heuristic.
+
+**Mechanism.** Agent `model:` frontmatter is static and HOS-managed, so escalation is applied at *invocation* by overriding `--model claude-opus-4-8`, never by editing agent definitions. A pure resolver `select_review_model(agent, governing_tier)` (new `scripts/oversight/model_escalation.py`) is the single source of truth for the policy. `risk-assessor` keys off the deterministic triage floor (`compute_triage_floor`, SPEC-332) since it *produces* the validated tier; the other three key off `max(triage_floor, validated_tier)`.
+
+**Fail-safe.** Escalation is **monotonic** — it only upgrades Sonnet→Opus, never below the #895 floor. An unknown/garbled tier degrades to the Sonnet default (cost, not safety, is at risk; the deterministic floor independently guarantees ≥ Sonnet-grade review). Reviewer independence and the cross-vendor requirement at high risk (D4) are untouched — only the Claude tier changes, not which vendors vote.
+
+**Scope.** Design only; no behavioral code lands with the design PR. Implementation (resolver + tests, then callsite wiring into the `claude --agent` oversight loop) is a separate MEDIUM+ slice requiring the full reviewer panel and human authorization.
