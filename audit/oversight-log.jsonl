@@ -619,3 +619,8 @@
 {"event":"release-gate-check","result":"no_open_release_requests","timestamp":"2026-06-28T09:55:58Z"}
 {"event":"cycle-review","pr":946,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (hard block #756); Validation stamps current stale failure 08:08Z (bot cannot re-trigger, 403); all other gates satisfied (human+overseer approved @ head SHA, three checks pass 09:11Z); no new comment posted (last comment 09:49Z current)","timestamp":"2026-06-28T09:55:59Z"}
 {"event":"cycle-complete","role":"overseer","timestamp":"2026-06-28T09:56:00Z","prs_reviewed":[946],"prs_merged":[]}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T10:05:27Z", "reason": "worker-cycle-skip"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T10:05:30Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "human-authorized-merge", "pr": 945, "merged_by": "ScottThurlow", "timestamp": "2026-06-28T07:57:09Z", "note": "step-0-audit: human merge, within 2h window boundary"}
+{"event": "cycle-review", "pr": 946, "decision": "HUMAN_REQUIRED", "reason": "needs-human label present (hard block #756); Validation stamps current stale failure 08:08Z; \u00a73b artifact fail-close: head_sha aa7e4167 != parent of artifact commit ec3b7a6b (new finding this cycle)", "comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/946#issuecomment-4825765125", "timestamp": "2026-06-28T10:16:16Z"}
+{"event": "cycle-complete", "role": "overseer", "timestamp": "2026-06-28T10:16:16Z", "prs_reviewed": [946], "prs_merged": []}
