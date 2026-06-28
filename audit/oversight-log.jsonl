@@ -570,3 +570,8 @@
 {"event": "human-authorized-merge", "role": "worker", "timestamp": "2026-06-28T07:35:58Z", "pr": 944, "merged_by": "ScottThurlow", "merged_at": "2026-06-28T06:43:59Z"}
 {"event": "human-authorized-merge", "role": "worker", "timestamp": "2026-06-28T07:35:58Z", "pr": 943, "merged_by": "ScottThurlow", "merged_at": "2026-06-28T05:56:35Z"}
 {"event":"human-required","role":"worker","timestamp":"2026-06-28T07:36:30Z","pr":945,"reason_category":"GATE_UNSATISFIED","summary":"No-release guard (NG3b) fired: docs/planning/v0.*.md filenames match 'v0.' release-detection pattern","agent":"hos-overseer-hos[bot]","comment_posted":true,"comment_url":"https://github.com/thurlow-research/HumanOversightSystem/pull/945#issuecomment-4825281891"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T07:45:12Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T07:45:15Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"timestamp":"2026-06-28T07:45:20Z","event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","cycle":"2026-06-28T07:45:15Z"}
+{"timestamp":"2026-06-28T07:45:20Z","event":"human-authorized-merge","pr":943,"merged_by":"ScottThurlow","cycle":"2026-06-28T07:45:15Z"}
+{"timestamp":"2026-06-28T07:45:30Z","event":"review-cycle","pr":945,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (#756); prior cycle (07:43Z) already escalated — no-release guard NG3b false positive on docs/planning/vX.Y.Z.md filenames; awaiting ScottThurlow approval","cycle":"2026-06-28T07:45:15Z","action":"no-duplicate-comment"}
