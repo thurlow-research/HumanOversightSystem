@@ -575,3 +575,8 @@
 {"timestamp":"2026-06-28T07:45:20Z","event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","cycle":"2026-06-28T07:45:15Z"}
 {"timestamp":"2026-06-28T07:45:20Z","event":"human-authorized-merge","pr":943,"merged_by":"ScottThurlow","cycle":"2026-06-28T07:45:15Z"}
 {"timestamp":"2026-06-28T07:45:30Z","event":"review-cycle","pr":945,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (#756); prior cycle (07:43Z) already escalated — no-release guard NG3b false positive on docs/planning/vX.Y.Z.md filenames; awaiting ScottThurlow approval","cycle":"2026-06-28T07:45:15Z","action":"no-duplicate-comment"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T07:55:40Z", "reason": "worker-cycle-complete"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T07:55:44Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"timestamp":"2026-06-28T07:55:52Z","event":"human-authorized-merge","pr":944,"merged_by":"ScottThurlow","merged_at":"2026-06-28T06:43:59Z","cycle":"2026-06-28T07:55:44Z"}
+{"timestamp":"2026-06-28T07:55:52Z","event":"human-authorized-merge","pr":943,"merged_by":"ScottThurlow","merged_at":"2026-06-28T05:56:35Z","cycle":"2026-06-28T07:55:44Z"}
+{"timestamp":"2026-06-28T07:55:58Z","event":"review-cycle","pr":945,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (#756); escalated at 07:43Z — no new human activity; no-duplicate-comment","cycle":"2026-06-28T07:55:44Z","action":"no-duplicate-comment"}
