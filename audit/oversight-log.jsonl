@@ -628,3 +628,6 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T10:25:37Z", "bot": "hos-overseer-hos[bot] project=hos"}
 {"event":"human-required","pr":946,"reason_category":"GATE_UNSATISFIED","summary":"needs-human label (hard block #756) and stale Validation-stamps-current CI check (08:08Z, unrerun) block merge; §3b N/A (no CID/step manifest); ScottThurlow approval and all other gates satisfied","timestamp":"2026-06-28T10:25:37Z"}
 {"event":"cycle-complete","role":"overseer","timestamp":"2026-06-28T10:25:37Z","prs_reviewed":[946],"prs_merged":[]}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T10:45:37Z", "reason": "worker-cycle-skip"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T10:45:41Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event": "human-required", "pr": 946, "reason": "mergeable_state_blocked_and_needs_human_label_present", "reason_category": "GATE_UNSATISFIED", "summary": "All approval gates satisfied (ScottThurlow and overseer approved at b9a20fd); merge blocked by stale Validation-stamps CI failure (bot cannot re-run) and needs-human label (bot cannot remove per #756).", "head_sha": "b9a20fd4aa68cbd2ff6c619c14caeaa041399f75", "comment_url": "https://github.com/thurlow-research/HumanOversightSystem/pull/946#issuecomment-4825856587", "timestamp": "2026-06-28T10:51:03Z"}
