@@ -608,3 +608,8 @@
 {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T09:25:30Z", "bot": "hos-overseer-hos[bot] project=hos"}
 {"event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","timestamp":"2026-06-28T09:34:58Z","note":"Human merge within last 2h — no process gap"}
 {"event":"human-required","pr":946,"reason_category":"GATE_UNSATISFIED","summary":"Validation stamps current required check failed at 08:08Z and was never re-run; merge API rejected squash despite all approval gates passing.","merged_by":null,"timestamp":"2026-06-28T09:34:58Z","risk_tier":"LOW","head_sha":"b9a20fd4aa68cbd2ff6c619c14caeaa041399f75","human_approval":"ScottThurlow@2026-06-28T09:04:37Z","action":"needs-human label re-added, escalation comment posted, needs-human label removed then re-added (removal was cycle housekeeping—label re-added on merge failure)"}
+{"event": "cycle-wakeup", "role": "worker", "timestamp": "2026-06-28T09:45:55Z", "reason": "worker-cycle-skip"}
+{"event": "cycle-start", "role": "worker", "timestamp": "2026-06-28T09:45:59Z", "bot": "hos-overseer-hos[bot] project=hos"}
+{"event":"human-authorized-merge","pr":945,"merged_by":"ScottThurlow","merged_at":"2026-06-28T07:57:09Z","timestamp":"2026-06-28T09:46:08Z"}
+{"event":"cycle-review","pr":946,"decision":"HUMAN_REQUIRED","reason":"needs-human label present (#756 hard block); Validation stamps current failed 08:08Z, cannot re-trigger via API (403); all other gates pass","timestamp":"2026-06-28T09:46:45Z","comment_id":4825612733}
+{"event":"cycle-complete","role":"overseer","timestamp":"2026-06-28T09:46:47Z","prs_reviewed":[946],"prs_merged":[]}
