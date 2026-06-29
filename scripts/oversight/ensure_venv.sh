@@ -50,15 +50,49 @@ _check_venv_stale() {
   return 0
 }
 
+# Free space (in KB) below which pip is likely to fail with ENOSPC while
+# building the venv (radon/bandit/flake8 + their deps). A full disk otherwise
+# surfaces as a generic "venv unavailable" with no hint about the real cause
+# (#954: a full /tmp made pip ENOSPC, which read as a missing-venv FATAL).
+_EVENV_MIN_FREE_KB=512000  # ~500 MB
+
+# Report free space at the venv's filesystem, e.g. "412 MB free". Best-effort:
+# returns nothing if df is unavailable or reports oddly.
+_evenv_free_space() {
+  df -Pk "$_ENSURE_VENV_DIR" 2>/dev/null \
+    | awk 'NR==2 && $4 ~ /^[0-9]+$/ {printf "%d MB free", int($4/1024)}'
+}
+
+# Warn (do NOT block) when disk is low, so a subsequent pip failure is read as
+# ENOSPC rather than a mystery. The pip exit-code checks below are the actual
+# arbiter — this is purely an explicit early heads-up.
+_check_disk_space() {
+  local avail
+  avail=$(df -Pk "$_ENSURE_VENV_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+  [[ "$avail" =~ ^[0-9]+$ ]] || return 0  # can't tell — don't warn
+  if (( avail < _EVENV_MIN_FREE_KB )); then
+    warn "low disk: only $((avail/1024)) MB free at $_ENSURE_VENV_DIR (need ~$((_EVENV_MIN_FREE_KB/1024)) MB) — pip may fail with ENOSPC"
+  fi
+}
+
 _create_venv() {
+  _check_disk_space
   _evenv_info "creating oversight venv at $VENV"
   if ! python3 -m venv "$VENV"; then
-    _evenv_err "python3 -m venv failed — is python3 (>= 3.8) installed?"
+    _evenv_err "python3 -m venv failed — is python3 (>= 3.8) installed? ($(_evenv_free_space))"
     return 1
   fi
   _evenv_info "installing oversight dependencies (this runs once) ..."
-  "$VENV_BIN/pip" install --quiet --upgrade pip
-  "$VENV_BIN/pip" install --quiet -r "$_ENSURE_VENV_DIR/requirements.txt"
+  # Check pip's exit code — a failed install (e.g. ENOSPC on a full disk) must
+  # NOT be reported as "ready" and silently leave a broken venv behind (#954).
+  if ! "$VENV_BIN/pip" install --quiet --upgrade pip; then
+    _evenv_err "pip self-upgrade failed — disk full or network down? ($(_evenv_free_space))"
+    return 1
+  fi
+  if ! "$VENV_BIN/pip" install --quiet -r "$_ENSURE_VENV_DIR/requirements.txt"; then
+    _evenv_err "pip install of oversight requirements failed — disk full or network down? ($(_evenv_free_space))"
+    return 1
+  fi
   _evenv_ok "oversight venv ready"
 }
 

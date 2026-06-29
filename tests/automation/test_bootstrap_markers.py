@@ -98,6 +98,21 @@ class BootstrapEnv:
             "#!/usr/bin/env bash\necho 'aabbccdd  -'\n",
         )
 
+        # Stub pipx — a no-op so the bootstrap's optional `pipx install
+        # scancode-toolkit` (hos_bootstrap.sh install_scancode) never performs a
+        # REAL install. The real scancode pipx venv builds a ~400 MB
+        # license-index cache *inside the per-test temp HOME*; left behind across
+        # runs it leaked tens of GB into /tmp/pytest-of-scott and filled the root
+        # disk (#954). These tests intentionally exercise the scancode-ABSENT
+        # (DEGRADED) path — scancode stays off the stub PATH — so a no-op
+        # installer is faithful and also removes a real network install from a
+        # unit test. stub_bin precedes /usr/bin on PATH, so this shadows any
+        # system pipx.
+        _write_exec(
+            self.stub_bin / "pipx",
+            "#!/usr/bin/env bash\nexit 0\n",
+        )
+
     @property
     def marker(self) -> Path:
         return self.marker_dir / "bootstrap"
@@ -133,7 +148,14 @@ class BootstrapEnv:
 
 @pytest.fixture
 def bootstrap(tmp_path):
-    return BootstrapEnv(tmp_path)
+    env = BootstrapEnv(tmp_path)
+    yield env
+    # Explicit teardown on the pass AND fail paths (fixture teardown always
+    # runs): remove the per-test temp tree so nothing survives into pytest's
+    # retain-last-3-runs window. Combined with the no-op pipx stub above this
+    # keeps /tmp/pytest-of-scott bounded — the leak in #954. ignore_errors so a
+    # teardown hiccup never masks a real assertion failure.
+    shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 # ─────────────────── Marker written on successful completion ────────────────
