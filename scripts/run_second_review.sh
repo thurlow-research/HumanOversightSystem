@@ -64,9 +64,13 @@ set -euo pipefail
 # Sourcing a repo-local .env would execute author-controlled shell before review,
 # defeating the gate's purpose (HOS#765).
 if [[ -f .env ]]; then
-    _val=$(grep -E '^OVERSIGHT_AGY_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1)
+    # `|| true` keeps a no-match (expected when the key is absent) non-fatal under
+    # `set -euo pipefail` — without it grep's exit 1 propagates and aborts the gate
+    # before any review runs (HOS#961). The `[[ -n "$_val" ]]` guard already handles
+    # the empty result, falling through to the defaults below.
+    _val=$(grep -E '^OVERSIGHT_AGY_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1 || true)
     [[ -n "$_val" ]] && OVERSIGHT_AGY_THRESHOLD="$_val"
-    _val=$(grep -E '^OVERSIGHT_CODEX_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1)
+    _val=$(grep -E '^OVERSIGHT_CODEX_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1 || true)
     [[ -n "$_val" ]] && OVERSIGHT_CODEX_THRESHOLD="$_val"
     unset _val
 fi
