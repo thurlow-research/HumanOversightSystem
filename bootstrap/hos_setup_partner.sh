@@ -184,14 +184,16 @@ ok "apps.env verified (all required vars present)"
 for role in Worker Overseer; do
   clone_dir="$PROJECT_DIR/$role"
   validate_script="$clone_dir/bootstrap/validate_setup.sh"
-  if [[ -d "$clone_dir" && -f "$validate_script" ]]; then
+  if [[ ! -d "$clone_dir" ]]; then
+    warn "$role/ not found at $clone_dir — skipping validation"
+  elif [[ ! -f "$validate_script" ]]; then
+    warn "$role/ found but bootstrap/validate_setup.sh not present — run hos_install.sh first, then re-run setup"
+  else
     info "Running validate_setup.sh on $role/"
     HOS_CONFIG_DIR="$CONFIG_DIR" \
       bash "$validate_script" --repo "$clone_dir" --quiet \
       && ok "$role/ setup: PASS" \
       || warn "$role/ setup: issues found — review output above"
-  else
-    warn "$role/ not found at $clone_dir — skipping validation"
   fi
 done
 
