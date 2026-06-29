@@ -12,7 +12,8 @@ WHAT IT CHECKS
   2. Risk tier — any HIGH/CRITICAL-tier step is surfaced explicitly; HIGH/CRITICAL
      WITH blocking-severity findings triggers escalation.
   3. Sign-off completeness — every required role from the step manifest has a
-     committed, valid-status stamp in signoffs/<role>.stamp.
+     committed, valid-status stamp under signoffs/<namespace>/<role>.stamp (any
+     namespace; #968). A pre-#968 flat signoffs/<role>.stamp is still accepted.
 
 PURITY
   - validate_release_artifacts() does file I/O (reads summary.json files and
@@ -54,6 +55,32 @@ VALID_STAMP_STATUSES: frozenset[str] = frozenset(
 
 # Fields required in a valid summary.json (artifact_version "1" schema).
 REQUIRED_ARTIFACT_FIELDS = ("tier", "composite_score", "head_sha", "artifact_version")
+
+# Reserved signoffs/ subdir holding committed validator artifacts
+# (signoffs/validators/step{N}/summary.json, #555) — never a stamp namespace.
+RESERVED_SIGNOFF_SUBDIRS: frozenset[str] = frozenset({"validators"})
+
+
+def _role_stamp_paths(signoffs_dir: Path, role: str) -> list[Path]:
+    """All existing stamp files for a role across every namespace + legacy flat.
+
+    Per-branch namespacing (#968) means a role's stamp may live under any
+    signoffs/<namespace>/ directory; the pre-#968 flat signoffs/<role>.stamp is
+    still accepted as a migration fallback. Mirrors
+    signoff_gate.namespaced_stamp_rels. Pure file I/O — no git/subprocess.
+    """
+    paths: list[Path] = []
+    legacy = signoffs_dir / f"{role}.stamp"
+    if legacy.exists():
+        paths.append(legacy)
+    if signoffs_dir.is_dir():
+        for child in sorted(signoffs_dir.iterdir()):
+            if not child.is_dir() or child.name in RESERVED_SIGNOFF_SUBDIRS:
+                continue
+            cand = child / f"{role}.stamp"
+            if cand.exists():
+                paths.append(cand)
+    return paths
 
 
 # --------------------------------------------------------------------------- #
@@ -307,18 +334,19 @@ def validate_release_artifacts(
         required_roles = _get_required_roles(manifest_data)
         signoffs_dir = root / "signoffs"
         for role in required_roles:
-            stamp_path = signoffs_dir / f"{role}.stamp"
-            if not stamp_path.exists():
+            stamp_paths = _role_stamp_paths(signoffs_dir, role)
+            if not stamp_paths:
                 missing_signoffs.append(role)
                 escalation_reasons.append(
                     f"missing committed sign-off stamp for required role: {role!r}"
                 )
                 continue
-            status = _parse_stamp_status(stamp_path)
-            if status not in VALID_STAMP_STATUSES:
+            # The role is satisfied if any namespace carries a valid-status stamp.
+            statuses = [_parse_stamp_status(p) for p in stamp_paths]
+            if not any(s in VALID_STAMP_STATUSES for s in statuses):
                 missing_signoffs.append(role)
                 escalation_reasons.append(
-                    f"invalid stamp status for role {role!r}: {status!r} "
+                    f"invalid stamp status for role {role!r}: {statuses[0]!r} "
                     f"(expected one of {sorted(VALID_STAMP_STATUSES)})"
                 )
 

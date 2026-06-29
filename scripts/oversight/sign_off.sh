@@ -2,12 +2,16 @@
 # sign_off.sh — write a validation-suite sign-off stamp.
 #
 # Each agent in the validation suite runs this when it approves a change. It
-# writes signoffs/<role>.stamp. The stamp's *git commit timestamp* is what the
-# gate checks (scripts/oversight/signoff_gate.py), so the caller must commit the
-# stamp together with — or after — the changes it signs off on.
+# writes signoffs/<namespace>/<role>.stamp, where <namespace> is a per-branch
+# slug. Per-branch namespacing keeps two concurrent PRs from ever sharing a
+# stamp path, so disjoint changes never collide on the register (#968) — the
+# same shape as the per-entry audit-log migration (#888). The stamp's *git
+# commit timestamp* is what the gate checks (scripts/oversight/signoff_gate.py),
+# so the caller must commit the stamp together with — or after — the changes it
+# signs off on.
 #
 # Usage:
-#   scripts/oversight/sign_off.sh <role> [--status STATUS] [--agent NAME] [--note "text"]
+#   scripts/oversight/sign_off.sh <role> [--status STATUS] [--agent NAME] [--note "text"] [--namespace NS]
 #
 #   <role>      One of the role keys in contract/step-manifest.yaml role_mappings
 #               (code-review, security, privacy, test-unit, test-system, process,
@@ -15,11 +19,14 @@
 #   --status    APPROVED (default) | CONDITIONAL | NOT_APPLICABLE
 #   --agent     Override the agent name (defaults to the manifest mapping).
 #   --note      Free-text note recorded in the stamp.
+#   --namespace Override the stamp namespace (defaults to a slug of the current
+#               git branch; falls back to $HOS_SIGNOFF_NAMESPACE then the short
+#               HEAD sha on a detached checkout).
 #
 # The stamp is written but NOT committed — commit it yourself so the timestamp
 # is authoritative:
 #
-#   git add signoffs/<role>.stamp && git commit
+#   git add signoffs/<namespace>/<role>.stamp && git commit
 #
 # Exit 0 on success, 2 on usage/role error.
 set -euo pipefail
@@ -43,8 +50,31 @@ else
 fi
 
 usage() {
-    sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit "${1:-2}"
+}
+
+# signoff_namespace — derive the per-branch stamp namespace slug.
+#   Precedence: explicit --namespace / $HOS_SIGNOFF_NAMESPACE, then the current
+#   branch name, then the short HEAD sha (detached HEAD). Sanitized to
+#   [A-Za-z0-9._-], collapsing other runs to a single "-". Must match the Python
+#   derivation in signoff_gate.py.
+signoff_namespace() {
+    local raw="${1:-}"
+    if [[ -z "$raw" ]]; then
+        raw="${HOS_SIGNOFF_NAMESPACE:-}"
+    fi
+    if [[ -z "$raw" ]]; then
+        raw="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+    fi
+    if [[ -z "$raw" || "$raw" == "HEAD" ]]; then
+        raw="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "detached")"
+    fi
+    # Replace any run of disallowed chars with a single "-", trim leading/trailing "-".
+    local slug
+    slug="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+    [[ -n "$slug" ]] || slug="detached"
+    printf '%s' "$slug"
 }
 
 [[ $# -ge 1 ]] || usage 2
@@ -54,11 +84,13 @@ ROLE="$1"; shift
 STATUS="APPROVED"
 AGENT=""
 NOTE=""
+NAMESPACE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --status) STATUS="${2:?--status needs a value}"; shift 2 ;;
         --agent)  AGENT="${2:?--agent needs a value}"; shift 2 ;;
         --note)   NOTE="${2:?--note needs a value}"; shift 2 ;;
+        --namespace) NAMESPACE="${2:?--namespace needs a value}"; shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "sign_off: unknown argument: $1" >&2; usage 2 ;;
     esac
@@ -89,8 +121,10 @@ PY
 )"
 [[ -n "$AGENT" ]] || AGENT="$RESOLVED_AGENT"
 
-mkdir -p "$SIGNOFFS_DIR"
-STAMP="$SIGNOFFS_DIR/${ROLE}.stamp"
+NS="$(signoff_namespace "$NAMESPACE")"
+STAMP_DIR="$SIGNOFFS_DIR/$NS"
+mkdir -p "$STAMP_DIR"
+STAMP="$STAMP_DIR/${ROLE}.stamp"
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "uncommitted")"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -98,6 +132,7 @@ NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "role: $ROLE"
     echo "agent: $AGENT"
     echo "status: $STATUS"
+    echo "namespace: $NS"
     echo "signed_at: $NOW          # informational — the gate uses the git commit time"
     echo "head_at_signing: $SHA"
     [[ -n "$NOTE" ]] && echo "note: $NOTE"
