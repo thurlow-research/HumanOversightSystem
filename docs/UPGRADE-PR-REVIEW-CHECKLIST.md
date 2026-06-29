@@ -19,6 +19,15 @@ additions, are the real review surface.
   Fixed in v0.3.1; on ≥ v0.3.1 this cannot silently happen.)*
 - [ ] **`.hos-release`** records the expected tag, and **`config.sh`** has the
   expected `PACK=` value.
+- [ ] **You ran the installer once per *repo*, not once per *role*.** How many
+  upgrade PRs to expect depends on deployment topology, not on the number of
+  roles. **Single-repo deployment** (Worker, Human, and Overseer all share one
+  GitHub repo — the default the installer scaffolds, where `*_worker_root` and
+  `*_overseer_root` point at the same path): **one PR is the entire upgrade** —
+  do not open a separate PR per role. **Split-repo deployment** (each role in its
+  own repo): run the installer in each repo and review one PR per repo. *(Red
+  flag: trying to push three per-role branches into one shared repo — that's the
+  push failure in #949/#950; a single-repo deployment needs exactly one PR.)*
 
 ## B. Data-loss review — read the *deletions* (the critical pass)
 - [ ] **Every deleted agent block is framework-absorbed, not project-unique.**
