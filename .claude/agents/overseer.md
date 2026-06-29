@@ -320,6 +320,27 @@ For each PR found:
    The function will block AUTO_MERGE unless a qualifying human approval on the current
    head SHA has been recorded since that prior comment — preventing silent decision downgrades.
 
+   **`human_hold_directive` (#902)** — using the SAME issue-comments fetch as above,
+   detect an unaddressed human bounce-back / hold / do-not-merge directive on the
+   current head. Do not hand-roll the scan — call the library helper:
+   ```python
+   from scripts.automation.lib.merge_authority import detect_human_hold_directive
+   # head_committed_at = ISO-8601 timestamp of the current head commit
+   #   (GET /repos/{o}/{r}/commits/{head_sha} → .commit.committer.date)
+   hold = detect_human_hold_directive(
+       comments, human_reviewer="ScottThurlow", head_committed_at=head_committed_at,
+   )
+   human_hold_directive = hold is not None
+   ```
+   It matches comments from `ScottThurlow` that say "bounce back", "send back",
+   "do not merge/approve", "on hold", "halt", "rework", "revise", etc., counting
+   only directives posted AFTER the current head was pushed (a newer worker push
+   supersedes an earlier bounce-back, exactly like a stale approval, #741). Pass
+   `human_hold_directive=<bool>` to `decide_merge_authority()`. When True the
+   function returns HUMAN_REQUIRED — and per step 6 you MUST NOT post an approval
+   review. This closes the #900 gap where a stale `APPROVED` review was posted
+   against an explicit human directive to send the PR back.
+
    **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
    - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
    - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection
@@ -331,7 +352,7 @@ For each PR found:
 6. **Act on decision**:
    - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. Log both actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
    - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; on next cycle, if ScottThurlow has approved, merge immediately.
-   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation).
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
    - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered. Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
