@@ -19,7 +19,9 @@ Matrix (R9.1 — authoritative):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
@@ -73,6 +75,86 @@ def has_human_approval(
         True if a qualifying APPROVED review exists from the human_reviewer.
     """
     return _find_human_approval(reviews, human_reviewer, head_sha) is not None
+
+
+# Explicit human directives that mean "do not approve / send this PR back" rather
+# than "merge it" — a bounce-back / hold / do-not-merge signal (#902). Matched
+# case-insensitively against a comment body. The set is deliberately conservative
+# but errs toward withholding: a false positive only ever blocks an auto-approval
+# (the safe direction), never enables one.
+_HOLD_DIRECTIVE_RE = re.compile(
+    r"\b(?:"
+    r"bounce(?:\s+it|\s+this)?\s+back"
+    r"|back\s+to\s+(?:the\s+)?(?:worker|hos-worker)"
+    r"|send(?:\s+it|\s+this)?\s+back"
+    r"|do\s+not\s+merge|don['’]?t\s+merge|dont\s+merge"
+    r"|do\s+not\s+approve|don['’]?t\s+approve|dont\s+approve"
+    r"|on\s+hold|hold\s+off|hold\s+the\s+merge"
+    r"|halt"
+    r"|unapprove"
+    r"|needs?\s+rework|rework\s+(?:this|it)"
+    r"|revise"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    """Parse a GitHub ISO-8601 timestamp (e.g. '2026-06-28T15:46:11Z') to an
+    aware datetime, or None if absent/unparseable."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def detect_human_hold_directive(
+    comments: list[dict],
+    human_reviewer: str = "ScottThurlow",
+    head_committed_at: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Find an unaddressed human hold / bounce-back directive on the current head (#902).
+
+    Scans issue/PR comments for one authored by ``human_reviewer`` whose body
+    matches a bounce-back / hold / do-not-merge pattern (``_HOLD_DIRECTIVE_RE``).
+
+    If ``head_committed_at`` (ISO-8601 timestamp of the current head commit) is
+    provided, only directives posted AFTER the head was pushed count — a newer
+    worker push supersedes an earlier bounce-back, mirroring how a push
+    invalidates a stale approval (#741). When ``head_committed_at`` is None, any
+    matching directive counts (fail-safe: withhold approval when the push time is
+    unknown). A comment whose own timestamp cannot be parsed is also counted
+    (fail-safe), so a missing ``created_at`` never silently clears the gate.
+
+    Args:
+        comments: Issue/PR comment dicts from ``GET /issues/{n}/comments`` (each
+            with ``user.login``, ``body``, ``created_at``).
+        human_reviewer: GitHub login of the authorized human reviewer.
+        head_committed_at: ISO-8601 timestamp the current head was pushed/committed.
+
+    Returns:
+        The most recent matching comment dict, or None if no active directive.
+    """
+    head_dt = _parse_iso(head_committed_at)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    matches: list[tuple[datetime, dict]] = []
+    for comment in comments or []:
+        login = (comment.get("user") or {}).get("login", "")
+        if login.lower() != human_reviewer.lower():
+            continue
+        if not _HOLD_DIRECTIVE_RE.search(comment.get("body") or ""):
+            continue
+        created_dt = _parse_iso(comment.get("created_at"))
+        if head_dt is not None and created_dt is not None and created_dt <= head_dt:
+            continue  # Superseded by a later head push — directive is addressed.
+        matches.append((created_dt or _epoch, comment))
+    if not matches:
+        return None
+    matches.sort(key=lambda m: m[0])
+    return matches[-1][1]
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +389,7 @@ def decide_merge_authority(
     pr_labels: list[str] = None,     # Labels on the PR; needs-human/hos-halt block AUTO_MERGE (#756)
     prior_overseer_decision: Optional[str] = None,  # "HUMAN_REQUIRED" if a prior cycle decided so (#761)
     requested_reviewers: Optional[list[str]] = None,  # Pending human review requests on the PR (#761)
+    human_hold_directive: bool = False,  # Unaddressed human bounce-back/hold on current head (#902)
 ) -> MergeAuthorityResult:
     """
     Decide what the automation may do with this PR.
@@ -321,6 +404,12 @@ def decide_merge_authority(
     other PRs the universal assertion (#757) fires last, after the server-side
     gate re-check (R9.1.1).  The audit reason always records the authorizing
     maintainer and the approved SHA.
+
+    Issue #902: an unaddressed human hold/bounce-back directive on the current
+    head (``human_hold_directive=True``, computed by the caller via
+    detect_human_hold_directive) forces HUMAN_REQUIRED before the worker/verdict
+    guards, so the overseer withholds approval rather than approving against an
+    explicit human decision to send the PR back.
     """
     if reviews is None:
         reviews = []
@@ -367,6 +456,24 @@ def decide_merge_authority(
                 ),
                 labels_to_add=["needs-human"],
             )
+
+    # Human hold-directive gate (#902): an explicit, unaddressed human directive
+    # to bounce back / hold / not merge on the current head SHA is a
+    # HUMAN_REQUIRED-equivalent block. It fires alongside the #756 label and #761
+    # reviewer guards — before the worker-class, verdict, and ceiling guards — so a
+    # held PR escalates to the human and the overseer withholds any approval review,
+    # rather than silently downgrading to PROPOSE_ONLY. The caller computes this via
+    # detect_human_hold_directive() over comments posted since the head was pushed;
+    # a newer worker push (or explicit human re-approval) supersedes the directive.
+    if human_hold_directive:
+        return MergeAuthorityResult(
+            decision=MergeDecision.HUMAN_REQUIRED,
+            reason=(
+                f"Unaddressed human hold/bounce-back directive from {human_reviewer} "
+                "on the current head — withholding approval; human authorization required (#902)"
+            ),
+            labels_to_add=["needs-human"],
+        )
 
     # No-release guard (NG3b)
     if _is_release_related(pr_title, changed_files):

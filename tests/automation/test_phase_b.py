@@ -452,6 +452,7 @@ from scripts.automation.lib.merge_authority import (
     MergeDecision,
     RiskTier,
     decide_merge_authority,
+    detect_human_hold_directive,
     detect_server_side_gate,
     route_embargo,
 )
@@ -915,6 +916,125 @@ class TestDecideMergeAuthority:
                 repo_root=str(tmp_path),
             )
         assert result.decision == MergeDecision.AUTO_MERGE
+
+    # ── Human hold-directive gate (#902) ──────────────────────────────────────
+
+    def test_human_hold_directive_blocks_auto_merge(self, tmp_path):
+        """An unaddressed human bounce-back directive forces HUMAN_REQUIRED (#902)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha902a"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                human_hold_directive=True,
+                reviews=review,
+                head_sha="sha902a",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "#902" in result.reason
+        assert "needs-human" in result.labels_to_add
+
+    def test_human_hold_directive_outranks_worker_class(self, tmp_path):
+        """The hold gate fires before the worker-class guard: a held worker PR
+        escalates to HUMAN_REQUIRED rather than silently becoming PROPOSE_ONLY (#902)."""
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "agent_class": "worker"},
+                human_hold_directive=True,
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert "#902" in result.reason
+
+    def test_no_hold_directive_does_not_block(self, tmp_path):
+        """Default human_hold_directive=False leaves an otherwise-mergeable PR mergeable (#902)."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha902b"}]
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE,
+                reviews=review,
+                head_sha="sha902b",
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    # ── Human hold-directive detection (#902) ─────────────────────────────────
+
+    def test_detect_hold_directive_matches_human_bounce_back(self):
+        comments = [
+            {"user": {"login": "someone-else"}, "body": "looks good", "created_at": "2026-06-28T15:00:00Z"},
+            {"user": {"login": "ScottThurlow"}, "body": "Bounce back to worker", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        match = detect_human_hold_directive(comments, human_reviewer="ScottThurlow")
+        assert match is not None
+        assert match["body"] == "Bounce back to worker"
+
+    def test_detect_hold_directive_ignores_non_human_author(self):
+        comments = [
+            {"user": {"login": "hos-worker-hos[bot]"}, "body": "do not merge yet", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        assert detect_human_hold_directive(comments, human_reviewer="ScottThurlow") is None
+
+    def test_detect_hold_directive_ignores_non_directive_comment(self):
+        comments = [
+            {"user": {"login": "ScottThurlow"}, "body": "Nice work, approving.", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        assert detect_human_hold_directive(comments, human_reviewer="ScottThurlow") is None
+
+    def test_detect_hold_directive_case_insensitive_login(self):
+        comments = [
+            {"user": {"login": "scottthurlow"}, "body": "Please HALT this one", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        assert detect_human_hold_directive(comments, human_reviewer="ScottThurlow") is not None
+
+    def test_detect_hold_directive_superseded_by_newer_head_push(self):
+        """A directive posted before the current head was pushed is addressed (#902/#741)."""
+        comments = [
+            {"user": {"login": "ScottThurlow"}, "body": "bounce back", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        # Head pushed AFTER the directive → directive addressed → no active hold.
+        assert detect_human_hold_directive(
+            comments, head_committed_at="2026-06-28T16:00:00Z"
+        ) is None
+
+    def test_detect_hold_directive_after_head_push_counts(self):
+        comments = [
+            {"user": {"login": "ScottThurlow"}, "body": "bounce back", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        # Head pushed BEFORE the directive → directive is unaddressed.
+        assert detect_human_hold_directive(
+            comments, head_committed_at="2026-06-28T15:00:00Z"
+        ) is not None
+
+    def test_detect_hold_directive_unknown_push_time_is_failsafe(self):
+        """With no head_committed_at, any matching directive counts (withhold)."""
+        comments = [
+            {"user": {"login": "ScottThurlow"}, "body": "send it back please", "created_at": "2026-06-28T15:46:11Z"},
+        ]
+        assert detect_human_hold_directive(comments, head_committed_at=None) is not None
+
+    def test_detect_hold_directive_returns_most_recent(self):
+        comments = [
+            {"user": {"login": "ScottThurlow"}, "body": "bounce back", "created_at": "2026-06-28T15:46:11Z"},
+            {"user": {"login": "ScottThurlow"}, "body": "actually do not merge this", "created_at": "2026-06-28T16:10:00Z"},
+        ]
+        match = detect_human_hold_directive(comments)
+        assert match["body"] == "actually do not merge this"
+
+    def test_detect_hold_directive_various_patterns(self):
+        for body in (
+            "do not merge",
+            "don't merge this",
+            "do not approve",
+            "put this on hold",
+            "hold off for now",
+            "send back to worker",
+            "this needs rework",
+            "please revise",
+            "unapprove and rework it",
+        ):
+            comments = [{"user": {"login": "ScottThurlow"}, "body": body, "created_at": "2026-06-28T15:46:11Z"}]
+            assert detect_human_hold_directive(comments) is not None, f"pattern not matched: {body!r}"
 
     # ── Protected-surface: docs/releases and .hos-release (#761) ──────────────
 
