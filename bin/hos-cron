@@ -215,15 +215,16 @@ _pre_jitter_deps_check() {
   fi
 
   local _venv_dir="$REPO_ROOT/scripts/oversight/.venv"
-  if [[ ! -x "$_venv_dir/bin/python" ]]; then
-    echo "$LOG_PREFIX FATAL: oversight venv missing at $_venv_dir — run: bash $REPO_ROOT/scripts/oversight/ensure_venv.sh"
-    _audit cycle-preflight-fail reason=oversight_venv_missing
-    exit 78
-  fi
-  if [[ ! -x "$_venv_dir/bin/pytest" ]]; then
-    echo "$LOG_PREFIX FATAL: pytest missing from oversight venv — run: bash $REPO_ROOT/scripts/oversight/ensure_venv.sh"
-    _audit cycle-preflight-fail reason=oversight_pytest_missing
-    exit 78
+  # A missing/incomplete oversight venv is self-healing: build it via ensure_venv.sh
+  # (the same auto-repair _validate_env relies on) and only FATAL if the build itself
+  # fails. Bare existence-check-then-FATAL here would shadow that auto-repair (#953).
+  if [[ ! -x "$_venv_dir/bin/python" || ! -x "$_venv_dir/bin/pytest" ]]; then
+    echo "$LOG_PREFIX oversight venv missing/incomplete at $_venv_dir — building via ensure_venv.sh"
+    if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet; then
+      echo "$LOG_PREFIX FATAL: ensure_venv.sh failed to build oversight venv at $_venv_dir"
+      _audit cycle-preflight-fail reason=oversight_venv_build_failed
+      exit 78
+    fi
   fi
 
   touch "$_marker" 2>/dev/null || true

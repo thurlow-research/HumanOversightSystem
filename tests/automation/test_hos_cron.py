@@ -549,21 +549,32 @@ class TestValidateEnv:
 
 # ─────────────────────── Pre-jitter dependency check ─────────────────────────
 class TestPreJitterDepsCheck:
-    def test_missing_venv_exits_78_before_jitter(self, cron):
-        """No oversight venv python → exit 78 before jitter sleep (fail-closed)."""
+    def test_missing_venv_self_heals_via_ensure_venv(self, cron):
+        """Missing oversight venv python → build via ensure_venv.sh, then proceed (#953).
+
+        The preflight must not shadow the auto-repair _validate_env already relies
+        on: a missing venv that ensure_venv.sh can build self-heals rather than
+        FATAL'ing and looping forever.
+        """
         (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
-        r = cron.run()
+        r = cron.run()  # ensure_venv.sh stub exits 0 by default → build succeeds
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "building via ensure_venv.sh" in r.stdout
+
+    def test_missing_venv_build_failure_exits_78(self, cron):
+        """Missing venv + ensure_venv.sh build fails → exit 78 (fail-closed) (#953)."""
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        r = cron.run(env_overrides={"HOS_TEST_ENSURE_VENV_EXIT": "1"})
         assert r.returncode == 78, r.stdout + r.stderr
-        assert "oversight venv missing" in r.stdout
+        assert "ensure_venv.sh failed to build" in r.stdout
         assert not cron.claude_ran()
 
-    def test_missing_pytest_exits_78_before_jitter(self, cron):
-        """pytest missing from venv → exit 78 before jitter sleep."""
+    def test_missing_pytest_self_heals_via_ensure_venv(self, cron):
+        """pytest missing from venv → build via ensure_venv.sh, then proceed (#953)."""
         (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest").unlink()
-        r = cron.run()
-        assert r.returncode == 78, r.stdout + r.stderr
-        assert "pytest missing" in r.stdout
-        assert not cron.claude_ran()
+        r = cron.run()  # ensure_venv.sh stub exits 0 by default → build succeeds
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "building via ensure_venv.sh" in r.stdout
 
     def test_successful_check_writes_marker(self, cron):
         """Successful deps check writes a marker file in validation-cache."""
@@ -592,7 +603,8 @@ class TestPreJitterDepsCheck:
         assert cron.claude_ran()
 
     def test_stale_marker_triggers_revalidation_and_fails(self, cron):
-        """A marker older than 7 days triggers re-validation; missing venv → exit 78."""
+        """A marker older than 7 days triggers re-validation; missing venv whose
+        build also fails → exit 78 (fail-closed) (#953)."""
         # Run once to get the marker written
         r1 = cron.run()
         assert r1.returncode == 0, r1.stdout + r1.stderr
@@ -609,10 +621,10 @@ class TestPreJitterDepsCheck:
             cron.claude_log.unlink()
         if cron.last_run_file.exists():
             cron.last_run_file.unlink()
-        # Re-run: stale marker → revalidation → venv missing → exit 78
-        r2 = cron.run()
+        # Re-run: stale marker → revalidation → venv missing → build fails → exit 78
+        r2 = cron.run(env_overrides={"HOS_TEST_ENSURE_VENV_EXIT": "1"})
         assert r2.returncode == 78, r2.stdout + r2.stderr
-        assert "oversight venv missing" in r2.stdout
+        assert "ensure_venv.sh failed to build" in r2.stdout
 
 
 # ──────────────────────────── Suspension (#778) ──────────────────────────────
