@@ -594,6 +594,25 @@ if [[ "$PR_MODE" != "off" ]] && ! $DRY_RUN; then
   if $_pr_ok; then
     _slug="$(printf '%s' "$HOS_REF" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
     PR_BRANCH="hos-upgrade/${_slug:-update}"
+    # #949: Worker/Human/Overseer can be separate local clones of ONE shared
+    # GitHub remote. A fixed branch name then collides — the first clone's push
+    # lands; the next clones' pushes are rejected non-fast-forward, leaving a
+    # local branch with no PR (and exit 1) despite the local install succeeding.
+    # If the chosen branch already exists on the remote, disambiguate with this
+    # clone's directory name so each role-clone opens its own PR. The common
+    # one-repo install hits no remote collision and keeps the plain name.
+    if git -C "$TARGET_REPO" ls-remote --exit-code --heads origin "$PR_BRANCH" >/dev/null 2>&1; then
+      _clone_tag="$(basename "$TARGET_REPO" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')"
+      _candidate="hos-upgrade/${_slug:-update}-${_clone_tag:-clone}"
+      # Two clones sharing a basename (or a re-run of this clone) could still
+      # collide; append a process-unique suffix so the push can never be
+      # rejected non-fast-forward.
+      if git -C "$TARGET_REPO" ls-remote --exit-code --heads origin "$_candidate" >/dev/null 2>&1; then
+        _candidate="${_candidate}-$$"
+      fi
+      info "Remote branch '$PR_BRANCH' already exists (another role-clone may share this repo) — using '$_candidate' so this upgrade gets its own PR (#949)."
+      PR_BRANCH="$_candidate"
+    fi
     if git -C "$TARGET_REPO" checkout -b "$PR_BRANCH" >/dev/null 2>&1; then
       PR_ACTIVE=true
       header "Install-via-PR"
