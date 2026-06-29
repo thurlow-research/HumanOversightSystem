@@ -10,7 +10,7 @@ disk. The commit timestamp is set when `git commit` runs, so the supported
 workflow is:
 
   1. Make changes (not yet committed).
-  2. Run the validation suite → each agent writes signoffs/<role>.stamp.
+  2. Run the validation suite → each agent writes signoffs/<namespace>/<role>.stamp.
   3. git add -A && git commit        ← changed files AND stamps share commit time T.
   4. Push.
   5. Gate: max(changed-file commit time) <= min(stamp commit time)  → PASS.
@@ -19,13 +19,22 @@ Two-commit variant (commit code at T1, then commit stamps at T2 > T1) also
 passes. The only case that fails is committing *new* changes after a stamp
 without re-signing — exactly what the gate exists to catch.
 
+Stamps live under a per-branch namespace, signoffs/<namespace>/<role>.stamp, so
+two concurrent PRs never share a stamp path and disjoint changes never collide
+on the register (#968 — the same shape as the per-entry audit-log migration,
+#888). PR mode reads only the current branch's namespace; a pre-#968 flat
+signoffs/<role>.stamp is still accepted as a migration fallback.
+
 Required roles are read from contract/step-manifest.yaml: the union of every
 step's `required_signoffs`, mapped to agent names via `role_mappings`. That
 manifest is the single source of truth for who is in the validation suite.
 
 Modes:
   --base <ref>   PR/CI mode. Compared file set = files changed vs. merge-base(ref).
-  --all          Deploy mode. Compared file set = every tracked file.
+                 Reads the current branch's namespace (override: --namespace /
+                 $HOS_SIGNOFF_NAMESPACE).
+  --all          Deploy mode. Compared file set = every tracked file; sign-offs
+                 are aggregated across every namespace on the tree.
 
 A stamp's status must be APPROVED, CONDITIONAL, or NOT_APPLICABLE. NOT_APPLICABLE
 still has to be re-affirmed (re-committed) after later changes, so a role can
@@ -37,6 +46,8 @@ Exit 0 = gate passes. Exit 1 = gate fails. Exit 2 = usage / environment error.
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -95,6 +106,12 @@ OVERSIGHT_ARTIFACT_PREFIXES = (
 # not by a stamp. See signoffs/README.md.
 VALID_STATUSES = {"APPROVED", "CONDITIONAL", "NOT_APPLICABLE", "NA"}
 STAMP_SUFFIX = ".stamp"
+# Environment override for the per-branch stamp namespace (#968). Lets a detached
+# CI checkout pin the logical branch, e.g. HOS_SIGNOFF_NAMESPACE="$GITHUB_HEAD_REF".
+NAMESPACE_ENV = "HOS_SIGNOFF_NAMESPACE"
+# Reserved subdirectory of signoffs/ that holds committed validator artifacts
+# (signoffs/validators/step{N}/summary.json, #555) — never a stamp namespace.
+RESERVED_SIGNOFF_SUBDIRS = {"validators"}
 
 
 def run_git(args: list[str], cwd: Path) -> str:
@@ -158,6 +175,51 @@ def parse_stamp_status(path: Path) -> str | None:
         if stripped.lower().startswith("status:"):
             return stripped.split(":", 1)[1].strip().upper()
     return None
+
+
+def signoff_namespace(root: Path, override: str | None = None) -> str:
+    """Per-branch stamp namespace slug. Mirrors sign_off.sh:signoff_namespace.
+
+    Precedence: explicit override / $HOS_SIGNOFF_NAMESPACE, then the current
+    branch name, then the short HEAD sha (detached HEAD). Sanitized to
+    [A-Za-z0-9._-], collapsing other runs to a single '-'. Never empty.
+    """
+    raw = override or os.environ.get(NAMESPACE_ENV, "") or ""
+    if not raw:
+        branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+        if branch and branch != "HEAD":
+            raw = branch
+    if not raw:
+        raw = run_git(["rev-parse", "--short", "HEAD"], root) or "detached"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")
+    return slug or "detached"
+
+
+def legacy_stamp_rel(role: str) -> str:
+    """Pre-#968 flat stamp path, kept as a migration fallback."""
+    return f"{SIGNOFFS_DIR}/{role}{STAMP_SUFFIX}"
+
+
+def namespaced_stamp_rels(root: Path, role: str) -> list[str]:
+    """Every existing stamp relpath for a role across all namespaces + legacy flat.
+
+    Used by deploy mode (--all) and the release gate, which ask whether the tree
+    on the integration branch is signed — they aggregate across the per-branch
+    directories that accumulate on merge, plus any pre-migration flat stamp.
+    """
+    rels: list[str] = []
+    legacy = legacy_stamp_rel(role)
+    if (root / legacy).exists():
+        rels.append(legacy)
+    signoffs = root / SIGNOFFS_DIR
+    if signoffs.is_dir():
+        for child in sorted(signoffs.iterdir()):
+            if not child.is_dir() or child.name in RESERVED_SIGNOFF_SUBDIRS:
+                continue
+            rel = f"{SIGNOFFS_DIR}/{child.name}/{role}{STAMP_SUFFIX}"
+            if (root / rel).exists():
+                rels.append(rel)
+    return rels
 
 
 def changed_files(root: Path, base: str) -> list[str]:
@@ -229,6 +291,15 @@ def main() -> int:
         help="Path to step-manifest.yaml (default: contract/step-manifest.yaml).",
     )
     parser.add_argument(
+        "--namespace",
+        metavar="NS",
+        help=(
+            "PR-mode stamp namespace (default: a slug of the current branch, or "
+            f"${NAMESPACE_ENV}). Ignored in --all mode, which aggregates across "
+            "every namespace."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Only print the final PASS/FAIL line.",
@@ -253,9 +324,16 @@ def main() -> int:
         if not args.quiet:
             print(msg)
 
+    # PR mode reads only the current branch's namespace (a stamp from another
+    # branch signed different code, so it must not satisfy this PR). Deploy mode
+    # aggregates across every namespace that has accumulated on the tree.
+    namespace = None if args.all else signoff_namespace(root, args.namespace)
+
     log("=== sign-off gate ===")
     log(f"manifest: {args.manifest}")
     log(f"mode:     {'deploy (--all)' if args.all else f'pr (--base {args.base})'}")
+    if namespace is not None:
+        log(f"namespace: {namespace}")
     log("")
 
     # ── 1. Working tree must be clean of unsigned changes ────────────────────
@@ -297,42 +375,70 @@ def main() -> int:
     log(f"required validation suite ({len(required_roles)} roles):")
     for role in required_roles:
         agent = role_map.get(role, "?")
-        rel = f"{SIGNOFFS_DIR}/{role}{STAMP_SUFFIX}"
-        stamp_path = root / rel
         agent_label = f"{role} ({agent})"
 
-        if not stamp_path.exists():
-            log(f"  ✗ {agent_label}: MISSING stamp {rel}")
-            failures.append(f"{agent_label}: no stamp at {rel}")
+        # Candidate stamp paths. PR mode: the branch namespace, then the legacy
+        # flat path as a migration fallback. Deploy mode: every namespace + legacy.
+        if args.all:
+            candidates = namespaced_stamp_rels(root, role)
+            missing_label = f"{SIGNOFFS_DIR}/*/{role}{STAMP_SUFFIX}"
+        else:
+            primary = f"{SIGNOFFS_DIR}/{namespace}/{role}{STAMP_SUFFIX}"
+            candidates = [
+                c for c in (primary, legacy_stamp_rel(role)) if (root / c).exists()
+            ]
+            missing_label = primary
+
+        if not candidates:
+            log(f"  ✗ {agent_label}: MISSING stamp {missing_label}")
+            failures.append(f"{agent_label}: no stamp at {missing_label}")
             continue
 
-        status = parse_stamp_status(stamp_path)
-        if status not in VALID_STATUSES:
-            log(f"  ✗ {agent_label}: invalid status {status!r}")
-            failures.append(
-                f"{agent_label}: status must be one of " f"{sorted(VALID_STATUSES)}, got {status!r}"
-            )
+        # Among the candidates, pick the newest stamp that is both valid-status
+        # and committed. In PR mode that is normally the single namespace stamp;
+        # in deploy mode it is the freshest sign-off across all merged branches.
+        best_rel = None
+        best_time = -1
+        best_status = None
+        for rel in candidates:
+            status = parse_stamp_status(root / rel)
+            if status not in VALID_STATUSES:
+                continue
+            t = commit_time(root, rel)
+            if t == 0:
+                continue
+            if t > best_time:
+                best_rel, best_time, best_status = rel, t, status
+
+        if best_rel is None:
+            # Nothing usable — surface the most actionable diagnostic from the
+            # first candidate (invalid status, else uncommitted).
+            first = candidates[0]
+            status = parse_stamp_status(root / first)
+            if status not in VALID_STATUSES:
+                log(f"  ✗ {agent_label}: invalid status {status!r}")
+                failures.append(
+                    f"{agent_label}: status must be one of "
+                    f"{sorted(VALID_STATUSES)}, got {status!r}"
+                )
+            else:
+                log(f"  ✗ {agent_label}: stamp not committed yet")
+                failures.append(
+                    f"{agent_label}: stamp {first} exists but has no commit — "
+                    f"commit it so it gets an authoritative timestamp"
+                )
             continue
 
-        stamp_time = commit_time(root, rel)
-        if stamp_time == 0:
-            log(f"  ✗ {agent_label}: stamp not committed yet")
-            failures.append(
-                f"{agent_label}: stamp {rel} exists but has no commit — "
-                f"commit it so it gets an authoritative timestamp"
-            )
-            continue
-
-        if stamp_time < newest_file_time:
-            delta = newest_file_time - stamp_time
+        if best_time < newest_file_time:
+            delta = newest_file_time - best_time
             log(f"  ✗ {agent_label}: STALE — signed {delta}s before " f"{newest_file} changed")
             failures.append(
-                f"{agent_label}: stamp ({stamp_time}) is older than changed file "
+                f"{agent_label}: stamp ({best_time}) is older than changed file "
                 f"{newest_file} ({newest_file_time}) — re-sign after changes"
             )
             continue
 
-        log(f"  ✓ {agent_label}: {status} @ commit {stamp_time}")
+        log(f"  ✓ {agent_label}: {best_status} @ commit {best_time} [{best_rel}]")
 
     log("")
     if failures:

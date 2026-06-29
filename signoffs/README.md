@@ -1,17 +1,21 @@
 # Sign-off stamps — CI-enforceable validation suite gate
 
-This directory holds **committed sign-off stamps** (`<role>.stamp`), one per reviewer role in the validation suite. They are the CI-enforcement layer for sign-offs: the markdown sign-off register (`.claudetmp/signoffs/step{N}-register.md`, ephemeral) is what agents write for the oversight-evaluator to reason over; these stamps are what a gate can check mechanically, in CI, after a PR is opened.
+This directory holds **committed sign-off stamps** (`<namespace>/<role>.stamp`), one per reviewer role in the validation suite. They are the CI-enforcement layer for sign-offs: the markdown sign-off register (`.claudetmp/signoffs/step{N}-register.md`, ephemeral) is what agents write for the oversight-evaluator to reason over; these stamps are what a gate can check mechanically, in CI, after a PR is opened.
 
 This is the same pattern as the framework validation stamps (`scripts/framework/validation-stamps/`) applied to per-step sign-offs — see `research/findings/stamp-based-ci-enforcement.md`.
+
+## Per-branch namespaces (#968)
+
+Stamps live under a **per-branch namespace**: `signoffs/<namespace>/<role>.stamp`, where `<namespace>` defaults to a slug of the current git branch (override with `--namespace` or `$HOS_SIGNOFF_NAMESPACE`). Because two concurrent PRs are on two branches, they write to two different directories and **never share a stamp path** — so disjoint changes can merge in either order without ever colliding on the register. This is the same conflict-elimination shape as the per-entry audit-log migration (#888); it supersedes the earlier per-step layout (#366) by going finer (it also prevents collisions between two PRs on the *same* step). A pre-#968 flat `signoffs/<role>.stamp` is still read as a migration fallback.
 
 ## How it works
 
 The authoritative clock is the **git commit timestamp**, not file mtime (mtime resets on checkout/clone; commit time is immutable history).
 
 1. Make changes (uncommitted).
-2. Each reviewer runs `scripts/oversight/sign_off.sh <role>` → writes `signoffs/<role>.stamp`.
+2. Each reviewer runs `scripts/oversight/sign_off.sh <role>` → writes `signoffs/<namespace>/<role>.stamp`.
 3. `git add -A && git commit` — changed files and stamps share commit time T.
-4. The gate (`scripts/oversight/signoff_gate.py`) checks: every required role has a committed stamp **no older than** the newest changed file. Committing new changes after signing, without re-signing, makes the stamp stale → gate fails. That is exactly what it exists to catch.
+4. The gate (`scripts/oversight/signoff_gate.py`) checks: every required role has a committed stamp **no older than** the newest changed file. In PR mode (`--base`) it reads only the current branch's namespace; in deploy mode (`--all`) it aggregates the freshest stamp per role across every namespace. Committing new changes after signing, without re-signing, makes the stamp stale → gate fails. That is exactly what it exists to catch.
 
 ## Commands
 

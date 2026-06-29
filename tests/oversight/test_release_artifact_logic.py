@@ -422,6 +422,44 @@ def test_ac11_not_applicable_stamp_passes(tmp_path):
     assert result.verdict == "pass"
 
 
+# ── #968 — per-branch namespaced stamps satisfy the aggregating release gate ──
+
+
+def test_namespaced_stamp_satisfies_release(tmp_path):
+    # Stamps committed under per-branch namespaces (no legacy flat stamp) must
+    # still satisfy the release gate, which aggregates across all namespaces.
+    _write_stamp(tmp_path / "signoffs" / "branch-a", "code-review")
+    _write_stamp(tmp_path / "signoffs" / "branch-b", "security")
+    manifest = _manifest(["code-review", "security"])
+    result = validate_release_artifacts(tmp_path, manifest_data=manifest)
+    assert result.verdict == "pass"
+    assert result.missing_signoffs == []
+
+
+def test_validators_subdir_is_not_a_namespace(tmp_path):
+    # signoffs/validators/ holds validator artifacts, not stamps — it must never
+    # be treated as a stamp namespace, so a required role with only a stray file
+    # there is still reported missing.
+    (tmp_path / "signoffs" / "validators").mkdir(parents=True)
+    (tmp_path / "signoffs" / "validators" / "code-review.stamp").write_text(
+        "role: code-review\nstatus: APPROVED\n", encoding="utf-8"
+    )
+    manifest = _manifest(["code-review"])
+    result = validate_release_artifacts(tmp_path, manifest_data=manifest)
+    assert result.verdict == "escalate"
+    assert "code-review" in result.missing_signoffs
+
+
+def test_namespaced_overrides_invalid_legacy(tmp_path):
+    # A valid namespaced stamp satisfies the role even if a stale legacy flat
+    # stamp has an invalid status (any valid stamp across namespaces suffices).
+    _write_stamp(tmp_path / "signoffs", "code-review", status="ESCALATED")
+    _write_stamp(tmp_path / "signoffs" / "branch-a", "code-review", status="APPROVED")
+    manifest = _manifest(["code-review"])
+    result = validate_release_artifacts(tmp_path, manifest_data=manifest)
+    assert result.verdict == "pass"
+
+
 # ── AC12 — audit event structure ─────────────────────────────────────────────
 
 

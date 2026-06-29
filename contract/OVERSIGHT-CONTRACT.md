@@ -11,11 +11,18 @@ All files live relative to the project root. The HOS reads these locations; comp
 ```
 signoffs/                            ← COMMITTED to project repo (not gitignored)
   README.md
-  <step-id>/                        ← one subdirectory per build step (id from step-manifest.yaml)
-    <role>.stamp                    ← one stamp per role per step; committed. The gate
+  <namespace>/                      ← one subdirectory per branch (slug of the git branch;
+                                       override via --namespace / $HOS_SIGNOFF_NAMESPACE)
+    <role>.stamp                    ← one stamp per role; committed. The gate
                                        (signoff_gate.py) reads its git commit timestamp.
-                                       Per-step subdirectories keep concurrent PRs for
-                                       different steps from colliding (#366).
+                                       Per-branch namespaces keep ANY two concurrent PRs
+                                       from sharing a stamp path, so disjoint changes never
+                                       collide on the register (#968, finer-grained than the
+                                       earlier per-step layout of #366; same shape as the
+                                       per-entry audit-log migration #888). PR mode reads
+                                       only the current branch's namespace; deploy/release
+                                       gates aggregate across all namespaces. A pre-#968 flat
+                                       signoffs/<role>.stamp is still accepted (migration).
   validators/                      ← COMMITTED validator artifacts (#555)
     step{N}/
       summary.json                 ← committed copy of validator output, written by
