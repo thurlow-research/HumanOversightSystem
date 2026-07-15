@@ -35,6 +35,7 @@ count_corroboration = panel_logic.count_corroboration
 reconcile_membership = panel_logic.reconcile_membership
 rank_findings = panel_logic.rank_findings
 annotate_and_rank = panel_logic.annotate_and_rank
+reconcile_arbiter = panel_logic.reconcile_arbiter
 compute_triage_floor = panel_logic.compute_triage_floor
 compute_sqc_sample = panel_logic.compute_sqc_sample
 extract_json = panel_logic.extract_json
@@ -586,4 +587,112 @@ def test_risk_override_not_bare_assignment():
     branch = _override_branch()
     assert 'RISK="$RISK_OVERRIDE"' not in branch, (
         "bare RISK=$RISK_OVERRIDE lets --risk lower the floor (#910 regression)"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# #978 — arbiter fail-open reconciliation. The Sonnet arbiter gates what        #
+# reaches the human; when it collapses a non-empty raw reviewer set to zero     #
+# findings (claude off PATH, or a prose/empty response — #113), the panel must  #
+# NOT silently drop the findings and leave the PR mergeable. reconcile_arbiter  #
+# salvages the raw findings ungrouped and flags the verdict for escalation.     #
+# --------------------------------------------------------------------------- #
+def test_reconcile_salvages_when_arbiter_drops_nonempty_raw():
+    # claude off PATH → the shell else-branch hands us an empty verdict, but the
+    # reviewers found real issues (findings.raw.json non-empty). Salvage them.
+    arbiter = {"summary": "Panel found no issues under the active lenses.", "findings": []}
+    raw = [
+        {"file": "a.py", "line": 10, "severity": "tier1", "reviewer": "agy", "lens": "correctness", "title": "off-by-one"},
+        {"file": "b.py", "line": 3, "severity": "tier2", "reviewer": "codex", "lens": "security", "title": "unescaped input"},
+    ]
+    out = reconcile_arbiter(arbiter, raw)
+    assert out["arbiter_salvaged"] is True
+    assert out["findings"] == raw            # raw findings surface, ungrouped
+    assert "2 reviewer finding" in out["summary"]
+    assert "#978" in out["summary"]
+
+
+def test_reconcile_salvages_on_prose_empty_arbiter():
+    # claude present but returned prose → extract_json fallback {"findings": []}.
+    # Same fail-open signature (arbiter 0, raw > 0) → same salvage.
+    arbiter = {"findings": []}
+    raw = [{"file": "x.py", "line": 1, "severity": "tier3", "reviewer": "agy", "lens": "quality"}]
+    out = reconcile_arbiter(arbiter, raw)
+    assert out["arbiter_salvaged"] is True
+    assert out["findings"] == raw
+
+
+def test_reconcile_passthrough_when_arbiter_has_findings():
+    # Arbiter produced a real synthesized verdict → do NOT overwrite it.
+    arbiter = {"summary": "one issue", "findings": [{"file": "a.py", "line": 5, "severity": "tier1"}]}
+    raw = [{"file": "a.py", "line": 5, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}]
+    out = reconcile_arbiter(arbiter, raw)
+    assert out["arbiter_salvaged"] is False
+    assert out["findings"] == arbiter["findings"]
+    assert out["summary"] == "one issue"
+
+
+def test_reconcile_no_false_salvage_when_raw_empty():
+    # Genuine "no findings" run (RAW_COUNT == 0): the empty verdict is CORRECT,
+    # not a fail-open. Must not fabricate a salvage.
+    arbiter = {"summary": "Panel found no issues.", "findings": []}
+    for raw in ([], None):
+        out = reconcile_arbiter(arbiter, raw)
+        assert out["arbiter_salvaged"] is False
+        assert out["findings"] == []
+
+
+def test_reconcile_treats_malformed_arbiter_as_empty():
+    # A malformed/None arbiter object with a non-empty raw set still salvages —
+    # the raw findings must never be lost to a bad arbiter payload.
+    raw = [{"file": "a.py", "line": 2, "severity": "tier1", "reviewer": "codex", "lens": "security"}]
+    for bad in (None, [], "prose", {"findings": "not-a-list"}):
+        out = reconcile_arbiter(bad, raw)
+        assert out["arbiter_salvaged"] is True
+        assert out["findings"] == raw
+
+
+def test_reconcile_does_not_mutate_inputs():
+    arbiter = {"findings": []}
+    raw = [{"file": "a.py", "line": 1, "severity": "tier1", "reviewer": "agy", "lens": "x"}]
+    out = reconcile_arbiter(arbiter, raw)
+    out["findings"].append({"file": "injected"})
+    assert arbiter == {"findings": []}       # caller's arbiter untouched
+    assert len(raw) == 1                       # caller's raw list untouched
+
+
+def test_reconcile_arbiter_cli_roundtrip(tmp_path, monkeypatch, capsys):
+    # Exercise the CLI wiring run_panel.sh depends on: arbiter JSON on stdin,
+    # --raw findings.raw.json → salvaged verdict on stdout with the flag set.
+    import io
+    import json as _json
+
+    raw = [{"file": "a.py", "line": 9, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}]
+    raw_path = tmp_path / "findings.raw.json"
+    raw_path.write_text(_json.dumps(raw))
+    monkeypatch.setattr("sys.stdin", io.StringIO(_json.dumps({"findings": []})))
+
+    rc = panel_logic.main(["reconcile-arbiter", "--raw", str(raw_path)])
+    assert rc == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert out["arbiter_salvaged"] is True
+    assert out["findings"] == raw
+
+
+# ── Shell-wiring guards: the salvage is only effective if run_panel.sh calls it ──
+def test_run_panel_calls_reconcile_arbiter():
+    src = _RUN_PANEL.read_text()
+    assert "reconcile-arbiter" in src, (
+        "run_panel.sh must call panel_logic.py reconcile-arbiter to close the "
+        "arbiter fail-open (#978)"
+    )
+
+
+def test_run_panel_salvage_escalates():
+    src = _RUN_PANEL.read_text()
+    assert "ARBITER_SALVAGED" in src, "salvage flag must be tracked in run_panel.sh (#978)"
+    # The escalation gate must consider the salvage flag, not tier1 count alone.
+    assert 'ARBITER_SALVAGED:-0}" -eq 1' in src, (
+        "a salvaged arbiter must force escalation (exit 3), else a silent arbiter "
+        "failure still slides through mergeable (#978 regression)"
     )

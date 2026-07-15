@@ -499,6 +499,54 @@ def annotate_and_rank(arbiter_obj: dict, raw_findings: list | None = None) -> di
     return out
 
 
+def reconcile_arbiter(arbiter_obj: dict, raw_findings: list | None) -> dict:
+    """Fail-closed reconciliation of a collapsed arbiter verdict (#978).
+
+    The Sonnet arbiter stage in run_panel.sh gates what actually reaches the human,
+    and it fails OPEN two ways: (a) `claude` is off PATH -> the shell else-branch
+    hardcodes an empty "no issues" verdict even when reviewers found real issues;
+    (b) `claude` is present but returns prose/empty (a documented Sonnet failure
+    mode, #113) -> extract_json degrades to {"findings": []}. Either way the
+    reviewer fan-out's findings (archived in findings.raw.json) are silently
+    dropped, no threads post, and the PR is left mergeable.
+
+    This mirrors run_second_review.sh's fail-closed reconciliation: if the arbiter
+    yielded ZERO findings while `raw_findings` is non-empty, SALVAGE — return a
+    verdict carrying the raw reviewer findings UNGROUPED (no dedup/corroboration;
+    that synthesis WAS the arbiter's job and it failed) plus a summary flagging the
+    failure and an `arbiter_salvaged: true` marker the caller uses to force
+    escalation. The salvaged findings still flow through annotate_and_rank, which
+    reconstructs genuine cross-vendor corroboration by file+line proximity — so a
+    truly corroborated issue still surfaces as Tier 1 even without the arbiter.
+
+    Otherwise the arbiter's own verdict is returned unchanged, tagged
+    `arbiter_salvaged: false`. Pure: no I/O, does not mutate its inputs.
+    """
+    if not isinstance(arbiter_obj, dict):
+        arbiter_obj = {}
+    arb_findings = arbiter_obj.get("findings")
+    arb_n = len(arb_findings) if isinstance(arb_findings, list) else 0
+    raw_n = len(raw_findings) if isinstance(raw_findings, list) else 0
+
+    if arb_n == 0 and raw_n > 0:
+        summary = (
+            "⚠️ **Arbiter unavailable or returned no usable findings** — the Sonnet "
+            f"synthesis step produced 0 findings while {raw_n} reviewer finding(s) "
+            "were present. `claude` was off PATH or the arbiter returned prose/empty "
+            "(#113). Posting the raw reviewer findings **ungrouped** (no "
+            "dedup/corroboration); a human must review. (#978)"
+        )
+        return {
+            "summary": summary,
+            "findings": list(raw_findings),
+            "arbiter_salvaged": True,
+        }
+
+    out = dict(arbiter_obj)
+    out["arbiter_salvaged"] = False
+    return out
+
+
 def _run_triage_floor(args) -> int:
     """SPEC-332 triage-floor subcommand: file list on stdin -> tier on stdout.
 
@@ -583,6 +631,36 @@ def _run_render_tier(args) -> int:
     return 0
 
 
+def _run_reconcile_arbiter(args) -> int:
+    """reconcile-arbiter: arbiter JSON on stdin -> reconciled verdict on stdout (#978).
+
+    Reads the raw findings from --raw (findings.raw.json). If the arbiter collapsed
+    a non-empty raw set to zero findings (fail-open), emits the salvaged verdict with
+    `arbiter_salvaged: true`; otherwise passes the arbiter verdict through with
+    `arbiter_salvaged: false`. Fail-open-SAFE: a parse error echoes the input
+    unchanged (exit 0) so reconciliation can never itself drop the arbiter's verdict.
+    """
+    data = sys.stdin.read()
+    try:
+        arbiter_obj = json.loads(data)
+    except Exception:
+        sys.stdout.write(data)
+        return 0
+
+    raw_findings = None
+    if args.raw:
+        try:
+            with open(args.raw, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, list):
+                raw_findings = loaded
+        except Exception:
+            raw_findings = None
+
+    sys.stdout.write(json.dumps(reconcile_arbiter(arbiter_obj, raw_findings)))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Panel deterministic logic (SPEC-376 ranking + SPEC-332 triage/SQC)."
@@ -624,6 +702,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_render.add_argument("--tier", type=int, required=True, choices=(1, 2))
 
+    # #978 — arbiter reconciliation: salvage raw findings when the arbiter
+    # collapsed a non-empty raw set to zero (fail-open). Arbiter JSON on stdin.
+    p_reconcile = sub.add_parser(
+        "reconcile-arbiter",
+        help="salvage raw findings if the arbiter dropped a non-empty raw set (stdin)",
+    )
+    p_reconcile.add_argument(
+        "--raw",
+        dest="raw",
+        default=None,
+        help="path to findings.raw.json (the reviewer fan-out's archived findings)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.cmd == "triage-floor":
@@ -638,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_tier_counts(args)
     if args.cmd == "render-tier":
         return _run_render_tier(args)
+    if args.cmd == "reconcile-arbiter":
+        return _run_reconcile_arbiter(args)
 
     # Default (no subcommand): SPEC-376 corroboration ranking — unchanged.
     data = sys.stdin.read()
