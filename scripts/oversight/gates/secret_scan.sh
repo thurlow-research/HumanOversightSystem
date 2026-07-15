@@ -39,6 +39,21 @@ if $CHECK_STAGED; then
         grep -E '\.(py|txt|yaml|yml|json|env|cfg|ini|sh)$' || true)
 fi
 
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    # No files specified and --staged not set: default to scanning the whole
+    # project rather than printing "No files to scan" and recording GATE PASS —
+    # a no-op pass is indistinguishable from a real pass, so hardcoded secrets
+    # would go undetected yet the gate would exit 0. Mirrors lint_check.sh. The
+    # extension set matches the --staged filter above. (#976)
+    echo "secret_scan: no files specified — defaulting to full project scan"
+    while IFS= read -r line; do FILES+=("$line"); done < <(find . -type f \
+        \( -name "*.py" -o -name "*.txt" -o -name "*.yaml" -o -name "*.yml" \
+           -o -name "*.json" -o -name "*.env" -o -name "*.cfg" -o -name "*.ini" \
+           -o -name "*.sh" \) \
+        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
+        -not -path "./.git/*")
+fi
+
 ERRORS=0
 GATE_TIMEOUT="${GATE_TIMEOUT:-60}"
 GATE_RETRIES="${GATE_RETRIES:-2}"

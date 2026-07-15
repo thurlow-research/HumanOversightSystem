@@ -38,6 +38,23 @@ if $CHECK_ALL; then
         -not -path "./.git/*")
 fi
 
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    # No files specified and --all not set: default to scanning all Python files
+    # rather than silently skipping bandit and recording GATE PASS (a no-op pass
+    # is indistinguishable from a real pass — HIGH-severity findings would go
+    # unscanned yet the gate would exit 0). Mirrors lint_check.sh / type_check.sh.
+    # (#976)
+    echo "security_scan: no files specified — defaulting to --all (full project scan)"
+    while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
+        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
+        -not -path "./.git/*")
+    if [[ ${#FILES[@]} -eq 0 ]]; then
+        # A project with zero Python files is an honest bandit skip (not a hidden
+        # pass); pip-audit below still runs against the dependency set.
+        echo "security_scan: no Python files found in project — bandit SKIP"
+    fi
+fi
+
 ERRORS=0
 GATE_TIMEOUT="${GATE_TIMEOUT:-120}"   # seconds per tool invocation
 GATE_RETRIES="${GATE_RETRIES:-2}"     # retries on crash/timeout
