@@ -320,6 +320,33 @@ class TestAnalyseFile:
         finally:
             os.unlink(path)
 
+    def test_partial_parse_failure_keeps_signal_and_flags(self):
+        # #979: one parseable file with a real function + one broken file → keep
+        # the RN signal (no exclusion), but flag the unparseable file so a
+        # reviewer confirms it hides no high-RN functions.
+        src = textwrap.dedent("""
+            def risky(x):
+                if x:
+                    for i in range(x):
+                        while i:
+                            if i and x:
+                                pass
+        """)
+        good = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        good.write(src)
+        good.close()
+        bad = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        bad.write("def broken(\n")
+        bad.close()
+        try:
+            result = analyse_files([good.name, bad.name])
+            assert result["error"] is None
+            assert result["raw_value"]["parse_errors"]
+            assert any("could not be parsed" in c for c in result["checklist_items"])
+        finally:
+            os.unlink(good.name)
+            os.unlink(bad.name)
+
     def test_nested_function_not_double_counted(self):
         src = textwrap.dedent("""
             def outer(x):

@@ -33,22 +33,75 @@ class TestComplexityMocked:
         ])
         mock = MagicMock(stdout=cc_json, stderr="", returncode=0)
         with patch("complexity_metrics.subprocess.run", return_value=mock):
-            result = _radon_cc(["test.py"])
-        assert len(result) == 2
-        assert result[1]["cyclomatic"] == 12
-        assert result[1]["name"] == "complex_fn"
+            funcs, errors = _radon_cc(["test.py"])
+        assert len(funcs) == 2
+        assert funcs[1]["cyclomatic"] == 12
+        assert funcs[1]["name"] == "complex_fn"
+        assert errors == []
 
     def test_radon_cc_empty_output_returns_empty(self):
         mock = MagicMock(stdout="", stderr="", returncode=0)
         with patch("complexity_metrics.subprocess.run", return_value=mock):
-            result = _radon_cc(["test.py"])
-        assert result == []
+            funcs, errors = _radon_cc(["test.py"])
+        assert funcs == []
+        assert errors == []
 
     def test_radon_cc_invalid_json_returns_empty(self):
         mock = MagicMock(stdout="not-json", stderr="", returncode=0)
         with patch("complexity_metrics.subprocess.run", return_value=mock):
-            result = _radon_cc(["test.py"])
-        assert result == []
+            funcs, errors = _radon_cc(["test.py"])
+        assert funcs == []
+        assert errors == []
+
+    def test_radon_cc_unparseable_file_recorded_not_crashed(self):
+        # #979: radon emits {"bad.py": {"error": "..."}} for a file it cannot
+        # parse. entries is a dict there — iterating it as a list of entries
+        # raised AttributeError and crashed the whole validator. Now it is
+        # recorded as a parse error and does NOT crash.
+        cc_json = json.dumps({
+            "good.py": [{"name": "ok", "lineno": 1, "complexity": 2}],
+            "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
+        })
+        mock = MagicMock(stdout=cc_json, stderr="", returncode=0)
+        with patch("complexity_metrics.subprocess.run", return_value=mock):
+            funcs, errors = _radon_cc(["good.py", "bad.py"])
+        assert [f["name"] for f in funcs] == ["ok"]
+        assert len(errors) == 1
+        assert errors[0]["file"] == "bad.py"
+        assert "invalid syntax" in errors[0]["error"]
+
+    def test_analyse_all_unparseable_excludes_dimension(self):
+        # #979: when radon can parse NO input file, exclude the dimension
+        # (error set) rather than reporting a clean 0.0.
+        cc_json = json.dumps({"bad.py": {"error": "invalid syntax (bad.py, line 1)"}})
+        with patch("complexity_metrics.subprocess.run",
+                   side_effect=[
+                       MagicMock(returncode=0),  # version check
+                       MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
+                       MagicMock(stdout="{}", stderr="", returncode=0),     # mi
+                   ]):
+            result = cm_analyse(["bad.py"])
+        assert result["error"] is not None
+        assert result["score"] == pytest.approx(0.0)
+
+    def test_analyse_partial_unparseable_keeps_signal_and_flags(self):
+        # #979: one parseable + one radon-broken file → keep the real signal,
+        # do NOT exclude, but flag the unparseable file for review.
+        cc_json = json.dumps({
+            "good.py": [{"name": "bad_fn", "lineno": 5, "complexity": 14}],
+            "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
+        })
+        with patch("complexity_metrics.subprocess.run",
+                   side_effect=[
+                       MagicMock(returncode=0),  # version check
+                       MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
+                       MagicMock(stdout="{}", stderr="", returncode=0),     # mi
+                   ]):
+            result = cm_analyse(["good.py", "bad.py"])
+        assert result["error"] is None
+        assert result["score"] > 0.0
+        assert result["raw_value"]["parse_errors"]
+        assert any("could not be parsed" in c for c in result["checklist_items"])
 
     def test_radon_mi_parses_output(self):
         mi_json = self._make_mi_json(62.5)

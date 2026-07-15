@@ -209,6 +209,52 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
+    def test_all_unparseable_excludes_dimension(self):
+        # #979: a syntax-error file must EXCLUDE the dimension (error set)
+        # rather than report a clean 0.0 with error=None.
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def broken(:\n    x =\n")
+            path = f.name
+        try:
+            result = fm_analyse_files([path])
+            assert result["error"] is not None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_non_utf8_file_excludes_dimension(self):
+        # #979: a latin-1 file with non-UTF8 bytes (passes flake8 per PEP 263)
+        # must EXCLUDE the dimension, not read as clean 0.0.
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="wb", delete=False) as f:
+            f.write(b"# -*- coding: latin-1 -*-\nx = '\xe9'\n")
+            path = f.name
+        try:
+            result = fm_analyse_files([path])
+            assert result["error"] is not None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_partial_parse_failure_keeps_signal_and_flags(self):
+        # #979: one parseable + one broken file → keep the real signal, do NOT
+        # exclude, but flag the unparseable file for review.
+        params = ", ".join(f"p{i}" for i in range(12))
+        good = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        good.write(f"def bloated({params}):\n    pass\n")
+        good.close()
+        bad = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        bad.write("def broken(:\n")
+        bad.close()
+        try:
+            result = fm_analyse_files([good.name, bad.name])
+            assert result["error"] is None
+            assert result["score"] > 0.0
+            assert result["raw_value"]["parse_errors"]
+            assert any("could not be parsed" in c for c in result["checklist_items"])
+        finally:
+            os.unlink(good.name)
+            os.unlink(bad.name)
+
 
 # ── portability_check ─────────────────────────────────────────────────────────
 

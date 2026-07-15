@@ -36,16 +36,30 @@ def _run(cmd: list[str]) -> tuple[str, str, int]:
     return result.stdout, result.stderr, result.returncode
 
 
-def _radon_cc(files: list[str]) -> list[dict]:
+def _radon_cc(files: list[str]) -> tuple[list[dict], list[dict]]:
+    """Return (functions, parse_errors). radon emits {"bad.py": {"error": ...}}
+    for files it cannot parse; that per-file value is a dict, not a list, so we
+    record it as a parse error instead of iterating it as entries (which raised
+    AttributeError on dict keys and crashed the whole validator). (#979)"""
     stdout, _, rc = _run(["radon", "cc", "-j", "-s"] + files)
     if rc != 0 or not stdout.strip():
-        return []
+        return [], []
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
-        return []
-    functions = []
+        return [], []
+    functions: list[dict] = []
+    errors: list[dict] = []
     for fpath, entries in data.items():
+        if isinstance(entries, dict):
+            # Per-file failure envelope: {"error": "invalid syntax ..."}.
+            errors.append({"file": fpath, "error": entries.get("error", "unparseable")})
+            continue
+        if not isinstance(entries, list):
+            errors.append(
+                {"file": fpath, "error": f"unexpected radon output ({type(entries).__name__})"}
+            )
+            continue
         for entry in entries:
             functions.append(
                 {
@@ -55,7 +69,7 @@ def _radon_cc(files: list[str]) -> list[dict]:
                     "cyclomatic": entry.get("complexity", 0),
                 }
             )
-    return functions
+    return functions, errors
 
 
 def _radon_mi(files: list[str]) -> dict[str, float]:
@@ -82,10 +96,22 @@ def analyse_files(file_paths: list[str]) -> dict:
             error="radon not installed — run: pip install radon",
         )
 
-    cc_funcs = _radon_cc(file_paths)
+    cc_funcs, cc_errors = _radon_cc(file_paths)
     mi_map = _radon_mi(file_paths)
 
     if not cc_funcs:
+        # No function could be analysed. If radon reported per-file parse errors
+        # for every input, EXCLUDE the dimension (error=) rather than reporting a
+        # clean 0.0 — an unparseable file must not read as low-complexity. (#979)
+        if cc_errors:
+            detail = "; ".join(f"{Path(e['file']).name}: {e['error']}" for e in cc_errors)
+            return make_result(
+                "complexity",
+                0.0,
+                {"functions": [], "parse_errors": cc_errors},
+                weight=WEIGHTS["cyclomatic"],
+                error=f"all files unparseable by radon — cannot assess complexity: {detail}",
+            )
         return make_result("complexity", 0.0, {"functions": []}, weight=WEIGHTS["cyclomatic"])
 
     max_cc = max(f["cyclomatic"] for f in cc_funcs)
@@ -105,6 +131,13 @@ def analyse_files(file_paths: list[str]) -> dict:
     ]
 
     checklist = []
+    # Some files parsed but others did not: keep the real signal, but flag the
+    # unparseable files so a reviewer confirms they hide no complex functions.
+    for e in cc_errors:
+        checklist.append(
+            f"⚠ {Path(e['file']).name} could not be parsed by radon ({e['error']}) — "
+            "manually verify it contains no high-complexity functions"
+        )
     for f in sorted(cc_funcs, key=lambda x: x["cyclomatic"], reverse=True)[:2]:
         if f["cyclomatic"] >= 10:
             checklist.append(
@@ -124,6 +157,7 @@ def analyse_files(file_paths: list[str]) -> dict:
             "high_complexity_functions": [f["name"] for f in high_cc],
             "min_maintainability_index": round(min_mi, 1),
             "maintainability_concern": mi_concern,
+            "parse_errors": cc_errors,
         },
         weight=WEIGHTS["cyclomatic"],
         evidence=evidence,

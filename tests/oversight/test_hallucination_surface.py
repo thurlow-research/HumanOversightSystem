@@ -221,14 +221,44 @@ class TestAnalyseFiles:
             os.unlink(path1)
             os.unlink(path2)
 
-    def test_unparseable_file_skipped(self):
+    def test_unparseable_file_excludes_dimension(self):
+        # #979: the sole file is unparseable → EXCLUDE the dimension (error set)
+        # rather than report a clean 0.0 that reads as "no version-sensitive API".
         path = self._write_py("def invalid syntax !!!\n")
         try:
             result = analyse_files([path])
-            # Should not raise; bad file silently skipped
             assert isinstance(result, dict)
+            assert result["error"] is not None
+            assert result["score"] == 0.0
         finally:
             os.unlink(path)
+
+    def test_non_utf8_file_excludes_dimension(self):
+        # #979: latin-1 non-UTF8 bytes (passes flake8 per PEP 263) → exclude.
+        f = tempfile.NamedTemporaryFile(suffix=".py", mode="wb", delete=False)
+        f.write(b"# -*- coding: latin-1 -*-\nx = '\xe9'\n")
+        f.close()
+        try:
+            result = analyse_files([f.name])
+            assert result["error"] is not None
+            assert result["score"] == 0.0
+        finally:
+            os.unlink(f.name)
+
+    def test_partial_parse_failure_keeps_signal_and_flags(self):
+        # #979: one risky-import file + one broken file → keep the signal,
+        # do NOT exclude, but flag the unparseable file for review.
+        good = self._write_py("from django.utils.encoding import force_text\n")
+        bad = self._write_py("def broken(:\n")
+        try:
+            result = analyse_files([good, bad])
+            assert result["error"] is None
+            assert result["score"] > 0.0
+            assert result["raw_value"]["parse_errors"]
+            assert any("could not be parsed" in c for c in result["checklist_items"])
+        finally:
+            os.unlink(good)
+            os.unlink(bad)
 
     def test_evidence_capped_at_ten(self):
         # Many risky imports

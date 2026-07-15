@@ -144,6 +144,8 @@ class _HallucinationVisitor(ast.NodeVisitor):
 
 def analyse_files(file_paths: list[str]) -> dict:
     all_findings: list[dict] = []
+    parse_errors: list[dict] = []
+    parsed_count = 0
 
     for path in file_paths:
         try:
@@ -152,8 +154,24 @@ def analyse_files(file_paths: list[str]) -> dict:
             v = _HallucinationVisitor(path)
             v.visit(tree)
             all_findings.extend(v.findings)
-        except Exception:
-            pass
+            parsed_count += 1
+        except Exception as e:
+            # Track parse/decode failures separately so an unparseable or
+            # non-UTF8 file is EXCLUDED (error=) rather than scored a clean 0.0.
+            # (#979, mirroring the #917 fix in migration_scorer.)
+            parse_errors.append({"file": path, "error": str(e)})
+
+    # No file could be parsed/decoded → no signal at all. Exclude the dimension
+    # via error= rather than reporting a clean 0.0. (#979)
+    if parse_errors and parsed_count == 0:
+        detail = "; ".join(f"{Path(pe['file']).name}: {pe['error']}" for pe in parse_errors)
+        return make_result(
+            "hallucination_surface",
+            0.0,
+            {"version_sensitive_count": 0, "findings": [], "parse_errors": parse_errors},
+            weight=WEIGHTS["hallucination_surface"],
+            error=f"all files unparseable — cannot assess hallucination surface: {detail}",
+        )
 
     # Deduplicate by (file, line, pattern)
     seen: set[tuple] = set()
@@ -173,11 +191,22 @@ def analyse_files(file_paths: list[str]) -> dict:
     ]
 
     checklist = [f"⚠ VERIFY: {f['pattern']} — {f['reason']}" for f in unique[:5]]
+    # Some files parsed but others did not: flag the unparseable files so a
+    # reviewer confirms they hide no version-sensitive API usage.
+    for pe in parse_errors:
+        checklist.append(
+            f"⚠ {Path(pe['file']).name} could not be parsed ({pe['error']}) — "
+            "manually verify it contains no version-sensitive API usage"
+        )
 
     return make_result(
         dimension="hallucination_surface",
         score=score,
-        raw_value={"version_sensitive_count": count, "findings": unique},
+        raw_value={
+            "version_sensitive_count": count,
+            "findings": unique,
+            "parse_errors": parse_errors,
+        },
         weight=WEIGHTS["hallucination_surface"],
         evidence=evidence,
         checklist_items=checklist,

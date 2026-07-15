@@ -130,6 +130,8 @@ class _N1Visitor(ast.NodeVisitor):
 
 def analyse_files(file_paths: list[str]) -> dict:
     all_findings: list[dict] = []
+    parse_errors: list[dict] = []
+    parsed_count = 0
 
     for path in file_paths:
         try:
@@ -138,8 +140,24 @@ def analyse_files(file_paths: list[str]) -> dict:
             v = _N1Visitor(path)
             v.visit(tree)
             all_findings.extend(v.findings)
-        except Exception:
-            pass
+            parsed_count += 1
+        except Exception as e:
+            # Track parse/decode failures separately so an unparseable or
+            # non-UTF8 file is EXCLUDED (error=) rather than scored a clean 0.0.
+            # (#979, mirroring the #917 fix in migration_scorer.)
+            parse_errors.append({"file": path, "error": str(e)})
+
+    # No file could be parsed/decoded → no signal at all. Exclude the dimension
+    # via error= rather than reporting a clean 0.0. (#979)
+    if parse_errors and parsed_count == 0:
+        detail = "; ".join(f"{Path(pe['file']).name}: {pe['error']}" for pe in parse_errors)
+        return make_result(
+            "n1_queries",
+            0.0,
+            {"candidate_count": 0, "locations": [], "parse_errors": parse_errors},
+            weight=WEIGHTS["n1_queries"],
+            error=f"all files unparseable — cannot assess N+1 risk: {detail}",
+        )
 
     count = len(all_findings)
     score = normalize(count, 0, 8)
@@ -155,6 +173,13 @@ def analyse_files(file_paths: list[str]) -> dict:
     ]
 
     checklist = []
+    # Some files parsed but others did not: flag the unparseable files so a
+    # reviewer confirms they hide no N+1 patterns.
+    for pe in parse_errors:
+        checklist.append(
+            f"⚠ {Path(pe['file']).name} could not be parsed ({pe['error']}) — "
+            "manually verify it contains no N+1 query patterns"
+        )
     if all_findings:
         checklist.append(
             "N+1 candidates found — verify each ORM call inside a loop uses "
@@ -169,7 +194,11 @@ def analyse_files(file_paths: list[str]) -> dict:
     return make_result(
         dimension="n1_queries",
         score=score,
-        raw_value={"candidate_count": count, "locations": all_findings[:20]},
+        raw_value={
+            "candidate_count": count,
+            "locations": all_findings[:20],
+            "parse_errors": parse_errors,
+        },
         weight=WEIGHTS["n1_queries"],
         evidence=evidence,
         checklist_items=checklist,
