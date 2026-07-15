@@ -114,8 +114,24 @@ NAMESPACE_ENV = "HOS_SIGNOFF_NAMESPACE"
 RESERVED_SIGNOFF_SUBDIRS = {"validators"}
 
 
-def run_git(args: list[str], cwd: Path) -> str:
-    """Run a git command and return stripped stdout (empty string on failure)."""
+def run_git(args: list[str], cwd: Path, check: bool = False) -> str:
+    """Run a git command and return stripped stdout.
+
+    By default returns "" on a non-zero exit. Several callers rely on this soft
+    behaviour, where an empty result is a graceful "nothing here" and a real
+    failure degrades to a safe fallback: namespace derivation falls back to the
+    short HEAD sha, and per-path ``commit_time`` treats no history as "not
+    committed".
+
+    Pass ``check=True`` for commands whose empty output would be
+    indistinguishable from a git *failure* AND would fail the gate OPEN — an
+    empty changed-file set makes ``newest_file_time`` 0, so every staleness
+    check is vacuously satisfied and the gate PASSes with zero required stamps.
+    A non-zero exit then aborts with exit 2 (environment error) instead of
+    silently reporting no changes (#974). An empty result from a *successful*
+    command (e.g. a branch with no changes vs. base) is still returned as "" —
+    only a non-zero exit aborts.
+    """
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
@@ -123,6 +139,15 @@ def run_git(args: list[str], cwd: Path) -> str:
         text=True,
     )
     if result.returncode != 0:
+        if check:
+            sys.stderr.write(
+                "signoff_gate: git command failed — cannot determine the "
+                "changed-file set; refusing to pass the gate open (#974).\n"
+                f"  command: git {' '.join(args)}\n"
+                f"  exit:    {result.returncode}\n"
+                f"  stderr:  {result.stderr.strip()}\n"
+            )
+            sys.exit(2)
         return ""
     return result.stdout.strip()
 
@@ -223,17 +248,26 @@ def namespaced_stamp_rels(root: Path, role: str) -> list[str]:
 
 
 def changed_files(root: Path, base: str) -> list[str]:
-    """Files changed between merge-base(base, HEAD) and HEAD."""
+    """Files changed between merge-base(base, HEAD) and HEAD.
+
+    The merge-base lookup is allowed to fail softly: refs that share no history
+    legitimately have no merge-base, and we fall back to a direct diff. The diff
+    itself is checked — a failure (unfetched/typo'd base ref in a shallow clone)
+    aborts with exit 2 rather than yielding an empty set that would pass the gate
+    open (#974).
+    """
     merge_base = run_git(["merge-base", base, "HEAD"], root)
     if not merge_base:
         # Fall back to a direct diff if the refs do not share history.
         merge_base = base
-    out = run_git(["diff", "--name-only", merge_base, "HEAD"], root)
+    out = run_git(["diff", "--name-only", merge_base, "HEAD"], root, check=True)
     return [line for line in out.splitlines() if line]
 
 
 def all_tracked_files(root: Path) -> list[str]:
-    out = run_git(["ls-files"], root)
+    # A git failure here must abort (exit 2), not yield an empty tree that would
+    # pass deploy-mode (--all) with zero required stamps (#974).
+    out = run_git(["ls-files"], root, check=True)
     return [line for line in out.splitlines() if line]
 
 
@@ -245,7 +279,9 @@ def dirty_non_signoff_paths(root: Path) -> list[str]:
     the audit trail, ephemeral agent state) are exempt — signing and the system's
     own bookkeeping are not source changes. (HOS#112)
     """
-    out = run_git(["status", "--porcelain"], root)
+    # Checked: a failure here would report a false-clean tree, skipping the
+    # unsigned-working-tree failure and helping pass the gate open (#974).
+    out = run_git(["status", "--porcelain"], root, check=True)
     dirty: list[str] = []
     for line in out.splitlines():
         if not line:
