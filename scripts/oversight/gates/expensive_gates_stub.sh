@@ -35,7 +35,11 @@ ERRORS=0
 # requirements*.txt or is a known base-image binary (python3, sh, bash, etc.).
 # Catches "container declares gunicorn but requirements.txt doesn't list it."
 
-KNOWN_BASE_BINARIES=(python python3 sh bash env tini dumb-init gunicorn uvicorn celery)
+# Only genuine base-image / init binaries belong here. gunicorn, uvicorn, and
+# celery are pip packages (not base-image binaries), so whitelisting them let a
+# container declare them while requirements*.txt omitted them — the exact defect
+# this gate exists to catch (#977, reopens the intent of HOS issue #8 defect 4).
+KNOWN_BASE_BINARIES=(python python3 sh bash env tini dumb-init)
 
 _check_binary_in_requirements() {
     local bin="$1"
