@@ -87,16 +87,19 @@ def glob_to_regex(glob: str) -> re.Pattern:
       - a single leading '/' is stripped (repo-root anchor; changed-file paths are
         repo-root-relative without a leading slash);
       - a trailing '/' becomes '/**' (a directory owns everything under it);
-      - a bare token with no slash and no glob becomes '**/<token>' (match at any
-        depth, per GitHub bare-name semantics — errs toward matching).
+      - a pattern with no '/' (a bare token OR one containing a glob, e.g.
+        "build", "*.py", "*") becomes '**/<pattern>' — GitHub matches no-slash
+        patterns at ANY depth, not just repo root (errs toward matching, #975).
     """
     g = glob
     if g.startswith("/"):
         g = g[1:]
     if g.endswith("/"):
         g = g + "**"
-    elif "/" not in g and "*" not in g:
-        # bare name (e.g. "build") — match anywhere, at any depth.
+    elif "/" not in g:
+        # No-slash pattern (e.g. "build", "*.py", "*") — match at any depth, not
+        # just repo root. Without this "*.py" gates only root-level files, so a
+        # nested human-owned "*.py" path would fail-open (#975 / reopened #303).
         g = "**/" + g
 
     out = ["^"]

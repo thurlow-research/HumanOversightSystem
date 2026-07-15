@@ -103,6 +103,27 @@ class TestGlobToRegex:
         assert rx.match("build")
         assert rx.match("sub/dir/build")
 
+    def test_star_ext_matches_any_depth(self):  # #975 (reopens #303)
+        # GitHub: a no-slash "*.py" matches every .py file at any depth, not just
+        # repo root. Previously compiled to ^[^/]*\.py$ → root-only → fail-open.
+        rx = glob_to_regex("*.py")
+        assert rx.match("foo.py")
+        assert rx.match("scripts/oversight/gates/x.py")
+        assert not rx.match("foo.pyc")  # extension boundary still enforced
+
+    def test_bare_star_matches_everything(self):  # #975
+        # The classic catch-all "* @owner" must own every path at any depth.
+        rx = glob_to_regex("*")
+        assert rx.match("x.txt")
+        assert rx.match("a/b/c/deep.txt")
+
+    def test_anchored_single_star_still_one_segment(self):  # regression guard
+        # "/src/*.py" is anchored (has a slash) — it must NOT gain any-depth
+        # semantics from the #975 fix; it stays one path segment.
+        rx = glob_to_regex("/src/*.py")
+        assert rx.match("src/a.py")
+        assert not rx.match("src/sub/a.py")
+
 
 # ── get_owners_for_path — last-match-wins (§3.1) ─────────────────────────────
 
@@ -258,6 +279,27 @@ class TestCheckPrFiles:
         _write_codeowners(tmp_path, "/x/ @alice\n")
         req2, _, _ = check_pr_files(["x/f"], tmp_path, BOTS)
         assert req2 is True
+
+    def test_catch_all_gates_nested_human_path(self, tmp_path):  # #975 (reopens #303)
+        # Consumer CODEOWNERS uses the classic catch-all "* @owner". A bot change
+        # to a nested path must still force HUMAN_REQUIRED — previously the root-
+        # only "*" regex found no owner → auto-merge of a human-owned surface.
+        _write_codeowners(tmp_path, "* @ScottThurlow\n")
+        req, matched, reason = check_pr_files(
+            ["scripts/oversight/gates/x.py"], tmp_path, BOTS
+        )
+        assert req is True
+        assert matched == ["scripts/oversight/gates/x.py"]
+        assert "@ScottThurlow" in reason
+
+    def test_star_ext_gates_nested_human_path(self, tmp_path):  # #975
+        # "*.py @owner" must gate a nested .py file, not just root-level ones.
+        _write_codeowners(tmp_path, "*.py @ScottThurlow\n")
+        req, matched, _ = check_pr_files(
+            ["scripts/oversight/codeowners.py", "README.md"], tmp_path, BOTS
+        )
+        assert req is True
+        assert matched == ["scripts/oversight/codeowners.py"]
 
     def test_protected_surface_path_also_human_owned(self, tmp_path):  # AC-4
         # A path that is both on a (hypothetical) protected surface and CODEOWNERS-human
