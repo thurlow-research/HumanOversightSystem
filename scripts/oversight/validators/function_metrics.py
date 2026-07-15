@@ -120,6 +120,7 @@ def _depth_recursive(stmts: list, depth: int) -> int:
 def analyse_files(file_paths: list[str]) -> dict:
     all_funcs: list[dict] = []
     file_labels: dict[str, str] = {}
+    parse_errors: list[dict] = []
 
     for path in file_paths:
         try:
@@ -131,8 +132,23 @@ def analyse_files(file_paths: list[str]) -> dict:
                 f["file"] = path
             all_funcs.extend(v.functions)
             file_labels[path] = path
-        except Exception:
-            pass
+        except Exception as e:
+            # Track parse/decode failures separately so an unparseable or
+            # non-UTF8 file is EXCLUDED (error=) rather than scored a clean 0.0.
+            # (#979, mirroring the #917 fix in migration_scorer.)
+            parse_errors.append({"file": path, "error": str(e)})
+
+    # Every file failed to parse/decode → no signal at all. Exclude the
+    # dimension via error= rather than reporting a clean 0.0. (#979)
+    if parse_errors and not all_funcs:
+        detail = "; ".join(f"{Path(pe['file']).name}: {pe['error']}" for pe in parse_errors)
+        return make_result(
+            "function_metrics",
+            0.0,
+            {"functions": [], "parse_errors": parse_errors},
+            weight=WEIGHTS["function_metrics"],
+            error=f"all files unparseable — cannot assess function metrics: {detail}",
+        )
 
     if not all_funcs:
         return make_result(
@@ -168,6 +184,13 @@ def analyse_files(file_paths: list[str]) -> dict:
             )
 
     checklist = []
+    # Some files parsed but others did not: keep the real signal, but flag the
+    # unparseable files so a reviewer confirms they hide no oversized functions.
+    for pe in parse_errors:
+        checklist.append(
+            f"⚠ {Path(pe['file']).name} could not be parsed ({pe['error']}) — "
+            "manually verify it contains no oversized/deeply-nested functions"
+        )
     for f in long_funcs[:2]:
         checklist.append(
             f"{f['name']}() — {f['lines']} lines: can this be decomposed into smaller units?"
@@ -187,6 +210,7 @@ def analyse_files(file_paths: list[str]) -> dict:
             "high_param_count": len(complex_params),
             "deeply_nested": len(deep_funcs),
             "many_return_paths": len(many_returns),
+            "parse_errors": parse_errors,
         },
         weight=WEIGHTS["function_metrics"],
         evidence=evidence,

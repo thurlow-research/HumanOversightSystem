@@ -164,3 +164,53 @@ class TestAnalyseFiles:
             assert 0.0 <= result["score"] <= 1.0
         finally:
             os.unlink(path)
+
+    def test_all_unparseable_excludes_dimension(self):
+        # #979: a syntax-error file must EXCLUDE the dimension (error set)
+        # rather than report a clean 0.0 with error=None.
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+            f.write("def broken(:\n    for x in\n")
+            path = f.name
+        try:
+            result = analyse_files([path])
+            assert result["error"] is not None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_non_utf8_file_excludes_dimension(self):
+        # #979: latin-1 non-UTF8 bytes (passes flake8 per PEP 263) → exclude.
+        with tempfile.NamedTemporaryFile(suffix=".py", mode="wb", delete=False) as f:
+            f.write(b"# -*- coding: latin-1 -*-\nx = '\xe9'\n")
+            path = f.name
+        try:
+            result = analyse_files([path])
+            assert result["error"] is not None
+            assert result["score"] == pytest.approx(0.0)
+        finally:
+            os.unlink(path)
+
+    def test_partial_parse_failure_keeps_signal_and_flags(self):
+        # #979: one parseable N+1 file + one broken file → keep the signal,
+        # do NOT exclude, but flag the unparseable file for review.
+        src = textwrap.dedent("""
+            def bad_view(pks):
+                for pk in pks:
+                    obj = MyModel.objects.get(pk=pk)
+                return obj
+        """)
+        good = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        good.write(src)
+        good.close()
+        bad = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        bad.write("def broken(:\n")
+        bad.close()
+        try:
+            result = analyse_files([good.name, bad.name])
+            assert result["error"] is None
+            assert result["score"] > 0.0
+            assert result["raw_value"]["parse_errors"]
+            assert any("could not be parsed" in c for c in result["checklist_items"])
+        finally:
+            os.unlink(good.name)
+            os.unlink(bad.name)

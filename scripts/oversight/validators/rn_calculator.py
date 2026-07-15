@@ -295,6 +295,14 @@ def analyse_files(file_paths: list[str]) -> dict:
     ]
 
     checklist: list[str] = []
+    # Some files parsed but others did not: keep the real signal, but flag the
+    # unparseable files so a reviewer confirms they hide no high-RN functions.
+    # (#979 — the all-fail case already excludes via error= above.)
+    for pe in parse_errors:
+        checklist.append(
+            f"⚠ {pe} — could not be parsed; "
+            "manually verify it contains no high-risk (high-RN) functions"
+        )
     for f in sorted(all_functions, key=lambda x: x["risk_number"], reverse=True)[:3]:
         checklist.extend(_checklist_items(f))
 
