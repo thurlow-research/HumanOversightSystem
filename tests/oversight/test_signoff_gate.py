@@ -207,6 +207,38 @@ def test_pr_mode_stale_stamp_fails(tmp_path):
 
 
 @pytestmark_git
+def test_pr_mode_bad_base_ref_exits_env_error(tmp_path):
+    # #974: a base ref that does not resolve (unfetched in a shallow clone, or a
+    # typo) must abort with exit 2 (env error), NOT silently PASS with an empty
+    # changed-file set. This is the exact case the gate exists to catch: the
+    # worker signed at T1, then committed an unsigned change at T2.
+    repo = _init_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature-x")
+    (repo / "src.py").write_text("x = 2\n", encoding="utf-8")
+    _git(repo, "commit", "-aqm", "change", when=1_000_100)
+    _write_stamp(repo, "signoffs/feature-x/code-review.stamp")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "sign", when=1_000_200)
+    # Unsigned change committed AFTER the stamp — must not be waved through.
+    (repo / "src.py").write_text("x = 3\n", encoding="utf-8")
+    _git(repo, "commit", "-aqm", "late unsigned change", when=1_000_300)
+
+    res = _run_gate(repo, "--base", "origin/does-not-exist")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "PASS" not in res.stdout
+
+
+@pytestmark_git
+def test_pr_mode_empty_diff_is_not_an_env_error(tmp_path):
+    # A genuinely empty diff (base == HEAD, no changes) must NOT be treated as a
+    # git failure: check=True fires only on a non-zero exit, never on legitimately
+    # empty output. Here the gate fails 1 (missing stamp), never 2 (#974).
+    repo = _init_repo(tmp_path)
+    res = _run_gate(repo, "--base", "main")
+    assert res.returncode != 2, res.stdout + res.stderr
+
+
+@pytestmark_git
 def test_deploy_mode_aggregates_across_namespaces(tmp_path):
     # Two namespaces on main, each signing the role at different times; --all
     # takes the freshest and must pass against the whole tree.
