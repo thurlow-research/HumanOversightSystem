@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ENV_FILE = Path(__file__).with_name("machine-accounts.env")
@@ -117,7 +118,46 @@ def get_changed_files(pr: str) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Tier computation
+#
+# The gate runs in CI on the TRUSTED BASE checkout (pull_request_target), so the
+# working tree is the base branch — NOT the PR. To judge the PR's risk the gate
+# must score the PR *head* content, which is untrusted. Per the workflow's
+# security model that head content is fetched as DATA via the `gh` API and only
+# ever *parsed* (ast) by the trusted-base validator, never executed.
+#
+# When a real Python risk surface exists but cannot be scored (validator error
+# or head-content fetch failure), the gate fails closed (compute_tier → None →
+# exit 2) rather than falling back to a MEDIUM-capped estimate that could never
+# exceed the HIGH ceiling — the fail-open that let an overseer-approved
+# CRITICAL PR pass unchecked (#973).
 # ---------------------------------------------------------------------------
+
+
+class _HeadFetchError(RuntimeError):
+    """A changed file's head content could not be fetched (non-404 failure)."""
+
+
+def _score_to_tier(score: float) -> str:
+    """Map a 0..1 risk score to a tier.
+
+    Local mirror of scripts/oversight/validators/schema.py:score_to_tier
+    (TIER_THRESHOLDS) — duplicated deliberately so this trusted-base gate imports
+    nothing from scripts/oversight/validators/ (whose modules mutate sys.path on
+    import). Keep the boundaries in sync with schema.py.
+    """
+    if score < 0.30:
+        return "LOW"
+    if score < 0.55:
+        return "MEDIUM"
+    if score < 0.78:
+        return "HIGH"
+    return "CRITICAL"
+
+
+def _max_tier(*tiers: str) -> str:
+    """Return the highest tier among the arguments (by TIER_ORDER)."""
+    return max(tiers, key=tier_to_int)
+
 
 def _try_validator_summary() -> str | None:
     """Read tier from .claudetmp/oversight/validators/summary.json if present."""
@@ -134,8 +174,66 @@ def _try_validator_summary() -> str | None:
     return None
 
 
-def _try_rn_calculator(changed_files: list[str]) -> str | None:
-    """Run rn_calculator.py and parse the tier from its output."""
+def _pr_head_sha(repo: str, pr: str) -> str:
+    """Resolve the PR's head commit SHA (via the gh API). Fail-closed on error."""
+    sha = _gh("api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha").strip()
+    if not sha:
+        raise _HeadFetchError("could not resolve PR head SHA")
+    return sha
+
+
+def _fetch_head_python(
+    repo: str, pr: str, py_files: list[str], dest: Path
+) -> list[str]:
+    """Fetch the PR *head* content of each changed .py file into `dest` as DATA.
+
+    The content is written to disk and later parsed (never executed) by the
+    trusted-base validator — matching the workflow's "read PR files as DATA via
+    the gh API" security model. Files that 404 at head (deleted by the PR) are
+    skipped. Any other fetch failure raises _HeadFetchError so the caller fails
+    closed rather than scoring an incomplete tree. Returns the written temp paths
+    (extension preserved so the validator treats them as Python).
+    """
+    head_sha = _pr_head_sha(repo, pr)
+    written: list[str] = []
+    for rel in py_files:
+        # Defensive: git tree paths are repo-relative and cannot escape, but
+        # never let an unexpected path write outside the temp dir.
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            continue
+        proc = subprocess.run(
+            [
+                "gh", "api",
+                "-H", "Accept: application/vnd.github.raw",
+                f"repos/{repo}/contents/{rel}?ref={head_sha}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.lower()
+            if "404" in err or "not found" in err:
+                continue  # deleted at head — nothing to score
+            raise _HeadFetchError(f"failed to fetch {rel}: {proc.stderr.strip()}")
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(proc.stdout, encoding="utf-8")
+        written.append(str(target))
+    return written
+
+
+def _try_rn_calculator(py_paths: list[str]) -> str | None:
+    """Score already-fetched head-content .py files with rn_calculator and derive
+    the tier from the result.
+
+    rn_calculator emits the shared schema envelope — a numeric `score` and a
+    discrete `tier_floor` (#377), but **no** `tier`/`risk_tier` key — so the tier
+    is derived here via _score_to_tier(score), then floored by tier_floor.
+    Returns the derived tier, or None if rn_calculator is missing, errors, or
+    yields no usable score (→ caller fails closed).
+    """
+    if not py_paths:
+        return None
     rn_script = (
         Path(__file__).resolve().parents[2]
         / "scripts"
@@ -147,27 +245,34 @@ def _try_rn_calculator(changed_files: list[str]) -> str | None:
         return None
     try:
         result = subprocess.run(
-            [sys.executable, str(rn_script)] + changed_files,
+            [sys.executable, str(rn_script)] + py_paths,
             capture_output=True,
             text=True,
             timeout=60,
         )
         if result.returncode != 0:
             return None
-        # rn_calculator outputs a JSON dict; look for "tier" key
         data = json.loads(result.stdout)
-        tier = data.get("tier") or data.get("risk_tier")
-        if isinstance(tier, str) and tier.upper() in TIER_ORDER:
-            return tier.upper()
     except Exception:
         return None
-    return None
+    if not isinstance(data, dict) or data.get("error"):
+        return None
+    score = data.get("score")
+    if not isinstance(score, (int, float)):
+        return None
+    tier = _score_to_tier(float(score))
+    floor = data.get("tier_floor")
+    if isinstance(floor, str) and floor.upper() in TIER_ORDER:
+        tier = _max_tier(tier, floor.upper())
+    return tier
 
 
 def _simplified_tier(changed_files: list[str]) -> str:
     """
-    Fallback tier estimate when neither summary.json nor rn_calculator is
-    available. Intentionally conservative:
+    Structural risk estimate from the changed-file list alone (no code parsing).
+    Used as a *floor* that can only raise a real tier, and as the standalone
+    estimate when the PR changes no Python (no code-risk surface to score).
+    Intentionally conservative:
       MEDIUM if >10 Python/shell files changed or any agent definition changed.
       LOW otherwise.
     """
@@ -183,18 +288,42 @@ def _simplified_tier(changed_files: list[str]) -> str:
     return "LOW"
 
 
-def compute_tier(changed_files: list[str]) -> str:
-    """Return the best available risk tier string (SAFE/LOW/MEDIUM/HIGH/CRITICAL)."""
-    # 1. Prefer pre-computed summary from the inner-loop validators
+def compute_tier(repo: str, pr: str, changed_files: list[str]) -> str | None:
+    """Best available risk tier for the PR, or None when a real Python risk
+    surface exists but could not be scored (→ caller fails closed).
+
+    Precedence:
+      1. Pre-computed validator summary.json (inner-loop/local runs only).
+      2. rn_calculator over the PR *head* content of changed .py files, floored
+         by the structural estimate.
+      3. No Python risk surface → structural estimate (conservative, ≤ MEDIUM).
+    """
+    structural = _simplified_tier(changed_files)
+
+    # 1. Pre-computed summary from the inner-loop validators (absent in CI).
     tier = _try_validator_summary()
     if tier:
-        return tier
-    # 2. Run rn_calculator on the diff
-    tier = _try_rn_calculator(changed_files)
-    if tier:
-        return tier
-    # 3. Conservative fallback estimate
-    return _simplified_tier(changed_files)
+        return _max_tier(tier, structural)
+
+    # 2. Score the PR head Python content as DATA.
+    py_files = [f for f in changed_files if f.endswith(".py")]
+    if py_files:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                fetched = _fetch_head_python(repo, pr, py_files, Path(tmp))
+                if fetched:
+                    rn = _try_rn_calculator(fetched)
+                    if rn is None:
+                        # Real Python surface we could not score → fail closed.
+                        return None
+                    return _max_tier(rn, structural)
+                # else: every changed .py was deleted at head → no live surface.
+        except _HeadFetchError:
+            # Could not fetch head content → fail closed (never guess).
+            return None
+
+    # 3. No Python risk surface to measure → structural estimate.
+    return structural
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +395,15 @@ def main() -> int:
         )
         return 0
 
-    tier = compute_tier(changed)
+    tier = compute_tier(repo, args.pr, changed)
+    if tier is None:
+        print(
+            "require_tier_ceiling: overseer approved, but the PR's changed "
+            "Python files could not be scored (validator error or head-content "
+            "fetch failure). Failing closed — a human reviewer must approve.",
+            file=sys.stderr,
+        )
+        return 2
     print(
         f"require_tier_ceiling: overseer approved; computed tier={tier}, "
         f"ceiling={ceiling}."
