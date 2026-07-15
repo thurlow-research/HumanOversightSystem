@@ -532,6 +532,27 @@ else
 fi
 printf '%s' "$ARB_JSON" > "$RUN_DIR/arbiter.json"
 
+# ── ARBITER RECONCILIATION (#978) — the arbiter must NOT silently drop a non-empty raw set ─
+# The arbiter gates what reaches the human and fails OPEN two ways: `claude` off PATH
+# (the else branch above hardcodes an empty verdict even when RAW_COUNT>0), and `claude`
+# present but returning prose/empty (extract_json degrades to {"findings":[]}, #113).
+# Either way real cross-vendor findings archived in findings.raw.json never surface and
+# the PR is left mergeable. panel_logic.py reconcile-arbiter detects arbiter-findings==0
+# while RAW_COUNT>0 and salvages the raw findings ungrouped (fail-closed), tagging the
+# verdict `arbiter_salvaged`. Genuine corroboration is still reconstructed downstream by
+# annotate_and_rank's file+line proximity fallback. (#314: logic in Python, shell launches.)
+ARBITER_SALVAGED=0
+if [[ -f "$PANEL_LOGIC" ]]; then
+  ARB_JSON="$(printf '%s' "$ARB_JSON" \
+    | python3 "$PANEL_LOGIC" reconcile-arbiter --raw "$RUN_DIR/findings.raw.json" \
+    || printf '%s' "$ARB_JSON")"
+  if [[ "$(printf '%s' "$ARB_JSON" | jq -r '.arbiter_salvaged // false')" == "true" ]]; then
+    ARBITER_SALVAGED=1
+    warn "arbiter reconciliation (#978): $RAW_COUNT raw finding(s) but arbiter returned 0 — salvaging raw findings ungrouped (fail-closed)"
+  fi
+  printf '%s' "$ARB_JSON" > "$RUN_DIR/arbiter.json"
+fi
+
 # ── CORROBORATION RANKING (SPEC-376) — annotate + tier-order via panel_logic.py ─
 # Counts cross-vendor corroboration from the arbiter's merged_from membership,
 # tags each finding with corroborated_by/corroborating_reviewers/corroboration_tier,
@@ -749,7 +770,15 @@ printf '{"new_blocking_count":%s,"tier1_count":%s,"suppressed_count":%s,"ledger"
 
 # SPEC-78 R4: exit 3 (escalation) when there are un-ledgered blocking findings
 # on a non-dry-run. Mirrors second-review convention (exit 3 = human decides).
-if [[ $DRY_RUN -eq 0 && "${NEW_BLOCKING_COUNT:-0}" -gt 0 ]]; then
-    warn "Panel verdict: ESCALATE — ${NEW_BLOCKING_COUNT} new un-ledgered blocking finding(s) (tier1)"
+# #978: a salvaged arbiter (arbiter failed with RAW_COUNT>0) ALWAYS escalates —
+# a silent arbiter failure is itself a fail-open the panel must close, even if the
+# salvaged findings are all sub-tier1 (they still post as threads, but escalation
+# guarantees a human decides rather than the PR sliding through mergeable).
+if [[ $DRY_RUN -eq 0 && ( "${NEW_BLOCKING_COUNT:-0}" -gt 0 || "${ARBITER_SALVAGED:-0}" -eq 1 ) ]]; then
+    if [[ "${ARBITER_SALVAGED:-0}" -eq 1 ]]; then
+        warn "Panel verdict: ESCALATE — arbiter failed with ${RAW_COUNT} raw finding(s); posted ${FCOUNT} raw finding(s) ungrouped (#978)"
+    else
+        warn "Panel verdict: ESCALATE — ${NEW_BLOCKING_COUNT} new un-ledgered blocking finding(s) (tier1)"
+    fi
     exit 3
 fi
