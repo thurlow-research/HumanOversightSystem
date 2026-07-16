@@ -163,27 +163,44 @@ _sync_audit_logs() {
   [[ -f "$_repo/audit/overnight-loop-log.md" ]] && _files+=("audit/overnight-loop-log.md")
   [[ ${#_files[@]} -eq 0 ]] && return 0
 
-  local _tmp_branch="_audit-sync-$$"
   (
-    cd "$_repo"
+    cd "$_repo" || return 0
     git fetch origin audit-log main --quiet 2>/dev/null || git fetch origin main --quiet 2>/dev/null || return 0
     local _base
     git ls-remote --exit-code origin audit-log &>/dev/null \
       && _base="origin/audit-log" || _base="origin/main"
-    git checkout -b "$_tmp_branch" "$_base" --quiet 2>/dev/null || return 0
+
+    # Sync in a throwaway *detached* worktree, never by switching the live
+    # checkout's branch (#988). The old `git checkout -b _audit-sync-$$` ran in
+    # $REPO_ROOT itself, so a SIGKILL (sleep/reboot/OOM) between `checkout -b`
+    # and `checkout -` — or a masked `checkout -` failure — stranded the shared
+    # working tree on an audit-log branch, and the next cycle then built/pushed
+    # feature work off audit-log history. A separate worktree keeps the live
+    # HEAD, branch and index untouched no matter when we die; worst case a
+    # scratch dir is left under TMPDIR, reaped by `git worktree prune` next run.
+    git worktree prune 2>/dev/null || true
+    local _scratch _wt
+    _scratch="$(mktemp -d "${TMPDIR:-/tmp}/hos-audit-sync.XXXXXX")" || return 0
+    _wt="$_scratch/wt"
+    # Subshell-local EXIT trap: fires on normal return AND on interruption, and
+    # does not disturb the parent's lock-cleanup trap.
+    trap 'git -C "$_repo" worktree remove --force "$_wt" 2>/dev/null || true; rm -rf "$_scratch" 2>/dev/null || true' EXIT
+    git worktree add --detach --quiet "$_wt" "$_base" 2>/dev/null || return 0
+
     local _changed=0
     for _f in "${_files[@]}"; do
-      git add -f "$_f" 2>/dev/null
-      git diff --cached --quiet "$_f" 2>/dev/null || _changed=1
+      mkdir -p "$_wt/$(dirname "$_f")" 2>/dev/null || true
+      cp -f "$_repo/$_f" "$_wt/$_f" 2>/dev/null || continue
+      git -C "$_wt" add -f "$_f" 2>/dev/null
+      git -C "$_wt" diff --cached --quiet "$_f" 2>/dev/null || _changed=1
     done
     if [[ "$_changed" -eq 1 ]]; then
-      git commit -m "chore(audit): sync logs $(date -u '+%Y-%m-%dT%H:%M:%SZ')" --quiet
-      git push origin HEAD:audit-log --quiet 2>/dev/null \
+      git -C "$_wt" commit -m "chore(audit): sync logs $(date -u '+%Y-%m-%dT%H:%M:%SZ')" --quiet
+      git -C "$_wt" push origin HEAD:refs/heads/audit-log --quiet 2>/dev/null \
         && echo "$LOG_PREFIX audit logs pushed to audit-log branch" \
         || echo "$LOG_PREFIX WARN: audit-log push failed (will retry next cycle)"
     fi
-    git checkout - --quiet 2>/dev/null || true
-    git branch -D "$_tmp_branch" --quiet 2>/dev/null || true
+    # EXIT trap removes the scratch worktree; the live checkout is never touched.
   )
 }
 

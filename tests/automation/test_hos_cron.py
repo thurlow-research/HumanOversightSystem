@@ -1301,3 +1301,94 @@ class TestSyncAuditLogs:
         r = _run_sync(local, env_extra={"PATH": f"{fake_bin}:/usr/bin:/bin"})
         assert r.returncode == 0, f"push failure must not exit non-zero; got {r.returncode}"
         assert "WARN" in r.stdout and "push failed" in r.stdout
+
+    # ── #988: the sync must never mutate the live shared working tree ─────────
+    def test_live_checkout_never_branch_switched(self, tmp_path):
+        """The sync runs `git checkout` in a scratch worktree, never in $REPO_ROOT.
+
+        The old code did `git checkout -b _audit-sync-$$` **in the live checkout**;
+        a SIGKILL (sleep/reboot/OOM) between that and the restoring `git checkout -`
+        stranded the shared working tree on an audit-log branch, so the next cycle
+        built/pushed feature work off audit-log history. The isolated-worktree fix
+        must issue no `checkout` against the live repo at all — and leak no
+        `_audit-sync-*` branch there.
+        """
+        remote, local = _make_repos(tmp_path)
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+
+        # A git wrapper that records every subcommand, then delegates to real git.
+        log_file = tmp_path / "git-calls.log"
+        fake_bin = tmp_path / "gitlog-bin"
+        fake_bin.mkdir()
+        fake_git = fake_bin / "git"
+        real_git = subprocess.check_output(["which", "git"], text=True).strip()
+        fake_git.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{log_file}"\n'
+            f'exec "{real_git}" "$@"\n'
+        )
+        fake_git.chmod(0o755)
+
+        r = _run_sync(local, env_extra={"PATH": f"{fake_bin}:/usr/bin:/bin"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "audit logs pushed" in r.stdout  # the sync still happened
+
+        calls = log_file.read_text()
+        # Token-exact match: a scratch worktree path can *contain* the substring
+        # "checkout"; what must never appear is `checkout` as a git subcommand.
+        assert not any("checkout" in line.split() for line in calls.splitlines()), (
+            "sync must not run `git checkout` (it branch-switches the live tree); "
+            f"git calls were:\n{calls}"
+        )
+        leaked = _git("-C", str(local), "branch", "--list", "_audit-sync-*").stdout
+        assert leaked.strip() == "", f"leaked audit-sync branch(es): {leaked!r}"
+
+    def test_live_head_index_and_worktree_pristine(self, tmp_path):
+        """A pre-existing branch + staged change survives the sync byte-for-byte.
+
+        Guards the live HEAD, branch and index from the sync, and asserts no
+        scratch worktree registration is left behind in the live repo.
+        """
+        remote, local = _make_repos(tmp_path)
+        _git("-C", str(local), "checkout", "-b", "feature-x", "--quiet")
+        (local / "work.py").write_text("x = 1\n")
+        _git("-C", str(local), "add", "work.py")
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+        before_head = _git("-C", str(local), "rev-parse", "HEAD").stdout.strip()
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+        assert (
+            _git("-C", str(local), "symbolic-ref", "--short", "HEAD").stdout.strip()
+            == "feature-x"
+        )
+        assert _git("-C", str(local), "rev-parse", "HEAD").stdout.strip() == before_head
+        staged = _git("-C", str(local), "diff", "--cached", "--name-only").stdout.split()
+        assert "work.py" in staged, "the live index must be untouched by the sync"
+        worktrees = _git("-C", str(local), "worktree", "list").stdout.strip().splitlines()
+        assert len(worktrees) == 1, f"scratch worktree leaked into live repo: {worktrees}"
+
+    def test_uncommitted_worktree_changes_not_leaked_to_audit_branch(self, tmp_path):
+        """Only audit files reach audit-log — never a carried-along feature change.
+
+        The old branch-switch could carry a staged working-tree change onto the
+        temp branch and push it; the scratch worktree only ever contains the
+        copied audit files, so unrelated work can't leak onto the audit branch.
+        """
+        remote, local = _make_repos(tmp_path)
+        (local / "secret_feature.py").write_text("leaked = True\n")
+        _git("-C", str(local), "add", "secret_feature.py")
+        (local / "audit").mkdir(parents=True)
+        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _remote_branch_exists(remote, "audit-log")
+        tree = _files_on_branch(remote, "audit-log")
+        assert any("oversight-log" in f for f in tree), tree
+        assert "secret_feature.py" not in tree, (
+            f"feature change leaked onto audit-log branch: {tree}"
+        )
