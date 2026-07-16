@@ -98,8 +98,11 @@ print('CRITICAL summary written to $OUT_DIR/summary.json')
 fi
 
 mkdir -p "$OUT_DIR"
-# Clear stale results from prior runs — old JSON files would contaminate the score
-rm -f "$OUT_DIR"/*.json
+# Clear stale validator results from prior runs — old JSON files would contaminate the score.
+# Preserve gate-results.json: run_gates.sh runs earlier in the pipeline and writes its record
+# here; the oversight-evaluator's REQ-GATE-NN-08/16 checks (via gate_compliance.py) read it.
+# A blanket `rm -f *.json` erased that evidence, fail-opening the gate-compliance invariant (#980).
+find "$OUT_DIR" -maxdepth 1 -type f -name '*.json' -not -name 'gate-results.json' -delete 2>/dev/null || true
 
 echo "=== Oversight validators: ${#ALL_FILES[@]} file(s) ==="
 echo "Output: $OUT_DIR/"
@@ -298,14 +301,21 @@ import json, os, sys
 from pathlib import Path
 
 out_dir = Path(".claudetmp/oversight/validators")
+# gate-results.json is run_gates.sh's artifact (a JSON list), not a validator
+# dimension — exclude it alongside our own summary.json so the composite loop
+# below only sees validator result dicts (#980).
+_NON_VALIDATOR = {"summary.json", "gate-results.json"}
 results = []
 for f in sorted(out_dir.glob("*.json")):
-    if f.name == "summary.json":
+    if f.name in _NON_VALIDATOR:
         continue
     try:
-        results.append(json.loads(f.read_text()))
+        obj = json.loads(f.read_text())
     except Exception:
-        pass
+        continue
+    # Defensive: only dict-shaped validator envelopes carry score/weight/error.
+    if isinstance(obj, dict):
+        results.append(obj)
 
 # Composite score: weighted average
 total_w, weighted_sum = 0.0, 0.0
