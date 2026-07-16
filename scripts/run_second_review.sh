@@ -59,25 +59,45 @@
 
 set -euo pipefail
 
-# Read threshold overrides from .env without executing it as shell.
+# Thresholds — trusted baseline first. A trusted caller (config.sh / orchestrator)
+# may set these via the real environment; absent that, the built-in defaults apply.
+AGY_THRESHOLD="${OVERSIGHT_AGY_THRESHOLD:-0.30}"
+CODEX_THRESHOLD="${OVERSIGHT_CODEX_THRESHOLD:-0.55}"
+
+# Read threshold overrides from the repo-local .env WITHOUT executing it as shell.
 # Only the two specific keys are extracted via grep/cut (strict numeric regex).
 # Sourcing a repo-local .env would execute author-controlled shell before review,
 # defeating the gate's purpose (HOS#765).
+#
+# The .env is author-controlled and UNTRUSTED: raising a threshold suppresses
+# reviewer firing — an author under review could commit OVERSIGHT_AGY_THRESHOLD=9
+# to self-skip the cross-vendor review (verdict: skipped, exit 0 — HOS#985). So a
+# .env value may only *lower* (strengthen) a threshold, never raise it: the
+# effective value is min(trusted_baseline, clamp(env_value, 0, 1)). Out-of-range
+# or non-numeric values are ignored and the trusted baseline is kept.
 if [[ -f .env ]]; then
+    # Fold a raw .env value into the trusted baseline: clamp to [0,1] and never
+    # allow a raise above the baseline. Echoes the effective threshold. awk does
+    # the float comparison bash can't, and rejects malformed values (e.g. "0.3.0").
+    _clamp_lower() {
+        awk -v base="$1" -v v="$2" 'BEGIN{
+            if (v ~ /^[0-9]+(\.[0-9]+)?$/) {
+                if (v < 0) v = 0; else if (v > 1) v = 1;
+                print (v < base ? v : base);
+            } else { print base }
+        }'
+    }
     # `|| true` keeps a no-match (expected when the key is absent) non-fatal under
     # `set -euo pipefail` — without it grep's exit 1 propagates and aborts the gate
-    # before any review runs (HOS#961). The `[[ -n "$_val" ]]` guard already handles
-    # the empty result, falling through to the defaults below.
+    # before any review runs (HOS#961). The `[[ -n "$_val" ]]` guard handles the
+    # empty result, leaving the trusted baseline in place.
     _val=$(grep -E '^OVERSIGHT_AGY_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1 || true)
-    [[ -n "$_val" ]] && OVERSIGHT_AGY_THRESHOLD="$_val"
+    [[ -n "$_val" ]] && AGY_THRESHOLD="$(_clamp_lower "$AGY_THRESHOLD" "$_val")"
     _val=$(grep -E '^OVERSIGHT_CODEX_THRESHOLD=[0-9.]+$' .env | cut -d= -f2 | head -1 || true)
-    [[ -n "$_val" ]] && OVERSIGHT_CODEX_THRESHOLD="$_val"
+    [[ -n "$_val" ]] && CODEX_THRESHOLD="$(_clamp_lower "$CODEX_THRESHOLD" "$_val")"
     unset _val
+    unset -f _clamp_lower
 fi
-
-# Thresholds — override via environment
-AGY_THRESHOLD="${OVERSIGHT_AGY_THRESHOLD:-0.30}"
-CODEX_THRESHOLD="${OVERSIGHT_CODEX_THRESHOLD:-0.55}"
 
 OUT_DIR=".claudetmp/second-review"
 STEP=""
