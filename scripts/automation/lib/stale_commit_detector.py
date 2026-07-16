@@ -136,9 +136,19 @@ def find_redundant_in_open_prs(
     any local fetch of the remote branches.
 
     Returns a dict mapping str(pr_number) to the subset of branch_commit_shas
-    whose SHAs appear in that PR's commits.  Skips the bot's own PRs and any
-    PR whose head branch matches current_branch.  API errors are logged and
+    whose SHAs appear in that PR's commits.  Skips only the PR whose head branch
+    matches current_branch — the branch under check, whose own already-pushed
+    commits are not "stale" against itself.  Both the open-PR listing and each
+    PR's commit list are fully paginated so a large PR backlog (or a PR with
+    >100 commits) is never silently truncated.  API errors are logged and
     silently skipped — this check is best-effort.
+
+    bot_login is retained for backward compatibility but no longer suppresses
+    detection (#987): in autonomous mode *every* open PR is bot-authored, so the
+    old bot-login skip made this guard a no-op against the worker's own stacked
+    branches — exactly the scenario #850 built it for.  The current_branch guard
+    already excludes the branch under check, so the bot-login skip was redundant
+    at best and blinding at worst.
     """
     if not branch_commit_shas:
         return {}
@@ -146,45 +156,67 @@ def find_redundant_in_open_prs(
     our_sha_set = set(branch_commit_shas)
     redundant_by_pr: dict[str, list[str]] = {}
 
-    try:
-        open_prs = _run_gh([f"/repos/{owner}/{repo}/pulls?state=open&per_page=100"])
-    except GitHubError as exc:
-        logger.warning("Could not list open PRs for stale-commit check: %s", exc)
-        return {}
-
-    if not open_prs:
-        return {}
-
-    if not isinstance(open_prs, list):
-        logger.warning(
-            "Unexpected type from PR listing API: %s — skipping open-PR stale check",
-            type(open_prs).__name__,
-        )
-        return {}
+    # Paginate the open-PR listing — an unpaged fetch silently drops PRs past
+    # the first 100, letting stale commits slip through in a busy repo (#987).
+    open_prs: list = []
+    page = 1
+    while True:
+        try:
+            batch = _run_gh(
+                [f"/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}"]
+            )
+        except GitHubError as exc:
+            logger.warning("Could not list open PRs for stale-commit check: %s", exc)
+            return {}
+        if not batch:
+            break
+        if not isinstance(batch, list):
+            logger.warning(
+                "Unexpected type from PR listing API: %s — skipping open-PR stale check",
+                type(batch).__name__,
+            )
+            return {}
+        open_prs.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
 
     for pr in open_prs:
         pr_number = pr.get("number")
         if pr_number is None:
             continue
-        if pr.get("user", {}).get("login", "") == bot_login:
-            continue
         if current_branch and pr.get("head", {}).get("ref", "") == current_branch:
             continue
 
-        try:
-            pr_commits = _run_gh(
-                [f"/repos/{owner}/{repo}/pulls/{pr_number}/commits?per_page=100"]
-            ) or []
-        except GitHubError as exc:
-            logger.warning("Could not fetch commits for PR #%s: %s", pr_number, exc)
-            continue
-
-        if not isinstance(pr_commits, list):
-            logger.warning(
-                "Unexpected commits response for PR #%s: got %s — skipping",
-                pr_number,
-                type(pr_commits).__name__,
-            )
+        # Paginate this PR's commits — a PR can carry more than 100 commits.
+        pr_commits: list = []
+        commit_page = 1
+        commits_ok = True
+        while True:
+            try:
+                commit_batch = _run_gh([
+                    f"/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+                    f"?per_page=100&page={commit_page}"
+                ])
+            except GitHubError as exc:
+                logger.warning("Could not fetch commits for PR #%s: %s", pr_number, exc)
+                commits_ok = False
+                break
+            if not commit_batch:
+                break
+            if not isinstance(commit_batch, list):
+                logger.warning(
+                    "Unexpected commits response for PR #%s: got %s — skipping",
+                    pr_number,
+                    type(commit_batch).__name__,
+                )
+                commits_ok = False
+                break
+            pr_commits.extend(commit_batch)
+            if len(commit_batch) < 100:
+                break
+            commit_page += 1
+        if not commits_ok:
             continue
 
         overlap = [

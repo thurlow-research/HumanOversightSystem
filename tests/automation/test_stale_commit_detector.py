@@ -175,9 +175,33 @@ class TestFindRedundantInOpenPrs:
 
         assert result == {}
 
-    def test_skips_bot_own_prs(self):
+    def test_bot_authored_prs_are_checked_not_skipped(self):
+        # #987: in autonomous mode *every* open PR is bot-authored, so the old
+        # bot-login skip made this guard a no-op against the worker's own
+        # stacked branches. A bot-authored PR on a *different* branch must now
+        # be checked like any other, and its overlapping commits detected.
         bot_pr = _pr(10, author="hos-worker-hos[bot]", branch="feat/bot-fix")
         prs = [bot_pr]
+        pr_commits = _make_commits([SHA_A, SHA_B])
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=[prs, pr_commits],
+        ):
+            result = find_redundant_in_open_prs(
+                OWNER, REPO, [SHA_A],
+                bot_login="hos-worker-hos[bot]",
+            )
+
+        assert result == {"10": [SHA_A]}
+
+    def test_skips_current_branch_pr_even_when_bot_authored(self):
+        # The branch under check may already have its own open PR (e.g. a re-run
+        # after CHANGES_REQUESTED). Its own already-pushed commits are not
+        # "stale" against itself and must still be skipped via current_branch,
+        # regardless of authorship.
+        own_pr = _pr(30, author="hos-worker-hos[bot]", branch="feat/my-fix")
+        prs = [own_pr]
 
         with patch(
             "scripts.automation.lib.stale_commit_detector._run_gh",
@@ -185,6 +209,7 @@ class TestFindRedundantInOpenPrs:
         ):
             result = find_redundant_in_open_prs(
                 OWNER, REPO, [SHA_A],
+                current_branch="feat/my-fix",
                 bot_login="hos-worker-hos[bot]",
             )
 
@@ -292,6 +317,62 @@ class TestFindRedundantInOpenPrs:
             )
 
         assert set(result["55"]) == {SHA_A, SHA_B}
+
+    def test_paginates_open_pr_listing(self):
+        # #987: an overlapping PR sitting past the first 100 must still be
+        # found. Page 1 returns a full 100 non-overlapping PRs (forcing a second
+        # page fetch); the overlapping PR is the 101st, on page 2.
+        page1 = [_pr(1000 + i, branch=f"feat/x{i}") for i in range(100)]
+        page2 = [_pr(2000, branch="feat/overlap")]
+        non_overlap = _make_commits([SHA_D])
+        overlap = _make_commits([SHA_A])
+
+        def _side_effect(args):
+            url = args[0]
+            if "pulls?state=open" in url:
+                if "&page=1" in url:
+                    return page1
+                if "&page=2" in url:
+                    return page2
+                return []
+            if "pulls/2000/commits" in url:
+                return overlap
+            return non_overlap
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+        assert result == {"2000": [SHA_A]}
+
+    def test_paginates_pr_commits(self):
+        # #987: a PR carrying >100 commits must have every page scanned; the
+        # overlapping commit here lands on page 2 of the PR's commit list.
+        prs = [_pr(77, branch="feat/big")]
+        commits_page1 = _make_commits([f"{i:040x}" for i in range(100)])
+        commits_page2 = _make_commits([SHA_A])
+
+        def _side_effect(args):
+            url = args[0]
+            if "pulls?state=open" in url:
+                return prs if "&page=1" in url else []
+            if "pulls/77/commits" in url:
+                if "&page=1" in url:
+                    return commits_page1
+                if "&page=2" in url:
+                    return commits_page2
+                return []
+            return []
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+        assert result == {"77": [SHA_A]}
 
 
 # ---------------------------------------------------------------------------
