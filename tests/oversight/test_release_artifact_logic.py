@@ -563,3 +563,144 @@ def test_ac14_multiple_clean_high_tier_steps_all_warn(tmp_path):
     assert result.verdict == "pass"
     assert len(result.warnings) == 3
     assert result.steps_found == 3
+
+
+# ── #984 — sign-off stamps must be committed (no uncommitted / stale accept) ──
+#
+# (b) _role_stamp_paths counts any on-disk stamp; a worker `touch`ing
+# signoffs/x/security.stamp with status APPROVED just before a release run —
+# never committed, never reviewed — must NOT satisfy the release gate. The CLI
+# injects a git-backed commit_time_fn; only stamps with commit_time > 0 count.
+
+
+def test_984_uncommitted_stamp_does_not_count(tmp_path):
+    # Stamp exists on disk with a valid status but has no committed history
+    # (commit_time 0) → treated as missing → escalate.
+    _write_stamp(tmp_path / "signoffs", "security", status="APPROVED")
+    manifest = _manifest(["security"])
+    result = validate_release_artifacts(
+        tmp_path, manifest_data=manifest, commit_time_fn=lambda p: 0
+    )
+    assert result.verdict == "escalate"
+    assert "security" in result.missing_signoffs
+    assert any("security" in r for r in result.escalation_reasons)
+
+
+def test_984_committed_stamp_counts(tmp_path):
+    # Same stamp, but the injected clock reports committed history → pass.
+    _write_stamp(tmp_path / "signoffs", "security", status="APPROVED")
+    manifest = _manifest(["security"])
+    result = validate_release_artifacts(
+        tmp_path, manifest_data=manifest, commit_time_fn=lambda p: 1_700_000_000
+    )
+    assert result.verdict == "pass"
+    assert result.missing_signoffs == []
+
+
+def test_984_committed_stamp_beats_uncommitted_sibling(tmp_path):
+    # Two namespaces carry the role: one committed, one not. The role is
+    # satisfied because at least one committed valid-status stamp exists.
+    _write_stamp(tmp_path / "signoffs" / "branch-uncommitted", "security")
+    committed = tmp_path / "signoffs" / "branch-committed" / "security.stamp"
+    _write_stamp(tmp_path / "signoffs" / "branch-committed", "security")
+    manifest = _manifest(["security"])
+    result = validate_release_artifacts(
+        tmp_path,
+        manifest_data=manifest,
+        commit_time_fn=lambda p: 1_700_000_000 if p == committed else 0,
+    )
+    assert result.verdict == "pass"
+    assert result.missing_signoffs == []
+
+
+def test_984_all_uncommitted_stamps_escalate(tmp_path):
+    # Every candidate stamp is uncommitted → role reported missing.
+    _write_stamp(tmp_path / "signoffs" / "branch-a", "security")
+    _write_stamp(tmp_path / "signoffs" / "branch-b", "security")
+    manifest = _manifest(["security"])
+    result = validate_release_artifacts(
+        tmp_path, manifest_data=manifest, commit_time_fn=lambda p: 0
+    )
+    assert result.verdict == "escalate"
+    assert "security" in result.missing_signoffs
+
+
+def test_984_commit_time_fn_none_preserves_pure_path(tmp_path):
+    # Backward compatibility: with no commit_time_fn injected, on-disk presence
+    # alone satisfies the role (the pure, subprocess-free path unit tests use).
+    _write_stamp(tmp_path / "signoffs", "security", status="APPROVED")
+    manifest = _manifest(["security"])
+    result = validate_release_artifacts(tmp_path, manifest_data=manifest)
+    assert result.verdict == "pass"
+
+
+def test_984_git_commit_time_untracked_returns_zero(tmp_path):
+    # The git helper degrades to 0 (not committed) for a path with no history —
+    # here a non-repository tmp dir — so an unverifiable stamp never counts.
+    stamp = tmp_path / "signoffs" / "x" / "security.stamp"
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text("status: APPROVED\n", encoding="utf-8")
+    assert ral._git_commit_time(tmp_path, stamp) == 0
+
+
+# ── #984 — a requested but unloadable --manifest fails closed (exit 2) ────────
+#
+# (a) _load_manifest returned None on any failure and _cmd_validate warned +
+# skipped sign-off completeness → exit 0. A YAML typo (or a venv without PyYAML)
+# would silently skip release sign-off completeness. Now: exit 2, matching
+# signoff_gate.py.
+
+
+def _write_manifest_yaml(tmp_path, text: str) -> str:
+    path = tmp_path / "step-manifest.yaml"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_984_missing_manifest_path_exits_2(tmp_path):
+    missing = str(tmp_path / "does-not-exist.yaml")
+    rc = ral.main(["validate", "--repo-root", str(tmp_path), "--manifest", missing])
+    assert rc == 2
+
+
+def test_984_malformed_manifest_exits_2(tmp_path):
+    # Unbalanced brackets → YAMLError → fail closed.
+    bad = _write_manifest_yaml(tmp_path, "steps: [ {id: 1, required_signoffs: [sec }\n")
+    rc = ral.main(["validate", "--repo-root", str(tmp_path), "--manifest", bad])
+    assert rc == 2
+
+
+def test_984_non_mapping_manifest_exits_2(tmp_path):
+    # Valid YAML that is a scalar, not a mapping → fail closed.
+    scalar = _write_manifest_yaml(tmp_path, "just a string\n")
+    rc = ral.main(["validate", "--repo-root", str(tmp_path), "--manifest", scalar])
+    assert rc == 2
+
+
+def test_984_no_manifest_flag_does_not_exit_2(tmp_path):
+    # Manifest-free deployment: sign-off completeness is legitimately skipped,
+    # NOT a fail-closed error. No artifacts, no manifest → pass (exit 0).
+    rc = ral.main(["validate", "--repo-root", str(tmp_path)])
+    assert rc == 0
+
+
+@pytest.mark.skipif(ral._yaml is None, reason="PyYAML required to parse manifest")
+def test_984_empty_manifest_is_valid_no_roles(tmp_path):
+    # An empty-but-valid manifest defines no required roles → loads to {} → the
+    # completeness check runs vacuously (no roles) rather than failing closed.
+    empty = _write_manifest_yaml(tmp_path, "\n")
+    rc = ral.main(["validate", "--repo-root", str(tmp_path), "--manifest", empty])
+    assert rc == 0
+
+
+@pytest.mark.skipif(ral._yaml is None, reason="PyYAML required to parse manifest")
+def test_984_cli_uncommitted_stamp_escalates_end_to_end(tmp_path):
+    # End-to-end through the CLI in a non-git tree: a required stamp is present
+    # on disk but has no commit history, so the git-backed check reports it
+    # uncommitted → the release gate escalates (exit 1) instead of passing open.
+    _write_stamp(tmp_path / "signoffs", "security", status="APPROVED")
+    manifest = _write_manifest_yaml(
+        tmp_path, "steps:\n  - id: 1\n    required_signoffs:\n      - security\n"
+    )
+    rc = ral.main(["validate", "--repo-root", str(tmp_path), "--manifest", manifest])
+    assert rc == 1
