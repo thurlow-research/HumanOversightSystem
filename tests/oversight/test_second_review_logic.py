@@ -198,3 +198,39 @@ def test_fenced_body_json_parses():
         '{"reviewer":"codex","verdict":"approve","findings":[]}',
     )
     assert aggregate_verdicts(content)["verdict"] == "approve"
+
+
+# --------------------------------------------------------------------------- #
+# #982 — prose reviewer report with its own "## " headings must not truncate  #
+# --------------------------------------------------------------------------- #
+def test_prose_report_with_internal_headings_not_truncated():
+    """A prose reviewer report (agy returned markdown, not JSON) whose body has
+    its own '## ' headings must be classified in full — the must-fix content
+    below the model's first heading must NOT be silently dropped (#982, the #113
+    degradation path). Previously the naïve '^## ' split truncated the reviewer
+    section at '## Critical Issues', leaving only the 'Looks good' preamble →
+    approve."""
+    prose = (
+        "Looks good overall.\n"
+        "## Critical Issues\n"
+        "- must-fix: SQL injection in views.py\n"
+    )
+    content = _HEADER + _section("agy — Correctness", prose)
+    result = aggregate_verdicts(content)
+    assert result["verdict"] == "request_changes"
+    assert result["highest_severity"] == "critical"
+
+
+def test_advisory_block_after_reviewer_does_not_corrupt_json():
+    """A '## [ADVISORY]' block the shell appends AFTER a reviewer section (a
+    top-level, outside-fence header) is not a reviewer and must not be pulled
+    into the preceding reviewer's fenced JSON body (fence-aware split guard for
+    the #982 fix — greedy fence extraction must still see only the reviewer's
+    own JSON)."""
+    content = (
+        _HEADER
+        + _section("agy — Correctness", '{"reviewer":"agy","verdict":"approve","findings":[]}')
+        + "## [ADVISORY] Full-context request — diff-centric mode (SPEC-379)\n"
+        + "```\n[ADVISORY] Reviewer requested full-repository context.\n```\n\n"
+    )
+    assert aggregate_verdicts(content)["verdict"] == "approve"
