@@ -365,3 +365,83 @@ def test_cmd_process_does_not_preserve_approve_when_compute_agrees(tmp_path):
     result_text = outfile.read_text()
     assert "verdict: approve" in result_text
     assert "verdict: request_changes" not in result_text
+
+
+# ── _cmd_process: verdict must be RE-KEYED, not dropped (#982) ─────────────────
+def test_cmd_process_upgrades_approve_to_request_changes_on_hidden_blocking(tmp_path):
+    """aggregate keys the per-reviewer verdict solely off data['verdict'], so a
+    reviewer returning {"verdict":"approve"} with a CRITICAL finding leaves the
+    file at `verdict: approve`. compute_verdict counts that critical as a NEW
+    blocking finding → request_changes; that upgrade MUST land in the file. The
+    old rewrite anchored on `^verdict: pending$` — already rewritten to `approve`
+    by aggregate — so it matched nothing and the blocking finding was lost
+    (#982)."""
+    vl = validation_logic
+    ledger = str(tmp_path / "ledger.jsonl")
+    reviewer_json = json.dumps({
+        "reviewer": "agy",
+        "verdict": "approve",  # reviewer said approve …
+        "findings": [{"severity": "critical", "file": "views.py", "line": 1,
+                      "finding": "SQL injection", "why": "unsanitized", "suggestion": "param"}],
+    })  # … but shipped a CRITICAL finding
+    content = (
+        "# Second Review — Step 3\n"
+        "Score: 0.70 | Timestamp: 20260716T000000\n"
+        "verdict: approve\n"          # already rewritten by aggregate
+        "reviewed_range: abc..def\n"
+        "highest_severity: critical\n"  # aggregate DID record the severity
+        "unresolved_findings: 1\n"
+        "blocking_count: 0\n"
+        "new_blocking_count: 0\n"
+        "\n"
+        "## agy — Correctness + Spec Adherence\n"
+        "```json\n" + reviewer_json + "\n```\n"
+    )
+    outfile = tmp_path / "step3-review.md"
+    outfile.write_text(content)
+    import argparse
+    args = argparse.Namespace(
+        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+    )
+    rc = vl._cmd_process(args)
+    assert rc == 0
+    result_text = outfile.read_text()
+    # The blocking verdict computed here must be written to the file.
+    assert "verdict: request_changes" in result_text
+    assert "verdict: approve" not in result_text
+    assert "highest_severity: critical" in result_text
+    assert "new_blocking_count: 1" in result_text
+    assert "blocking_count: 1" in result_text
+
+
+def test_cmd_process_error_verdict_upgrades_approve(tmp_path):
+    """A reviewer block that failed to review ({"verdict":"error"}) is a #670
+    fail-closed signal. Even if the file header says `approve`, `process` must
+    re-key it to error (the strongest verdict), never leave it approve."""
+    vl = validation_logic
+    ledger = str(tmp_path / "ledger.jsonl")
+    reviewer_json = json.dumps({"reviewer": "codex", "verdict": "error", "findings": []})
+    content = (
+        "# Second Review — Step 3\n"
+        "Score: 0.70 | Timestamp: 20260716T000000\n"
+        "verdict: approve\n"
+        "reviewed_range: abc..def\n"
+        "highest_severity: none\n"
+        "unresolved_findings: 0\n"
+        "blocking_count: 0\n"
+        "new_blocking_count: 0\n"
+        "\n"
+        "## codex — Adversarial Security Probe (reserve)\n"
+        "```json\n" + reviewer_json + "\n```\n"
+    )
+    outfile = tmp_path / "step3-review.md"
+    outfile.write_text(content)
+    import argparse
+    args = argparse.Namespace(
+        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+    )
+    assert vl._cmd_process(args) == 0
+    result_text = outfile.read_text()
+    assert "verdict: request_changes" in result_text
+    assert "verdict: approve" not in result_text
+    assert "new_blocking_count: 1" in result_text

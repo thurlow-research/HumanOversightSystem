@@ -59,6 +59,37 @@ BLOCKING_SEVERITIES = ("critical", "high", "blocking")
 # timeout has no stable fingerprint and must always gate (fail-closed, #670).
 ERROR_VERDICT = "error"
 
+# Verdict ordering for the pre-PR pipeline ratchet (higher = more blocking).
+# `run_second_review.sh` runs `second_review_logic.py aggregate` (which rewrites
+# `verdict: pending` → e.g. `approve`) BEFORE `validation_logic.py process`. When
+# `process` re-keys the verdict it must be free to UPGRADE the file (this step's
+# ledger-aware compute can raise an approve to request_changes — e.g. a #670
+# error block, or a reviewer that returned {"verdict":"approve"} alongside a
+# critical finding) but must NEVER DOWNGRADE a blocking verdict already written
+# to approve (#683). Unknown verdicts rank below approve so a known computed
+# verdict wins rather than an unrecognized string sticking.
+_VERDICT_RANK = {
+    "pending": 0,
+    "skipped": 0,
+    "approve": 1,
+    "unparseable": 2,
+    "request_changes": 3,
+    "error": 4,
+}
+
+
+def _verdict_rank(verdict: str) -> int:
+    return _VERDICT_RANK.get(str(verdict).strip().lower(), -1)
+
+
+def _severity_rank(severity: str) -> int:
+    """Rank a severity by the canonical ordering (lower index = more severe).
+    Unknown severities rank least-severe so they never mask a known one."""
+    try:
+        return SEVERITIES.index(str(severity).strip().lower())
+    except ValueError:
+        return len(SEVERITIES)
+
 
 # ── JSON extraction (binding 6) ───────────────────────────────────────────────
 def _brace_objects(text: str) -> list[dict]:
@@ -270,29 +301,42 @@ def _cmd_process(args: argparse.Namespace) -> int:
     blocking = result["blocking_count"]
     new_blocking = result["new_blocking_count"]
 
-    # Preserve an existing request_changes verdict written by second_review_logic.py
-    # aggregate — a reviewer's explicit request_changes must not be laundered into
-    # approve just because its findings are medium-severity (not blocking by count).
-    # When the file already says request_changes and compute_verdict would approve,
-    # keep request_changes and ensure new_blocking_count reflects the blocking intent
-    # so downstream evaluators see a non-zero gate (#683).
+    # RATCHET against the verdict/severity already in the file. In the pre-PR
+    # pipeline, `second_review_logic.py aggregate` has ALREADY rewritten the
+    # header away from its `pending`/`none`/`0` defaults before we run, so
+    # anchoring the rewrite on those literals (as this did) matched nothing and
+    # silently dropped this step's ledger-aware verdict on the floor — a reviewer
+    # returning {"verdict":"approve"} alongside a critical finding, or a #670
+    # error block, stayed `approve` in the file the evaluator reads (#982). We
+    # therefore match the CURRENT value and never DOWNGRADE a blocking verdict to
+    # approve (#683), while still letting a stronger computed verdict land (#670).
     existing_verdict_m = re.search(r"^verdict: (\S+)$", content, flags=re.M)
     existing_verdict = existing_verdict_m.group(1) if existing_verdict_m else "pending"
-    if existing_verdict == "request_changes" and verdict == "approve":
-        verdict = "request_changes"
-        new_blocking = max(new_blocking, 1)
+    if _verdict_rank(existing_verdict) >= _verdict_rank(verdict):
+        verdict = existing_verdict
+    # A blocking final verdict must present a non-zero gate to any count-based
+    # consumer even when this step's own (deduped) new-blocking tally is zero:
+    # the reviewer's blocking intent, not the count, is authoritative (#683).
+    if verdict in ("request_changes", ERROR_VERDICT) and new_blocking == 0:
+        new_blocking = 1
+        blocking = max(blocking, new_blocking)
+
+    existing_sev_m = re.search(r"^highest_severity: (\S+)$", content, flags=re.M)
+    existing_sev = existing_sev_m.group(1) if existing_sev_m else "none"
+    if _severity_rank(existing_sev) <= _severity_rank(highest):
+        highest = existing_sev
 
     new_content = re.sub(
-        r"^verdict: pending$", f"verdict: {verdict}", content, flags=re.M
+        r"^verdict: \S+$", f"verdict: {verdict}", content, count=1, flags=re.M
     )
     new_content = re.sub(
-        r"^highest_severity: none$", f"highest_severity: {highest}", new_content, flags=re.M
+        r"^highest_severity: \S+$", f"highest_severity: {highest}", new_content, count=1, flags=re.M
     )
     new_content = re.sub(
-        r"^blocking_count: 0$", f"blocking_count: {blocking}", new_content, flags=re.M
+        r"^blocking_count: \d+$", f"blocking_count: {blocking}", new_content, count=1, flags=re.M
     )
     new_content = re.sub(
-        r"^new_blocking_count: 0$", f"new_blocking_count: {new_blocking}", new_content, flags=re.M
+        r"^new_blocking_count: \d+$", f"new_blocking_count: {new_blocking}", new_content, count=1, flags=re.M
     )
     with open(args.file, "w", encoding="utf-8") as fh:
         fh.write(new_content)

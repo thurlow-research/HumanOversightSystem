@@ -131,6 +131,46 @@ def _fenced_body(text: str) -> str:
     return (m.group(1) if m else text).strip()
 
 
+def _split_sections(content: str) -> list[str]:
+    """Split the output file into "## " sections, HONORING fenced code blocks.
+
+    `run_second_review.sh` embeds each reviewer's raw output verbatim inside a
+    ```` ```json … ``` ```` fence. When a reviewer returns a prose markdown
+    report instead of JSON (the documented #113 degradation path), that report
+    routinely carries its own "## " headings (e.g. "## Critical Issues"). Those
+    are reviewer CONTENT, not section boundaries: splitting on them truncated the
+    reviewer's section at its first internal heading, so a "looks good" preamble
+    classified as approve while the must-fix content below was silently discarded
+    (#982 — regression class of #113/#670/#683).
+
+    Only "## " lines that appear OUTSIDE a fenced block — the reviewer/advisory
+    headers the shell itself writes at column 0 — start a new section. This is
+    the non-forgeable boundary: reviewer output can contain any "## " it likes
+    without being mistaken for a shell-written header. Each returned element
+    begins immediately after its "## " marker, matching the prior
+    `re.split(r"(?m)^## ", content)[1:]` contract.
+    """
+    sections: list[str] = []
+    current: list[str] | None = None
+    in_fence = False
+    for line in content.splitlines(keepends=True):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            if current is not None:
+                current.append(line)
+            continue
+        if not in_fence and line.startswith("## "):
+            if current is not None:
+                sections.append("".join(current))
+            current = [line[3:]]  # drop the "## " marker (old split contract)
+            continue
+        if current is not None:
+            current.append(line)
+    if current is not None:
+        sections.append("".join(current))
+    return sections
+
+
 def _aggregate_full(content: str) -> tuple[dict, bool]:
     """Aggregate reviewer sections → (result_dict, parsed_any_prose).
 
@@ -139,8 +179,9 @@ def _aggregate_full(content: str) -> tuple[dict, bool]:
     shim uses it to render the parity prose-note). Verbatim port of the heredoc
     aggregation (run_second_review.sh lines 599-699). Pure: no file I/O.
     """
-    # Each element starts after a "## " heading.
-    sections = re.split(r"(?m)^## ", content)[1:]
+    # Each element starts after a "## " heading (fence-aware: a "## " inside a
+    # reviewer's fenced body is content, not a section boundary — see #982).
+    sections = _split_sections(content)
 
     reviewers = []  # (name, verdict, severity, finding_count, parsed_from)
     for sec in sections:
