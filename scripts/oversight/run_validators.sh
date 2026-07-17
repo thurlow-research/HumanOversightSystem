@@ -47,11 +47,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --diff)
             DIFF_REF="$2"; shift 2
+            # Collect the FULL changed-file list — NOT just *.py (#981). ALL_FILES
+            # drives ip_check (license/provenance gate) and issue_query, whose
+            # signals key off dependency manifests (requirements*.txt, pyproject.toml,
+            # package.json) that never end in .py. Filtering to .py here blinded the
+            # release gate to manifest changes. The .py-only subset is derived below
+            # into PY_FILES for the Python-only validators.
             # bash 3.2 (macOS default) has no `mapfile` — use a portable read loop.
             FILES=()
             while IFS= read -r _f; do
                 [[ -n "$_f" ]] && FILES+=("$_f")
-            done < <(git diff --name-only "$DIFF_REF" 2>/dev/null | grep '\.py$' || true)
+            done < <(git diff --name-only "$DIFF_REF" 2>/dev/null || true)
             ;;
         *)
             FILES+=("$1"); shift
@@ -95,6 +101,17 @@ Path('$OUT_DIR/summary.json').write_text(json.dumps(summary, indent=2))
 print('CRITICAL summary written to $OUT_DIR/summary.json')
 " 2>/dev/null || true
     exit 1
+fi
+
+# Testability seam (#981): with RUN_VALIDATORS_FILELIST_ONLY set, emit the
+# resolved ALL_FILES / PY_FILES split and exit BEFORE any validator runs. Lets
+# tests pin the --diff file collection (dependency manifests must reach ALL_FILES,
+# and only *.py may reach PY_FILES) without the heavy/network validator run.
+# Off by default; no effect on the real pipeline.
+if [[ -n "${RUN_VALIDATORS_FILELIST_ONLY:-}" ]]; then
+    for _af in ${ALL_FILES[@]+"${ALL_FILES[@]}"}; do printf 'ALL_FILES\t%s\n' "$_af"; done
+    for _pf in ${PY_FILES[@]+"${PY_FILES[@]}"}; do printf 'PY_FILES\t%s\n' "$_pf"; done
+    exit 0
 fi
 
 mkdir -p "$OUT_DIR"
