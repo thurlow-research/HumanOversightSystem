@@ -4,6 +4,10 @@ Covers the glob matcher (each protected class matches; near-misses don't) and th
 bot-vs-human approval logic — the load-bearing determination-honesty check.
 """
 import importlib.util
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -148,3 +152,115 @@ def test_copilot_exact_login_match():
     reviews_bot = [{"state": "APPROVED", "user": {"login": "copilot[bot]"}}]
     result_bot = rha.human_approval_present(reviews_bot, bot_accounts)
     assert result_bot == [], "copilot[bot] must be excluded"
+
+
+# ── #994: layered bot detection (type / [bot] suffix / case-insensitive list) ─
+def test_user_type_bot_excluded_even_when_not_in_bot_accounts():
+    """A reviewer GitHub reports as user.type == "Bot" is never human, even if the
+    login isn't enumerated in BOT_ACCOUNTS (unlisted app fail-open, #994)."""
+    reviews = [{"state": "APPROVED", "user": {"login": "github-actions", "type": "Bot"}}]
+    assert rha.human_approval_present(reviews, set()) == []
+
+
+def test_bracket_bot_suffix_excluded_even_when_not_in_bot_accounts():
+    """copilot-pull-request-reviewer[bot] — the login GitHub's Copilot review
+    actually submits as — is excluded by the [bot] suffix though machine-accounts
+    only lists 'copilot[bot]' (#994)."""
+    reviews = [
+        {"state": "APPROVED", "user": {"login": "copilot-pull-request-reviewer[bot]"}}
+    ]
+    assert rha.human_approval_present(reviews, {"copilot[bot]"}) == []
+
+
+def test_bot_accounts_match_is_case_insensitive():
+    """A PAT machine-user (type "User", no [bot] suffix) is excluded via BOT_ACCOUNTS
+    regardless of login case (#994)."""
+    reviews = [{"state": "APPROVED", "user": {"login": "HOSWorkerTutelare", "type": "User"}}]
+    assert rha.human_approval_present(reviews, {"hosworkertutelare"}) == []
+
+
+def test_is_bot_reviewer_direct():
+    assert rha.is_bot_reviewer("x[bot]", "", set()) is True
+    assert rha.is_bot_reviewer("anyone", "Bot", set()) is True
+    assert rha.is_bot_reviewer("MachineUser", "User", {"machineuser"}) is True
+    assert rha.is_bot_reviewer("ScottThurlow", "User", {"hos-worker-hos[bot]"}) is False
+
+
+# ── #994: main() fail-closed on empty BOT_ACCOUNTS + protected surface ────────
+_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "scripts" / "framework" / "require_human_approval.py"
+)
+
+
+def _run_main(tmp_path, changed, reviews, bot_accounts_env):
+    changed_file = tmp_path / "changed.txt"
+    changed_file.write_text("\n".join(changed) + "\n")
+    reviews_file = tmp_path / "reviews.json"
+    reviews_file.write_text(json.dumps(reviews))
+    env = dict(os.environ)
+    if bot_accounts_env is None:
+        env.pop("BOT_ACCOUNTS", None)
+    else:
+        env["BOT_ACCOUNTS"] = bot_accounts_env
+    return subprocess.run(
+        [
+            sys.executable,
+            str(_SCRIPT),
+            "--changed-files-file",
+            str(changed_file),
+            "--reviews-file",
+            str(reviews_file),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_main_exit2_when_bot_accounts_empty_on_protected_surface(tmp_path):
+    """Protected surface touched + BOT_ACCOUNTS empty → exit 2 (misconfig), even
+    with an APPROVED review present (#994)."""
+    r = _run_main(
+        tmp_path,
+        changed=["AGENTS.md"],
+        reviews=[{"state": "APPROVED", "user": {"login": "ScottThurlow", "type": "User"}}],
+        bot_accounts_env="",
+    )
+    assert r.returncode == 2, r.stderr
+    assert "MISCONFIGURED" in r.stderr
+
+
+def test_main_no_protected_surface_passes_even_with_empty_bot_accounts(tmp_path):
+    """The misconfig gate only fires when a protected surface is actually touched."""
+    r = _run_main(
+        tmp_path,
+        changed=["README.md"],
+        reviews=[],
+        bot_accounts_env="",
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def test_main_only_bot_approval_fails_closed_via_suffix(tmp_path):
+    """Overseer ([bot]) approval on a protected surface, BOT_ACCOUNTS populated →
+    exit 1 (no human), not a pass (#994)."""
+    r = _run_main(
+        tmp_path,
+        changed=["AGENTS.md"],
+        reviews=[{"state": "APPROVED", "user": {"login": "hos-overseer-hos[bot]", "type": "Bot"}}],
+        bot_accounts_env="hos-overseer-hos[bot]",
+    )
+    assert r.returncode == 1, r.stderr
+
+
+def test_main_human_approval_passes(tmp_path):
+    r = _run_main(
+        tmp_path,
+        changed=["AGENTS.md"],
+        reviews=[
+            {"state": "APPROVED", "user": {"login": "hos-overseer-hos[bot]", "type": "Bot"}},
+            {"state": "APPROVED", "user": {"login": "ScottThurlow", "type": "User"}},
+        ],
+        bot_accounts_env="hos-overseer-hos[bot]",
+    )
+    assert r.returncode == 0, r.stderr

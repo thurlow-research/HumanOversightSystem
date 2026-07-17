@@ -21,7 +21,8 @@ Modes:
 
 Exit: 0 = pass (no protected surface, or a human approval present)
       1 = FAIL (protected surface touched, no human approval)
-      2 = usage/tooling error
+      2 = usage/tooling error, or misconfiguration (protected surface touched but
+          BOT_ACCOUNTS empty — the bot-vs-human determination is untrustworthy)
 """
 
 from __future__ import annotations
@@ -136,14 +137,37 @@ def reviews_from_gh(pr: str) -> list[dict]:
         return json.loads(re.sub(r"\]\s*\[", ",", out))
 
 
+def is_bot_reviewer(login: str, user_type: str, bot_accounts: set[str]) -> bool:
+    """True if a review author is a bot (must NOT satisfy the human gate).
+
+    An allowlist would fail open on any unlisted app; this is a layered denylist:
+      1. GitHub reports ``user.type == "Bot"`` — every GitHub App reviewer
+         (Copilot, github-actions, our worker/overseer) authenticates this way,
+         regardless of whether the consumer enumerated it in BOT_ACCOUNTS.
+      2. The login carries the GitHub App ``[bot]`` suffix — a belt-and-suspenders
+         check for the same class in case ``user.type`` is absent from the payload.
+      3. The login is in BOT_ACCOUNTS (compared case-insensitively) — the only
+         layer that can catch a PAT *machine-user* account (``type == "User"``,
+         no ``[bot]`` suffix), e.g. the former HOSWorkerTutelare accounts.
+    """
+    if str(user_type).lower() == "bot":
+        return True
+    if login.endswith("[bot]"):
+        return True
+    low = login.lower()
+    return any(low == b.lower() for b in bot_accounts)
+
+
 def human_approval_present(reviews: list[dict], bot_accounts: set[str]) -> list[str]:
     """Return the list of human approver logins (APPROVED, not a bot)."""
     approvers = []
     for r in reviews:
         if str(r.get("state", "")).upper() != "APPROVED":
             continue
-        login = (r.get("user") or {}).get("login", "")
-        if login and login not in bot_accounts:
+        user = r.get("user") or {}
+        login = user.get("login", "")
+        user_type = user.get("type", "")
+        if login and not is_bot_reviewer(login, user_type, bot_accounts):
             approvers.append(login)
     return sorted(set(approvers))
 
@@ -181,6 +205,29 @@ def main() -> int:
 
     bot_accounts = {b for b in os.environ.get("BOT_ACCOUNTS", "").split() if b}
 
+    # Fail-closed on misconfiguration (#994): a protected surface is touched but
+    # the bot identity set is empty (missing/renamed machine-accounts.env, or the
+    # workflow's `export BOT_ACCOUNTS="${BOT_ACCOUNTS:-}"` producing an empty set).
+    # With no bot list we cannot reliably exclude a PAT machine-user's approval,
+    # so the "human" determination is untrustworthy. Exit 2 (config error) — not 1
+    # — to signal "fix your install", distinct from a legitimate missing-human FAIL.
+    if not bot_accounts:
+        print("", file=sys.stderr)
+        print(
+            "✘ require-human-approval: MISCONFIGURED — a protected surface is touched but",
+            file=sys.stderr,
+        )
+        print(
+            "  BOT_ACCOUNTS is empty. Cannot distinguish bot approvals from human ones, so",
+            file=sys.stderr,
+        )
+        print(
+            "  the gate fails closed. Populate scripts/framework/machine-accounts.env",
+            file=sys.stderr,
+        )
+        print("  (BOT_ACCOUNTS) and re-run.", file=sys.stderr)
+        return 2
+
     if args.reviews_file:
         reviews = json.loads(Path(args.reviews_file).read_text())
     elif args.pr:
@@ -208,11 +255,6 @@ def main() -> int:
         "  NO human approval. A bot (worker/overseer) may not approve or merge it.", file=sys.stderr
     )
     print(f"  Protected surfaces: {', '.join(surfaces)}", file=sys.stderr)
-    if not bot_accounts:
-        print(
-            "  (BOT_ACCOUNTS unset — any human-collaborator approval will satisfy this gate.)",
-            file=sys.stderr,
-        )
     print("  A human with repo access must review and approve before merge.", file=sys.stderr)
     return 1
 
