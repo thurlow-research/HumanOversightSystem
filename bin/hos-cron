@@ -92,7 +92,12 @@ LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 # ── State dirs ────────────────────────────────────────────────────────────────
 _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
-_WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}"
+# #995: wakeup files are scoped per-project (mirroring last-run) so one project's
+# cron can no longer consume — and rm — another project's wakeup signal. The
+# legacy unscoped path is still read (only) for backward compatibility with
+# signals dropped by an older launcher; see the consume block below.
+_WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}-${PROJECT}"
+_WAKEUP_FILE_LEGACY="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
 IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
 mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean"
@@ -276,7 +281,28 @@ _validate_env() {
 _validate_env
 
 # ── Wakeup / idle backoff ─────────────────────────────────────────────────────
+# #995: prefer the project-scoped wakeup file. Fall back to the legacy unscoped
+# path ONLY when its JSON "project" field is absent (a truly pre-scoping signal)
+# or matches this project — never consume/rm a wakeup that names another project,
+# so mixed old/new deployments can't steal each other's signals.
+_WAKEUP_ACTIVE=""
 if [[ -f "$_WAKEUP_FILE" ]]; then
+  _WAKEUP_ACTIVE="$_WAKEUP_FILE"
+elif [[ -f "$_WAKEUP_FILE_LEGACY" ]]; then
+  _legacy_project=$(python3 -c "
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get('project', ''))
+except Exception:
+    print('')
+" "$_WAKEUP_FILE_LEGACY" 2>/dev/null || echo "")
+  if [[ -z "$_legacy_project" || "$_legacy_project" == "$PROJECT" ]]; then
+    _WAKEUP_ACTIVE="$_WAKEUP_FILE_LEGACY"
+  else
+    echo "$LOG_PREFIX ignoring legacy wakeup addressed to project '$_legacy_project' (not '$PROJECT') — leaving it for its owner (#995)"
+  fi
+fi
+if [[ -n "$_WAKEUP_ACTIVE" ]]; then
   _wakeup_reason=$(python3 -c "
 import json, sys
 try:
@@ -284,8 +310,8 @@ try:
     print(d.get('reason', 'unknown'))
 except Exception:
     print('unknown')
-" "$_WAKEUP_FILE" 2>/dev/null || echo "unknown")
-  rm -f "$_WAKEUP_FILE"
+" "$_WAKEUP_ACTIVE" 2>/dev/null || echo "unknown")
+  rm -f "$_WAKEUP_ACTIVE"
   echo "$LOG_PREFIX wakeup signal received (reason=$_wakeup_reason)"
   _audit cycle-wakeup "reason=$_wakeup_reason"
 elif [[ -f "$_LAST_RUN_FILE" ]]; then
@@ -302,7 +328,24 @@ fi
 
 # ── Git sync ──────────────────────────────────────────────────────────────────
 git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
-git -C "$REPO_ROOT" pull origin main --ff-only --quiet 2>/dev/null || true
+# #996: never let a diverged local main be masked by `|| true`. A SIGTERM between
+# a session's commit and push can strand a stray commit on main; from then on
+# every `pull --ff-only` fails and silently discarding it would let the worker
+# keep cutting branches from a drifting base with no signal at all. Capture the
+# failure and, if local main carries commits not on origin/main, log loudly, emit
+# an audit event, and skip the cycle fail-closed — the stray commit is left in
+# place (reflog-recoverable) for a human to reconcile.
+if ! git -C "$REPO_ROOT" pull origin main --ff-only --quiet 2>/dev/null; then
+  _ahead=$(git -C "$REPO_ROOT" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+  if [[ "${_ahead:-0}" -gt 0 ]]; then
+    echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_ahead} local commit(s) not on origin (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" log origin/main..HEAD"
+    _audit cycle-preflight-fail reason=local_main_diverged ahead="${_ahead}"
+    exit 0
+  fi
+  # ff-only could not fast-forward but local main is NOT ahead (e.g. no upstream
+  # configured yet, or a transient fetch failure) — nothing was masked; continue
+  # on the current HEAD, as the old `|| true` did.
+fi
 
 # ── Repo slug — shared by halt check, PR routing, and milestone resolution ────
 _REPO_SLUG="${HOS_REPO_SLUG:-$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
@@ -577,7 +620,7 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       _audit cycle-skip reason=awaiting-merge
       printf '{"reason":"worker-cycle-skip","project":"%s","timestamp":"%s"}\n' \
         "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-        > "$_HOS_DIR/wakeup/overseer"
+        > "$_HOS_DIR/wakeup/overseer-${PROJECT}"
       date +%s > "$_LAST_RUN_FILE"
       exit 0
     fi
@@ -799,8 +842,8 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
     fi
   fi
   if [[ "$_did_work" -eq 1 ]]; then
-    printf '{"reason":"self-wakeup-more-work","timestamp":"%s"}\n' \
-      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$_WAKEUP_FILE"
+    printf '{"reason":"self-wakeup-more-work","project":"%s","timestamp":"%s"}\n' \
+      "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$_WAKEUP_FILE"
     echo "$LOG_PREFIX outcome: did-work — self-wakeup dropped"
   else
     echo "$LOG_PREFIX outcome: idle"
@@ -816,5 +859,5 @@ else
 fi
 printf '{"reason":"%s-cycle-complete","project":"%s","timestamp":"%s"}\n' \
   "$ROLE" "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-  > "$_HOS_DIR/wakeup/${_other}"
+  > "$_HOS_DIR/wakeup/${_other}-${PROJECT}"
 echo "$LOG_PREFIX cycle complete (exit=$_claude_exit) — ${_other} wakeup signal dropped"

@@ -204,10 +204,20 @@ class CronEnv:
 
     @property
     def wakeup_worker(self) -> Path:
-        return self.state / "wakeup" / "worker"
+        # #995: wakeup files are scoped per-project ("hos" in this fixture).
+        return self.state / "wakeup" / "worker-hos"
 
     @property
     def wakeup_overseer(self) -> Path:
+        return self.state / "wakeup" / "overseer-hos"
+
+    @property
+    def wakeup_worker_legacy(self) -> Path:
+        # Pre-#995 unscoped path — read-only back-compat surface.
+        return self.state / "wakeup" / "worker"
+
+    @property
+    def wakeup_overseer_legacy(self) -> Path:
         return self.state / "wakeup" / "overseer"
 
     def suspend_file(self, project="hos") -> Path:
@@ -281,6 +291,46 @@ class CronEnv:
             git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True
         )
         return head.stdout.strip()
+
+    def git_init_diverged_main(self) -> None:
+        """Make the fake repo a git repo whose local main is one commit ahead of
+        origin/main — the #996 stray-commit-from-a-killed-session state.
+
+        Builds a bare origin, pushes an initial `main`, then adds a local commit
+        that is never pushed, so `pull origin main --ff-only` cannot fast-forward
+        and `git rev-list origin/main..HEAD` is non-empty.
+        """
+        origin = self.repo.parent / "origin.git"
+        other = self.repo.parent / "other_clone"
+        git = ["git", "-C", str(self.repo)]
+        gito = ["git", "-C", str(other)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
+                 "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        # Point the bare's HEAD at main so a fresh clone checks out main (not the
+        # nonexistent default master).
+        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "base"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+        # Advance origin/main via an independent clone so the two histories share a
+        # base but each carries a unique commit — `pull --ff-only` fails only on a
+        # genuine divergence (local merely ahead is a no-op fast-forward).
+        subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+        (other / "remote.txt").write_text("landed on origin while local was offline\n")
+        subprocess.run(gito + ["add", "-A"], check=True)
+        subprocess.run(gito + ident + ["commit", "-q", "-m", "remote-advance"], check=True)
+        subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
+        # Refresh the local remote-tracking ref, then strand a local-only commit →
+        # local main now diverges from origin/main.
+        subprocess.run(git + ["fetch", "-q", "origin"], check=True)
+        (self.repo / "stray.txt").write_text("stray commit from a killed session\n")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "stray"], check=True)
 
     def write_cowpat(self, sha: str) -> None:
         self.cowpat_file.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +453,40 @@ class TestWakeupBackoff:
         assert not cron.wakeup_worker.exists(), "wakeup file must be consumed"
         assert cron.claude_ran()
 
+    def test_legacy_wakeup_for_this_project_is_consumed(self, cron):
+        # #995: an unscoped wakeup from an older launcher whose JSON names THIS
+        # project is honored (back-compat) and consumed.
+        cron.wakeup_worker_legacy.parent.mkdir(parents=True, exist_ok=True)
+        cron.wakeup_worker_legacy.write_text('{"reason":"legacy-mine","project":"hos"}')
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "wakeup signal received" in r.stdout
+        assert "reason=legacy-mine" in r.stdout
+        assert not cron.wakeup_worker_legacy.exists(), "legacy wakeup for this project must be consumed"
+        assert cron.claude_ran()
+
+    def test_legacy_wakeup_without_project_is_consumed(self, cron):
+        # #995: a truly pre-scoping signal (no "project" field) stays back-compat —
+        # consumed by whichever cron fires, matching the old behavior.
+        cron.wakeup_worker_legacy.parent.mkdir(parents=True, exist_ok=True)
+        cron.wakeup_worker_legacy.write_text('{"reason":"legacy-global"}')
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "reason=legacy-global" in r.stdout
+        assert not cron.wakeup_worker_legacy.exists()
+        assert cron.claude_ran()
+
+    def test_legacy_wakeup_for_other_project_is_not_stolen(self, cron):
+        # #995 core fix: a legacy wakeup addressed to a DIFFERENT project must not
+        # be consumed/rm'd by this project's cron — it is left for its owner.
+        cron.wakeup_worker_legacy.parent.mkdir(parents=True, exist_ok=True)
+        cron.wakeup_worker_legacy.write_text('{"reason":"legacy-theirs","project":"otherproj"}')
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "ignoring legacy wakeup" in r.stdout
+        assert cron.wakeup_worker_legacy.exists(), "another project's wakeup must not be stolen"
+        assert "reason=legacy-theirs" not in r.stdout
+
     def test_recent_last_run_triggers_idle_backoff(self, cron):
         # last-run = now, no wakeup → within IDLE_INTERVAL → skip with exit 0.
         cron.last_run_file.parent.mkdir(parents=True, exist_ok=True)
@@ -420,6 +504,30 @@ class TestWakeupBackoff:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert "idle poll" in r.stdout
+        assert cron.claude_ran()
+
+
+# ───────────────────────── Git sync divergence (#996) ──────────────────────
+class TestGitSyncDivergence:
+    def test_diverged_local_main_skips_cycle_fail_closed(self, cron):
+        # #996: a stray local commit (killed-session state) makes `pull --ff-only`
+        # fail forever. The launcher must detect the divergence, log loudly, and
+        # skip the cycle fail-closed instead of silently building from a stale base.
+        cron.git_init_diverged_main()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "DIVERGED" in r.stdout
+        assert "#996" in r.stdout
+        assert not cron.claude_ran(), "diverged main must skip the cycle (no build)"
+
+    def test_ff_only_failure_without_divergence_still_runs(self, cron):
+        # A plain git repo with no upstream: `pull --ff-only` fails but local main
+        # is NOT ahead of origin/main — nothing was masked, so the cycle proceeds
+        # (no false-positive divergence halt).
+        cron.git_init_repo()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "DIVERGED" not in r.stdout
         assert cron.claude_ran()
 
 
