@@ -70,6 +70,15 @@ def _reviewer_stub(stub_dir: Path, name: str, *, fail: bool, output: str = "") -
     _write_exec(stub_dir / name, body)
 
 
+def _make_target(tmp_path: Path) -> None:
+    """Create a source file matching the `auth` milestone scope (`*/accounts/*`)
+    so CODEBASE_SAMPLE is non-empty and the empty-target guard (#1000) does not
+    pre-empt the reviewer-state guard the test is exercising."""
+    acct = tmp_path / "accounts"
+    acct.mkdir(exist_ok=True)
+    (acct / "models.py").write_text("class User:\n    pass\n")
+
+
 def _run(stub_dir: Path, tmp_path: Path, *extra_args: str,
          minimal_path: bool = False) -> subprocess.CompletedProcess:
     if minimal_path:
@@ -87,6 +96,7 @@ def test_both_reviewers_error_fails_closed(tmp_path):
     """Both fired reviewers crash → checkpoint FAILURE (exit 1)."""
     stub = tmp_path / "stub_bin"
     stub.mkdir()
+    _make_target(tmp_path)
     _gh_stub(stub)
     _reviewer_stub(stub, "codex", fail=True)
     _reviewer_stub(stub, "agy", fail=True)
@@ -100,6 +110,7 @@ def test_one_reviewer_error_fails_closed(tmp_path):
     produced a real review."""
     stub = tmp_path / "stub_bin"
     stub.mkdir()
+    _make_target(tmp_path)
     _gh_stub(stub)
     _reviewer_stub(stub, "codex", fail=False, output=_CLEAN_CODEX)
     _reviewer_stub(stub, "agy", fail=True)
@@ -112,6 +123,7 @@ def test_both_reviewers_real_passes(tmp_path):
     """Two real reviews (clean, no findings) → checkpoint succeeds (exit 0)."""
     stub = tmp_path / "stub_bin"
     stub.mkdir()
+    _make_target(tmp_path)
     _gh_stub(stub)
     _reviewer_stub(stub, "codex", fail=False, output=_CLEAN_CODEX)
     _reviewer_stub(stub, "agy", fail=False, output=_CLEAN_AGY)
@@ -127,6 +139,69 @@ def test_dry_run_is_exempt(tmp_path):
     _gh_stub(stub)
     r = _run(stub, tmp_path, "--dry-run")
     assert r.returncode == 0, r.stderr
+
+
+# ── #1000: empty target sample & prose (non-JSON) response fail closed ────────
+
+def test_empty_codebase_sample_fails_closed(tmp_path):
+    """No source file matches the milestone scope (the non-CPS portability case):
+    CODEBASE_SAMPLE is empty, so the reviewers would be handed an empty <code>
+    target. That is not a valid checkpoint — exit 1 before any reviewer runs."""
+    stub = tmp_path / "stub_bin"
+    stub.mkdir()
+    _gh_stub(stub)
+    # Reviewers return clean JSON, but the guard must fire before they are used.
+    _reviewer_stub(stub, "codex", fail=False, output=_CLEAN_CODEX)
+    _reviewer_stub(stub, "agy", fail=False, output=_CLEAN_AGY)
+    # No _make_target(): nothing matches "*/accounts/*".
+    r = _run(stub, tmp_path)
+    assert r.returncode == 1, r.stderr
+    assert "FAIL-CLOSED" in r.stderr
+    assert "no target files matched" in r.stderr
+
+
+def test_empty_sample_dry_run_exempt(tmp_path):
+    """--dry-run with an empty sample is exempt — it only tests pipeline wiring."""
+    stub = tmp_path / "stub_bin"
+    stub.mkdir()
+    _gh_stub(stub)
+    r = _run(stub, tmp_path, "--dry-run")
+    assert r.returncode == 0, r.stderr
+
+
+def test_prose_response_fails_closed(tmp_path):
+    """A reviewer that narrates prose/markdown instead of emitting schema JSON
+    (the #113 degradation) is `unparseable`, not a silent pass → exit 1."""
+    stub = tmp_path / "stub_bin"
+    stub.mkdir()
+    _make_target(tmp_path)
+    _gh_stub(stub)
+    prose = (
+        "I reviewed the authentication code and found nothing exploitable. "
+        "The TOTP flow looks solid and recovery codes are single-use."
+    )
+    _reviewer_stub(stub, "codex", fail=False, output=prose)
+    _reviewer_stub(stub, "agy", fail=False, output=_CLEAN_AGY)
+    r = _run(stub, tmp_path)
+    assert r.returncode == 1, r.stderr
+    assert "FAIL-CLOSED" in r.stderr
+    assert "unparseable" in r.stderr
+
+
+def test_fence_wrapped_json_still_real(tmp_path):
+    """A schema-valid JSON object wrapped in markdown fences / prose is salvaged
+    and counts as a real review → checkpoint succeeds (exit 0)."""
+    stub = tmp_path / "stub_bin"
+    stub.mkdir()
+    _make_target(tmp_path)
+    _gh_stub(stub)
+    fenced_codex = "Here is my analysis:\n```json\n" + _CLEAN_CODEX + "\n```\n"
+    fenced_agy = "Summary follows.\n```json\n" + _CLEAN_AGY + "\n```\n"
+    _reviewer_stub(stub, "codex", fail=False, output=fenced_codex)
+    _reviewer_stub(stub, "agy", fail=False, output=fenced_agy)
+    r = _run(stub, tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "FAIL-CLOSED" not in r.stderr
 
 
 def test_both_reviewers_absent_fails_closed(tmp_path):

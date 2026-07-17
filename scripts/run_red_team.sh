@@ -112,6 +112,25 @@ if [[ -n "$CODEX_FILES" ]]; then
     done
 fi
 
+# ── Fail closed on an empty target sample (#1000) ────────────────────────────
+# The milestone scope's find-paths are project-specific (`*/accounts/*`,
+# `*/parking/*`, `*/admin*`, …). HOS is a PORTABLE framework, so on any non-
+# CondoParkShare project those paths match nothing and CODEBASE_SAMPLE stays
+# empty. An empty target prompts both reviewers with an empty <code></code>
+# block; they then truthfully attest "nothing exploitable", reviewer_state()
+# reads that as a `real` review, and the checkpoint exits 0 with ZERO coverage —
+# the highest-leverage adversarial gate becomes a silent no-op. No target = an
+# invalid checkpoint. --dry-run is exempt (it tests pipeline wiring, not review).
+if ! $DRY_RUN && [[ -z "${CODEBASE_SAMPLE//[[:space:]]/}" ]]; then
+    echo "" >&2
+    echo "run_red_team: FAIL-CLOSED — no target files matched the '${MILESTONE}' milestone scope." >&2
+    echo "  CODEBASE_SAMPLE is empty, so the reviewers would receive an empty <code> target and" >&2
+    echo "  any 'nothing exploitable' attestation would be a false pass with zero real coverage." >&2
+    echo "  The milestone scope find-paths are CondoParkShare-specific; point them at this" >&2
+    echo "  project's source (or run against CPS) and re-run." >&2
+    exit 1
+fi
+
 {
     printf "# Red-Team Report — %s checkpoint\n" "$MILESTONE"
     printf "Timestamp: %s\n" "$TIMESTAMP"
@@ -170,6 +189,55 @@ for f in findings:
 PYEOF
 }
 
+# ── JSON salvage (#1000 / #113) ──────────────────────────────────────────────
+# Agentic review CLIs (agy/codex) sometimes wrap the requested JSON in markdown
+# fences or prose, or narrate in markdown instead of emitting JSON at all. This
+# reads a reviewer's raw response and prints the first balanced, parseable {...}
+# object that carries the red-team schema (exploitable_findings / findings /
+# not_exploitable_attestations). It is STRING-AWARE so a brace inside a JSON
+# string value can't fool the scan. Prints nothing and exits 1 when there is no
+# review JSON to salvage (true prose) — the caller treats that as `unparseable`,
+# which fails the checkpoint closed rather than counting narration as a review.
+# Ported from run_second_review.sh's salvage (schema keys adapted to red-team).
+salvage_review_json() {
+    REVIEW_RAW="$1" python3 - <<'PYEOF'
+import json, os, sys
+
+raw = os.environ.get("REVIEW_RAW", "")
+
+def objects(s):
+    depth = 0; start = None; in_str = False; esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:            esc = False
+            elif ch == '\\':   esc = True
+            elif ch == '"':    in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            if depth == 0: start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0:
+                yield s[start:i + 1]
+
+for cand in objects(raw):
+    try:
+        obj = json.loads(cand)
+    except Exception:
+        continue
+    if isinstance(obj, dict) and (
+        "exploitable_findings" in obj or "findings" in obj
+        or "not_exploitable_attestations" in obj
+    ):
+        print(json.dumps(obj))
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
 # ── codex: adversarial attack chains ─────────────────────────────────────────
 info "Running codex (adversarial attack chains)..."
 
@@ -223,6 +291,11 @@ else
     CODEX_OUT='{"reviewer":"codex","skipped":true,"exploitable_findings":[],"not_exploitable_attestations":[],"summary":"dry-run or codex unavailable"}'
 fi
 
+# Salvage schema JSON from a possibly fence-wrapped/prose response (#1000/#113).
+# Empty when the reviewer narrated prose with no extractable JSON — issue
+# creation is then skipped and the fail-closed guard below flags `unparseable`.
+CODEX_CLEAN=$(salvage_review_json "$CODEX_OUT" 2>/dev/null || echo "")
+
 {
     echo "## codex — Adversarial Attack Chains"
     echo '```json'
@@ -231,7 +304,7 @@ fi
     echo ""
 } >> "$OUTFILE"
 
-$DRY_RUN || create_redteam_issues "codex" "$CODEX_OUT"
+$DRY_RUN || create_redteam_issues "codex" "${CODEX_CLEAN:-$CODEX_OUT}"
 ok "codex done"
 
 # ── agy: spec vs implementation gap at system level ──────────────────────────
@@ -288,6 +361,8 @@ else
     AGY_OUT='{"reviewer":"agy","skipped":true,"exploitable_findings":[],"not_exploitable_attestations":[],"summary":"dry-run or agy unavailable"}'
 fi
 
+AGY_CLEAN=$(salvage_review_json "$AGY_OUT" 2>/dev/null || echo "")
+
 {
     echo "## agy — Spec vs Implementation Gap"
     echo '```json'
@@ -296,7 +371,7 @@ fi
     echo ""
 } >> "$OUTFILE"
 
-$DRY_RUN || create_redteam_issues "agy" "$AGY_OUT"
+$DRY_RUN || create_redteam_issues "agy" "${AGY_CLEAN:-$AGY_OUT}"
 ok "agy done"
 
 # ── Fail closed on degraded or absent reviewers (#911) ───────────────────────
@@ -312,23 +387,34 @@ ok "agy done"
 # reviewer produced a real (non-skipped, non-error) review the checkpoint is
 # invalid. --dry-run is intentionally exempt (its skipped placeholders are
 # expected, not a degraded run).
-reviewer_state() {  # echoes: real | error | skipped
+#
+# #1000: a reviewer that narrated prose/markdown instead of emitting schema JSON
+# (the #113 degradation) previously slipped through as `real` — no `"error"`
+# substring, non-empty — so the checkpoint passed with zero parseable findings
+# and zero real attestations. A response from which salvage_review_json extracts
+# no schema object is now classified `unparseable` and fails the checkpoint
+# closed (a human reads the preserved raw report), symmetric with the
+# run_second_review.sh unparseable → CONDITIONAL/ESCALATE routing.
+reviewer_state() {  # echoes: real | error | skipped | unparseable
     local out="$1"
-    if [[ -z "${out//[[:space:]]/}" ]]; then echo "error"          # empty output = crash/auth failure
-    elif echo "$out" | grep -q '"error"'; then echo "error"        # fired-but-failed placeholder/CLI error
-    elif echo "$out" | grep -q '"skipped":true'; then echo "skipped"
-    else echo "real"; fi
+    if [[ -z "${out//[[:space:]]/}" ]]; then echo "error"; return; fi   # empty output = crash/auth failure
+    if echo "$out" | grep -q '"error"'; then echo "error"; return; fi   # fired-but-failed placeholder/CLI error
+    if echo "$out" | grep -q '"skipped":true'; then echo "skipped"; return; fi
+    # A real review must yield salvageable schema JSON; prose narration does not.
+    if salvage_review_json "$out" >/dev/null 2>&1; then echo "real"; else echo "unparseable"; fi
 }
 
 if ! $DRY_RUN; then
     CODEX_STATE=$(reviewer_state "$CODEX_OUT")
     AGY_STATE=$(reviewer_state "$AGY_OUT")
 
-    if [[ "$CODEX_STATE" == "error" || "$AGY_STATE" == "error" ]]; then
+    if [[ "$CODEX_STATE" == "error" || "$AGY_STATE" == "error" \
+       || "$CODEX_STATE" == "unparseable" || "$AGY_STATE" == "unparseable" ]]; then
         echo "" >&2
-        echo "run_red_team: FAIL-CLOSED — a fired reviewer errored at runtime (codex=${CODEX_STATE}, agy=${AGY_STATE})." >&2
+        echo "run_red_team: FAIL-CLOSED — a fired reviewer errored or returned unparseable prose (codex=${CODEX_STATE}, agy=${AGY_STATE})." >&2
         echo "  The adversarial checkpoint did not produce a complete independent review." >&2
-        echo "  Fix the reviewer CLI and re-run: ./scripts/setup_clis.sh auth" >&2
+        echo "  A prose (non-JSON) reviewer response is human-routed, not a silent pass." >&2
+        echo "  Fix/authenticate the reviewer CLI and re-run: ./scripts/setup_clis.sh auth" >&2
         exit 1
     fi
     if [[ "$CODEX_STATE" != "real" && "$AGY_STATE" != "real" ]]; then
