@@ -743,16 +743,25 @@ _build_context() {
   fi
 }
 
-if [[ -f "$PROMPT_FILE" ]]; then
-  if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
-    { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
-          "$_HOS_ACTIONABLE_PRS" "${_HOS_SKIPPED_PRS:-none}"; \
-      _build_prompt; } | _run_claude || _claude_exit=$?
-  else
-    _build_prompt | _run_claude || _claude_exit=$?
-  fi
+# #989: the role prompt file carries ALL runtime governance — the untrusted-
+# input/prompt-injection policy (#734), the REST-only rule, the Step-4 test/
+# validator HARD GATE, the pre-PR stale-commit gate, PR attribution, and the
+# identity guard. If it is absent, falling back to an ad-hoc nine-word prompt
+# would still launch `claude --permission-mode bypassPermissions` headless with
+# full tool access — a guardrail-free autonomous agent. Fail closed instead:
+# treat a missing prompt file as a config-level preflight failure (EX_CONFIG).
+if [[ ! -f "$PROMPT_FILE" ]]; then
+  echo "$LOG_PREFIX FATAL: role prompt file missing: $PROMPT_FILE — refusing guardrail-free bypassPermissions launch"
+  _audit cycle-preflight-fail reason=prompt_file_missing
+  exit 78  # EX_CONFIG
+fi
+
+if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
+  { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
+        "$_HOS_ACTIONABLE_PRS" "${_HOS_SKIPPED_PRS:-none}"; \
+    _build_prompt; } | _run_claude || _claude_exit=$?
 else
-  echo "Run the $ROLE LOOP for project $PROJECT." | _run_claude || _claude_exit=$?
+  _build_prompt | _run_claude || _claude_exit=$?
 fi
 
 if [[ $_claude_exit -eq 124 ]]; then

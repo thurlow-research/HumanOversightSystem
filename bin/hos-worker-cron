@@ -90,10 +90,18 @@ echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting loop"
 # overseer wakeup below never run on a failed session — breaking the two-agent
 # handoff on exactly the cycles that most need oversight. Guard with
 # `|| _claude_exit=$?`; sibling hos-cron uses the same pattern.
+# #989: never fall back to an ad-hoc prompt — a missing prompt file strips all
+# runtime governance (injection hardening #734, REST-only, the Step-4 test/
+# validator HARD GATE, PR attribution). Fail closed as a config-level error.
+_WORKER_PROMPT_FILE="$REPO_ROOT/bootstrap/worker-cron-prompt.md"
+if [[ ! -f "$_WORKER_PROMPT_FILE" ]]; then
+  echo "$LOG_PREFIX FATAL: worker prompt file missing: $_WORKER_PROMPT_FILE — refusing guardrail-free launch"
+  _audit cycle-preflight-fail reason=prompt_file_missing
+  exit 78  # EX_CONFIG
+fi
+
 _claude_exit=0
-claude --print "$(cat "$REPO_ROOT/bootstrap/worker-cron-prompt.md" 2>/dev/null \
-  || echo '---\n**Role: HOS Worker Agent | autonomous cron invocation**\nRun the LOOP.')" \
-  || _claude_exit=$?
+claude --print "$(cat "$_WORKER_PROMPT_FILE")" || _claude_exit=$?
 
 if [[ $_claude_exit -ne 0 ]]; then
   echo "$LOG_PREFIX claude exited $_claude_exit — if auth-related, refresh the token"

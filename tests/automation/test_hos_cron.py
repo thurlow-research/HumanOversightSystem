@@ -186,6 +186,14 @@ class CronEnv:
         self.auth_env.write_text("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-TESTTOKEN\n")
         self.auth_env.chmod(0o600)
 
+        # #989: the launcher fails closed when the role prompt file is absent
+        # (a missing prompt would otherwise launch a guardrail-free
+        # bypassPermissions session). Ship a minimal prompt for both roles so the
+        # happy path reaches claude; the missing-prompt tests delete these.
+        for _role in ("worker", "overseer"):
+            self.prompt_file(_role).parent.mkdir(parents=True, exist_ok=True)
+            self.prompt_file(_role).write_text(f"## {_role} cron prompt\n")
+
     @property
     def lock_dir(self) -> Path:
         return self.state / "locks" / "hos-cron-worker-hos.lock"
@@ -204,6 +212,10 @@ class CronEnv:
 
     def suspend_file(self, project="hos") -> Path:
         return self.state / "suspend" / project
+
+    def prompt_file(self, role="worker") -> Path:
+        """The role prompt file the launcher requires (#989)."""
+        return self.repo / "bootstrap" / f"{role}-cron-prompt.md"
 
     def run(self, *args, env_overrides=None, role="worker", project="hos",
             timeout=30) -> subprocess.CompletedProcess:
@@ -1010,6 +1022,47 @@ class TestOverseerPRFetchFailure:
             "a genuine empty-PR cycle still arms the idle backoff"
         )
         assert not cron.claude_ran()
+
+
+# ──────────────────── Missing prompt file fails closed (#989) ─────────────────
+class TestMissingPromptFile:
+    """A missing role prompt file must fail closed, never fall back to an ad-hoc
+    prompt: the prompt file carries all runtime governance (injection hardening
+    #734, REST-only, the Step-4 test/validator HARD GATE, PR attribution, the
+    identity guard), and the launch is `--permission-mode bypassPermissions` with
+    full tool access. Falling back would run a guardrail-free autonomous agent.
+    """
+
+    def test_missing_worker_prompt_exits_78_without_claude(self, cron):
+        cron.prompt_file("worker").unlink()
+        r = cron.run()
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert not cron.claude_ran(), (
+            "a missing prompt must NOT launch a guardrail-free bypassPermissions session"
+        )
+        assert "role prompt file missing" in r.stdout
+
+    def test_missing_worker_prompt_does_not_stamp_last_run(self, cron):
+        # Fail-closed config errors must not arm idle backoff — next fire retries.
+        cron.prompt_file("worker").unlink()
+        r = cron.run()
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert not cron.last_run_file.exists()
+
+    def test_missing_overseer_prompt_exits_78_without_claude(self, cron):
+        # Give the overseer an open PR so it proceeds past the "no open PRs" skip
+        # and reaches the prompt-file guard.
+        cron.prompt_file("overseer").unlink()
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "856"})
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert not cron.claude_ran()
+        assert "role prompt file missing" in r.stdout
+
+    def test_present_prompt_still_launches_claude(self, cron):
+        # Guard: the fixture ships a prompt, so the happy path is unaffected.
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.claude_ran()
 
 
 # ──────────────────────── Working directory injection (#805) ──────────────────
