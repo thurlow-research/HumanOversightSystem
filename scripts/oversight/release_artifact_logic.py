@@ -29,7 +29,9 @@ SHELL INTEGRATION
       --version $VERSION --log-to audit/oversight-log.jsonl
   - Exit 0: all checks pass (or no artifacts found — graceful skip).
   - Exit 1: escalation required (human must authorize before release).
-  - Exit 2: usage / environment error (unreadable args, missing venv YAML, etc.).
+  - Exit 2: usage / environment error (unreadable args, missing venv YAML, or a
+            --manifest that was requested but could not be loaded — fail closed
+            rather than silently skipping sign-off completeness, #984).
   - Human-readable summary printed to stdout on all paths.
 """
 
@@ -37,9 +39,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 # Findings with these severities require explicit human acknowledgment at the
 # release gate when found inside a HIGH+ tier step.
@@ -229,6 +233,28 @@ def _parse_stamp_status(path: Path) -> str | None:
     return None
 
 
+def _git_commit_time(root: Path, path: Path) -> int:
+    """Commit timestamp (epoch seconds) of the last commit to touch `path`.
+
+    Returns 0 when the path has no committed history (written to the working
+    tree but not yet committed, or untracked) — callers treat 0 as 'not
+    committed'. Any git failure (not a repo, git absent) also yields 0, so an
+    uncommitted or unverifiable stamp never counts toward release sign-off.
+    Mirrors signoff_gate.commit_time (#984).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", str(path)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    out = result.stdout.strip()
+    return int(out) if result.returncode == 0 and out.isdigit() else 0
+
+
 def _get_required_roles(manifest_data: dict) -> list[str]:
     """Return the sorted union of required_signoffs across all steps in the manifest."""
     roles: set[str] = set()
@@ -262,6 +288,7 @@ def _load_audit_log():
 def validate_release_artifacts(
     repo_root: str | Path,
     manifest_data: dict | None = None,
+    commit_time_fn: Callable[[Path], int] | None = None,
 ) -> ReleaseArtifactResult:
     """Sweep all committed step artifacts and sign-off stamps for a release gate.
 
@@ -273,6 +300,16 @@ def validate_release_artifacts(
         Pre-parsed step-manifest dict. When provided, sign-off completeness is
         checked against required_signoffs per step. When None, that check is
         skipped (manifest-free deployments or framework self-test).
+    commit_time_fn:
+        Optional callable mapping a stamp Path to its git commit timestamp
+        (epoch seconds), or 0 when the stamp has no committed history. When
+        provided, only stamps with commit_time > 0 count toward a role — an
+        uncommitted working-tree stamp (e.g. a freshly `touch`ed
+        signoffs/x/security.stamp) is ignored, so it can never satisfy the
+        release gate (#984). When None, the check is skipped (keeps the pure
+        no-subprocess path used by unit tests); the CLI always injects the
+        real git-backed check. This function itself makes no git/subprocess
+        calls — freshness is delegated to the injected callable.
 
     Returns
     -------
@@ -335,6 +372,12 @@ def validate_release_artifacts(
         signoffs_dir = root / "signoffs"
         for role in required_roles:
             stamp_paths = _role_stamp_paths(signoffs_dir, role)
+            if commit_time_fn is not None:
+                # Only committed stamps count. An uncommitted working-tree stamp
+                # (commit_time 0) was never reviewed/committed and must not
+                # satisfy the release gate (#984), matching signoff_gate.py which
+                # rejects stamps with no commit timestamp.
+                stamp_paths = [p for p in stamp_paths if commit_time_fn(p) > 0]
             if not stamp_paths:
                 missing_signoffs.append(role)
                 escalation_reasons.append(
@@ -388,13 +431,24 @@ except ImportError:
 
 
 def _load_manifest(path: str) -> dict | None:
-    """Load a step-manifest YAML file.  Returns None on any failure (caller warns)."""
+    """Load a step-manifest YAML file.
+
+    Returns None on any failure — PyYAML unavailable, unreadable path, malformed
+    YAML, or a payload that is not a mapping. The caller treats None as a hard
+    error (exit 2), never a skip (#984). An empty-but-valid file loads to `{}`
+    (a valid manifest that simply defines no required roles).
+    """
     if _yaml is None:
         return None
     try:
-        return _yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}  # type: ignore[union-attr]
+        data = _yaml.safe_load(Path(path).read_text(encoding="utf-8"))  # type: ignore[union-attr]
     except Exception:  # pylint: disable=broad-except
         return None
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _now_utc() -> str:
@@ -425,19 +479,41 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
     hdr("Release artifact validation")
 
-    # Load manifest if provided and YAML is available.
+    # Load manifest if provided and YAML is available. A manifest that was
+    # explicitly requested but cannot be loaded is a HARD error: skipping the
+    # sign-off completeness check would fail OPEN — the release would cut with
+    # required roles unverified. Fail closed (exit 2), matching signoff_gate.py
+    # which exits 2 on the same conditions (#984).
     manifest_data: dict | None = None
     if args.manifest:
         manifest_data = _load_manifest(args.manifest)
         if manifest_data is None:
             if _yaml is None:
-                warn(f"PyYAML not available — sign-off completeness check skipped")
+                err(
+                    "PyYAML not available — cannot load the step manifest for "
+                    "the sign-off completeness check; refusing to pass the "
+                    "release gate open (#984)."
+                )
+                err("  Repair the venv:  ./scripts/oversight/ensure_venv.sh")
             else:
-                warn(f"Could not read manifest {args.manifest!r} — sign-off completeness check skipped")
+                err(
+                    f"Could not read or parse manifest {args.manifest!r} — "
+                    f"refusing to pass the release gate open (#984)."
+                )
+            return 2
+
+    # Committed-history check for sign-off stamps: an uncommitted working-tree
+    # stamp must not satisfy the release gate (#984). Delegated to git via an
+    # injected callable so validate_release_artifacts stays subprocess-free.
+    release_root = Path(args.repo_root).resolve()
+
+    def commit_time_fn(stamp_path: Path) -> int:
+        return _git_commit_time(release_root, stamp_path)
 
     result = validate_release_artifacts(
         repo_root=args.repo_root,
         manifest_data=manifest_data,
+        commit_time_fn=commit_time_fn,
     )
 
     # ── Print summary ────────────────────────────────────────────────────────
