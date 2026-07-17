@@ -228,6 +228,38 @@ source_looks_valid() {  # dir -> 0 if all required paths present
 }
 VERBOSE_SRC_CHECK=false
 
+# _published_release_commit <ref> -> print the commit SHA the published release
+# tag resolves to on $HOS_REPO (the AUTHORITATIVE remote), or nothing. GitHub
+# dereferences an annotated tag to its commit, so `.sha` is the commit SHA.
+_published_release_commit() {
+  local ref="$1" sha=""
+  if command -v gh &>/dev/null; then
+    sha="$(gh api "repos/${HOS_REPO}/commits/${ref}" --jq '.sha' 2>/dev/null || true)"
+  fi
+  if [[ -z "$sha" ]]; then
+    # Fallback: unauthenticated ls-remote against the published repo. Prefer the
+    # peeled ^{} line (annotated-tag commit); fall back to the bare ref (lightweight tag).
+    sha="$(git ls-remote "https://github.com/${HOS_REPO}.git" "refs/tags/${ref}^{}" 2>/dev/null | awk 'NR==1{print $1}')"
+    [[ -n "$sha" ]] || sha="$(git ls-remote "https://github.com/${HOS_REPO}.git" "refs/tags/${ref}" 2>/dev/null | awk 'NR==1{print $1}')"
+  fi
+  printf '%s' "$sha"
+}
+
+# _local_tag_matches_published <ref> -> 0 iff the LOCAL tag's commit equals the
+# commit the published release resolves to (#991). Guards the offline fast path:
+# a re-cut release (same tag name, new commit) or a same-named tag in a vendored
+# target repo would otherwise `git archive` stale/foreign content and install it
+# stamped as the validated release. Unverifiable (offline, no gh, tag absent) ->
+# non-zero, so the caller falls through to the checksummed tarball instead.
+_local_tag_matches_published() {
+  local ref="$1" local_sha remote_sha
+  local_sha="$(git -C "$HOS_REPO_ROOT" rev-parse -q --verify "refs/tags/${ref}^{commit}" 2>/dev/null || true)"
+  [[ -n "$local_sha" ]] || return 1
+  remote_sha="$(_published_release_commit "$ref")"
+  [[ -n "$remote_sha" ]] || return 1     # cannot authenticate the tag → don't trust the fast path
+  [[ "$local_sha" == "$remote_sha" ]]
+}
+
 # Portable sha256 of one file (also used later for .hos-manifest entries).
 _sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
@@ -349,7 +381,15 @@ resolve_hos_source() {
   if git -C "$HOS_REPO_ROOT" rev-parse --git-dir &>/dev/null; then
     git -C "$HOS_REPO_ROOT" fetch --tags --quiet origin 2>/dev/null || true
     if git -C "$HOS_REPO_ROOT" rev-parse -q --verify "refs/tags/${ref}" &>/dev/null; then
-      git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" 2>/dev/null | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
+      # #991: the local tag NAME existing is not enough — the SHA it points at must
+      # equal the published release's commit. A re-cut tag or a same-named tag in a
+      # vendored target repo fails this and falls through to the checksummed tarball,
+      # so we never install stale/foreign content stamped as the validated release.
+      if _local_tag_matches_published "$ref"; then
+        git -C "$HOS_REPO_ROOT" archive --format=tar "$ref" 2>/dev/null | tar -x -C "$HOS_SOURCE" 2>/dev/null || true
+      else
+        info "Local tag '$ref' does not match the published release (or is unverifiable) — using the checksummed release tarball."
+      fi
     fi
   fi
   if ! source_looks_valid "$HOS_SOURCE"; then
@@ -719,7 +759,8 @@ fi
 # Phase-A/B agent flow below, instead of in-place over installed files.
 _manifest="$HOS_SOURCE/scripts/framework/placeholders.manifest"
 _subst_config="$TARGET_REPO/scripts/framework/config.sh"
-_perl_args=()        # populated below; empty ⇒ nothing to substitute
+_subst_names=()      # populated below; parallel to _subst_vals. empty ⇒ nothing to substitute
+_subst_vals=()       # config values handed to perl via %ENV — never interpolated into the program (#992)
 _names=()
 _appended=()
 if [[ ! -f "$_manifest" ]]; then
@@ -743,15 +784,18 @@ else
     _appended+=("$_n")
   done
 
-  # Build perl substitutions: env override > config.sh value. Missing → leave token.
+  # Build substitution pairs: env override > config.sh value. Missing → leave token.
+  # Name/value are handed to perl ONLY via %ENV (see _substitute_into), never
+  # interpolated into the program text, so @/$/\ in a config value substitute
+  # literally instead of corrupting the agent or aborting the whole perl run (#992).
   for _n in "${_names[@]+"${_names[@]}"}"; do
     _val="${!_n:-}"
     if [[ -z "$_val" && -f "$_subst_config" ]]; then
       _val=$(grep -E "^${_n}=" "$_subst_config" 2>/dev/null | head -1 | cut -d= -f2- | sed 's/^"//; s/"$//')
     fi
     if [[ -z "$_val" ]]; then continue; fi
-    _val=${_val//|/\\|}              # escape the perl s||| delimiter
-    _perl_args+=(-e "s|\{${_n}\}|${_val}|g;")
+    _subst_names+=("$_n")
+    _subst_vals+=("$_val")
   done
 fi
 
@@ -760,11 +804,26 @@ fi
 # This is the D6 substitution boundary — regions.py is handed already-substituted
 # bytes and never substitutes itself. No-op copy if perl/args unavailable.
 _substitute_into() {
-  local _src="$1" _dst="$2"
+  local _src="$1" _dst="$2" _i _rc=0
   cp "$_src" "$_dst"
-  if [[ ${#_perl_args[@]} -gt 0 ]] && command -v perl >/dev/null 2>&1; then
-    perl -i -p "${_perl_args[@]}" "$_dst" 2>/dev/null || true
+  if [[ ${#_subst_names[@]} -gt 0 ]] && command -v perl >/dev/null 2>&1; then
+    for _i in "${!_subst_names[@]}"; do
+      # Token name and value reach perl exclusively through %ENV: \Q…\E literalises
+      # the {NAME} token and $ENV{v} substitutes the value verbatim — no config byte
+      # is ever parsed as perl code (#992). Mirrors the pack-token engine (REQ-S-01).
+      if ! HOS_SUBST_N="${_subst_names[$_i]}" HOS_SUBST_V="${_subst_vals[$_i]}" \
+           perl -i -pe 's/\{\Q$ENV{HOS_SUBST_N}\E\}/$ENV{HOS_SUBST_V}/g' "$_dst"; then
+        _rc=1
+      fi
+    done
   fi
+  # A genuine perl failure is surfaced (counted → run exits non-zero at the summary)
+  # instead of being swallowed by `|| true`, so a corrupt substitution can no longer
+  # report success (#992). Return 0 so set -e doesn't abort the per-agent loop.
+  if [[ $_rc -ne 0 ]]; then
+    fail "Placeholder substitution failed on $(basename "$_dst") — agent template may be incomplete."
+  fi
+  return 0
 }
 
 # ── Brownfield helpers (#275) ──────────────────────────────────────────────────
@@ -2063,11 +2122,17 @@ if $PR_ACTIVE; then
     git -C "$TARGET_REPO" branch -D "$PR_BRANCH" >/dev/null 2>&1 || true
   else
     git -C "$TARGET_REPO" add -A
+    _pr_commit_failed=false
     if ! git -C "$TARGET_REPO" commit -q -m "chore(hos): upgrade framework to ${HOS_REF}"; then
       # #273: a swallowed commit failure (e.g. a rejecting hook) must NOT fall
       # through to pushing an un-committed branch under a misleading "Committed…"
       # message. Fail-closed; the base branch is untouched (work is on PR_BRANCH).
-      fail "Commit failed on '$PR_BRANCH' (e.g. a rejecting hook) — staged changes remain; your base branch is untouched. Resolve and re-run."
+      # #993: the staged upgrade is still uncommitted — we must NOT `git checkout
+      # "$PR_ORIG_BRANCH"` below (PR_BRANCH was forked with no commits, so the
+      # checkout would carry every staged change onto the base branch). Flag it so
+      # the trailing return-to-base is skipped and the upgrade stays isolated here.
+      _pr_commit_failed=true
+      fail "Commit failed on '$PR_BRANCH' (e.g. a rejecting hook) — the staged upgrade remains on '$PR_BRANCH', NOT on '$PR_ORIG_BRANCH'. Resolve the hook and re-run, or discard the staged changes before switching back."
     elif git -C "$TARGET_REPO" push -q -u origin "$PR_BRANCH" 2>/dev/null; then
       # #226: disclose that this PR is machine-generated — by a deterministic
       # installer script, not hand-authored (and not LLM-authored). Draft +
@@ -2090,7 +2155,13 @@ This PR is the **complete** framework upgrade for *this repository*. If your Wor
     else
       fail "Committed on '$PR_BRANCH' but push failed — push it and open a PR manually. (Your base branch is untouched.)"
     fi
-    if git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1; then
+    # #993: only return to the base branch when the upgrade is safely committed on
+    # PR_BRANCH. If the commit failed, the changes are still staged; checking out
+    # PR_ORIG_BRANCH would drag them onto the base branch while claiming it is
+    # undisturbed — so stay on PR_BRANCH instead.
+    if $_pr_commit_failed; then
+      warn "Staying on '$PR_BRANCH' — the upgrade is staged here (uncommitted). Not switching to '$PR_ORIG_BRANCH' while it would carry these changes over."
+    elif git -C "$TARGET_REPO" checkout "$PR_ORIG_BRANCH" >/dev/null 2>&1; then
       info "Back on '$PR_ORIG_BRANCH' — your working state is undisturbed; the upgrade lives in the PR."
     else
       warn "Could not return to '$PR_ORIG_BRANCH' — you are still on '$PR_BRANCH'. Switch back manually (git checkout $PR_ORIG_BRANCH)."
