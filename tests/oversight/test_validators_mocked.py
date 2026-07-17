@@ -251,6 +251,65 @@ class TestStaticAnalysisMocked:
         assert result["error"] is None
         assert len(result["checklist_items"]) >= 1
 
+    # ── #997: HIGH findings are scored + raise a discrete tier_floor ──────────
+
+    @staticmethod
+    def _bandit_json(severity: str, n: int = 1) -> str:
+        return json.dumps({
+            "results": [
+                {
+                    "filename": "test.py",
+                    "line_number": 5 + i,
+                    "issue_text": "Use of eval is a security risk.",
+                    "issue_severity": severity,
+                    "issue_confidence": "HIGH",
+                    "test_id": "B307",
+                }
+                for i in range(n)
+            ],
+            "metrics": {"test.py": {"loc": 10, "nosec": 0}},
+        })
+
+    def test_high_finding_sets_high_tier_floor(self):
+        # #997: a HIGH bandit finding must raise tier_floor="HIGH" so the
+        # risk-assessor promotes the tier even if the numeric composite is low
+        # (e.g. security gate suspended → HIGH never blocked upstream).
+        mock = MagicMock(stdout=self._bandit_json("HIGH"), returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=mock):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is None
+        assert result["tier_floor"] == "HIGH"
+        assert result["raw_value"]["bandit_high_count"] == 1
+
+    def test_no_high_finding_leaves_tier_floor_none(self):
+        # A MEDIUM-only result must NOT set a HIGH floor.
+        mock = MagicMock(stdout=self._bandit_json("MEDIUM"), returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=mock):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is None
+        assert result["tier_floor"] is None
+
+    def test_high_finding_scores_higher_than_medium(self):
+        # #997: one HIGH must score strictly higher than one MEDIUM (HIGH was
+        # scored as exactly 0.0 before). The shared subprocess mock makes the
+        # semgrep call echo the same payload for both, so that contribution is
+        # equal and the ordering is driven by the HIGH severity weight.
+        high_mock = MagicMock(stdout=self._bandit_json("HIGH"), returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=high_mock):
+            high = sa_analyse(["test.py"])
+        med_mock = MagicMock(stdout=self._bandit_json("MEDIUM"), returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=med_mock):
+            med = sa_analyse(["test.py"])
+        assert high["error"] is None and med["error"] is None
+        assert high["score"] > med["score"]
+
+    def test_high_finding_evidence_marked_high_severity(self):
+        mock = MagicMock(stdout=self._bandit_json("HIGH"), returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=mock):
+            result = sa_analyse(["test.py"])
+        high_evidence = [e for e in result["evidence"] if e["severity"] == "high"]
+        assert high_evidence, "HIGH bandit finding must surface as high-severity evidence"
+
 
 # ── hallucination_surface (mocked) ────────────────────────────────────────────
 
