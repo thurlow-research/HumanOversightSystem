@@ -145,8 +145,13 @@ def test_new_blocking_drives_request_changes(tmp_path):
 
 
 def test_seen_finding_does_not_gate(tmp_path):
+    # A finding whose (files, class) was recorded with a RESOLVING disposition
+    # (fixed) is deduped and does not gate (#983: only resolving dispositions
+    # silence).
     ledger = tmp_path / "ledger.jsonl"
-    ledger.write_text(json.dumps({"files": ["a"], "class": "x"}) + "\n")
+    ledger.write_text(
+        json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"}) + "\n"
+    )
     blocks = [{"findings": [{"severity": "blocking", "files": ["a"], "type": "x"}]}]
     result = compute_verdict(blocks, str(ledger))
     assert result["verdict"] == "approve"
@@ -240,12 +245,14 @@ def test_load_ledger_missing_file(tmp_path):
 
 
 def test_load_ledger_skips_malformed_lines(tmp_path):
+    # Two well-formed RESOLVING entries plus junk: only the two valid, resolving
+    # entries contribute silencing keys (#983 gates non-resolving dispositions).
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"files": ["a"], "class": "x"}) + "\n"
+        json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"}) + "\n"
         + "not json\n"
         + "\n"
-        + json.dumps({"files": ["b"], "class": "y"}) + "\n"
+        + json.dumps({"files": ["b"], "class": "y", "disposition": "filed:#42"}) + "\n"
     )
     seen = load_ledger(str(ledger))
     assert len(seen) == 2
@@ -276,6 +283,97 @@ def test_record_appends_one_line(tmp_path):
     assert entry["class"] == "x"
     assert entry["disposition"] == "noise"
     assert entry["ts"].endswith("Z")
+
+
+# ── #983: only RESOLVING dispositions silence; degenerate keys never silence ──
+def test_noise_disposition_does_not_silence(tmp_path):
+    # The core #983 failure scenario: a finding recorded with disposition `noise`
+    # must NOT silence a later blocking finding with the same (files, class).
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"files": ["views.py"], "class": "security", "disposition": "noise"})
+        + "\n"
+    )
+    blocks = [{"findings": [
+        {"severity": "critical", "files": ["views.py"], "category": "security"},
+    ]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 1
+    assert result["verdict"] == "request_changes"
+
+
+def test_residual_disposition_does_not_silence(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "residual"})
+        + "\n"
+    )
+    blocks = [{"findings": [{"severity": "high", "files": ["a.py"], "type": "bug"}]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 1
+    assert result["verdict"] == "request_changes"
+
+
+def test_missing_disposition_does_not_silence(tmp_path):
+    # A legacy/hand-written entry with no `disposition` field is non-resolving.
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({"files": ["a.py"], "class": "bug"}) + "\n")
+    blocks = [{"findings": [{"severity": "high", "files": ["a.py"], "type": "bug"}]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 1
+
+
+def test_filed_disposition_silences(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "filed:#123"})
+        + "\n"
+    )
+    blocks = [{"findings": [{"severity": "high", "files": ["a.py"], "type": "bug"}]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 0
+    assert result["verdict"] == "approve"
+
+
+def test_gaming_preemptive_noise_does_not_silence_unrelated_finding(tmp_path):
+    # A gaming worker preemptively records `noise` for views.py/security, then an
+    # UNRELATED critical security finding surfaces in views.py. It must gate.
+    ledger = tmp_path / "ledger.jsonl"
+    record_ledger_entry(
+        {"files": ["views.py"], "class": "security", "disposition": "noise"},
+        str(ledger),
+    )
+    blocks = [{"attacks": [
+        {"severity": "critical", "files": ["views.py"], "category": "security"},
+    ]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 1
+    assert result["verdict"] == "request_changes"
+
+
+def test_degenerate_resolving_entry_never_silences(tmp_path):
+    # Even a RESOLVING entry with no files and no class is degenerate ([[], ""]):
+    # it must not silence a class-less/file-less blocking finding (#983/#670).
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(
+        json.dumps({"files": [], "class": "", "disposition": "fixed"}) + "\n"
+    )
+    blocks = [{"findings": [{"severity": "blocking"}]}]
+    result = compute_verdict(blocks, str(ledger))
+    assert result["new_blocking_count"] == 1
+    assert load_ledger(str(ledger)) == set()
+
+
+def test_is_resolving_predicate():
+    _is_resolving = validation_logic._is_resolving
+    assert _is_resolving("fixed")
+    assert _is_resolving("FIXED")
+    assert _is_resolving("filed:#7")
+    assert not _is_resolving("noise")
+    assert not _is_resolving("residual")
+    assert not _is_resolving("filed:#")   # no issue number
+    assert not _is_resolving("")
+    assert not _is_resolving(None)
 
 
 # ── _cmd_process: preserve existing request_changes verdict (#683) ────────────

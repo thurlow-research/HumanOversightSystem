@@ -182,9 +182,39 @@ def _ledger_fingerprint(entry: dict) -> str:
     return json.dumps([_files_of(entry), entry.get("class", "")], sort_keys=True)
 
 
+# Dispositions that RESOLVE a finding and may therefore silence a re-surfaced
+# copy of it. Only `fixed` and `filed:#<issue>` mark a finding as dealt with;
+# `noise`/`residual` (and any unknown/empty value) merely record that a finding
+# was SEEN, not that it was resolved, so they must NEVER silence a later blocking
+# finding with the same fingerprint (#983). Fail-closed: unknown ⇒ not resolving.
+_FILED_RE = re.compile(r"^filed:#\d+$")
+
+
+def _is_resolving(disposition) -> bool:
+    """True only for `fixed` or `filed:#<issue>` — the dispositions that mark a
+    finding RESOLVED. Everything else (`noise`, `residual`, unknown, empty)
+    returns False so it can never dedup-silence a blocking finding (#983)."""
+    d = str(disposition or "").strip().lower()
+    return d == "fixed" or bool(_FILED_RE.match(d))
+
+
+def _is_degenerate(files: list[str], cls: str) -> bool:
+    """A fingerprint with NO files AND no class is degenerate: it collapses every
+    file-less, class-less finding onto the single key `[[], ""]`, so one such
+    ledger entry would silence ALL of them (#983). A degenerate key can neither
+    silence nor be silenced — fail-closed, mirroring the #670 no-stable-
+    fingerprint rule for reviewer-error blocks."""
+    return not files and not cls
+
+
 def load_ledger(ledger_path: str) -> set[str]:
-    """Read a JSONL ledger and return the set of seen fingerprints. Tolerates a
-    missing file (empty set) and malformed lines (skipped). (Spec R1.)"""
+    """Read a JSONL ledger and return the set of SILENCING fingerprints. Tolerates
+    a missing file (empty set) and malformed lines (skipped). (Spec R1.)
+
+    Only entries with a RESOLVING disposition (`fixed`/`filed:#N`) and a non-
+    degenerate fingerprint contribute a silencing key: a `noise`/`residual` or
+    class-less/file-less entry records that a finding was seen but must not
+    silence a later, materially different blocking finding (#983)."""
     seen: set[str] = set()
     try:
         with open(ledger_path, encoding="utf-8") as fh:
@@ -195,6 +225,10 @@ def load_ledger(ledger_path: str) -> set[str]:
                 try:
                     entry = json.loads(line)
                 except Exception:
+                    continue
+                if not _is_resolving(entry.get("disposition", "")):
+                    continue
+                if _is_degenerate(_files_of(entry), entry.get("class", "")):
                     continue
                 seen.add(_ledger_fingerprint(entry))
     except FileNotFoundError:
@@ -246,7 +280,11 @@ def compute_verdict(
                 pass
             if sev in BLOCKING_SEVERITIES:
                 blocking_count += 1
-                if fingerprint(item) not in seen:
+                # A degenerate (file-less, class-less) finding has no stable
+                # fingerprint to dedup against, so it always counts as NEW —
+                # never silenced by a `[[], ""]` ledger key (#983, cf. #670).
+                if _is_degenerate(_files_of(item), _class_of_finding(item)) \
+                        or fingerprint(item) not in seen:
                     new_blocking_count += 1
 
     # Verdict keyed on NEW (un-ledgered) blocking findings: convergence is "zero
