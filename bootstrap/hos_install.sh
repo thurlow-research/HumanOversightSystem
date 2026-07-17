@@ -414,11 +414,14 @@ INSTALLED_TAG=""
 [[ -f "${TARGET_REPO}/.hos-release" ]] && INSTALLED_TAG="$(tr -d '[:space:]' < "${TARGET_REPO}/.hos-release")"
 
 if [[ -n "$INSTALLED_TAG" ]] && ! $LOCAL_SOURCE && ! $FULL; then
-  # Determine the target tag being installed.
-  _install_tag="$RELEASE_REF"
-  if [[ -z "$_install_tag" ]]; then
-    _install_tag="$(gh release view --repo "$HOS_REPO" --json tagName -q .tagName 2>/dev/null || true)"
-  fi
+  # Determine the target tag being installed. resolve_hos_source already resolved
+  # AND published-gate-checked this exact tag into $HOS_REF (guaranteed non-empty
+  # on this non-local path), so reuse it — do NOT re-query. A second
+  # `gh release view` here could fail on a transient hiccup (rate limit / network),
+  # leaving _install_tag empty and silently skipping the entire adjacency gate
+  # (the very fail-open the later _releases_json fetch guards against), or disagree
+  # if a release is published between the two queries. #998.
+  _install_tag="$HOS_REF"
 
   if [[ -n "$_install_tag" && "$INSTALLED_TAG" != "$_install_tag" ]]; then
     # Fetch the ordered release list (newest-first, non-draft only).

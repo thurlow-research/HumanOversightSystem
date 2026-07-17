@@ -1,6 +1,6 @@
-r"""Regression guards for hos_install.sh hardening — #991, #992, #993.
+r"""Regression guards for hos_install.sh hardening — #991, #992, #993, #998.
 
-Three independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
+Four independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
 
 * **#991** — the ``--release`` fast path ``git archive``-exports whatever a
   *local* tag points at, never comparing its SHA against the published release.
@@ -14,6 +14,12 @@ Three independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
   fell through to an unconditional ``git checkout "$PR_ORIG_BRANCH"`` that
   carried the still-staged upgrade onto the base branch while claiming it was
   untouched.
+* **#998** — the version-skip adjacency gate recomputed the target tag with a
+  *second* ``gh release view`` when ``--release`` was flagless, even though
+  ``resolve_hos_source`` already resolved and published-gate-checked it into
+  ``$HOS_REF``. A transient failure of that duplicate query emptied
+  ``_install_tag`` and silently skipped the whole adjacency gate — installing
+  skipped versions unsequenced. Fixed by reusing ``$HOS_REF``.
 
 Each bug gets two layers of coverage (mirrors the #949 test convention):
 
@@ -234,3 +240,77 @@ def test_installer_gates_fast_path_on_published_match():
     assert "_published_release_commit" in _SRC
     # The authoritative remote is $HOS_REPO, and annotated tags are peeled to a commit.
     assert 'refs/tags/${ref}^{}' in _SRC
+
+
+# --------------------------------------------------------------------------- #
+# #998 — the adjacency gate must reuse the already-resolved $HOS_REF, never
+#        re-query the target tag (a transient failure would skip the gate).
+# --------------------------------------------------------------------------- #
+
+# Two mirrors of the target-tag resolution + gate-entry decision: the corrected
+# form (reuses $HOS_REF) and the old buggy form (re-queries, empties on failure).
+# A "transient" re-query failure is simulated by _requery returning non-zero.
+_ADJ_FIXED_SNIPPET = r"""
+set -euo pipefail
+INSTALLED_TAG="$1"; RELEASE_REF="$2"; HOS_REF="$3"
+_requery() { return 1; }   # simulate a transient `gh release view` failure
+# Corrected #998 logic: reuse the already resolved+gate-checked ref.
+_install_tag="$HOS_REF"
+if [[ -n "$_install_tag" && "$INSTALLED_TAG" != "$_install_tag" ]]; then
+  echo "GATE_RUNS:$_install_tag"
+else
+  echo "GATE_SKIPPED"
+fi
+"""
+
+_ADJ_BUGGY_SNIPPET = r"""
+set -euo pipefail
+INSTALLED_TAG="$1"; RELEASE_REF="$2"; HOS_REF="$3"
+_requery() { return 1; }   # simulate a transient `gh release view` failure
+# Old #998 bug: re-query when flagless; a transient failure empties _install_tag.
+_install_tag="$RELEASE_REF"
+if [[ -z "$_install_tag" ]]; then
+  _install_tag="$(_requery 2>/dev/null || true)"
+fi
+if [[ -n "$_install_tag" && "$INSTALLED_TAG" != "$_install_tag" ]]; then
+  echo "GATE_RUNS:$_install_tag"
+else
+  echo "GATE_SKIPPED"
+fi
+"""
+
+
+def _adj(snippet: str, installed: str, release_ref: str, hos_ref: str) -> str:
+    return subprocess.run(
+        ["bash", "-c", snippet, "_", installed, release_ref, hos_ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_flagless_upgrade_runs_gate_via_hos_ref_despite_requery_failure():
+    """Corrected: a flagless (empty RELEASE_REF) upgrade uses $HOS_REF, so the
+    adjacency gate still runs even when a re-query would have failed."""
+    out = _adj(_ADJ_FIXED_SNIPPET, installed="v0.3.0", release_ref="", hos_ref="v0.6.0")
+    assert out == "GATE_RUNS:v0.6.0"
+
+
+def test_old_requery_form_would_skip_gate_on_transient_failure():
+    """Regression contrast: the old re-query form empties the target tag on a
+    transient failure and silently skips the gate — the exact #998 fail-open."""
+    out = _adj(_ADJ_BUGGY_SNIPPET, installed="v0.3.0", release_ref="", hos_ref="v0.6.0")
+    assert out == "GATE_SKIPPED"
+
+
+def test_installer_reuses_hos_ref_for_adjacency_target():
+    """Static guard: the adjacency gate reuses $HOS_REF and no longer re-queries."""
+    assert '_install_tag="$HOS_REF"' in _SRC, (
+        "the #998 fix (reuse the resolved $HOS_REF) was dropped from hos_install.sh"
+    )
+    # The old duplicate `gh release view ... --json tagName` re-query command must
+    # be gone from the version-skip block (prose comments may still name it).
+    _skip_block = _SRC[_SRC.index("Version-skip detection") :]
+    assert "gh release view --repo" not in _skip_block, (
+        "the #998 duplicate `gh release view` re-query is back in the adjacency gate"
+    )
