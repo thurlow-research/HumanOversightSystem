@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-complexity_metrics.py — cyclomatic and cognitive complexity via radon.
+complexity_metrics.py — cyclomatic complexity via radon.
 
 Cyclomatic (McCabe): measures testability — number of independent execution paths.
-Cognitive (Campbell 2018): measures understandability — how hard is this to read?
+High cyclomatic + low test coverage = risky.
 
-These are independent signals. High cyclomatic + low test coverage = risky.
-High cognitive = reviewers are more likely to miss bugs while reading.
+Cognitive complexity (Campbell 2018) — an independent readability signal — was
+intended as a second dimension but is not currently computed: radon's `cc`
+yields cyclomatic only. The emitted `complexity` dimension is scored from
+cyclomatic alone (weight `WEIGHTS["cyclomatic"]`). See #1001.
 
 Usage: python complexity_metrics.py file.py [file2.py ...]
 """
@@ -28,7 +30,6 @@ from schema import WEIGHTS, make_finding, make_result, normalize  # noqa: E402
 
 # Thresholds for score normalization
 _CC_HIGH = 15  # cyclomatic complexity ≥15 → score 1.0
-_COGN_HIGH = 20  # cognitive complexity ≥20 → score 1.0
 
 
 def _run(cmd: list[str]) -> tuple[str, str, int]:

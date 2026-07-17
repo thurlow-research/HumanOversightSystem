@@ -51,7 +51,7 @@ scripts/
   oversight/
     validators/          Risk scoring scripts (Python, deterministic):
       rn_calculator.py     Dai et al. Risk Number (nesting calibrated from bug data)
-      complexity_metrics.py  Cyclomatic + cognitive complexity (radon)
+      complexity_metrics.py  Cyclomatic complexity (radon)
       function_metrics.py    Function length, param count, return paths
       n1_detector.py         Django N+1 query heuristic
       migration_scorer.py    Database migration risk classification

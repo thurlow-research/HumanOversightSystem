@@ -5,7 +5,7 @@ diff_size.py — Diff-size risk-tier floor and multi-purpose split trigger (#377
 Watanabe et al. (2026) found agentic PRs are empirically larger and far more
 frequently multi-purpose than human PRs, and reviewers reject oversized agent
 PRs because review becomes impractical. The intra-file complexity validators
-(rn_calculator, cyclomatic, cognitive) have no signal for the raw size or
+(rn_calculator, cyclomatic) have no signal for the raw size or
 topical breadth of a diff. This validator adds two deterministic rules:
 
   R1 — Diff-size floor: changed_lines > HOS_DIFF_SIZE_FLOOR OR

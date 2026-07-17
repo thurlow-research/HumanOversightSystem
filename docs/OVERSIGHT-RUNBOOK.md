@@ -295,7 +295,7 @@ All must exit 0 before proceeding. Fix any failures before the review chain.
 
 > **For MEDIUM+ steps: capture the prompt artifact BEFORE running this phase.** risk-assessor reads `Prompt-Artifact:` git trailers to invoke `prompt-fidelity`; if the artifact is missing at assessment time, risk-assessor records a missing-artifact finding; on MEDIUM+ the evaluator treats missing trailers/files according to prompt-artifact compliance rules. Only semantic comparison NYI is a non-blocking coverage gap. Run `bash scripts/capture_prompt.sh` and commit with the trailer first, then proceed with Phase 2. (Phase 5 below is a record-keeping step for this artifact, not the trigger.)
 
-Run after gates pass. Scores the code across 12 signal dimensions (across 11 validator scripts) and produces an inspection brief for reviewers.
+Run after gates pass. Scores the code across 12 signal dimensions (across 12 validator scripts) and produces an inspection brief for reviewers.
 
 ```bash
 # Establish the step's commit range — the SAME range risk-assessor and the

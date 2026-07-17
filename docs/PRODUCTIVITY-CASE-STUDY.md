@@ -197,7 +197,7 @@ a small traditional team would need to design, build, test, and document each
 artifact at its current scope:
 
 *HOS:*
-- Code/tooling (install engine, 11 validators, scripts, pipeline): ~6–12 person-months
+- Code/tooling (install engine, 12 validators, scripts, pipeline): ~6–12 person-months
 - Agent definitions (24 agents, full specifications): ~3–6 person-months
 - Documentation (methodology, contract, research notes, ADRs): ~3–6 person-months
 - **HOS subtotal: ~12–24 person-months**
