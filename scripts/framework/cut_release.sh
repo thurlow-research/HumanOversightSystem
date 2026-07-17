@@ -233,18 +233,19 @@ while IFS= read -r _sf; do
             fi ;;
     esac
 done < <(git ls-files "$_STAMP_DIR_ABS" | grep '\.stamp$')
+# ADVISORY ONLY (#999): a stamp-cleanup commit cut here lands on local main, which
+# is PROTECTED (PRs only) — so the commit is unpushable and would (a) leave the
+# release targeting a local-only SHA that `gh release create` 422s on, and (b) leave
+# local main one commit ahead of origin, breaking the next run's in-sync precondition.
+# Report stale stamps and require a pre-release cleanup PR; never self-commit.
 if [[ ${#_STALE_STAMPS[@]} -eq 0 ]]; then
     ok "no stale stamp files"
-elif $DRY_RUN; then
-    for _sf in "${_STALE_STAMPS[@]}"; do info "[dry] would remove stale stamp: $_sf"; done
 else
-    for _sf in "${_STALE_STAMPS[@]}"; do
-        git rm -f "$_sf" && ok "removed stale stamp: $_sf"
-    done
-    if [[ -n "$(git status --porcelain scripts/framework/validation-stamps/)" ]]; then
-        git commit -m "chore: clean up stale validation stamps for $VERSION release"
-        ok "committed stamp cleanup"
-    fi
+    warn "${#_STALE_STAMPS[@]} stale validation stamp(s) present (don't match the current agent-content hash):"
+    for _sf in "${_STALE_STAMPS[@]}"; do info "  stale: $_sf"; done
+    warn "These are advisory noise, not a release blocker. To remove them, open a"
+    warn "pre-release cleanup PR (git rm the stale stamps, merge to main) BEFORE cutting —"
+    warn "main is protected, so this script cannot (and must not) commit the cleanup itself."
 fi
 
 # ── Tag + publish + assets ────────────────────────────────────────────────────
@@ -268,10 +269,25 @@ else
   NOTES_ARG=(--generate-notes)
 fi
 
-# Build the assets from the TAGGED COMMIT (HEAD), not the working tree — so the
-# published scripts always match the release source even under --allow-dirty, and
-# any files validation touched (e.g. stamps) don't leak into the assets.
-HEAD_SHA="$(git rev-parse HEAD)"
+# Build the assets from the TAGGED COMMIT, not the working tree — so the published
+# scripts always match the release source even under --allow-dirty, and any files
+# validation touched (e.g. stamps) don't leak into the assets.
+#
+# The tag must point at a commit that EXISTS ON ORIGIN: gh 422s on a local-only SHA,
+# and main is protected so a local-ahead commit is unpushable (#999). So target the
+# pushed remote tip (== local HEAD by the in-sync precondition, but taken from the
+# remote ref so a stray local commit can't poison it). --allow-branch is the
+# deliberate override that targets local HEAD; git resolves the SHAs, the Python
+# rule picks which one. The shell never lets Python spawn git (binding 4).
+# resolve-target is a pure read (no writes), so it runs identically under --dry-run.
+_LOCAL_HEAD="$(git rev-parse HEAD)"
+_REMOTE_HEAD="$(git rev-parse "origin/$RELEASE_BRANCH" 2>/dev/null || true)"
+_rt_flag=(); $ALLOW_BRANCH && _rt_flag=(--allow-branch)
+if ! HEAD_SHA="$("$PYBIN" "$RELEASE_LOGIC" resolve-target \
+      --local "$_LOCAL_HEAD" --remote "$_REMOTE_HEAD" ${_rt_flag[@]+"${_rt_flag[@]}"})"; then
+  err "no pushable release target (local main ahead of origin? push via PR first). Aborting."
+  exit 1
+fi
 sha256() { if command -v sha256sum &>/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 ASSET_NAMES=(hos_install.sh hos_bootstrap.sh setup_clis.sh)
 ASSET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hos-assets.XXXXXX")"; CLEANUP+=("$ASSET_DIR")

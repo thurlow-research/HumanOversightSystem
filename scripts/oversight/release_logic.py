@@ -17,9 +17,14 @@ for launch). This module extracts them into named, importable, unit-testable
 functions so a bug in version arithmetic, threshold comparison, or set-membership is
 caught without running the full shell script, `git`, or `gh`.
 
+A later addition (R4, #999) keeps the same discipline: resolve_release_target
+decides WHICH SHA a release tag may point at (the pushed remote tip, never a
+local-only commit), as pure rule logic fed git-resolved SHAs from the shell.
+
 PURITY (architect binding 6 / spec R5):
-  - bump_version and verify_assets_present perform NO subprocess, network, or file
-    I/O — purely computational, unit-testable with synthetic inputs.
+  - bump_version, verify_assets_present, and resolve_release_target perform NO
+    subprocess, network, or file I/O — purely computational, unit-testable with
+    synthetic inputs.
   - check_authored_notes reads ONE local file by path (its only I/O) and is kept as
     a separately named I/O function. It performs no subprocess or network call.
   - Python NEVER spawns `git` or `gh` (binding 4): the shell runs `gh` and passes
@@ -138,6 +143,44 @@ def verify_assets_present(uploaded: list[str], expected: list[str]) -> list[str]
 
 
 # --------------------------------------------------------------------------- #
+# R4 — release-target SHA selection (#999)                                    #
+# --------------------------------------------------------------------------- #
+def resolve_release_target(
+    local_head: str, remote_head: str, allow_branch: bool
+) -> str:
+    """The SHA a release tag should point at.
+
+    A GitHub release tag can only point at a commit that EXISTS ON THE REMOTE;
+    `gh release create --target <local-only-sha>` 422s (#999). `main` is protected
+    (PRs only), so any local-ahead commit — e.g. the old step-3c stamp-cleanup
+    commit — is unpushable by design. Therefore, for a normal on-branch cut we
+    target the pushed REMOTE tip, which the in-sync precondition guarantees equals
+    local HEAD — but taking it from the remote ref means a stray local commit can
+    never poison the target.
+
+    - allow_branch True: a deliberate off-branch / ahead cut (--allow-branch); the
+      operator owns pushing their branch. Target local_head as-is (prior behavior
+      for that explicit override). Raises ValueError if local_head is empty.
+    - allow_branch False: target remote_head. Raises ValueError if remote_head is
+      empty (no pushed tip to tag — push the release branch first).
+
+    Pure: no git/gh/file I/O (binding 4/6). The shell resolves both SHAs with git
+    and passes them in as argv.
+    """
+    lh = (local_head or "").strip()
+    rh = (remote_head or "").strip()
+    if allow_branch:
+        if not lh:
+            raise ValueError("no local HEAD to target")
+        return lh
+    if not rh:
+        raise ValueError(
+            "no origin tip to target — push the release branch to origin first"
+        )
+    return rh
+
+
+# --------------------------------------------------------------------------- #
 # CLI shim — the ONLY place that reads argv / writes stdout (binding 2).       #
 # --------------------------------------------------------------------------- #
 def _cmd_bump_version(args: argparse.Namespace) -> int:
@@ -161,6 +204,17 @@ def _cmd_verify_assets(args: argparse.Namespace) -> int:
     # shell decides what to do with it.
     for name in verify_assets_present(args.uploaded, args.expected):
         print(name)
+    return 0
+
+
+def _cmd_resolve_target(args: argparse.Namespace) -> int:
+    # Print the target SHA to stdout (binding 2). A ValueError is a real failure —
+    # there is no pushable SHA to tag — so exit 2 and let the shell abort the cut.
+    try:
+        print(resolve_release_target(args.local, args.remote, args.allow_branch))
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     return 0
 
 
@@ -211,6 +265,22 @@ def main(argv: list[str] | None = None) -> int:
         help="asset names actually present (from gh)",
     )
     p_assets.set_defaults(func=_cmd_verify_assets)
+
+    p_target = sub.add_parser(
+        "resolve-target",
+        help="Print the release-target SHA (the pushed remote tip, unless "
+        "--allow-branch). Exit 2 if no pushable SHA exists.",
+    )
+    p_target.add_argument("--local", default="", help="local HEAD sha")
+    p_target.add_argument(
+        "--remote", default="", help="origin/<branch> tip sha (empty if none)"
+    )
+    p_target.add_argument(
+        "--allow-branch",
+        action="store_true",
+        help="deliberate off-branch/ahead cut: target local HEAD instead",
+    )
+    p_target.set_defaults(func=_cmd_resolve_target)
 
     args = parser.parse_args(argv)
     return args.func(args)
