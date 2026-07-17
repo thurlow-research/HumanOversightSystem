@@ -826,6 +826,26 @@ if [[ "$FINAL_VERDICT" == "error" ]]; then
     echo "  The mandatory cross-vendor review did not produce an independent judgment. Re-run." >&2
     exit 1
 fi
+# ── Fail closed on a blocking review verdict (#986) ──────────────────────────
+# `validation_logic.py process` sets verdict=request_changes iff new_blocking_count
+# > 0 — i.e. the cross-vendor review surfaced blocking findings NOT already
+# dispositioned in this step's convergence ledger (dedup-silenced findings never
+# reach this verdict). That module deliberately exits 0 for EVERY verdict ("the
+# shell decides pass/fail"), so this guard is the sole place the pre-PR chain
+# learns of a blocking second-review verdict. Before #986 the script fell through
+# to exit 0 here, so run_review_chain.sh gated purely on that exit code, printed
+# "second review passed", and proceeded to the panel — a blocking cross-vendor
+# verdict survived only in $OUTFILE, which nothing downstream reads. Exit
+# non-zero (a code distinct from the reviewer-error exit 1) so the chain halts
+# and the operator/evaluator dispositions the findings before a PR is opened.
+if [[ "$FINAL_VERDICT" == "request_changes" ]]; then
+    NEW_BLOCKING=$(grep -m1 '^new_blocking_count:' "$OUTFILE" | awk '{print $2}')
+    echo "run_second_review: FAIL-CLOSED — verdict=request_changes (${NEW_BLOCKING:-?} new blocking finding(s))." >&2
+    echo "  The cross-vendor second review surfaced blocking findings not yet dispositioned in the ledger." >&2
+    echo "  Read the review, resolve or disposition each finding, then re-run:" >&2
+    echo "    $OUTFILE" >&2
+    exit 2
+fi
 if [[ "$FINAL_VERDICT" == "unparseable" ]]; then
     # The reviewer produced a real review we could not auto-structure (agy returned
     # a markdown report, not JSON — HOS#113). This is NOT a crash: the content is
