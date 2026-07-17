@@ -2,9 +2,17 @@
 """
 static_analysis.py — bandit security findings as a risk score.
 
-HIGH severity bandit findings are handled by the gate script (security_scan.sh)
-as a blocking check. This validator collects MEDIUM findings as a risk signal
-that feeds the composite score without blocking the pipeline.
+In the normal path HIGH severity bandit findings are blocked upstream by the
+gate script (security_scan.sh). But that gate can be human-suspended
+(``SUSPENDED: security`` in contract/gate-suspension.md) or skipped on an empty
+file list — legitimate states where the gate exits 0 without blocking. So this
+validator scores HIGH findings too (weighted 3× a MEDIUM) AND raises a discrete
+``tier_floor="HIGH"`` the risk-assessor reads independently of the numeric
+score, so a HIGH bandit finding can never contribute 0.0 to the highest-weight
+security dimension. Belt-and-braces: the gate still blocks first in the normal
+path; this is the backstop when it doesn't. (#997, #917)
+
+MEDIUM findings feed the composite score without blocking the pipeline.
 
 Optionally runs semgrep with Django security rules if available.
 
@@ -69,8 +77,10 @@ def _run_semgrep(files: list[str]) -> list[dict]:
         return []
 
 
-_BANDIT_SEVERITY_SCORE = {"MEDIUM": 0.4, "LOW": 0.2}
-_BANDIT_CONF_MULTIPLIER = {"HIGH": 1.0, "MEDIUM": 0.8, "LOW": 0.6}
+# A HIGH bandit finding weighs this many MEDIUM findings toward the numeric
+# score. HIGH is the more severe signal, so it should raise the score faster
+# than a MEDIUM does (the pre-#997 code scored HIGH as exactly 0.0). (#997)
+_HIGH_FINDING_WEIGHT = 3
 
 
 def analyse_files(file_paths: list[str]) -> dict:
@@ -89,19 +99,22 @@ def analyse_files(file_paths: list[str]) -> dict:
 
     semgrep_results = _run_semgrep(file_paths)
 
-    # Only score MEDIUM severity (HIGH is a gate-level block)
+    # Score HIGH as well as MEDIUM. HIGH is normally blocked upstream, but when
+    # the gate is suspended or skipped it reaches here and must not score 0.0.
+    high_findings = [r for r in bandit_results if r.get("issue_severity", "LOW") == "HIGH"]
     medium_findings = [r for r in bandit_results if r.get("issue_severity", "LOW") == "MEDIUM"]
 
-    evidence = [
-        make_finding(
+    def _finding_evidence(r: dict, severity: str) -> dict:
+        return make_finding(
             r.get("filename", "?"),
             r.get("line_number", 0),
             f"[{r.get('test_id', '?')}] {r.get('issue_text', '')} "
             f"(conf={r.get('issue_confidence', '?')})",
-            severity="medium",
+            severity=severity,
         )
-        for r in medium_findings[:10]
-    ]
+
+    evidence = [_finding_evidence(r, "high") for r in high_findings[:10]]
+    evidence += [_finding_evidence(r, "medium") for r in medium_findings[:10]]
 
     for r in semgrep_results[:5]:
         loc = r.get("start", {})
@@ -114,12 +127,17 @@ def analyse_files(file_paths: list[str]) -> dict:
             )
         )
 
-    total_findings = len(medium_findings) + len(semgrep_results)
-    score = normalize(total_findings, 0, 10)
+    weighted_findings = (
+        _HIGH_FINDING_WEIGHT * len(high_findings)
+        + len(medium_findings)
+        + len(semgrep_results)
+    )
+    score = normalize(weighted_findings, 0, 10)
 
     checklist = []
     seen_ids: set[str] = set()
-    for r in medium_findings[:3]:
+    # HIGH first — the more severe findings lead the reviewer checklist.
+    for r in high_findings[:3] + medium_findings[:3]:
         test_id = r.get("test_id", "")
         if test_id not in seen_ids:
             seen_ids.add(test_id)
@@ -132,12 +150,16 @@ def analyse_files(file_paths: list[str]) -> dict:
         dimension="static_analysis",
         score=score,
         raw_value={
+            "bandit_high_count": len(high_findings),
             "bandit_medium_count": len(medium_findings),
             "semgrep_count": len(semgrep_results),
         },
         weight=WEIGHTS["static_analysis"],
         evidence=evidence,
         checklist_items=checklist,
+        # Discrete tier promotion the risk-assessor reads even if the gate that
+        # normally blocks HIGH was suspended/skipped. (#997)
+        tier_floor="HIGH" if high_findings else None,
     )
 
 
