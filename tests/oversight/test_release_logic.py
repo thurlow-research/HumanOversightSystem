@@ -30,6 +30,7 @@ _spec.loader.exec_module(release_logic)
 bump_version = release_logic.bump_version
 check_authored_notes = release_logic.check_authored_notes
 verify_assets_present = release_logic.verify_assets_present
+resolve_release_target = release_logic.resolve_release_target
 
 
 # --------------------------------------------------------------------------- #
@@ -151,3 +152,73 @@ def test_exact_equality_not_substring():
     assert verify_assets_present(["hos_install"], ["hos_install.sh"]) == [
         "hos_install.sh"
     ]
+
+
+# --------------------------------------------------------------------------- #
+# R4 — resolve_release_target (#999)                                          #
+# --------------------------------------------------------------------------- #
+def test_target_normal_in_sync_uses_remote_tip():
+    # In-sync cut: local == remote → target that (pushed) SHA.
+    sha = "a" * 40
+    assert resolve_release_target(sha, sha, allow_branch=False) == sha
+
+
+def test_target_local_ahead_uses_remote_not_local():
+    # The #999 regression guard: a local commit ahead of origin (e.g. the old
+    # stamp-cleanup commit) must NOT become the tag target — that SHA isn't on the
+    # remote and gh 422s. We target the pushed remote tip instead.
+    local = "b" * 40  # local-only, unpushable
+    remote = "c" * 40  # the pushed origin tip
+    assert resolve_release_target(local, remote, allow_branch=False) == remote
+
+
+def test_target_no_remote_raises():
+    with pytest.raises(ValueError):
+        resolve_release_target("a" * 40, "", allow_branch=False)
+
+
+def test_target_allow_branch_uses_local_head():
+    # Deliberate override: cut targets local HEAD; operator owns pushing.
+    local = "d" * 40
+    assert resolve_release_target(local, "e" * 40, allow_branch=True) == local
+    # allow_branch does not need a remote tip.
+    assert resolve_release_target(local, "", allow_branch=True) == local
+
+
+def test_target_allow_branch_no_local_raises():
+    with pytest.raises(ValueError):
+        resolve_release_target("", "", allow_branch=True)
+
+
+def test_target_strips_whitespace():
+    # git rev-parse output can arrive with a trailing newline in the shell capture.
+    assert (
+        resolve_release_target("  x\n", " y \n", allow_branch=False) == "y"
+    )
+    assert resolve_release_target(" z \n", "", allow_branch=True) == "z"
+
+
+# --- CLI contract the shell depends on (stdout SHA + exit code) -------------- #
+def test_cli_resolve_target_prints_remote_tip(capsys):
+    sha = "f" * 40
+    rc = release_logic.main(
+        ["resolve-target", "--local", "0" * 40, "--remote", sha]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == sha
+
+
+def test_cli_resolve_target_no_remote_exits_2(capsys):
+    rc = release_logic.main(["resolve-target", "--local", "0" * 40, "--remote", ""])
+    assert rc == 2
+    # Nothing pushable on stdout — shell must abort, not tag an empty target.
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_cli_resolve_target_allow_branch_prints_local(capsys):
+    sha = "9" * 40
+    rc = release_logic.main(
+        ["resolve-target", "--local", sha, "--remote", "", "--allow-branch"]
+    )
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == sha
