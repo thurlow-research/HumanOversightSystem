@@ -133,19 +133,48 @@ except Exception:
   fi
 fi
 
-# ── Overlap lock (#728) — portable mkdir mutex (macOS has no flock) ──────────
+# ── Overlap lock (#728, #1002) — portable mkdir mutex (macOS has no flock) ───
 # One hos-cron run per (role, project) at a time. Lightweight overlap guard,
-# not the orchestrator machine-lock. Stale-lock reclaim via PID liveness.
+# not the orchestrator machine-lock.
+#
+# `mkdir` and `echo $$ >pid` are two separate steps, so reclaim must guard two
+# fail modes the naive "reclaim unless the recorded PID is alive" logic hit:
+#   (a) Empty-pid double-acquire (#1002): a contender that loses the mkdir race
+#       but reads the pid file before the holder has written it sees "". That is
+#       "holder in-flight" — it must back off, NOT treat the lock as stale and
+#       reclaim it (which rm's the live lock and lets both sessions run).
+#   (b) PID-reuse permanent standstill (#1002): after a reboot mid-cycle the
+#       recorded PID can be reused by any long-lived same-user process, so
+#       `kill -0` succeeds forever and every cycle exits 0 as "locked" while the
+#       role is dead indefinitely. A lock-age ceiling reclaims regardless of PID
+#       liveness, bounding any standstill — and also frees an in-flight lock
+#       whose holder died before recording its pid.
 _LOCK_DIR="$_HOS_DIR/locks/hos-cron-${ROLE}-${PROJECT}.lock"
+_stat_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+# Ceiling = 2x the session cap, floored at 1h so a disabled (0) or tiny cap can
+# never collapse the ceiling to ~0 and turn every lock into an instant reclaim.
+_lock_max_secs="${HOS_CRON_MAX_SECONDS:-1800}"
+[[ "$_lock_max_secs" =~ ^[0-9]+$ ]] || _lock_max_secs=1800
+_lock_ceiling=$(( _lock_max_secs * 2 ))
+(( _lock_ceiling >= 3600 )) || _lock_ceiling=3600
 if ! mkdir "$_LOCK_DIR" 2>/dev/null; then
   _lock_pid="$(cat "$_LOCK_DIR/pid" 2>/dev/null || echo "")"
-  if [[ -n "$_lock_pid" ]] && kill -0 "$_lock_pid" 2>/dev/null; then
+  _lock_age=$(( $(date +%s) - $(_stat_mtime "$_LOCK_DIR") ))
+  if (( _lock_age >= _lock_ceiling )); then
+    echo "$LOG_PREFIX reclaiming stale lock (age ${_lock_age}s ≥ ${_lock_ceiling}s ceiling, holder pid=${_lock_pid:-unknown})"
+    rm -rf "$_LOCK_DIR"
+    mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
+  elif [[ -z "$_lock_pid" ]]; then
+    echo "$LOG_PREFIX another hos-cron $ROLE:$PROJECT run is acquiring the lock (pid not yet recorded) — exiting"
+    exit 0
+  elif kill -0 "$_lock_pid" 2>/dev/null; then
     echo "$LOG_PREFIX another hos-cron $ROLE:$PROJECT run (pid=$_lock_pid) holds the lock — exiting"
     exit 0
+  else
+    echo "$LOG_PREFIX reclaiming stale lock (holder pid=$_lock_pid not alive)"
+    rm -rf "$_LOCK_DIR"
+    mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
   fi
-  echo "$LOG_PREFIX reclaiming stale lock (holder pid=${_lock_pid:-unknown} not alive)"
-  rm -rf "$_LOCK_DIR"
-  mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
 fi
 echo "$$" > "$_LOCK_DIR/pid"
 trap 'rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
