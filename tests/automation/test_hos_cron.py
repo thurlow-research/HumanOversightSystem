@@ -440,6 +440,36 @@ class TestOverlapLock:
         assert seen_lock_pid != "99999999", "stale pid should have been overwritten"
         assert seen_lock_pid == launcher_pid, "lock pid must be the launcher's own pid"
 
+    def test_empty_pid_lock_is_not_reclaimed(self, cron):
+        # #1002 (a): a fresh lock whose holder has done `mkdir` but not yet written
+        # its pid presents an empty/absent pid file. A contender must read that as
+        # "holder in-flight" and back off — NOT reclaim the live lock (which would
+        # let both sessions run in one checkout). The dir is freshly created here,
+        # so its age is well under the ceiling.
+        cron.lock_dir.mkdir(parents=True)  # no pid file written yet
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "acquiring the lock" in r.stdout
+        assert "reclaiming stale lock" not in r.stdout
+        assert not cron.claude_ran(), "must not run work while a holder is mid-acquire"
+        assert cron.lock_dir.exists(), "in-flight lock must not be removed"
+        assert not (cron.lock_dir / "pid").exists(), "back-off must not stamp a pid"
+
+    def test_old_lock_reclaimed_even_with_live_pid(self, cron):
+        # #1002 (b): after a reboot the recorded PID can be reused by a long-lived
+        # same-user process, so `kill -0` succeeds forever. A lock older than the
+        # age ceiling (floored at 3600s here since HOS_CRON_MAX_SECONDS=0) must be
+        # reclaimed regardless of PID liveness, bounding the standstill.
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")  # a genuinely live pid
+        old = time.time() - 7200  # 2h ago, past the 1h ceiling
+        os.utime(cron.lock_dir, (old, old))
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "reclaiming stale lock" in r.stdout
+        assert "ceiling" in r.stdout
+        assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
+
 
 # ──────────────────────────── Wakeup / idle backoff ────────────────────────
 class TestWakeupBackoff:
