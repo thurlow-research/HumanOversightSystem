@@ -62,8 +62,7 @@ def normalize(value: float, low: float, high: float) -> float:
 # Weights for composite score — tunable as research data accumulates
 WEIGHTS = {
     "risk_number": 0.18,
-    "cyclomatic": 0.08,
-    "cognitive": 0.08,
+    "cyclomatic": 0.08,  # weight of the `complexity` dimension (cyclomatic only)
     "function_metrics": 0.07,
     "n1_queries": 0.08,
     "migration_risk": 0.12,

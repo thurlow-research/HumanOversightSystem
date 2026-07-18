@@ -263,7 +263,7 @@ sequenceDiagram
 
     C->>C: writes code + self-flags RISK/CONFIDENCE
     C->>RA: submits for scoring
-    RA->>RA: runs 11 validators (12 signal dims) + dep-mapper + risk-historian
+    RA->>RA: runs 12 validators (12 signal dimensions) + dep-mapper + risk-historian
     RA->>RA: validates risk tier (can only raise)
     RA->>CR: inspection brief with ranked high-risk areas
     CR->>C: correctness findings
