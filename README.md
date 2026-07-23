@@ -327,6 +327,9 @@ Contributions, critique, and collaboration welcome.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE). Copyright Scott Thurlow 2026.
+Dual-licensed by content type. Copyright Scott Thurlow 2026.
+
+- **Code** (framework, scripts, tooling) — MIT License, see [LICENSE](LICENSE).
+- **Documentation** (architecture/design docs, decision records, runbooks, planning and research notes) — [CC BY 4.0](LICENSE-DOCS): reuse and adapt freely with attribution.
 
 Attribution is required for distributions. The research framing and framework design are Scott Thurlow's original work; collaboration and derivative builds are encouraged.

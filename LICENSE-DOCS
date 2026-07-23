@@ -1,0 +1,22 @@
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+==========================================================
+
+The documentation in this repository — including the architecture and design
+documents, decision records (DECISIONS.md), runbooks, governance documents,
+planning and research notes under `docs/`, and all other prose — is licensed
+under the Creative Commons Attribution 4.0 International License.
+
+You are free to share and adapt this material for any purpose, provided you
+give appropriate credit, link to the license, and indicate if changes were
+made.
+
+Suggested attribution:
+
+  Thurlow, S. (2026). Human Oversight System (HOS) — documentation and
+  research notes. https://github.com/thurlow-research/HumanOversightSystem
+  (software archived at https://doi.org/10.5281/zenodo.21347272)
+
+Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Source code in this repository (the framework, scripts, and tooling) is
+separately licensed under the MIT License — see the LICENSE file.
