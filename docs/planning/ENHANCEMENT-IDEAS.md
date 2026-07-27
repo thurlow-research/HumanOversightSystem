@@ -25,6 +25,18 @@ Source for all four: [`SLR-Derived-Improvements.md`](SLR-Derived-Improvements.md
 
 ---
 
+## Finding: self-hosting inflates the protected-surface intervention rate (2026-07-27)
+
+**Observed** while building the Astro/JS pack (epic #1029): a large share of substantive HOS PRs route to HUMAN_REQUIRED because `scripts/framework/protected_surfaces.txt` **is** the framework's own machinery — `.claude/agents/**`, `contract/**`, `bootstrap/**`, `scripts/framework/**`, `scripts/oversight/gates/**`, `run_validators.sh`, `schema.py`, `.github/workflows/**`, and the governance/kill-switch files. Developing HOS *means* editing those, so nearly every feature PR is protected.
+
+**The key point:** this is largely a **self-hosting artifact**. A *consumer* project installs those files as HOS-owned vendor code and does its work in application code (`src/`) that is not on the list, so it hits protected-surface HUMAN_REQUIRED far less often. **The dogfooding intervention rate overstates the consumer burden** — useful for the research narrative: the observed cost is an upper bound, not the typical consumer experience.
+
+**Within an epic the load is front-loaded.** Foundation steps that touch the control surface (e.g. Astro S1–S3 and the gate steps S10–S12) are protected; additive steps that only add files (new validators in `validators/`, pack bodies under `packs/**`) are not. Intervention concentrates early and eases as the work becomes additive.
+
+**Tuning (design item):** finer-grained, test-conditioned protected-surface matching via an `hos-dev` profile — filed as **#1042** (v0.7.0). Guardrail: the v0.5.0 pre-cut audit found 21 fail-open defects concentrated in exactly these surfaces, so tuning must never let a control-loosening change escape human review.
+
+---
+
 ## Evidence-chain integrity (assurance artifacts)
 
 **Observed 2026-07-10** (AI House governance talk, noted during SLR Stage-4 SQ6
