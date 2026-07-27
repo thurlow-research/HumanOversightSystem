@@ -31,6 +31,9 @@ PYTHON="${PYTHON:-$OVERSIGHT_PYTHON}"
 # shellcheck source=scripts/oversight/run_with_retry.sh
 source "$SCRIPT_DIR/run_with_retry.sh"
 
+# shellcheck source=scripts/oversight/lib/detect_stack.sh
+source "$SCRIPT_DIR/lib/detect_stack.sh"
+
 # Configurable defaults (override via env)
 VALIDATOR_TIMEOUT="${VALIDATOR_TIMEOUT:-60}"       # seconds per attempt
 VALIDATOR_RETRIES="${VALIDATOR_RETRIES:-2}"        # retries after first attempt
@@ -125,6 +128,25 @@ if [[ -n "${RUN_VALIDATORS_FILELIST_ONLY:-}" ]]; then
     for _pf in ${PY_FILES[@]+"${PY_FILES[@]}"}; do printf 'PY_FILES\t%s\n' "$_pf"; done
     for _jf in ${JS_FILES[@]+"${JS_FILES[@]}"}; do printf 'JS_FILES\t%s\n' "$_jf"; done
     exit 0
+fi
+
+# Tool preflight (D1, ADR-032): a depended-on-but-missing consumer tool now
+# hard-fails here instead of letting each validator/gate silently SKIP.
+# Runs AFTER the RUN_VALIDATORS_FILELIST_ONLY seam above, so the byte-identical
+# regression harness in a bare tmp repo never triggers a tool check (AC-2), and
+# BEFORE the validator loop so a missing tool blocks scoring rather than
+# producing partial/misleading signal. No-op outside a JS/Astro project (AC-4).
+if ! tool_preflight_or_fail; then
+    mkdir -p "$OUT_DIR"
+    PYTHONSAFEPATH=1 "$PYTHON" -c "
+import json; from pathlib import Path
+summary = {'composite_score': 1.0, 'tier': 'CRITICAL', 'validator_count': 0,
+           'successful_validators': 0,
+           'error': 'Required tool(s) missing for this project (D1, ADR-032) — see stderr for detail'}
+Path('$OUT_DIR/summary.json').write_text(json.dumps(summary, indent=2))
+print('CRITICAL summary written to $OUT_DIR/summary.json')
+" 2>/dev/null || true
+    exit 1
 fi
 
 mkdir -p "$OUT_DIR"
