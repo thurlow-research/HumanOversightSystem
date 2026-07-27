@@ -18,6 +18,7 @@ Matrix (R9.1 — authoritative):
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from dataclasses import dataclass
@@ -307,15 +308,68 @@ class MergeAuthorityResult:
 # No-release guard (NG3b)
 # ---------------------------------------------------------------------------
 
-_RELEASE_PATTERNS = [
-    "tag", "release", "v0.", "v1.", "publish", "ship", "cut-release",
-    "semver", "CHANGELOG", "release/v",
+# Release detection is split into TITLE patterns and PATH globs (#1032).  The
+# original implementation concatenated the title with every changed path into a
+# single string and substring-matched a flat keyword list, so any path holding
+# "v0." (every file under docs/v0.6.0/**) or "tag" ("staging", "metadata",
+# "packs/") read as a release.  Titles are now matched with word boundaries and
+# paths are matched as globs against release artifacts only.
+#
+# The guard still fails safe: it may only ever route a PR to HUMAN_REQUIRED, so
+# narrowing it removes false positives without opening any autonomous-release
+# path.  Genuine release PRs are additionally backstopped by the server-side
+# protected-surface gate (docs/releases/**, .hos-release — #761).
+_RELEASE_TITLE_RE = re.compile(
+    r"""
+      \b releases? \b
+    | \b releasing \b
+    | \b publish (?: es | ed | ing )? \b
+    | \b ship (?: s | ped | ping )? \b
+    | \b semver \b
+    | \b tags? \b
+    | \b tagging \b
+    | \b v \d+ \. \d+ (?: \. \d+ )? \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Release artifacts only — deliberately NOT the whole of
+# scripts/framework/protected_surfaces.txt.  That list covers every control
+# surface (bin/**, .claude/agents/**, …); reusing it here would label unrelated
+# control-surface PRs as releases and widen NG3b with a misleading reason.  Those
+# surfaces are already gated by _touches_protected_surface().  Keep the entries
+# below in sync with the "Release artifacts (#761)" block of that file.
+_RELEASE_PATH_GLOBS = [
+    "docs/releases/**",
+    ".hos-release",
+    "CHANGELOG*",
+    "release/v*",
 ]
 
 
+def _matches_release_path(path: str) -> bool:
+    """True when a changed path is a release artifact (glob, not substring)."""
+    normalized = path.strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lower()
+    for pattern in _RELEASE_PATH_GLOBS:
+        pattern = pattern.lower()
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(normalized, f"**/{pattern}"):
+            return True
+    return False
+
+
 def _is_release_related(pr_title: str, changed_files: list[str]) -> bool:
-    text = pr_title.lower() + " " + " ".join(changed_files).lower()
-    return any(kw.lower() in text for kw in _RELEASE_PATTERNS)
+    """
+    True when the PR performs a release action — NG3b: never autonomous.
+
+    Title and paths are evaluated independently (#1032): a release verb/version
+    in the title, or a changed file that is a release artifact.
+    """
+    if _RELEASE_TITLE_RE.search(pr_title or ""):
+        return True
+    return any(_matches_release_path(f) for f in (changed_files or []))
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +382,6 @@ def _touches_protected_surface(changed_files: list[str], repo_root: str = ".") -
     if not surfaces_path.is_file():
         return False
     try:
-        import fnmatch
         globs = []
         for line in surfaces_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
