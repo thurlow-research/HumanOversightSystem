@@ -82,9 +82,19 @@ fi
 # Filter to existing Python files
 PY_FILES=()
 ALL_FILES=()
+# Parallel JS/TS/Astro lane (#1034, ADR-032). On an all-.astro/.ts/.js changeset
+# the PY_FILES gate skipped 8 of 12 scoring dimensions, so the composite signal
+# went largely dark. JS_FILES routes those files to the *_js validators without
+# touching the Python path: the ALL_FILES/PY_FILES derivation below is unchanged,
+# and on a Python-only changeset JS_FILES stays empty, so every downstream
+# dispatch and argv is identical (AC-2).
+# Lowercase extensions only, mirroring the `*.py` match (DQ-1).
+JS_FILES=()
+JS_EXTS_RE='\.(ts|tsx|js|jsx|astro|mjs|cjs)$'
 for f in ${FILES[@]+"${FILES[@]}"}; do  # bash 3.2: unguarded expansion crashes on empty array
     ALL_FILES+=("$f")
     [[ "$f" == *.py && -f "$f" ]] && PY_FILES+=("$f")
+    [[ "$f" =~ $JS_EXTS_RE && -f "$f" ]] && JS_FILES+=("$f")
 done
 
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
@@ -108,9 +118,12 @@ fi
 # tests pin the --diff file collection (dependency manifests must reach ALL_FILES,
 # and only *.py may reach PY_FILES) without the heavy/network validator run.
 # Off by default; no effect on the real pipeline.
+# JS_FILES lines are APPENDED after the existing emissions (#1034) so seam
+# parsers written against ALL_FILES/PY_FILES are unaffected.
 if [[ -n "${RUN_VALIDATORS_FILELIST_ONLY:-}" ]]; then
     for _af in ${ALL_FILES[@]+"${ALL_FILES[@]}"}; do printf 'ALL_FILES\t%s\n' "$_af"; done
     for _pf in ${PY_FILES[@]+"${PY_FILES[@]}"}; do printf 'PY_FILES\t%s\n' "$_pf"; done
+    for _jf in ${JS_FILES[@]+"${JS_FILES[@]}"}; do printf 'JS_FILES\t%s\n' "$_jf"; done
     exit 0
 fi
 
@@ -237,6 +250,27 @@ if [[ ${#PY_FILES[@]} -gt 0 ]]; then
     run_validator "hallucination"    "$VALIDATORS_DIR/hallucination_surface.py" 60 false "${PY_FILES[@]}"
 fi
 
+# JS/TS/Astro lane (#1034) — mirrors the Python dispatch above on JS_FILES.
+# The `_js` NAME suffix gives each JS validator its own outfile (complexity_js.json),
+# so nothing overwrites the Python results and the aggregator — which globs *.json
+# and keys off the `dimension` field, not the filename — needs no change (S1.5).
+# The *_js.py scripts land in S4–S9; until then run_validator SKIPs each missing
+# script cleanly, so this block is inert rather than fatal.
+if [[ ${#JS_FILES[@]} -gt 0 ]]; then
+    # Same RN_EXTRA guard as the Python call — bash 3.2 errors on "${arr[@]}" for
+    # an empty array under set -u.
+    if [[ ${#RN_EXTRA[@]} -gt 0 ]]; then
+        run_validator "risk_number_js"  "$VALIDATORS_DIR/rn_calculator_js.py"        60 false "${RN_EXTRA[@]}" "${JS_FILES[@]}"
+    else
+        run_validator "risk_number_js"  "$VALIDATORS_DIR/rn_calculator_js.py"        60 false "${JS_FILES[@]}"
+    fi
+    run_validator "complexity_js"       "$VALIDATORS_DIR/complexity_metrics_js.py"   60 false "${JS_FILES[@]}"
+    run_validator "function_metrics_js" "$VALIDATORS_DIR/function_metrics_js.py"     60 false "${JS_FILES[@]}"
+    run_validator "n1_queries_js"       "$VALIDATORS_DIR/n1_detector_js.py"          60 false "${JS_FILES[@]}"
+    run_validator "static_analysis_js"  "$VALIDATORS_DIR/static_analysis_js.py"     120 false "${JS_FILES[@]}"
+    run_validator "hallucination_js"    "$VALIDATORS_DIR/hallucination_surface_js.py" 60 false "${JS_FILES[@]}"
+fi
+
 # Migration scorer — all files
 run_validator "migration_risk"   "$VALIDATORS_DIR/migration_scorer.py"         60 false "${ALL_FILES[@]}"
 
@@ -298,11 +332,19 @@ if [[ ${#PY_FILES[@]} -gt 0 ]]; then
     run_validator "portability"    "$VALIDATORS_DIR/portability_check.py"       60 false "${PY_FILES[@]}"
 fi
 
-# Prompt audit — network-dependent (calls gh for spec-gap count)
-if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+# Prompt audit — network-dependent (calls gh for spec-gap count).
+# Stack-neutral: it scores the PROMPT artifact and prompt/code proportions, not
+# language syntax, so it runs on the PY_FILES ∪ JS_FILES union (#1034, DQ-4
+# verified: a JS path is read as text, never parsed as Python). On a Python-only
+# changeset JS_FILES is empty, so _PA_FILES == PY_FILES and the argv is identical
+# to the pre-#1034 call (AC-2).
+if [[ ${#PY_FILES[@]} -gt 0 || ${#JS_FILES[@]} -gt 0 ]]; then
+    _PA_FILES=()
+    [[ ${#PY_FILES[@]} -gt 0 ]] && _PA_FILES+=("${PY_FILES[@]}")
+    [[ ${#JS_FILES[@]} -gt 0 ]] && _PA_FILES+=("${JS_FILES[@]}")
     run_validator "prompt_ambiguity" "$VALIDATORS_DIR/prompt_audit_risk.py"  \
         "$NETWORK_TIMEOUT" false \
-        --prompts-dir "prompts" --step "${STEP:-}" "${PY_FILES[@]}"
+        --prompts-dir "prompts" --step "${STEP:-}" "${_PA_FILES[@]}"
 fi
 
 echo ""
