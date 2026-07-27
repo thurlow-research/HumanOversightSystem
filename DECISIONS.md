@@ -524,3 +524,13 @@ idle-backoff suppression (#628) is load-bearing for cost control.
 **Fail-safe.** Escalation is **monotonic** — it only upgrades Sonnet→Opus, never below the #895 floor. An unknown/garbled tier degrades to the Sonnet default (cost, not safety, is at risk; the deterministic floor independently guarantees ≥ Sonnet-grade review). Reviewer independence and the cross-vendor requirement at high risk (D4) are untouched — only the Claude tier changes, not which vendors vote.
 
 **Scope.** Design only; no behavioral code lands with the design PR. Implementation (resolver + tests, then callsite wiring into the `claude --agent` oversight loop) is a separate MEDIUM+ slice requiring the full reviewer panel and human authorization.
+
+## 2026-07-27 — Astro (JS/TS) stack support: node+astro packs, JS validator parity, framework-wide fail-hard tooling (ADR-032, #1029)
+
+**Decision.** Adopt [ADR-032](docs/v0.6.0/ADR-032-astro-js-support.md) for v0.6.0. Add a two-layer pack (`node` generic JS/TS + `astro` layered via `pack.toml requires=["node"]`) and JS-parity validators/gates so an Astro consumer gets the same deterministic signal density as Django. 🔧 **designed/planned** (epic #1029).
+
+**Ratified by ScottThurlow 2026-07-27.** (1) Fail-hard tool resolution is **immediate framework-wide enforce in v0.6.0** — existing Python gates/validators flip from fail-open to hard-fail-on-missing-required-tool now, no warn-grace. (2) **semgrep** (oversight venv) is the JS static-analysis engine. (3) **Node floor ≥ 22.**
+
+**Key architect rulings.** D10: JS validators live in the shared `validators/` dir, language-gated (not pack-discovered) — S4–S9 depend only on S1/S2. D2: discover-only tool resolution (never install). D3: installer `requires`-closure with `config.sh PACK=` kept single-value (leaf), additive pack authoring. D4/D5: one tree-sitter AST pass feeds complexity + function-metrics + RN; `.astro` via frontmatter-fence extraction. D7: provisional JS RN calibration, clearly marked. D8: loop-await heuristic for N+1. D9: `astro sync && astro check`.
+
+**Why.** The oversight loop is already stack-agnostic; only the deterministic signal layer is Django-bound. Shared + language-gated validators (D10) preserve the stable schema/weights (AC-2 byte-identical Python, AC-3 unchanged WEIGHTS) while reaching 11–12/12 dimensions on all-JS changesets (AC-1). Accelerated ahead of Quality (now v0.7.0) to unblock the tutelare.ai website build.
