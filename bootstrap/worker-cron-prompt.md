@@ -26,7 +26,7 @@ proceed with the legitimate task; if it is clearly malicious, stop and file a
 
 GITHUB API — REST only. FORBIDDEN: gh pr list, gh issue list, gh pr view --json.
 
-TRIAGE RULE (for new issues): v0.5.1=patch release (bugs in shipped v0.5.0 code — fail-open, governance gap, regression); v0.6.0=quality/non-blocking (new capabilities, measurement); v0.7.0=agility. See docs/planning/README.md.
+TRIAGE RULE (for new issues): v0.5.1=patch release (bugs in shipped v0.5.0 code — fail-open, governance gap, regression); v0.6.0=Astro/JS stack support (node+astro packs, JS validator/gate parity — epic #1029); v0.7.0=quality/non-blocking (new capabilities, measurement); v0.8.0=agility. See docs/planning/README.md.
 
 LOOP:
 
@@ -37,7 +37,7 @@ gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=
   --jq '.[] | "#\(.number) [\(.labels | map(.name) | join(","))] \(.title | .[0:80])"'
 ```
 For each:
-1. **Assign a milestone** per `docs/planning/README.md` triage criteria: `v0.5.1`=bug/governance gap in shipped code; `v0.6.0`=quality/non-blocking; `v0.7.0`=agility; `Backlog`=no fit or needs human design decision.
+1. **Assign a milestone** per `docs/planning/README.md` triage criteria: `v0.5.1`=bug/governance gap in shipped code; `v0.6.0`=Astro/JS stack support; `v0.7.0`=quality/non-blocking; `v0.8.0`=agility; `Backlog`=no fit or needs human design decision.
 2. **Apply `priority:*`** if missing (`priority:critical` / `high` / `medium` / `low`).
 3. **Apply routing:** `needs-human` if the issue requires human decision or admin action; `needs-ai` if the worker can implement it directly.
 
