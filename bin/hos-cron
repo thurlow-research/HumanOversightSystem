@@ -356,24 +356,53 @@ fi
 # Timestamp written only after successful Claude exit (#711)
 
 # ── Git sync ──────────────────────────────────────────────────────────────────
-git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
-# #996: never let a diverged local main be masked by `|| true`. A SIGTERM between
-# a session's commit and push can strand a stray commit on main; from then on
-# every `pull --ff-only` fails and silently discarding it would let the worker
-# keep cutting branches from a drifting base with no signal at all. Capture the
-# failure and, if local main carries commits not on origin/main, log loudly, emit
-# an audit event, and skip the cycle fail-closed — the stray commit is left in
-# place (reflog-recoverable) for a human to reconcile.
-if ! git -C "$REPO_ROOT" pull origin main --ff-only --quiet 2>/dev/null; then
-  _ahead=$(git -C "$REPO_ROOT" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
-  if [[ "${_ahead:-0}" -gt 0 ]]; then
-    echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_ahead} local commit(s) not on origin (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" log origin/main..HEAD"
-    _audit cycle-preflight-fail reason=local_main_diverged ahead="${_ahead}"
-    exit 0
+# Fetch the default refspec (not just `main`) — a single-ref `fetch origin main`
+# only prunes refs within that same explicit refspec, so a feature branch's
+# remote-tracking ref would never be pruned and #1044's "upstream gone" check
+# below would never fire.
+git -C "$REPO_ROOT" fetch origin --prune --quiet 2>/dev/null || true
+
+# #1044: return to main once a feature branch's PR has merged (its remote branch
+# is now gone). Without this the checkout never leaves the branch it just built
+# work on, and the #996 guard below — which must test `main` itself, not
+# whatever HEAD happens to be parked on — would have nothing meaningful to
+# reconcile. A branch whose PR is still open keeps its upstream and is left
+# alone; a dirty/conflicting working tree leaves HEAD as-is (nothing is
+# force-discarded). Local branch cleanup is a separate concern (#1044 scope note).
+_cur_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+if [[ -n "$_cur_branch" && "$_cur_branch" != "main" ]] \
+   && git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/main \
+   && ! git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  if git -C "$REPO_ROOT" checkout --quiet main 2>/dev/null; then
+    echo "$LOG_PREFIX returned to main from '$_cur_branch' (upstream gone — merged & pruned) (#1044)"
+  else
+    echo "$LOG_PREFIX could not return to main from '$_cur_branch' (dirty tree?) — leaving HEAD as-is"
   fi
-  # ff-only could not fast-forward but local main is NOT ahead (e.g. no upstream
-  # configured yet, or a transient fetch failure) — nothing was masked; continue
-  # on the current HEAD, as the old `|| true` did.
+fi
+
+# #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
+# between a session's commit and push can strand a stray commit on main; from
+# then on every fast-forward fails and silently discarding it would let the
+# worker keep cutting branches from a drifting base with no signal at all.
+# Tested against the local `main` branch itself — not HEAD, which may be parked
+# on an unrelated feature branch (#1044) — using patch-id equivalence
+# (`git cherry`) so a squash-merged commit (same content, new SHA on
+# origin/main) is never misread as a stray local commit.
+# `grep -c` already prints "0" on no-match but exits 1 — guard with `|| true`,
+# not `|| echo 0`, or the fallback appends a second "0" line and breaks the
+# numeric comparison below.
+_stray=$(git -C "$REPO_ROOT" cherry origin/main main 2>/dev/null | grep -c '^+' || true)
+if [[ "${_stray:-0}" -gt 0 ]]; then
+  echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_stray} local commit(s) on main with no upstream-equivalent (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" cherry -v origin/main main"
+  _audit cycle-preflight-fail reason=local_main_diverged stray="${_stray}"
+  exit 0
+fi
+# main carries nothing origin/main doesn't already have (by content) — safe to
+# bring it to origin/main's tip, whether or not HEAD is currently on main.
+if [[ "$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")" == "main" ]]; then
+  git -C "$REPO_ROOT" merge --ff-only --quiet origin/main 2>/dev/null || true
+else
+  git -C "$REPO_ROOT" update-ref refs/heads/main refs/remotes/origin/main 2>/dev/null || true
 fi
 
 # ── Repo slug — shared by halt check, PR routing, and milestone resolution ────
