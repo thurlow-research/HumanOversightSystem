@@ -451,6 +451,7 @@ class TestKnownDivergenceFromOversightCodeowners:
 from scripts.automation.lib.merge_authority import (
     MergeDecision,
     RiskTier,
+    _is_release_related,
     decide_merge_authority,
     detect_human_hold_directive,
     detect_server_side_gate,
@@ -1064,6 +1065,104 @@ class TestDecideMergeAuthority:
                 repo_root=str(tmp_path),
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+
+class TestIsReleaseRelated:
+    """
+    NG3b release detection — title patterns and path globs are evaluated
+    independently, so a milestone docs path is not a release (#1032).
+
+    Pinned in BOTH directions: every historical true positive must stay True,
+    and the substring false positives must become False.
+    """
+
+    # ── True positives (must never regress) ───────────────────────────────────
+
+    @pytest.mark.parametrize("title", [
+        "chore: cut release v1.0.0",
+        "chore(release): v0.5.1",
+        "release v0.6.0",
+        "chore: publish the v0.5.1 packages",
+        "chore: ship v0.5.1",
+        "chore: bump semver minor",
+        "chore: tag v0.6.0",
+        "chore: cut-release for the patch milestone",
+    ])
+    def test_release_titles_detected(self, title):
+        assert _is_release_related(title, ["src/foo.py"]) is True
+
+    @pytest.mark.parametrize("path", [
+        "docs/releases/v0.5.1.md",
+        "docs/releases/v0.4.1-release-notes.md",
+        ".hos-release",
+        "CHANGELOG.md",
+        "docs/CHANGELOG.md",
+        "release/v0.6.0",
+        "release/v0.6.0/notes.md",
+    ])
+    def test_release_paths_detected(self, path):
+        assert _is_release_related("fix: something small", [path]) is True
+
+    def test_release_path_detected_among_unrelated_files(self):
+        assert _is_release_related(
+            "fix: something small",
+            ["src/foo.py", "docs/releases/v0.5.1.md", "README.md"],
+        ) is True
+
+    # ── False positives that #1032 removes ────────────────────────────────────
+
+    def test_milestone_docs_path_is_not_a_release(self):
+        """The #1032 reproducer: PR #1031, docs-only, no release artifact."""
+        assert _is_release_related(
+            "docs(adr): ADR-032 — Astro/JS stack support",
+            ["docs/v0.6.0/ADR-032-astro-js-support.md", "DECISIONS.md"],
+        ) is False
+
+    @pytest.mark.parametrize("path", [
+        "docs/v0.6.0/ADR-032-astro-js-support.md",
+        "docs/v0.7.0/design-notes.md",
+        "docs/v1.0/roadmap.md",
+        "packs/astro/tag-helpers.md",
+        "packs/django/metadata.md",
+        "scripts/deploy/staging.sh",
+        "src/tagging/util.py",
+    ])
+    def test_substring_paths_are_not_releases(self, path):
+        assert _is_release_related("fix: something small", [path]) is False
+
+    def test_empty_inputs_are_not_releases(self):
+        assert _is_release_related("", []) is False
+
+
+class TestReleaseGuardDecision:
+    """The narrowed heuristic reaches decide_merge_authority() unchanged."""
+
+    def test_milestone_docs_pr_is_not_routed_as_release(self, tmp_path):
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **TestDecideMergeAuthority.BASE,
+                    "pr_title": "docs(adr): ADR-032 — Astro/JS stack support",
+                    "changed_files": ["docs/v0.6.0/ADR-032-astro-js-support.md"],
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.is_release is False
+        assert "NG3b" not in result.reason
+
+    def test_genuine_release_pr_still_human_required(self, tmp_path):
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **TestDecideMergeAuthority.BASE,
+                    "pr_title": "chore: prepare notes",
+                    "changed_files": ["docs/releases/v0.5.1.md"],
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert result.is_release is True
+        assert "needs-human" in result.labels_to_add
 
 
 class TestRiskTierEnum:
