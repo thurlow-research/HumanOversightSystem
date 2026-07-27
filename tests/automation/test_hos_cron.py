@@ -332,6 +332,96 @@ class CronEnv:
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + ident + ["commit", "-q", "-m", "stray"], check=True)
 
+    def git_init_squash_merged_feature_branch(self) -> None:
+        """Make the fake repo a git repo whose HEAD sits on a feature branch that
+        was squash-merged into origin/main and had its remote branch deleted —
+        the #1044 deadlock state.
+
+        Builds a bare origin, pushes an initial `main`, cuts a local feature
+        branch with content changes and pushes it (so it has an upstream, as a
+        real PR branch would), then — via an independent clone, simulating what
+        happens on GitHub when the PR merges — squash-merges the same content
+        into origin/main as a single new-SHA commit and deletes the remote
+        feature branch. The local repo is left checked out on the feature branch
+        with local `main` unmoved (behind origin/main) and the feature branch's
+        remote-tracking ref gone once fetched.
+        """
+        origin = self.repo.parent / "origin.git"
+        other = self.repo.parent / "other_clone"
+        git = ["git", "-C", str(self.repo)]
+        gito = ["git", "-C", str(other)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
+                 "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "base"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+        # Cut a feature branch with two commits and push it — a real PR branch.
+        subprocess.run(git + ["checkout", "-q", "-b", "feat/1032-thing"], check=True)
+        (self.repo / "feature.txt").write_text("change1\n")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "feat: change1"], check=True)
+        (self.repo / "feature.txt").write_text("change1\nchange2\n")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "feat: change2"], check=True)
+        subprocess.run(
+            git + ["push", "-q", "-u", "origin", "feat/1032-thing"], check=True,
+        )
+        # Simulate GitHub's squash-merge (same content, one new commit, new SHA)
+        # plus its "delete head branch on merge" auto-cleanup — from an
+        # independent clone, so the local repo's feature branch is untouched.
+        subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+        subprocess.run(
+            gito + ["fetch", "-q", "origin", "feat/1032-thing"], check=True,
+        )
+        subprocess.run(
+            gito + ["merge", "-q", "--squash", "FETCH_HEAD"], check=True,
+        )
+        subprocess.run(gito + ident + ["commit", "-q", "-m", "feat: squashed (#1032)"], check=True)
+        subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
+        subprocess.run(
+            gito + ["push", "-q", "origin", "--delete", "feat/1032-thing"], check=True,
+        )
+        # Local repo is still parked on the (now-merged) feature branch.
+        subprocess.run(git + ["checkout", "-q", "feat/1032-thing"], check=True)
+
+    def git_init_open_feature_branch(self) -> None:
+        """Make the fake repo a git repo whose HEAD sits on a feature branch that
+        still has a live upstream (its PR has not merged) — the non-regression
+        counterpart to `git_init_squash_merged_feature_branch`.
+        """
+        origin = self.repo.parent / "origin.git"
+        git = ["git", "-C", str(self.repo)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
+                 "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "base"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+        subprocess.run(git + ["checkout", "-q", "-b", "feat/in-progress"], check=True)
+        (self.repo / "feature.txt").write_text("wip\n")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "feat: wip"], check=True)
+        subprocess.run(
+            git + ["push", "-q", "-u", "origin", "feat/in-progress"], check=True,
+        )
+
+    def current_branch(self) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+
     def write_cowpat(self, sha: str) -> None:
         self.cowpat_file.parent.mkdir(parents=True, exist_ok=True)
         self.cowpat_file.write_text(sha + "\n")
@@ -558,6 +648,43 @@ class TestGitSyncDivergence:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert "DIVERGED" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_squash_merged_feature_branch_does_not_deadlock(self, cron):
+        # #1044 bug repro: HEAD parked on a feature branch whose commit was
+        # squash-merged into origin/main (new SHA, same content) with the remote
+        # branch deleted. The old guard measured `origin/main..HEAD` and saw the
+        # feature branch's own commits as "diverged local main" forever — this
+        # is the state that deadlocked the worker for 11+ hours after every
+        # merge. It must not falsely halt the cycle.
+        cron.git_init_squash_merged_feature_branch()
+        assert cron.current_branch() == "feat/1032-thing"
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "DIVERGED" not in r.stdout, r.stdout
+        assert cron.claude_ran()
+
+    def test_squash_merged_feature_branch_returns_to_main(self, cron):
+        # #1044 durable fix: once a feature branch's upstream is gone (merged &
+        # pruned), the launcher must check out `main` so the checkout doesn't
+        # accumulate dead branches indefinitely and future branches are cut from
+        # a base that reflects the merge.
+        cron.git_init_squash_merged_feature_branch()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.current_branch() == "main"
+        assert "returned to main" in r.stdout
+        assert "#1044" in r.stdout
+
+    def test_open_feature_branch_with_live_upstream_is_left_alone(self, cron):
+        # A feature branch whose PR is still open (remote branch still exists)
+        # must NOT be swept back to main mid-build.
+        cron.git_init_open_feature_branch()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "returned to main" not in r.stdout
+        assert "DIVERGED" not in r.stdout
+        assert cron.current_branch() == "feat/in-progress"
         assert cron.claude_ran()
 
 
