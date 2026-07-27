@@ -171,7 +171,7 @@ run_validator() {
     local name="$1"
     local script="$2"
     local timeout="${3:-$VALIDATOR_TIMEOUT}"
-    local required="${4:-false}"
+    local is_required="${4:-false}"
     shift 4
     local args=("$@")
 
@@ -196,7 +196,7 @@ run_validator() {
     }
 
     local rc=0
-    run_with_retry "$name" "$VALIDATOR_RETRIES" "$required" _validator_unit && rc=0 || rc=$?
+    run_with_retry "$name" "$VALIDATOR_RETRIES" "$is_required" _validator_unit && rc=0 || rc=$?
 
     if [[ $rc -eq 0 ]]; then
         local OUTPUT
