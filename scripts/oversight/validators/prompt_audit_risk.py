@@ -91,6 +91,32 @@ def score_prompt_ambiguity(prompt_text: str) -> tuple[float, list[str]]:
     return score, signals
 
 
+_JS_CONTROL_KEYWORDS = {
+    "if", "for", "while", "switch", "catch", "function", "return", "else",
+    "do", "try", "finally", "with",
+}
+
+
+def _find_js_function_names(code_text: str) -> list[str]:
+    """
+    Function-shape detection for JS/TS (and .astro frontmatter, which is plain
+    JS/TS fenced in the same file text). Heuristic, not AST-based — mirrors the
+    Python `def` regex's level of rigor. See #1045.
+    """
+    names = []
+    # `function foo(`, `export function foo(`, `export default function foo(`
+    names += re.findall(r"\bfunction\s+(\w+)\s*\(", code_text)
+    # `const/let/var foo = (…) => …` and `const/let/var foo = function …`
+    names += re.findall(r"\b(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(", code_text)
+    names += re.findall(r"\b(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function\b", code_text)
+    # class/object methods: `  methodName(args) {` — indented, block-bodied, not a keyword
+    for m in re.finditer(r"^[ \t]+(?:async\s+)?(?:static\s+)?(\w+)\s*\([^)]*\)\s*\{", code_text, re.M):
+        name = m.group(1)
+        if name not in _JS_CONTROL_KEYWORDS:
+            names.append(name)
+    return names
+
+
 def score_fidelity_surface(
     prompt_text: str,
     code_text: str,
@@ -115,8 +141,12 @@ def score_fidelity_surface(
             score += 0.2
             signals.append(f"code/prompt ratio {ratio:.1f} — modest spec coverage")
 
-    # Count function definitions in code that aren't mentioned in prompt
+    # Count function definitions in code that aren't mentioned in prompt.
+    # Python `def` and JS/TS/.astro function shapes are both scanned unconditionally
+    # (this validator runs on a PY_FILES ∪ JS_FILES union — see run_validators.sh) —
+    # #1045.
     func_names = re.findall(r"def (\w+)\s*\(", code_text)
+    func_names += _find_js_function_names(code_text)
     mentioned_in_prompt = [f for f in func_names if f.lower() in prompt_text.lower()]
     unmentioned = [
         f
