@@ -26,6 +26,7 @@ from tests.oversight.run_validators_harness import (
     filelist_split,
     hermetic_run,
     init_repo,
+    install_node_tool_stub,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -128,6 +129,11 @@ def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
         {"src/page.astro": "---\n---\n<p>hi</p>\n", "src/lib.ts": "export const a = 1;\n"},
         subject="astro page",
     )
+    # The .astro file is itself an astro/astro-check tool marker (S2, ADR-032
+    # D1) — stub both so the new tool preflight passes and this test keeps
+    # exercising JS *validator* routing/dispatch, not tool availability.
+    install_node_tool_stub(tmp_path, "astro")
+    install_node_tool_stub(tmp_path, "astro-check")
 
     proc = hermetic_run(tmp_path, "src/page.astro", "src/lib.ts")
 

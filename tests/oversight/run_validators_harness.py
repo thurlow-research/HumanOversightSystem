@@ -82,6 +82,22 @@ def filelist_split(cwd: Path, *script_args: str) -> dict[str, list[str]]:
     return split
 
 
+def install_node_tool_stub(tmp_path: Path, name: str) -> Path:
+    """Create an executable node_modules/.bin/<name> stub that answers `--version`.
+
+    Lets a hermetic test simulate a properly-tooled JS/Astro project for the
+    S2 tool-preflight (ADR-032 D1/D2) without a real npm install: `resolve_node_tool`
+    checks `./node_modules/.bin/<tool>` first, so this stub is found and the
+    preflight is satisfied.
+    """
+    bin_dir = tmp_path / "node_modules" / ".bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / name
+    stub.write_text(f"#!/usr/bin/env bash\necho '{name} 0.0.0-stub'\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return stub
+
+
 def install_shim(tmp_path: Path) -> Path:
     """Copy the canned-validator Python shim into tmp_path and make it executable."""
     dst = tmp_path / "validator_python_shim.py"
