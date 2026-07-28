@@ -122,6 +122,48 @@ class TestScoreFidelitySurface:
         score, _ = score_fidelity_surface("x", "def a(): pass\ndef b(): pass")
         assert 0.0 <= score <= 1.0
 
+    def test_js_function_declaration_detected(self):
+        prompt = "Write a helper."
+        code = "export function computeTotal(items) {\n  return items.length;\n}\n"
+        score, signals = score_fidelity_surface(prompt, code)
+        assert score > 0.0
+        assert any("computeTotal" in s for s in signals)
+
+    def test_js_arrow_const_detected(self):
+        prompt = "Write a helper."
+        code = "const computeTotal = (items) => {\n  return items.length;\n}\n"
+        score, signals = score_fidelity_surface(prompt, code)
+        assert score > 0.0
+        assert any("computeTotal" in s for s in signals)
+
+    def test_js_class_method_detected(self):
+        prompt = "Write a helper."
+        code = "class Cart {\n  computeTotal(items) {\n    return items.length;\n  }\n}\n"
+        score, signals = score_fidelity_surface(prompt, code)
+        assert score > 0.0
+        assert any("computeTotal" in s for s in signals)
+
+    def test_astro_frontmatter_function_detected(self):
+        prompt = "Write a helper."
+        code = "---\nconst computeTotal = (items) => items.length;\n---\n<div>{computeTotal(props.items)}</div>\n"
+        score, signals = score_fidelity_surface(prompt, code)
+        assert score > 0.0
+        assert any("computeTotal" in s for s in signals)
+
+    def test_js_control_flow_not_treated_as_function(self):
+        prompt = "Write a helper."
+        code = "function run() {\n  if (x) {\n    doThing();\n  }\n}\n"
+        score, signals = score_fidelity_surface(prompt, code)
+        assert not any(" if " in s or "'if'" in s for s in signals)
+
+    def test_js_mentioned_function_lowers_score(self):
+        prompt = "Write computeTotal."
+        code = "export function computeTotal(items) {\n  return items.length;\n}\n"
+        score, _ = score_fidelity_surface(prompt, code)
+        prompt_unmentioned = "Write something else entirely with no overlap words at all."
+        score_unmentioned, _ = score_fidelity_surface(prompt_unmentioned, code)
+        assert score <= score_unmentioned
+
 
 # ── get_prompt_artifact() ────────────────────────────────────────────────────
 
