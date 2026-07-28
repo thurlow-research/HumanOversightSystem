@@ -1063,6 +1063,25 @@ _resolve_pack_dir() {
   return 1
 }
 
+# Parse a pack's `requires = ["a","b"]` single-line array from pack.toml
+# (ADR-032 D3, #1036). Missing key → no output (leaf pack, no deps). Single-
+# line array form only (bash 3.2 safe — no TOML lib); a pack authoring rule,
+# not enforced here. Prints one dep name per line to stdout.
+_pack_requires() {
+  local _dir="$1" _line _tok
+  _line="$(grep -E '^[[:space:]]*requires[[:space:]]*=' "$_dir/pack.toml" 2>/dev/null | head -1)"
+  [[ -z "$_line" ]] && return 0
+  _line="${_line#*\[}"
+  _line="${_line%%\]*}"
+  [[ -z "$_line" ]] && return 0
+  local _toks
+  IFS=',' read -ra _toks <<< "$_line"
+  for _tok in "${_toks[@]}"; do
+    _tok="$(printf '%s' "$_tok" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')"
+    [[ -n "$_tok" ]] && printf '%s\n' "$_tok"
+  done
+}
+
 # ── Brownfield-state detection and pre-flight handling (#275) ─────────────────
 # Called once after all brownfield helper functions are defined, after TARGET_REPO
 # is resolved, and before the agent-install phase (§1.2 contract). With
@@ -1146,6 +1165,63 @@ if [[ ${#_resolved_packs[@]} -eq 0 ]]; then
     fi
 fi
 
+# (R2c) Pack dependency closure (ADR-032 D3, #1036). Expands _resolved_packs
+#       to its transitive `requires` closure: DFS post-order (deps before the
+#       pack that needs them), deduped, cycle → hard error (nothing written).
+#       Runs on the leaf(s) resolved above (from --pack or the flagless
+#       config.sh PACK= upgrade path) and REPLACES _resolved_packs with the
+#       closure, so R2b/R3 below slug-validate and existence-check every pack
+#       the walk touches — seed or dependency. `--pack astro` → (node astro);
+#       `--pack node` → (node). Unknown pack hit during the walk → hard error
+#       (same surface as R3). R5 still records the operator-selected LEAF only
+#       (via `_packs`, untouched here) — the closure is re-derived every run,
+#       never persisted to config.sh.
+_pack_leaf_count=${#_resolved_packs[@]}   # R4 must warn on LEAF count, not closure size
+if [[ $_pack_leaf_count -gt 0 ]]; then
+    _pack_closure_order=()
+    _pack_closure_seen=()
+    _pack_closure_stack=()
+
+    _pack_closure_contains() {
+        local _needle="$1"; shift
+        local _x
+        for _x in "$@"; do [[ "$_x" == "$_needle" ]] && return 0; done
+        return 1
+    }
+
+    _pack_closure_visit() {
+        local _p="$1"
+        _pack_closure_contains "$_p" "${_pack_closure_seen[@]+"${_pack_closure_seen[@]}"}" && return 0
+        if _pack_closure_contains "$_p" "${_pack_closure_stack[@]+"${_pack_closure_stack[@]}"}"; then
+            err "pack dependency cycle detected: ${_pack_closure_stack[*]} -> $_p"
+            exit 1
+        fi
+        local _dir
+        _dir="$(_resolve_pack_dir "$_p")" || {
+            err "unknown pack '$_p' — no packs/$_p/ in the consumer repo or HOS source ($HOS_REF)"
+            err "available (HOS): $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+                  | tr -d / | tr '\n' ' ' || echo '(none)')"
+            err "available (consumer): $(cd "$TARGET_REPO/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+                  | tr -d / | tr '\n' ' ' || echo '(none)')"
+            exit 1
+        }
+        _pack_closure_stack+=("$_p")
+        local _dep
+        while IFS= read -r _dep; do
+            [[ -n "$_dep" ]] && _pack_closure_visit "$_dep"
+        done < <(_pack_requires "$_dir")
+        local _stack_n=${#_pack_closure_stack[@]}
+        _pack_closure_stack=("${_pack_closure_stack[@]:0:_stack_n-1}")   # pop (bash 3.2 safe; no negative index)
+        _pack_closure_seen+=("$_p")
+        _pack_closure_order+=("$_p")
+    }
+
+    for _p in "${_resolved_packs[@]}"; do
+        _pack_closure_visit "$_p"
+    done
+    _resolved_packs=("${_pack_closure_order[@]}")
+fi
+
 # (R2b) Slug-validate every resolved pack name before R3/R5 use it.
 #       A name that does not match [a-z0-9][a-z0-9-]* must never reach the
 #       directory-existence check or the `perl -i -pe "s|^PACK=...|PACK=\"$_pk\"|"`
@@ -1183,7 +1259,10 @@ for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
 done
 
 # (R4) Multi-pack → permit, but WARN once (Decision 4 — untested composition).
-if [[ ${#_resolved_packs[@]} -gt 1 ]]; then
+# Gated on the operator-selected LEAF count (#1036), not the closure size — a
+# single leaf whose `requires` expanded to >1 pack is intended layering, not
+# untested multi-pack composition.
+if [[ $_pack_leaf_count -gt 1 ]]; then
     warn "multiple packs selected (${_resolved_packs[*]}) — multi-pack composition"
     warn "is UNTESTED in v0.3.0 (alphabetical order, no conflict resolution);"
     warn "single-pack is the supported path"

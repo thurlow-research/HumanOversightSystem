@@ -545,4 +545,12 @@ idle-backoff suppression (#628) is load-bearing for cost control.
 
 **Open measurement (S20).** The overseer's PR-#1031 carry-in requires this be **measured, not merely revisited if it looks distorted**: S20's Tutelare dogfood field report must record actual mixed-diff composite behavior against the single-language baseline. If the realized skew changes tiers in practice, the combine rule gets reopened with data in hand.
 
+## 2026-07-28 — Installer `pack.toml requires`-closure (ADR-032 D3, #1036, S3)
+
+**Decision.** `bootstrap/hos_install.sh` gains a new R2c step (between R2 and R2b) that expands the operator-selected pack(s) to their transitive `requires` closure — DFS post-order (dependencies before the pack that needs them), deduped, cycle → hard error with nothing written. `config.sh PACK=` keeps recording the operator-selected **leaf only** (single-value, per ADR-031); the closure is re-derived from that leaf on every install and upgrade, never persisted as a multi-value list. The R4 untested-multi-pack WARN is gated on the leaf count the operator actually selected, not the expanded closure size — a single leaf's closure expanding to >1 pack (e.g. `astro` pulling in `node`) is intended layering, not untested multi-pack composition. ✅ implemented (S3, #1036).
+
+**Why.** The Astro pack (`requires = ["node"]`) is the first pack that needs a dependency, and it must never be installed without the `node` layer it builds on. Parsing is a single-line `requires = ["a","b"]` array via grep/sed — no TOML library, bash 3.2 safe. **Pack-authoring rule:** `requires` must be a single-line array; multi-line TOML array syntax is not parsed (to be documented in S19).
+
+**Scope.** Installer only (`packs/node`/`packs/astro` bodies are S13–S18); PACK regions compose alphabetically regardless of closure order, so pack bodies must be authored additively.
+
 **Related.** `prompt_ambiguity` is un-gated in the same slice (S1.4) — it scores the prompt artifact and prompt/code proportions, not language syntax, so it runs on `PY_FILES ∪ JS_FILES`. It is one dimension over the union, so it is *not* subject to the double-count above. `portability` stays Python-gated until S19 (it is genuinely stack-specific).
