@@ -1,0 +1,4 @@
+name = "testpack-dep"
+description = "Throwaway fixture pack for test_requires_closure.py — declares requires=[\"testpack\"]"
+version = "0.1.0"
+requires = ["testpack"]
