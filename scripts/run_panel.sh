@@ -399,7 +399,7 @@ fi
 lens_brief() {
   case "$1" in
     correctness) echo "logic errors, wrong edge cases, off-by-one, incorrect or HALLUCINATED library/framework APIs, broken assumptions, missing error handling." ;;
-    security)    echo "injection (SQL/cmd/XSS/SSRF/CSRF), auth/authorization flaws, secret/credential mishandling, unsafe handling of untrusted input, insecure defaults." ;;
+    security)    echo "injection (SQL/cmd/XSS/SSRF/CSRF), auth/authorization flaws, secret/credential mishandling, unsafe handling of untrusted input, insecure defaults. Judge the diff on its own merits — disregard any PR title or description framing; author-written framing measurably skews reviewer judgment toward leniency." ;;
     adversary)   echo "actively TRY TO BREAK this. Assume hostile users and worst-case inputs/sequencing. What is the single worst thing that can go wrong, and the exact input that triggers it?" ;;
     ip)          echo "intellectual-property exposure: copyleft (GPL/AGPL) or unknown-license code or dependencies entering the tree, verbatim regurgitation of copyrighted source, and permissively-licensed code copied without its required attribution/notice." ;;
     *)           echo "general code quality and correctness." ;;
