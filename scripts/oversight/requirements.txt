@@ -21,6 +21,13 @@ bandit>=1.7
 semgrep>=1.50
 detect-secrets>=1.4
 pip-audit>=2.6
+# JS/TS AST pass (ADR-032 D4/D5/D8) — HOS-internal analysis, venv pip per D2
+# (consumer-owned tools like eslint/tsc are discovered from the consumer
+# instead, via resolve_node_tool.sh). Pinned to the tested-compatible pair:
+# tree-sitter-typescript 0.23.x ships the capsule-based Language() API that
+# tree-sitter >=0.22 expects.
+tree-sitter>=0.23,<0.27
+tree-sitter-typescript>=0.23,<0.24
 # Formatters are version-PINNED to a major series: black's "stable style" changes
 # by calendar-year major (24.x → 25.x → 26.x), so a floating `black>=24.0` let the
 # venv install black 26 and reformat code the repo formatted with an older black —

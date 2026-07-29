@@ -100,7 +100,7 @@ _create_venv() {
 # Runs on every invocation so a broken venv (e.g. after a Python upgrade or
 # path change) is caught and repaired without human intervention.
 _smoke_test_venv() {
-  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8" 2>/dev/null
+  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8, tree_sitter, tree_sitter_typescript" 2>/dev/null
 }
 
 if ! _check_venv_stale; then
