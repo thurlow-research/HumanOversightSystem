@@ -25,6 +25,14 @@ name: Require overseer approval (all PRs)
 # workflow or the gate script to neuter the check that gates it. The PR's reviews
 # are read as DATA via gh API calls, never checked out and executed. (Same
 # security model as require-human-approval.yml and require-tier-ceiling.yml.)
+#
+# SECURITY (#972): this workflow also re-runs on pull_request_review, and under
+# that event GITHUB_REF is the PR's MERGE ref (base + head), not the base branch
+# — unlike pull_request_target. A bare `actions/checkout@v4` on a review-submit
+# run would therefore check out and execute the PR's OWN copy of the gate script,
+# reintroducing the exact self-bypass this file's header warns against. The
+# checkout step below pins `ref: base.sha` explicitly so BOTH trigger types
+# always check out the trusted base, never the PR head or merge ref.
 on:
   pull_request_target:
     branches: [main, "release/v*"]
@@ -50,12 +58,17 @@ jobs:
     name: require-overseer-approval
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (TRUSTED base — never the PR head)
-        # Under pull_request_target the default ref is the base branch, so this
-        # checks out the trusted gate script and machine-accounts.env. Do NOT add
-        # `ref: ${{ github.event.pull_request.head.sha }}` — that would run the
-        # PR's version of the gate and reintroduce the self-bypass.
+      - name: Checkout (TRUSTED base — never the PR head or merge ref)
+        # Explicitly pin the base SHA so this is correct under BOTH trigger
+        # types: pull_request_target (where the default ref is already base,
+        # so this is a no-op) and pull_request_review (where the default ref
+        # is the PR's merge ref — base+head — and a bare checkout would run
+        # the PR's own copy of the gate script; see #972). Do NOT change this
+        # to `${{ github.event.pull_request.head.sha }}` or the merge ref —
+        # that would reintroduce the self-bypass.
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Overseer approval gate
         env:
