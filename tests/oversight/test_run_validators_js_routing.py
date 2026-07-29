@@ -120,10 +120,10 @@ def test_deleted_js_file_is_not_routed(tmp_path: Path):
 def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
     """JS-only changeset with most `*_js.py` still absent must SKIP, not fail closed.
 
-    The remaining JS validators land in S5–S9. Until then the dispatch block must
+    The remaining JS validators land in S6–S9. Until then the dispatch block must
     stay inert for them: the run still exits 0 and the stack-neutral `ALL_FILES`
-    validators (plus the now-real `complexity_js`, landed in S4) keep the
-    composite out of the fail-closed CRITICAL branch.
+    validators (plus the now-real `complexity_js`/`function_metrics_js`, landed in
+    S4/S5) keep the composite out of the fail-closed CRITICAL branch.
     """
     init_repo(tmp_path)
     commit_files(
@@ -147,7 +147,8 @@ def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
     # Still-missing JS validators are skipped cleanly — no result files, no failures.
     assert "SKIP (script not found)" in proc.stdout
     assert (tmp_path / OUT_REL / "complexity_js.json").exists()
-    assert not list((tmp_path / OUT_REL).glob("function_metrics_js.json"))
+    assert (tmp_path / OUT_REL / "function_metrics_js.json").exists()
+    assert not list((tmp_path / OUT_REL).glob("n1_queries_js.json"))
 
 
 def test_js_only_run_ungates_prompt_ambiguity(tmp_path: Path):
