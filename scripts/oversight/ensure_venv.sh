@@ -54,7 +54,9 @@ _check_venv_stale() {
 # building the venv (radon/bandit/flake8 + their deps). A full disk otherwise
 # surfaces as a generic "venv unavailable" with no hint about the real cause
 # (#954: a full /tmp made pip ENOSPC, which read as a missing-venv FATAL).
-_EVENV_MIN_FREE_KB=512000  # ~500 MB
+# Bumped for semgrep's footprint (ADR-032 D6) — semgrep alone brings the venv
+# to ~480 MB, well past the pre-JS floor.
+_EVENV_MIN_FREE_KB=1024000  # ~1 GB
 
 # Report free space at the venv's filesystem, e.g. "412 MB free". Best-effort:
 # returns nothing if df is unavailable or reports oddly.
@@ -100,7 +102,7 @@ _create_venv() {
 # Runs on every invocation so a broken venv (e.g. after a Python upgrade or
 # path change) is caught and repaired without human intervention.
 _smoke_test_venv() {
-  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8, tree_sitter, tree_sitter_typescript" 2>/dev/null
+  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8, tree_sitter, tree_sitter_typescript, semgrep" 2>/dev/null
 }
 
 if ! _check_venv_stale; then

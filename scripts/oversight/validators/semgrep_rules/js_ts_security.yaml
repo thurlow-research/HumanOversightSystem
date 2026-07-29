@@ -1,0 +1,108 @@
+# js_ts_security.yaml — vendored JS/TS security ruleset for static_analysis_js.py
+#
+# Vendored (not fetched from the semgrep registry) so scores are reproducible
+# offline and never drift when an upstream `p/...` ruleset changes underfoot
+# (ADR-032 D6: "Pin semgrep + a vendored ruleset version"). Bump this file
+# deliberately, in its own reviewed change, when the rule set needs to grow —
+# do not let it drift silently.
+#
+# severity: ERROR is scored like bandit's HIGH (3x weight + tier_floor);
+# WARNING is scored like bandit's MEDIUM. There is no INFO tier here — every
+# rule is at least a MEDIUM+ signal (ADR-032 D6), matching the Python
+# sibling's HIGH/MEDIUM-only scoring (LOW/INFO carry no signal).
+rules:
+  - id: eval-use
+    languages: [js, ts]
+    severity: ERROR
+    message: >-
+      Use of eval() executes arbitrary strings as code — a common injection
+      vector when any part of the input is attacker-influenced.
+    pattern: eval(...)
+
+  - id: function-constructor
+    languages: [js, ts]
+    severity: ERROR
+    message: >-
+      The Function constructor compiles a string into executable code, the
+      same injection risk class as eval().
+    pattern: new Function(...)
+
+  - id: tls-reject-unauthorized-disabled
+    languages: [js, ts]
+    severity: ERROR
+    message: >-
+      rejectUnauthorized:false disables TLS certificate validation, exposing
+      the connection to interception.
+    patterns:
+      - pattern: "{rejectUnauthorized: false, ...}"
+
+  - id: child-process-exec-injection
+    languages: [js, ts]
+    severity: ERROR
+    message: >-
+      Shell command built from a template literal or concatenation and
+      passed to child_process exec/execSync — attacker-influenced input here
+      is command injection.
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec(`...${$X}...`, ...)
+          - pattern: child_process.execSync(`...${$X}...`, ...)
+          - pattern: exec(`...${$X}...`, ...)
+          - pattern: execSync(`...${$X}...`, ...)
+          - pattern: child_process.exec($A + $B, ...)
+          - pattern: child_process.execSync($A + $B, ...)
+
+  - id: jwt-alg-none
+    languages: [js, ts]
+    severity: ERROR
+    message: >-
+      JWT algorithm "none" accepts unsigned tokens — any client can forge a
+      valid-looking token.
+    patterns:
+      - pattern-either:
+          - pattern: "{algorithm: 'none', ...}"
+          - pattern: "{alg: 'none', ...}"
+
+  - id: dangerously-set-inner-html
+    languages: [js, ts]
+    severity: WARNING
+    message: >-
+      dangerouslySetInnerHTML renders raw HTML — an XSS vector unless the
+      value is verified sanitized at this call site.
+    pattern: "<$TAG dangerouslySetInnerHTML={{__html: $X}} />"
+
+  - id: innerhtml-assignment
+    languages: [js, ts]
+    severity: WARNING
+    message: >-
+      Assigning to .innerHTML renders raw HTML — an XSS vector unless the
+      value is verified sanitized at this call site.
+    pattern: $EL.innerHTML = $X
+
+  - id: weak-hash-algorithm
+    languages: [js, ts]
+    severity: WARNING
+    message: >-
+      MD5/SHA1 are broken for security purposes (collision-prone); use
+      SHA-256 or better where the hash has any integrity/security role.
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash('md5')
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash('sha1')
+          - pattern: crypto.createHash("sha1")
+
+  - id: hardcoded-secret-assignment
+    languages: [js, ts]
+    severity: WARNING
+    message: >-
+      String literal assigned to a variable whose name suggests a credential
+      — verify this is not a hardcoded secret committed to source.
+    patterns:
+      - pattern-either:
+          - pattern: const $VAR = "..."
+          - pattern: let $VAR = "..."
+          - pattern: var $VAR = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)^(password|passwd|secret|api_?key|access_?token|auth_?token|private_?key)$
