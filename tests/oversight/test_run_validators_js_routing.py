@@ -6,8 +6,9 @@ signal was mostly noise. S1 adds a parallel `JS_FILES` lane that routes those
 files to `*_js.py` validators (landing in S4–S9).
 
 These tests pin the routing itself — which files reach which lane, and that a
-JS-only changeset still completes cleanly while the `*_js.py` scripts do not yet
-exist (each is SKIPped, not fatal, so S1 ships green ahead of S4–S9).
+JS-only changeset still completes cleanly while most `*_js.py` scripts do not yet
+exist (each is SKIPped, not fatal, so S1 ships green ahead of S4–S9;
+`complexity_metrics_js.py` landed in S4 and is dispatched for real).
 
 The Python-side non-regression guard is `test_run_validators_byte_identical.py`.
 """
@@ -117,10 +118,11 @@ def test_deleted_js_file_is_not_routed(tmp_path: Path):
 
 
 def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
-    """JS-only changeset with no `*_js.py` present must SKIP, not fail closed.
+    """JS-only changeset with most `*_js.py` still absent must SKIP, not fail closed.
 
-    The JS validators land in S4–S9. Until then the dispatch block must be inert:
-    the run still exits 0 and the stack-neutral `ALL_FILES` validators keep the
+    The remaining JS validators land in S5–S9. Until then the dispatch block must
+    stay inert for them: the run still exits 0 and the stack-neutral `ALL_FILES`
+    validators (plus the now-real `complexity_js`, landed in S4) keep the
     composite out of the fail-closed CRITICAL branch.
     """
     init_repo(tmp_path)
@@ -142,9 +144,10 @@ def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
     assert summary["tier"] != "CRITICAL"
     assert summary["successful_validators"] > 0
     assert "error" not in summary
-    # Missing JS validators are skipped cleanly — no result files, no failures.
+    # Still-missing JS validators are skipped cleanly — no result files, no failures.
     assert "SKIP (script not found)" in proc.stdout
-    assert not list((tmp_path / OUT_REL).glob("*_js.json"))
+    assert (tmp_path / OUT_REL / "complexity_js.json").exists()
+    assert not list((tmp_path / OUT_REL).glob("function_metrics_js.json"))
 
 
 def test_js_only_run_ungates_prompt_ambiguity(tmp_path: Path):
