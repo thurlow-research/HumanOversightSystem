@@ -94,10 +94,16 @@ ALL_FILES=()
 # Lowercase extensions only, mirroring the `*.py` match (DQ-1).
 JS_FILES=()
 JS_EXTS_RE='\.(ts|tsx|js|jsx|astro|mjs|cjs)$'
+# package.json is additive (not part of JS_FILES — it must not reach the
+# tree-sitter validators) so hallucination_surface_js.py's dependency-existence
+# check (S7, #1063) still fires on a package.json-only bump with no other JS
+# touched, without changing JS_FILES membership or JS_EXTS_RE (AC-2 untouched).
+PKG_JSON_FILES=()
 for f in ${FILES[@]+"${FILES[@]}"}; do  # bash 3.2: unguarded expansion crashes on empty array
     ALL_FILES+=("$f")
     [[ "$f" == *.py && -f "$f" ]] && PY_FILES+=("$f")
     [[ "$f" =~ $JS_EXTS_RE && -f "$f" ]] && JS_FILES+=("$f")
+    [[ "$(basename "$f")" == "package.json" && -f "$f" ]] && PKG_JSON_FILES+=("$f")
 done
 
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
@@ -127,6 +133,7 @@ if [[ -n "${RUN_VALIDATORS_FILELIST_ONLY:-}" ]]; then
     for _af in ${ALL_FILES[@]+"${ALL_FILES[@]}"}; do printf 'ALL_FILES\t%s\n' "$_af"; done
     for _pf in ${PY_FILES[@]+"${PY_FILES[@]}"}; do printf 'PY_FILES\t%s\n' "$_pf"; done
     for _jf in ${JS_FILES[@]+"${JS_FILES[@]}"}; do printf 'JS_FILES\t%s\n' "$_jf"; done
+    for _kf in ${PKG_JSON_FILES[@]+"${PKG_JSON_FILES[@]}"}; do printf 'PKG_JSON_FILES\t%s\n' "$_kf"; done
     exit 0
 fi
 
@@ -290,7 +297,14 @@ if [[ ${#JS_FILES[@]} -gt 0 ]]; then
     run_validator "function_metrics_js" "$VALIDATORS_DIR/function_metrics_js.py"     60 false "${JS_FILES[@]}"
     run_validator "n1_queries_js"       "$VALIDATORS_DIR/n1_detector_js.py"          60 false "${JS_FILES[@]}"
     run_validator "static_analysis_js"  "$VALIDATORS_DIR/static_analysis_js.py"     120 false "${JS_FILES[@]}"
-    run_validator "hallucination_js"    "$VALIDATORS_DIR/hallucination_surface_js.py" 60 false "${JS_FILES[@]}"
+fi
+
+# hallucination_js (S7, #1063) is dispatched independently of the JS_FILES
+# gate above: its package.json dependency-existence check must still fire on
+# a dependency-only bump with zero .ts/.js/.astro files touched.
+if [[ ${#JS_FILES[@]} -gt 0 || ${#PKG_JSON_FILES[@]} -gt 0 ]]; then
+    run_validator "hallucination_js" "$VALIDATORS_DIR/hallucination_surface_js.py" 60 false \
+        ${JS_FILES[@]+"${JS_FILES[@]}"} ${PKG_JSON_FILES[@]+"${PKG_JSON_FILES[@]}"}
 fi
 
 # Migration scorer — all files
