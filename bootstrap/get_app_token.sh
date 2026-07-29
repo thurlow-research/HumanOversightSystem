@@ -2,8 +2,18 @@
 # bootstrap/get_app_token.sh — generate a GitHub App installation token for HOS bot identities
 #
 # Usage (source into current shell so GH_TOKEN + HOS_BOT_LOGIN are exported):
-#   source <(./bootstrap/get_app_token.sh --app worker)
-#   source <(./bootstrap/get_app_token.sh --app overseer)
+#   ./bootstrap/get_app_token.sh --app worker > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#   ./bootstrap/get_app_token.sh --app overseer > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#
+# Do not use `source <(./bootstrap/get_app_token.sh --app ...)`. Process
+# substitution is unreliable in minimal cron environments (/dev/fd may be
+# absent — see bin/hos-worker-cron) and can force an extra confirmation
+# prompt under some tooling even when the underlying command is allowed.
+# bin/hos-worker-cron, bin/hos-overseer-cron, and bin/hos-cron already use
+# the temp-file pattern above; bin/hos-worker and bin/hos-overseer (the
+# interactive launchers) still use `source <()` and should be updated to
+# match — tracked separately since bin/ changes go through the normal build
+# pipeline.
 #
 # After sourcing, `gh api` calls in the same shell use the App installation token.
 # HOS_BOT_LOGIN is set to the App's bot identity (e.g. "hos-worker-hos[bot]") so
