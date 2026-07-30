@@ -4,6 +4,12 @@ This region adds generic JS/TS-stack attack surface to the generic security chec
 
 ---
 
+### Review framing: presume a defect exists
+
+Approach this checklist as an adversary hunting for one exploitable class below, not as a checker asking "does this look secure?" Defect-presuming framing raises vulnerable-code detection substantially over neutral review; a "looks secure" verdict reached without actively trying to construct an exploit for each applicable class below is not a completed review. Work in two passes: (1) comprehend what external input the diff touches and where it flows, then (2) audit each flow against every checklist item below.
+
+---
+
 ### npm supply-chain risk
 
 - A new dependency added without checking its maintenance status, download count, and whether it ships install-time lifecycle scripts (`preinstall`/`install`/`postinstall`) is a **high** finding when the package is unfamiliar or low-usage — lifecycle scripts execute arbitrary code at install time with the installing user's privileges.
@@ -58,3 +64,9 @@ This region adds generic JS/TS-stack attack surface to the generic security chec
 ### Log and metrics output neutralization (CWE-117)
 
 Dynamic values written into a structured-log record or a metrics emitter (Prometheus text exposition, a custom telemetry line) are an injection sink, not just an observability concern. Code that interpolates a header, env var, hostname, or any user/external-derived string into a log line or a metric label without stripping CR/LF or validating against the target format's metacharacters is a finding — unsanitized newlines enable log forging; unescaped label delimiters (`"`, `}`, `\`) can forge or malform emitted metric lines. Require a fail-closed validator (allowlist regex, or explicit escaping) before the value reaches the sink.
+
+---
+
+### Execution evidence for exploit-dependent findings
+
+Several classes above are exploit-dependent, not just pattern-dependent — prototype pollution, ReDoS, command injection, and dynamic-code-execution findings are only confirmed once an actual malicious input is shown to reach the sink. Before marking one of these **critical**/**high**, prefer grounding it in an actual reproduction (a failing test, a REPL trace, or the project's test/execution output resolved from `config.sh`) over a static read of the diff. Where a `critical`/`high` finding in this region cannot be reproduced or grounded in execution output, say so explicitly — an unexecuted "this looks exploitable" claim is weaker evidence than a demonstrated one, and downstream readers (the risk-assessor, the human gate) need to know which they are getting.

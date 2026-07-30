@@ -4,6 +4,12 @@ This region adds generic JS/TS-stack correctness and idiom checks to the generic
 
 ---
 
+### Review framing: presume a defect exists
+
+Do not approach this checklist by asking "does this look correct?" — approach it by assuming the diff contains at least one violation from the list below and hunting for it. Defect-presuming framing measurably raises detection versus neutral framing; an open-ended "looks fine" verdict is the failure mode this region exists to prevent. Work in two passes: (1) comprehend what the diff is trying to do before judging it, then (2) audit it point-by-point against every checklist item below. Skipping straight to a verdict without the audit pass is how correct code gets false-rejected and incorrect code gets waved through.
+
+---
+
 ### Unhandled promise rejections
 
 Check every `async` call site:
@@ -55,3 +61,9 @@ Check every `async` call site:
 ### Node version and engine assumptions
 
 - Code using an API gated behind a Node version newer than the project's `engines.node` floor (check `package.json`) is a finding — verify against the declared floor, not the reviewer's local Node version.
+
+---
+
+### Execution evidence for dynamic-behavior findings
+
+A finding that depends on runtime behavior — an unhandled rejection actually firing, a circular-import cycle actually producing `undefined`, an `EventEmitter` actually crashing on an unhandled `'error'` event — is stronger when grounded in the project's actual test/execution output (resolve the test-output location from `config.sh`, the same location the test-authoring agents write to) rather than argued from reading the diff alone. Where that output exists, cite it. Where a finding in this region is `blocking` and no execution output is available to confirm or refute it, say so explicitly in the finding rather than issuing an unqualified verdict — an unexecuted read on a dynamic-behavior claim is not the same confidence level as one grounded in an actual run, and the difference must be visible to whoever reads the finding next.
