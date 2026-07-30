@@ -65,6 +65,10 @@ EXIT_REGION_ABSENT = 3
 # the usage/invalid codes so the installer can tell "drift, refuse the whole
 # upgrade" apart from a bad invocation; `plan` returns this when blocked.
 EXIT_DRIFT = 4
+# check-pack-conflicts found advisory findings (#1081 Option 3). Distinct from
+# EXIT_INVALID: this is a heuristic prose-level signal, not a structural
+# fail-closed violation — callers must not treat it as "the file is invalid."
+EXIT_CONFLICTS = 5
 
 
 # --------------------------------------------------------------------------- #
@@ -450,6 +454,82 @@ def validate(parsed: ParsedAgent, placeholder_keys: list[str] | None = None) -> 
 
     errors.sort(key=lambda e: (e[0], e[1]))
     return Result(ok=not errors, errors=errors)
+
+
+# --------------------------------------------------------------------------- #
+# PACK conflict detection — advisory only (#1081 Option 3)
+# --------------------------------------------------------------------------- #
+
+_NEGATION_RE = re.compile(
+    r"(?:do not|don't|never)\s+use\s+([A-Za-z][A-Za-z0-9_.\-]*)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Conflict:
+    region_a: str  # the region carrying the negation, e.g. "PACK:node"
+    region_b: str  # the region carrying the conflicting recommendation
+    term: str
+    detail: str
+
+
+def detect_pack_conflicts(regions: list[Region]) -> list[Conflict]:
+    """
+    Advisory heuristic for #1081 Option 3. ADR-032 D3 requires PACK bodies to
+    compose additively and never contradict each other, but that is prose
+    discipline with no structural check — the exact "unenforceable rule" smell
+    `research/findings/unenforceable-rules-need-verification-mechanisms.md`
+    warns about. This flags it when detectable; it does not (and cannot)
+    guarantee detection.
+
+    Deliberately narrow-precision, not broad-recall: a broad heuristic that
+    flags any two PACK bodies merely mentioning the same tool name
+    false-positives on legitimate layering — e.g. PACK:node presents both
+    jest and vitest as acceptable ("do not assume one over the other; use
+    whichever the project already has installed"), while PACK:astro
+    recommends vitest specifically for the Container API. That is additive
+    depth, not contradiction, and a co-occurrence check would wrongly flag it
+    on the framework's own (correct) pack bodies.
+
+    This function only flags an EXPLICIT negation in one PACK body ("do not
+    use X" / "don't use X" / "never use X") paired with an EXPLICIT
+    affirmative recommendation of the same term ("use X" / "prefer X" /
+    "target X") in another PACK body for the same agent. It will miss softer
+    or implicit contradictions (recall is intentionally low) but should not
+    fire on correctly-authored additive packs (precision is the design goal).
+
+    Findings are advisory, not fail-closed: regions.py's fail-closed guarantee
+    (validate()) covers only structural invariants; prose-level conflict
+    detection is heuristic by nature and callers must not block on it alone.
+    """
+    packs = [r for r in regions if r.id.startswith("PACK:")]
+    seen: set[tuple[str, str, str]] = set()
+    conflicts: list[Conflict] = []
+    for a in packs:
+        a_text = a.body.decode("utf-8", errors="replace")
+        forbidden_terms = {m.rstrip(".,;:") for m in _NEGATION_RE.findall(a_text)}
+        for term in forbidden_terms:
+            recommend_re = re.compile(
+                r"\b(?:use|prefer|target)\s+" + re.escape(term) + r"\b",
+                re.IGNORECASE,
+            )
+            for b in packs:
+                if b is a or not recommend_re.search(b.body.decode("utf-8", errors="replace")):
+                    continue
+                key = (a.id, b.id, term.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                conflicts.append(
+                    Conflict(
+                        region_a=a.id,
+                        region_b=b.id,
+                        term=term,
+                        detail=f"{a.id} says not to use '{term}'; {b.id} recommends it",
+                    )
+                )
+    return conflicts
 
 
 # --------------------------------------------------------------------------- #
@@ -1138,6 +1218,21 @@ def _cmd_validate(args) -> int:
     return EXIT_INVALID
 
 
+def _cmd_check_pack_conflicts(args) -> int:
+    data = _read_file(args.file)
+    try:
+        parsed = parse(data)
+    except ParseError as e:
+        sys.stderr.write(f"{args.file}: parse error {e}\n")
+        return EXIT_INVALID
+    conflicts = detect_pack_conflicts(parsed.regions)
+    if not conflicts:
+        return EXIT_OK
+    for c in conflicts:
+        sys.stdout.write(f"{c.region_a}<->{c.region_b}:{c.term}:{c.detail}\n")
+    return EXIT_CONFLICTS
+
+
 def _cmd_region_sha(args) -> int:
     data = _read_file(args.file)
     try:
@@ -1375,6 +1470,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated keys; flag any {KEY} inside CORE/PACK (D7)",
     )
     va.set_defaults(func=_cmd_validate)
+
+    cp = sub.add_parser(
+        "check-pack-conflicts",
+        help="advisory-only: flag explicit negation vs. recommendation across "
+        "PACK regions of one composed agent file (#1081 Option 3; exit 5 on "
+        "findings — NOT a fail-closed structural check)",
+    )
+    cp.add_argument("file")
+    cp.set_defaults(func=_cmd_check_pack_conflicts)
 
     rs = sub.add_parser("region-sha", help="print the sha of one region (exit 3 if absent)")
     rs.add_argument("file")

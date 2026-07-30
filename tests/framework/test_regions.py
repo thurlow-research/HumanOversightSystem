@@ -15,6 +15,9 @@ spec §4 / §11/§11a decisions the module must honor:
     PACK-to-PACK order is preserved, not alphabetized — #1080)
   - line-ending + trailing-newline normalization (LF/CRLF/CR invariant; compose
     writes LF only; the D1 substitution-before-sha identity)
+  - detect_pack_conflicts(): advisory negation-vs-recommendation heuristic
+    across PACK regions (#1081 Option 3), incl. a dogfood guard over every
+    declared pack.toml `requires` closure
 
 regions is importable bare because tests/conftest.py puts the validators dir on
 sys.path (same pattern as the other validator tests).
@@ -28,6 +31,7 @@ import pytest
 import regions
 from regions import (
     compose,
+    detect_pack_conflicts,
     manifest_rows,
     parse,
     region_sha,
@@ -438,6 +442,79 @@ def test_manifest_rows_flat_file_implicit_core():
 
 
 # --------------------------------------------------------------------------- #
+# PACK conflict detection — advisory only (#1081 Option 3)
+# --------------------------------------------------------------------------- #
+
+
+def _pack_region(name, body):
+    return regions.Region(id=f"PACK:{name}", name=name, body=body.encode("utf-8"), start_line=1, end_line=1)
+
+
+def test_detect_pack_conflicts_flags_explicit_negation_vs_recommendation():
+    a = _pack_region("node", "Never use jest for new tests.")
+    b = _pack_region("astro", "Use jest for component tests.")
+    found = detect_pack_conflicts([a, b])
+    assert len(found) == 1
+    assert found[0].region_a == "PACK:node"
+    assert found[0].region_b == "PACK:astro"
+    assert found[0].term == "jest"
+
+
+def test_detect_pack_conflicts_ignores_plain_co_occurrence():
+    # Both packs merely mention the same tool without one negating it — this is
+    # additive layering (the astro/node jest-vs-vitest case in production), not
+    # a contradiction, and must NOT be flagged.
+    a = _pack_region("node", "Use whichever the project already has installed: jest or vitest.")
+    b = _pack_region("astro", "Use vitest for Container API rendering tests.")
+    assert detect_pack_conflicts([a, b]) == []
+
+
+def test_detect_pack_conflicts_no_negation_no_finding():
+    a = _pack_region("node", "Use eslint for linting.")
+    b = _pack_region("astro", "Use eslint for linting.")
+    assert detect_pack_conflicts([a, b]) == []
+
+
+def test_detect_pack_conflicts_ignores_non_pack_regions():
+    core = regions.Region(id="CORE", name=None, body=b"Never use jest.", start_line=1, end_line=1)
+    pack = _pack_region("node", "Use jest for unit tests.")
+    assert detect_pack_conflicts([core, pack]) == []
+
+
+def test_dogfood_declared_pack_closures_have_no_detected_conflicts():
+    # Only exercise closures declared for real (non-fixture) use via pack.toml
+    # `requires` — testcycle-*/testpack* dirs are throwaway fixtures for
+    # test_requires_closure.py / test_pack_install.py, never installed together
+    # in production, and are exempt from this dogfood guard.
+    import ast
+    import re as _re
+
+    packs_dir = ROOT / "packs"
+    requires_re = _re.compile(r"requires\s*=\s*(\[[^\]]*\])")
+    real_packs = {}
+    for pack_dir in sorted(p for p in packs_dir.iterdir() if p.is_dir()):
+        if pack_dir.name.startswith(("testcycle", "testpack")):
+            continue
+        toml_text = (pack_dir / "pack.toml").read_text()
+        m = requires_re.search(toml_text)
+        real_packs[pack_dir.name] = ast.literal_eval(m.group(1)) if m else []
+
+    for name, deps in real_packs.items():
+        if not deps:
+            continue
+        closure = [*deps, name]
+        agents_present = set.intersection(
+            *[{f.name for f in (packs_dir / p).glob("*.md")} for p in closure]
+        )
+        for agent in sorted(agents_present):
+            pack_regions = [
+                _pack_region(p, (packs_dir / p / agent).read_text(encoding="utf-8")) for p in closure
+            ]
+            found = detect_pack_conflicts(pack_regions)
+            assert found == [], f"{agent} across {closure}: {found}"
+
+
+# --------------------------------------------------------------------------- #
 # CLI surface (TD §2.7)
 # --------------------------------------------------------------------------- #
 
@@ -503,6 +580,28 @@ def test_cli_compose_roundtrips():
     x = _shas(parse(FIXTURE.read_bytes()))
     y = _shas(parse(composed))
     assert x == y
+
+
+def test_cli_check_pack_conflicts_clean_exit_zero():
+    r = _run("check-pack-conflicts", str(FIXTURE))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout == ""
+
+
+def test_cli_check_pack_conflicts_finding_exit_five():
+    bad = FIXTURE.parent / "_tmp_conflict.md"
+    bad.write_bytes(
+        _agent(
+            core="core body",
+            packs={"node": "Never use jest.", "astro": "Use jest for component tests."},
+        )
+    )
+    try:
+        r = _run("check-pack-conflicts", str(bad))
+        assert r.returncode == 5
+        assert "PACK:node<->PACK:astro:jest:" in r.stdout
+    finally:
+        bad.unlink()
 
 
 # --------------------------------------------------------------------------- #
