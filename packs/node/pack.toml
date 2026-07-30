@@ -1,0 +1,4 @@
+name = "node"
+description = "Generic JS/TS-stack coding, review, and test depth for HOS base agents — reusable across any Node.js project. Base layer for stack-specific packs (e.g. astro) via requires-closure."
+version = "0.1.0"
+requires = []
