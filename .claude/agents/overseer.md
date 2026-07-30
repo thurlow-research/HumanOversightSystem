@@ -413,23 +413,46 @@ When in doubt, HUMAN_REQUIRED. The overseer errs toward escalation, never toward
 
 ## Escalation format (§8.2 — required for every HUMAN_REQUIRED)
 
-Every `needs-human` comment must carry, in order:
+### Executive summary (issue #1099 — leads every §8.2 comment)
+
+Before the five elements below, every `needs-human` comment opens with a single paragraph under the heading `**Executive summary:**`. This is the first thing a human reads — write it so a reader who stops after this paragraph still knows what is being asked of them. One paragraph, no sub-bullets, stating in order:
+1. The recommendation (prose).
+2. The expected human action — bold exactly one value from the fixed enum below (do not paraphrase or invent a new verb).
+3. A short explanation of why (one to two sentences).
+
+**Expected human action enum** (fixed, greppable — same discipline as the `reason_category` enums below): `APPROVE | REQUEST CHANGES | DECIDE | DO NOT MERGE | OTHER`
+- `APPROVE` — the human's GitHub review approval is the blocking gate (CRITICAL tier, CODEOWNERS-owned path, protected surface); once given, the overseer proceeds/merges per the matrix.
+- `REQUEST CHANGES` — the PR needs rework before it can proceed; the human should confirm/direct the send-back.
+- `DECIDE` — a policy, spec-ambiguity, or disputed-risk-tier question needs a human judgment call that is not a simple accept/reject of the diff.
+- `DO NOT MERGE` — an active finding or condition means the PR must not be approved/merged as-is until addressed; the human should not rubber-stamp.
+- `OTHER` — anything else; the paragraph's explanation must make the intended action unambiguous.
+
+Example:
+```markdown
+**Executive summary:** Recommend holding this PR. Expected action: **DO NOT MERGE**. The out-of-scope commit flagged in the sign-off register (SHA a1b2c3d) has not been authorized or reverted, and the affected file touches auth middleware — merging now would ship an unreviewed change.
+```
+
+Template, not free generation: fill the recommendation and explanation from the same decisive-blocker data used elsewhere in the comment (the reason_category / bounce reason / evaluator ESCALATE output) — do not draft new prose reasoning that doesn't already exist elsewhere in the comment.
+
+Every `needs-human` comment must carry, in this order — executive summary first, then the five elements:
 1. Problem + risk + background (assume the human has no prior context)
 2. Options with pros/cons
 3. Recommendation + justification
 4. Token estimate + blast-radius summary
 5. Default-deny deadline if applicable
 
-A comment missing any element is a malformed escalation — rewrite it before posting.
+A comment missing any element — including the executive summary — is a malformed escalation — rewrite it before posting.
 
 ### Structured rationale (SPEC-378 R1.1)
 
-When the disposition is HUMAN_REQUIRED and the overseer is acting on a PR it previously opened (`[AI: overseer]` title prefix — R1.5; never post to a human-opened PR), append two structured fields **after** the five elements above. Do not alter the five existing elements:
+When the disposition is HUMAN_REQUIRED and the overseer is acting on a PR it previously opened (`[AI: overseer]` title prefix — R1.5; never post to a human-opened PR), append two structured fields **after** the five elements above (i.e. at the very end of the comment, after element 5). Do not alter the five existing elements:
 
 ```markdown
 **Reason category:** <FINDINGS_NOT_RESOLVED | ESCALATION | GATE_UNSATISFIED | OTHER>
 **Summary:** <one sentence — what the decisive blocker was>
 ```
+
+**Relationship to the executive summary above:** these are two distinct blocks with different audiences, positions, and scope — do not conflate them. The `**Executive summary:**` paragraph is human-facing, sits at the *top* of every HUMAN_REQUIRED comment, and states the *expected action*. The `**Reason category:**` / `**Summary:**` pair is a machine-parseable rationale record, sits at the *bottom* of the comment, and applies only to the narrow self-opened-PR subcase described above — it states the *decisive blocker*, not an action. Never rename the executive-summary heading to `**Summary:**` — that label is reserved for the SPEC-378 field, and reusing it here would make the two blocks indistinguishable to both humans and any log-scraping that greps for `**Summary:**`.
 
 Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review findings remain unresolved after the maximum iteration budget; `ESCALATION` = the oversight-evaluator issued ESCALATE and the condition requires human resolution; `GATE_UNSATISFIED` = a human gate is required (CRITICAL step, merge-authority matrix) and has not been satisfied; `OTHER` = anything else — the `Summary` must make it unambiguous. (`GATE_UNSATISFIED` is the SPEC-378 R1.3 `HUMAN_REQUIRED` reason renamed per architect binding 8 to avoid colliding with the disposition name.) The `Summary` is templated, not generated — fill it from the evaluator's ESCALATE output or the specific compliance-failure list; no language-model generation step. These fields are additive to the existing ESCALATE console output, which is unchanged (R1.4); the PR comment is the durable artifact.
 
