@@ -1264,7 +1264,7 @@ done
 # untested multi-pack composition.
 if [[ $_pack_leaf_count -gt 1 ]]; then
     warn "multiple packs selected (${_resolved_packs[*]}) — multi-pack composition"
-    warn "is UNTESTED in v0.3.0 (alphabetical order, no conflict resolution);"
+    warn "is UNTESTED in v0.3.0 (dependency-closure order, no conflict resolution);"
     warn "single-pack is the supported path"
 fi
 
@@ -1440,8 +1440,11 @@ else
 
     # (A1b) Pack injection (ADR-031 §3.1 step 4). For each selected pack that
     # deepens THIS agent (packs/<pack>/<agent>.md exists), inject its PACK:<pack>
-    # region into the staged CORE template. compose() (inside inject-pack) re-sorts
-    # alphabetically, so injection order is irrelevant. An agent with no pack file
+    # region into the staged CORE template. compose() (inside inject-pack) keeps
+    # PACK regions in the order they were injected (#1080), so injection order
+    # IS significant: _resolved_packs is already in dependency-closure order
+    # (deps-first, R2c above), so iterating it in order here composes the most-
+    # specific pack last, matching recency precedence. An agent with no pack file
     # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
     # are NEVER substituted (D6) — they are injected raw, post-substitution.
     # _resolve_pack_dir is called once per pack (B-4: never call it twice; it logs).
