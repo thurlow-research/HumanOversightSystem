@@ -4,6 +4,26 @@ This region adds generic JS/TS-specific test tooling, idioms, and patterns to th
 
 ---
 
+### Spec-derived test independence
+
+Derive each assertion's expected value from the technical design and the module's documented contract — its exported TypeScript interface, JSDoc `@param`/`@returns`, or a runtime schema (Zod, io-ts, TypeBox) — not by running the implementation and copying its current output into the assertion. A test whose expected value was captured that way is not a test; it certifies whatever the implementation does today, bugs included, and keeps passing after a regression that changes the output.
+
+Where the module defines a runtime schema, validate against it directly instead of hand-writing shape assertions that merely happen to match the implementation's return value:
+
+```typescript
+import { orderSchema } from "../src/schemas/order.js";
+
+test("computes order total from line items", () => {
+  const result = computeOrderTotal(fixture);
+  expect(orderSchema.parse(result)).toEqual(result); // throws if result violates the documented schema
+  expect(result.total).toBe(4599); // value derived from the spec's pricing rule, not from running computeOrderTotal
+});
+```
+
+When you can see the diff that produced the code under test, do not read the diff to decide what to assert — read the spec/design section first, write the expected value from that, then check it against the diff. Coverage and mutant score (CORE targets) measure how much of the implementation your tests exercise; they say nothing about whether the exercised behavior is correct. Assertions sourced from the implementation instead of the spec can meet both targets and still certify nothing.
+
+---
+
 ### Test stack: tools and invocation
 
 **Test runner and coverage:**

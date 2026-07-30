@@ -36,6 +36,23 @@ Exercise the real auth flow at least once per protected route class (login → s
 
 ---
 
+### Contract-first independence
+
+When the project publishes a machine-readable API contract (an OpenAPI/Swagger document, a shared Zod/io-ts schema package, a tRPC or GraphQL SDL definition), validate the actual response against that contract — not only against hand-written assertions that happen to match the handler's current output:
+
+```javascript
+import { orderResponseSchema } from "../../src/contracts/order.js";
+
+test("GET /orders/:id matches the published contract", async () => {
+  const res = await request(app).get(`/orders/${id}`);
+  expect(() => orderResponseSchema.parse(res.body)).not.toThrow();
+});
+```
+
+The contract is the durable, reviewable oracle; the handler's current serialization is not. Do not derive the contract validator from the handler's current output (e.g. snapshotting today's response into a schema file) — trace it back to the spec/design doc or to a contract file the coder did not generate from the implementation. A response that satisfies your hand-written assertions but fails contract validation is a drift signal to report, not a passing test.
+
+---
+
 ### Real dependencies over mocks at the system level
 
 System tests exist to catch integration bugs that unit tests (which mock the boundary) cannot. Run system tests against a real (or realistic containerized) instance of the database, cache, or queue the service depends on — not a mock of the client library. Reserve mocking, at this layer, for genuinely external third-party services (a payment gateway, an email provider) that cannot be run locally; use a recorded-fixture/sandbox mode for those where the provider offers one.
