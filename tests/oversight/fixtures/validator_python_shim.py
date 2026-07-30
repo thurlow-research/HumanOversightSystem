@@ -28,6 +28,7 @@ import sys
 # not weight policy.
 _TABLE: dict[str, tuple[str, float, float]] = {
     "rn_calculator.py": ("risk_number", 0.11, 0.15),
+    "rn_calculator_js.py": ("risk_number", 0.10, 0.18),
     "complexity_metrics.py": ("complexity", 0.22, 0.10),
     "complexity_metrics_js.py": ("complexity", 0.21, 0.08),
     "function_metrics.py": ("function_metrics", 0.33, 0.08),

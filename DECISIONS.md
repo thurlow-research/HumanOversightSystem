@@ -554,3 +554,13 @@ idle-backoff suppression (#628) is load-bearing for cost control.
 **Scope.** Installer only (`packs/node`/`packs/astro` bodies are S13–S18); PACK regions compose alphabetically regardless of closure order, so pack bodies must be authored additively.
 
 **Related.** `prompt_ambiguity` is un-gated in the same slice (S1.4) — it scores the prompt artifact and prompt/code proportions, not language syntax, so it runs on `PY_FILES ∪ JS_FILES`. It is one dimension over the union, so it is *not* subject to the double-count above. `portability` stays Python-gated until S19 (it is genuinely stack-specific).
+
+## 2026-07-30 — RN calculator JS/TS sibling, provisional calibration (ADR-032 D7, #1064, S8)
+
+**Decision.** `rn_calculator_js.py` implements Dai et al. Risk Number for JS/TS/JSX/TSX/Astro via a tree-sitter walk over the same `_FUNCTION_TYPES` set as `complexity_metrics_js.py`/`function_metrics_js.py`. It reuses the Python sibling's nesting-increment coefficient table verbatim (duplicated, not imported — consistent with the existing `_js` sibling convention of full independence). `raw_value["calibration"]` is unconditionally set to `"provisional-js-reuses-python-weights"` so the flag reaches the risk-assessor's inspection brief without inspecting source, per D7. dimension="risk_number", weight=`WEIGHTS["risk_number"]` (0.18) — unchanged from the Python dimension. ✅ implemented (S8, #1029).
+
+**Why.** No JS-specific defect-regression data exists yet to calibrate nesting increments independently, and #1064 explicitly rules out silently applying Python-calibrated weights as if equally validated. Shipping with an always-visible provisional flag lets the dimension contribute real signal now (better than N/A) while making the calibration gap impossible to miss downstream.
+
+**Depth-tracking simplification (documented limitation).** The Python AST visitor recurses only into a flow-break node's *body*, keeping its condition/test expression at the enclosing nesting depth, and treats `elif`/trailing `else` as siblings rather than an extra nesting level. The JS visitor instead recurses into all of a flow-break node's children uniformly — the same style already used by `complexity_metrics_js.py`'s decision-point counter and `function_metrics_js.py`'s max-nesting walker. This slightly over-counts depth for conditions containing nested control flow (rare) and for `else if` chains. Acceptable for a provisional heuristic; a precise per-field walk can be added alongside JS recalibration if the over-count proves material.
+
+**Follow-up.** Recalibrate `_NESTING_TABLE` from JS defect data once available (tracked by the open D7 follow-up in ADR-032); until then `calibration` stays `"provisional-js-reuses-python-weights"`.
