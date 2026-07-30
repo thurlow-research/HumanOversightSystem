@@ -134,3 +134,26 @@ def test_config_records_leaf_only_not_closure(tmp_path):
         line for line in config_file.read_text().splitlines() if line.startswith("PACK=")
     ]
     assert pack_lines == ['PACK="testpack-dep"'], f"expected single leaf-only PACK= line: {pack_lines}"
+
+
+@pytest.mark.slow
+def test_pack_astro_resolves_node_dependency(tmp_path):
+    """The real ``--pack astro`` -> node assertion deferred from S3 (#1036) to
+    S16 (#1072), now that packs/astro exists. Mirrors
+    test_pack_dep_injects_both_regions but against the real two-layer pack
+    the astro/node work exists to serve, on an agent both packs deepen."""
+    target = _git_init_target(tmp_path)
+    r = _run_installer(target, ["--pack", "astro"])
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    agent_file = target / ".claude" / "agents" / "coder.md"
+    assert agent_file.exists()
+    ids = [reg.id for reg in parse(agent_file.read_bytes()).regions]
+    assert "PACK:node" in ids, f"node dependency region missing: {ids}"
+    assert "PACK:astro" in ids, f"astro leaf region missing: {ids}"
+
+    config_file = target / "scripts" / "framework" / "config.sh"
+    pack_lines = [
+        line for line in config_file.read_text().splitlines() if line.startswith("PACK=")
+    ]
+    assert pack_lines == ['PACK="astro"'], f"expected single leaf-only PACK= line: {pack_lines}"
