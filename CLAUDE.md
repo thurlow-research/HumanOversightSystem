@@ -193,3 +193,18 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 - Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md`. CORE and PACK regions are HOS-owned — consumer project logic belongs only in PROJECT regions. Stack depth belongs in `packs/<name>/`, not in the base agent files.
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.
+
+### Shell usage
+
+Do not compose ad-hoc multi-command shell blocks. Commands containing
+command substitution `$(...)`, variable expansion `${VAR}`, backslash
+line-continuations, or `for`/`while` loops cannot be covered by any
+permission rule — they prompt every time, and on Worker/Overseer they
+will hang with nobody to answer.
+
+Instead:
+- Use an existing script in `scripts/` or `bootstrap/`
+- If none fits, write one, commit it, then invoke it
+- One command per Bash call; no `&&`/`;` chaining for unrelated steps
+- Never inline logic that already exists as a script — token minting
+  goes through `bootstrap/get_app_token.sh`, never a hand-built JWT
