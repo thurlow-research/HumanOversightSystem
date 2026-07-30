@@ -34,6 +34,7 @@ _TABLE: dict[str, tuple[str, float, float]] = {
     "function_metrics.py": ("function_metrics", 0.33, 0.08),
     "function_metrics_js.py": ("function_metrics", 0.32, 0.07),
     "n1_detector.py": ("n1_queries", 0.44, 0.10),
+    "n1_detector_js.py": ("n1_queries", 0.43, 0.08),
     "static_analysis.py": ("static_analysis", 0.55, 0.15),
     "static_analysis_js.py": ("static_analysis", 0.54, 0.15),
     "hallucination_surface.py": ("hallucination", 0.66, 0.07),
