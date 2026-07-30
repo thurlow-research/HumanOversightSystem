@@ -151,6 +151,12 @@ def test_pack_astro_resolves_node_dependency(tmp_path):
     ids = [reg.id for reg in parse(agent_file.read_bytes()).regions]
     assert "PACK:node" in ids, f"node dependency region missing: {ids}"
     assert "PACK:astro" in ids, f"astro leaf region missing: {ids}"
+    # #1080: PACK:node (the dependency astro requires) must compose BEFORE
+    # PACK:astro (the dependent/most-specific layer) so recency precedence
+    # favors the specialization, not the base it specializes.
+    assert ids.index("PACK:node") < ids.index("PACK:astro"), (
+        f"node must precede astro for recency precedence: {ids}"
+    )
 
     config_file = target / "scripts" / "framework" / "config.sh"
     pack_lines = [
@@ -175,3 +181,8 @@ def test_pack_astro_test_agent_regions_inject(tmp_path):
         ids = [reg.id for reg in parse(agent_file.read_bytes()).regions]
         assert "PACK:node" in ids, f"{agent_name}: node dependency region missing: {ids}"
         assert "PACK:astro" in ids, f"{agent_name}: astro leaf region missing: {ids}"
+        # #1080: node (base) must precede astro (dependent) — recency
+        # precedence.
+        assert ids.index("PACK:node") < ids.index("PACK:astro"), (
+            f"{agent_name}: node must precede astro for recency precedence: {ids}"
+        )

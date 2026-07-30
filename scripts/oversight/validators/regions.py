@@ -7,7 +7,9 @@ An agent `.md` is composed of marker-delimited regions:
     <!-- HOS:PACK:<name>:START -->  ... stack rules ...    <!-- HOS:PACK:<name>:END -->
     <!-- HOS:PROJECT:START -->    ... consumer's rules ... <!-- HOS:PROJECT:END -->
 
-Canonical order is CORE -> PACK:<name> (alphabetical) -> PROJECT (recency
+Canonical order is CORE -> PACK:<name> (stable, in the order the regions were
+given — the installer supplies PACK regions in dependency-closure order, base
+packs before their dependents, hos_install.sh R2c) -> PROJECT (recency
 precedence: the most-specific layer comes last so PROJECT overrides PACK
 overrides CORE). `compose()` is the ONLY writer and always emits this order.
 
@@ -584,30 +586,35 @@ def merge_region(
 # --------------------------------------------------------------------------- #
 
 
-def _canonical_order_key(region: Region) -> tuple:
-    """Sort key implementing CORE -> PACK(alpha) -> PROJECT."""
+def _canonical_order_key(region: Region) -> int:
+    """Sort key implementing CORE -> PACK(stable) -> PROJECT.
+
+    Bucket-only: `sorted()` is stable, so regions within the same bucket keep
+    their input order rather than being re-alphabetized. For PACK regions that
+    input order is the dependency-closure order the caller supplies (deps
+    before dependents, hos_install.sh R2c / `inject-pack` append order) — the
+    property recency precedence depends on (the most-specific pack composes
+    last). Do NOT reintroduce a name tiebreaker here; that silently drops back
+    to alphabetical and reverts this to the ordering bug it fixed (#1080).
+    """
     if region.id == "CORE":
-        bucket = 0
-        name = ""
-    elif region.id.startswith("PACK:"):
-        bucket = 1
-        name = region.name or ""
-    elif region.id == "PROJECT":
-        bucket = 2
-        name = ""
-    else:  # pragma: no cover - parse never produces other ids
-        bucket = 3
-        name = region.id
-    return (bucket, name)
+        return 0
+    if region.id.startswith("PACK:"):
+        return 1
+    if region.id == "PROJECT":
+        return 2
+    return 3  # pragma: no cover - parse never produces other ids
 
 
 def compose(parsed_or_regions: ParsedAgent | list[Region]) -> bytes:
     """
     Rebuild the canonical file (TD §2.5). The ONLY writer.
 
-    Order: front-matter -> CORE -> each PACK:<name> in alphabetical name order
-    -> PROJECT last. PROJECT is NOT synthesized if absent (callers that need an
-    empty stub create it explicitly — installer §7.1).
+    Order: front-matter -> CORE -> each PACK:<name> in the order given (stable
+    sort on bucket only, §_canonical_order_key — the caller's PACK ordering is
+    preserved, not alphabetized) -> PROJECT last. PROJECT is NOT synthesized if
+    absent (callers that need an empty stub create it explicitly — installer
+    §7.1).
 
     Each region is emitted as:
         <canonical START marker>\\n
@@ -663,7 +670,7 @@ def make_empty_project_region(start_line: int = 0) -> Region:
 def manifest_rows(path: str, parsed: ParsedAgent) -> list[str]:
     """
     Produce `path\\tregion\\tsha` rows for every region, in canonical order
-    (CORE -> PACK(alpha) -> PROJECT). A flat (marker-less) file yields a single
+    (CORE -> PACK(stable, as given) -> PROJECT). A flat (marker-less) file yields a single
     CORE row (implicit-CORE rule) — the caller is responsible for the
     provenance gate that decides flat-file CORE vs PROJECT at migration time
     (§5); at enumeration of HOS source every file is HOS-owned so CORE is
@@ -1223,10 +1230,14 @@ def _cmd_inject_pack(args) -> int:
 
     Parses the staged (already-substituted) CORE template, appends a new
     Region with the supplied pack body, re-composes via compose() (which
-    alpha-orders PACK regions and applies _normalize_body so the on-disk bytes
-    equal the manifest sha), then validates the result.  A duplicate PACK name
-    surfaces here as E_DUP_PACK from validate().  Prints to stdout by default;
-    --in-place rewrites the staged file.
+    keeps PACK regions in the order they were appended and applies
+    _normalize_body so the on-disk bytes equal the manifest sha), then
+    validates the result. Because order is preserved, not alphabetized, the
+    CALLER's injection order is significant: the installer invokes this once
+    per pack in dependency-closure order (deps before dependents,
+    hos_install.sh R2c) so the most-specific pack ends up composed last. A
+    duplicate PACK name surfaces here as E_DUP_PACK from validate(). Prints to
+    stdout by default; --in-place rewrites the staged file.
 
     Mirrors _cmd_migrate exactly for the --in-place / stdout split.
     (TD-pack §1; ADR-031 §3.2)
@@ -1254,7 +1265,8 @@ def _cmd_inject_pack(args) -> int:
     regions = list(parsed.regions) + [pack_region]
     merged = ParsedAgent(front_matter=parsed.front_matter, regions=regions, raw=parsed.raw)
 
-    # Step 5: compose (alpha-orders via _canonical_order_key; normalizes bodies).
+    # Step 5: compose (stable-orders via _canonical_order_key — preserves the
+    # caller's PACK injection order; normalizes bodies).
     out = compose(merged)
 
     # Step 6: re-validate (duplicate pack → E_DUP_PACK; literal marker in body →

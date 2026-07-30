@@ -11,7 +11,8 @@ spec §4 / §11/§11a decisions the module must honor:
   - a dogfood guard: no shipped agent/rubric file trips E_LITERAL_MARKER_IN_BODY
   - flat (marker-less) file -> implicit single CORE
   - D7 placeholder-free CORE/PACK check (--placeholder-keys)
-  - compose() canonical re-ordering (CORE -> PACK alpha -> PROJECT)
+  - compose() canonical re-ordering (CORE -> PACK, stable/as-given -> PROJECT;
+    PACK-to-PACK order is preserved, not alphabetized — #1080)
   - line-ending + trailing-newline normalization (LF/CRLF/CR invariant; compose
     writes LF only; the D1 substitution-before-sha identity)
 
@@ -353,7 +354,12 @@ def test_roundtrip_is_fixpoint():
 
 
 def test_compose_reorders_to_canonical():
-    # Author out of order: PROJECT, then PACK:beta, PACK:alpha, then CORE.
+    # Author out of bucket order: PROJECT, then PACK:beta, PACK:alpha, then
+    # CORE. compose() must still bucket CORE first / PROJECT last regardless
+    # of authored position, but — since #1080 — PACK regions are a STABLE
+    # sort (bucket only): their relative order is preserved from the input,
+    # not re-alphabetized. beta was authored before alpha, so beta stays
+    # first.
     text = (
         b"<!-- HOS:PROJECT:START -->\np\n<!-- HOS:PROJECT:END -->\n\n"
         b"<!-- HOS:PACK:beta:START -->\nb\n<!-- HOS:PACK:beta:END -->\n\n"
@@ -361,7 +367,7 @@ def test_compose_reorders_to_canonical():
         b"<!-- HOS:CORE:START -->\nc\n<!-- HOS:CORE:END -->\n"
     )
     out = parse(compose(parse(text)))
-    assert [r.id for r in out.regions] == ["CORE", "PACK:alpha", "PACK:beta", "PROJECT"]
+    assert [r.id for r in out.regions] == ["CORE", "PACK:beta", "PACK:alpha", "PROJECT"]
 
 
 def test_compose_preserves_front_matter():
@@ -387,8 +393,11 @@ def test_compose_writes_lf_only():
 
 def test_round_trip_preserves_full_ordered_region_list():
     # B2: the FULL ordered region-id list must survive a round-trip, with TWO
-    # packs present, so a compose path that silently drops or reorders a PACK is
-    # caught (a single-region assertion would miss it).
+    # packs present, so a compose path that silently drops or unexpectedly
+    # reorders a PACK is caught (a single-region assertion would miss it).
+    # PACK:beta precedes PACK:alpha here on purpose (#1080): a stable,
+    # bucket-only sort must preserve that relative order rather than
+    # re-alphabetizing it.
     text = (
         b"<!-- HOS:CORE:START -->\nc\n<!-- HOS:CORE:END -->\n\n"
         b"<!-- HOS:PACK:beta:START -->\nb\n<!-- HOS:PACK:beta:END -->\n\n"
@@ -398,8 +407,8 @@ def test_round_trip_preserves_full_ordered_region_list():
     out = parse(compose(parse(text)))
     assert [r.id for r in out.regions] == [
         "CORE",
-        "PACK:alpha",
         "PACK:beta",
+        "PACK:alpha",
         "PROJECT",
     ]
 
