@@ -59,7 +59,7 @@ Mapping to existing work: **#127's committed content-hashed record is the *local
 
 **Build-time obligation (don't leave it implicit in the diff):** when this ships, record **one explicit line** stating whether the human-approval check is enforced **server-side (GitHub branch protection)** or **by a local HOS script** — because that single fact is what determines whether the determination-honesty gap is *actually closed* (server-side) or merely made *auditable* (local). The mechanics of "we moved to machine accounts" will be obvious from the diff; this distinction will not be, and it is the one that matters.
 
-### 5.2 Two boundaries, two enforcement strengths (under the two-account model, §7)
+### 5.2 Two approval boundaries, two enforcement strengths (under the three-account model, §7)
 
 The worker/overseer/human structure creates **two** approval boundaries, and they are not equally strong:
 
@@ -77,25 +77,33 @@ So: **pilot** = two accounts + the server-side human gate (a real win, and "who 
 | **Accountability** | CODEOWNERS + branch protection requiring a **human** approval on HIGH/CRITICAL paths (this is the Layer-3 gate, now mechanically enforced) |
 | **Traceability** | commit trailers — keep `AI-Model:`/`AI-Risk:`, add **`Supervised-by: <human>`** linking the bot's work to its responsible human |
 
-## 7. Account structure — two classes, not N accounts (decided 2026-06-14)
+## 7. Account structure — three classes (decided 2026-06-14; extended with human-proxy 2026-07)
 
-A per-agent account proliferation (tens of accounts to manage) is unwanted *and* unnecessary. The system already has exactly **two classes of agent**, so use **two machine accounts**, one per class:
+A per-agent account proliferation (tens of accounts to manage) is unwanted *and* unnecessary. The system has exactly **three identity classes**, one account per class:
 
 | Account | Class | Members (examples) | May approve PRs? |
 |---|---|---|---|
-| **`hos-worker`** | agents that **do work** | coder, technical-design, architect, dep-mapper | **No** — opens PRs, never approves |
-| **`hos-overseer`** | agents that **oversee & approve** | code/security/privacy/reliability/ops reviewers, risk-assessor, oversight-evaluator/orchestrator, Faberix | **Approves AND merges** safe (LOW) PRs end-to-end; **recommends-only** above (escalates to human) |
+| **worker bot** | agents that **do work** (autonomous cron) | coder, technical-design, architect, dep-mapper | **No** — opens PRs, never approves |
+| **overseer bot** | agents that **oversee & approve** (autonomous cron) | code/security/privacy/reliability/ops reviewers, risk-assessor, oversight-evaluator/orchestrator, Faberix | **Approves AND merges** safe (LOW) PRs end-to-end; **recommends-only** above (escalates to human) |
+| **human-proxy bot** | interactive Claude sessions driven by the human | the session Claude agent in a Human clone | **Not counted as human** — opens PRs, posts comments; excluded from the human-approval gate |
 | *(human — personal account)* | the escalation ceiling | — | **Approves** HIGH/CRITICAL (and anything above the overseer's ceiling) before it can merge |
+
+The **human-proxy** class was added to close the §8.1 attribution gap: without it,
+interactive Claude sessions commit under the human's own account, making it
+impossible to distinguish AI-authored commits from the human's genuine actions.
+The human-proxy bot is structurally incapable of modifying branch protection (its
+GitHub App registration deliberately omits Administration permissions).
 
 Within each class, every agent still **self-identifies which agent + mode it is** (`[AI: {agent-name}]`, the Layer-2 attribution) on commits/issues/PRs — so "exactly who did what" is preserved without an account per agent.
 
-**Why two accounts beat both alternatives:**
-- **vs. a single bot:** a single bot would *author **and** approve* — collapsing the **author ≠ reviewer independence** that is the entire point of HOS (the same role-absorption failure as #173). Two accounts restore that separation **at the identity layer**: the worker account literally cannot approve its own (or any) PR.
-- **vs. per-agent (N accounts):** two accounts are manageable; per-agent is an *optional later refinement only* — Layer-2 attribution already records which agent acted, so a distinct account per agent is rarely worth the management cost.
+**Why three accounts (not two, not N):**
+- **vs. one bot per cron role (original two-account design):** adding the human-proxy class closes the §8.1 interactive-session attribution gap. Two accounts still covered the autonomous pipeline correctly; the third covers the interactive case.
+- **vs. a single bot:** a single bot would *author **and** approve* — collapsing the **author ≠ reviewer independence** that is the entire point of HOS (the same role-absorption failure as #173).
+- **vs. per-agent (N accounts):** three accounts are manageable; per-agent is an *optional later refinement only* — Layer-2 attribution already records which agent acted, so a distinct account per agent is rarely worth the management cost.
 
-**The three identity tiers map onto the three oversight layers:** worker (signal/build) → overseer (oversight/approve-within-risk) → human (the gate). The overseer's **risk-tiered approval ceiling *is* the Faberix R3 trust-ratchet (#167)**: overseer auto-approves LOW, *recommends* on MED/HIGH, human approves HIGH/CRITICAL — and the ceiling may ratchet up as trust is earned, never to HIGH.
+**The three identity tiers map onto the three oversight layers:** worker (signal/build) → overseer (oversight/approve-within-risk) → human (the gate). The overseer's **risk-tiered approval ceiling *is* the Faberix R3 trust-ratchet (#167)**: overseer auto-approves LOW, *recommends* on MED/HIGH, human approves HIGH/CRITICAL — and the ceiling may ratchet up as trust is earned.
 
-Naming: `hos-worker` / `hos-overseer` (per repo/owner). Both owned/recovered by the human.
+Naming: worker/overseer names follow the `hos-<role>-hos[bot]` pattern; the human-proxy name is operator-chosen (e.g. `<name>-claude[bot]`). All three are owned/recovered by the human.
 
 ## 8. git/gh configuration (per agent environment)
 
@@ -105,25 +113,43 @@ The agent's checkout/session is configured to operate as the bot:
 - The human's personal credentials are **absent** from the agent's environment.
 - Pushes go to feature branches; `main` is protected (merge requires human approval — §5).
 
-### 8.1 Interactive sessions: Claude is the **worker**, not the human
+### 8.1 Interactive sessions: Claude is the **human-proxy bot**, not the human
 
-§8 applies to **interactive** sessions too — not only the autonomous loop. When a human (e.g. Scott) drives Claude live in a chat session, **Claude still authenticates as the worker bot; the human's account is reserved for the irreducible human-only acts.** The load-bearing reframe:
+§8 applies to **interactive** sessions too — not only the autonomous loop. When a
+human (e.g. Scott) drives Claude live in a chat session, **Claude authenticates as
+the human-proxy bot** (not the worker bot, not the human's personal account).
+
+The human-proxy bot is the third identity class (§7): it is distinct from the
+autonomous worker/overseer bots, and it is excluded from the human-approval gate —
+a human-proxy PR approval does NOT count as a human approval.
 
 > **"Interactive vs autonomous" is about whether a human is *present to direct* — NOT about which identity Claude wears.** A human present and directing *is* the human-in-the-loop, and that role is satisfied by their **review and authorization**, not by their account being the committer.
 
-Role mapping that follows from this:
+Role mapping:
 
 | Role | Interactive (human present) | Autonomous (no human) |
 |---|---|---|
-| **Worker** (writes code, opens PRs, never approves) | **Claude**, as the worker bot | Claude, as the worker bot |
+| **Opens PRs, posts comments** | **Claude**, as the **human-proxy bot** | Claude, as the worker bot |
 | **Oversight** (approves within the §7 ceiling) | the **human**, reviewing live | the **overseer bot** (auto-approves ≤ ceiling) |
 | **Human gate** (protected surface §9.0, above-ceiling, security, overrides) | the **human**, as themselves | escalated to the **human** |
 
-**Why it must be this way.** If interactive-Claude keeps using the human's account, that account's history becomes a mix of genuine-human and bot actions — and the human gate becomes *unfalsifiable*: you could never prove a given action under the human's account was actually a human's, because some "human" actions were the bot's. **Reserving the human account for human-only acts is the single thing that makes every action under it provably a human decision** — the §5.1 actor-identity guarantee applied to the day-to-day. "You are actually me" is the bug this closes, not a property to preserve.
+**Why the human-proxy bot, not the worker bot.** The worker bot's role is to build
+and open PRs — it is under the human gate for all approvals. Reusing the worker
+identity for interactive sessions would conflate two distinct roles (directive
+from human vs. autonomous build) and make it impossible to audit which of a
+worker bot's actions were human-directed. The human-proxy bot makes the
+human-directed category explicit and machine-auditable.
 
-**Interim state (until the bot accounts are wired into a session):** an interactive session running under the human's credentials *is* the transitional case — its commits/PRs authenticate as the human, mitigated only by the `🤖 [AI: claude]` disclosure markers. Those fix the **attribution** layer ("the AI wrote this") but not the **actor** layer (which still says the human) — i.e. accountability, not forge-proofing (§5.1). Wiring the worker token into the session is what closes it.
+**Why not the human's own account.** If interactive-Claude used the human's
+account, that account's history would be a mix of genuine-human and bot actions —
+making the human gate *unfalsifiable*. **Reserving the human account for human-only
+acts is the single thing that makes every action under it provably a human decision**
+— the §5.1 actor-identity guarantee applied to the day-to-day.
 
-**Tooling rule.** The session wraps `git`/`gh` to use the **worker token by default**; it switches to the **overseer token** only for an autonomous within-ceiling approval; and it uses the **human's token *never*** — except when the human personally performs a human-gate act. The AI-CLI/model auth stays under the human's subscription (§4 decoupling) — that is the unavoidable attribution layer; the **git committer + gh actor** are the bot.
+**Tooling.** The `bin/hos-human` launcher mints a Human GitHub App installation
+token (`get_app_token.sh --app human`) and `exec claude`. The AI-CLI/model auth
+stays under the human's subscription (§4 decoupling) — that is the unavoidable
+attribution layer; the **git committer + gh actor** are the human-proxy bot.
 
 ## 9. Branch protection (the merge gate as forge-proofing) — settable as code
 
@@ -143,7 +169,7 @@ The overseer's "approve/merge safe (LOW)" authority is gated on a **content-risk
 **Any change matching a protected-surface path requires a *human* approval, regardless of computed risk tier — no bot may approve or merge it.** The list is **canonical glob paths** (so CODEOWNERS and the status check can match it precisely, not prose):
 
 ```
-.claude/agents/**          AGENTS.md
+.claude/agents/**          AGENTS.md          CLAUDE.md
 contract/**                docs/AGENTS.md
 docs/AGENT-IDENTITY.md     METHODOLOGY.md
 docs/FABERIX-ROLES.md      docs/CROSS-REPO-CONDUCT.md
@@ -152,7 +178,7 @@ scripts/oversight/gates/** scripts/oversight/run_validators.sh
 scripts/oversight/validators/schema.py                 (weights / tier thresholds)
 .github/CODEOWNERS         .github/workflows/**
 ```
-(Anything that defines an agent's behavior, the contract, a gate/validator, the installer/release path, or the identity/authority model itself.)
+(Anything that defines an agent's behavior, the contract, a gate/validator, the installer/release path, or the identity/authority model itself. `CLAUDE.md` is included because it contains the `HOS:HUMAN-PROXY` identity block — a bot that edits that block could grant itself human-approval status or suppress the identity guard.)
 
 This is the global backstop behind the overseer ceiling and the operator's risk-tiered merge grant: **the surfaces that define the controls can never be loosened on the controls' own say-so.** Enforce it server-side via CODEOWNERS on those paths (require a human reviewer) **plus** a required status check that fails any PR touching a protected surface without a human approval. (Surfaced by the v0.2.0 release gate; it tightens the LOW/MED auto-merge authority, not just the bots.)
 

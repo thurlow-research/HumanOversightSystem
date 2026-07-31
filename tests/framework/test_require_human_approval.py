@@ -40,6 +40,8 @@ def test_protected_dir_globs_match():
 def test_protected_exact_files_match():
     for p in [
         "AGENTS.md",
+        "CLAUDE.md",
+        "templates/CLAUDE.human.md",
         "METHODOLOGY.md",
         "docs/AGENT-IDENTITY.md",
         "scripts/oversight/run_validators.sh",
@@ -152,6 +154,35 @@ def test_copilot_exact_login_match():
     reviews_bot = [{"state": "APPROVED", "user": {"login": "copilot[bot]"}}]
     result_bot = rha.human_approval_present(reviews_bot, bot_accounts)
     assert result_bot == [], "copilot[bot] must be excluded"
+
+
+# ── CODEOWNERS health check ──────────────────────────────────────────────────
+def test_codeowners_has_no_fallback_owner_placeholder():
+    """gen_codeowners.sh falls back to the literal string 'OWNER' when the
+    owner argument is omitted and `gh repo view` is unavailable (e.g. no auth).
+    A CODEOWNERS file containing '@OWNER' points to a non-existent user and
+    silently disables the 'Require review from Code Owners' branch-protection
+    rule — bots could merge protected-surface changes without human review.
+
+    This test acts as a regression guard: if the generator is ever re-run
+    without an explicit owner arg in a no-auth environment, the test fails
+    before the broken file can be committed.
+    """
+    codeowners = (
+        Path(__file__).resolve().parents[2] / ".github" / "CODEOWNERS"
+    )
+    assert codeowners.exists(), ".github/CODEOWNERS does not exist"
+    content = codeowners.read_text(encoding="utf-8")
+    # Allow '@OWNER' only inside comment lines (the header explains the fallback).
+    non_comment_lines = [
+        ln for ln in content.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    for ln in non_comment_lines:
+        assert "@OWNER" not in ln, (
+            f".github/CODEOWNERS contains literal '@OWNER' on a non-comment line: {ln!r}\n"
+            "Re-run: scripts/framework/gen_codeowners.sh @<real-owner-login>"
+        )
 
 
 # ── #994: layered bot detection (type / [bot] suffix / case-insensitive list) ─

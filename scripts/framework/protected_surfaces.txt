@@ -16,6 +16,8 @@
 .claude/agents/**
 contract/**
 AGENTS.md
+CLAUDE.md
+templates/CLAUDE.human.md
 docs/AGENTS.md
 docs/AGENT-IDENTITY.md
 METHODOLOGY.md
