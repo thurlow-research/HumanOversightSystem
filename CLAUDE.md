@@ -194,20 +194,81 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.
 
-### Shell usage
+### Shell usage under the sandbox
 
-Do not compose ad-hoc multi-command shell blocks. Commands containing
-command substitution `$(...)`, variable expansion `${VAR}`, backslash
-line-continuations, or `for`/`while` loops cannot be covered by any
-permission rule — they prompt every time, and on Worker/Overseer they
-will hang with nobody to answer.
+This session runs inside an OS-enforced sandbox. Filesystem and network boundaries
+are enforced by the kernel, so **permission prompts are not the security control —
+they are friction.** On Worker and Overseer they are worse: nobody is present to
+answer, so an unallowlistable command is a **hang**.
 
-Instead:
-- Use an existing script in `scripts/` or `bootstrap/`
-- If none fits, write one, commit it, then invoke it
-- One command per Bash call; no `&&`/`;` chaining for unrelated steps
-- Never inline logic that already exists as a script — token minting
-  goes through `bootstrap/get_app_token.sh`, never a hand-built JWT
+**The rule: a command can be allowlisted only if its full text is known before it
+runs.** Claude Code matches the command against rules like `Bash(git *)`. If any
+part is determined at runtime, no rule can match and it prompts *every time*,
+regardless of what is in the settings file.
+
+**The tell:** if the prompt has no "Always allow" button, the command was
+unallowlistable. No configuration change fixes it — rewrite the command.
+
+#### What breaks allowlisting
+
+| Pattern | Example |
+|---|---|
+| Command substitution | `--body "$(cat <<'EOF' … EOF)"` |
+| Heredocs | `cat <<'EOF' > file` |
+| Variable expansion in paths | `> "$TMPDIR/out.json"` |
+| Backslash line continuations | `gh pr create \` … |
+| Loops | `for r in Worker Overseer; do … done` |
+| Sourcing a runtime-named file | `source /tmp/claude/hos_auth.sh` |
+| Chained unrelated steps | `cmd1 && cmd2 && cmd3` |
+
+#### What to do instead
+
+1. **Use an existing script.** If `scripts/` or `bootstrap/` already does it, call
+   it: `bash scripts/oversight/smoke_test.sh`
+2. **If none fits, write one, then call it.** Put loops, substitutions and
+   multi-step logic *inside the file*, reviewed once at commit time rather than
+   approved individually at runtime.
+3. **If you would write that script again next session, commit it.** A committed
+   script is reviewed once and reused; a script recreated ad hoc is **unreviewed
+   every time** and accumulates no capability. Rule of thumb: **the second time you
+   need it, it belongs in `scripts/` or `bootstrap/` with a test**, not in
+   `/tmp/claude/`. This is D41's "one invocation site" applied to tooling.
+4. **Never inline logic that already exists as a script.** Token minting goes
+   through `bootstrap/get_app_token.sh`, never a hand-built JWT — hand-rolling it
+   produces a pipeline whose covering rules (`Bash(curl *)`, `Bash(openssl *)`,
+   `Bash(source *)`) amount to arbitrary shell plus arbitrary network.
+5. **Write long text to a file, then pass the path.** This is what forces heredocs.
+   Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
+6. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
+   subcommand is evaluated independently, so one unallowlistable stage prompts for
+   the whole thing.
+7. **Use literal paths.** Write `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`.
+
+#### When a prompt does appear
+
+Diagnose before asking for a rule. Three causes; only one is fixed by adding rules.
+**Report which one it is.**
+
+| Prompt says | Cause | Fix |
+|---|---|---|
+| "Contains command_substitution / simple_expansion / backslash-escaped whitespace" | Unallowlistable command | Rewrite it |
+| "Path is outside allowed working directories" | Path scope, not the command | Ask the operator to add the path |
+| Plain command, has "Always allow" | Genuinely missing rule | Ask the operator to add it |
+
+Do not ask for a broad rule to silence a prompt you could have avoided by writing
+the command differently.
+
+#### Failing safely
+
+If something is blocked, **say so and stop.** Do not retry with
+`dangerouslyDisableSandbox` (disabled by policy; attempting it prompts). Do not
+route around a boundary you have concluded is misconfigured — report it. Do not
+assume a read failure means a file is absent: outside allowed paths, blocked reads
+surface as `No such file or directory`, **not** a permission error, so `ENOENT`
+here often means *masked*, not *missing*.
+
+A blocked operation reported plainly is useful. A boundary quietly routed around is
+not.
 
 <!-- HOS:HUMAN-PROXY start -->
 ## HOS: Human-proxy session identity
