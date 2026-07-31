@@ -30,9 +30,9 @@ show_missing = true
 fail_under = 80
 
 [tool.mutmut]
-paths_to_mutate = "scripts/oversight/validators/"
-runner = "python -m pytest tests/ -x -q --no-header"
-tests_dir = "tests/"
-# Exclude __init__.py and files that are primarily subprocess wrappers
-# (those are integration-tested, not unit-tested)
-dict_synonyms = ""
+# mutmut 3.x config keys (paths_to_mutate/tests_dir/runner/dict_synonyms were
+# the 2.x-era names; 3.x's PytestRunner calls pytest.main() in-process instead
+# of shelling out to a runner command). See requirements.txt for the version pin.
+source_paths = ["scripts/oversight/validators/"]
+pytest_add_cli_args = ["--no-header"]
+pytest_add_cli_args_test_selection = ["tests/"]

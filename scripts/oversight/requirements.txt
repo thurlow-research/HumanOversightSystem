@@ -42,7 +42,13 @@ mypy>=1.8
 # Testing
 pytest>=8.0
 pytest-cov>=5.0
-mutmut>=2.4
+# mutmut is version-PINNED to a major series, same rationale as black above:
+# 3.x rewrote its config format (paths_to_mutate/tests_dir/runner/dict_synonyms
+# were dropped for source_paths/pytest_add_cli_args_test_selection, and the
+# runner now shells pytest in-process instead of a --runner command). A
+# floating `mutmut>=2.4` silently installed 3.6.0 against the 2.x-era
+# pyproject.toml config, crashing every invocation. (#1083)
+mutmut>=3.6,<4.0
 
 # IP tooling (install separately to keep core deps lean)
 # scancode-toolkit>=32.0
