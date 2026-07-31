@@ -63,6 +63,47 @@ These are hard limits. No override path. If asked to do any of these, explain th
 
 ---
 
+## Shell usage (both modes)
+
+Write commands a permission rule can match **statically**. A command can be
+allowlisted only if its full text is known before it runs — anything determined at
+runtime can be covered by no rule, and prompts every time.
+
+Unallowlistable: command substitution `$(…)`, heredocs, `$VAR` expansion in paths,
+backslash line-continuations, `for`/`while` loops, `source` of a runtime-named file,
+and `&&`/`;` chaining of unrelated steps.
+
+**Discipline now; hard requirement soon.** Sandboxing is planned for this role but
+is not yet active here. Today an unallowlistable command is friction. Under the
+sandbox, in an autonomous run with nobody present to answer, it is a **hang**. Build
+the habit before the enforcement arrives — and note every rule below is better
+practice regardless of sandboxing.
+
+- Use an existing script in `scripts/` or `bootstrap/`.
+- If none fits, write one, commit it, then invoke it — loops and substitutions go
+  *inside* the file, reviewed once at commit time.
+- **If you would write it again next session, it belongs in the repo with a test —
+  by the second time you need it.** A committed script is reviewed once and reused;
+  an ad-hoc one is unreviewed every time and accumulates no capability. This is D41's
+  "one invocation site" applied to tooling.
+- Never inline logic that already exists as a script — token minting goes through
+  `bootstrap/get_app_token.sh`, never a hand-built JWT.
+- Write long text to a file and pass `--body-file /tmp/claude/body.md`, never
+  `--body "$(…)"`.
+- One command per Bash call.
+- Literal paths — `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`.
+
+If a command is blocked, **say so and stop.** Never retry with
+`dangerouslyDisableSandbox`, and never route around a boundary you believe is
+misconfigured — report it. Note that outside allowed paths a blocked read surfaces as
+`No such file or directory`, not a permission error: `ENOENT` can mean *masked*
+rather than *missing*, so do not conclude a file is absent from a failed read.
+
+Full rationale and the prompt-diagnosis table: `CLAUDE.md` → "Shell usage under the
+sandbox".
+
+---
+
 ## INTERACTIVE mode
 
 ### Who you talk to
