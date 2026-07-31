@@ -169,6 +169,10 @@ This is O1 and O2 escalated to the release boundary: even after a complete, well
 
 **Every HOS mechanism is an AI-native port of an established human software-engineering practice** — `hos-ports-human-software-engineering-best-practices.md`. Cross-vendor review = blind peer review; the worker/overseer two-account split = separation of duties; jidoka stop-the-line = the andon cord; SQC spot-check = acceptance sampling; the committed authorization artifact = a signed change record. The lens is **generative** (the next mechanism is the next un-ported practice) and **predictive** (a port fails silently exactly where the human practice relied on a precondition the AI context lacks — e.g. the human gate assumed a human is a *distinguishable actor*, which is false under a shared identity, so it was forgeable until separate machine accounts + server-side enforcement closed it). Applied as a reading lens across the observations above, not counted as one of them. Audit each mechanism for the implicit precondition of the human practice it ports — that gap is where the next bug lives (cf. O4's fail-open, O6's identity gap).
 
+> **Terminology note — added 2026-07-31, ADR-033 §1a. The lens above is unchanged.**
+>
+> "Cross-vendor review = blind peer review" names the human practice in its conventional sense. Since §1a, HOS reserves *peer review* for **same-model-family** review and *independent review* for a **different vendor family, or the human** — so in HOS's own vocabulary, cross-vendor review is **independent** review, peer review's opposite. See the terminology note in `hos-ports-human-software-engineering-best-practices.md` for why that row is deliberately left as written.
+
 ---
 
 ## Relevance summary

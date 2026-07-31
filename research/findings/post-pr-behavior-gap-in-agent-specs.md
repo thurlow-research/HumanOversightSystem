@@ -28,6 +28,12 @@ The entire "autonomous worker submits work, overseer reviews, human only sees es
 
 This failure mode is hard to detect because it produces a human response (the human does approve, or pushes back) and the work gets done. The oversight gap is invisible unless the human notices that they are approving work that the overseer has not reviewed.
 
+> **Terminology note — added 2026-07-31, ADR-033 §1a. The finding above is unchanged.**
+>
+> "The independent verification layer" above refers to the overseer's review, in the pre-§1a sense of *independent* (a separate agent, not the author). Under §1a's narrower vocabulary the overseer is **same model family** as the worker — rank-3 reviewing rank-2 work — which is *class-differential peer review*, not independent review. The genuinely independent layer is the cross-vendor panel that runs later, at PR time.
+>
+> This sharpens the finding rather than weakening it: the bypass skips **both** the overseer's peer review *and* the cross-vendor independent review that would have followed at PR time. The original argument holds; only the label has narrowed.
+
 ## Evidence
 
 - PR #354 (forward-port v0.3.8 → main): worker opened PR and directed human to approve, stating "71 files changed — needs your approval" with no oversight escalation
