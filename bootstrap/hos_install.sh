@@ -1448,6 +1448,7 @@ else
     # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
     # are NEVER substituted (D6) — they are injected raw, post-substitution.
     # _resolve_pack_dir is called once per pack (B-4: never call it twice; it logs).
+    _agent_had_pack=false
     for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
       _pk_dir="$(_resolve_pack_dir "$_pk")" || _pk_dir="$HOS_SOURCE/packs/$_pk"
       _body="$_pk_dir/${agent}.md"
@@ -1466,7 +1467,30 @@ else
         _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)
         continue 2              # skip this agent; an unwritable pack region must not ship half-composed
       fi
+      _agent_had_pack=true
     done
+
+    # (A1c, #1117) Advisory-only PACK conflict check (#1081 Option 3). Runs once
+    # per agent, after all its PACK regions are injected, so a conflict between
+    # any two PACK bodies is visible in a single pass. detect_pack_conflicts() is
+    # a narrow-precision heuristic, not a fail-closed structural check (see its
+    # docstring in regions.py) — exit 5 (findings) is printed as a WARNING only;
+    # the install is NEVER aborted on it, matching the issue's "advisory" intent.
+    if $_agent_had_pack; then
+      _conflict_out="$_AGENT_STAGE/${agent}.conflicts.out"
+      _conflict_rc=0
+      python3 "$_REGIONS_PY" check-pack-conflicts "$_stage" >"$_conflict_out" 2>&1 || _conflict_rc=$?
+      if [[ $_conflict_rc -eq 5 ]]; then
+        warn "PACK conflict advisory for ${agent}.md (heuristic — review recommended):"
+        sed 's/^/      /' "$_conflict_out"
+      elif [[ $_conflict_rc -ne 0 ]]; then
+        # Neither OK (0) nor findings (5) — check-pack-conflicts itself broke.
+        # Surface it (don't swallow a regions.py failure silently, #276) but
+        # still don't abort: this check is advisory-only by design (#1117).
+        warn "check-pack-conflicts on ${agent}.md exited $_conflict_rc (not a findings result) — advisory check skipped, install continues:"
+        sed 's/^/      /' "$_conflict_out"
+      fi
+    fi
 
     # (A2) prepare the disk file. If a flat (marker-less) file is present, migrate
     # it first (provenance = is the slug HOS-shipped, i.e. in consumer_agents.txt;
