@@ -32,6 +32,10 @@
 #   ./hos_install.sh --scaffold-pack <slug> [DIR]
 #                                         # extract PROJECT customizations into a consumer
 #                                         #   pack (requires --brownfield; slug = pack name)
+#   ./hos_install.sh --worker [DIR]       # generate worker cron-prompt + show worker cron next-steps
+#   ./hos_install.sh --overseer [DIR]     # generate overseer cron-prompt + show overseer cron next-steps
+#   ./hos_install.sh --human [DIR]        # show interactive Human GitHub App session next-steps
+#                                         # Default (no role flag): --worker --overseer
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -78,6 +82,9 @@ FULL=false            # --full: bypass version-adjacency hard-stop; install targ
 BROWNFIELD=false      # --brownfield: classify flat agent files, synth a baseline, then merge (#275)
 SCAFFOLD_PACK=""      # --scaffold-pack <slug>: extract project_custom into a consumer pack (#275)
 _packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
+ROLE_WORKER=false     # --worker:  generate worker cron-prompt + show worker next-steps
+ROLE_OVERSEER=false   # --overseer: generate overseer cron-prompt + show overseer next-steps
+ROLE_HUMAN=false      # --human:  show interactive Human GitHub App session next-steps
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -99,7 +106,10 @@ while [[ $# -gt 0 ]]; do
     --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
     --pack=*)        _packs+=("${1#*=}"); shift ;;
     --no-pack)       NO_PACK=true; shift ;;
-    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --worker)        ROLE_WORKER=true; shift ;;
+    --overseer)      ROLE_OVERSEER=true; shift ;;
+    --human)         ROLE_HUMAN=true; shift ;;
+    --help|-h)       sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -111,6 +121,23 @@ TARGET_REPO="$(cd "$TARGET_REPO" 2>/dev/null && pwd)" || {
 # Mutual-exclusion: --no-pack and --pack are contradictory.
 if $NO_PACK && [[ ${#_packs[@]} -gt 0 ]]; then
   echo "ERROR: --no-pack and --pack are mutually exclusive (try --help)"; exit 1
+fi
+
+# Role defaults: if no role flag was passed, activate worker+overseer (current behaviour).
+# --human alone is valid; it means interactive session only, no cron setup.
+if ! $ROLE_WORKER && ! $ROLE_OVERSEER && ! $ROLE_HUMAN; then
+  ROLE_WORKER=true; ROLE_OVERSEER=true
+fi
+
+# Mutual-exclusion: --human installs a different CLAUDE.md block than --worker/--overseer.
+# Combining them would produce a contradictory context file (two role blocks) with no
+# clear identity, so it is a hard error.
+if $ROLE_HUMAN && { $ROLE_WORKER || $ROLE_OVERSEER; }; then
+  echo "ERROR: --human is mutually exclusive with --worker/--overseer."
+  echo "  --human installs the Human-proxy CLAUDE.md block;"
+  echo "  --worker/--overseer install the orchestrator block."
+  echo "  Use --human alone for a Human-proxy install."
+  exit 2
 fi
 
 # REQ-B-01: --brownfield and --squash are mutually exclusive (#275).
@@ -701,6 +728,11 @@ ensure_line     "$GITIGNORE" ".claudetmp/"      ".claudetmp/ (agent ephemeral st
 ensure_line     "$GITIGNORE" ".ai-local/"     ".ai-local/ (SQC salt + panel cache)"
 ensure_line     "$GITIGNORE" "*.salt"         "*.salt (sampling keys)"
 ensure_line     "$GITIGNORE" ".hos-brownfield/" ".hos-brownfield/ (brownfield migration scratch — not committed, #275)"
+# CLAUDE.human.generated.md is a conflict-avoidance file written when CLAUDE.md
+# already exists without the HOS:HUMAN-PROXY marker.  The operator reviews it,
+# merges the block into CLAUDE.md, and removes it — so it must not be committed.
+$ROLE_HUMAN && ensure_line "$GITIGNORE" "CLAUDE.human.generated.md" \
+  "CLAUDE.human.generated.md (human-proxy block staging file — merge into CLAUDE.md then remove)"
 ensure_not_ignored "$GITIGNORE" "audit/"     "audit/ (committed audit trail)"
 ensure_not_ignored "$GITIGNORE" "AGENTS.md"  "AGENTS.md (governance protocol)"
 ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
@@ -1778,6 +1810,7 @@ echo ""
 info "bootstrap/ — auth and setup scripts"
 run mkdir -p "$TARGET_REPO/bootstrap"
 cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/bootstrap/get_app_token.sh"   "bootstrap/get_app_token.sh (GitHub App auth)"
+cp_framework_file "$HOS_SOURCE/bootstrap/hos_repo_sync.sh"   "$TARGET_REPO/bootstrap/hos_repo_sync.sh"   "bootstrap/hos_repo_sync.sh (interactive-session repo sync)"
 # validate_setup.sh: install if present (added v0.4.0)
 [[ -f "$HOS_SOURCE/bootstrap/validate_setup.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/validate_setup.sh"     "$TARGET_REPO/bootstrap/validate_setup.sh"     "bootstrap/validate_setup.sh (setup health check)" || true
 # apps.env.template: install if present so consumers have a discoverable starting point
@@ -1814,7 +1847,12 @@ _cron_worker_dir="$TARGET_REPO"
 _cron_overseer_dir="$TARGET_REPO"
 
 _subst_prompt() {
-  local src="$1" dst="$2" role="$3" dir="$4" bot_placeholder="$5"
+  # source_login: the HOS-repo-specific login string already present in the
+  # template (e.g. "hos-worker-hos[bot]", "scottthurlow-claude[bot]").
+  # _subst_prompt replaces it with bot_placeholder so consumers can fill in
+  # their own value. Pass "" for dir to skip the working-directory substitution
+  # (used for CLAUDE.md templates that have no WORKING DIRECTORY: header).
+  local src="$1" dst="$2" source_login="$3" dir="$4" bot_placeholder="$5"
   [[ -f "$src" ]] || return 0
   # Derive the source working-directory path from the prompt template itself
   # rather than hardcoding a developer-specific home path (#731). The
@@ -1829,7 +1867,7 @@ _subst_prompt() {
   python3 - "$src" "$dst" \
     "thurlow-research/HumanOversightSystem" "$_cron_repo_url" \
     "$from_dir" "$dir" \
-    "hos-${role}-hos[bot]" "$bot_placeholder" <<'PYEOF'
+    "$source_login" "$bot_placeholder" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
@@ -1842,19 +1880,23 @@ PYEOF
 }
 
 if ! $DRY_RUN; then
-  _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
-    "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
-    "worker" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
-    && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
-    || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
-  _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
-    "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
-    "overseer" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
-    && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
-    || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+  if $ROLE_WORKER; then
+    _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
+      "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
+      "hos-worker-hos[bot]" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
+      && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
+      || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
+  fi
+  if $ROLE_OVERSEER; then
+    _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
+      "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
+      "hos-overseer-hos[bot]" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
+      && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
+      || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+  fi
 else
-  dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
-  dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
+  $ROLE_WORKER   && dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
+  $ROLE_OVERSEER && dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
 fi
 
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
@@ -1866,6 +1908,7 @@ cp_framework_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
 [[ -f "$HOS_SOURCE/METHODOLOGY.md" ]] && \
   cp_framework_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" || true
 
+if ! $ROLE_HUMAN; then
 # ── CLAUDE.md — wire the orchestrator role into the auto-loaded context ────────
 # AGENTS.md holds the protocol, but the main interactive agent only auto-loads
 # CLAUDE.md. Without a pointer there, the orchestrator never reads the protocol
@@ -1906,6 +1949,58 @@ else
   rm -f "$_bf"
   skip "CLAUDE.md — HOS orchestrator block refreshed in place"
 fi
+
+else
+# ── CLAUDE.md — install the human-proxy context block ─────────────────────────
+# The human-proxy CLAUDE.md block names the bot identity and gives the session-
+# start checklist.  It is marker-delimited so re-runs refresh the block without
+# touching consumer content outside the markers (same awk pattern as orchestrator).
+# Three outcomes:
+#   (a) HOS:HUMAN-PROXY marker already present → refresh the block in place.
+#   (b) CLAUDE.md exists but no marker → write CLAUDE.human.generated.md and ask
+#       the operator to merge it in (avoids clobbering existing consumer content).
+#   (c) No CLAUDE.md → create it directly from the generated block.
+_CLAUDE_MD="$TARGET_REPO/CLAUDE.md"
+_HOS_HP_BS="<!-- HOS:HUMAN-PROXY start -->"
+_HOS_HP_BE="<!-- HOS:HUMAN-PROXY end -->"
+_human_tpl="$HOS_SOURCE/templates/CLAUDE.human.md"
+
+if $DRY_RUN; then
+  dry_run "ensure HOS human-proxy block in CLAUDE.md"
+elif [[ ! -f "$_human_tpl" ]]; then
+  warn "templates/CLAUDE.human.md not found in release — skipping CLAUDE.md human-proxy block"
+else
+  _human_generated="$(mktemp)"
+  if _subst_prompt "$_human_tpl" "$_human_generated" \
+      "scottthurlow-claude[bot]" "" "__HUMAN_BOT_LOGIN__"; then
+    if [[ ! -f "$_CLAUDE_MD" ]]; then
+      # (c) No CLAUDE.md — create directly from the generated block
+      cp "$_human_generated" "$_CLAUDE_MD"
+      info "CLAUDE.md created with HOS human-proxy block"
+    elif ! grep -qF "$_HOS_HP_BS" "$_CLAUDE_MD"; then
+      # (b) CLAUDE.md exists, no HOS:HUMAN-PROXY marker — write separate file
+      # to avoid clobbering existing consumer content; operator merges manually
+      _gen_dst="$TARGET_REPO/CLAUDE.human.generated.md"
+      cp "$_human_generated" "$_gen_dst"
+      info "CLAUDE.human.generated.md written (CLAUDE.md exists without HOS:HUMAN-PROXY marker — merge the block into CLAUDE.md manually, then re-run)"
+    else
+      # (a) HOS:HUMAN-PROXY marker present — refresh the block in place
+      _tmp="$(mktemp)"
+      awk -v s="$_HOS_HP_BS" -v e="$_HOS_HP_BE" -v bf="$_human_generated" '
+        BEGIN { while ((getline line < bf) > 0) block = block line "\n" }
+        $0==s { printf "%s", block; skip=1; next }
+        $0==e { skip=0; next }
+        !skip { print }
+      ' "$_CLAUDE_MD" > "$_tmp" && mv "$_tmp" "$_CLAUDE_MD"
+      skip "CLAUDE.md — HOS human-proxy block refreshed in place"
+    fi
+  else
+    warn "CLAUDE.human.md substitution failed (python3 unavailable?)"
+  fi
+  rm -f "$_human_generated"
+fi
+
+fi  # end if ! $ROLE_HUMAN
 
 # ── contract/ — oversight contract + step manifest template ───────────────────
 run mkdir -p "$TARGET_REPO/contract"
@@ -2315,22 +2410,42 @@ echo ""
   echo "  5. Review the audit trail:"
   echo "       cat audit/oversight-log.jsonl | jq 'select(.event==\"sign-off\")'"
   echo ""
-  echo "  6. Set up autonomous cron agents (#715, #717):"
-  echo "       a. Edit the generated prompt files and replace __*_BOT_LOGIN__ placeholders:"
-  echo "            $TARGET_REPO/bootstrap/worker-cron-prompt.md"
-  echo "            $TARGET_REPO/bootstrap/overseer-cron-prompt.md"
-  echo "       b. Add your project to ~/.config/hos/projects.conf:"
-  echo "            __PROJECT___config_dir=<path-to-your-project>/.config/hos"
-  echo "            __PROJECT___worker_root=$TARGET_REPO"
-  echo "            __PROJECT___overseer_root=$TARGET_REPO"
-  echo "       c. Add to crontab (crontab -e) — adjust schedule and PATH as needed:"
-  echo "            # Worker (every 5 min):"
-  echo "            1,6,11,16,21,26,31,36,41,46,51,56 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role worker  --project __PROJECT__ >> /tmp/hos-worker-__PROJECT__.log 2>&1"
-  echo "            # Overseer (every 5 min, 3 min offset):"
-  echo "            4,9,14,19,24,29,34,39,44,49,54,59 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role overseer --project __PROJECT__ >> /tmp/hos-overseer-__PROJECT__.log 2>&1"
-  echo "            # Weekly log trim:"
-  echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
-  echo ""
+  _next_step=6
+  if $ROLE_WORKER || $ROLE_OVERSEER; then
+    echo "  $_next_step. Set up autonomous cron agents (#715, #717):"
+    echo "       a. Edit the generated prompt files and replace __*_BOT_LOGIN__ placeholders:"
+    $ROLE_WORKER   && echo "            $TARGET_REPO/bootstrap/worker-cron-prompt.md"
+    $ROLE_OVERSEER && echo "            $TARGET_REPO/bootstrap/overseer-cron-prompt.md"
+    echo "       b. Add your project to ~/.config/hos/projects.conf:"
+    echo "            __PROJECT___config_dir=<path-to-your-project>/.config/hos"
+    $ROLE_WORKER   && echo "            __PROJECT___worker_root=$TARGET_REPO"
+    $ROLE_OVERSEER && echo "            __PROJECT___overseer_root=$TARGET_REPO"
+    echo "       c. Add to crontab (crontab -e) — adjust schedule and PATH as needed:"
+    if $ROLE_WORKER; then
+      echo "            # Worker (every 5 min):"
+      echo "            1,6,11,16,21,26,31,36,41,46,51,56 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role worker  --project __PROJECT__ >> /tmp/hos-worker-__PROJECT__.log 2>&1"
+    fi
+    if $ROLE_OVERSEER; then
+      echo "            # Overseer (every 5 min, 3 min offset):"
+      echo "            4,9,14,19,24,29,34,39,44,49,54,59 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role overseer --project __PROJECT__ >> /tmp/hos-overseer-__PROJECT__.log 2>&1"
+    fi
+    echo "            # Weekly log trim:"
+    echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
+    echo ""
+    _next_step=$(( _next_step + 1 ))
+  fi
+  if $ROLE_HUMAN; then
+    echo "  $_next_step. Start an interactive human-proxy session:"
+    echo "       a. Ensure the Human GitHub App is registered and apps.env is populated"
+    echo "            (see docs/HUMAN-SETUP.md for the full walk-through)"
+    echo "       b. Fill in both CLAUDE.md placeholders:"
+    echo "            sed -i 's/__HUMAN_BOT_LOGIN__/<your-appname>[bot]/g' $TARGET_REPO/CLAUDE.md"
+    echo "            sed -i 's|__CLONE_ROOT__|$TARGET_REPO|g' $TARGET_REPO/CLAUDE.md"
+    echo "       c. Launch the session:"
+    echo "            $TARGET_REPO/bin/hos-human"
+    echo "            (preflight → auth → repo sync → exec claude)"
+    echo ""
+  fi
 
 echo "  Docs: CLAUDE.md · ARCHITECTURE.md · contract/OVERSIGHT-CONTRACT.md"
 echo ""

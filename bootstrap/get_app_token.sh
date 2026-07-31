@@ -4,6 +4,7 @@
 # Usage (source into current shell so GH_TOKEN + HOS_BOT_LOGIN are exported):
 #   ./bootstrap/get_app_token.sh --app worker > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
 #   ./bootstrap/get_app_token.sh --app overseer > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#   ./bootstrap/get_app_token.sh --app human > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
 #
 # Do not use `source <(./bootstrap/get_app_token.sh --app ...)`. Process
 # substitution is unreliable in minimal cron environments (/dev/fd may be
@@ -41,11 +42,11 @@ APPS_ENV="${HOS_CONFIG_DIR:-${HOME}/.config/hos}/apps.env"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --app) APP_ROLE="$2"; shift 2 ;;
-        *)     echo "Usage: $0 --app [worker|overseer]" >&2; exit 1 ;;
+        *)     echo "Usage: $0 --app [worker|overseer|human]" >&2; exit 1 ;;
     esac
 done
 
-[[ -n "$APP_ROLE" ]] || err "--app required (worker or overseer)"
+[[ -n "$APP_ROLE" ]] || err "--app required (worker, overseer, or human)"
 [[ -f "$APPS_ENV" ]] || err "apps.env not found at $APPS_ENV — run hos_bootstrap.sh or set HOS_CONFIG_DIR"
 
 # ── #633: verify apps.env permissions before sourcing ─────────────────────────
@@ -73,7 +74,12 @@ case "$APP_ROLE" in
         PEM_PATH="$HOS_OVERSEER_PEM"
         DECLARED_BOT_LOGIN="${HOS_OVERSEER_BOT_LOGIN:-}"
         ;;
-    *)  err "--app must be 'worker' or 'overseer'" ;;
+    human)
+        APP_ID="$HOS_HUMAN_APP_ID"
+        PEM_PATH="$HOS_HUMAN_PEM"
+        DECLARED_BOT_LOGIN="${HOS_HUMAN_BOT_LOGIN:-}"
+        ;;
+    *)  err "--app must be 'worker', 'overseer', or 'human'" ;;
 esac
 
 # ── Input validation (#545, #548) ─────────────────────────────────────────────

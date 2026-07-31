@@ -1,8 +1,12 @@
 # Machine Accounts — Setup Guide
 
-How to wire the HOS two-account identity model (`AGENT-IDENTITY.md` §7) so that
-AI work is **attributable** (worker vs overseer vs human) and the human gate is
-**server-side enforced** (a bot cannot approve or merge what only a human may).
+How to wire the HOS three-account identity model (`AGENT-IDENTITY.md` §7) so that
+AI work is **attributable** (worker vs overseer vs human-proxy vs human) and the
+human gate is **server-side enforced** (a bot cannot approve or merge what only a
+human may).
+
+This file covers the **worker and overseer** GitHub Apps. For the third account
+(human-proxy), see `docs/HUMAN-SETUP.md`.
 
 This is hosting-agnostic. The default path below is a **personal repo +
 collaborators** (no GitHub org required). If you later move to an org, the same
@@ -15,17 +19,18 @@ config works — you just manage the bots via a team instead of collaborators.
 
 ## The model in one paragraph
 
-Two machine accounts, by class (not one per agent):
+Three bot accounts, by class (not one per agent):
 - **worker** — agents that *do work* (coder, technical-design, …). Opens PRs; **never approves**.
 - **overseer** — agents that *review & approve* (reviewers, risk-assessor, evaluator, orchestrator, Faberix). **Approves + merges** SAFE/LOW non-protected PRs end-to-end; **recommends-only** above its ceiling (escalates to a human).
+- **human-proxy** — interactive Claude sessions driven by the human. Opens PRs, posts comments; **NOT counted as human approval**. See `docs/HUMAN-SETUP.md`.
 
 A **human** is required to approve: any **protected surface** (§9), any PR above the **overseer ceiling**, and any HIGH/CRITICAL change. Enforcement is server-side (GitHub Actions + branch protection), outside the agents' reach.
 
 ---
 
-## Step 1 — Create the two accounts  *(human; one-time)*
+## Step 1 — Create the worker and overseer accounts  *(human; one-time)*
 
-Create two GitHub accounts, each with its own email. For this repo they are:
+Create two GitHub App installations (worker + overseer). For this repo they are:
 - worker → `hos_worker@tutelare.ai`
 - overseer → `hos_oversight@tutelare.ai`
 
