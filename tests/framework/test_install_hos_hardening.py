@@ -1,6 +1,6 @@
-r"""Regression guards for hos_install.sh hardening — #991, #992, #993, #998.
+r"""Regression guards for hos_install.sh hardening — #991, #992, #993, #998, #1179.
 
-Four independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
+Five independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
 
 * **#991** — the ``--release`` fast path ``git archive``-exports whatever a
   *local* tag points at, never comparing its SHA against the published release.
@@ -20,6 +20,12 @@ Four independent fail-open/corruption bugs in ``bootstrap/hos_install.sh``:
   ``$HOS_REF``. A transient failure of that duplicate query emptied
   ``_install_tag`` and silently skipped the whole adjacency gate — installing
   skipped versions unsequenced. Fixed by reusing ``$HOS_REF``.
+* **#1179** — ``bootstrap/apps.env.template`` was installed with ``cp_file``
+  (skip-if-exists), unlike its sibling framework scripts. On a routine
+  ``--pr`` upgrade to an existing role checkout, the template never refreshed,
+  so ``sync_apps_env.sh`` (added for #957) read a stale key list and silently
+  reported "nothing to do" even when the release added new required keys.
+  Fixed by switching to ``cp_framework_file`` (always overwrite).
 
 Each bug gets two layers of coverage (mirrors the #949 test convention):
 
@@ -313,4 +319,69 @@ def test_installer_reuses_hos_ref_for_adjacency_target():
     _skip_block = _SRC[_SRC.index("Version-skip detection") :]
     assert "gh release view --repo" not in _skip_block, (
         "the #998 duplicate `gh release view` re-query is back in the adjacency gate"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# #1179 — bootstrap/apps.env.template must always refresh on upgrade, or a
+#         `--pr` upgrade that already has the file leaves it stale and
+#         sync_apps_env.sh silently reports "nothing to do" on new keys.
+# --------------------------------------------------------------------------- #
+
+# Mirrors of cp_file (skip-if-exists) and cp_framework_file (always overwrite),
+# reduced to their overwrite decision only.
+_CP_FILE_SNIPPET = r"""
+set -euo pipefail
+src="$1"; dst="$2"; FORCE=false
+if [[ -f "$dst" ]] && ! $FORCE; then
+  echo "SKIPPED"
+else
+  cp "$src" "$dst"
+  echo "COPIED"
+fi
+"""
+
+_CP_FRAMEWORK_FILE_SNIPPET = r"""
+set -euo pipefail
+src="$1"; dst="$2"
+cp "$src" "$dst"
+echo "COPIED"
+"""
+
+
+def _cp_decision(snippet: str, tmp_path: Path) -> str:
+    src = tmp_path / "src.template"
+    dst = tmp_path / "dst.template"
+    src.write_text("NEW_KEY=\n", encoding="utf-8")
+    dst.write_text("OLD_KEY=\n", encoding="utf-8")
+    return subprocess.run(
+        ["bash", "-c", snippet, "_", str(src), str(dst)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_cp_file_would_skip_an_existing_template(tmp_path):
+    """Contrast: cp_file (the old helper for this line) leaves an existing
+    destination untouched — this is the #1179 staleness bug in isolation."""
+    assert _cp_decision(_CP_FILE_SNIPPET, tmp_path) == "SKIPPED"
+
+
+def test_cp_framework_file_always_refreshes_the_template(tmp_path):
+    """Corrected: cp_framework_file overwrites unconditionally, so the template
+    an upgrade ships always matches the release."""
+    assert _cp_decision(_CP_FRAMEWORK_FILE_SNIPPET, tmp_path) == "COPIED"
+
+
+def test_installer_installs_apps_env_template_via_cp_framework_file():
+    """Static guard: the apps.env.template install line must use
+    cp_framework_file, not cp_file — else the template goes stale across
+    `--pr` upgrades and sync_apps_env.sh silently misses new keys."""
+    assert 'cp_framework_file "$HOS_SOURCE/bootstrap/apps.env.template"' in _SRC, (
+        "bootstrap/apps.env.template is still installed via cp_file (#1179) — "
+        "it must use cp_framework_file so it always tracks the release"
+    )
+    assert 'cp_file "$HOS_SOURCE/bootstrap/apps.env.template"' not in _SRC, (
+        "bootstrap/apps.env.template install line regressed back to cp_file (#1179)"
     )
