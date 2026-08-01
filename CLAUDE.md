@@ -239,9 +239,12 @@ unallowlistable. No configuration change fixes it — rewrite the command.
    `Bash(source *)`) amount to arbitrary shell plus arbitrary network. To verify
    a mint succeeded, check `$?` and/or the script's own stderr confirmation line
    — never open or grep the sourced token output file; it holds a live
-   installation token (#1086). `bootstrap/create_issue.sh` and
-   `bootstrap/submit_pr.sh` wrap the same mint→use→revoke pattern for issue/PR
-   creation — use them instead of hand-composing `gh issue create`/`gh pr create`.
+   installation token (#1086). Issue and PR creation go through
+   `bootstrap/create_issue.sh` and `bootstrap/submit_pr.sh` (both
+   `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
+   token mint + revoke) — see their headers for usage. `submit_pr.sh --app human`
+   requires `--confirmed`: only pass it when a human has given explicit
+   per-instance authorization for that specific push.
 5. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 6. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
