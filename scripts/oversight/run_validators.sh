@@ -446,16 +446,22 @@ composite = round(weighted_sum / total_w, 4)
 TIERS = [("LOW", 0.30), ("MEDIUM", 0.55), ("HIGH", 0.78), ("CRITICAL", 1.01)]
 tier = next(t for t, hi in TIERS if composite < hi)
 
-# Hoist any non-null tier_floor signal (e.g. from diff_size, #377) to the top
-# level of the summary so the risk-assessor reads it without parsing raw_value.
-# Read-only surfacing: it does NOT alter composite_score or the derived tier
-# (the risk-assessor is the actor that promotes the final tier).
+# Hoist the highest non-null tier_floor signal (e.g. from diff_size, #377, or
+# the static_analysis HIGH-bandit backstop, #997) to the top level of the
+# summary so the risk-assessor reads it without parsing raw_value. Read-only
+# surfacing: it does NOT alter composite_score or the derived tier (the
+# risk-assessor is the actor that promotes the final tier). Must take the
+# MAX across all validators, not the first non-null in glob-sorted filename
+# order — multiple validators can emit tier_floor, and first-wins silently
+# drops a higher floor emitted by a validator whose filename sorts later
+# (#1052: static_analysis's HIGH backstop was masked by rn_calculator's
+# earlier-sorting, lower MEDIUM floor).
+_TIER_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 tier_floor = None
 for r in results:
     tf = r.get("tier_floor")
-    if tf:
+    if tf and (tier_floor is None or _TIER_RANK.get(tf, -1) > _TIER_RANK.get(tier_floor, -1)):
         tier_floor = tf
-        break
 
 summary = {
     "composite_score": composite,

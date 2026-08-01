@@ -72,11 +72,19 @@ def main() -> None:
         dimension, score, weight = _TABLE.get(
             os.path.basename(argv[0]), ("unknown_validator", 0.99, 0.99)
         )
-        print(
-            json.dumps(
-                {"dimension": dimension, "score": score, "weight": weight, "error": None}
-            )
-        )
+        envelope = {"dimension": dimension, "score": score, "weight": weight, "error": None}
+        # Optional per-basename field overrides (e.g. tier_floor), read as JSON from
+        # HOS_SHIM_EXTRA_FIELDS: {"<basename>.py": {"tier_floor": "HIGH"}, ...}. Lets a
+        # test pin a validator-specific field without adding a new dispatch table column
+        # for every one-off scenario.
+        extra_raw = os.environ.get("HOS_SHIM_EXTRA_FIELDS")
+        if extra_raw:
+            try:
+                extra_all = json.loads(extra_raw)
+            except Exception:
+                extra_all = {}
+            envelope.update(extra_all.get(os.path.basename(argv[0]), {}))
+        print(json.dumps(envelope))
         return
 
     # Not a validator call (inline -c, heredoc aggregator, artifact writer):

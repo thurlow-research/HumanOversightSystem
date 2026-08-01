@@ -110,13 +110,19 @@ ARGV_LOG_NAME = "shim-argv.jsonl"
 
 
 def hermetic_run(
-    cwd: Path, *script_args: str, script: Path | None = None
+    cwd: Path,
+    *script_args: str,
+    script: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the script end-to-end with every validator call served by the shim.
 
     `script` overrides which run_validators.sh is executed (used to capture a
     baseline from a pre-change copy); it must live in `scripts/oversight/` so
     SCRIPT_DIR resolves the validators and sourced libs identically.
+
+    `extra_env` merges additional env vars on top of the shim defaults (e.g.
+    `HOS_SHIM_EXTRA_FIELDS` to pin a per-validator field override).
     """
     shim = install_shim(cwd)
     env = {
@@ -129,6 +135,7 @@ def hermetic_run(
         "VALIDATOR_TIMEOUT": "20",
         "NETWORK_TIMEOUT": "20",
         "VALIDATOR_RETRIES": "0",
+        **(extra_env or {}),
     }
     env.pop("RUN_VALIDATORS_FILELIST_ONLY", None)
     return subprocess.run(
