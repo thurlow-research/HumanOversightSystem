@@ -69,14 +69,24 @@ if [[ ${#FILES[@]} -eq 0 ]] && ! $CHECK_ALL; then
         -not -path "./node_modules/*" -not -path "./.git/*")
 fi
 
+# Filter to Python files only — FILES may include non-.py paths when passed
+# individually (run_gates.sh forwards the whole changeset to every gate).
+# Mirrors lint_check.sh's PY_FILES/JS_FILES split (#1096).
+PY_FILES=()
+for f in "${FILES[@]}"; do
+    case "$f" in
+        *.py) PY_FILES+=("$f") ;;
+    esac
+done
+
 ERRORS=0
 
 echo "=== mypy ==="
-if [[ ${#FILES[@]} -eq 0 ]]; then
+if [[ ${#PY_FILES[@]} -eq 0 ]]; then
     echo "SKIP: no Python files found in project"
 elif [[ ! -x "$VENV_BIN/mypy" ]]; then
     echo "SKIP: mypy not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
-elif "$VENV_BIN/mypy" --ignore-missing-imports --no-error-summary "${FILES[@]}"; then
+elif "$VENV_BIN/mypy" --ignore-missing-imports --no-error-summary "${PY_FILES[@]}"; then
     echo "OK: no type errors"
 else
     ERRORS=$((ERRORS + 1))
