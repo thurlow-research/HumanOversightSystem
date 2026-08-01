@@ -221,3 +221,26 @@ An agent defaults to the *narrowest* interpretation of an instruction that satis
 
 **Cross-links:** O3 (explicit forcing is required), O4 (must fail loud — missing the check = silently passing a failing gate).
 
+
+## O11 — A self-hosted oversight framework does not sample its own target population; friction measured on itself is systematically pessimistic. `[signal]`
+
+**HOS's protected surfaces *are* HOS's own machinery, so developing HOS escalates nearly every substantive PR to a human — while a consumer project, doing its work in application code that is on no protected list, trips the same policy far less often. The intervention rate observed while dogfooding is not an estimate of the rate a user would experience.**
+
+The policy is correct: `protected_surfaces.txt` covers `.claude/agents/**`, `contract/**`, `bootstrap/**`, `scripts/framework/**`, `.github/workflows/**` and the governance/kill-switch files precisely so the controls cannot be loosened on the controls' own say-so. The measurement consequence is incidental — and structural rather than proportional, since the two populations differ categorically (every change vs. rarely any) rather than by degree.
+
+Two consequences, which pull in opposite directions and must not be conflated:
+
+1. **Research validity.** Any claim of the form *"an AI oversight pipeline requires human intervention at rate R"* measured on this repo inherits an upward bias. It is a threat to external validity, not a defect in the system.
+2. **Product risk.** Optimizing the policy to reduce *observed* friction risks loosening protections that a real user rarely trips, to fix pain that is mostly an artifact of the test bed. Issue #1042 guards against this explicitly by requiring human-led design.
+
+The generalizable form: **any framework whose protections cover its own source will find its most-protected files are exactly the ones its developers edit most.** True of any linter, policy engine, or CI gate developed under its own enforcement — self-hosted friction metrics are pessimistic by construction.
+
+Worth separating in any future measurement: escalations caused by **protected-surface match** (self-hosting-biased) from those caused by **computed risk tier** (representative of AI-generated-code risk). Only the second generalizes. The CPS pilot is the natural comparison population for turning this caveat into a measured correction factor.
+
+**Evidence:**
+- `dogfooding-inflates-the-measured-intervention-rate.md`
+- `#1042` (`[hos-dev]`, v0.7.0) — diagnoses the same effect independently and names it a self-hosting artifact
+- PR #1145 (2026-08-01) — a docs-only change escalated solely because the same prose was mirrored into three protected agent/config files; correct under policy, unrepresentative of a consumer edit
+- One session, 2026-08-01: seven human-proxy PRs, all requiring human approval, merged in practice via human approval plus admin override of the overseer gate
+
+**Cross-links:** O2 (each layer catches a class the others miss — this is about *measuring* that layering honestly), O7 (only a human may relax oversight — the reason the friction cannot simply be automated away), and the cross-cutting lens below (a port fails where the human practice relied on a precondition the AI context lacks; here the ported practice — protecting the controls — is sound, but self-hosting removes the separation between auditor and audited that made the metric meaningful).
