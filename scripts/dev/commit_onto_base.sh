@@ -103,39 +103,75 @@ fi
 git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null \
     || err "base ref does not resolve to a commit: $BASE"
 
-# The actual staleness test: does the upstream target contain commits the base
-# does not? If so, the tree seeded from BASE LACKS that work, and committing it
-# proposes reverting it.
+# The staleness decision itself lives in Python — scripts/automation/lib/
+# stale_commit_detector.check_base_freshness() — so it is unit-testable in
+# isolation and sits with its sibling staleness logic rather than being a second
+# implementation in a second language. This shell only invokes it and formats.
 #
-# Note this cannot be detected by diffing BASE against the resulting tree — the
-# base IS the stale thing, so that diff looks perfectly clean. It has to be
-# compared against the real upstream target.
-if ! git rev-parse --verify --quiet "${COMPARE_TO}^{commit}" >/dev/null; then
-    # Fail loudly rather than silently skipping the guard — a skipped staleness
-    # check is exactly the fail-open this exists to prevent.
-    warn "staleness guard SKIPPED: --compare-to ref '${COMPARE_TO}' does not resolve."
-    warn "  Pass --compare-to <ref> to enable it (e.g. the branch this will be PR'd against)."
-else
-    _behind="$(git rev-list --count "${BASE}..${COMPARE_TO}" 2>/dev/null || echo 0)"
-    if (( _behind > 0 )) && (( ALLOW_DELETIONS )); then
-        warn "base is ${_behind} commit(s) behind ${COMPARE_TO} — proceeding because --allow-deletions was given"
-    elif (( _behind > 0 )); then
-        err "STALE BASE — '${BASE}' is ${_behind} commit(s) behind ${COMPARE_TO}.
+# (The predicate is NOT "diff the base against the resulting tree": the base IS
+# the stale thing, so that diff is clean by construction. See the function's
+# docstring.)
+# HOS_ROOT is resolved from THIS SCRIPT's location, never the caller's CWD.
+# Using a CWD-relative import here would silently disable the guard whenever the
+# script is invoked from another directory — the exact fail-open shape it exists
+# to catch. (Caught by its own tests, which run with cwd set to a throwaway repo.)
+_HOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+set +e
+_freshness="$(HOS_ROOT="$_HOS_ROOT" python3 -c '
+import os, sys
+sys.path.insert(0, os.environ["HOS_ROOT"])
+from scripts.automation.lib.stale_commit_detector import check_base_freshness
+r = check_base_freshness(base=sys.argv[1], target=sys.argv[2])
+if r.could_not_check:
+    print("UNRESOLVED")
+elif r.is_fresh:
+    print("FRESH")
+else:
+    print(f"STALE {r.behind_count}")
+    for line in r.missing_commits:
+        print(f"    {line}")
+' "$BASE" "$COMPARE_TO" 2>/dev/null)"
+_freshness_rc=$?
+set -e
+(( _freshness_rc == 0 )) || _freshness="UNAVAILABLE"
+
+case "$_freshness" in
+    UNAVAILABLE*)
+        # Distinct from UNRESOLVED: the checker itself could not run (python3
+        # missing, module not importable). Both are loud — a silently-skipped
+        # staleness check is the fail-open this guard exists to prevent.
+        warn "staleness guard SKIPPED: could not run the freshness checker."
+        warn "  Expected scripts/automation/lib/stale_commit_detector.py under ${_HOS_ROOT}"
+        ;;
+    UNRESOLVED*)
+        warn "staleness guard SKIPPED: --compare-to ref '${COMPARE_TO}' does not resolve."
+        warn "  Pass --compare-to <ref> to enable it (e.g. the branch this will be PR'd against)."
+        ;;
+    FRESH) ;;
+    STALE*)
+        _behind="$(echo "$_freshness" | head -1 | cut -d' ' -f2)"
+        _missing="$(echo "$_freshness" | tail -n +2)"
+        if (( ALLOW_DELETIONS )); then
+            warn "base is ${_behind} commit(s) behind ${COMPARE_TO} — proceeding because --allow-deletions was given"
+        else
+            err "STALE BASE — '${BASE}' is ${_behind} commit(s) behind ${COMPARE_TO}.
 
 A tree built on this base is missing that work, so the resulting commit would
 propose REVERTING it. The PR would look entirely normal. (Observed 2026-08-01:
 this exact shape would have reverted four merged PRs — 6,114 deletions.)
 
 Missing commits (newest first):
-$(git log --oneline -5 "${BASE}..${COMPARE_TO}" | sed 's/^/    /')$( (( _behind > 5 )) && printf '\n    ... and %d more' "$(( _behind - 5 ))" )
+${_missing}
 
 Fix: rebuild against a current base — usually '--base ${COMPARE_TO}'. If a
 feature branch was passed as --base, that branch is itself stale and needs the
 target merged into it first.
 
 --compare-to <ref> changes the target; --allow-deletions overrides (rarely right)."
-    fi
-fi
+        fi
+        ;;
+esac
 
 # Fail closed on a branch that already exists at an unrelated commit: moving it
 # silently would discard work. Require it to be absent, or an ancestor of BASE.
