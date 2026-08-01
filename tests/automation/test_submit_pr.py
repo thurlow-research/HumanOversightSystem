@@ -26,6 +26,8 @@ printf "export HOS_BOT_LOGIN='fake-bot[bot]'\\n"
 """
 
 # rev-parse --abbrev-ref HEAD -> "current-branch"; remote get-url origin -> repo URL;
+# fetch -> honors GIT_FETCH_FAIL; rev-list --count -> GIT_BEHIND_COUNT (default 0);
+# merge -> honors GIT_MERGE_FAIL (merge --abort always succeeds);
 # push <url> <refspec> -> captured, honors GIT_PUSH_FAIL.
 GIT_STUB = """#!/usr/bin/env bash
 echo "GIT_CALLED_WITH:$*" >> "$CAPTURE_FILE"
@@ -35,6 +37,12 @@ sub="${@:$((i+1)):1}"
 case "$sub" in
   remote) echo "https://github.com/test-owner/test-repo.git" ;;
   rev-parse) echo "current-branch" ;;
+  fetch) if [[ "${GIT_FETCH_FAIL:-}" == "1" ]]; then exit 1; fi ;;
+  rev-list) echo "${GIT_BEHIND_COUNT:-0}" ;;
+  merge)
+    if [[ "$*" == *"--abort"* ]]; then exit 0; fi
+    if [[ "${GIT_MERGE_FAIL:-}" == "1" ]]; then exit 1; fi
+    ;;
   push) if [[ "${GIT_PUSH_FAIL:-}" == "1" ]]; then exit 1; fi ;;
 esac
 exit 0
@@ -260,3 +268,64 @@ def test_gh_pr_create_failure_still_revokes_token(h):
     assert result.returncode != 0
     cap = h.capture()
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+# --------------------------------------------------------------------------- #
+# Merge-from-base guard (#1162)
+# --------------------------------------------------------------------------- #
+
+
+def test_fetches_base_before_pushing(h):
+    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    fetch_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and " fetch " in ln][0]
+    assert "fetch origin main" in fetch_line
+
+
+def test_up_to_date_base_does_not_merge(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "0"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "merge" not in cap
+
+
+def test_behind_base_merges_before_push(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "3"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    calls = cap.splitlines()
+    merge_line = [ln for ln in calls if ln.startswith("GIT_CALLED_WITH") and " merge " in ln][0]
+    assert "origin/main" in merge_line
+    push_idx = [i for i, ln in enumerate(calls) if "refs/heads/" in ln][0]
+    merge_idx = calls.index(merge_line)
+    assert merge_idx < push_idx, "merge must happen before push"
+
+
+def test_merge_conflict_aborts_and_does_not_push(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "3", "GIT_MERGE_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "conflict" in result.stderr.lower()
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert not any("refs/heads/" in ln for ln in cap.splitlines())
+    assert any("--abort" in ln for ln in cap.splitlines())
+
+
+def test_fetch_failure_aborts_before_token_mint(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_FETCH_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
