@@ -44,9 +44,10 @@
 
 set -euo pipefail
 
-GREEN="\033[32m"; CYAN="\033[36m"; RED="\033[31m"; RESET="\033[0m"
+GREEN="\033[32m"; CYAN="\033[36m"; YELLOW="\033[33m"; RED="\033[31m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*" >&2; }
 info() { echo -e "  ${CYAN}→${RESET}  $*" >&2; }
+warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 
 BASE="origin/main"
@@ -54,6 +55,9 @@ BRANCH=""
 MESSAGE_FILE=""
 MODE="100644"
 DRY_RUN=0
+ALLOW_DELETIONS=0
+NO_FETCH=0
+COMPARE_TO="origin/main"
 FILE_SPECS=()
 
 while [[ $# -gt 0 ]]; do
@@ -64,6 +68,9 @@ while [[ $# -gt 0 ]]; do
         --mode)         MODE="$2"; shift 2 ;;
         --file)         FILE_SPECS+=("$2"); shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
+        --allow-deletions) ALLOW_DELETIONS=1; shift ;;
+        --no-fetch)     NO_FETCH=1; shift ;;
+        --compare-to)   COMPARE_TO="$2"; shift 2 ;;
         -h|--help)      sed -n '2,45p' "$0"; exit 0 ;;
         *)              err "unknown argument: $1" ;;
     esac
@@ -76,8 +83,59 @@ done
 [[ ${#FILE_SPECS[@]} -gt 0 ]]     || err "at least one --file is required"
 [[ "$MODE" =~ ^100(644|755)$ ]]   || err "--mode must be 100644 or 100755, got: $MODE"
 
+# ── Staleness guard (#1162) ───────────────────────────────────────────────────
+# A stale base is the failure this guard exists for: if the local remote-tracking
+# ref is behind the real remote, the tree seeded from it LACKS whatever landed in
+# between, and the resulting commit proposes DELETING that work. The PR looks
+# entirely normal. Observed 2026-08-01: a branch built this way would have
+# reverted four merged PRs (6,114 deletions), caught only by manual inspection.
+#
+# So: refresh the remote-tracking ref before reading it. Cheap, and it removes
+# the most common way to get a stale base.
+if [[ "$BASE" == origin/* ]] && (( ! NO_FETCH )); then
+    _remote_branch="${BASE#origin/}"
+    info "fetching origin/${_remote_branch} to ensure the base is current (--no-fetch to skip)..."
+    # Non-fatal: an offline run should still work off the last known ref, but say so.
+    git fetch --quiet origin "$_remote_branch" 2>/dev/null \
+        || warn "fetch failed — proceeding with the local ref, which may be STALE"
+fi
+
 git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null \
     || err "base ref does not resolve to a commit: $BASE"
+
+# The actual staleness test: does the upstream target contain commits the base
+# does not? If so, the tree seeded from BASE LACKS that work, and committing it
+# proposes reverting it.
+#
+# Note this cannot be detected by diffing BASE against the resulting tree — the
+# base IS the stale thing, so that diff looks perfectly clean. It has to be
+# compared against the real upstream target.
+if ! git rev-parse --verify --quiet "${COMPARE_TO}^{commit}" >/dev/null; then
+    # Fail loudly rather than silently skipping the guard — a skipped staleness
+    # check is exactly the fail-open this exists to prevent.
+    warn "staleness guard SKIPPED: --compare-to ref '${COMPARE_TO}' does not resolve."
+    warn "  Pass --compare-to <ref> to enable it (e.g. the branch this will be PR'd against)."
+else
+    _behind="$(git rev-list --count "${BASE}..${COMPARE_TO}" 2>/dev/null || echo 0)"
+    if (( _behind > 0 )) && (( ALLOW_DELETIONS )); then
+        warn "base is ${_behind} commit(s) behind ${COMPARE_TO} — proceeding because --allow-deletions was given"
+    elif (( _behind > 0 )); then
+        err "STALE BASE — '${BASE}' is ${_behind} commit(s) behind ${COMPARE_TO}.
+
+A tree built on this base is missing that work, so the resulting commit would
+propose REVERTING it. The PR would look entirely normal. (Observed 2026-08-01:
+this exact shape would have reverted four merged PRs — 6,114 deletions.)
+
+Missing commits (newest first):
+$(git log --oneline -5 "${BASE}..${COMPARE_TO}" | sed 's/^/    /')$( (( _behind > 5 )) && printf '\n    ... and %d more' "$(( _behind - 5 ))" )
+
+Fix: rebuild against a current base — usually '--base ${COMPARE_TO}'. If a
+feature branch was passed as --base, that branch is itself stale and needs the
+target merged into it first.
+
+--compare-to <ref> changes the target; --allow-deletions overrides (rarely right)."
+    fi
+fi
 
 # Fail closed on a branch that already exists at an unrelated commit: moving it
 # silently would discard work. Require it to be absent, or an ancestor of BASE.
