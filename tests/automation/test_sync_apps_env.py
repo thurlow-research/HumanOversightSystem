@@ -175,3 +175,33 @@ class TestGapFill:
         r = _run(config_dir, args=["--non-interactive"])
         assert r.returncode == 0, r.stdout + r.stderr
         assert "nothing to do" in r.stdout
+
+    def test_permissions_400_message_does_not_imply_it_is_wrong(self, config_dir):
+        # 400 is an explicitly allowed mode (line above), but the error text
+        # used to claim "expected 600" unconditionally — misleading someone
+        # troubleshooting a deliberately read-only apps.env.
+        apps_env = _write_apps_env(config_dir, MINIMAL_BODY)
+        apps_env.chmod(0o644)
+        r = _run(config_dir, args=["--non-interactive"])
+        assert "expected 600 or 400" in r.stderr
+
+    def test_config_dir_missing_value_errors_cleanly(self, config_dir):
+        # `--config-dir` with no following argument must not crash on an
+        # unbound `$2` under `set -u` — it should fail with a clear message.
+        r = subprocess.run(
+            [BASH, str(SCRIPT), "--config-dir"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        assert r.returncode == 1
+        assert "unbound variable" not in r.stderr
+        assert "--config-dir requires a value" in r.stderr
+
+    def test_interactive_prompt_eof_leaves_key_unresolved_instead_of_crashing(self, config_dir):
+        # EOF on stdin (e.g. piped input running out) makes `read` return
+        # non-zero. Under `set -e` that used to kill the whole script instead
+        # of being treated like an empty answer.
+        apps_env = _write_apps_env(config_dir, MINIMAL_BODY)
+        r = _run(config_dir, args=[], input_text="")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert 'HUMAN_REVIEWER="<YOUR_GITHUB_LOGIN>"' in apps_env.read_text()
+        assert "left unresolved" in r.stderr

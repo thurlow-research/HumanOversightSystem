@@ -53,7 +53,9 @@ DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config-dir)       CONFIG_DIR="$2";      shift 2 ;;
+    --config-dir)
+      [[ $# -ge 2 ]] || err "--config-dir requires a value"
+      CONFIG_DIR="$2"; shift 2 ;;
     --non-interactive)  NON_INTERACTIVE=true; shift ;;
     --dry-run)          DRY_RUN=true;         shift ;;
     --help|-h)
@@ -73,7 +75,7 @@ APPS_ENV="$CONFIG_DIR/apps.env"
 _env_mode=$(stat -c "%a" "$APPS_ENV" 2>/dev/null || stat -f "%OLp" "$APPS_ENV" 2>/dev/null) \
   || err "Cannot verify apps.env permissions — stat unavailable. Manually confirm: chmod 600 $APPS_ENV"
 if [[ "$_env_mode" != "600" && "$_env_mode" != "400" ]]; then
-  err "apps.env has permissions $_env_mode (expected 600). Run: chmod 600 $APPS_ENV"
+  err "apps.env has permissions $_env_mode (expected 600 or 400). Run: chmod 600 $APPS_ENV"
 fi
 
 # Reject shell metacharacters before writing a user-supplied value into a file
@@ -107,7 +109,10 @@ for line in "${TEMPLATE_LINES[@]}"; do
       value="${!key:-}"
     else
       printf "  %s is new in this release (template default: %s)\n" "$key" "$template_value"
-      read -r -p "  Value (Enter to leave unresolved): " value
+      # `|| true` so EOF on stdin (Ctrl-D, or piped input running out) is
+      # treated like an empty answer — leave the key unresolved — instead of
+      # `read`'s non-zero EOF return tripping `set -e` and killing the script.
+      read -r -p "  Value (Enter to leave unresolved): " value || true
     fi
     if [[ -z "$value" ]]; then
       warn "$key left unresolved — using placeholder; edit $APPS_ENV before the next run that needs it"
