@@ -86,9 +86,10 @@ if $MUTATION || $MUTATION_ONLY; then
     echo "  This runs the full test suite against each mutant — may take several minutes."
     echo ""
 
+    # mutmut 3.x reads paths/runner config from pyproject.toml's [tool.mutmut]
+    # (source_paths / pytest_add_cli_args_test_selection) — its `run` command no
+    # longer accepts --paths-to-mutate/--runner flags (2.x-era CLI surface).
     "$VENV_PYTHON" -m mutmut run \
-        --paths-to-mutate scripts/oversight/validators/ \
-        --runner "\"$VENV_PYTHON\" -m pytest tests/ -x -q --no-header" \
         2>&1 || true  # mutmut exits non-zero even on partial success
 
     echo ""
