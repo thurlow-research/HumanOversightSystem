@@ -1813,8 +1813,11 @@ cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/boots
 cp_framework_file "$HOS_SOURCE/bootstrap/hos_repo_sync.sh"   "$TARGET_REPO/bootstrap/hos_repo_sync.sh"   "bootstrap/hos_repo_sync.sh (interactive-session repo sync)"
 # validate_setup.sh: install if present (added v0.4.0)
 [[ -f "$HOS_SOURCE/bootstrap/validate_setup.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/validate_setup.sh"     "$TARGET_REPO/bootstrap/validate_setup.sh"     "bootstrap/validate_setup.sh (setup health check)" || true
-# apps.env.template: install if present so consumers have a discoverable starting point
-[[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
+# apps.env.template: install if present so consumers have a discoverable starting point.
+# Framework-owned reference file — always overwrite (cp_framework_file), not cp_file,
+# so it tracks the release on --pr upgrades; otherwise sync_apps_env.sh reads a stale
+# key list and silently misses newly-added keys (#1179 review finding).
+[[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
 # sync_apps_env.sh: install if present (added v0.6.0, #957) — lets a consumer
 # fill apps.env gaps a `--pr` upgrade introduces without a new setup_partner run.
 [[ -f "$HOS_SOURCE/bootstrap/sync_apps_env.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/sync_apps_env.sh"     "$TARGET_REPO/bootstrap/sync_apps_env.sh"     "bootstrap/sync_apps_env.sh (apps.env gap-fill)" || true
