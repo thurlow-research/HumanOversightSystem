@@ -46,14 +46,26 @@ _RISK_LABELS = [
 _CHURN_EXCLUDE_PREFIXES = ("docs:", "spec:", "research:")
 
 
-def _gh_issues_for_files(file_paths: list[str]) -> list[dict]:
-    """Query GitHub issues mentioning any of the given file paths."""
+def _gh_issues_for_files(file_paths: list[str]) -> tuple[list[dict], str, int]:
+    """
+    Query GitHub issues mentioning any of the given file paths.
+
+    Returns (issues, status, failed_label_count). Historical density is
+    legitimately 0 on a new project (see module docstring) — but a gh outage
+    or auth failure partway through the per-label loop used to look exactly
+    like "genuinely found nothing", collapsing "the tool didn't run" into the
+    same empty result as a clean query (#1087). status/failed_label_count let
+    callers surface the difference: "not_installed" (gh missing, accepted
+    degraded mode), "error" (every label query failed), "partial" (some did),
+    or "ok".
+    """
     try:
         subprocess.run(["gh", "issue", "list", "--help"], capture_output=True, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return []
+        return [], "not_installed", 0
 
     all_issues: list[dict] = []
+    failed_labels = 0
     for label in _RISK_LABELS:
         try:
             result = subprocess.run(
@@ -75,6 +87,7 @@ def _gh_issues_for_files(file_paths: list[str]) -> list[dict]:
                 timeout=15,
             )
             if result.returncode != 0:
+                failed_labels += 1
                 continue
             issues = json.loads(result.stdout)
             for issue in issues:
@@ -92,6 +105,7 @@ def _gh_issues_for_files(file_paths: list[str]) -> list[dict]:
             FileNotFoundError,
             subprocess.CalledProcessError,
         ):
+            failed_labels += 1
             continue
 
     # Deduplicate by issue number
@@ -101,7 +115,14 @@ def _gh_issues_for_files(file_paths: list[str]) -> list[dict]:
         if issue["number"] not in seen:
             seen.add(issue["number"])
             unique.append(issue)
-    return unique
+
+    if failed_labels == 0:
+        status = "ok"
+    elif failed_labels == len(_RISK_LABELS):
+        status = "error"
+    else:
+        status = "partial"
+    return unique, status, failed_labels
 
 
 def _git_churn(file_paths: list[str]) -> dict[str, int]:
@@ -138,7 +159,7 @@ def _git_churn(file_paths: list[str]) -> dict[str, int]:
 
 
 def analyse_files(file_paths: list[str]) -> dict:
-    issues = _gh_issues_for_files(file_paths)
+    issues, gh_status, gh_failed_labels = _gh_issues_for_files(file_paths)
     churn = _git_churn(file_paths)
 
     issue_count = len(issues)
@@ -181,6 +202,14 @@ def analyse_files(file_paths: list[str]) -> dict:
             f"{Path(most_churned).name}: {high_churn[most_churned]} commits in 90 days — "
             "high churn may indicate persistent complexity."
         )
+    if gh_status in ("error", "partial"):
+        # A gh query failure must not read the same as "no historical issues
+        # found" (#1087) — flag it so a reviewer knows issue_count above may
+        # be undercounted, not confirmed clean.
+        checklist.append(
+            f"⚠ GitHub issue query failed for {gh_failed_labels}/{len(_RISK_LABELS)} label(s) — "
+            "issue_count above may be undercounted, not a confirmed clean history."
+        )
 
     return make_result(
         dimension="historical_density",
@@ -197,6 +226,8 @@ def analyse_files(file_paths: list[str]) -> dict:
                 for i in issues
             ],
             "churn": churn,
+            "gh_status": gh_status,
+            "gh_failed_labels": gh_failed_labels,
             "note": "empty on new projects — accumulates value over time",
         },
         weight=WEIGHTS["historical_density"],

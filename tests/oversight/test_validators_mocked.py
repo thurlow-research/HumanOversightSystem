@@ -310,6 +310,68 @@ class TestStaticAnalysisMocked:
         high_evidence = [e for e in result["evidence"] if e["severity"] == "high"]
         assert high_evidence, "HIGH bandit finding must surface as high-severity evidence"
 
+    # ── #1087: semgrep failure must not read the same as "semgrep ran clean" ──
+
+    def test_run_semgrep_not_installed(self):
+        from static_analysis import _run_semgrep
+        with patch("static_analysis.subprocess.run",
+                   side_effect=FileNotFoundError("semgrep not found")):
+            results, status, error = _run_semgrep(["test.py"])
+        assert results == []
+        assert status == "not_installed"
+        assert error is None
+
+    def test_run_semgrep_timeout_signals_error(self):
+        from static_analysis import _run_semgrep
+        import subprocess as sp
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            raise sp.TimeoutExpired("semgrep", 60)
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            results, status, error = _run_semgrep(["test.py"])
+        assert results == []
+        assert status == "error"
+        assert error is not None
+
+    def test_run_semgrep_unparseable_signals_error(self):
+        from static_analysis import _run_semgrep
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            return MagicMock(stdout="not-json", returncode=0)
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            results, status, error = _run_semgrep(["test.py"])
+        assert results == []
+        assert status == "error"
+        assert error is not None
+
+    def test_semgrep_failure_does_not_exclude_dimension_but_is_flagged(self):
+        # Bandit succeeds (clean); semgrep is installed but times out. Semgrep
+        # is only an additive signal here, so the dimension is NOT excluded —
+        # but the failure must be visible in raw_value/checklist, not silently
+        # collapsed into "semgrep found nothing" (#1087).
+        empty_bandit = json.dumps({"results": [], "metrics": {}})
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "bandit":
+                return MagicMock(stdout=empty_bandit, returncode=0)
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            import subprocess as sp
+            raise sp.TimeoutExpired("semgrep", 60)
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is None
+        assert result["raw_value"]["semgrep_status"] == "error"
+        assert "semgrep_error" in result["raw_value"]
+        assert any("semgrep did not complete" in item for item in result["checklist_items"])
+
 
 # ── hallucination_surface (mocked) ────────────────────────────────────────────
 

@@ -59,11 +59,23 @@ def _run_bandit(files: list[str]) -> tuple[list[dict], str | None]:
     return data.get("results", []), None
 
 
-def _run_semgrep(files: list[str]) -> list[dict]:
+def _run_semgrep(files: list[str]) -> tuple[list[dict], str, str | None]:
+    """
+    Run semgrep and return (results, status, error).
+
+    Unlike bandit, semgrep is an optional additive signal here — its absence
+    must not exclude the whole static_analysis dimension. But "semgrep isn't
+    installed" and "semgrep is installed and a scan attempt failed" both used
+    to collapse to the same empty `[]`, making a broken scan indistinguishable
+    from a clean one (#1087). status distinguishes the two: "not_installed"
+    (expected/accepted degraded mode, callers stay silent) vs "error" (semgrep
+    ran but produced no usable output — a timeout or an output-format break —
+    which callers must surface, not silently score as clean).
+    """
     try:
         subprocess.run(["semgrep", "--version"], capture_output=True, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError):
-        return []
+        return [], "not_installed", None
     try:
         result = subprocess.run(
             ["semgrep", "--config", "p/django", "--json", "--quiet"] + files,
@@ -71,10 +83,13 @@ def _run_semgrep(files: list[str]) -> list[dict]:
             text=True,
             timeout=60,
         )
+    except subprocess.TimeoutExpired:
+        return [], "error", "semgrep scan timed out after 60s — cannot assess this signal"
+    try:
         data = json.loads(result.stdout)
-        return data.get("results", [])
-    except (json.JSONDecodeError, subprocess.TimeoutExpired):
-        return []
+    except json.JSONDecodeError:
+        return [], "error", "semgrep output unparseable — scan failed, cannot assess this signal"
+    return data.get("results", []), "ok", None
 
 
 # A HIGH bandit finding weighs this many MEDIUM findings toward the numeric
@@ -97,7 +112,7 @@ def analyse_files(file_paths: list[str]) -> dict:
             error=bandit_error,
         )
 
-    semgrep_results = _run_semgrep(file_paths)
+    semgrep_results, semgrep_status, semgrep_error = _run_semgrep(file_paths)
 
     # Score HIGH as well as MEDIUM. HIGH is normally blocked upstream, but when
     # the gate is suspended or skipped it reaches here and must not score 0.0.
@@ -145,15 +160,25 @@ def analyse_files(file_paths: list[str]) -> dict:
                 f"{r.get('filename', '?')}:{r.get('line_number', 0)} "
                 f"[{test_id}] — {r.get('issue_text', '')}"
             )
+    if semgrep_status == "error":
+        # A failed scan must not read the same as "semgrep ran clean" (#1087) —
+        # flag it on the checklist so a reviewer knows the semgrep_count above
+        # reflects a broken tool, not a swept file.
+        checklist.append(f"⚠ semgrep did not complete ({semgrep_error}) — semgrep_count above is not a clean scan result; verify manually")
+
+    raw_value = {
+        "bandit_high_count": len(high_findings),
+        "bandit_medium_count": len(medium_findings),
+        "semgrep_count": len(semgrep_results),
+        "semgrep_status": semgrep_status,
+    }
+    if semgrep_error is not None:
+        raw_value["semgrep_error"] = semgrep_error
 
     return make_result(
         dimension="static_analysis",
         score=score,
-        raw_value={
-            "bandit_high_count": len(high_findings),
-            "bandit_medium_count": len(medium_findings),
-            "semgrep_count": len(semgrep_results),
-        },
+        raw_value=raw_value,
         weight=WEIGHTS["static_analysis"],
         evidence=evidence,
         checklist_items=checklist,
