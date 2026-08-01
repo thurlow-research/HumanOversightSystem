@@ -63,6 +63,8 @@ class CronEnv:
         # Records each `gh issue create` invocation so dedup/fail-closed tests
         # (#849) can assert whether a [BLOCKED] issue was actually filed.
         self.aa_issue_marker = tmp_path / "aa_issue_create.log"
+        # Records each `gh issue close` invocation (#959 auto-close on green baseline).
+        self.aa_issue_close_marker = tmp_path / "aa_issue_close.log"
 
         # ── claude stub: records how it was invoked, never spawns the real CLI ──
         # $0 proves thin-env resolved it by absolute path off the pinned PATH;
@@ -100,6 +102,11 @@ class CronEnv:
             # Context: next work candidates (needs-ai issues, not needs-human)
             '  *"labels=needs-ai"*)\n'
             '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
+            # #959 auto-close: broken-state issue *numbers* (not the dedup count) —
+            # matched first since it's the more specific pattern (the jq expression
+            # ending in ".[].number" vs the plain "| length" count query below).
+            '  *"labels=needs-human"*".[].number"*)\n'
+            '    printf "%s\\n" ${HOS_TEST_BROKEN_STATE_OPEN_NUMS:-} ;;\n'
             # Agent availability: needs-human blocked issues count.
             # HOS_TEST_AA_QUERY_FAIL simulates a gh API failure (non-zero exit)
             # so the #849 fail-closed dedup path can be exercised.
@@ -123,6 +130,10 @@ class CronEnv:
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  echo "https://github.com/test/repo/issues/999"\n'
+            'fi\n'
+            # issue close — record which issue number was closed (#959 auto-close)
+            'if [[ "$1" == "issue" && "$2" == "close" ]]; then\n'
+            f'  echo "$3" >> "{self.aa_issue_close_marker}"\n'
             'fi\n'
             "exit 0\n",
         )
@@ -440,6 +451,22 @@ class CronEnv:
     def aa_issue_created(self) -> bool:
         """True if the launcher filed a [BLOCKED] agent-unavailable issue."""
         return self.aa_issue_marker.exists()
+
+    def closed_issue_nums(self) -> list[str]:
+        """Issue numbers the launcher closed via `gh issue close` (#959 auto-close)."""
+        if not self.aa_issue_close_marker.exists():
+            return []
+        return [ln for ln in self.aa_issue_close_marker.read_text().splitlines() if ln]
+
+    def baseline_repair_state_file(self, project="hos") -> Path:
+        """The #959 repair-attempt counter file for worker/<project>."""
+        return self.state / "baseline-repair" / f"worker-{project}"
+
+    def set_baseline_on_red(self, mode: str, project="hos") -> None:
+        """Append <project>_baseline_on_red=<mode> to projects.conf (#959)."""
+        conf = self.home / ".config" / "hos" / "projects.conf"
+        with conf.open("a") as f:
+            f.write(f"{project}_baseline_on_red={mode}\n")
 
     def claude_record(self) -> str:
         return self.claude_log.read_text() if self.claude_log.exists() else ""
@@ -1164,6 +1191,108 @@ class TestCycleStartBaselineCowpat:
             "dedup query failed → must fail closed and NOT file an issue"
         )
         assert "fail-closed" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_baseline_green_auto_closes_standing_blocked_issue(self, cron):
+        """#959: baseline passes → any standing [BLOCKED] issue is auto-closed,
+        even in default "halt" mode (this is the unconditional "at minimum" ask)."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={"HOS_TEST_BROKEN_STATE_OPEN_NUMS": "321"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.closed_issue_nums() == ["321"]
+        assert cron.claude_ran()
+
+    def test_baseline_green_no_standing_issue_closes_nothing(self, cron):
+        """No standing [BLOCKED] issue → auto-close is a no-op."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={"HOS_TEST_BROKEN_STATE_OPEN_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.closed_issue_nums() == []
+        assert cron.claude_ran()
+
+
+# ───────────────── Baseline repair mode, opt-in (#959) ───────────────────────
+class TestBaselineRepairMode:
+    """<project>_baseline_on_red=repair (opt-in via projects.conf) scopes a red
+    baseline cycle to fixing the failing tests instead of halting — but only for
+    ordinary assertion failures (pytest exit 1); any other nonzero exit means the
+    environment itself is broken and always halts. Bounded by
+    HOS_BASELINE_REPAIR_MAX_ATTEMPTS consecutive cycles before escalating."""
+
+    def test_default_mode_still_halts_on_assertion_failure(self, cron):
+        """No <project>_baseline_on_red set → unchanged legacy halt behavior."""
+        cron.git_init_repo()
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "1",
+            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.claude_ran()
+        assert not cron.baseline_repair_state_file().exists()
+
+    def test_repair_mode_absorbs_assertion_failure_and_launches_claude(self, cron):
+        """repair mode + pytest exit 1 (assertion failures) → no halt, Claude
+        launches scoped to the failing baseline, attempt counter stamped at 1."""
+        cron.git_init_repo()
+        cron.set_baseline_on_red("repair")
+        r = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.aa_issue_created(), "repair mode must not file needs-human yet"
+        assert cron.claude_ran(), "repair mode must still launch Claude, scoped to the fix"
+        assert "baseline repair mode: attempt 1/3" in r.stdout
+        assert cron.baseline_repair_state_file().read_text().strip() == "1"
+
+    def test_repair_mode_context_tells_claude_to_scope_to_baseline(self, cron):
+        """The injected prompt context names #959 repair mode so Claude doesn't
+        pick up backlog work instead of fixing the baseline."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("## Worker step instructions\n")
+        cron.git_init_repo()
+        cron.set_baseline_on_red("repair")
+        r = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "BASELINE REPAIR MODE" in context
+        assert "#959" in context
+
+    def test_repair_mode_still_halts_on_environmental_failure(self, cron):
+        """repair mode + pytest exit 2 (collection/session error — environmental,
+        not an ordinary assertion failure) → halts exactly like default mode; the
+        worker cannot fix broken infrastructure."""
+        cron.git_init_repo()
+        cron.set_baseline_on_red("repair")
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "2",
+            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert not cron.claude_ran()
+        assert cron.aa_issue_created()
+        assert not cron.baseline_repair_state_file().exists()
+
+    def test_repair_mode_escalates_after_max_attempts(self, cron):
+        """Repair attempts exceeding HOS_BASELINE_REPAIR_MAX_ATTEMPTS escalate to
+        the same needs-human halt path instead of repairing forever."""
+        cron.git_init_repo()
+        cron.set_baseline_on_red("repair")
+        cron.baseline_repair_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.baseline_repair_state_file().write_text("3\n")  # already used all 3 attempts
+        r = cron.run(env_overrides={
+            "HOS_TEST_INNER_LOOP_EXIT": "1",
+            "HOS_BASELINE_REPAIR_MAX_ATTEMPTS": "3",
+            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+        })
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "repair exhausted" in r.stdout
+        assert cron.aa_issue_created(), "exhausted repair mode must still escalate to a human"
         assert not cron.claude_ran()
 
 

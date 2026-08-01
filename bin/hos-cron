@@ -14,6 +14,7 @@
 #   cps_config_dir=$HOME/Code/CPS/.config/hos
 #   cps_worker_root=$HOME/Code/CPS/Main
 #   cps_overseer_root=$HOME/Code/CPS/Main
+#   cps_baseline_on_red=repair   # optional (#959); default "halt" — see below
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
@@ -29,6 +30,16 @@
 #   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
 #   HOS_TARGET_RELEASE          override the active release title (e.g. v0.4.2); default from projects.conf
 #   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
+#   HOS_BASELINE_REPAIR_MAX_ATTEMPTS  consecutive red-baseline cycles allowed in
+#                               repair mode before escalating to needs-human (default 3)
+#
+# <project>_baseline_on_red (projects.conf, worker only; #959): on a red cycle-start
+# baseline, "halt" (default) files a needs-human issue and exits — unchanged legacy
+# behavior. "repair" instead scopes the cycle to fixing the failing tests (bounded by
+# HOS_BASELINE_REPAIR_MAX_ATTEMPTS) when the failure is an ordinary assertion failure
+# (pytest exit 1); a collection/session/environmental failure (any other nonzero exit)
+# always halts regardless of mode, since the worker cannot fix broken infrastructure.
+# Either mode auto-closes a standing [BLOCKED] issue once the baseline goes green.
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
@@ -608,44 +619,98 @@ if [[ "$ROLE" == "worker" ]]; then
     # Unknown or dirty state — no cowpat (first run), HEAD moved since the last
     # green run, a dirty tree from a crashed cycle, or HEAD unresolvable. Run the
     # baseline before Claude starts so it never builds on a broken tree.
-    if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
-      echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED"
-      _audit cycle-preflight-fail reason=inner_loop_tests_failed
-      # Broken-state flow (#789): rather than a silent exit, file a needs-human
-      # issue so a human can investigate/authorize a fix — the worker is halted
-      # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
-      # agent-availability guard: only file when the dedup query SUCCEEDS and
-      # confirms zero existing broken-state issues. A query error must never
-      # default the count to 0 — that would file a fresh issue every cycle and
-      # flood the queue. On query failure, skip filing; the next cycle whose
-      # query succeeds files once.
-      if [[ -n "$_REPO_SLUG" ]]; then
-        _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
-        if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
-            --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
-            2>/dev/null); then
-          _bs_existing="${_bs_existing:-0}"
-          if [[ "$_bs_existing" == "0" ]]; then
-            gh issue create \
-              --repo "$_REPO_SLUG" \
-              --title "${_bs_title_prefix} — worker halted" \
-              --label "needs-human,needs-ai" \
-              --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
-              2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
-              || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
-          else
-            echo "$LOG_PREFIX broken-state issue already open — not filing a duplicate"
-          fi
+    _bs_exit=0
+    bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null || _bs_exit=$?
+    _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
+    _bs_repair_state="$_HOS_DIR/baseline-repair/${ROLE}-${PROJECT}"
+    if [[ "$_bs_exit" -ne 0 ]]; then
+      echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED (exit $_bs_exit)"
+      _audit cycle-preflight-fail "reason=inner_loop_tests_failed exit=$_bs_exit"
+
+      # #959: an unconditional halt deadlocks any project whose baseline isn't
+      # already green — the worker can never fix the very tests that block it.
+      # Classify instead: pytest exit 1 means tests were collected and RAN —
+      # ordinary, fixable assertion failures, no different from any other
+      # backlog bug. Any other nonzero exit (2=collection/session error,
+      # 3=internal error, 4=usage error, 5=no tests collected) means the
+      # environment itself is broken; the worker cannot fix infrastructure, so
+      # those always halt regardless of repair mode. Opt-in via
+      # <project>_baseline_on_red=repair in projects.conf — default stays
+      # "halt" (unchanged behavior) so existing installs are unaffected.
+      _bs_mode="$(_conf_val baseline_on_red)"; _bs_mode="${_bs_mode:-halt}"
+      _bs_halt=1
+      if [[ "$_bs_mode" == "repair" && "$_bs_exit" -eq 1 ]]; then
+        _bs_max="${HOS_BASELINE_REPAIR_MAX_ATTEMPTS:-3}"
+        _bs_attempts=$(( $(cat "$_bs_repair_state" 2>/dev/null || echo 0) + 1 ))
+        if [[ "$_bs_attempts" -le "$_bs_max" ]]; then
+          _bs_halt=0
+          mkdir -p "$(dirname "$_bs_repair_state")"
+          printf '%s\n' "$_bs_attempts" > "$_bs_repair_state"
+          export HOS_BASELINE_REPAIR_ACTIVE=1
+          export HOS_BASELINE_REPAIR_ATTEMPT="${_bs_attempts}/${_bs_max}"
+          echo "$LOG_PREFIX baseline repair mode: attempt ${_bs_attempts}/${_bs_max} — this cycle is scoped to the failing baseline, no new backlog"
+          _audit cycle-baseline-repair "attempt=${_bs_attempts}/${_bs_max}"
         else
-          echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+          echo "$LOG_PREFIX baseline repair exhausted after ${_bs_attempts} attempts without a green baseline — escalating to human"
         fi
       fi
-      exit 1
+
+      if [[ "$_bs_halt" -eq 1 ]]; then
+        # Broken-state flow (#789): rather than a silent exit, file a needs-human
+        # issue so a human can investigate/authorize a fix — the worker is halted
+        # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
+        # agent-availability guard: only file when the dedup query SUCCEEDS and
+        # confirms zero existing broken-state issues. A query error must never
+        # default the count to 0 — that would file a fresh issue every cycle and
+        # flood the queue. On query failure, skip filing; the next cycle whose
+        # query succeeds files once.
+        if [[ -n "$_REPO_SLUG" ]]; then
+          if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+              --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
+              2>/dev/null); then
+            _bs_existing="${_bs_existing:-0}"
+            if [[ "$_bs_existing" == "0" ]]; then
+              gh issue create \
+                --repo "$_REPO_SLUG" \
+                --title "${_bs_title_prefix} — worker halted" \
+                --label "needs-human,needs-ai" \
+                --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
+                2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
+                || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
+            else
+              echo "$LOG_PREFIX broken-state issue already open — not filing a duplicate"
+            fi
+          else
+            echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+          fi
+        fi
+        exit 1
+      fi
+      # Repair mode absorbed the failure above (fell through instead of exiting)
+      # — do NOT stamp the cowpat below; the baseline is still red.
+    else
+      # Baseline green — reset any standing repair-attempt counter and
+      # auto-close a standing [BLOCKED] issue (#959): the steady state must not
+      # stay "permanently parked + stale human issue" once the tree recovers.
+      rm -f "$_bs_repair_state"
+      if [[ -n "$_REPO_SLUG" ]]; then
+        if _bs_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+            --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | .[].number" \
+            2>/dev/null); then
+          while IFS= read -r _bs_num; do
+            [[ -z "$_bs_num" ]] && continue
+            gh issue close "$_bs_num" --repo "$_REPO_SLUG" \
+              --comment "Baseline is green again at HEAD \`${_CURRENT_HEAD:-unknown}\` — auto-closing." \
+              2>/dev/null && echo "$LOG_PREFIX auto-closed broken-state issue #${_bs_num}" \
+              || echo "$LOG_PREFIX WARN: failed to auto-close broken-state issue #${_bs_num}"
+          done <<< "$_bs_open_nums"
+        fi
+      fi
+      # Stamp the cowpat with the SHA just verified so the next cycle on an
+      # unchanged repo skips the redundant run. Only when HEAD resolved (a
+      # non-git or unresolvable REPO_ROOT leaves no marker → always re-runs).
+      [[ -n "$_CURRENT_HEAD" ]] && printf '%s\n' "$_CURRENT_HEAD" > "$_COWPAT_FILE"
     fi
-    # Baseline green — stamp the cowpat with the SHA just verified so the next
-    # cycle on an unchanged repo skips the redundant run. Only when HEAD resolved
-    # (a non-git or unresolvable REPO_ROOT leaves no marker → always re-runs).
-    [[ -n "$_CURRENT_HEAD" ]] && printf '%s\n' "$_CURRENT_HEAD" > "$_COWPAT_FILE"
   fi
 fi
 
@@ -807,6 +872,20 @@ _build_prompt() {
 # Fail-open: any section that errors is silently omitted; never abort the launch.
 _build_context() {
   printf '\n## Pre-computed cycle context — %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  # #959: when the cycle-start baseline was red but repair mode absorbed it
+  # (see the inner-loop baseline block above) instead of halting, this cycle
+  # must not pick up new backlog — it must fix the failing baseline first.
+  if [[ "${HOS_BASELINE_REPAIR_ACTIVE:-0}" == "1" ]]; then
+    printf '### ⚠ BASELINE REPAIR MODE — attempt %s (#959)\n\n' "${HOS_BASELINE_REPAIR_ATTEMPT:-?}"
+    printf 'The cycle-start inner-loop baseline is RED (ordinary assertion failures,\n'
+    printf 'not an environmental error — those always halt instead of reaching this mode).\n'
+    printf 'This cycle is scoped to making `bash scripts/framework/run_tests_inner_loop.sh`\n'
+    printf 'pass again — do not pick up Step 2 backlog work until it is green. Treat the\n'
+    printf 'failing tests as this cycle'"'"'s only work item, fix them, then run Step 4\n'
+    printf '(tests + validators) and open a PR as usual. If repair attempts are exhausted\n'
+    printf 'without reaching green, the launcher escalates to a needs-human issue automatically.\n\n'
+  fi
 
   printf '### Open bot PRs\n'
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
