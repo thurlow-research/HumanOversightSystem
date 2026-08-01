@@ -236,9 +236,12 @@ unallowlistable. No configuration change fixes it — rewrite the command.
 4. **Never inline logic that already exists as a script.** Token minting goes
    through `bootstrap/get_app_token.sh`, never a hand-built JWT — hand-rolling it
    produces a pipeline whose covering rules (`Bash(curl *)`, `Bash(openssl *)`,
-   `Bash(source *)`) amount to arbitrary shell plus arbitrary network. Issue and
-   PR creation go through `bootstrap/create_issue.sh` and `bootstrap/submit_pr.sh`
-   (both `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
+   `Bash(source *)`) amount to arbitrary shell plus arbitrary network. To verify
+   a mint succeeded, check `$?` and/or the script's own stderr confirmation line
+   — never open or grep the sourced token output file; it holds a live
+   installation token (#1086). Issue and PR creation go through
+   `bootstrap/create_issue.sh` and `bootstrap/submit_pr.sh` (both
+   `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
    token mint + revoke) — see their headers for usage. `submit_pr.sh --app human`
    requires `--confirmed`: only pass it when a human has given explicit
    per-instance authorization for that specific push.

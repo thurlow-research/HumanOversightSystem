@@ -20,6 +20,13 @@
 # HOS_BOT_LOGIN is set to the App's bot identity (e.g. "hos-worker-hos[bot]") so
 # identity guards don't need a `gh api user` call (which fails for App tokens).
 #
+# Verify a mint succeeded via $? and/or the "✔ <role> token obtained" line this
+# script already prints to stderr on success — never by opening or grepping the
+# sourced token output file (e.g. /tmp/hos_auth.sh). That file holds a live
+# installation token; reading it for any reason, including with `grep -o` for
+# just a variable name, is one pattern mistake away from leaking the value into
+# a transcript or log. (#1086)
+#
 # Token lifetime: 1 hour. Re-source before long sessions.
 #
 # Reads: ~/.config/hos/apps.env  (App IDs, PEM paths — never committed to git)
