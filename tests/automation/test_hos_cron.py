@@ -791,6 +791,99 @@ class TestThinEnv:
         assert "/usr/bin" in path_line
 
 
+# ── #957: missing bin/lib/git-credentials.sh must self-heal, not crash-loop ──
+# `CronEnv.run()` always executes the *real* `bin/hos-cron` at its real path,
+# so `${BASH_SOURCE[0]}` resolves inside this dev checkout's own `bin/`, where
+# `lib/git-credentials.sh` genuinely exists — that fixture can never exercise
+# the "missing" branch. These tests instead run a standalone copy of the
+# script from a throwaway git checkout so the file can be made to actually be
+# absent, with a real `origin` remote for the self-heal fetch+ff-merge to act
+# on (mirrors a role's checkout having missed an upgrade a sibling role
+# already applied, #957's failure mode).
+class TestGitCredentialsGuard:
+    IDENT = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+    REAL_GIT_CREDS_LIB = HOS_CRON.parent / "lib" / "git-credentials.sh"
+
+    def _write_claude_stub(self, home: Path) -> None:
+        _write_exec(
+            home / ".local" / "bin" / "claude",
+            "#!/usr/bin/env bash\ncat > /dev/null 2>&1 || true\nexit 0\n",
+        )
+
+    def _init_repo(self, tmp_path: Path, include_git_creds_lib: bool):
+        """Bare `origin` + a local clone containing a copy of the real
+        `bin/hos-cron` (and optionally `bin/lib/git-credentials.sh`), committed
+        and pushed, so the guard's self-heal runs against real git plumbing."""
+        origin = tmp_path / "origin.git"
+        repo = tmp_path / "repo"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        git = ["git", "-C", str(repo)]
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        (repo / "bin").mkdir(parents=True)
+        shutil.copy(HOS_CRON, repo / "bin" / "hos-cron")
+        (repo / "bin" / "hos-cron").chmod(0o755)
+        if include_git_creds_lib:
+            (repo / "bin" / "lib").mkdir(parents=True)
+            shutil.copy(self.REAL_GIT_CREDS_LIB, repo / "bin" / "lib" / "git-credentials.sh")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + self.IDENT + ["commit", "-q", "-m", "init"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+        return origin, repo
+
+    def _run(self, repo: Path, tmp_path: Path) -> subprocess.CompletedProcess:
+        home = tmp_path / "home"
+        self._write_claude_stub(home)
+        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "HOS_CRON_JITTER_MAX": "0"}
+        return subprocess.run(
+            [BASH, str(repo / "bin" / "hos-cron")],
+            capture_output=True, text=True, timeout=15, check=False, env=env,
+        )
+
+    def test_present_file_sources_normally(self, tmp_path):
+        _, repo = self._init_repo(tmp_path, include_git_creds_lib=True)
+        r = self._run(repo, tmp_path)
+        combined = r.stdout + r.stderr
+        assert "git-credentials.sh missing" not in combined
+        assert "hos-cron: --role and --project required" in combined
+
+    def test_missing_file_no_fix_on_origin_is_fatal(self, tmp_path):
+        """No sibling checkout has advanced origin — the self-heal fetch has
+        nothing to pull, so the guard must degrade to a clear diagnostic and a
+        stable exit code, not a bare 'No such file or directory' crash."""
+        _, repo = self._init_repo(tmp_path, include_git_creds_lib=False)
+        r = self._run(repo, tmp_path)
+        assert r.returncode == 78
+        assert "still missing after self-update attempt" in r.stderr
+        assert "No such file or directory" not in r.stderr
+
+    def test_missing_file_self_heals_via_fetch_ff_merge(self, tmp_path):
+        """Origin has already been upgraded (as if a sibling role's checkout
+        applied it first) — the guard's fetch+ff-merge should pull the file in
+        and sourcing should proceed, reaching normal arg validation."""
+        origin, repo = self._init_repo(tmp_path, include_git_creds_lib=False)
+        other = tmp_path / "other_clone"
+        subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+        (other / "bin" / "lib").mkdir(parents=True)
+        shutil.copy(self.REAL_GIT_CREDS_LIB, other / "bin" / "lib" / "git-credentials.sh")
+        gito = ["git", "-C", str(other)]
+        subprocess.run(gito + ["add", "-A"], check=True)
+        subprocess.run(gito + self.IDENT + ["commit", "-q", "-m", "add git-credentials.sh"], check=True)
+        subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
+
+        r = self._run(repo, tmp_path)
+        combined = r.stdout + r.stderr
+        assert "attempting self-update" in r.stderr
+        assert "still missing after self-update attempt" not in r.stderr
+        assert "hos-cron: --role and --project required" in combined
+        assert (repo / "bin" / "lib" / "git-credentials.sh").exists(), (
+            "local checkout must actually be fast-forwarded onto origin/main"
+        )
+
+
 # ──────────── last-run written only on exit 0 + wakeup hand-off ─────────────
 class TestPostCycleBookkeeping:
     def test_last_run_written_on_success(self, cron):

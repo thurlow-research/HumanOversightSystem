@@ -63,8 +63,27 @@ CLAUDE_BIN="$(command -v claude || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "[hos-cron] FATAL: claude not found on PATH (cron thin env)"; exit 78; }
 
 # Deterministic git credentials (#738) — sourced now, applied after auth below.
+# #957: a checkout that missed an upgrade applied to a sibling role (e.g.
+# Overseer stuck on v0.4.1 while Worker moved to v0.5.0) has this file
+# missing outright, and a raw `source` under `set -e` crash-loops with a bare
+# "No such file" before the self-sync later in this script ever runs — the
+# staleness that breaks it also blocks the self-heal. Guard it: attempt a
+# fetch + fast-forward of this checkout first, then degrade to a clear
+# diagnostic instead of a silent crash-loop.
+_HOS_CRON_DIR="$(dirname "${BASH_SOURCE[0]}")"
+_GIT_CREDS_LIB="$_HOS_CRON_DIR/lib/git-credentials.sh"
+_HOS_CRON_SELF_ROOT="$(cd "$_HOS_CRON_DIR/.." && pwd)"
+if [[ ! -f "$_GIT_CREDS_LIB" ]]; then
+  echo "[hos-cron] WARNING: $_GIT_CREDS_LIB missing (stale checkout? #957) — attempting self-update" >&2
+  git -C "$_HOS_CRON_SELF_ROOT" fetch origin --quiet 2>/dev/null || true
+  git -C "$_HOS_CRON_SELF_ROOT" merge --ff-only --quiet origin/main 2>/dev/null || true
+fi
+if [[ ! -f "$_GIT_CREDS_LIB" ]]; then
+  echo "[hos-cron] FATAL: $_GIT_CREDS_LIB still missing after self-update attempt — checkout is stale and cannot self-heal; run: git -C \"$_HOS_CRON_SELF_ROOT\" pull --ff-only origin main" >&2
+  exit 78  # EX_CONFIG
+fi
 # shellcheck source=lib/git-credentials.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/git-credentials.sh"
+source "$_GIT_CREDS_LIB"
 
 # ── Args ─────────────────────────────────────────────────────────────────────
 ROLE="" PROJECT=""
