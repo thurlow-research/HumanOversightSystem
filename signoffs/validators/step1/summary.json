@@ -1,10 +1,10 @@
 {
-  "head_sha": "f7e323b0ce2caf3779843aaa91ef3a4ae3208534",
+  "head_sha": "323aa1692a242dad9ed2f2327b879fb26c4a7d05",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-29T05:46:47Z",
-  "composite_score": 0.1637,
+  "written_at": "2026-08-01T06:06:44Z",
+  "composite_score": 0.2185,
   "tier": "LOW",
   "validator_count": 12,
   "successful_validators": 10,
@@ -26,12 +26,12 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 147,
-        "changed_files": 2,
+        "changed_lines": 117,
+        "changed_files": 4,
         "floor_rule_fired": null,
         "domain_count": 2,
         "domains_detected": [
-          "bootstrap",
+          "scripts",
           "other"
         ],
         "thresholds": {
@@ -51,11 +51,12 @@
       "dimension": "function_metrics",
       "score": 0.0,
       "raw_value": {
-        "total_functions": 7,
+        "total_functions": 15,
         "long_functions": 0,
         "high_param_count": 0,
         "deeply_nested": 0,
-        "many_return_paths": 0
+        "many_return_paths": 0,
+        "parse_errors": []
       },
       "weight": 0.07,
       "evidence": [],
@@ -69,7 +70,8 @@
       "score": 0.0,
       "raw_value": {
         "version_sensitive_count": 0,
-        "findings": []
+        "findings": [],
+        "parse_errors": []
       },
       "weight": 0.06,
       "evidence": [],
@@ -80,209 +82,85 @@
     },
     {
       "dimension": "historical_density",
-      "score": 1.0,
+      "score": 0.65,
       "raw_value": {
-        "issue_count": 20,
+        "issue_count": 4,
         "issues": [
           {
-            "number": 957,
-            "title": "Per-role checkouts drift across HOS releases: overseer silently crash-loops at hos-cron:54 (git-credentials source) before self-sync can heal it",
+            "number": 981,
+            "title": "[AI: audit] bug: run_validators.sh --diff filters to .py only, blinding the IP/license gate to dependency-manifest changes",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "scripts/oversight/run_validators.sh"
           },
           {
-            "number": 922,
-            "title": "bug: version-skip adjacency gate fails open on NOT_FOUND tag (hos_install.sh)",
+            "number": 980,
+            "title": "[AI: audit] bug: run_validators.sh deletes run_gates.sh's gate-results.json, erasing failed-gate evidence",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "scripts/oversight/run_validators.sh"
           },
           {
-            "number": 914,
-            "title": "bug: --prune silently implies --squash, overwriting drifted CORE/PACK regions (hos_install.sh)",
+            "number": 725,
+            "title": "bug(#724): run_validators.sh --step atomic write broken \u2014 mktemp not used as write target",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "scripts/oversight/run_validators.sh"
           },
           {
-            "number": 805,
-            "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+            "number": 701,
+            "title": "bug: worker cron LOOP missing inner-loop test run before PR \u2014 tests only caught by overseer",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 731,
-            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 723,
-            "title": "bug(#722): _cron_repo_url unescaped in sed replacement \u2014 pipe char in git remote breaks prompt generation",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 717,
-            "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 715,
-            "title": "hos_setup_partner.sh / hos_install.sh: no mechanism to install bin/ cron launchers into consumer project",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 692,
-            "title": "portability_check.sh: nested .venv dirs not excluded (only root .venv/ is excluded)",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 691,
-            "title": "Bot identity (machine account names) should live in PROJECT config, not CORE agent files",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 687,
-            "title": "hos_setup_partner.sh: misleading 'not found' warning when clone exists but validate_setup.sh is absent",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 685,
-            "title": "bug: run_second_review.sh hardcodes CondoParkShare context \u2014 wrong project threat model for all consumers",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 653,
-            "title": "bug: hos_install.sh does not install bootstrap/get_app_token.sh \u2014 consumer has no auth mechanism",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 652,
-            "title": "bug: hos_install.sh does not install worker.md and overseer.md \u2014 validate_setup.sh fails after clean install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 623,
-            "title": "bug(#622): validate_setup.sh hard-codes canonical repo remote \u2014 false-warns on every consumer install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 609,
-            "title": "Bug + Design: worker startup must validate specialist agents; setup must be self-applicable and role-neutral",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 276,
-            "title": "hos_install.sh suppresses python stderr (2>/dev/null) \u2014 regions.py crashes fail silently and fall back, masking a degraded install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 272,
-            "title": "\ud83e\udd16 [AI: claude] [ship-stopper] hos_install.sh --pr silently mutates consumer's working tree in-place when PR setup fails",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 241,
-            "title": "Pre-existing half-write: hos_install.sh A4 plan-failure path (L771-773) committed Phase B before exiting",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 226,
-            "title": "hos_install.sh --pr: generated upgrade PR carries no AI-disclosure (title prefix / trailers / needs_human / draft)",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "scripts/oversight/run_validators.sh"
           }
         ],
         "churn": {
-          "bootstrap/hos_install.sh": 41,
-          "tests/framework/test_install_pr_branch_shared_remote.py": 1
+          "scripts/oversight/run_validators.sh": 23,
+          "tests/oversight/fixtures/validator_python_shim.py": 7,
+          "tests/oversight/run_validators_harness.py": 3,
+          "tests/oversight/test_run_validators_tier_floor_max.py": 1
         },
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
       "evidence": [
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "scripts/oversight/run_validators.sh",
           "line": 0,
-          "message": "[bug] #957: Per-role checkouts drift across HOS releases: overseer silently crash-loops at hos-cron:54 (git-credentials source) before self-sync can heal it",
+          "message": "[bug] #981: [AI: audit] bug: run_validators.sh --diff filters to .py only, blinding the IP/license gate to dependency-manifest changes",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "scripts/oversight/run_validators.sh",
           "line": 0,
-          "message": "[bug] #922: bug: version-skip adjacency gate fails open on NOT_FOUND tag (hos_install.sh)",
+          "message": "[bug] #980: [AI: audit] bug: run_validators.sh deletes run_gates.sh's gate-results.json, erasing failed-gate evidence",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "scripts/oversight/run_validators.sh",
           "line": 0,
-          "message": "[bug] #914: bug: --prune silently implies --squash, overwriting drifted CORE/PACK regions (hos_install.sh)",
+          "message": "[bug] #725: bug(#724): run_validators.sh --step atomic write broken \u2014 mktemp not used as write target",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "scripts/oversight/run_validators.sh",
           "line": 0,
-          "message": "[bug] #805: bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+          "message": "[bug] #701: bug: worker cron LOOP missing inner-loop test run before PR \u2014 tests only caught by overseer",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "scripts/oversight/run_validators.sh",
           "line": 0,
-          "message": "[bug] #731: bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
+          "message": "high churn: 23 commits in 90 days",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
           "line": 0,
-          "message": "[bug] #723: bug(#722): _cron_repo_url unescaped in sed replacement \u2014 pipe char in git remote breaks prompt generation",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_install.sh",
-          "line": 0,
-          "message": "[bug] #717: fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_install.sh",
-          "line": 0,
-          "message": "[bug] #715: hos_setup_partner.sh / hos_install.sh: no mechanism to install bin/ cron launchers into consumer project",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_install.sh",
-          "line": 0,
-          "message": "[bug] #692: portability_check.sh: nested .venv dirs not excluded (only root .venv/ is excluded)",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_install.sh",
-          "line": 0,
-          "message": "[bug] #691: Bot identity (machine account names) should live in PROJECT config, not CORE agent files",
-          "severity": "medium"
-        },
-        {
-          "file": "bootstrap/hos_install.sh",
-          "line": 0,
-          "message": "high churn: 41 commits in 90 days",
+          "message": "high churn: 7 commits in 90 days",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "20 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "hos_install.sh: 41 commits in 90 days \u2014 high churn may indicate persistent complexity."
+        "4 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "run_validators.sh: 23 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
       "error": null,
@@ -299,7 +177,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 2,
+          "files_checked": 4,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -333,7 +211,8 @@
       "score": 0.0,
       "raw_value": {
         "candidate_count": 0,
-        "locations": []
+        "locations": [],
+        "parse_errors": []
       },
       "weight": 0.08,
       "evidence": [],
@@ -357,33 +236,44 @@
     },
     {
       "dimension": "prompt_ambiguity",
-      "score": 0.25,
+      "score": 0.35,
       "raw_value": {
         "ambiguity_score": 0.25,
-        "fidelity_surface_score": 0.0,
+        "fidelity_surface_score": 0.5,
         "ambiguity_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+          "16 spec-gap issue(s) on record \u2014 historical spec ambiguity",
+          "precision marker (reduces ambiguity)",
+          "normative language (reduces ambiguity)"
         ],
-        "fidelity_signals": [],
+        "fidelity_signals": [
+          "8 function(s) in code not mentioned in prompt: init_repo, commit_files, filelist_split, install_node_tool_stub, install_shim..."
+        ],
         "process_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+          "16 spec-gap issue(s) on record \u2014 historical spec ambiguity"
         ],
         "missing_artifacts": [
-          "tests/framework/test_install_pr_branch_shared_remote.py"
+          "tests/oversight/fixtures/validator_python_shim.py",
+          "tests/oversight/test_run_validators_tier_floor_max.py"
         ],
-        "files_with_artifacts": 0
+        "files_with_artifacts": 1
       },
       "weight": 0.07,
       "evidence": [
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
+          "file": "tests/oversight/run_validators_harness.py",
           "line": 0,
-          "message": "1 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
+          "message": "Fidelity surface: 8 function(s) in code not mentioned in prompt: init_repo, commit_files, filelist_split, install_node_tool_stub, install_shim...",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 0,
+          "message": "2 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "1 file(s) missing prompt artifacts: test_install_pr_branch_shared_remote.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
+        "2 file(s) missing prompt artifacts: validator_python_shim.py, test_run_validators_tier_floor_max.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
       ],
       "findings": [],
       "error": null,
@@ -391,100 +281,230 @@
     },
     {
       "dimension": "risk_number",
-      "score": 0.0,
+      "score": 0.45,
       "raw_value": {
-        "max_rn": 0.0,
-        "mean_rn": 0.0,
-        "high_risk_functions": [],
-        "function_count": 7,
+        "max_rn": 9.0,
+        "mean_rn": 1.13,
+        "high_risk_functions": [
+          "main"
+        ],
+        "function_count": 15,
         "parse_errors": [],
         "task_class": "fix",
         "task_class_source": "commit_prefix",
         "floor_applied": false,
-        "pre_floor_tier": "LOW",
-        "post_floor_tier": "LOW"
+        "pre_floor_tier": "MEDIUM",
+        "post_floor_tier": "MEDIUM"
       },
       "weight": 0.18,
       "evidence": [
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 29,
-          "message": "RN=0.0 \u2014 _git()",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 68,
+          "message": "RN=9.0 \u2014 main()",
+          "severity": "high"
+        },
+        {
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 66,
+          "message": "RN=4.0 \u2014 filelist_split()",
           "severity": "medium"
         },
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 58,
-          "message": "RN=0.0 \u2014 _pick_branch()",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 54,
+          "message": "RN=2.0 \u2014 _record_argv()",
           "severity": "medium"
         },
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 67,
-          "message": "RN=0.0 \u2014 _make_clone()",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 48,
+          "message": "RN=1.0 \u2014 commit_files()",
           "severity": "medium"
         },
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 75,
-          "message": "RN=0.0 \u2014 shared_remote()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 87,
-          "message": "RN=0.0 \u2014 test_plain_branch_when_no_collision()",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 150,
+          "message": "RN=1.0 \u2014 argv_fingerprint()",
           "severity": "medium"
         }
       ],
-      "checklist_items": [],
+      "checklist_items": [
+        "main:84 \u2014 is the exception caught at the right granularity (not bare `except`)?",
+        "main:70 \u2014 can this condition be both true and false as expected?",
+        "main:70 \u2014 are all branches (including implicit else) handled?",
+        "main:81 \u2014 can this condition be both true and false as expected?",
+        "main:81 \u2014 are all branches (including implicit else) handled?",
+        "filelist_split:80 \u2014 can this condition be both true and false as expected?",
+        "filelist_split:80 \u2014 are all branches (including implicit else) handled?",
+        "filelist_split:78 \u2014 is the loop bound correct and termination guaranteed?",
+        "filelist_split:78 \u2014 is anything mutated inside the loop that affects the iterator?",
+        "_record_argv:62 \u2014 can this condition be both true and false as expected?",
+        "_record_argv:62 \u2014 are all branches (including implicit else) handled?",
+        "_record_argv:64 \u2014 does the context manager correctly release resources on exception?"
+      ],
       "findings": [
         {
+          "function": "main",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 68,
+          "risk_number": 9.0,
+          "top_statements": [
+            {
+              "line": 84,
+              "type": "ExceptHandler",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 70,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 81,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "filelist_split",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 66,
+          "risk_number": 4.0,
+          "top_statements": [
+            {
+              "line": 80,
+              "type": "If",
+              "rn": 3.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 78,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_record_argv",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 54,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 62,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 64,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "commit_files",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 48,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 50,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "argv_fingerprint",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 150,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 153,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_is_validator",
+          "file": "tests/oversight/fixtures/validator_python_shim.py",
+          "line": 50,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "init_repo",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 33,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
           "function": "_git",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 29,
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 35,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_pick_branch",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 58,
+          "function": "install_node_tool_stub",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 85,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_make_clone",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 67,
+          "function": "install_shim",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 101,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "shared_remote",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 75,
+          "function": "hermetic_run",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 112,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_plain_branch_when_no_collision",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 87,
+          "function": "composite_fingerprint",
+          "file": "tests/oversight/run_validators_harness.py",
+          "line": 159,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_second_clone_disambiguates_and_pushes_cleanly",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 93,
+          "function": "_repo",
+          "file": "tests/oversight/test_run_validators_tier_floor_max.py",
+          "line": 34,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_installer_contains_949_disambiguation_guard",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 123,
+          "function": "test_tier_floor_is_max_not_first_alphabetical",
+          "file": "tests/oversight/test_run_validators_tier_floor_max.py",
+          "line": 39,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_tier_floor_absent_when_no_validator_emits_one",
+          "file": "tests/oversight/test_run_validators_tier_floor_max.py",
+          "line": 65,
           "risk_number": 0.0,
           "top_statements": []
         }
