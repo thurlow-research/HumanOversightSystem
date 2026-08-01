@@ -13,7 +13,13 @@
 #   bash bootstrap/submit_pr.sh --title <text> --body-file <path> --base <branch> \
 #     [--head <branch>] --app <worker|overseer|human> [--confirmed]
 #
-# --head defaults to the current branch.
+# --head names the LOCAL branch to push; it defaults to the current branch
+# if omitted. It must already exist as a local branch (refs/heads/<name>) —
+# this pushes that branch's actual content, not whatever happens to be
+# checked out, so it is safe to pass a branch other than the current one
+# (#1166). If that branch is behind --base and isn't the checked-out branch,
+# rebuild it onto a fresh base first (scripts/dev/commit_onto_base.sh) rather
+# than relying on this script to merge it in place.
 #
 # --app human requires --confirmed: per docs/AGENT-IDENTITY.md, a human-proxy
 # PR is only appropriate in the stuck-worker exception, with explicit
@@ -73,8 +79,22 @@ if [[ "$APP_ROLE" == "human" && "$CONFIRMED" != "true" ]]; then
     err "--app human requires --confirmed: a human-proxy PR is only appropriate with explicit per-instance human authorization (docs/AGENT-IDENTITY.md, stuck-worker exception). Confirm a human has approved THIS push, then pass --confirmed."
 fi
 
-[[ -n "$HEAD" ]] || HEAD="$(git -C "$SCRIPT_DIR/.." rev-parse --abbrev-ref HEAD)"
+CURRENT_BRANCH="$(git -C "$SCRIPT_DIR/.." rev-parse --abbrev-ref HEAD)"
+[[ -n "$HEAD" ]] || HEAD="$CURRENT_BRANCH"
 [[ "$HEAD" != "HEAD" ]] || err "Could not determine current branch (detached HEAD) — pass --head <branch>"
+
+# ── Resolve the branch to push (#1166) ──────────────────────────────────────
+# --head names the LOCAL branch to push, not "whatever is checked out." Using
+# the working-tree HEAD as the push source silently publishes stale content
+# under the named branch whenever the two differ — e.g. a branch built without
+# a checkout (scripts/dev/commit_onto_base.sh, #1147), which is the required
+# pattern for protected-surface edits in the sandboxed Human clone. Resolve
+# and push refs/heads/${HEAD} explicitly so the source is always the named
+# branch, checked out or not.
+git -C "$SCRIPT_DIR/.." rev-parse --verify --quiet "refs/heads/${HEAD}" >/dev/null \
+    || err "No local branch named '${HEAD}' (refs/heads/${HEAD} does not exist) — build it first"
+HEAD_IS_CHECKED_OUT="false"
+[[ "$HEAD" == "$CURRENT_BRANCH" ]] && HEAD_IS_CHECKED_OUT="true"
 
 # ── Merge from base before pushing (#1162) ─────────────────────────────────────
 # A branch built on a stale base doesn't just miss the work that landed on
@@ -85,8 +105,11 @@ fi
 git -C "$SCRIPT_DIR/.." fetch origin "$BASE" \
     || err "Could not fetch origin/${BASE} — resolve network/auth before opening a PR"
 
-BEHIND_COUNT="$(git -C "$SCRIPT_DIR/.." rev-list --count "HEAD..origin/${BASE}")"
+BEHIND_COUNT="$(git -C "$SCRIPT_DIR/.." rev-list --count "refs/heads/${HEAD}..origin/${BASE}")"
 if [[ "$BEHIND_COUNT" -gt 0 ]]; then
+    if [[ "$HEAD_IS_CHECKED_OUT" != "true" ]]; then
+        err "${HEAD} is ${BEHIND_COUNT} commit(s) behind origin/${BASE} and is not the checked-out branch, so it cannot be merged here without touching the working tree. Rebuild it onto a fresh base (scripts/dev/commit_onto_base.sh --base origin/${BASE} --branch ${HEAD} ...) and retry."
+    fi
     warn "${HEAD} is ${BEHIND_COUNT} commit(s) behind origin/${BASE} — merging base in before push"
     if ! git -C "$SCRIPT_DIR/.." merge --no-edit "origin/${BASE}"; then
         git -C "$SCRIPT_DIR/.." merge --abort 2>/dev/null || true
@@ -120,7 +143,7 @@ revoke_token() {
 # Token lives in the URL only for this one push, never in .git/config or any
 # remote name — passed directly as the push destination.
 PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git"
-if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "HEAD:refs/heads/${HEAD}"; then
+if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "refs/heads/${HEAD}:refs/heads/${HEAD}"; then
     revoke_token
     err "git push failed"
 fi
