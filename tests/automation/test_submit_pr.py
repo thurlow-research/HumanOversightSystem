@@ -25,7 +25,8 @@ printf "export GH_TOKEN='fake-token-%s'\\n" "$2"
 printf "export HOS_BOT_LOGIN='fake-bot[bot]'\\n"
 """
 
-# rev-parse --abbrev-ref HEAD -> "current-branch"; remote get-url origin -> repo URL;
+# rev-parse --abbrev-ref HEAD -> "current-branch"; rev-parse --verify -> honors
+# GIT_VERIFY_FAIL; remote get-url origin -> repo URL;
 # fetch -> honors GIT_FETCH_FAIL; rev-list --count -> GIT_BEHIND_COUNT (default 0);
 # merge -> honors GIT_MERGE_FAIL (merge --abort always succeeds);
 # push <url> <refspec> -> captured, honors GIT_PUSH_FAIL.
@@ -36,7 +37,13 @@ if [[ "$1" == "-C" ]]; then i=2; fi
 sub="${@:$((i+1)):1}"
 case "$sub" in
   remote) echo "https://github.com/test-owner/test-repo.git" ;;
-  rev-parse) echo "current-branch" ;;
+  rev-parse)
+    if [[ "$*" == *"--verify"* ]]; then
+        if [[ "${GIT_VERIFY_FAIL:-}" == "1" ]]; then exit 1; fi
+    else
+        echo "current-branch"
+    fi
+    ;;
   fetch) if [[ "${GIT_FETCH_FAIL:-}" == "1" ]]; then exit 1; fi ;;
   rev-list) echo "${GIT_BEHIND_COUNT:-0}" ;;
   merge)
@@ -204,8 +211,8 @@ def test_head_defaults_to_current_branch(h):
     result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"])
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "refs/heads/" in ln][0]
-    assert "HEAD:refs/heads/current-branch" in push_line
+    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
+    assert "refs/heads/current-branch:refs/heads/current-branch" in push_line
 
 
 def test_explicit_head_used_over_current_branch(h):
@@ -215,8 +222,11 @@ def test_explicit_head_used_over_current_branch(h):
     ])
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "refs/heads/" in ln][0]
-    assert "HEAD:refs/heads/explicit-branch" in push_line
+    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
+    assert "refs/heads/explicit-branch:refs/heads/explicit-branch" in push_line
+    # #1166 regression guard: the push source must be the named branch, never
+    # the working-tree HEAD (current-branch != explicit-branch in this test).
+    assert "HEAD:refs/heads/" not in push_line
 
 
 def test_happy_path_pushes_creates_pr_and_revokes_token(h):
@@ -229,9 +239,9 @@ def test_happy_path_pushes_creates_pr_and_revokes_token(h):
 
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH:--app worker" in cap
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "refs/heads/" in ln][0]
+    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
     assert "x-access-token:fake-token-worker@github.com/test-owner/test-repo.git" in push_line
-    assert "HEAD:refs/heads/feature-x" in push_line
+    assert "refs/heads/feature-x:refs/heads/feature-x" in push_line
     gh_line = [ln for ln in cap.splitlines() if ln.startswith("GH_CALLED_WITH")][0]
     assert "--repo test-owner/test-repo" in gh_line
     assert "--base main" in gh_line
@@ -303,7 +313,7 @@ def test_behind_base_merges_before_push(h):
     calls = cap.splitlines()
     merge_line = [ln for ln in calls if ln.startswith("GIT_CALLED_WITH") and " merge " in ln][0]
     assert "origin/main" in merge_line
-    push_idx = [i for i, ln in enumerate(calls) if "refs/heads/" in ln][0]
+    push_idx = [i for i, ln in enumerate(calls) if "x-access-token" in ln][0]
     merge_idx = calls.index(merge_line)
     assert merge_idx < push_idx, "merge must happen before push"
 
@@ -317,8 +327,45 @@ def test_merge_conflict_aborts_and_does_not_push(h):
     assert "conflict" in result.stderr.lower()
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH" not in cap
-    assert not any("refs/heads/" in ln for ln in cap.splitlines())
+    assert not any("x-access-token" in ln for ln in cap.splitlines())
     assert any("--abort" in ln for ln in cap.splitlines())
+
+
+# --------------------------------------------------------------------------- #
+# Push-source correctness for a non-checked-out branch (#1166)
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_local_branch_fails_closed(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "no-such-branch", "--app", "worker"],
+        env_overrides={"GIT_VERIFY_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "no-such-branch" in result.stderr
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert not any("x-access-token" in ln for ln in cap.splitlines())
+
+
+def test_stale_non_checked_out_head_refuses_instead_of_merging(h):
+    # explicit-branch != the stub's "current-branch": this is exactly the
+    # build-without-checkout shape (scripts/dev/commit_onto_base.sh) that
+    # produced the 11k-deletion incident when submit_pr.sh pushed the
+    # checked-out HEAD under the named branch instead of refusing.
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "explicit-branch", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "3"},
+    )
+    assert result.returncode != 0
+    assert "not the checked-out branch" in result.stderr
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert not any("x-access-token" in ln for ln in cap.splitlines())
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " merge " in ln and "--abort" not in ln
+                   for ln in cap.splitlines())
 
 
 def test_fetch_failure_aborts_before_token_mint(h):
