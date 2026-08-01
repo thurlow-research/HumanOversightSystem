@@ -2,7 +2,7 @@
 # bin/hos-worker — interactive HOS worker session launcher
 #
 # Runs preflight, authenticates as the worker bot, then opens Claude.
-# Use this to start an interactive session. For cron use: bin/hos-worker-cron
+# Use this to start an interactive session. For cron use: bin/hos-cron --role worker --project <name>
 #
 # Usage: hos-worker  (from the repo root, or via direnv PATH_add bin)
 

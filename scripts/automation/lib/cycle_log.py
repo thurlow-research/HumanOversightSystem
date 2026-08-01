@@ -12,8 +12,8 @@ Usage (from bash in cron/LOOP context):
   python3 -m scripts.automation.lib.cycle_log cycle-pr-opened pr=613 issue=559
 
 Events:
-  cycle-start          logged by bin/hos-worker-cron (shell-level)
-  cycle-preflight-fail logged by bin/hos-worker-cron (shell-level)
+  cycle-start          logged by bin/hos-cron (shell-level)
+  cycle-preflight-fail logged by bin/hos-cron (shell-level)
   cycle-stop           logged here; reason=<enum>
   cycle-pick           logged here; issue=<N> title=<str>
   cycle-pr-opened      logged here; pr=<N> issue=<N>

@@ -8,13 +8,13 @@
 #
 # Do not use `source <(./bootstrap/get_app_token.sh --app ...)`. Process
 # substitution is unreliable in minimal cron environments (/dev/fd may be
-# absent — see bin/hos-worker-cron) and can force an extra confirmation
-# prompt under some tooling even when the underlying command is allowed.
-# bin/hos-worker-cron, bin/hos-overseer-cron, and bin/hos-cron already use
-# the temp-file pattern above; bin/hos-worker and bin/hos-overseer (the
-# interactive launchers) still use `source <()` and should be updated to
-# match — tracked separately since bin/ changes go through the normal build
-# pipeline.
+# absent) and can force an extra confirmation prompt under some tooling even
+# when the underlying command is allowed.
+# bin/hos-cron already uses the temp-file pattern above; bin/hos-worker and
+# bin/hos-overseer (the interactive launchers) still use `source <()` and
+# should be updated to match — tracked separately since bin/ changes go
+# through the normal build pipeline. (The legacy per-role hos-worker-cron/
+# hos-overseer-cron launchers that predated hos-cron were retired — #990.)
 #
 # After sourcing, `gh api` calls in the same shell use the App installation token.
 # HOS_BOT_LOGIN is set to the App's bot identity (e.g. "hos-worker-hos[bot]") so
