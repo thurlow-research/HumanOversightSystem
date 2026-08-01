@@ -76,6 +76,24 @@ fi
 [[ -n "$HEAD" ]] || HEAD="$(git -C "$SCRIPT_DIR/.." rev-parse --abbrev-ref HEAD)"
 [[ "$HEAD" != "HEAD" ]] || err "Could not determine current branch (detached HEAD) — pass --head <branch>"
 
+# ── Merge from base before pushing (#1162) ─────────────────────────────────────
+# A branch built on a stale base doesn't just miss the work that landed on
+# main while it was being built — its PR proposes *reverting* that work, and
+# the diff looks entirely normal until inspected. Fetch the base and merge it
+# in here, before anything else touches the network, so a stale base can never
+# reach `gh pr create`. Read-only (fetch + local merge); no token required.
+git -C "$SCRIPT_DIR/.." fetch origin "$BASE" \
+    || err "Could not fetch origin/${BASE} — resolve network/auth before opening a PR"
+
+BEHIND_COUNT="$(git -C "$SCRIPT_DIR/.." rev-list --count "HEAD..origin/${BASE}")"
+if [[ "$BEHIND_COUNT" -gt 0 ]]; then
+    warn "${HEAD} is ${BEHIND_COUNT} commit(s) behind origin/${BASE} — merging base in before push"
+    if ! git -C "$SCRIPT_DIR/.." merge --no-edit "origin/${BASE}"; then
+        git -C "$SCRIPT_DIR/.." merge --abort 2>/dev/null || true
+        err "Merging origin/${BASE} into ${HEAD} produced conflicts — resolve manually (git fetch origin ${BASE} && git merge origin/${BASE}, fix conflicts, commit), then retry submit_pr.sh. Never push a branch built on a stale base: its PR would silently propose reverting the commits it's missing (#1162)."
+    fi
+fi
+
 # ── Resolve owner/repo from the origin remote (no auth required) ──────────────
 REPO_URL="$(git -C "$SCRIPT_DIR/.." remote get-url origin 2>/dev/null)" \
     || err "Could not read git remote 'origin' — run from inside the HOS repo"
