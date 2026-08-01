@@ -1815,6 +1815,9 @@ cp_framework_file "$HOS_SOURCE/bootstrap/hos_repo_sync.sh"   "$TARGET_REPO/boots
 [[ -f "$HOS_SOURCE/bootstrap/validate_setup.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/validate_setup.sh"     "$TARGET_REPO/bootstrap/validate_setup.sh"     "bootstrap/validate_setup.sh (setup health check)" || true
 # apps.env.template: install if present so consumers have a discoverable starting point
 [[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
+# sync_apps_env.sh: install if present (added v0.6.0, #957) — lets a consumer
+# fill apps.env gaps a `--pr` upgrade introduces without a new setup_partner run.
+[[ -f "$HOS_SOURCE/bootstrap/sync_apps_env.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/sync_apps_env.sh"     "$TARGET_REPO/bootstrap/sync_apps_env.sh"     "bootstrap/sync_apps_env.sh (apps.env gap-fill)" || true
 
 # ── framework consumer files — bin/, .github/workflows/, scripts/framework/ (#769) ──
 # Ship-set declared in scripts/framework/framework_consumer_files.txt — the single
