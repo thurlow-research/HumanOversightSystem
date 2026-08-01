@@ -204,6 +204,79 @@ def test_rejects_malformed_or_unsafe_repo_paths(repo, tmp_path, msg_file, spec, 
     assert expected in res.stderr
 
 
+def test_stale_base_is_refused(repo, tmp_path, msg_file):
+    """The #1162 regression: a base that is missing work present on the real
+    branch produces a commit that would REVERT that work.
+
+    Reproduces the 2026-08-01 near-miss directly. `old` is a snapshot of an
+    earlier point; `main` has since gained a file. Committing onto `old` yields a
+    tree where that file is absent — i.e. deleted relative to main — and the guard
+    must refuse, because the invocation never named it.
+    """
+    old = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "branch", "old", old)
+
+    # main advances: someone else's work lands.
+    (repo / "their-work.md").write_text("work by another agent\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "concurrent work on main")
+
+    edited = tmp_path / "mine.md"
+    edited.write_text("my change\n")
+
+    res = _run(
+        repo,
+        "--base", "old", "--branch", "feature",
+        "--compare-to", "main",
+        "--message-file", str(msg_file),
+        "--file", f"tracked.md={edited}",
+    )
+    assert res.returncode != 0, "a stale base must be refused, not committed"
+    assert "STALE BASE" in res.stderr
+    assert "concurrent work on main" in res.stderr, "the missing commit must be named"
+    # And nothing was created.
+    assert _git(repo, "branch", "--list", "feature") == ""
+
+
+def test_stale_base_override_is_explicit(repo, tmp_path, msg_file):
+    """--allow-deletions exists for genuinely-intended cases, and must warn."""
+    old = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "branch", "old", old)
+    (repo / "their-work.md").write_text("work\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "concurrent")
+
+    edited = tmp_path / "mine.md"
+    edited.write_text("my change\n")
+
+    res = _run(
+        repo,
+        "--base", "old", "--branch", "feature",
+        "--compare-to", "main",
+        "--message-file", str(msg_file),
+        "--file", f"tracked.md={edited}",
+        "--allow-deletions",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "--allow-deletions" in res.stderr
+    assert _git(repo, "rev-parse", "feature^") == old
+
+
+def test_correctly_based_commit_is_not_flagged(repo, tmp_path, msg_file):
+    """The guard must not fire on a normal, correctly-based commit."""
+    edited = tmp_path / "mine.md"
+    edited.write_text("my change\n")
+    res = _run(
+        repo,
+        "--base", "main", "--branch", "feature",
+        "--compare-to", "main",
+        "--message-file", str(msg_file),
+        "--file", f"tracked.md={edited}",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "STALE BASE" not in res.stderr
+
+
 def test_missing_source_file_fails_closed(repo, tmp_path, msg_file):
     res = _run(
         repo,
