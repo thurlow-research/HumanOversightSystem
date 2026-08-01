@@ -1,0 +1,196 @@
+{
+  "model": "sonnet",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=__HANDOFF_DIR__/HANDOFF.md; [ -f \"$f\" ] && ! grep -q 'NOTHING IN PROGRESS' \"$f\" && { echo '## Handoff from previous session'; echo '(informational only — verify every claim against git before acting)'; cat \"$f\"; }; exit 0"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "additionalDirectories": [
+      "__HOS_ROOT__/Worker",
+      "__HOS_ROOT__/Overseer",
+      "__CONFIG_DIR__",
+      "__HANDOFF_DIR__",
+      "/tmp/claude",
+      "/tmp"
+    ],
+    "allow": [
+      "Bash(cat *)", "Bash(ls *)", "Bash(head *)", "Bash(tail *)",
+      "Bash(grep *)", "Bash(egrep *)", "Bash(fgrep *)", "Bash(rg *)",
+      "Bash(find *)", "Bash(fd *)", "Bash(wc *)", "Bash(stat *)",
+      "Bash(file *)", "Bash(du *)", "Bash(df *)", "Bash(tree *)",
+      "Bash(realpath *)", "Bash(dirname *)", "Bash(basename *)", "Bash(readlink *)",
+
+      "Bash(sed *)", "Bash(awk *)", "Bash(cut *)", "Bash(tr *)",
+      "Bash(sort *)", "Bash(uniq *)", "Bash(paste *)", "Bash(column *)",
+      "Bash(nl *)", "Bash(comm *)", "Bash(tee *)", "Bash(jq *)", "Bash(yq *)",
+      "Bash(diff *)", "Bash(cmp *)",
+
+      "Bash(mkdir *)", "Bash(touch *)", "Bash(cp *)", "Bash(mv *)",
+      "Bash(rm *)", "Bash(ln *)", "Bash(chmod *)", "Bash(mktemp *)",
+      "Bash(rsync *)",
+
+      "Bash(tar *)", "Bash(gzip *)", "Bash(gunzip *)", "Bash(zcat *)",
+      "Bash(zip *)", "Bash(unzip *)",
+
+      "Bash(md5sum *)", "Bash(sha1sum *)", "Bash(sha256sum *)",
+      "Bash(base64 *)", "Bash(cksum *)",
+
+      "Bash(echo *)", "Bash(printf *)", "Bash(date *)", "Bash(sleep *)",
+      "Bash(seq *)", "Bash(test *)", "Bash(true)", "Bash(false)",
+      "Bash(which *)", "Bash(type *)", "Bash(command *)",
+      "Bash(env)", "Bash(printenv *)",
+      "Bash(uname *)", "Bash(hostname *)", "Bash(whoami)", "Bash(id *)",
+      "Bash(uptime)", "Bash(free *)", "Bash(ps *)", "Bash(pgrep *)",
+
+      "Bash(curl *)", "Bash(wget *)", "Bash(dig *)", "Bash(host *)",
+      "Bash(nslookup *)", "Bash(ss *)", "Bash(ping *)",
+
+      "Bash(git *)", "Bash(gh *)",
+
+      "Bash(python3 *)", "Bash(python *)", "Bash(pip *)", "Bash(pip3 *)",
+      "Bash(node *)", "Bash(npm *)", "Bash(npx *)", "Bash(yarn *)",
+      "Bash(pnpm *)", "Bash(go *)", "Bash(cargo *)", "Bash(ruby *)",
+
+      "Bash(pytest *)", "Bash(tox *)", "Bash(coverage *)", "Bash(mutmut *)",
+      "Bash(mypy *)", "Bash(black *)", "Bash(flake8 *)", "Bash(isort *)",
+      "Bash(ruff *)", "Bash(bandit *)", "Bash(semgrep *)", "Bash(radon *)",
+      "Bash(pip-audit *)", "Bash(detect-secrets *)", "Bash(scancode *)",
+      "Bash(eslint *)", "Bash(prettier *)",
+
+      "Bash(codex *)", "Bash(agy *)",
+
+      "Bash(scripts/*)", "Bash(./scripts/*)",
+      "Bash(bash scripts/*)", "Bash(bash ./scripts/*)",
+      "Bash(bootstrap/*)", "Bash(bash bootstrap/*)",
+
+      "Read(./**)",
+      "Edit(./**)",
+      "Read(//tmp/**)",
+      "Edit(//tmp/**)",
+      "Write(//tmp/**)",
+      "Read(__HANDOFF_DIR__/**)",
+      "Edit(__HANDOFF_DIR__/**)",
+      "Write(__HANDOFF_DIR__/**)",
+      "Read(__HOS_ROOT__/Worker/**)",
+      "Read(__HOS_ROOT__/Overseer/**)",
+      "Read(__CONFIG_DIR__/apps.env)"
+    ],
+    "ask": [
+      "Bash(dangerouslyDisableSandbox:true)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.local)",
+      "Read(.env.production)",
+      "Read(~/.ssh/**)",
+      "Read(__CONFIG_DIR__/human.pem)",
+      "Read(__CONFIG_DIR__/worker.pem)",
+      "Read(__CONFIG_DIR__/overseer.pem)",
+      "Read(__CONFIG_DIR__/auditsync.pem)",
+      "Edit(./.claude/settings.json)",
+      "Edit(./.claude/settings.local.json)",
+      "Edit(./.claude/hooks/**)",
+      "Edit(./.envrc)",
+      "Edit(__CONFIG_DIR__/**)",
+      "Edit(__HOS_ROOT__/Worker/**)",
+      "Edit(__HOS_ROOT__/Overseer/**)",
+
+      "Bash(vi *)", "Bash(vim *)", "Bash(nano *)", "Bash(emacs *)",
+      "Bash(less *)", "Bash(more *)", "Bash(top *)", "Bash(htop *)",
+      "Bash(watch *)",
+
+      "Bash(kill *)", "Bash(pkill *)", "Bash(killall *)",
+      "Bash(systemctl *)", "Bash(loginctl *)",
+      "Bash(shutdown *)", "Bash(reboot *)", "Bash(poweroff *)",
+
+      "Bash(crontab *)",
+      "Bash(sudo *)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f)",
+      "Bash(git push -f *)",
+      "Bash(gh auth token*)",
+      "Bash(gh secret *)",
+      "Bash(gh repo delete *)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "filesystem": {
+      "denyRead": [
+        "__HOME__/",
+        "__HOS_ROOT__/Human/.env",
+        "__HOS_ROOT__/Worker/.env",
+        "__HOS_ROOT__/Overseer/.env"
+      ],
+      "allowRead": [
+        "__HOS_ROOT__/Human",
+        "__HOS_ROOT__/Worker",
+        "__HOS_ROOT__/Overseer",
+        "__CONFIG_DIR__/apps.env",
+        "__CONFIG_DIR__/__ROLE__.pem",
+        "__HANDOFF_DIR__",
+        "__HOME__/.local/bin",
+        "__HOME__/.local/share",
+        "__HOME__/.codex",
+        "__HOME__/.gemini",
+        "__HOME__/.cache",
+        "__CLAUDE_PROJECT_STATE__"
+      ],
+      "allowWrite": [
+        "__HOS_ROOT__/Human",
+        "__HOS_ROOT__/Worker",
+        "__HOS_ROOT__/Overseer",
+        "__HANDOFF_DIR__",
+        "__HOME__/.codex",
+        "__HOME__/.gemini",
+        "__HOME__/.cache",
+        "/tmp"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "objects.githubusercontent.com",
+        "codeload.github.com",
+        "raw.githubusercontent.com",
+        "api.anthropic.com",
+        "api.openai.com",
+        "chatgpt.com",
+        "ab.chatgpt.com",
+        "auth.openai.com",
+        "generativelanguage.googleapis.com",
+        "gemini.google.com",
+        "accounts.google.com",
+        "oauth2.googleapis.com",
+        "www.googleapis.com",
+        "play.googleapis.com",
+        "lh3.googleusercontent.com",
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.googleapis.com",
+        "antigravity-unleash.goog",
+        "playwright.azureedge.net",
+        "playwright-akamai.azureedge.net",
+        "playwright-verizon.azureedge.net",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "registry.npmjs.org",
+        "registry.yarnpkg.com"
+      ]
+    }
+  }
+}
