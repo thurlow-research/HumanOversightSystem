@@ -236,7 +236,12 @@ unallowlistable. No configuration change fixes it — rewrite the command.
 4. **Never inline logic that already exists as a script.** Token minting goes
    through `bootstrap/get_app_token.sh`, never a hand-built JWT — hand-rolling it
    produces a pipeline whose covering rules (`Bash(curl *)`, `Bash(openssl *)`,
-   `Bash(source *)`) amount to arbitrary shell plus arbitrary network.
+   `Bash(source *)`) amount to arbitrary shell plus arbitrary network. Issue and
+   PR creation go through `bootstrap/create_issue.sh` and `bootstrap/submit_pr.sh`
+   (both `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
+   token mint + revoke) — see their headers for usage. `submit_pr.sh --app human`
+   requires `--confirmed`: only pass it when a human has given explicit
+   per-instance authorization for that specific push.
 5. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 6. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
