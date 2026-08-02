@@ -11,5 +11,17 @@
       "Bash(bash scripts/run_second_review.sh *)",
       "Bash(bash scripts/run_red_team.sh *)"
     ]
+  },
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/oversight/record_agent_model.py"
+          }
+        ]
+      }
+    ]
   }
 }
