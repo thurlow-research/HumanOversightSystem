@@ -167,19 +167,25 @@ authorization protocol.
 
 ## Step 9 — Configure cron schedules *(human; one-time per machine)* (#642)
 
-Add the following entries to the operator's crontab (`crontab -e`):
+Add the following entries to the operator's crontab (`crontab -e`). Both roles
+share the single governed `bin/hos-cron` launcher (halt/suspend/overlap-lock/
+timeout — see `docs/CRON-SETUP.md`); it resolves each role's repo path from
+`~/.config/hos/projects.conf` by `--project` key, so one copy in the Worker
+clone serves both roles. Do **not** hand-roll a per-role launcher — an earlier
+generation of per-role scripts (`hos-worker-cron`/`hos-overseer-cron`) bypassed
+every governance gate and was retired (#990).
 
 ```crontab
 # HOS Worker — fires at :00, :15, :30, :45 of every hour
-0,15,30,45 * * * * /path/to/project/Worker/bin/hos-worker-cron >> /tmp/hos-worker.log 2>&1
+0,15,30,45 * * * * /path/to/project/Worker/bin/hos-cron --role worker --project <name> >> /tmp/hos-worker.log 2>&1
 
 # HOS Overseer — fires at :07, :22, :37, :52 (offset 7 min from worker)
-7,22,37,52 * * * * /path/to/project/Overseer/bin/hos-overseer-cron >> /tmp/hos-overseer.log 2>&1
+7,22,37,52 * * * * /path/to/project/Worker/bin/hos-cron --role overseer --project <name> >> /tmp/hos-overseer.log 2>&1
 ```
 
 **Why the 7-minute offset:** The worker opens PRs; the overseer needs time to see them. A 7-minute gap gives the worker a window to complete its cycle before the overseer's next check, reducing empty overseer cycles.
 
-**Replace `/path/to/project/`** with the actual project parent path (e.g. `/Users/you/Code/CPS`). The `bin/` scripts handle preflight, auth, and jitter automatically.
+**Replace `/path/to/project/`** with the actual project parent path (e.g. `/Users/you/Code/CPS`), and `<name>` with this project's key in `~/.config/hos/projects.conf` (e.g. `cps`) — see `docs/CRON-SETUP.md` §3. `bin/hos-cron` handles preflight, auth, and jitter automatically.
 
 **Verify setup before adding to crontab:**
 ```bash

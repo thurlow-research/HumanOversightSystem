@@ -16,6 +16,7 @@
 #     --overseer-bot-login 'hos-overseer-hos[bot]' \
 #     --human-reviewer ScottThurlow \
 #     [--overseer-ceiling LOW|MEDIUM|HIGH]   # default: LOW
+#     [--project <name>]                     # projects.conf key; default: basename of pwd
 #     [--force]                              # overwrite existing apps.env
 #
 # What it does:
@@ -43,15 +44,13 @@ if git rev-parse --git-dir &>/dev/null 2>&1; then
 fi
 
 # ── Resolve the HOS install dir from this script's own location (#689) ─────────
-# The cron scripts live in the HOS clones (Worker/ and Overseer/), which may be
-# installed in a separate directory from the partner project. Deriving their
-# paths from $(pwd) is wrong whenever HOS lives elsewhere. Resolve from the
-# script's location instead — correct in both colocated and separate-clone
-# layouts, since this script ships inside the Worker clone.
+# The cron launcher lives in the HOS Worker clone, which may be installed in a
+# separate directory from the partner project. Deriving its path from $(pwd) is
+# wrong whenever HOS lives elsewhere. Resolve from the script's location
+# instead — correct in both colocated and separate-clone layouts, since this
+# script ships inside the Worker clone.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # the Worker clone (holds this script)
-HOS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"   # parent of Worker/ and Overseer/
-OVERSEER_DIR="$HOS_DIR/Overseer"             # sibling clone (may not exist yet)
+WORKER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # the Worker clone (holds this script and bin/hos-cron)
 
 CONFIG_DIR="$PROJECT_DIR/.config/hos"
 
@@ -59,6 +58,11 @@ CONFIG_DIR="$PROJECT_DIR/.config/hos"
 REPO_OWNER="" WORKER_APP_ID="" WORKER_PEM="" WORKER_BOT_LOGIN=""
 OVERSEER_APP_ID="" OVERSEER_PEM="" OVERSEER_BOT_LOGIN=""
 HUMAN_REVIEWER="" OVERSEER_CEILING="LOW" FORCE=false
+# Default projects.conf key: basename of the project parent dir, lowercased,
+# non-alnum stripped (e.g. ~/Code/CPS -> "cps"). Must match the key used in
+# ~/.config/hos/projects.conf (docs/CRON-SETUP.md §3) — override with --project
+# if the directory name and the registry key differ.
+PROJECT_NAME="$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --overseer-bot-login) OVERSEER_BOT_LOGIN="$2"; shift 2 ;;
     --human-reviewer)     HUMAN_REVIEWER="$2";      shift 2 ;;
     --overseer-ceiling)   OVERSEER_CEILING="$2";   shift 2 ;;
+    --project)            PROJECT_NAME="$2";        shift 2 ;;
     --force)              FORCE=true;               shift ;;
     --help|-h)
       sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
@@ -199,23 +204,26 @@ for role in Worker Overseer; do
 done
 
 # ── 6. Print crontab entries ───────────────────────────────────────────────────
-# Paths point at the HOS install (where the cron scripts actually live), not the
-# partner project dir (#689). Warn if a resolved cron script is missing so the
-# user can correct the path before installing the crontab entry.
-[[ -x "$WORKER_DIR/bin/hos-worker-cron" ]] \
-  || warn "hos-worker-cron not found at $WORKER_DIR/bin/ — adjust the crontab path below"
-[[ -x "$OVERSEER_DIR/bin/hos-overseer-cron" ]] \
-  || warn "hos-overseer-cron not found at $OVERSEER_DIR/bin/ — adjust the crontab path below"
+# All roles share the single hos-cron launcher (governed: hos-halt, suspend
+# marker, overlap lock, wall-clock timeout — none of which the retired
+# per-role hos-worker-cron/hos-overseer-cron launchers had, #990). hos-cron
+# resolves REPO_ROOT per-role from projects.conf (-C, never cd), so one copy
+# in the Worker clone serves both roles — see docs/CRON-SETUP.md §3-4.
+[[ -x "$WORKER_DIR/bin/hos-cron" ]] \
+  || warn "hos-cron not found at $WORKER_DIR/bin/ — adjust the crontab path below"
 
 printf "\n${BOLD}Suggested crontab entries (run: crontab -e)${RESET}\n"
+printf "  # projects.conf key resolved to: %s — must match a %s_worker_root /\n" "$PROJECT_NAME" "$PROJECT_NAME"
+printf "  # %s_overseer_root entry in ~/.config/hos/projects.conf (override with --project)\n" "$PROJECT_NAME"
 printf "  # HOS Worker\n"
-printf "  0,15,30,45 * * * *  %s/bin/hos-worker-cron >> /tmp/hos-worker.log 2>&1\n" "$WORKER_DIR"
+printf "  0,15,30,45 * * * *  %s/bin/hos-cron --role worker --project %s >> /tmp/hos-worker.log 2>&1\n" "$WORKER_DIR" "$PROJECT_NAME"
 printf "  # HOS Overseer\n"
-printf "  7,22,37,52 * * * *  %s/bin/hos-overseer-cron >> /tmp/hos-overseer.log 2>&1\n\n" "$OVERSEER_DIR"
+printf "  7,22,37,52 * * * *  %s/bin/hos-cron --role overseer --project %s >> /tmp/hos-overseer.log 2>&1\n\n" "$WORKER_DIR" "$PROJECT_NAME"
 
 printf "${GREEN}${BOLD}Setup complete.${RESET} Apps.env written to:\n"
 printf "  %s\n\n" "$APPS_ENV"
 printf "Next steps:\n"
-printf "  1. Add crontab entries above\n"
-printf "  2. Test auth: cd %s && bootstrap/get_app_token.sh --app worker > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh\n" "$WORKER_DIR"
-printf "  3. Start interactive session: cd %s && bin/hos-worker\n\n" "$WORKER_DIR"
+printf "  1. Add ${PROJECT_NAME}_config_dir / ${PROJECT_NAME}_worker_root / ${PROJECT_NAME}_overseer_root to ~/.config/hos/projects.conf (docs/CRON-SETUP.md §3)\n"
+printf "  2. Add crontab entries above\n"
+printf "  3. Test auth: cd %s && bootstrap/get_app_token.sh --app worker > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh\n" "$WORKER_DIR"
+printf "  4. Start interactive session: cd %s && bin/hos-worker\n\n" "$WORKER_DIR"
