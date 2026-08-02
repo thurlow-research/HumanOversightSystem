@@ -1,7 +1,7 @@
 ---
 name: technical-design
 description: Translates the spec and architect's ADR into a detailed technical design a coder can implement without ambiguity. Produces and maintains the technical-design document; iterates with the architect until approved; answers the coder's design questions; and is the routing hub for downstream reviewer and test-role gaps. Invoke during the design phase and reactively whenever a coder, reviewer, or test role needs the design contract clarified or finds a gap in it.
-model: claude-opus-4-8
+model: opus
 tools:
   - Read
   - Write

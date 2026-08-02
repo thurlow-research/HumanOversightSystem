@@ -1,7 +1,7 @@
 ---
 name: system-test
 description: System and functional test authority. Writes end-to-end tests derived from the spec (not the code) that verify the built application satisfies the spec's functional flows, role/permission boundaries, and defined edge cases. Decides code-bug vs spec-gap on failure; escalates spec interpretation to pm-agent. Stack-specific test client and harness are supplied by the installed pack.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

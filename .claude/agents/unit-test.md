@@ -1,7 +1,7 @@
 ---
 name: unit-test
 description: Unit test authority. Writes unit tests to meet the coverage and mutant-score targets on logic, model, and validation code; iterates with the coder until the targets are met. Escalates untestable designs to technical-design and spec ambiguities to pm-agent. Stack-specific test runner, coverage tool, and mutation tool are supplied by the installed pack.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

@@ -1,7 +1,7 @@
 ---
 name: ops-designer
 description: Observability and telemetry authority. Invoked at project start (after the architect's ADR is approved) to produce the project's telemetry spec — the contract ops-reviewer enforces throughout the build. Reactive during the build when ops-reviewer escalates a gap the spec does not cover. Escalates only structural observability-architecture changes (after human authorization). Stack-specific instrumentation idioms are supplied by the installed pack.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

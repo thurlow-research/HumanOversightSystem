@@ -1,7 +1,7 @@
 ---
 name: doc-validator
 description: Validates that documentation accurately and completely describes agent behavior. Catches the "omission" class of doc bug — where a doc mentions an agent but only covers a subset of its roles, modes, or escalation paths. The authoritative source for each agent's behavior is its own .claude/agents/*.md file; this agent checks that docs/AGENTS.md, docs/OVERSIGHT-RUNBOOK.md, docs/SETUP.md, and docs/CUSTOMIZATION.md are faithful to those definitions. Invoke before committing documentation changes, or periodically as a health check.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

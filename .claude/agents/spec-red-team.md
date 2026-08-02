@@ -6,7 +6,7 @@ description: >
   implicit assumptions, and edge cases the spec doesn't cover. Creates spec-gap
   issues for findings. Invoke before the coder starts a build step, after the
   technical design for that step is approved.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Bash
