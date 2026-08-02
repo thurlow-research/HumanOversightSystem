@@ -80,6 +80,11 @@ class CronEnv:
             '  echo "auth_token=${ANTHROPIC_AUTH_TOKEN:-UNSET}"\n'
             '  echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-UNSET}"\n'
             '  echo "path=$PATH"\n'
+            # #967 (ADR-037 AD-5): the launcher must mint and export cycle
+            # identity into the launched session's environment.
+            '  echo "cycle_id=${HOS_CYCLE_ID:-UNSET}"\n'
+            '  echo "cycle_role=${HOS_CYCLE_ROLE:-UNSET}"\n'
+            '  echo "cycle_token=${HOS_CYCLE_TOKEN:-UNSET}"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -762,6 +767,70 @@ class TestIdentityGuard:
         assert r.returncode == 0, r.stdout + r.stderr
         assert f"Authenticated as {EXPECTED_BOT}" in r.stdout
         assert cron.claude_ran()
+
+
+# ─────────────────────────── Cycle identity (#967) ──────────────────────────
+class TestCycleIdentity:
+    """bin/hos-cron mints HOS_CYCLE_ID / HOS_CYCLE_ROLE / HOS_CYCLE_TOKEN once
+    per invocation and exports them into the launched Claude session's
+    environment (ADR-037 AD-5). This is P1: mechanism only — nothing reads
+    these yet (bootstrap/submit_pr.sh's enforcement check is P2). This suite
+    covers the launcher side of the contract only."""
+
+    def _env(self, cron, role="worker", project="hos", env_overrides=None) -> dict:
+        r = cron.run(role=role, project=project, env_overrides=env_overrides)
+        assert r.returncode == 0, r.stdout + r.stderr
+        out = {}
+        for line in cron.claude_record().splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                out[k] = v
+        return out
+
+    def test_cycle_vars_are_minted_and_exported(self, cron):
+        env = self._env(cron)
+        assert env.get("cycle_id", "UNSET") != "UNSET"
+        assert env.get("cycle_role", "UNSET") != "UNSET"
+        assert env.get("cycle_token", "UNSET") != "UNSET"
+
+    def test_cycle_id_matches_the_documented_grammar(self, cron):
+        import re
+        env = self._env(cron)
+        assert re.match(r"^[A-Za-z0-9._-]+$", env["cycle_id"]), env["cycle_id"]
+        assert env["cycle_id"].startswith("worker-hos-")
+
+    def test_cycle_token_is_a_12_digit_utc_timestamp(self, cron):
+        import re
+        env = self._env(cron)
+        assert re.match(r"^\d{12}$", env["cycle_token"]), env["cycle_token"]
+
+    def test_cycle_role_matches_the_invoked_role(self, cron):
+        env = self._env(cron, role="worker")
+        assert env["cycle_role"] == "worker"
+
+    def test_overseer_also_receives_a_cycle_identity(self, cron):
+        # AD-5: minted for BOTH roles. The overseer creates no branches, but
+        # withholding the identity would be a role-detection heuristic, which
+        # AD-5 explicitly avoids — role scoping is enforced by the recorded
+        # role= value in the ownership record (P2), not by minting selectively.
+        # An actionable open PR is stubbed so the overseer's own PR pre-filter
+        # (unrelated to #967) reaches the Claude launch at all.
+        env = self._env(cron, role="overseer", env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+        })
+        assert env.get("cycle_id", "UNSET") != "UNSET"
+        assert env["cycle_role"] == "overseer"
+
+    def test_two_invocations_mint_different_cycle_ids(self, cron):
+        env1 = self._env(cron)
+        # Clear bookkeeping from the first run so idle backoff doesn't
+        # short-circuit the second invocation before Claude launches.
+        if cron.last_run_file.exists():
+            cron.last_run_file.unlink()
+        if cron.claude_log.exists():
+            cron.claude_log.unlink()
+        env2 = self._env(cron)
+        assert env1["cycle_id"] != env2["cycle_id"]
 
 
 # ───────────────────────────── Thin-env hardening ──────────────────────────

@@ -260,6 +260,7 @@ Follow the per-task worker chain exactly:
 5. **Fetch issue content** — REST-by-id, never Search API.
 6. **Triage** (`triage.py:triage`) — classify. Route immediately to embargo if security-report; to `needs-human` if not autonomous or low-confidence.
 7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
+7b. **Create this cycle's branch** — `bash bootstrap/create_branch.sh --issue <N> --slug <slug>`. This writes the branch-ownership record and is the **only** sanctioned branch-creation path in autonomous mode (#967). Never `git checkout -b` directly, and never continue work on a branch you did not create in this cycle — whatever commits are on it, whatever issue it names.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
    - **Before dispatching each coder:** verify the target branch's working tree is clean (`git status --short` = empty). If not, stash or abort before dispatch. Never dispatch a coder into a dirty working tree.
    - **Pipeline discipline — no self-exemption (#556).** Before dispatching coder, classify the change:
@@ -301,7 +302,9 @@ This applies in interactive mode too. If `HOS_BOT_LOGIN` is unset or wrong, push
 - Act on issues not in your sanctioned repo
 - Initiate work on FEATURE-class items (queue for human)
 - Bypass any gate — no `--force`, no `--no-verify`, no protected-surface self-merge
-- Use a protected/release branch as a PR head branch — always create a dedicated working branch (e.g. `feat/<cid>-*`, `fix/<issue>-*`, or `forward-port/<desc>`) and open the PR from that branch. Never open a PR with `release/v*` or `main` as the head branch — this would consume the release branch pointer and may block future work on that branch.
+- Use a protected/release branch as a PR head branch — always create a dedicated working branch via `bootstrap/create_branch.sh` (§7b) and open the PR from that branch. Never open a PR with `release/v*` or `main` as the head branch — this would consume the release branch pointer and may block future work on that branch.
+- **Create a working branch by any means other than `bootstrap/create_branch.sh` (autonomous mode)** — including a raw `git checkout -b`. That script writes the branch-ownership record as part of creating the branch; a branch created any other way carries no record (#967).
+- **Open a PR for, push to, or continue work on a branch created by another session or a previous cycle** — whatever commits it carries or issue it names. Branch or commit presence is not evidence the work is yours or finished (#967).
 - **Open a PR with more than 15 changed files or more than 10 commits without first splitting into smaller PRs.** If a group would exceed 15 files, split by logical sub-group (e.g. docs / lib / tests) and open sequential PRs. Hard ceiling: 25 files — above this, merge conflicts compound faster than reviews complete. See `docs/PR-SIZE-POLICY.md` (#450).
 - Cut, tag, or publish a release — no `gh release create`/`publish`/`edit`, no
   version `git tag`, no direct `cut_release.sh`. Releases are human-authorized via

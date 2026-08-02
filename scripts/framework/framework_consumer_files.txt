@@ -21,6 +21,14 @@ bin/hos-cron
 bin/hos-trim-logs
 bin/lib/git-credentials.sh
 
+# ── bootstrap/ — branch-ownership mechanism (#967, ADR-037, P1) ──────────────────
+# create_branch.sh is the R1 branch-creation seam bin/hos-cron's worker prose
+# now names; branch_ownership.sh is its record library. Shipped in P1 so the
+# mechanism exists ahead of P2's enforcement change in submit_pr.sh (not yet
+# shipped — tracked with the P2 PR, technical-design §10/§15 TD-N1).
+bootstrap/lib/branch_ownership.sh
+bootstrap/create_branch.sh
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,
