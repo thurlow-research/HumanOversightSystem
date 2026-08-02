@@ -257,6 +257,7 @@ hos_bo_verify() {
         return 1
     fi
     if [[ "$role_v" != "worker" ]]; then
+        # shellcheck disable=SC2034 # cross-file out-parameter, read by callers (create_branch.sh)
         HOS_BO_REASON="wrong_role"
         return 1
     fi
