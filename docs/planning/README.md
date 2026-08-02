@@ -7,7 +7,7 @@ Forward-looking release plans for HOS development. Each file captures the theme,
 | [v0.4.0.md](v0.4.0.md) | v0.4.0 — Autonomous Worker | Make the loop truly autonomous | ✅ **Shipped** 2026-06-20 |
 | [v0.4.1.md](v0.4.1.md) | v0.4.1 — Operational Polish | Fix what broke, stabilize what shipped | ✅ **Shipped** |
 | [v0.5.0.md](v0.5.0.md) | v0.5.0 — Governance, Accuracy & Usability | Tighten governance, improve accuracy, fix usability gaps | ✅ **Shipped** 2026-07-13 |
-| v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | 🔧 **Maintenance** |
+| v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | 🚫 **Drained, closed to new triage** (#1173) |
 | [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | 🔄 **Active** (accelerated for tutelare.ai) |
 | [v0.7.0.md](v0.7.0.md) | v0.7.0 — Quality | Measure and improve quality over time | Planning |
 | [v0.8.0.md](v0.8.0.md) | v0.8.0 — Agility | Fully embrace agile | Planning (early) |
@@ -18,13 +18,16 @@ When a new issue is filed, triage it to the appropriate release:
 
 | Release | Take if... |
 |---------|-----------|
-| **v0.5.1** | Bug or governance/security/accuracy gap in **shipped** v0.5.0 code — fail-open, regression, install failure. Lands on the `release/0.5.x` maintenance branch. |
-| **v0.6.0** | Astro / JS-TS stack support — node/astro packs, JS validator or gate parity, pack `requires` resolution (epic #1029). The active feature line. |
-| **v0.7.0** | Quality or reliability improvement that isn't blocking — measurement, MTTF certification, lean waste, quality ratchet. |
+| **v0.6.0** | Astro / JS-TS stack support — node/astro packs, JS validator or gate parity, pack `requires` resolution (epic #1029). Also: governance/security/accuracy gaps surfaced during active development (Human-clone beta, oversight-pipeline gaps) — the active line absorbs these while v0.5.1 is drained. |
+| **v0.7.0** | Quality or reliability improvement that isn't blocking — measurement, MTTF certification, lean waste, quality ratchet. Also: autonomous worker/overseer finalization (e.g. sandbox hardening) that isn't required to unblock v0.6.0. |
 | **v0.8.0** | Agility improvement — reduces friction, improves throughput, pull-system flow, developer experience. Not blocking anything today. |
 | **Backlog** | Nice-to-have with no clear theme fit, or requires human design decision before scoping. |
 
-**Decision rule:** breaks/gap in shipped code → v0.5.1 (maintenance). Astro/JS stack work → v0.6.0. Quality measurement → v0.7.0. Agility/DX → v0.8.0.
+**v0.5.1 is drained and closed to new triage (#1173).** No decision rule above may select it — a bug or governance gap found today, even one that traces back to shipped v0.5.0 code, routes to v0.6.0 (the active line) unless a human explicitly authorizes a maintenance-branch fix.
+
+**Decision rule:** Astro/JS stack work or a governance/security gap in the active line → v0.6.0. Quality measurement or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
+
+**Scope of triage:** only issues filed **without** a milestone are triaged (worker Step 0). Issues that already carry a milestone are left as-is — corrections made here are stable and won't be re-triaged on a later cycle.
 
 ## Conventions
 
