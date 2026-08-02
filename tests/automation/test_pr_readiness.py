@@ -282,6 +282,23 @@ def test_signoffs_present_no_required_roles_configured():
     assert check.passed is True
 
 
+@pytest.mark.parametrize("status", ["REJECTED", "PENDING", "BLOCKED", "REQUEST_CHANGES", ""])
+def test_signoffs_present_rejects_non_approving_status(status):
+    # #1197 panel finding (tier2): a non-empty but non-approving Status must
+    # not satisfy the presence check — only Status non-emptiness was checked.
+    entries = [{"role": "security", "fields": {"Status": status, "Agent": "x", "Artifact": "a.py", "Iterations": "1"}}]
+    check = _check_signoffs_present(entries, True, ["security"])
+    assert check.passed is False
+    assert "security" in check.detail
+
+
+@pytest.mark.parametrize("status", ["APPROVED", "CONDITIONAL", "N/A", "NA", "ESCALATED"])
+def test_signoffs_present_accepts_approving_status(status):
+    entries = [{"role": "security", "fields": {"Status": status, "Agent": "x", "Artifact": "a.py", "Iterations": "1"}}]
+    check = _check_signoffs_present(entries, True, ["security"])
+    assert check.passed is True
+
+
 def test_no_unresolved_escalations_passes_when_resolved():
     entries = [{"role": "security", "fields": {"Status": "ESCALATED", "Human_resolution": "2026-06-11 — waived by human"}}]
     check = _check_no_unresolved_escalations(entries, True)
@@ -293,6 +310,18 @@ def test_no_unresolved_escalations_fails_when_unresolved():
     check = _check_no_unresolved_escalations(entries, True)
     assert check.passed is False
     assert "security" in check.detail
+
+
+def test_no_unresolved_escalations_ignores_superseded_entry():
+    # #1197 panel finding (tier2): an early ESCALATED entry later resolved by
+    # a subsequent APPROVED entry for the same role must not be flagged —
+    # only the latest entry per role reflects current state.
+    entries = [
+        {"role": "security", "fields": {"Status": "ESCALATED"}},
+        {"role": "security", "fields": {"Status": "APPROVED", "Agent": "x", "Artifact": "a.py", "Iterations": "2"}},
+    ]
+    check = _check_no_unresolved_escalations(entries, True)
+    assert check.passed is True
 
 
 def test_critical_human_authorization_not_required_below_critical(tmp_path):
@@ -337,6 +366,20 @@ def test_second_review_approve_verdict_passes(tmp_path):
     (d / "step1-20260802T060000Z.md").write_text("verdict: approve\nreviewed_range: x..y\n")
     check = _check_second_review(tmp_path, 1, "HIGH")
     assert check.passed is True
+
+
+@pytest.mark.parametrize(
+    "verdict", ["reject", "rejected", "fail", "changes_requested", "blocked", "request_changes"]
+)
+def test_second_review_rejection_verdict_fails(tmp_path, verdict):
+    # #1197 panel finding (tier1, cross-vendor confirmed): the old check
+    # blacklisted only {error, skipped, unparseable, pending} and let any
+    # other value — including an explicit rejection — pass through.
+    d = tmp_path / ".claudetmp" / "second-review"
+    d.mkdir(parents=True)
+    (d / "step1-20260802T060000Z.md").write_text(f"verdict: {verdict}\nreviewed_range: x..y\n")
+    check = _check_second_review(tmp_path, 1, "HIGH")
+    assert check.passed is False
 
 
 def test_system_tests_not_applicable_passes(tmp_path):
@@ -414,6 +457,21 @@ def test_na_domains_skips_non_checkable_roles(tmp_path):
     entries = [{"role": "code-review", "fields": {"Status": "N/A"}}]
     check = _check_na_domains(tmp_path, entries, BASE, HEAD)
     assert check.passed is True  # code-review has no domain rule — not independently checkable
+
+
+def test_na_domains_ignores_superseded_na_entry(tmp_path):
+    # #1197 panel finding (tier2): an early N/A entry later superseded by an
+    # APPROVED entry for the same role must not trigger the independent
+    # domain-verification path — only the latest entry per role is current.
+    # (No change_classifier.py invocation should be needed since no role is
+    # currently N/A once the later entry is considered.)
+    entries = [
+        {"role": "security", "fields": {"Status": "N/A"}},
+        {"role": "security", "fields": {"Status": "APPROVED", "Agent": "x", "Artifact": "a.py", "Iterations": "2"}},
+    ]
+    check = _check_na_domains(tmp_path, entries, BASE, HEAD)
+    assert check.passed is True
+    assert check.detail == "no independently-checkable N/A entries"
 
 
 # ---------------------------------------------------------------------------

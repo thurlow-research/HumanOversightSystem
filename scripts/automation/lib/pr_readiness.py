@@ -259,6 +259,20 @@ def _latest_entry_by_role(entries: list[dict], role: str) -> Optional[dict]:
     return None
 
 
+def _latest_entries_by_role(entries: list[dict]) -> dict[str, dict]:
+    """Reduce `entries` to the latest occurrence per role (lowercased key).
+
+    A later register entry for the same role supersedes an earlier one (e.g.
+    an early N/A or ESCALATED entry that a subsequent entry resolved) — checks
+    that scan the register for a role's *current* state must use this instead
+    of iterating over every historical entry (#1197 panel finding, tier2).
+    """
+    latest: dict[str, dict] = {}
+    for entry in entries:
+        latest[entry["role"].lower()] = entry
+    return latest
+
+
 def _parse_required_signoffs(manifest_path: Path, step: Union[str, int]) -> list[str]:
     """Extract `required_signoffs: [a, b, c]` for `step` from step-manifest.yaml.
 
@@ -379,6 +393,12 @@ def _load_register(repo_root: Path, step: Union[str, int]) -> tuple[Optional[str
     return text, _parse_register(text)
 
 
+# Status values §3 of the contract defines as valid register entries.
+# ESCALATED is included here — an ESCALATED-without-resolution entry is a
+# distinct compliance gap caught by REQ-W-06, not by this presence check.
+_SIGNOFF_VALID_STATUSES = frozenset({"APPROVED", "CONDITIONAL", "ESCALATED"} | _NA_STATUSES)
+
+
 def _check_signoffs_present(
     entries: list[dict], register_present: bool, required_roles: list[str]
 ) -> CheckResult:
@@ -395,6 +415,10 @@ def _check_signoffs_present(
         absent_fields = [f for f in _REGISTER_REQUIRED_FIELDS if not entry["fields"].get(f)]
         if absent_fields:
             missing.append(f"{role}: missing field(s) {', '.join(absent_fields)}")
+            continue
+        status = entry["fields"].get("Status", "").strip().upper()
+        if status not in _SIGNOFF_VALID_STATUSES:
+            missing.append(f"{role}: Status={status!r} is not an approving value")
     if missing:
         return CheckResult("REQ-W-05", False, "; ".join(missing))
     return CheckResult("REQ-W-05", True, f"all {len(required_roles)} required role(s) present with required fields")
@@ -404,12 +428,12 @@ def _check_no_unresolved_escalations(entries: list[dict], register_present: bool
     if not register_present:
         return CheckResult("REQ-W-06", False, "sign-off register is missing")
     unresolved = []
-    for entry in entries:
+    for entry in _latest_entries_by_role(entries).values():
         status = entry["fields"].get("Status", "").strip().upper()
         if status == _ESCALATED_STATUS and not entry["fields"].get("Human_resolution", "").strip():
             unresolved.append(entry["role"])
     if unresolved:
-        return CheckResult("REQ-W-06", False, f"ESCALATED without Human_resolution: {', '.join(unresolved)}")
+        return CheckResult("REQ-W-06", False, f"ESCALATED without Human_resolution: {', '.join(sorted(unresolved))}")
     return CheckResult("REQ-W-06", True, "no unresolved ESCALATED entries")
 
 
@@ -422,7 +446,7 @@ def _check_critical_human_authorization(repo_root: Path, step: Union[str, int], 
     return CheckResult("REQ-W-07", True, "human-authorization file present")
 
 
-_SECOND_REVIEW_NON_TERMINAL = frozenset({"error", "skipped", "unparseable", "pending"})
+_SECOND_REVIEW_PASSING = frozenset({"approve"})
 
 
 def _check_second_review(repo_root: Path, step: Union[str, int], risk_tier: str) -> CheckResult:
@@ -440,18 +464,22 @@ def _check_second_review(repo_root: Path, step: Union[str, int], risk_tier: str)
         if stripped.lower().startswith("verdict:"):
             verdict = stripped.split(":", 1)[1].strip().lower()
             break
-    if verdict is None or verdict in _SECOND_REVIEW_NON_TERMINAL:
-        return CheckResult("REQ-W-08", False, f"{latest.name} verdict={verdict!r} — not a terminal, non-error verdict")
+    # Allowlist, not a blacklist (#1197 panel finding, tier1): the only verdict
+    # second_review_logic.py's aggregate_verdicts ever writes for an actual
+    # approval is "approve". Every other value — request_changes, unparseable,
+    # error, skipped, pending, or an explicit rejection like reject/rejected/
+    # fail/changes_requested/blocked — must FAIL here rather than silently pass
+    # through a blacklist that doesn't name it.
+    if verdict not in _SECOND_REVIEW_PASSING:
+        return CheckResult("REQ-W-08", False, f"{latest.name} verdict={verdict!r} — not an approving verdict")
     return CheckResult("REQ-W-08", True, f"{latest.name} verdict={verdict}")
 
 
 def _check_na_domains(repo_root: Path, entries: list[dict], base_sha: str, head_sha: str) -> CheckResult:
     na_roles = sorted(
-        {
-            e["role"] for e in entries
-            if e["fields"].get("Status", "").strip().upper() in _NA_STATUSES
-            and e["role"].lower() in _DOMAIN_CHECKABLE_ROLES
-        }
+        entry["role"] for role, entry in _latest_entries_by_role(entries).items()
+        if role in _DOMAIN_CHECKABLE_ROLES
+        and entry["fields"].get("Status", "").strip().upper() in _NA_STATUSES
     )
     if not na_roles:
         return CheckResult("REQ-W-09", True, "no independently-checkable N/A entries")
