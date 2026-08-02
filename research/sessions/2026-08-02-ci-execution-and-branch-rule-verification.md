@@ -169,7 +169,30 @@ finding that construction beats configuration at the permission boundary.
 
 **Findings:** `a-suspension-conditioned-on-external-state-never-lifts`,
 `attestation-displaces-the-execution-it-attests-to`,
-`state-assertions-decay-faster-than-their-documents`.
+`state-assertions-decay-faster-than-their-documents`,
+`delete-the-conditional-rather-than-conditioning-it-better`.
+
+## The resolution, and the near-miss inside it
+
+The `overseer.md:60` contradiction resolved once the human supplied intent neither document
+recorded: the rule was never an independence principle but a **token-economy optimisation**
+conditioned on the worker having already run the checks — a premise nothing verified.
+
+The first drafted fix was to *suspend* §60 with a machine-checkable lift condition. That was
+rejected: **the proposed remedy for a stale-conditional defect was another conditional**,
+in a session that had just documented `overseer.md:391` failing that exact way. The human's
+correction — "the overseer runs the check. Period. We abandon the cleverness" — removed the
+class rather than managing it.
+
+Two principles came out of it, both now in the issues:
+
+- **Trust versus enforcement.** The optimisation's *intent* was right — deterministic work
+  should not be repeated by an LLM. It failed because it was implemented as trust rather
+  than enforcement. In CI the same optimisation is free. The efficient design and the safe
+  design were the same design at different points on that axis.
+- **No fallback.** A migration that leaves the old execution path as a fallback has not
+  migrated; the fallback fires exactly when the new mechanism's absence should be visible.
+  Applied to both the overseer's CI consumption and the generated script index.
 
 ---
 
