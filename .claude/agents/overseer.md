@@ -546,9 +546,10 @@ This is the canonical wrapper (same mint/act/revoke pattern as `create_issue.sh`
 comment --body-file`, which reads the file's actual content, and it independently
 guards against a body file that is itself an `@path` literal. It is a single,
 allowlistable command — composing a `python3 -c "...post_comment(...)..."`
-one-liner to call the underlying Python helper (`scripts/automation/lib/github.py:post_comment`)
-embeds variable comment text into the command line, which is itself unallowlistable
-and is what pushed a prior cycle toward a raw `gh api` call instead (#1155).
+one-liner to call the underlying Python helper (`post_comment()` in
+`scripts/automation/lib/github.py`) embeds variable comment text into the
+command line, which is itself unallowlistable and is what pushed a prior
+cycle toward a raw `gh api` call instead (#1155).
 
 **Never** use:
 - `gh pr comment --body "@/tmp/..."` — posts the literal `@path` string, not file content
