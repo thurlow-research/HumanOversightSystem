@@ -209,6 +209,33 @@ fi
 echo "$$" > "$_LOCK_DIR/pid"
 trap 'rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
 
+# ── Cycle identity (#967, ADR-037 AD-5) ───────────────────────────────────────
+# Minted exactly once per invocation, under the overlap lock, and exported into
+# the launched Claude session's environment. This is the ONLY place cycle
+# identity is minted — nothing downstream may derive, invent, or persist one.
+# Its ABSENCE is the fail-closed hinge for branch-ownership enforcement
+# (bootstrap/lib/branch_ownership.sh, bootstrap/submit_pr.sh): an interactive
+# session is never launched by this script, so it never has a cycle id, so it
+# can never write or satisfy a valid ownership record — role-scoping falls out
+# of the minting boundary with no separate role-detection heuristic needed.
+_cycle_ts="$(date -u +%y%m%d%H%M%S)"          # 12 digits, e.g. 260802191500
+HOS_CYCLE_TOKEN="$_cycle_ts"
+HOS_CYCLE_ROLE="$ROLE"
+# PROJECT is operator-supplied (registry key); sanitize before folding it into
+# an identifier so a stray character in projects.conf can't produce a cycle id
+# that fails its own grammar check below.
+_project_safe="$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9._-' '-')"
+HOS_CYCLE_ID="${ROLE}-${_project_safe}-${_cycle_ts}-$$"
+if [[ ! "$HOS_CYCLE_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "$LOG_PREFIX FATAL: minted HOS_CYCLE_ID '$HOS_CYCLE_ID' failed grammar validation — refusing to launch a session with a malformed cycle identity"
+  exit 78  # EX_CONFIG
+fi
+# Minted for BOTH roles (#967 ADR-037 AD-5) — the overseer creates no branches,
+# but giving it an identity costs nothing and keeps one code path; role scoping
+# is enforced by the recorded role= value in the ownership record, not by
+# withholding the identifier here.
+export HOS_CYCLE_ID HOS_CYCLE_ROLE HOS_CYCLE_TOKEN
+
 # ── Audit helper ──────────────────────────────────────────────────────────────
 _audit() {
   local event="$1"; shift
@@ -828,7 +855,7 @@ fi
 
 
 # ── Cycle start ───────────────────────────────────────────────────────────────
-_audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT"
+_audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT cycle_id=$HOS_CYCLE_ID"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 
 # ── Per-fire bounds (#728 Task 2) ─────────────────────────────────────────────

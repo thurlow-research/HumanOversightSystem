@@ -71,6 +71,12 @@ gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
 
+**Step 2b — Create this cycle's working branch:**
+```bash
+bash bootstrap/create_branch.sh --issue <N> --slug <short-slug>
+```
+This is the **only** sanctioned way to create a branch (#967). Never `git checkout -b` directly. Never continue work on a branch you did not create in this cycle — whatever commits are on it, whatever issue it names.
+
 **Step 3 — Pipeline discipline:**
 - Spec/behavioral → pm-agent + architect + technical-design
 - Bug fix/tweak → proceed directly
