@@ -910,7 +910,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - `scripts/framework/decisions.md` — each decision's `Verification:` criterion checked against its stated implementation files
 
 **Key requirements:**
-- REQ-001: No Claude model in the independent reviewer seat (agy/codex only)
+- REQ-001: No Claude model recorded, counted, or reported as satisfying the *independent*-review requirement (agy/codex or the human only); a same-family model at a strictly higher class may still serve as a **peer** (class-differential) reviewer (ADR-033 AD-1/AD-10), which never substitutes for the independent vote
 - REQ-002: agy fires at MEDIUM+; codex at HIGH+; fail-closed when unavailable
 - REQ-003: Human gate mandatory at CRITICAL steps
 - REQ-004: Opus for high-judgment agents (architect, technical-design); Sonnet for reviewers
