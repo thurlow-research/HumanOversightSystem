@@ -50,13 +50,14 @@ would buy nothing exposed the actual gap.
    `unittest`, `run_gates`, `run_validators` returns nothing, against substantial suites.
 4. **The overseer is forbidden from re-running them** — `overseer.md:60`, under "These are
    hard limits. No override path."
-5. **The attestation that substitutes for execution is ignored by instruction** —
-   `overseer.md:391` disables stamp checks "until the content-hash redesign (#552) ships."
-   #552 closed 2026-06-28, five weeks earlier.
+5. **The attestation's consumer is instructed to disregard it** — `overseer.md:391` calls
+   stamp checks a known false positive "until the content-hash redesign (#552) ships." #552
+   closed 2026-06-28, five weeks earlier. The gate itself is live and was confirmed failing
+   for real on PR #1210 (#1211); it is the instruction that is stale, which is a latent risk
+   rather than a bypass already taken.
 
 So between authoring and merge, nothing independently executes the tests, and the gate that
-records they were run is switched off by a suspension whose lift-condition was met over a
-month ago.
+records they were run is one an agent has been told in advance to dismiss.
 
 The human's framing settled the design question: re-running on a moved base is redundant
 *because the required checks don't analyse the merged code* — and the fix is to move
@@ -141,9 +142,11 @@ whether it already exists" without specifying *against what* has a measurable fa
 rate in a repository where several agents merge concurrently.
 
 **A suspension with a precise lift-condition still never lifts.** `overseer.md:391` names a
-specific issue whose closure would end the bypass. It closed five weeks ago. Prose is not an
-evaluator, and the fix landing is what made the instruction wrong — the system was more
-correct before #552 shipped than after.
+specific issue whose closure would end the suspension. It closed five weeks ago. Prose is
+not an evaluator, and the fix landing is what made the instruction wrong — the system was
+more correct before #552 shipped than after. Caught only by finding #1211, filed hours
+earlier by another agent, which had measured the gate as live; the first draft of this
+finding asserted the gate was being bypassed and had to be corrected.
 
 **Construction discipline held.** Comment posting moved to `bootstrap/post_comment.sh`
 partway through and ran clean thereafter. The earlier hand-rolled `source …; gh …` pattern

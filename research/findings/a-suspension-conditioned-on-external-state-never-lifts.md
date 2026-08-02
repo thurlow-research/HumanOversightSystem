@@ -34,17 +34,29 @@ The reasoning is sound and the lift-condition is precise. **#552 closed 2026-06-
 redesign shipped: `scripts/framework/check_validation_current.sh:4` reads
 `# Uses content-hash-based stamps (#552): computes a SHA-256 hash of all`.
 
-Five weeks later the instruction still stands, so the overseer still treats every stamp
-check as SKIP. The gate was rebuilt specifically to fix the false-positive problem that
-justified the suspension, and the rebuilt gate has never been consulted.
+Five weeks later the instruction still stands, telling the overseer that every stamp check
+is a known false positive to be ignored.
+
+**Precisely what this does and does not cause.** The gate itself is live: the current script
+has no gitignore or SKIP branch, a missing or stale stamp is a hard `exit 1`, and the check
+was confirmed failing for real on PR #1210 via the check-runs API (#1211). So this is **not**
+a bypass that has already occurred. It is a **standing instruction to dismiss a real
+failure** — an agent that trusts the note instead of reading live CI state would treat a
+genuine stamp failure on a protected surface (`.claude/agents/**`) as noise and merge
+through it.
+
+That distinction matters for the class. The damage from a stale suspension is not
+necessarily that the control stopped running; it is that the **consumer has been told in
+advance to disregard the control's output.** The gate and its reader disagree, and only the
+reader's belief is written down.
 
 Two aggravating properties:
 
 - **The condition is satisfiable but unobserved.** This is not a vague condition that can
   never be judged met. It is a closed issue with a date. Nobody looks.
-- **The bypass is invisible from the gate's side.** `check_validation_current.sh` runs and
-  exits 0. From CI, the gate appears healthy. Only the consumer's instructions record that
-  its output is discarded.
+- **The disagreement is invisible from both sides.** From CI, the gate runs and reports
+  honestly. From the agent's instructions, the gate is a known-bad signal. Nothing compares
+  the two, so neither surface shows a conflict.
 
 ## Why this class is hard to detect
 
@@ -80,9 +92,10 @@ control surface is the set of controls whose suspensions have not silently outli
 reasons — which is not the set any configuration audit reports.
 
 It also qualifies [`stamp-based-ci-enforcement`](stamp-based-ci-enforcement.md), which
-records that a committed stamp makes validation non-bypassable. The mechanism is
-non-bypassable; the *instruction to ignore its result* bypassed it anyway. A control's
-strength is bounded by its consumer's willingness to read it.
+records that a committed stamp makes validation non-bypassable. That holds — the mechanism
+is non-bypassable and demonstrably still enforcing. What the suspension reaches is not the
+mechanism but its **reader**. A control's effective strength is bounded by whether its
+consumer has been told to believe it.
 
 ## What changed
 

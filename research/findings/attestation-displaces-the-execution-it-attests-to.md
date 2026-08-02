@@ -51,6 +51,10 @@ The chain has no executor:
 4. The overseer is **forbidden** from re-running them — `.claude/agents/overseer.md:60`
    lists "Re-run inner-loop checks (validators, reviewer agents) that the worker should have
    run pre-PR" under "These are hard limits. No override path."
+5. And the overseer's instructions call the remaining attestation a known false positive —
+   `overseer.md:391`, stale since #552 closed 2026-06-28. The stamp gate itself still
+   enforces (#1211); it is the *reader* that has been told to discount it. See
+   [`a-suspension-conditioned-on-external-state-never-lifts`](a-suspension-conditioned-on-external-state-never-lifts.md).
 
 Between authoring and merge, nothing independently executes the suite.
 

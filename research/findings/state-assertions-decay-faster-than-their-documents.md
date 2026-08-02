@@ -58,7 +58,24 @@ the start of each phase rather than inheriting the previous phase's observations
 listed five earlier conclusions that had turned out to be artifacts. The warning did not
 protect the document containing it.
 
-**3. A repair runbook whose expected value expired mid-repair.** A step-by-step recovery
+**3. An issue filed against an issue tracker that already tracked it.** An issue was filed
+proposing read and edit wrappers for GitHub operations. **#1175, open since the previous
+day and sitting in the same milestone, already proposed exactly that** — and had
+independently reached the same conclusion rejecting a generic passthrough. The filesystem
+was searched; the issue tracker never was. It surfaced only when the milestone was listed
+for an unrelated reason.
+
+This is the sharpest variant, because the check that would have caught it is trivial and
+the artifact was not stale at all — it was simply never looked for. The three cases fail
+identically from three distinct causes:
+
+| Missed artifact | Why the check failed |
+|---|---|
+| `lib/github.py` | searched for scripts, not library functions |
+| `bootstrap/post_comment.sh` | searched a working tree 15 commits behind |
+| **#1175** | searched the filesystem, never the tracker |
+
+**4. A repair runbook whose expected value expired mid-repair.** A step-by-step recovery
 procedure specified `git log --oneline -1  # expect c17f20f or later`. Between the runbook
 being written and being executed, `main` advanced 15 commits to `9ef0d13`. A human following
 it literally would have seen a mismatch and been unable to tell whether the repair had
