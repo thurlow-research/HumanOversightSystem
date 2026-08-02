@@ -857,11 +857,20 @@ else _TIMEOUT_BIN=""; fi
 _claude_cmd=("$CLAUDE_BIN" --print --permission-mode bypassPermissions)
 [[ -n "${HOS_CRON_MAX_TURNS:-}" ]] && _claude_cmd+=(--max-turns "$HOS_CRON_MAX_TURNS")
 _run_claude() {  # stdin is inherited → passed through to claude
+  # #1126: claude's `.claude/agents/*.md` custom-subagent discovery is
+  # cwd-based at process start — NOT derived from the "WORKING DIRECTORY:"
+  # text injected into the prompt below. Without this `cd`, the process
+  # inherits cron's own launch cwd (unrelated to $REPO_ROOT), so the worker
+  # can dispatch none of its 26 shipped agents and silently falls back to
+  # built-ins (claude/Explore/general-purpose/Plan/statusline-setup) — the
+  # exact specialist-substitution the #608/#609 governance finding forbids.
+  # Scoped to a subshell (matches `_audit`'s `(cd "$REPO_ROOT" && ...)`
+  # pattern above) so it never perturbs the launcher's own cwd.
   if [[ -n "$_TIMEOUT_BIN" && "$HOS_CRON_MAX_SECONDS" != "0" ]]; then
-    "$_TIMEOUT_BIN" "$HOS_CRON_MAX_SECONDS" "${_claude_cmd[@]}"
+    (cd "$REPO_ROOT" && "$_TIMEOUT_BIN" "$HOS_CRON_MAX_SECONDS" "${_claude_cmd[@]}")
   else
     [[ -z "$_TIMEOUT_BIN" ]] && echo "$LOG_PREFIX WARN: no timeout/gtimeout — claude runs unbounded"
-    "${_claude_cmd[@]}"
+    (cd "$REPO_ROOT" && "${_claude_cmd[@]}")
   fi
 }
 

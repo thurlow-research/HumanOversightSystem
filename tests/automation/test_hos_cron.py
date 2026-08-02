@@ -1577,6 +1577,33 @@ class TestWorkingDirectoryInjection:
         assert str(cron.repo) in stdin_text, "Injected path must match REPO_ROOT"
         assert "hello from prompt" in stdin_text
 
+    def test_claude_invoked_with_cwd_at_repo_root(self, cron):
+        """claude's process cwd must be $REPO_ROOT (#1126).
+
+        Claude Code's `.claude/agents/*.md` custom-subagent discovery is
+        cwd-based at process start, not derived from the injected
+        "WORKING DIRECTORY:" prompt text. Without a `cd` before invocation,
+        the launcher inherits its own launch cwd (unrelated to $REPO_ROOT)
+        and the worker/overseer session can dispatch none of its shipped
+        agents — a silent, systemic governance-pipeline failure.
+        """
+        pwd_capture = cron.home / "claude_pwd.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            'cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n'
+            f'pwd -P > "{pwd_capture}"\n'
+            "exit 0\n",
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        actual = pwd_capture.read_text().strip()
+        expected = str(cron.repo.resolve())
+        assert actual == expected, (
+            f"claude must run with cwd=REPO_ROOT for agent discovery; "
+            f"got {actual!r}, expected {expected!r}"
+        )
+
     def test_no_hardcoded_paths_in_worker_prompt(self):
         """worker-cron-prompt.md must contain no absolute paths (regression guard)."""
         prompt = (
