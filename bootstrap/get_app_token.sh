@@ -29,6 +29,11 @@
 #
 # Token lifetime: 1 hour. Re-source before long sessions.
 #
+# To revoke the token this script exports before it would otherwise expire,
+# use bootstrap/revoke_app_token.sh — it reads GH_TOKEN from the environment,
+# so the call site (`bash bootstrap/revoke_app_token.sh`) takes no token
+# argument and is statically allowlistable (#1191).
+#
 # Reads: ~/.config/hos/apps.env  (App IDs, PEM paths — never committed to git)
 # Requires: openssl, curl, python3 (all present on macOS by default)
 
