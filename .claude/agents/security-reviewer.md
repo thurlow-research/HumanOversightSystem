@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: Finds exploitable vulnerabilities — auth bypass, injection, broken authorization, session/CSRF, secrets-in-code, OWASP Top 10. Adversarial. Runs after code-review approves, in parallel with the other inner-loop reviewers. Iterates with the coder until clean. Does NOT cover correctness, privacy/GDPR, reliability, telemetry, UI, accessibility, or infrastructure — those are handled by their dedicated reviewer agents.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

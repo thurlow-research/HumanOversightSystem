@@ -4,7 +4,7 @@ description: >
   Subagent of risk-assessor. Queries GitHub issues and git log to build a
   historical risk profile for changed files. Starts empty on new projects and
   accumulates value over time. Invoke only from risk-assessor.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Bash
   - Read

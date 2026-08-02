@@ -1,7 +1,7 @@
 ---
 name: ux-designer
 description: UX design authority. Invoked at project start (after pm-agent's Q&A) to audit and complete the design pack against the full spec, then reactively throughout the build to answer design questions and fill gaps for coder, ui-reviewer, a11y-reviewer, and technical-design. Produces a design-readiness document at project start. Escalates only fundamental brand or paradigm changes to the human. Stack-specific templating idioms are supplied by the installed pack; the design pack itself is project-owned.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

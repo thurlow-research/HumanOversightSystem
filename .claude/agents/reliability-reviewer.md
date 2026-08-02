@@ -1,7 +1,7 @@
 ---
 name: reliability-reviewer
 description: Reviews code changes for resilience against external-dependency failures — timeouts on outbound connections, retry with backoff, graceful degradation, no unbounded waits. Inner loop, runs in parallel with the other inner-loop reviewers. N/A for changes with no outbound connections (no DB, no API calls, no queues, no remote I/O).
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep
