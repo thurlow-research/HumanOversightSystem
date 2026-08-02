@@ -1,7 +1,7 @@
 ---
 name: coder
 description: Implementation agent. Writes production-quality application code that faithfully implements the technical design, and iterates with code-reviewer (then the parallel reviewers) until approved. Asks technical-design for clarification before writing, not after. Builds what the design specifies — does not decide scope. Invoke during the build phase for each build step.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

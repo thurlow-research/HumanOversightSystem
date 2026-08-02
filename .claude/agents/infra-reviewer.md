@@ -1,7 +1,7 @@
 ---
 name: infra-reviewer
 description: Reviews deployment and configuration changes against the project's deployment spec — container orchestration, reverse proxy/TLS, firewall/network exposure, secrets placement, datastore exposure, persistent volumes, and backups/restore. Reviews the layer the app runs inside, not the application code. Independent track, runs when infra/config files change. N/A when no infra/config files are touched.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

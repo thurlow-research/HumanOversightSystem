@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews application code for correctness, faithful adherence to the technical design, and language/framework idioms + quality. Runs first in the inner loop and gates the parallel reviewers. Iterates with the coder until the code is sound. Does NOT cover security, privacy, reliability, telemetry, UI, accessibility, infrastructure, or test coverage — those are handled by their dedicated reviewer/test agents, which run after code review approves.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

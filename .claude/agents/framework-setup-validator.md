@@ -1,7 +1,7 @@
 ---
 name: framework-setup-validator
 description: Validates that the agent pipeline framework is correctly installed in a project repo — all required agent files present, docs directories exist, config.sh populated, and output doc paths are reachable. Invoke after running scripts/framework/install.sh in a new repo, or when troubleshooting a framework installation. Reports what is missing or misconfigured with specific remediation steps.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Bash
