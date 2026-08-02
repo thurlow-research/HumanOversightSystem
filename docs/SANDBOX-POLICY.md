@@ -4,11 +4,13 @@ Reference documentation for `contract/sandbox-policy.template.json` — the HOS
 sandbox and permission policy.
 
 **Status:** the template is a *faithful, path-templated copy of the Human-role
-profile proven in production on 2026-08-01*. It is checked in so the policy is
-source-controlled and reviewable rather than living only in one operator's
-untracked `.claude/settings.local.json`. **It is not yet installed by
-`hos_install.sh`, and it is not yet applied to `worker` or `overseer`.** Both of
-those are v0.7.0 work, tracked at **#1146**.
+profile proven in production*, reconciled against the live config as of
+2026-08-02 (#1185). It is checked in so the policy is source-controlled and
+reviewable rather than living only in one operator's untracked
+`.claude/settings.local.json`. **It is not yet installed by `hos_install.sh`,
+and it is not yet applied to `worker` or `overseer`.** Both of those are
+v0.7.0 work, tracked at **#1146**. Reconciliation is not automatic — see §4
+item 7 for what still needs re-checking by hand after any further live edit.
 
 ---
 
@@ -101,8 +103,10 @@ prompt. The list covers four families:
   (`__CONFIG_DIR__/__ROLE__.pem`); the `permissions.deny` entries stop the agent
   from reading them as file content through the tool layer.
 - **Self-modification** — `.claude/settings.json`, `.claude/settings.local.json`,
-  `.claude/hooks/**`, `.envrc`. An agent must not edit the policy that constrains
-  it. **Open question (§4):** `.claude/agents/**` is *not* denied, so agent
+  `.claude/hooks/**`, `.envrc`, `bin/**`. An agent must not edit the policy that
+  constrains it, or the launcher that sets its permission mode (`bin/hos-worker`,
+  `bin/hos-overseer`, `bin/hos-cron`) — see the escalation chain documented in
+  #1183. **Open question (§4):** `.claude/agents/**` is *not* denied, so agent
   definitions remain editable.
 - **Interactive/pager/process-control commands** — `vi`, `less`, `top`, `watch`,
   `kill`, `systemctl`, `sudo`, … These block indefinitely waiting for a TTY that
@@ -121,6 +125,31 @@ direction: a new dotfile appearing in `$HOME` is unreadable by default rather
 than readable by default.
 
 `allowWrite` is deliberately *narrower* than `allowRead`.
+
+`denyWrite` closes the gap the `permissions.deny` `Edit(./bin/**)` entry above
+leaves open: `Edit(./bin/**)` blocks only the Edit *tool*, not a Bash-level write
+(`sed -i`, `cp`, `mv`, `tee`, a `>` redirect) inside the sandboxed filesystem,
+because `allowWrite` covers the whole project tree. `denyWrite` is enforced by
+the OS-level sandbox itself, so it applies regardless of which tool or command
+performs the write. `denyWrite: ["__PROJECT_ROOT__/bin"]` makes the launcher
+directory unwritable by any means, closing the third link of the escalation
+chain documented in #1183 for real rather than at the tool-permission layer
+only. (`denyWrite` is a supported sibling of `denyRead`/`allowRead`/`allowWrite`
+in the filesystem sandbox schema — confirmed present in the Claude Code binary,
+resolving the "unverified, needs checking" flagged in #1185.)
+
+### Arbitrary code execution is intentional, not an oversight
+
+`permissions.allow` grants `Bash(python3 *)`, `Bash(node *)`, `Bash(curl *)`,
+`Bash(bash scripts/*)`, and similar — on their face, unrestricted code
+execution. A future audit will flag this. It is deliberate: **the OS-level
+sandbox (`sandbox.filesystem` + `sandbox.network`) is the actual security
+boundary; the `permissions` layer is friction management for an autonomous
+session, not a containment mechanism.** With `autoAllowBashIfSandboxed: true`,
+that friction is mostly turned off anyway — the allowlist's value is intent and
+auditability (what commands does the role's config expect to run), not
+enforcement. Do not "fix" this by narrowing the allowlist; narrow
+`sandbox.filesystem`/`sandbox.network` instead if a role needs less capability.
 
 ### `sandbox.network.allowedDomains`
 Egress allowlist. Four groups: GitHub, the three model vendors (Anthropic,
@@ -164,15 +193,35 @@ as it exists; it does not pre-empt the design.
    whether an agent may rewrite them warrants an explicit ruling rather than
    falling out of a glob.
 
-5. **`Edit(./bin/**)`.** Denied in an earlier revision of this profile; not in
-   the current one. `bin/` holds the cron launchers that set the permission mode
-   in the first place, so it is self-modification-adjacent.
+5. ~~**`Edit(./bin/**)`.**~~ **Resolved (#1183, #1185).** Re-added to
+   `permissions.deny`, and backed by a matching `sandbox.filesystem.denyWrite`
+   entry so a Bash-level write (not just the Edit tool) is also blocked — see
+   §3. The live Human profile had already re-added the `Edit(...)` half by hand
+   on 2026-08-02; this template now matches, plus closes the Bash-write gap
+   the hand-edit didn't cover.
 
 6. **Placeholder substitution must fail closed.** Every `__NAME__` must be
    substituted at install time. An *unsubstituted* placeholder produces a policy
    that silently denies what it was meant to allow, presenting as unexplained
    tool failures rather than as a misconfiguration — the exact class of bug
    already filed as #1114. Install must hard-fail on a surviving `__`.
+
+7. **Live-vs-template reconciliation is not fully closed.** Comparing this
+   template (placeholders substituted) against the live, hand-edited
+   `Human/.claude/settings.local.json` on 2026-08-02 surfaced two items this PR
+   deliberately does *not* resolve, because each needs a call this document
+   shouldn't make unilaterally:
+   - `Bash(claude *)` is allowed live but not in this template. Unclear whether
+     nested-Claude invocation should be a Human-only allowance or belong in the
+     shared template for all roles (an autonomous role invoking `claude` on
+     itself is a different risk shape than an interactive one doing so).
+   - The live config's absolute-path `Read(...)`/`Edit(...)`/`Write(...)` entries
+     are consistently double-slash (e.g. `Read(//home/scott/.../Worker/**)`),
+     while this template's placeholder substitution (`__HOS_ROOT__/Worker/**` →
+     a single leading slash) produces single-slash paths. Whether Claude Code's
+     permission-glob matcher treats these differently is **unverified** — flag
+     for the #1146 design chain rather than guess at security-relevant glob
+     semantics.
 
 ---
 
@@ -197,4 +246,8 @@ as it exists; it does not pre-empt the design.
 - **#1053** — run HOS processes in sandboxes
 - **#1114** — unfilled `__CLONE_ROOT__` placeholder not caught before session start
 - **#957** — per-role checkouts drift across releases
+- **#1183** — Human-clone beta: bypassPermissions escalation chain + unmeasured
+  keystone control (`allowUnsandboxedCommands: false`)
+- **#1185** — this template had drifted from the live-validated Human profile;
+  source of this PR's reconciliation
 - `CLAUDE.md` — "Shell usage under the sandbox"
