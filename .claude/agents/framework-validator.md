@@ -1,7 +1,7 @@
 ---
 name: framework-validator
 description: Validates the agent pipeline framework before committing changes. Runs check_agents_static.sh (structural), then validate_agents.sh (agy + codex semantic review), then synthesizes findings. Invoke before committing any change to .claude/agents/, docs/AGENTS.md, docs/OVERSIGHT-RUNBOOK.md, or scripts/framework/. Acts on MUST_FIX findings by delegating fixes to the appropriate agent (coder for paths, ux-designer for design gaps, pm-agent for spec gaps). Does not fix code it doesn't own.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

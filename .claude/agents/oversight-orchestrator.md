@@ -6,7 +6,7 @@ description: >
   CONDITIONAL_PROCEED: same, but adds "Human Review Required Before Merge" section.
   ESCALATE: surfaces specific, bounded questions to the human — does NOT open the PR.
   Invoke after oversight-evaluator produces its recommendation.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write

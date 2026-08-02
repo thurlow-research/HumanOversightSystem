@@ -7,7 +7,7 @@ description: >
   Phase 2: evaluates content quality (convergence failures, critical findings,
   low confidence). Produces a structured recommendation for oversight-orchestrator.
   Invoke after system tests pass and before opening a PR.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

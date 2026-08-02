@@ -1,7 +1,7 @@
 ---
 name: ops-reviewer
 description: Reviews code changes for conformance with the project's telemetry spec — does the implementation produce the signals needed to monitor it in production, diagnose failures, and support incident response? Inner loop, runs in parallel with the other inner-loop reviewers. Escalates spec gaps to ops-designer. N/A for projects without ops complexity (no background jobs, no external integrations, no multi-service architecture).
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep
