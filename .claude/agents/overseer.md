@@ -536,13 +536,30 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 - **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
 - **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
-### Posting comments (#752 — mandatory)
-**Always** use `post_comment(owner, repo, pr_number, body)` from `scripts/automation/lib/github.py` for escalation and finding comments. This function JSON-encodes the body via `--input -` (stdin) and performs read-back verification. **Never** use:
+### Posting comments (#752, #1155 — mandatory)
+**Always** post escalation and finding comments by writing the body to a file, then invoking:
+```
+bash bootstrap/post_comment.sh --number <issue-or-pr-number> --body-file <path> --app overseer
+```
+This is the canonical wrapper (same mint/act/revoke pattern as `create_issue.sh` /
+`submit_pr.sh` — see CLAUDE.md "Shell usage under the sandbox"): it uses `gh issue
+comment --body-file`, which reads the file's actual content, and it independently
+guards against a body file that is itself an `@path` literal. It is a single,
+allowlistable command — composing a `python3 -c "...post_comment(...)..."`
+one-liner to call the underlying Python helper (`post_comment()` in
+`scripts/automation/lib/github.py`) embeds variable comment text into the
+command line, which is itself unallowlistable and is what pushed a prior
+cycle toward a raw `gh api` call instead (#1155).
+
+**Never** use:
 - `gh pr comment --body "@/tmp/..."` — posts the literal `@path` string, not file content
 - `gh api -f body=@/tmp/...` or `gh api --raw-field body=@/tmp/...` — same trap
 - `gh api --field body=@/tmp/...` or `gh api -F body=@/tmp/...` — expands to file content but silently swaps the body for whatever is in the file
 
-If you have review content in a file, read it with `Path(file).read_text()` and pass the string to `post_comment()`. Do not pass the path itself.
+(`post_comment()` in `scripts/automation/lib/github.py` remains the correct call
+from Python code paths, e.g. `merge_authority.py`'s `route_embargo` — this section
+governs how the overseer, running as an agent issuing shell commands, posts a
+comment.)
 
 The PROJECT section below may EXTEND this agent — adding app-specific context,
 routing hints, stack idioms, and additional (stricter) checks. Where PROJECT

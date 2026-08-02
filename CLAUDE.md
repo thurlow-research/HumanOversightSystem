@@ -244,7 +244,11 @@ unallowlistable. No configuration change fixes it — rewrite the command.
    `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
    token mint + revoke) — see their headers for usage. `submit_pr.sh --app human`
    requires `--confirmed`: only pass it when a human has given explicit
-   per-instance authorization for that specific push.
+   per-instance authorization for that specific push. Issue/PR comments go
+   through `bootstrap/post_comment.sh --number <n> --body-file <path> --app
+   <role>` (same pattern) — never `gh api --field body=@path` /
+   `-f body=@path`, which silently posts the literal `@path` string instead
+   of the file's contents (#1155).
 5. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 6. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
