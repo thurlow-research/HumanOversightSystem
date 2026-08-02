@@ -144,8 +144,8 @@ ${SCRIPT_CONTENT}
 ## What to check
 
 **Constraint REQ-001: Cross-vendor independence**
-METHODOLOGY.md states: \"no Claude model casts an independent review.\" agy (Gemini) and codex (OpenAI) are the independent reviewers. Claude Sonnet is the arbiter only.
-Check: Do validate_agents.sh, validate_docs.sh, and validate_spec_compliance.sh send their review prompts to agy/codex, NOT to a Claude CLI? Does any agent file assign a Claude model to an independent reviewer role?
+METHODOLOGY.md states: \"no Claude model casts an independent review.\" agy (Gemini) and codex (OpenAI) are the independent reviewers. Claude Sonnet is the arbiter only. A same-family model at a strictly higher class than the artifact's authors may serve as a **peer** (class-differential) reviewer (ADR-033 AD-1/AD-10) — this is legitimate but must never be recorded, counted, or reported as satisfying the independent-review requirement.
+Check: Do validate_agents.sh, validate_docs.sh, and validate_spec_compliance.sh send their independent-review prompts to agy/codex, NOT to a Claude CLI? Does any agent file assign a Claude model to the independent-reviewer role, or record a same-family finding as though it were independent? (A Claude CLI call for a declared peer-review lens is not itself a violation.)
 
 **Constraint REQ-002: Risk-tiered escalation thresholds**
 METHODOLOGY.md states: MEDIUM+ requires agy; HIGH+ requires codex.
