@@ -6,7 +6,7 @@ description: >
   risk tier (can only raise, never lower), and produces a ranked inspection brief
   that directs reviewer attention to the highest-risk areas. Invoke after the
   coder completes a build step and before code-reviewer begins.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Bash

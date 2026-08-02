@@ -1,7 +1,7 @@
 ---
 name: privacy-reviewer
 description: Reviews PII handling, encryption correctness, data minimization, right-to-erasure, consent/lawful-basis, and PII-access logging. Runs after code-review approves, in parallel with security-reviewer and the other inner-loop reviewers. Iterates with the coder until clean. Does NOT cover correctness, exploitability/auth-bypass, reliability, telemetry, UI, accessibility, or infrastructure — those are handled by their dedicated reviewer agents.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

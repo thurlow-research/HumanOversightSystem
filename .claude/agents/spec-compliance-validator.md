@@ -1,7 +1,7 @@
 ---
 name: spec-compliance-validator
 description: Validates that the agent pipeline implementation satisfies its own governance requirements — the rules defined in METHODOLOGY.md, the mandatory behaviors in AGENTS.md, and the design decisions recorded in decisions.md. This is the system-test equivalent for the pipeline itself: not "are the files consistent?" but "does the pipeline actually do what its governance spec says it must?" Invoke periodically as a health check, after significant agent changes, or when decisions.md is updated.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write
@@ -54,7 +54,7 @@ CRITICAL-tier steps require explicit human authorization before oversight-evalua
 
 **REQ-004: Model tier assignments**
 Author = Claude Opus. Arbiter = Claude Sonnet. Independent reviewers = agy/codex. For the agent pipeline: architect and technical-design use Opus (high-judgment design work); all reviewer/test agents use Sonnet; no agent uses Haiku for judgment calls.
-- Check: Do architect.md and technical-design.md declare `model: claude-opus-4-8`? Do all reviewer agents declare `model: claude-sonnet-4-6`?
+- Check: Do architect.md and technical-design.md declare `model: opus`? Do all reviewer agents declare `model: sonnet`? (Class aliases, not pinned generation IDs — #1122: pinning drifts silently as new generations ship; the alias always resolves to the current model in that tier.)
 
 **REQ-005: Loop exit conditions**
 Every iterative agent loop must have a defined exit condition (round limit) and an escalation path when that limit is reached.

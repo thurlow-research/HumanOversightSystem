@@ -1,7 +1,7 @@
 ---
 name: ui-reviewer
 description: Reviews user-facing changes for faithful conformance with the project's design pack — design-token usage, component classes/structures, typography rules, voice/tone in copy, and layout restraint. Spec compliance against a documented design system, not personal taste. Inner loop, runs in parallel with the other inner-loop reviewers. N/A when the change touches no user-facing surface.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep
