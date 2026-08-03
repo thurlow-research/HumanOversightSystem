@@ -230,7 +230,7 @@ hos_bo_verify() {
     done <<< "$content"
 
     local key count
-    for key in schema branch cycle_id role; do
+    for key in schema branch cycle_id role created_at; do
         count="$(printf '%s\n' "$content" | grep -c "^${key}=")" || true
         if [[ "$count" -ne 1 ]]; then
             HOS_BO_REASON="malformed"
@@ -265,6 +265,17 @@ hos_bo_verify() {
     return 0
 }
 
+# _hos_bo_json_escape <string>
+# Minimal JSON string escaping (backslash, double-quote) so a branch name or
+# reason containing either cannot break the enclosing JSON object built by
+# hos_bo_audit_refusal.
+_hos_bo_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
 # hos_bo_audit_refusal <repo_dir> <branch> <reason>
 # Best-effort R9 event, written through the standard audit-log writer (#888)
 # via scripts/oversight/lib/audit_log.sh. If that helper is absent or fails,
@@ -280,10 +291,13 @@ hos_bo_audit_refusal() {
     source "$audit_lib" 2>/dev/null || return 0
     command -v audit_write_event >/dev/null 2>&1 || return 0
 
-    local ts json
+    local ts json branch_esc reason_esc cycle_esc
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    branch_esc="$(_hos_bo_json_escape "$branch")"
+    reason_esc="$(_hos_bo_json_escape "$reason")"
+    cycle_esc="$(_hos_bo_json_escape "${HOS_CYCLE_ID:-}")"
     json="$(printf '{"event":"branch-ownership-refused","branch":"%s","role":"worker","reason":"%s","cycle_id":"%s","timestamp":"%s"}' \
-        "$branch" "$reason" "${HOS_CYCLE_ID:-}" "$ts")"
+        "$branch_esc" "$reason_esc" "$cycle_esc" "$ts")"
     audit_write_event "$json" "$repo_dir" >/dev/null 2>&1 || true
     return 0
 }

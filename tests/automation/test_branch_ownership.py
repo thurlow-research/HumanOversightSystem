@@ -99,7 +99,10 @@ class Repo:
 
 
 def _verify(repo: Path, branch: str, cycle_id: str | None) -> subprocess.CompletedProcess:
-    """Call hos_bo_verify directly by sourcing the real library.
+    """Call hos_bo_verify directly by sourcing the library copy installed
+    under <repo>/bootstrap/lib/ (the same copy create_branch.sh sourced when
+    it wrote the record), not the dev checkout — otherwise this would stay
+    green even if the in-repo copy drifted from the dev checkout.
 
     P1 has no chokepoint yet that reads the record (that lands in P2's
     submit_pr.sh integration) — this is the library's own test surface until
@@ -110,8 +113,9 @@ def _verify(repo: Path, branch: str, cycle_id: str | None) -> subprocess.Complet
         env.pop("HOS_CYCLE_ID", None)
     else:
         env["HOS_CYCLE_ID"] = cycle_id
+    installed_lib = repo / "bootstrap" / "lib" / "branch_ownership.sh"
     script = (
-        f'source "{REAL_BRANCH_OWNERSHIP_LIB}"\n'
+        f'source "{installed_lib}"\n'
         f'hos_bo_verify "{repo}" "{branch}"\n'
         'rc=$?\n'
         'printf "rc=%s reason=%s\\n" "$rc" "${HOS_BO_REASON:-}"\n'
@@ -241,8 +245,15 @@ class TestCycleUniqueBranchNames:
         assert _current_branch(repo.root) == r1.stdout.strip()
 
         # Idempotent re-entry, not a second record write — exactly one record
-        # file exists for this branch.
-        common_dir = (repo.root / ".git").resolve()
+        # file exists for this branch. Resolved via `rev-parse
+        # --git-common-dir` (the mechanism under test), not a hardcoded
+        # `.git`, so this can't mask a store-dir resolution failure under
+        # worktrees or alternate layouts.
+        common_dir_raw = _git(repo.root, "rev-parse", "--git-common-dir").stdout.strip()
+        common_dir = Path(common_dir_raw)
+        if not common_dir.is_absolute():
+            common_dir = repo.root / common_dir
+        common_dir = common_dir.resolve()
         records = list((common_dir / "hos" / "branch-ownership").glob("*.rec"))
         assert len(records) == 1
 
