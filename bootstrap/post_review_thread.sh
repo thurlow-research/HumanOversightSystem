@@ -44,8 +44,17 @@
 # output (status updates, release-gate clearance, worker-facing summaries)
 # that does not need a merge-blocking gate.
 #
+# A bare `addPullRequestReviewThread` call, with no existing
+# `pullRequestReviewId` supplied, implicitly creates a new review in PENDING
+# state and attaches the thread to it. A PENDING review's comments are
+# visible ONLY to the review's own author until the review is explicitly
+# submitted — so this script also submits that review as a COMMENT event
+# (never APPROVE/REQUEST_CHANGES: it must not assert a verdict on the
+# poster's behalf, only make the pending thread visible) (#1248).
+#
 # Requires: bootstrap/get_app_token.sh, gh, git (to resolve owner/repo from
-# the 'origin' remote), curl (token revocation).
+# the 'origin' remote), curl (token revocation), jq (parse the mutation
+# response to find the implicitly-created review's REST id).
 
 set -euo pipefail
 
@@ -137,9 +146,22 @@ if ! THREAD_JSON="$(gh api graphql -f query='
   mutation($prId:ID!, $path:String!, $body:String!) {
     addPullRequestReviewThread(input:{
       pullRequestId:$prId, path:$path, subjectType:FILE, body:$body
-    }) { thread { id isResolved } }
+    }) { thread { id isResolved pullRequestReview { databaseId } } }
   }' -f prId="$PR_NODE_ID" -f path="$ANCHOR_PATH" -f body="$BODY_CONTENT")"; then
     fail "addPullRequestReviewThread mutation failed for PR #${PR_NUMBER}"
+fi
+
+# The mutation implicitly created a PENDING review — submit it so the thread
+# becomes visible outside the posting bot's own account (#1248). Use the
+# REST events endpoint, which takes the review's databaseId (an integer),
+# not its GraphQL node id.
+REVIEW_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.data.addPullRequestReviewThread.thread.pullRequestReview.databaseId // empty')"
+[[ -n "$REVIEW_ID" ]] || fail "mutation succeeded but returned no review id for PR #${PR_NUMBER} — thread was created but remains PENDING and is invisible to the human"
+
+if ! gh api --method POST -H "Accept: application/vnd.github+json" \
+    "repos/${REPO_SLUG}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/events" \
+    -f event=COMMENT >/dev/null; then
+    fail "created review thread but failed to submit review ${REVIEW_ID} for PR #${PR_NUMBER} — thread remains PENDING and is invisible to the human"
 fi
 
 revoke_token
