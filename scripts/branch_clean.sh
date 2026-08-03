@@ -21,11 +21,17 @@
 #
 #   With no arguments, only resets the working tree and syncs main — no
 #   branch is deleted. Any branch names passed as arguments are force-deleted
-#   with `git branch -D` (a no-op, reported, if the branch doesn't exist).
+#   with `git branch -D`. A branch that does not exist, or that is the one
+#   currently checked out, is reported and skipped rather than aborting.
+#
+#   Untracked files ARE deleted — commit or stash anything worth keeping
+#   first. Files ignored via .gitignore are preserved (`clean -fd`, not
+#   `-fdx`), so local config such as .env survives.
 #
 # Prints each step as it runs, then a verification block:
-#   git status --short                       — expect no output
-#   git rev-list --count HEAD..origin/main    — expect 0
+#   git status --short                        — expect no output
+#   git rev-list --count HEAD..origin/main    — behind; expect 0
+#   git rev-list --count origin/main..HEAD    — ahead;  expect 0
 #   git log --oneline -1
 
 set -euo pipefail
@@ -33,20 +39,34 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-echo "==> git checkout main"
-git checkout main
-
-echo "==> git checkout -- . (discard uncommitted changes to tracked files)"
-git checkout -- .
+# Reset BEFORE switching branches. `git checkout main` refuses to run when
+# local modifications would be overwritten by the switch — which is exactly
+# the state this script exists to repair, so doing it first makes the script
+# abort on its own use case. `reset --hard` is also what clears the INDEX:
+# `git checkout -- .` restores the working tree from the index and therefore
+# leaves staged changes in place, so the tree would still be dirty at the
+# verification step.
+echo "==> git reset --hard HEAD (discard staged and unstaged tracked changes)"
+git reset --hard HEAD
 
 echo "==> git clean -fd (remove untracked files/dirs)"
 git clean -fd
 
+# Safe now: the tree is clean, so the switch has nothing to refuse to overwrite.
+echo "==> git checkout main"
+git checkout main
+
 echo "==> git pull --ff-only origin main"
 git pull --ff-only origin main
 
+current_branch="$(git symbolic-ref --short HEAD)"
 for branch in "$@"; do
-  if git show-ref --verify --quiet "refs/heads/$branch"; then
+  if [[ "$branch" == "$current_branch" ]]; then
+    # git refuses to delete the checked-out branch; without this guard that
+    # refusal aborts the whole script under `set -e`, after the destructive
+    # steps have already run.
+    echo "==> skip: '$branch' is the checked-out branch — cannot delete"
+  elif git show-ref --verify --quiet "refs/heads/$branch"; then
     echo "==> git branch -D $branch"
     git branch -D "$branch"
   else
@@ -58,7 +78,11 @@ echo
 echo "==> Verify"
 echo "-- git status --short (expect no output)"
 git status --short
-echo "-- git rev-list --count HEAD..origin/main (expect 0)"
+# Both directions: behind-only would report 0 for a local main that is AHEAD of
+# origin (unpushed commits), which reads as "synced" when it is not.
+echo "-- git rev-list --count HEAD..origin/main (behind; expect 0)"
 git rev-list --count HEAD..origin/main
+echo "-- git rev-list --count origin/main..HEAD (ahead; expect 0)"
+git rev-list --count origin/main..HEAD
 echo "-- git log --oneline -1"
 git log --oneline -1
