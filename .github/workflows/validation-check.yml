@@ -4,8 +4,11 @@ name: Validation Stamp Check
 # was pushed. Does NOT call agy or codex — those run locally only (subscription
 # CLI auth cannot run in CI). This check just verifies the stamp is current.
 #
-# Pass condition: scripts/framework/validation-stamps/all-phases.stamp was
-# committed AFTER (or at the same time as) every non-excluded changed file.
+# Pass condition (content-hash, #552): a stamp file
+# scripts/framework/validation-stamps/phase1-<HASH>.stamp is committed, where
+# <HASH> is the SHA-256 of the concatenated contents of every .claude/agents/*.md
+# file. Identical agent content always hashes the same, so the stamp survives
+# rebase/merge — no commit-timestamp comparison is involved.
 #
 # Excluded from the check (changes to these do not require re-validation):
 #   - audit/          — append-only oversight log
