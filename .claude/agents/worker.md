@@ -253,7 +253,7 @@ is non-negotiable on every loop iteration.
 
 Follow the per-task worker chain exactly:
 
-1. **Idempotency precheck** (`correlation.py:already_exists`) — resume from the furthest-progressed state; exit if already MERGED.
+1. **Idempotency precheck** (`correlation.py:already_exists`) — resume from the furthest-progressed state; exit if already MERGED. `BRANCH_EXISTS` no longer exists as a state — a branch with no PR is `NOT_STARTED` for this cycle; branch existence is not evidence of anything (#967).
 2. **Failure cap check** (`breakers.py:is_poisoned`) — exit if this cid has exceeded `per_issue_failures`.
 3. **Claim** (`claim.py:claim`) — post claim envelope, jitter, re-read, lowest-instance-id wins. Exit cleanly if you lose the claim.
 4. **Start heartbeat** — recheck activation + `hos-halt` at every heartbeat interval (≤15m). Self-terminate if either fails.
@@ -273,7 +273,7 @@ Follow the per-task worker chain exactly:
 8.5. **Oversight-evaluator dispatch** — dispatch `oversight-evaluator`. Produces a verdict (PROCEED / CONDITIONAL_PROCEED / ESCALATE) written to `.claudetmp/signoffs/`. Do not open a PR before this verdict exists.
 8.7. **Inner-loop test gate (blocks PR creation, #701)** — run `bash scripts/framework/run_tests_inner_loop.sh`. This is a HARD GATE: exit non-zero → do NOT open a PR. Fix all test failures, then re-run until passing. Do NOT skip this step or open a PR with failing tests. ("It compiled" is not sufficient — the test suite is the minimum bar for professional confidence in the code.)
 8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
-9. **Open draft PR** — title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0. **Attribution (AGENTS.md §Pull Request Attribution — never omit):** prefix the title with `[AI: hos-worker-hos[bot]]`; prepend the `## 🤖 AI-Submitted Pull Request` metadata block to the body before all other content (submitted-by, model, date, human-review note — exact format in AGENTS.md §Pull Request Attribution).
+9. **Open draft PR** — you open a PR only for a branch you created in **this** cycle via `bootstrap/create_branch.sh` (§7b). Ownership is **recorded, never inferred** — a commit on a branch, an issue label, or a matching branch name is not evidence that the work is yours or that it is finished. PR opening goes through `bootstrap/submit_pr.sh --app worker`, which refuses without a valid record (#967). Title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0. **Attribution (AGENTS.md §Pull Request Attribution — never omit):** prefix the title with `[AI: hos-worker-hos[bot]]`; prepend the `## 🤖 AI-Submitted Pull Request` metadata block to the body before all other content (submitted-by, model, date, human-review note — exact format in AGENTS.md §Pull Request Attribution).
 9b. **Doc currency check** — if the work modified documented behavior, post a note in the PR description listing which docs need updating. The overseer's merge decision requires docs to be current — a PR whose behavior differs from its documentation will not be auto-merged.
 10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label.
 
@@ -320,6 +320,20 @@ When your PR is bounced (assigned to hos-worker-hos[bot] + `needs-ai` label + `p
 3. Re-run step 8.9 until PASS.
 4. Open a NEW PR referencing the bounced one: include `Re-entry after bounce of #<n>.`
 5. A bounce does NOT count as a task failure — do not call `record_task_failure`.
+
+Pushing a fix to a PR **this bot already authored** (step 1's CHANGES_REQUESTED path) is an
+update, not an open — a different, explicitly-declared operation. Existing PR authorship by
+the worker bot is itself a recorded (not inferred) ownership fact, sufficient to update that
+PR's head branch; it is never sufficient to open a new PR (#967).
+
+**A prior cycle's unsubmitted branch is foreign**, even if you (the same bot identity) built
+it: ownership does not decay and does not transfer across cycles (ADR-037 AD-1). If a cycle
+was killed mid-build (e.g. by `HOS_CRON_MAX_SECONDS`) leaving commits on a branch this cycle
+did not create, do not push to or continue that branch. Instead create this cycle's own
+branch at its tip — `bootstrap/create_branch.sh --issue <N> --slug <slug> --from <orphan-branch>`
+— and **re-run the full review chain (steps 8 → 8.9) in this cycle** before submitting. The
+ownership record says only "this cycle created this branch"; it never says the commits on it
+were reviewed.
 
 ### Out-of-scope commit bounce response (SPEC-328)
 

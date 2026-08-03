@@ -26,7 +26,8 @@ printf "export HOS_BOT_LOGIN='fake-bot[bot]'\\n"
 """
 
 # rev-parse --abbrev-ref HEAD -> "current-branch"; rev-parse --verify -> honors
-# GIT_VERIFY_FAIL; remote get-url origin -> repo URL;
+# GIT_VERIFY_FAIL; rev-parse --git-common-dir -> $GIT_COMMON_DIR (#967 ownership
+# store resolution); remote get-url origin -> repo URL;
 # fetch -> honors GIT_FETCH_FAIL; rev-list --count -> GIT_BEHIND_COUNT (default 0);
 # merge -> honors GIT_MERGE_FAIL (merge --abort always succeeds);
 # push <url> <refspec> -> captured, honors GIT_PUSH_FAIL.
@@ -38,7 +39,9 @@ sub="${@:$((i+1)):1}"
 case "$sub" in
   remote) echo "https://github.com/test-owner/test-repo.git" ;;
   rev-parse)
-    if [[ "$*" == *"--verify"* ]]; then
+    if [[ "$*" == *"--git-common-dir"* ]]; then
+        echo "${GIT_COMMON_DIR:?GIT_COMMON_DIR not set in test harness}"
+    elif [[ "$*" == *"--verify"* ]]; then
         if [[ "${GIT_VERIFY_FAIL:-}" == "1" ]]; then exit 1; fi
     else
         echo "current-branch"
@@ -76,6 +79,14 @@ def _write_exec(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+DEFAULT_CYCLE_ID = "test-cycle"
+
+
+def _encode_branch(branch: str) -> str:
+    """Mirror bootstrap/lib/branch_ownership.sh's hos_bo_encode (#967, §4.2)."""
+    return branch.replace("%", "%25").replace("/", "%2F")
+
+
 class Harness:
     def __init__(self, tmp_path: Path):
         self.tmp = tmp_path
@@ -85,6 +96,26 @@ class Harness:
         shutil.copy(SUBMIT_PR_SH, self.script)
         self.script.chmod(0o755)
         _write_exec(self.bootstrap_dir / "get_app_token.sh", GET_APP_TOKEN_STUB)
+
+        self.lib_dir = self.bootstrap_dir / "lib"
+        self.lib_dir.mkdir()
+        shutil.copy(
+            REPO_ROOT / "bootstrap" / "lib" / "branch_ownership.sh",
+            self.lib_dir / "branch_ownership.sh",
+        )
+
+        # hos_bo_audit_refusal (#967, R9) sources <repo_dir>/scripts/oversight/lib/audit_log.sh.
+        # repo_dir here is tmp_path (submit_pr.sh resolves it as "$SCRIPT_DIR/..").
+        self.audit_lib_dir = tmp_path / "scripts" / "oversight" / "lib"
+        self.audit_lib_dir.mkdir(parents=True)
+        self.audit_log_path = self.audit_lib_dir / "audit_log.sh"
+        _write_exec(
+            self.audit_log_path,
+            '#!/usr/bin/env bash\n'
+            'audit_write_event() {\n'
+            '    echo "AUDIT_EVENT:$1" >> "$CAPTURE_FILE"\n'
+            '}\n',
+        )
 
         self.stub_bin = tmp_path / "stub_bin"
         self.stub_bin.mkdir()
@@ -98,12 +129,64 @@ class Harness:
         self.body_file = tmp_path / "body.md"
         self.body_file.write_text("pr body\nwith a newline\n")
 
-    def run(self, args, env_overrides=None):
+        self.git_common_dir = tmp_path / "gitdir"
+
+    @staticmethod
+    def _get_arg(args, flag):
+        args = list(args)
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args):
+                return args[idx + 1]
+        return None
+
+    def write_record(
+        self,
+        branch: str,
+        *,
+        cycle_id: str = DEFAULT_CYCLE_ID,
+        role: str = "worker",
+        branch_field: str | None = None,
+        created_at: str = "2026-01-01T00:00:00Z",
+        body: str | None = None,
+    ) -> Path:
+        """Write a branch-ownership record directly (§4.3), bypassing the bash
+        writer, so tests can construct both valid and deliberately invalid
+        records (wrong branch/cycle/role, malformed, oversized)."""
+        store = self.git_common_dir / "hos" / "branch-ownership"
+        store.mkdir(parents=True, exist_ok=True)
+        path = store / f"{_encode_branch(branch)}.rec"
+        if body is not None:
+            path.write_text(body)
+        else:
+            path.write_text(
+                "schema=1\n"
+                f"branch={branch_field if branch_field is not None else branch}\n"
+                f"cycle_id={cycle_id}\n"
+                f"role={role}\n"
+                f"created_at={created_at}\n"
+            )
+        return path
+
+    def run(self, args, env_overrides=None, cycle_id=DEFAULT_CYCLE_ID, write_record=True):
+        """Run submit_pr.sh. For --app worker, by default exports HOS_CYCLE_ID
+        and writes a matching valid ownership record for the resolved --head
+        branch (or "current-branch" if --head is omitted) so existing
+        happy-path tests exercise the unchanged push/PR flow (T2) rather than
+        incidentally hitting the new refusal path. Pass write_record=False
+        and/or cycle_id=None to exercise the refusal path (T1, T3, T5)."""
         env = {
             "PATH": f"{self.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "CAPTURE_FILE": str(self.capture_file),
             "HOME": str(self.tmp / "home"),
+            "GIT_COMMON_DIR": str(self.git_common_dir),
         }
+        if self._get_arg(args, "--app") == "worker":
+            if cycle_id:
+                env["HOS_CYCLE_ID"] = cycle_id
+                if write_record:
+                    head = self._get_arg(args, "--head") or "current-branch"
+                    self.write_record(head, cycle_id=cycle_id)
         if env_overrides:
             env.update(env_overrides)
         return subprocess.run(
@@ -376,3 +459,240 @@ def test_fetch_failure_aborts_before_token_mint(h):
     assert result.returncode != 0
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+
+
+# --------------------------------------------------------------------------- #
+# Branch-ownership enforcement (#967, ADR-037, R4/R5/R6) — T1-T5
+# --------------------------------------------------------------------------- #
+
+
+def _assert_fully_refused_before_network(cap: str):
+    """No fetch, no token mint, no push, no PR create — the refusal must
+    precede all network access (R4, ADR §6.1)."""
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert not any("x-access-token" in ln for ln in cap.splitlines())
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " fetch " in ln for ln in cap.splitlines())
+    assert "GH_CALLED_WITH" not in cap
+
+
+def test_worker_refuses_pr_for_branch_without_ownership_record(h):
+    """T1 — the #967 regression scenario: a foreign branch with no ownership
+    record must never reach fetch, token mint, push, or gh pr create. This
+    test MUST fail against pre-fix behaviour."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    assert "foreign-branch" in result.stderr
+    assert "#967" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_when_no_cycle_id_set(h):
+    """T3 — no_cycle_id: the checking process itself was not launched with a
+    cycle identity, e.g. a session not started by bin/hos-cron."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        cycle_id=None,
+    )
+    assert result.returncode != 0
+    assert "HOS_CYCLE_ID" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_record_from_a_different_cycle(h):
+    """T3 — wrong_cycle: a record exists but was written by a prior/different
+    cycle. Ownership does not transfer (ADR-037 AD-1)."""
+    h.write_record("current-branch", cycle_id="some-other-cycle")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False, cycle_id="this-cycle",
+    )
+    assert result.returncode != 0
+    assert "current-branch" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_record_naming_a_different_branch(h):
+    """T3 — wrong_branch: the record file at this branch's path asserts a
+    different branch name inside it (no prefix/glob match is ever honoured)."""
+    h.write_record("current-branch", branch_field="someone-elses-branch")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_record_with_non_worker_role(h):
+    """T3 — wrong_role: a record cannot be produced incidentally by a
+    non-worker session per R2; this is the fail-closed check on that value."""
+    h.write_record("current-branch", role="human")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_malformed_record(h):
+    """T3 — malformed: content doesn't match the key=value grammar."""
+    h.write_record("current-branch", body="this is not a valid record\n")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_unreadable_record(h):
+    """T3 — unreadable: chmod 000 makes the file exist but unreadable."""
+    path = h.write_record("current-branch")
+    path.chmod(0o000)
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_oversized_record(h):
+    """T3 — oversized (> 4096 bytes): treated as no_record, not parsed."""
+    oversized_body = (
+        "schema=1\nbranch=current-branch\ncycle_id=test-cycle\nrole=worker\n"
+        f"created_at={'x' * 5000}\n"
+    )
+    h.write_record("current-branch", body=oversized_body)
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_refuses_pr_for_absent_record(h):
+    """T3 — no_record: nothing at all was written for this branch."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "never-created-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_worker_with_valid_record_reaches_unchanged_push_pr_path(h):
+    """T2 — happy path, run alongside T1's refusal so both directions of the
+    fail-open/fail-closed risk are covered by one proof obligation (SPEC §10).
+    A branch with a valid current-cycle record still reaches the unchanged
+    push/PR flow."""
+    result = h.run([
+        "--title", "My PR", "--body-file", str(h.body_file), "--base", "main",
+        "--head", "worker-owned-branch", "--app", "worker",
+    ])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "https://github.com/test-owner/test-repo/pull/999"
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH:--app worker" in cap
+    assert any("x-access-token" in ln for ln in cap.splitlines())
+
+
+def test_app_human_confirmed_ignores_ownership_state(h):
+    """T4 — role isolation. A stale/foreign record and no HOS_CYCLE_ID at all
+    must not affect --app human --confirmed: it never consults the store."""
+    h.write_record("current-branch", cycle_id="not-this-session")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--app", "human", "--confirmed"],
+        cycle_id=None,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_app_overseer_ignores_ownership_state(h):
+    """T4 — role isolation. Same as above for --app overseer."""
+    h.write_record("current-branch", cycle_id="not-this-session")
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "overseer"],
+        cycle_id=None,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_confirmed_flag_does_not_bypass_worker_ownership_check(h):
+    """T5 — no override. --confirmed is a human-proxy authorization flag; it
+    must not let --app worker skip the ownership check."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker", "--confirmed"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_hos_state_dir_env_var_is_not_consulted_for_ownership(h):
+    """T5 — no override. HOS_STATE_DIR is the launcher's unrelated state-dir
+    idiom; R5 forbids any environment escape hatch for the ownership check."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"HOS_STATE_DIR": str(h.tmp / "fake-state-dir")},
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_hos_bo_reason_env_var_cannot_fake_a_valid_record(h):
+    """T5 — no override. Pre-setting the library's own out-parameter must not
+    influence the outcome; it is only ever an output, never an input."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"HOS_BO_REASON": ""},
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_refusal_emits_audit_event(h):
+    """R9 — a refusal is observable via the standard audit-log writer."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    cap = h.capture()
+    assert "AUDIT_EVENT:" in cap
+    assert '"event":"branch-ownership-refused"' in cap
+    assert '"branch":"foreign-branch"' in cap
+    assert '"reason":"no_record"' in cap
+
+
+def test_audit_sink_failure_does_not_mask_refusal(h):
+    """R9 — an audit-sink failure must never convert a refusal into a pass."""
+    h.audit_log_path.unlink()
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "foreign-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
