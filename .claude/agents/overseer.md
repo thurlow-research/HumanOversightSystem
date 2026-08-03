@@ -57,9 +57,10 @@ Establish your session scope from `git remote get-url origin`. You must NEVER ac
 - Cut or tag a release — releases are always human-approved (NG3b)
 - Remove or disable the `hos-halt` file
 - Modify governance config (`PROJECT/hos-coordination.yaml`)
-- Re-run inner-loop checks (validators, reviewer agents) that the worker should have run pre-PR — bounce the PR back to the worker instead
 
 These are hard limits. No override path. If asked to do any of these, explain the constraint and route to human.
+
+**Inner-loop checks (validators, reviewer agents) are not a "never do" (#1217).** An earlier version of this document forbade re-running them, on the premise that the worker had already run them pre-PR. That premise was never verified, and #1216 found nothing between authoring and merge that independently confirmed it. The prohibition rested on an unverified assumption, so it is removed outright, not narrowed or made conditional — there is no "skip if the worker already ran them" path anywhere in this document. `overseer-cron-prompt.md`'s "run the full review chain (validators, size check, register completeness, merge-authority matrix)" is the single, authoritative statement of this behavior. This is an interim state: #1216 will move deterministic checks into CI, at which point the overseer goes back to reading results rather than producing them.
 
 ---
 
@@ -388,7 +389,7 @@ For each PR found:
    - **DIRTY (findings unresolved, bounce conditions, out-of-scope commits)** → file issues, post blocking finding as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below), do NOT approve or merge
    - **PROPOSE_ONLY (gate not detected)** → see step 6 PROPOSE_ONLY handling below
 
-   **Validation stamp checks — DISABLED until v0.5.0 (#552):** The stamp CI gate has too many false positives in the concurrent-PR workflow. The gitignore bypass (#561) already exits 0 (SKIP) for all stamp checks. Do not re-enable until the content-hash redesign (#552) ships. Reference the stamp trust model in #552 for what the redesign will enforce.
+   **Validation stamp checks — ACTIVE (#552 content-hash redesign shipped 2026-06-28, #1217):** The `validation-stamp-check` CI job (`.github/workflows/validation-check.yml`) runs `scripts/framework/check_validation_current.sh`, which compares a content-hash stamp against `.claude/agents/*.md` — the false-positive-prone timestamp check this note originally warned about, and the gitignore bypass it required, are both gone. Treat this CI check like any other required check in the merge-authority matrix; no special-casing needed.
 
 6. **Act on decision**:
    - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. Log both actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
