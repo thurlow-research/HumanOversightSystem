@@ -1,9 +1,9 @@
 {
-  "head_sha": "ebcc06b420a2e7ce3bb6dbaa5fd0695d28cb922c",
+  "head_sha": "fbaf3a937b1216f5507d02c626be645e2e469717",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-08-03T06:57:39Z",
+  "written_at": "2026-08-03T07:14:48Z",
   "composite_score": 0.2732,
   "tier": "LOW",
   "validator_count": 12,
@@ -26,8 +26,8 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 467,
-        "changed_files": 8,
+        "changed_lines": 2115,
+        "changed_files": 10,
         "floor_rule_fired": "changed_lines",
         "domain_count": 6,
         "domains_detected": [
@@ -90,7 +90,7 @@
       "dimension": "historical_density",
       "score": 1.0,
       "raw_value": {
-        "issue_count": 27,
+        "issue_count": 32,
         "issues": [
           {
             "number": 1230,
@@ -141,6 +141,24 @@
             "file": ".claude/agents/worker.md"
           },
           {
+            "number": 973,
+            "title": "[AI: audit] bug: require_tier_ceiling tier computation is dead code \u2014 ceiling gate can never fail",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
+          },
+          {
+            "number": 918,
+            "title": "bug: run_redteam_sample counts reviewer outage as no-tier-escape (false calibration)",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
+          },
+          {
+            "number": 880,
+            "title": "bug: chore(audit) commits on feature branches break overseer head_sha match",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
+          },
+          {
             "number": 805,
             "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
             "label": "bug",
@@ -151,6 +169,12 @@
             "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
             "label": "bug",
             "file": "bootstrap/worker-cron-prompt.md"
+          },
+          {
+            "number": 725,
+            "title": "bug(#724): run_validators.sh --step atomic write broken \u2014 mktemp not used as write target",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
             "number": 717,
@@ -199,6 +223,12 @@
             "title": "bug(#587): worker.md backtick reference to check_pre_coder_gate.sh fails check_agents_static",
             "label": "bug",
             "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 555,
+            "title": "Bug (HIGH): overseer reads only CI status, not validator artifacts",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
             "number": 551,
@@ -256,12 +286,14 @@
           }
         ],
         "churn": {
-          ".claude/agents/worker.md": 31,
+          ".claude/agents/worker.md": 32,
           "bootstrap/submit_pr.sh": 4,
           "bootstrap/worker-cron-prompt.md": 19,
           "contract/OVERSIGHT-CONTRACT.md": 30,
           "docs/specs/UNATTENDED-WORKER-TECH-DESIGN.md": 6,
           "scripts/automation/lib/correlation.py": 2,
+          "scripts/framework/validation-stamps/phase1-dd1e58b67445e972dc1d5fc915552a15d6a05ce8478638f30cee1062718c405e.stamp": 1,
+          "signoffs/validators/step1/summary.json": 14,
           "tests/automation/test_correlation.py": 2,
           "tests/automation/test_submit_pr.py": 4
         },
@@ -320,21 +352,21 @@
           "severity": "medium"
         },
         {
-          "file": "bootstrap/worker-cron-prompt.md",
+          "file": "signoffs/validators/step1/summary.json",
           "line": 0,
-          "message": "[bug] #805: bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+          "message": "[bug] #973: [AI: audit] bug: require_tier_ceiling tier computation is dead code \u2014 ceiling gate can never fail",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/worker-cron-prompt.md",
+          "file": "signoffs/validators/step1/summary.json",
           "line": 0,
-          "message": "[bug] #731: bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
+          "message": "[bug] #918: bug: run_redteam_sample counts reviewer outage as no-tier-escape (false calibration)",
           "severity": "medium"
         },
         {
           "file": ".claude/agents/worker.md",
           "line": 0,
-          "message": "high churn: 31 commits in 90 days",
+          "message": "high churn: 32 commits in 90 days",
           "severity": "medium"
         },
         {
@@ -351,8 +383,8 @@
         }
       ],
       "checklist_items": [
-        "27 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "worker.md: 31 commits in 90 days \u2014 high churn may indicate persistent complexity."
+        "32 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "worker.md: 32 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
       "error": null,
@@ -369,7 +401,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 8,
+          "files_checked": 10,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -503,7 +535,7 @@
         ],
         "function_count": 88,
         "parse_errors": [],
-        "task_class": "feat",
+        "task_class": "chore",
         "task_class_source": "commit_prefix",
         "floor_applied": false,
         "pre_floor_tier": "MEDIUM",
