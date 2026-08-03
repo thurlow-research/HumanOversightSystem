@@ -1,9 +1,9 @@
 {
-  "head_sha": "168e85eff7e68044dc649ee76e7a76bb0c6f25ab",
+  "head_sha": "094824bbaae9573e45d941aabd7116909975e1f1",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-08-03T01:37:55Z",
+  "written_at": "2026-08-03T03:58:26Z",
   "composite_score": 0.283,
   "tier": "LOW",
   "validator_count": 12,
@@ -26,8 +26,8 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 791,
-        "changed_files": 8,
+        "changed_lines": 2704,
+        "changed_files": 10,
         "floor_rule_fired": "changed_lines",
         "domain_count": 4,
         "domains_detected": [
@@ -97,7 +97,7 @@
       "dimension": "historical_density",
       "score": 1.0,
       "raw_value": {
-        "issue_count": 49,
+        "issue_count": 32,
         "issues": [
           {
             "number": 1174,
@@ -109,13 +109,13 @@
             "number": 1173,
             "title": "worker milestone eligibility should be '<= active release', not '== active release' \u2014 unfinished work in earlier milestones is silently unreachable",
             "label": "bug",
-            "file": ".claude/agents/worker.md"
+            "file": "bin/hos-cron"
           },
           {
             "number": 1126,
             "title": "[GOVERNANCE BUG] Worker session cannot dispatch pm-agent/architect/technical-design as subagents despite .claude/agents/*.md being present",
             "label": "bug",
-            "file": ".claude/agents/worker.md"
+            "file": "bin/hos-cron"
           },
           {
             "number": 1044,
@@ -158,12 +158,6 @@
             "title": "[AI: audit] bug: hos-cron audit-log sync branch-switches the live shared working tree \u2014 interruption/concurrency corrupts repo state",
             "label": "bug",
             "file": "bin/hos-cron"
-          },
-          {
-            "number": 981,
-            "title": "[AI: audit] bug: run_validators.sh --diff filters to .py only, blinding the IP/license gate to dependency-manifest changes",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
           },
           {
             "number": 959,
@@ -268,12 +262,6 @@
             "file": "bin/hos-cron"
           },
           {
-            "number": 731,
-            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
-            "label": "bug",
-            "file": "bootstrap/worker-cron-prompt.md"
-          },
-          {
             "number": 730,
             "title": "hardening(#729): parse CLAUDE_CODE_OAUTH_TOKEN with grep/cut instead of sourcing entire env file",
             "label": "bug",
@@ -298,96 +286,6 @@
             "file": "bin/hos-cron"
           },
           {
-            "number": 702,
-            "title": "[GOVERNANCE BUG] Worker submitted PRs without running inner-loop tests \u2014 violated professional code quality standard",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 701,
-            "title": "bug: worker cron LOOP missing inner-loop test run before PR \u2014 tests only caught by overseer",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 652,
-            "title": "bug: hos_install.sh does not install worker.md and overseer.md \u2014 validate_setup.sh fails after clean install",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 609,
-            "title": "Bug + Design: worker startup must validate specialist agents; setup must be self-applicable and role-neutral",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 608,
-            "title": "[GOVERNANCE BUG] Worker must hard-fail when required agent type is unavailable \u2014 no silent fallback",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 589,
-            "title": "Bug: overseer does not auto-merge after human approves a protected-surface PR",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 588,
-            "title": "bug(#587): worker.md backtick reference to check_pre_coder_gate.sh fails check_agents_static",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 551,
-            "title": "Bug: worker loop protocol missing review-body read step",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 550,
-            "title": "Bug: worker missed CHANGES_REQUESTED reviews for multiple loops",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 363,
-            "title": "[HARD RULE] Worker must never use human credentials for any GitHub operation without explicit per-operation human authorization",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 362,
-            "title": "[GOVERNANCE BUG] Worker opened PRs under human credentials throughout interactive session \u2014 identity guard not enforced",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 359,
-            "title": "bug: role identification instruction ignored \u2014 buried at line 376 of 421, must be first in CORE",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 357,
-            "title": "bug: worker directs human to approve PR directly, bypassing the oversight review loop",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 348,
-            "title": "bug: R5.6.2 check uses actor.login but GitHub Issues Events API uses assigner.login for who performed the assignment",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
-            "number": 345,
-            "title": "[GOVERNANCE BUG] Worker cut and published a release without human authorization \u2014 NG3b violation",
-            "label": "bug",
-            "file": ".claude/agents/worker.md"
-          },
-          {
             "number": 1110,
             "title": "[AI: spec-red-team] spec-gap: --human flag not declared mutually exclusive with --worker/--overseer",
             "label": "spec-gap",
@@ -395,12 +293,9 @@
           }
         ],
         "churn": {
-          ".claude/agents/worker.md": 30,
           "bin/hos-cron": 37,
           "bootstrap/create_branch.sh": 1,
           "bootstrap/lib/branch_ownership.sh": 2,
-          "bootstrap/worker-cron-prompt.md": 18,
-          "scripts/framework/framework_consumer_files.txt": 2,
           "tests/automation/test_branch_ownership.py": 1,
           "tests/automation/test_hos_cron.py": 22
         },
@@ -417,13 +312,13 @@
           "severity": "medium"
         },
         {
-          "file": ".claude/agents/worker.md",
+          "file": "bin/hos-cron",
           "line": 0,
           "message": "[bug] #1173: worker milestone eligibility should be '<= active release', not '== active release' \u2014 unfinished work in earlier milestones is silently unreachable",
           "severity": "medium"
         },
         {
-          "file": ".claude/agents/worker.md",
+          "file": "bin/hos-cron",
           "line": 0,
           "message": "[bug] #1126: [GOVERNANCE BUG] Worker session cannot dispatch pm-agent/architect/technical-design as subagents despite .claude/agents/*.md being present",
           "severity": "medium"
@@ -477,12 +372,6 @@
           "severity": "medium"
         },
         {
-          "file": ".claude/agents/worker.md",
-          "line": 0,
-          "message": "high churn: 30 commits in 90 days",
-          "severity": "medium"
-        },
-        {
           "file": "tests/automation/test_hos_cron.py",
           "line": 0,
           "message": "high churn: 22 commits in 90 days",
@@ -490,7 +379,7 @@
         }
       ],
       "checklist_items": [
-        "49 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "32 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
         "hos-cron: 37 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
@@ -508,7 +397,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 8,
+          "files_checked": 5,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -622,13 +511,13 @@
       "score": 0.5,
       "raw_value": {
         "max_rn": 10.0,
-        "mean_rn": 0.19,
+        "mean_rn": 0.2,
         "high_risk_functions": [
           "_extract_sync_audit_logs_func"
         ],
         "function_count": 172,
         "parse_errors": [],
-        "task_class": "fix",
+        "task_class": "chore",
         "task_class_source": "commit_prefix",
         "floor_applied": false,
         "pre_floor_tier": "MEDIUM",
@@ -783,7 +672,7 @@
           "risk_number": 2.0,
           "top_statements": [
             {
-              "line": 109,
+              "line": 112,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -847,11 +736,25 @@
         {
           "function": "test_record_lives_under_git_common_dir",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 132,
+          "line": 136,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 140,
+              "line": 144,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_second_run_in_same_cycle_is_idempotent",
+          "file": "tests/automation/test_branch_ownership.py",
+          "line": 235,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 254,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -966,56 +869,49 @@
         {
           "function": "repo",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 126,
+          "line": 130,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_record_invisible_to_git_status",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 149,
+          "line": 153,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_record_never_appears_in_ls_files",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 156,
+          "line": 160,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_record_in_one_clone_is_not_valid_in_another",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 167,
+          "line": 171,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_same_named_branch_in_second_project_is_isolated",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 190,
+          "line": 194,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_different_cycle_tokens_produce_different_branch_names",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 215,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_second_run_in_same_cycle_is_idempotent",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 231,
+          "line": 219,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
           "function": "test_existing_samename_branch_without_valid_record_is_refused",
           "file": "tests/automation/test_branch_ownership.py",
-          "line": 249,
+          "line": 260,
           "risk_number": 0.0,
           "top_statements": []
         },
