@@ -596,7 +596,11 @@ python3 scripts/oversight/token_tracker.py report
 
 ### PHASE 10 — Human Gate
 
-Review and resolve all PR threads before merging.
+Review and resolve all PR threads before merging. Threads come from two sources: the
+Phase 9 panel (one per finding) and the overseer's own blocking findings — DIRTY-
+disposition findings and §8.2 HUMAN_REQUIRED escalations, posted via
+`bootstrap/post_review_thread.sh` rather than a plain PR comment specifically so they
+participate in this gate (#1207; see `.claude/agents/overseer.md` "Posting comments").
 
 ```bash
 # List open threads
