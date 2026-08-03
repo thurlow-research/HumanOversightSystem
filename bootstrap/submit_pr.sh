@@ -13,6 +13,22 @@
 #   bash bootstrap/submit_pr.sh --title <text> --body-file <path> --base <branch> \
 #     [--head <branch>] --app <worker|overseer|human> [--confirmed]
 #
+#   bash bootstrap/submit_pr.sh --update-pr <N> --base <branch> [--head <branch>] \
+#     --app worker
+#
+# --update-pr <N> pushes to an EXISTING PR instead of opening a new one (#967
+# AD-4). Requires --app worker; --title/--body-file are rejected (the PR
+# already has both). Mode declaration is explicit and caller-declared — this
+# script never infers "this PR is mine" from a failed `gh pr create`. It does
+# NOT consult the branch-ownership record (that check answers "may I open a
+# PR here", not "may I push here"); authority instead comes from a
+# server-side check, after the token mint and before the push, that PR #<N>
+# is open, has head/base matching --head/--base, and was authored by this
+# bot identity. Any mismatch revokes the token and refuses — no --force is
+# ever used. In open mode (no --update-pr), an open PR already existing for
+# --head is refused with a pointer to --update-pr, so a caller can never
+# silently open a second PR for the same branch.
+#
 # --head names the LOCAL branch to push; it defaults to the current branch
 # if omitted. It must already exist as a local branch (refs/heads/<name>) —
 # this pushes that branch's actual content, not whatever happens to be
@@ -51,29 +67,39 @@ BASE=""
 HEAD=""
 APP_ROLE=""
 CONFIRMED="false"
+UPDATE_PR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --title)     TITLE="$2"; shift 2 ;;
-        --body-file) BODY_FILE="$2"; shift 2 ;;
-        --base)      BASE="$2"; shift 2 ;;
-        --head)      HEAD="$2"; shift 2 ;;
-        --app)       APP_ROLE="$2"; shift 2 ;;
-        --confirmed) CONFIRMED="true"; shift ;;
-        --body)      err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
-        *)           err "Usage: $0 --title <text> --body-file <path> --base <branch> [--head <branch>] --app <worker|overseer|human> [--confirmed]" ;;
+        --title)      TITLE="$2"; shift 2 ;;
+        --body-file)  BODY_FILE="$2"; shift 2 ;;
+        --base)       BASE="$2"; shift 2 ;;
+        --head)       HEAD="$2"; shift 2 ;;
+        --app)        APP_ROLE="$2"; shift 2 ;;
+        --confirmed)  CONFIRMED="true"; shift ;;
+        --update-pr)  UPDATE_PR="$2"; shift 2 ;;
+        --body)       err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
+        *)            err "Usage: $0 --title <text> --body-file <path> --base <branch> [--head <branch>] --app <worker|overseer|human> [--confirmed] | $0 --update-pr <N> --base <branch> [--head <branch>] --app worker" ;;
     esac
 done
 
-[[ -n "$TITLE" ]]     || err "--title required"
-[[ -n "$BODY_FILE" ]] || err "--body-file required"
-[[ -f "$BODY_FILE" ]] || err "--body-file not found: $BODY_FILE"
 [[ -n "$BASE" ]]      || err "--base required"
 [[ -n "$APP_ROLE" ]]  || err "--app required (worker, overseer, or human)"
 case "$APP_ROLE" in
     worker|overseer|human) ;;
     *) err "--app must be 'worker', 'overseer', or 'human'" ;;
 esac
+
+if [[ -n "$UPDATE_PR" ]]; then
+    [[ "$UPDATE_PR" =~ ^[0-9]+$ ]] || err "--update-pr requires a numeric PR number, got '${UPDATE_PR}'"
+    [[ "$APP_ROLE" == "worker" ]]  || err "--update-pr requires --app worker"
+    [[ -z "$TITLE" ]]     || err "--title is not accepted with --update-pr — the PR already exists; only its branch content changes"
+    [[ -z "$BODY_FILE" ]] || err "--body-file is not accepted with --update-pr — the PR already exists; only its branch content changes"
+else
+    [[ -n "$TITLE" ]]     || err "--title required"
+    [[ -n "$BODY_FILE" ]] || err "--body-file required"
+    [[ -f "$BODY_FILE" ]] || err "--body-file not found: $BODY_FILE"
+fi
 
 if [[ "$APP_ROLE" == "human" && "$CONFIRMED" != "true" ]]; then
     err "--app human requires --confirmed: a human-proxy PR is only appropriate with explicit per-instance human authorization (docs/AGENT-IDENTITY.md, stuck-worker exception). Confirm a human has approved THIS push, then pass --confirmed."
@@ -101,7 +127,10 @@ HEAD_IS_CHECKED_OUT="false"
 # is recorded, never inferred. This must run before any network access, token
 # mint, or push (R4), and is scoped to --app worker only (R6) — --app human
 # and --app overseer see no change in behaviour, output, or exit codes.
-if [[ "$APP_ROLE" == "worker" ]]; then
+# --update-pr is exempt (AD-4, §7): it answers "may I push to an existing PR",
+# not "may I open one", and its own server-side authorship check below is a
+# stronger recorded fact than the ownership record.
+if [[ "$APP_ROLE" == "worker" && -z "$UPDATE_PR" ]]; then
     # shellcheck source=bootstrap/lib/branch_ownership.sh
     source "$SCRIPT_DIR/lib/branch_ownership.sh" \
         || err "branch-ownership library missing (bootstrap/lib/branch_ownership.sh) — refusing to open a PR for '${HEAD}'"
@@ -164,8 +193,48 @@ revoke_token() {
         || warn "failed to revoke installation token (it will expire naturally within 1 hour)"
 }
 
+# ── PR-authorship / duplicate-PR guard (#967 AD-4) ─────────────────────────
+# Runs after the token mint (it needs an authenticated `gh api` call) and
+# before the push, so a mismatch is caught before anything is published.
+PR_HTML_URL=""
+if [[ -n "$UPDATE_PR" ]]; then
+    # Update mode: authority comes from server-side PR authorship, not the
+    # ownership record — a stronger recorded fact than any caller assertion.
+    # Try-create-then-fall-back-on-error is forbidden (AD-4): the mode is
+    # caller-declared and verified independently, never inferred from a
+    # `gh pr create` failure string.
+    if ! PR_FIELDS="$(gh api "repos/${REPO_SLUG}/pulls/${UPDATE_PR}" --jq '[.state, .head.ref, .user.login, .base.ref, .html_url] | @tsv' 2>/dev/null)"; then
+        revoke_token
+        err "Could not fetch PR #${UPDATE_PR} from ${REPO_SLUG} — refusing to push without verifying authorship (#967 AD-4)"
+    fi
+    IFS=$'\t' read -r PR_STATE PR_HEAD_REF PR_USER_LOGIN PR_BASE_REF PR_HTML_URL <<< "$PR_FIELDS"
+    if [[ "$PR_STATE" != "open" || "$PR_HEAD_REF" != "$HEAD" || "$PR_USER_LOGIN" != "${HOS_BOT_LOGIN:-}" || "$PR_BASE_REF" != "$BASE" || -z "$PR_HTML_URL" ]]; then
+        revoke_token
+        err "PR #${UPDATE_PR} does not match this push (expected head=${HEAD} base=${BASE} user=${HOS_BOT_LOGIN:-<unset>}; got state=${PR_STATE:-?} head=${PR_HEAD_REF:-?} user=${PR_USER_LOGIN:-?} base=${PR_BASE_REF:-?}) — refusing (#967 AD-4)"
+    fi
+elif [[ "$APP_ROLE" == "worker" ]]; then
+    # Open mode, --app worker: refuse if an open PR already exists for --head
+    # — the caller should have used --update-pr. A query failure fails
+    # closed, same as every other check in this script. Scoped to worker
+    # only, matching R6: --app human and --app overseer see no behaviour
+    # change from this issue.
+    REPO_OWNER="${REPO_SLUG%%/*}"
+    if ! EXISTING_PR_FIELDS="$(gh api "repos/${REPO_SLUG}/pulls?state=open&head=${REPO_OWNER}:${HEAD}" --jq '[length, (.[0].number // "")] | @tsv' 2>/dev/null)"; then
+        revoke_token
+        err "Could not check for an existing open PR on '${HEAD}' — refusing to open a new one (#967 AD-4)"
+    fi
+    IFS=$'\t' read -r EXISTING_PR_COUNT EXISTING_PR_NUMBER <<< "$EXISTING_PR_FIELDS"
+    [[ "$EXISTING_PR_COUNT" =~ ^[0-9]+$ ]] || { revoke_token; err "Could not parse the open-PR check response for '${HEAD}' — refusing (#967 AD-4)"; }
+    if [[ "$EXISTING_PR_COUNT" -gt 0 ]]; then
+        revoke_token
+        err "An open PR already exists for '${HEAD}' (#${EXISTING_PR_NUMBER}) — use --update-pr ${EXISTING_PR_NUMBER} instead of opening a new one (#967 AD-4)"
+    fi
+fi
+
 # Token lives in the URL only for this one push, never in .git/config or any
-# remote name — passed directly as the push destination.
+# remote name — passed directly as the push destination. No --force in
+# either mode: a non-fast-forward push fails loudly rather than silently
+# overwriting a PR head (#967 AD-4).
 PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git"
 if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "refs/heads/${HEAD}:refs/heads/${HEAD}"; then
     revoke_token
@@ -173,10 +242,14 @@ if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "refs/heads/${HEAD}:refs/heads/${H
 fi
 PUSH_URL=""
 
-if ! PR_URL="$(gh pr create --repo "$REPO_SLUG" --title "$TITLE" --body-file "$BODY_FILE" --base "$BASE" --head "$HEAD")"; then
+if [[ -n "$UPDATE_PR" ]]; then
     revoke_token
-    err "gh pr create failed"
+    echo "$PR_HTML_URL"
+else
+    if ! PR_URL="$(gh pr create --repo "$REPO_SLUG" --title "$TITLE" --body-file "$BODY_FILE" --base "$BASE" --head "$HEAD")"; then
+        revoke_token
+        err "gh pr create failed"
+    fi
+    revoke_token
+    echo "$PR_URL"
 fi
-
-revoke_token
-echo "$PR_URL"

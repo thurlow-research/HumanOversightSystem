@@ -58,12 +58,35 @@ esac
 exit 0
 """
 
+# "api repos/.../pulls/<N> --jq ..." -> the --update-pr authorship check (#967
+# AD-4, T9): prints a TSV of state/head.ref/user.login/base.ref/html_url,
+# honoring GH_API_PULL_* overrides and GH_API_PULL_FAIL.
+# "api repos/.../pulls?state=open&head=... --jq ..." -> the open-mode
+# duplicate-PR guard: prints a TSV of count/first-number, honoring
+# GH_API_DUP_* overrides and GH_API_DUP_FAIL.
 GH_STUB = """#!/usr/bin/env bash
 echo "GH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
     if [[ "${GH_FAIL:-}" == "1" ]]; then exit 1; fi
     echo "https://github.com/test-owner/test-repo/pull/999"
     exit 0
+fi
+if [[ "$1" == "api" ]]; then
+    path="$2"
+    if [[ "$path" == *"pulls?state=open"* ]]; then
+        if [[ "${GH_API_DUP_FAIL:-}" == "1" ]]; then exit 1; fi
+        printf '%s\\t%s\\n' "${GH_API_DUP_COUNT:-0}" "${GH_API_DUP_NUMBER:-}"
+        exit 0
+    elif [[ "$path" == *"/pulls/"* ]]; then
+        if [[ "${GH_API_PULL_FAIL:-}" == "1" ]]; then exit 1; fi
+        printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \\
+            "${GH_API_PULL_STATE:-open}" \\
+            "${GH_API_PULL_HEAD_REF:-current-branch}" \\
+            "${GH_API_PULL_USER_LOGIN:-fake-bot[bot]}" \\
+            "${GH_API_PULL_BASE_REF:-main}" \\
+            "${GH_API_PULL_HTML_URL:-https://github.com/test-owner/test-repo/pull/42}"
+        exit 0
+    fi
 fi
 exit 1
 """
@@ -325,7 +348,7 @@ def test_happy_path_pushes_creates_pr_and_revokes_token(h):
     push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
     assert "x-access-token:fake-token-worker@github.com/test-owner/test-repo.git" in push_line
     assert "refs/heads/feature-x:refs/heads/feature-x" in push_line
-    gh_line = [ln for ln in cap.splitlines() if ln.startswith("GH_CALLED_WITH")][0]
+    gh_line = [ln for ln in cap.splitlines() if ln.startswith("GH_CALLED_WITH:pr create")][0]
     assert "--repo test-owner/test-repo" in gh_line
     assert "--base main" in gh_line
     assert "--head feature-x" in gh_line
@@ -349,7 +372,9 @@ def test_push_failure_aborts_before_pr_create_but_revokes(h):
     )
     assert result.returncode != 0
     cap = h.capture()
-    assert "GH_CALLED_WITH" not in cap
+    # The open-mode duplicate-PR guard (#967 AD-4) now runs before the push,
+    # so it is expected to have fired; `gh pr create` must not have.
+    assert "GH_CALLED_WITH:pr create" not in cap
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
 
 
@@ -696,3 +721,183 @@ def test_audit_sink_failure_does_not_mask_refusal(h):
     )
     assert result.returncode != 0
     _assert_fully_refused_before_network(h.capture())
+
+
+# --------------------------------------------------------------------------- #
+# --update-pr mode (#967 AD-4, §7, T9)
+# --------------------------------------------------------------------------- #
+
+
+def test_update_pr_rejects_non_worker_app(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch",
+         "--app", "human", "--confirmed"],
+    )
+    assert result.returncode != 0
+    assert "--update-pr requires --app worker" in result.stderr
+
+
+def test_update_pr_rejects_title(h):
+    result = h.run(
+        ["--update-pr", "42", "--title", "t", "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+    )
+    assert result.returncode != 0
+    assert "--title" in result.stderr
+
+
+def test_update_pr_rejects_body_file(h):
+    result = h.run(
+        ["--update-pr", "42", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+    )
+    assert result.returncode != 0
+    assert "--body-file" in result.stderr
+
+
+def test_update_pr_rejects_non_numeric_pr_number(h):
+    result = h.run(
+        ["--update-pr", "not-a-number", "--base", "main",
+         "--head", "current-branch", "--app", "worker"],
+    )
+    assert result.returncode != 0
+    assert "--update-pr" in result.stderr
+
+
+def test_update_pr_does_not_consult_ownership_record(h):
+    """§7 — update mode requires no branch-ownership record; authority comes
+    from the server-side PR-authorship check instead (AD-4)."""
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "https://github.com/test-owner/test-repo/pull/42"
+
+
+def test_update_pr_pushes_without_opening_new_pr(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert any(ln.startswith("GIT_CALLED_WITH") and " push " in ln for ln in cap.splitlines())
+    assert "pulls/42" in cap
+    assert "GH_CALLED_WITH:pr create" not in cap
+
+
+def test_update_pr_refuses_on_pr_fetch_failure(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"GH_API_PULL_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "Could not fetch PR #42" in result.stderr
+    cap = h.capture()
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " push " in ln for ln in cap.splitlines())
+    assert "CURL_CALLED_WITH" in cap
+
+
+def test_update_pr_refuses_when_pr_closed(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"GH_API_PULL_STATE": "closed"},
+    )
+    assert result.returncode != 0
+    assert "does not match this push" in result.stderr
+
+
+def test_update_pr_refuses_on_head_mismatch(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"GH_API_PULL_HEAD_REF": "some-other-branch"},
+    )
+    assert result.returncode != 0
+    assert "does not match this push" in result.stderr
+
+
+def test_update_pr_refuses_on_base_mismatch(h):
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"GH_API_PULL_BASE_REF": "develop"},
+    )
+    assert result.returncode != 0
+    assert "does not match this push" in result.stderr
+
+
+def test_update_pr_refuses_on_author_mismatch(h):
+    """The core AD-4 case: someone else's PR for the same head/base is never
+    treated as this bot's to push to."""
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        write_record=False,
+        env_overrides={"GH_API_PULL_USER_LOGIN": "someone-else[bot]"},
+    )
+    assert result.returncode != 0
+    assert "does not match this push" in result.stderr
+    cap = h.capture()
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " push " in ln for ln in cap.splitlines())
+
+
+# --------------------------------------------------------------------------- #
+# Open-mode duplicate-PR guard (#967 AD-4)
+# --------------------------------------------------------------------------- #
+
+
+def test_open_mode_worker_refuses_when_open_pr_already_exists(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "worker-owned-branch", "--app", "worker"],
+        env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
+    )
+    assert result.returncode != 0
+    assert "#77" in result.stderr
+    assert "--update-pr 77" in result.stderr
+    cap = h.capture()
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " push " in ln for ln in cap.splitlines())
+
+
+def test_open_mode_worker_proceeds_when_no_existing_pr(h):
+    """Default stub returns zero existing PRs — the unchanged happy path."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "worker-owned-branch", "--app", "worker"],
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_open_mode_worker_refuses_when_duplicate_check_query_fails(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--head", "worker-owned-branch", "--app", "worker"],
+        env_overrides={"GH_API_DUP_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "Could not check for an existing open PR" in result.stderr
+    cap = h.capture()
+    assert not any(ln.startswith("GIT_CALLED_WITH") and " push " in ln for ln in cap.splitlines())
+
+
+def test_open_mode_human_unaffected_by_duplicate_guard(h):
+    """R6 — --app human sees no behaviour change; the duplicate guard is
+    scoped to --app worker only."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
+         "--app", "human", "--confirmed"],
+        env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_open_mode_overseer_unaffected_by_duplicate_guard(h):
+    """R6 — --app overseer sees no behaviour change."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "overseer"],
+        env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
+    )
+    assert result.returncode == 0, result.stderr

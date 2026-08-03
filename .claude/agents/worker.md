@@ -324,7 +324,13 @@ When your PR is bounced (assigned to hos-worker-hos[bot] + `needs-ai` label + `p
 Pushing a fix to a PR **this bot already authored** (step 1's CHANGES_REQUESTED path) is an
 update, not an open — a different, explicitly-declared operation. Existing PR authorship by
 the worker bot is itself a recorded (not inferred) ownership fact, sufficient to update that
-PR's head branch; it is never sufficient to open a new PR (#967).
+PR's head branch; it is never sufficient to open a new PR (#967). The sanctioned command for
+this push is `bash bootstrap/submit_pr.sh --update-pr <n> --base <branch> --head <branch>
+--app worker` — it does **not** consult the branch-ownership record (that answers "may I
+open a PR here", not "may I push here"); instead it independently verifies, server-side,
+that PR `<n>` is open, that its head/base match `--head`/`--base`, and that it was authored
+by this bot identity, before pushing. A mismatch on any of those refuses the push (#967
+AD-4) — never fall back to a raw `git push` on a "this must be mine" assumption.
 
 **A prior cycle's unsubmitted branch is foreign**, even if you (the same bot identity) built
 it: ownership does not decay and does not transfer across cycles (ADR-037 AD-1). If a cycle
