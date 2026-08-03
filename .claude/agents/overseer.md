@@ -385,7 +385,7 @@ For each PR found:
    **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
    - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
    - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection
-   - **DIRTY (findings unresolved, bounce conditions, out-of-scope commits)** → file issues, post blocking comment, do NOT approve or merge
+   - **DIRTY (findings unresolved, bounce conditions, out-of-scope commits)** → file issues, post blocking finding as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below), do NOT approve or merge
    - **PROPOSE_ONLY (gate not detected)** → see step 6 PROPOSE_ONLY handling below
 
    **Validation stamp checks — DISABLED until v0.5.0 (#552):** The stamp CI gate has too many false positives in the concurrent-PR workflow. The gitignore bypass (#561) already exits 0 (SKIP) for all stamp checks. Do not re-enable until the content-hash redesign (#552) ships. Reference the stamp trust model in #552 for what the redesign will enforce.
@@ -393,7 +393,7 @@ For each PR found:
 6. **Act on decision**:
    - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. Log both actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
    - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; on next cycle, if ScottThurlow has approved, merge immediately.
-   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
    - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered. Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
@@ -536,25 +536,45 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 - **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
 - **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
-### Posting comments (#752, #1155 — mandatory)
-**Always** post escalation and finding comments by writing the body to a file, then invoking:
-```
-bash bootstrap/post_comment.sh --number <issue-or-pr-number> --body-file <path> --app overseer
-```
-This is the canonical wrapper (same mint/act/revoke pattern as `create_issue.sh` /
-`submit_pr.sh` — see CLAUDE.md "Shell usage under the sandbox"): it uses `gh issue
-comment --body-file`, which reads the file's actual content, and it independently
-guards against a body file that is itself an `@path` literal. It is a single,
-allowlistable command — composing a `python3 -c "...post_comment(...)..."`
-one-liner to call the underlying Python helper (`post_comment()` in
-`scripts/automation/lib/github.py`) embeds variable comment text into the
-command line, which is itself unallowlistable and is what pushed a prior
-cycle toward a raw `gh api` call instead (#1155).
+### Posting comments (#752, #1155, #1207 — mandatory)
+
+Two wrappers, chosen by whether the content is merge-blocking:
+
+- **Blocking findings** (DIRTY-disposition findings, §8.2 HUMAN_REQUIRED escalations —
+  anything meaning "a human must address this before merge") → post as a **resolvable
+  review thread**, not a plain comment:
+  ```
+  bash bootstrap/post_review_thread.sh --pr <pr-number> --body-file <path> --app overseer
+  ```
+  A plain issues-comment has no `isResolved` state, so a branch-protection rule with
+  `required_conversation_resolution` does not gate merge on it — the finding can sit
+  unaddressed with no gate ever seeing it (#1207). `post_review_thread.sh` posts a real
+  `PullRequestReviewThread` via GraphQL `addPullRequestReviewThread` (the same
+  empirically-verified mutation `oversight-orchestrator` uses for CONDITIONAL_PROCEED
+  items, SPEC-222), which DOES block merge under that rule.
+
+- **Narrative-only output** (release-gate clearance, PROPOSE_ONLY notices, worker-facing
+  summaries, anything not meant to gate merge on its own) → the plain conversation
+  comment:
+  ```
+  bash bootstrap/post_comment.sh --number <issue-or-pr-number> --body-file <path> --app overseer
+  ```
+
+Both are the canonical wrappers (same mint/act/revoke pattern as `create_issue.sh` /
+`submit_pr.sh` — see CLAUDE.md "Shell usage under the sandbox") and both write the body
+to a file first, then invoke the wrapper — never inline `--body <text>`. Composing a
+`python3 -c "...post_comment(...)..."` one-liner to call the underlying Python helper
+(`post_comment()` in `scripts/automation/lib/github.py`) embeds variable comment text
+into the command line, which is itself unallowlistable and is what pushed a prior cycle
+toward a raw `gh api` call instead (#1155).
 
 **Never** use:
 - `gh pr comment --body "@/tmp/..."` — posts the literal `@path` string, not file content
 - `gh api -f body=@/tmp/...` or `gh api --raw-field body=@/tmp/...` — same trap
 - `gh api --field body=@/tmp/...` or `gh api -F body=@/tmp/...` — expands to file content but silently swaps the body for whatever is in the file
+- `gh pr review --comment` for a blocking finding — it posts a review summary body with
+  no `comments[]`, so no `PullRequestReviewThread` is created and it never blocks merge
+  (verified in `docs/v0.4.0/TECHNICAL-DESIGN-222-cp-thread-posting.md` §1)
 
 (`post_comment()` in `scripts/automation/lib/github.py` remains the correct call
 from Python code paths, e.g. `merge_authority.py`'s `route_embargo` — this section
