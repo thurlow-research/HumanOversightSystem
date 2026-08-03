@@ -328,7 +328,7 @@ Human GitHub App bot: `scottthurlow-claude[bot]`.
 1. Preflight: `bootstrap/validate_setup.sh --repo .`
 2. Auth: `get_app_token.sh --app human` via temp-file source — never `source <(...)`
 3. Identity guard: abort if `HOS_BOT_LOGIN != HOS_EXPECTED_BOT_LOGIN` (both exported by `get_app_token.sh`)
-4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session)
+4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session, but a residual behind-count is always reported loudly on stderr, with the cause classified structural — e.g. sandbox write-protection, will not resolve by retrying — or transient/benign — e.g. network, dirty tree, retry next session; #1200)
 5. Orient: read `.claudetmp/HANDOFF.md` before acting
 
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do
