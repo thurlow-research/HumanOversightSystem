@@ -248,7 +248,17 @@ unallowlistable. No configuration change fixes it — rewrite the command.
    through `bootstrap/post_comment.sh --number <n> --body-file <path> --app
    <role>` (same pattern) — never `gh api --field body=@path` /
    `-f body=@path`, which silently posts the literal `@path` string instead
-   of the file's contents (#1155).
+   of the file's contents (#1155). Issue/PR metadata edits (labels, milestone,
+   title, state, assignees) go through `bootstrap/edit_issue.sh --number <n>
+   --app <role> [--add-label ...] [--remove-label ...] [--milestone
+   <title-prefix>|none] [--title ...] [--state open|closed] [--assignee ...]`
+   — milestones are matched by **prefix**, not exact title, since this repo's
+   milestone titles contain an em dash. Reads (single/multiple issues,
+   milestone-scoped listings, PR-filtered, comments, assignable users) go
+   through `bootstrap/query_issues.sh --app <role> (--issue <n[,n,...]> |
+   --list [--milestone <prefix>|--milestone-less] [--label ...] [--state ...]
+   | --comments <n> | --assignable-users)` — never hand-rolled `gh api` reads
+   (#1175, #1192, #1204).
 5. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 6. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
