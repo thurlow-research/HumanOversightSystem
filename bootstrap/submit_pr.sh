@@ -96,6 +96,30 @@ git -C "$SCRIPT_DIR/.." rev-parse --verify --quiet "refs/heads/${HEAD}" >/dev/nu
 HEAD_IS_CHECKED_OUT="false"
 [[ "$HEAD" == "$CURRENT_BRANCH" ]] && HEAD_IS_CHECKED_OUT="true"
 
+# ── Branch-ownership enforcement (#967, ADR-037, R4/R5/R6) ─────────────────
+# The worker opens a PR only for a branch it created in this cycle; ownership
+# is recorded, never inferred. This must run before any network access, token
+# mint, or push (R4), and is scoped to --app worker only (R6) — --app human
+# and --app overseer see no change in behaviour, output, or exit codes.
+if [[ "$APP_ROLE" == "worker" ]]; then
+    # shellcheck source=bootstrap/lib/branch_ownership.sh
+    source "$SCRIPT_DIR/lib/branch_ownership.sh" \
+        || err "branch-ownership library missing (bootstrap/lib/branch_ownership.sh) — refusing to open a PR for '${HEAD}'"
+    if ! hos_bo_verify "$SCRIPT_DIR/.." "$HEAD"; then
+        hos_bo_audit_refusal "$SCRIPT_DIR/.." "$HEAD" "$HOS_BO_REASON"
+        case "$HOS_BO_REASON" in
+            no_cycle_id)
+                err "HOS_CYCLE_ID is not set in this environment. Branch ownership cannot be verified, so --app worker cannot open a PR for '${HEAD}'. This session was not launched by bin/hos-cron, or the launcher predates #967 (upgrade bin/hos-cron and bootstrap/ together)." ;;
+            no_record)
+                err "No ownership record for branch '${HEAD}'. The worker opens PRs only for branches it created in this cycle via bootstrap/create_branch.sh. A branch created by another session — whatever its commits or issue label — is never this cycle's to submit (#967)." ;;
+            wrong_cycle)
+                err "Ownership record for '${HEAD}' was written by a different cycle. Ownership does not decay; authority does not transfer (ADR-037 AD-1). Create this cycle's own branch (bootstrap/create_branch.sh --from ${HEAD}) and submit that." ;;
+            *)
+                err "Branch-ownership check failed for '${HEAD}' (reason: ${HOS_BO_REASON}). Refusing to open a PR (#967)." ;;
+        esac
+    fi
+fi
+
 # ── Merge from base before pushing (#1162) ─────────────────────────────────────
 # A branch built on a stale base doesn't just miss the work that landed on
 # main while it was being built — its PR proposes *reverting* that work, and

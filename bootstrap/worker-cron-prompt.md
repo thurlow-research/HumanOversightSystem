@@ -46,6 +46,8 @@ Triage is a **pure API operation** — no code changes, no test run, no PR. Cont
 **Step 1 — Check open PRs:**
 Context pre-computed — see "Open bot PRs" in the context block at the bottom of this prompt. For each open PR authored by this worker: read all reviews AND comments. CHANGES_REQUESTED → fix, push, STOP. All approved/clean → STOP. No open PRs → Step 2.
 
+Pushing a fix here **updates a PR this bot already authored** — it is never a path to open a new PR, and it does not make the branch this cycle's to submit (#967): the branch was created by a prior cycle, not this one, and no ownership record for it belongs to this cycle.
+
 Fallback (if context block is absent):
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:60])"'
@@ -55,7 +57,7 @@ For each open PR authored by this worker:
    ```bash
    gh api "repos/thurlow-research/HumanOversightSystem/pulls/<N>" --jq '.mergeable_state'
    ```
-   If `dirty` (conflict): identify the commits unique to this branch (not already in main), cherry-pick them onto a new local branch cut from current main, then force-push to the **same remote branch name** so the existing PR updates in place. If the unique delta cannot be cleanly applied, close the PR with a comment explaining the conflict and open a fresh PR from main with only the unique commits.
+   If `dirty` (conflict): identify the commits unique to this branch (not already in main), cherry-pick them onto a new local branch created via `bootstrap/create_branch.sh` and cut from current main, then force-push to the **same remote branch name** so the existing PR updates in place. If the unique delta cannot be cleanly applied, close the PR with a comment explaining the conflict and open a fresh PR from main with only the unique commits.
 2. CHANGES_REQUESTED → fix, push, STOP.
 3. All approved/clean → STOP.
 4. No open PRs → Step 2.
@@ -98,7 +100,11 @@ python3 -m scripts.automation.pre_pr_stale_check
 ```
 If it exits 0: proceed. If it exits 1 with "commits overlap an open PR": STOP — do NOT push or open a PR. Cherry-pick your unique commits onto a fresh branch cut from current `main`, then restart from Step 4. If it exits 1 due to a rebase conflict: STOP — comment on the issue and escalate to a human.
 
-**Step 5:** Open PR (≤15 files, ≤10 commits), then STOP.
+**Step 5 — Open PR:** You open a PR only for a branch you created **in this cycle** via `bootstrap/create_branch.sh` (Step 2b). Ownership is **recorded, never inferred** — a commit on a branch, an issue label, or a matching branch name is not evidence the work is yours or finished. PR opening goes through:
+```bash
+bash bootstrap/submit_pr.sh --title <title> --body-file <path> --base main --head <branch> --app worker
+```
+`submit_pr.sh` refuses (before any network access) without a valid ownership record for `<branch>` (#967). Size limits unchanged: ≤15 files, ≤10 commits. Then STOP.
 
 **PR attribution (AGENTS.md §Pull Request Attribution — never omit):**
 

@@ -2,10 +2,13 @@
 Correlation-id derivation, artifact naming, idempotency precheck, and
 cold-start recovery state machine for the HOS automation loop.
 
-This is the M1 correctness owner (ADR-2, R6.1).  The cid is the ONLY
-mechanism that prevents duplicate work — all lock/claim/activation layers
-are contention reducers on top.  Any code that re-derives a branch name
-outside this module is a bug.
+This is the M1 correctness owner (ADR-2, R6.1).  Deduplication rests on the
+claim protocol and on remote PR/merge state (PR_EXISTS/MERGED); the cid is
+the naming/correlation key shared by all lock/claim/activation layers.  Any
+code that re-derives a branch name outside this module is a bug.
+
+Branch existence is not evidence of anything — PR-opening authority is the
+per-cycle ownership record checked at bootstrap/submit_pr.sh (#967, ADR-037).
 """
 
 import hashlib
@@ -15,7 +18,6 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from scripts.automation.lib.github import (
-    get_branch,
     list_issue_comments,
     list_pulls,
 )
@@ -27,8 +29,7 @@ class ResumeState(Enum):
     A worker resumes from this state rather than starting over (R6.1 cold-start table).
     """
     NOT_STARTED = auto()       # No artifacts found — begin from scratch.
-    CLAIM_PRESENT = auto()     # Claim envelope posted but no branch.
-    BRANCH_EXISTS = auto()     # Branch created but no PR.
+    CLAIM_PRESENT = auto()     # Claim envelope posted but no PR.
     PR_EXISTS = auto()         # PR open — re-run gates then re-decide.
     GATES_COMPLETE = auto()    # Gate results visible on the PR — re-decide merge.
     MERGED = auto()            # Already merged — nothing to do.
@@ -143,11 +144,7 @@ def already_exists(
     branch = branch_name(cid)
     head_filter = f"{owner}:{branch}"
 
-    # 1. Does the branch exist?
-    branch_ref = get_branch(owner, repo, branch)
-    branch_found = branch_ref is not None
-
-    # 2. Does a PR exist (any state)?
+    # 1. Does a PR exist (any state)?
     pulls = list_pulls(owner, repo, head=head_filter, state="all")
     pr_found = bool(pulls)
 
@@ -158,10 +155,7 @@ def already_exists(
             return ResumeState.GATES_COMPLETE
         return ResumeState.PR_EXISTS
 
-    if branch_found:
-        return ResumeState.BRANCH_EXISTS
-
-    # 3. Is there a claim envelope on the issue?
+    # 2. Is there a claim envelope on the issue?
     if _has_claim_envelope(owner, repo, issue_number, cid):
         return ResumeState.CLAIM_PRESENT
 
@@ -193,7 +187,6 @@ def _has_claim_envelope(
 COLD_START_TABLE: dict[ResumeState, str] = {
     ResumeState.NOT_STARTED: "Begin from scratch: triage → claim → branch → build → PR",
     ResumeState.CLAIM_PRESENT: "Claim envelope found — re-triage and continue from claim",
-    ResumeState.BRANCH_EXISTS: "Branch exists — open PR (idempotent; branch already created)",
     ResumeState.PR_EXISTS: "PR exists — re-run gates then re-decide merge",
     ResumeState.GATES_COMPLETE: "Gate results visible — re-read PR state and re-decide merge",
     ResumeState.MERGED: "Already merged — no work remaining for this cid",

@@ -1,10 +1,10 @@
 {
-  "head_sha": "094824bbaae9573e45d941aabd7116909975e1f1",
+  "head_sha": "fbaf3a937b1216f5507d02c626be645e2e469717",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-08-03T03:58:26Z",
-  "composite_score": 0.283,
+  "written_at": "2026-08-03T07:14:48Z",
+  "composite_score": 0.2732,
   "tier": "LOW",
   "validator_count": 12,
   "successful_validators": 10,
@@ -26,15 +26,17 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 2704,
+        "changed_lines": 2115,
         "changed_files": 10,
         "floor_rule_fired": "changed_lines",
-        "domain_count": 4,
+        "domain_count": 6,
         "domains_detected": [
           "agents",
-          "other",
           "bootstrap",
-          "scripts"
+          "contract",
+          "docs",
+          "scripts",
+          "other"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -45,7 +47,7 @@
       "weight": 0.0,
       "evidence": [],
       "checklist_items": [
-        "Consider splitting into focused PRs: changes span 4 domains (threshold 3); domains: agents, other, bootstrap, scripts"
+        "Consider splitting into focused PRs: changes span 6 domains (threshold 3); domains: agents, bootstrap, contract, docs, scripts, other"
       ],
       "findings": [],
       "error": null,
@@ -53,27 +55,18 @@
     },
     {
       "dimension": "function_metrics",
-      "score": 0.0029,
+      "score": 0.0,
       "raw_value": {
-        "total_functions": 172,
-        "long_functions": 1,
+        "total_functions": 88,
+        "long_functions": 0,
         "high_param_count": 0,
         "deeply_nested": 0,
         "many_return_paths": 0,
         "parse_errors": []
       },
       "weight": 0.07,
-      "evidence": [
-        {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 55,
-          "message": "__init__(): lines=157",
-          "severity": "medium"
-        }
-      ],
-      "checklist_items": [
-        "__init__() \u2014 157 lines: can this be decomposed into smaller units?"
-      ],
+      "evidence": [],
+      "checklist_items": [],
       "findings": [],
       "error": null,
       "tier_floor": null
@@ -100,204 +93,209 @@
         "issue_count": 32,
         "issues": [
           {
-            "number": 1174,
-            "title": "coverage and mutation testing exclude every module the #314 shell\u2192Python policy produced \u2014 including merge_authority.py",
+            "number": 1230,
+            "title": "Worker cron sessions launch without HOS_CYCLE_ID exported \u2014 blocks all Step 2b branch creation (#967 P1 gap)",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/submit_pr.sh"
           },
           {
             "number": 1173,
             "title": "worker milestone eligibility should be '<= active release', not '== active release' \u2014 unfinished work in earlier milestones is silently unreachable",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 1166,
+            "title": "bug: submit_pr.sh --head pushes local HEAD, not the named branch \u2014 silently published 11k deletions",
+            "label": "bug",
+            "file": "bootstrap/submit_pr.sh"
+          },
+          {
+            "number": 1129,
+            "title": "[AI: technical-design] bug: overseer.md and OVERSIGHT-CONTRACT.md cite merge_authority.py bounce functions that do not exist",
+            "label": "bug",
+            "file": "contract/OVERSIGHT-CONTRACT.md"
           },
           {
             "number": 1126,
             "title": "[GOVERNANCE BUG] Worker session cannot dispatch pm-agent/architect/technical-design as subagents despite .claude/agents/*.md being present",
             "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 1044,
-            "title": "bug: #996 divergence guard measures HEAD not main \u2014 worker deadlocks after every merged unit of work",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 1002,
-            "title": "[AI: audit] bug: hos-cron lock reclaim has an empty-pid double-acquire window and PID-reuse permanent-standstill path",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 996,
-            "title": "[AI: audit] bug: hos-cron 'git pull --ff-only || true' masks a diverged local main forever \u2014 worker silently builds from a stale base",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 995,
-            "title": "[AI: audit] bug: hos-cron wakeup files are role-global while consumers are per-project \u2014 cross-project wakeup theft delays oversight",
-            "label": "bug",
-            "file": "bin/hos-cron"
+            "file": ".claude/agents/worker.md"
           },
           {
             "number": 990,
             "title": "[AI: audit] bug: legacy hos-worker-cron/hos-overseer-cron bypass every governance gate (halt/lock/timeout) + broken '---' prompt invocation",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
           },
           {
             "number": 989,
             "title": "[AI: audit] bug: missing prompt file silently launches a guardrail-free bypassPermissions cron session",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
           },
           {
-            "number": 988,
-            "title": "[AI: audit] bug: hos-cron audit-log sync branch-switches the live shared working tree \u2014 interruption/concurrency corrupts repo state",
+            "number": 981,
+            "title": "[AI: audit] bug: run_validators.sh --diff filters to .py only, blinding the IP/license gate to dependency-manifest changes",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": ".claude/agents/worker.md"
           },
           {
-            "number": 959,
-            "title": "Worker halts dead on a red baseline (exit 1 + needs-human) instead of prioritizing a fix \u2014 deadlocks any project whose baseline isn't green",
+            "number": 973,
+            "title": "[AI: audit] bug: require_tier_ceiling tier computation is dead code \u2014 ceiling gate can never fail",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
-            "number": 957,
-            "title": "Per-role checkouts drift across HOS releases: overseer silently crash-loops at hos-cron:54 (git-credentials source) before self-sync can heal it",
+            "number": 918,
+            "title": "bug: run_redteam_sample counts reviewer outage as no-tier-escape (false calibration)",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
-            "number": 956,
-            "title": "No end-to-end build-env bootstrap: ensure_venv skips app deps, hos_bootstrap.sh missing, no .env/test-DB/test-settings provisioning",
+            "number": 880,
+            "title": "bug: chore(audit) commits on feature branches break overseer head_sha match",
             "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 954,
-            "title": "Bootstrap tests leak ~1.2GB/run into /tmp/pytest-of-scott (filled root disk to 100%; never cleaned up)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 953,
-            "title": "hos-cron FATALs on missing oversight venv instead of auto-building it (preflight bypasses existing ensure_venv.sh auto-repair)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 921,
-            "title": "bug: cron overseer masks preflight/auth failure as exit 0 (silent oversight outage)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 920,
-            "title": "bug: overseer pre-filter treats unknown mergeable_state as actionable (hos-cron)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 919,
-            "title": "bug: missing target_release launches worker with unsubstituted milestone placeholders",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 916,
-            "title": "bug: hos-worker-cron loses Claude exit code under set -e \u2014 overseer handoff breaks",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 915,
-            "title": "bug: overseer skips cycle + arms 30-min backoff when open-PR fetch errors (hos-cron)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 912,
-            "title": "bug: halt kill-switch fails open on gh API error / missing repo slug (hos-cron)",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 807,
-            "title": "bug: ensure_venv.sh marker trusted forever \u2014 broken venv after Python upgrade or path change goes undetected",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 806,
-            "title": "bug: hos_bootstrap.sh never writes ~/.hos/setup-validation/bootstrap marker \u2014 hos-cron warns on every cycle",
-            "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
             "number": 805,
             "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
           },
           {
-            "number": 744,
-            "title": "governance(gap): bin/ (cron launchers) is not a protected surface despite being control-defining",
+            "number": 731,
+            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
           },
           {
-            "number": 738,
-            "title": "bug: bin/hos-cron must configure git credentials deterministically (don't rely on the machine's git credential helper)",
+            "number": 725,
+            "title": "bug(#724): run_validators.sh --step atomic write broken \u2014 mktemp not used as write target",
             "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 734,
-            "title": "security(#733): bypassPermissions + no allowedTools + CLAUDE_CODE_OAUTH_TOKEN in env \u2014 prompt injection can exfiltrate OAuth token",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 730,
-            "title": "hardening(#729): parse CLAUDE_CODE_OAUTH_TOKEN with grep/cut instead of sourcing entire env file",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 728,
-            "title": "fix: bin/hos-cron \u2014 headless Max subscription auth via CLAUDE_CODE_OAUTH_TOKEN",
-            "label": "bug",
-            "file": "bin/hos-cron"
-          },
-          {
-            "number": 720,
-            "title": "fix(#718): mktemp in hos-cron should use private dir \u2014 shared /tmp exposes auth token window",
-            "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "signoffs/validators/step1/summary.json"
           },
           {
             "number": 717,
             "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
             "label": "bug",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
+          },
+          {
+            "number": 702,
+            "title": "[GOVERNANCE BUG] Worker submitted PRs without running inner-loop tests \u2014 violated professional code quality standard",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 701,
+            "title": "bug: worker cron LOOP missing inner-loop test run before PR \u2014 tests only caught by overseer",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 652,
+            "title": "bug: hos_install.sh does not install worker.md and overseer.md \u2014 validate_setup.sh fails after clean install",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 609,
+            "title": "Bug + Design: worker startup must validate specialist agents; setup must be self-applicable and role-neutral",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 608,
+            "title": "[GOVERNANCE BUG] Worker must hard-fail when required agent type is unavailable \u2014 no silent fallback",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 589,
+            "title": "Bug: overseer does not auto-merge after human approves a protected-surface PR",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 588,
+            "title": "bug(#587): worker.md backtick reference to check_pre_coder_gate.sh fails check_agents_static",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 555,
+            "title": "Bug (HIGH): overseer reads only CI status, not validator artifacts",
+            "label": "bug",
+            "file": "signoffs/validators/step1/summary.json"
+          },
+          {
+            "number": 551,
+            "title": "Bug: worker loop protocol missing review-body read step",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 550,
+            "title": "Bug: worker missed CHANGES_REQUESTED reviews for multiple loops",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 363,
+            "title": "[HARD RULE] Worker must never use human credentials for any GitHub operation without explicit per-operation human authorization",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 362,
+            "title": "[GOVERNANCE BUG] Worker opened PRs under human credentials throughout interactive session \u2014 identity guard not enforced",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 359,
+            "title": "bug: role identification instruction ignored \u2014 buried at line 376 of 421, must be first in CORE",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 357,
+            "title": "bug: worker directs human to approve PR directly, bypassing the oversight review loop",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 348,
+            "title": "bug: R5.6.2 check uses actor.login but GitHub Issues Events API uses assigner.login for who performed the assignment",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
+          },
+          {
+            "number": 345,
+            "title": "[GOVERNANCE BUG] Worker cut and published a release without human authorization \u2014 NG3b violation",
+            "label": "bug",
+            "file": ".claude/agents/worker.md"
           },
           {
             "number": 1110,
             "title": "[AI: spec-red-team] spec-gap: --human flag not declared mutually exclusive with --worker/--overseer",
             "label": "spec-gap",
-            "file": "bin/hos-cron"
+            "file": "bootstrap/worker-cron-prompt.md"
           }
         ],
         "churn": {
-          "bin/hos-cron": 37,
-          "bootstrap/create_branch.sh": 1,
-          "bootstrap/lib/branch_ownership.sh": 2,
-          "tests/automation/test_branch_ownership.py": 1,
-          "tests/automation/test_hos_cron.py": 22
+          ".claude/agents/worker.md": 32,
+          "bootstrap/submit_pr.sh": 4,
+          "bootstrap/worker-cron-prompt.md": 19,
+          "contract/OVERSIGHT-CONTRACT.md": 30,
+          "docs/specs/UNATTENDED-WORKER-TECH-DESIGN.md": 6,
+          "scripts/automation/lib/correlation.py": 2,
+          "scripts/framework/validation-stamps/phase1-dd1e58b67445e972dc1d5fc915552a15d6a05ce8478638f30cee1062718c405e.stamp": 1,
+          "signoffs/validators/step1/summary.json": 14,
+          "tests/automation/test_correlation.py": 2,
+          "tests/automation/test_submit_pr.py": 4
         },
         "gh_status": "ok",
         "gh_failed_labels": 0,
@@ -306,81 +304,87 @@
       "weight": 0.12,
       "evidence": [
         {
-          "file": "bin/hos-cron",
+          "file": "bootstrap/submit_pr.sh",
           "line": 0,
-          "message": "[bug] #1174: coverage and mutation testing exclude every module the #314 shell\u2192Python policy produced \u2014 including merge_authority.py",
+          "message": "[bug] #1230: Worker cron sessions launch without HOS_CYCLE_ID exported \u2014 blocks all Step 2b branch creation (#967 P1 gap)",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
+          "file": ".claude/agents/worker.md",
           "line": 0,
           "message": "[bug] #1173: worker milestone eligibility should be '<= active release', not '== active release' \u2014 unfinished work in earlier milestones is silently unreachable",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
+          "file": "bootstrap/submit_pr.sh",
+          "line": 0,
+          "message": "[bug] #1166: bug: submit_pr.sh --head pushes local HEAD, not the named branch \u2014 silently published 11k deletions",
+          "severity": "medium"
+        },
+        {
+          "file": "contract/OVERSIGHT-CONTRACT.md",
+          "line": 0,
+          "message": "[bug] #1129: [AI: technical-design] bug: overseer.md and OVERSIGHT-CONTRACT.md cite merge_authority.py bounce functions that do not exist",
+          "severity": "medium"
+        },
+        {
+          "file": ".claude/agents/worker.md",
           "line": 0,
           "message": "[bug] #1126: [GOVERNANCE BUG] Worker session cannot dispatch pm-agent/architect/technical-design as subagents despite .claude/agents/*.md being present",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #1044: bug: #996 divergence guard measures HEAD not main \u2014 worker deadlocks after every merged unit of work",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #1002: [AI: audit] bug: hos-cron lock reclaim has an empty-pid double-acquire window and PID-reuse permanent-standstill path",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #996: [AI: audit] bug: hos-cron 'git pull --ff-only || true' masks a diverged local main forever \u2014 worker silently builds from a stale base",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
-          "line": 0,
-          "message": "[bug] #995: [AI: audit] bug: hos-cron wakeup files are role-global while consumers are per-project \u2014 cross-project wakeup theft delays oversight",
-          "severity": "medium"
-        },
-        {
-          "file": "bin/hos-cron",
+          "file": "bootstrap/worker-cron-prompt.md",
           "line": 0,
           "message": "[bug] #990: [AI: audit] bug: legacy hos-worker-cron/hos-overseer-cron bypass every governance gate (halt/lock/timeout) + broken '---' prompt invocation",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
+          "file": "bootstrap/worker-cron-prompt.md",
           "line": 0,
           "message": "[bug] #989: [AI: audit] bug: missing prompt file silently launches a guardrail-free bypassPermissions cron session",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
+          "file": ".claude/agents/worker.md",
           "line": 0,
-          "message": "[bug] #988: [AI: audit] bug: hos-cron audit-log sync branch-switches the live shared working tree \u2014 interruption/concurrency corrupts repo state",
+          "message": "[bug] #981: [AI: audit] bug: run_validators.sh --diff filters to .py only, blinding the IP/license gate to dependency-manifest changes",
           "severity": "medium"
         },
         {
-          "file": "bin/hos-cron",
+          "file": "signoffs/validators/step1/summary.json",
           "line": 0,
-          "message": "high churn: 37 commits in 90 days",
+          "message": "[bug] #973: [AI: audit] bug: require_tier_ceiling tier computation is dead code \u2014 ceiling gate can never fail",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_hos_cron.py",
+          "file": "signoffs/validators/step1/summary.json",
           "line": 0,
-          "message": "high churn: 22 commits in 90 days",
+          "message": "[bug] #918: bug: run_redteam_sample counts reviewer outage as no-tier-escape (false calibration)",
+          "severity": "medium"
+        },
+        {
+          "file": ".claude/agents/worker.md",
+          "line": 0,
+          "message": "high churn: 32 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "contract/OVERSIGHT-CONTRACT.md",
+          "line": 0,
+          "message": "high churn: 30 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "bootstrap/worker-cron-prompt.md",
+          "line": 0,
+          "message": "high churn: 19 commits in 90 days",
           "severity": "medium"
         }
       ],
       "checklist_items": [
         "32 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "hos-cron: 37 commits in 90 days \u2014 high churn may indicate persistent complexity."
+        "worker.md: 32 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
       "error": null,
@@ -397,7 +401,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 5,
+          "files_checked": 10,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -428,15 +432,21 @@
     },
     {
       "dimension": "n1_queries",
-      "score": 0.125,
+      "score": 0.25,
       "raw_value": {
-        "candidate_count": 1,
+        "candidate_count": 2,
         "locations": [
           {
-            "file": "tests/automation/test_hos_cron.py",
-            "line": 1791,
+            "file": "scripts/automation/lib/correlation.py",
+            "line": 124,
             "loop_depth": 1,
-            "attr": "count"
+            "attr": "get"
+          },
+          {
+            "file": "scripts/automation/lib/correlation.py",
+            "line": 178,
+            "loop_depth": 1,
+            "attr": "get"
           }
         ],
         "parse_errors": []
@@ -444,15 +454,22 @@
       "weight": 0.08,
       "evidence": [
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1791,
-          "message": "potential N+1: .count() inside loop (depth=1)",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 124,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 178,
+          "message": "potential N+1: .get() inside loop (depth=1)",
           "severity": "medium"
         }
       ],
       "checklist_items": [
         "N+1 candidates found \u2014 verify each ORM call inside a loop uses select_related() or prefetch_related() on the queryset that feeds the loop.",
-        "  test_hos_cron.py:1791 \u2014 .count() inside loop: is this queryset prefetched upstream?"
+        "  correlation.py:124 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  correlation.py:178 \u2014 .get() inside loop: is this queryset prefetched upstream?"
       ],
       "findings": [],
       "error": null,
@@ -485,22 +502,23 @@
           "16 spec-gap issue(s) on record \u2014 historical spec ambiguity"
         ],
         "missing_artifacts": [
-          "tests/automation/test_branch_ownership.py",
-          "tests/automation/test_hos_cron.py"
+          "scripts/automation/lib/correlation.py",
+          "tests/automation/test_correlation.py",
+          "tests/automation/test_submit_pr.py"
         ],
         "files_with_artifacts": 0
       },
       "weight": 0.07,
       "evidence": [
         {
-          "file": "tests/automation/test_branch_ownership.py",
+          "file": "scripts/automation/lib/correlation.py",
           "line": 0,
-          "message": "2 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
+          "message": "3 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "2 file(s) missing prompt artifacts: test_branch_ownership.py, test_hos_cron.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
+        "3 file(s) missing prompt artifacts: correlation.py, test_correlation.py, test_submit_pr.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
       ],
       "findings": [],
       "error": null,
@@ -508,14 +526,14 @@
     },
     {
       "dimension": "risk_number",
-      "score": 0.5,
+      "score": 0.4,
       "raw_value": {
-        "max_rn": 10.0,
-        "mean_rn": 0.2,
+        "max_rn": 8.0,
+        "mean_rn": 0.42,
         "high_risk_functions": [
-          "_extract_sync_audit_logs_func"
+          "run"
         ],
-        "function_count": 172,
+        "function_count": 88,
         "parse_errors": [],
         "task_class": "chore",
         "task_class_source": "commit_prefix",
@@ -526,93 +544,75 @@
       "weight": 0.18,
       "evidence": [
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1782,
-          "message": "RN=10.0 \u2014 _extract_sync_audit_logs_func()",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 171,
+          "message": "RN=8.0 \u2014 run()",
           "severity": "high"
         },
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 246,
-          "message": "RN=3.0 \u2014 run()",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 129,
+          "message": "RN=6.0 \u2014 already_exists()",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 780,
-          "message": "RN=3.0 \u2014 _env()",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 117,
+          "message": "RN=3.0 \u2014 _check_gates_complete()",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1071,
-          "message": "RN=3.0 \u2014 test_stale_marker_triggers_revalidation_and_fails()",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 165,
+          "message": "RN=3.0 \u2014 _has_claim_envelope()",
           "severity": "medium"
         },
         {
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 101,
-          "message": "RN=2.0 \u2014 _verify()",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 135,
+          "message": "RN=3.0 \u2014 _get_arg()",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "_extract_sync_audit_logs_func:1792 \u2014 can this condition be both true and false as expected?",
-        "_extract_sync_audit_logs_func:1792 \u2014 are all branches (including implicit else) handled?",
-        "_extract_sync_audit_logs_func:1787 \u2014 can this condition be both true and false as expected?",
-        "_extract_sync_audit_logs_func:1787 \u2014 are all branches (including implicit else) handled?",
-        "_extract_sync_audit_logs_func:1789 \u2014 can this condition be both true and false as expected?",
-        "_extract_sync_audit_logs_func:1789 \u2014 are all branches (including implicit else) handled?",
-        "run:263 \u2014 can this condition be both true and false as expected?",
-        "run:263 \u2014 are all branches (including implicit else) handled?",
-        "run:266 \u2014 can this condition be both true and false as expected?",
-        "run:266 \u2014 are all branches (including implicit else) handled?",
-        "_env:785 \u2014 can this condition be both true and false as expected?",
-        "_env:785 \u2014 are all branches (including implicit else) handled?",
-        "_env:784 \u2014 is the loop bound correct and termination guaranteed?",
-        "_env:784 \u2014 is anything mutated inside the loop that affects the iterator?"
+        "run:187 \u2014 can this condition be both true and false as expected?",
+        "run:187 \u2014 are all branches (including implicit else) handled?",
+        "run:185 \u2014 can this condition be both true and false as expected?",
+        "run:185 \u2014 are all branches (including implicit else) handled?",
+        "run:184 \u2014 can this condition be both true and false as expected?",
+        "run:184 \u2014 are all branches (including implicit else) handled?",
+        "already_exists:152 \u2014 can this condition be both true and false as expected?",
+        "already_exists:152 \u2014 are all branches (including implicit else) handled?",
+        "already_exists:154 \u2014 can this condition be both true and false as expected?",
+        "already_exists:154 \u2014 are all branches (including implicit else) handled?",
+        "already_exists:151 \u2014 can this condition be both true and false as expected?",
+        "already_exists:151 \u2014 are all branches (including implicit else) handled?",
+        "_check_gates_complete:124 \u2014 can this condition be both true and false as expected?",
+        "_check_gates_complete:124 \u2014 are all branches (including implicit else) handled?",
+        "_check_gates_complete:123 \u2014 is the loop bound correct and termination guaranteed?",
+        "_check_gates_complete:123 \u2014 is anything mutated inside the loop that affects the iterator?"
       ],
       "findings": [
         {
-          "function": "_extract_sync_audit_logs_func",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1782,
-          "risk_number": 10.0,
+          "function": "run",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 171,
+          "risk_number": 8.0,
           "top_statements": [
             {
-              "line": 1792,
+              "line": 187,
               "type": "If",
-              "rn": 5.0,
+              "rn": 4.0,
               "nesting_depth": 2
             },
             {
-              "line": 1787,
+              "line": 185,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 1
             },
             {
-              "line": 1789,
-              "type": "If",
-              "rn": 2.0,
-              "nesting_depth": 1
-            }
-          ]
-        },
-        {
-          "function": "run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 246,
-          "risk_number": 3.0,
-          "top_statements": [
-            {
-              "line": 263,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 266,
+              "line": 184,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -620,155 +620,45 @@
           ]
         },
         {
-          "function": "_env",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 780,
-          "risk_number": 3.0,
+          "function": "already_exists",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 129,
+          "risk_number": 6.0,
           "top_statements": [
             {
-              "line": 785,
+              "line": 152,
               "type": "If",
               "rn": 2.0,
               "nesting_depth": 1
             },
             {
-              "line": 784,
-              "type": "For",
+              "line": 154,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 151,
+              "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
             }
           ]
         },
         {
-          "function": "test_stale_marker_triggers_revalidation_and_fails",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1071,
+          "function": "_check_gates_complete",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 117,
           "risk_number": 3.0,
           "top_statements": [
             {
-              "line": 1082,
-              "type": "For",
-              "rn": 1.0,
-              "nesting_depth": 0
+              "line": 124,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
             },
             {
-              "line": 1086,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 1088,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "_verify",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 101,
-          "risk_number": 2.0,
-          "top_statements": [
-            {
-              "line": 112,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "test_two_invocations_mint_different_cycle_ids",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 824,
-          "risk_number": 2.0,
-          "top_statements": [
-            {
-              "line": 828,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 830,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "test_fresh_marker_skips_validation_after_venv_removed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1052,
-          "risk_number": 2.0,
-          "top_statements": [
-            {
-              "line": 1062,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            },
-            {
-              "line": 1064,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "create_branch",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 79,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 93,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "test_record_lives_under_git_common_dir",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 136,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 144,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "test_second_run_in_same_cycle_is_idempotent",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 235,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 254,
-              "type": "If",
-              "rn": 1.0,
-              "nesting_depth": 0
-            }
-          ]
-        },
-        {
-          "function": "__init__",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 55,
-          "risk_number": 1.0,
-          "top_statements": [
-            {
-              "line": 209,
+              "line": 123,
               "type": "For",
               "rn": 1.0,
               "nesting_depth": 0
@@ -776,13 +666,19 @@
           ]
         },
         {
-          "function": "add_agent_files",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 275,
-          "risk_number": 1.0,
+          "function": "_has_claim_envelope",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 165,
+          "risk_number": 3.0,
           "top_statements": [
             {
-              "line": 277,
+              "line": 178,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 177,
               "type": "For",
               "rn": 1.0,
               "nesting_depth": 0
@@ -790,13 +686,19 @@
           ]
         },
         {
-          "function": "closed_issue_nums",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 460,
-          "risk_number": 1.0,
+          "function": "_get_arg",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 135,
+          "risk_number": 3.0,
           "top_statements": [
             {
-              "line": 462,
+              "line": 139,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 137,
               "type": "If",
               "rn": 1.0,
               "nesting_depth": 0
@@ -804,13 +706,41 @@
           ]
         },
         {
-          "function": "set_baseline_on_red",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 470,
+          "function": "write_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 143,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 159,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_normalize_issue_url",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 42,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 473,
+              "line": 61,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_not_started_no_artifacts",
+          "file": "tests/automation/test_correlation.py",
+          "line": 162,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 163,
               "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
@@ -818,1122 +748,632 @@
           ]
         },
         {
-          "function": "_init_repo",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 882,
+          "function": "test_claim_present_no_branch",
+          "file": "tests/automation/test_correlation.py",
+          "line": 170,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 897,
-              "type": "If",
+              "line": 172,
+              "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
             }
           ]
         },
         {
-          "function": "_run_sync",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1820,
+          "function": "test_branch_without_pr_is_not_started",
+          "file": "tests/automation/test_correlation.py",
+          "line": 179,
           "risk_number": 1.0,
           "top_statements": [
             {
-              "line": 1822,
-              "type": "If",
+              "line": 185,
+              "type": "With",
               "rn": 1.0,
               "nesting_depth": 0
             }
           ]
         },
         {
-          "function": "_git",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 42,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_pr_exists_open",
+          "file": "tests/automation/test_correlation.py",
+          "line": 192,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 194,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "_current_branch",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 49,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_gates_complete_clean_pr",
+          "file": "tests/automation/test_correlation.py",
+          "line": 201,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 203,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "__init__",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 59,
-          "risk_number": 0.0,
-          "top_statements": []
+          "function": "test_merged",
+          "file": "tests/automation/test_correlation.py",
+          "line": 210,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 212,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
         },
         {
-          "function": "repo",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 130,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_record_invisible_to_git_status",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 153,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_record_never_appears_in_ls_files",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 160,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_record_in_one_clone_is_not_valid_in_another",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 171,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_same_named_branch_in_second_project_is_isolated",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 194,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_different_cycle_tokens_produce_different_branch_names",
-          "file": "tests/automation/test_branch_ownership.py",
+          "function": "test_merged_beats_gates_complete",
+          "file": "tests/automation/test_correlation.py",
           "line": 219,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 222,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_open_pr_returns_pr_exists",
+          "file": "tests/automation/test_correlation.py",
+          "line": 229,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 232,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_claim_envelope_only_finds_matching_cid",
+          "file": "tests/automation/test_correlation.py",
+          "line": 239,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 244,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_all_states_have_entry",
+          "file": "tests/automation/test_correlation.py",
+          "line": 257,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 258,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_entries_are_non_empty_strings",
+          "file": "tests/automation/test_correlation.py",
+          "line": 261,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 262,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "derive_cid",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 69,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_existing_samename_branch_without_valid_record_is_refused",
-          "file": "tests/automation/test_branch_ownership.py",
-          "line": 260,
+          "function": "branch_name",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 91,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_write_exec",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "pr_title",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 96,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "envelope_cid_line",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 104,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_check_merged",
+          "file": "scripts/automation/lib/correlation.py",
+          "line": 113,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_expected_cid",
+          "file": "tests/automation/test_correlation.py",
+          "line": 38,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_deterministic_same_input",
+          "file": "tests/automation/test_correlation.py",
           "line": 45,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "lock_dir",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "test_length_12_hex",
+          "file": "tests/automation/test_correlation.py",
+          "line": 51,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_trailing_slash_stripped",
+          "file": "tests/automation/test_correlation.py",
+          "line": 56,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_host_case_insensitive",
+          "file": "tests/automation/test_correlation.py",
+          "line": 62,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_different_issues_different_cids",
+          "file": "tests/automation/test_correlation.py",
+          "line": 67,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_url_without_issue_number_appends_it",
+          "file": "tests/automation/test_correlation.py",
+          "line": 74,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_matches_expected_formula",
+          "file": "tests/automation/test_correlation.py",
+          "line": 81,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_canonical_unchanged",
+          "file": "tests/automation/test_correlation.py",
+          "line": 92,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_trailing_slash_removed",
+          "file": "tests/automation/test_correlation.py",
+          "line": 96,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_host_lowercased",
+          "file": "tests/automation/test_correlation.py",
+          "line": 100,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_wrong_issue_number_in_url_replaced",
+          "file": "tests/automation/test_correlation.py",
+          "line": 108,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_branch_name_prefix",
+          "file": "tests/automation/test_correlation.py",
+          "line": 120,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_pr_title_contains_cid",
+          "file": "tests/automation/test_correlation.py",
+          "line": 124,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_envelope_cid_line_format",
+          "file": "tests/automation/test_correlation.py",
+          "line": 131,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_mock_list_pulls",
+          "file": "tests/automation/test_correlation.py",
+          "line": 147,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_mock_list_comments",
+          "file": "tests/automation/test_correlation.py",
+          "line": 154,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_no_branch_inference_sites",
+          "file": "tests/automation/test_correlation.py",
+          "line": 271,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_write_exec",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 77,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_encode_branch",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 85,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "__init__",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 91,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "capture",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 197,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "h",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 202,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_missing_title",
+          "file": "tests/automation/test_submit_pr.py",
           "line": 214,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "last_run_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 218,
+          "function": "test_missing_body_file_flag",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 220,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_worker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 222,
+          "function": "test_body_file_does_not_exist",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 226,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 227,
+          "function": "test_missing_base",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 232,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_worker_legacy",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 231,
+          "function": "test_missing_app",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 238,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "wakeup_overseer_legacy",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 236,
+          "function": "test_invalid_app_value",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 244,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "suspend_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 239,
+          "function": "test_rejects_inline_body",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 250,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "prompt_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 242,
+          "function": "test_app_human_without_confirmed_fails",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 261,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "set_consumer_agents",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 282,
+          "function": "test_app_human_with_confirmed_proceeds",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 269,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "cowpat_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 290,
+          "function": "test_app_worker_does_not_require_confirmed",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 278,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "git_init_repo",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 294,
+          "function": "test_app_overseer_does_not_require_confirmed",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 283,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "git_init_diverged_main",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 311,
+          "function": "test_head_defaults_to_current_branch",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 293,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "git_init_squash_merged_feature_branch",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 351,
+          "function": "test_explicit_head_used_over_current_branch",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 301,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "git_init_open_feature_branch",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 409,
+          "function": "test_happy_path_pushes_creates_pr_and_revokes_token",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 315,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "current_branch",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "test_token_mint_failure_aborts_before_push",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 335,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_push_failure_aborts_before_pr_create_but_revokes",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 345,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_gh_pr_create_failure_still_revokes_token",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 356,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_fetches_base_before_pushing",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 371,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_up_to_date_base_does_not_merge",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 379,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_behind_base_merges_before_push",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 389,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_merge_conflict_aborts_and_does_not_push",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 404,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_missing_local_branch_fails_closed",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 422,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_stale_non_checked_out_head_refuses_instead_of_merging",
+          "file": "tests/automation/test_submit_pr.py",
           "line": 435,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "write_cowpat",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 441,
+          "function": "test_fetch_failure_aborts_before_token_mint",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 454,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "make_dirty",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 445,
+          "function": "_assert_fully_refused_before_network",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 469,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "baseline_ran",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 449,
+          "function": "test_worker_refuses_pr_for_branch_without_ownership_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 478,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "claude_ran",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 453,
+          "function": "test_worker_refuses_pr_when_no_cycle_id_set",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 493,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "aa_issue_created",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 456,
+          "function": "test_worker_refuses_pr_for_record_from_a_different_cycle",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 506,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "baseline_repair_state_file",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 466,
+          "function": "test_worker_refuses_pr_for_record_naming_a_different_branch",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 520,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "claude_record",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 476,
+          "function": "test_worker_refuses_pr_for_record_with_non_worker_role",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 533,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "cron",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 481,
+          "function": "test_worker_refuses_pr_for_malformed_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 546,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_missing_role_and_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 487,
+          "function": "test_worker_refuses_pr_for_unreadable_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 558,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_no_args_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 492,
+          "function": "test_worker_refuses_pr_for_oversized_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 571,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_invalid_role_rejected",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 498,
+          "function": "test_worker_refuses_pr_for_absent_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 587,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_unknown_flag_shows_usage",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 503,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_unknown_project_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 511,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_role_root_errors",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 516,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_resolved_project_proceeds_past_registry",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 524,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_live_holder_makes_second_invocation_exit_zero",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 534,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_stale_dead_pid_lock_is_reclaimed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 543,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pid_written_is_the_launcher_pid",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 551,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_empty_pid_lock_is_not_reclaimed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 565,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_old_lock_reclaimed_even_with_live_pid",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 580,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_file_is_consumed_and_cycle_runs",
-          "file": "tests/automation/test_hos_cron.py",
+          "function": "test_worker_with_valid_record_reaches_unchanged_push_pr_path",
+          "file": "tests/automation/test_submit_pr.py",
           "line": 598,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_legacy_wakeup_for_this_project_is_consumed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 608,
+          "function": "test_app_human_confirmed_ignores_ownership_state",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 614,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_legacy_wakeup_without_project_is_consumed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 620,
+          "function": "test_app_overseer_ignores_ownership_state",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 626,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_legacy_wakeup_for_other_project_is_not_stolen",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 631,
+          "function": "test_confirmed_flag_does_not_bypass_worker_ownership_check",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 636,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_recent_last_run_triggers_idle_backoff",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 642,
+          "function": "test_hos_state_dir_env_var_is_not_consulted_for_ownership",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 648,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_stale_last_run_polls_and_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 652,
+          "function": "test_hos_bo_reason_env_var_cannot_fake_a_valid_record",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 661,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_diverged_local_main_skips_cycle_fail_closed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 664,
+          "function": "test_refusal_emits_audit_event",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 674,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_ff_only_failure_without_divergence_still_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 675,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_squash_merged_feature_branch_does_not_deadlock",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 685,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_squash_merged_feature_branch_returns_to_main",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 699,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_open_feature_branch_with_live_upstream_is_left_alone",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 711,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_claude_auth_env_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 725,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_empty_oauth_token_is_ex_config",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 732,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_api_key_unset_before_claude_invoke",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 739,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_login_mismatch_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 752,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_expected_login_unset_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 758,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_matching_login_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 765,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_cycle_vars_are_minted_and_exported",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 790,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_cycle_id_matches_the_documented_grammar",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 796,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_cycle_token_is_a_12_digit_utc_timestamp",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 802,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_cycle_role_matches_the_invoked_role",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 807,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_overseer_also_receives_a_cycle_identity",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 811,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_claude_resolved_by_absolute_path_from_minimal_path",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 838,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_pinned_path_includes_standard_bins",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 851,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_write_claude_stub",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 876,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 906,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_present_file_sources_normally",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 915,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_file_no_fix_on_origin_is_fatal",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 922,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_file_self_heals_via_fetch_ff_merge",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 932,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_written_on_success",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 958,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_last_run_not_written_when_claude_fails",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 964,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_wakeup_dropped_to_overseer",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 973,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_absent_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 984,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_bootstrap_marker_present_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 990,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_broken_venv_warns",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 999,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_healthy_venv_no_warn",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1005,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_venv_self_heals_via_ensure_venv",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1018,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_venv_build_failure_exits_78",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1030,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_pytest_self_heals_via_ensure_venv",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1038,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_successful_check_writes_marker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1045,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_suspended_project_exits_0_without_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1100,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_suspended_project_logs_clear_hint",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1110,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_suspended_until_future_exits_0",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1118,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_suspended_until_past_removes_marker_and_runs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1128,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_marker_runs_normally",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1139,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_halt_issue_present_skips_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1149,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_halt_issue_present_logs_audit_event",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1157,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_halt_issue_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1163,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_halt_check_empty_slug_fails_closed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1170,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_halt_check_api_error_fails_closed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1177,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_agents_list_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1187,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_all_agents_present_proceeds",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1194,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_agent_exits_one",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1203,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_agent_files_needs_human_issue_filed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1213,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_agent_duplicate_issue_guard",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1222,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_agent_dedup_query_failure_fails_closed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1231,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_comments_and_blanks_in_agents_list_ignored",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1244,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_clean_repo_skips_baseline",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1269,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_head_moved_runs_baseline_and_restamps_cowpat",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1279,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_dirty_tree_runs_baseline",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1289,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_cowpat_runs_baseline_and_bootstraps_marker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1299,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_non_git_repo_runs_baseline_without_marker",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1309,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_baseline_failure_files_broken_state_issue",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1318,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_baseline_failure_duplicate_issue_guard",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1331,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_baseline_failure_dedup_query_failure_fails_closed",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1343,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_baseline_green_auto_closes_standing_blocked_issue",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1358,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_baseline_green_no_standing_issue_closes_nothing",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1367,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_default_mode_still_halts_on_assertion_failure",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1384,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_repair_mode_absorbs_assertion_failure_and_launches_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1395,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_repair_mode_context_tells_claude_to_scope_to_baseline",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1407,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_repair_mode_still_halts_on_environmental_failure",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1428,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_repair_mode_escalates_after_max_attempts",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1443,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_open_prs_launches_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1463,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_awaiting_merge_skips_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1470,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_awaiting_merge_drops_overseer_wakeup",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1481,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_awaiting_merge_stamps_last_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1493,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_changes_requested_launches_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1503,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_unapproved_pr_launches_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1514,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_overseer_role_not_subject_to_pr_routing",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1525,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_overseer_last_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1548,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_fetch_failure_does_not_stamp_last_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1552,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_fetch_failure_is_distinct_from_empty",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1559,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_fetch_failure_does_not_launch_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1567,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_genuine_empty_pr_list_stamps_last_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1572,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_worker_prompt_exits_78_without_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1592,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_worker_prompt_does_not_stamp_last_run",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1601,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_missing_overseer_prompt_exits_78_without_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1608,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_present_prompt_still_launches_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1617,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_prompt_file_prepended_with_working_directory",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1626,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_claude_invoked_with_cwd_at_repo_root",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1649,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_hardcoded_paths_in_worker_prompt",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1676,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_hardcoded_paths_in_overseer_prompt",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1688,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_setup_stdin_capture",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1705,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_context_block_present_no_open_prs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1719,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_context_block_one_open_pr",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1728,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_context_block_three_open_prs",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1743,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_context_block_follows_prompt_content",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1758,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_context_block_absent_when_routing_skips_claude",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1770,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_git",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1800,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_make_repos",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1806,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_remote_branch_exists",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1837,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "_files_on_branch",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1845,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_changed_audit_files_pushed_to_audit_log_branch",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1856,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_no_audit_files_on_disk_no_push",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1871,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_audit_log_branch_absent_bases_off_main",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1879,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_audit_log_branch_exists_rebases_from_it",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1892,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_push_failure_warns_and_exits_zero",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1916,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_live_checkout_never_branch_switched",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1942,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_live_head_index_and_worktree_pristine",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 1983,
-          "risk_number": 0.0,
-          "top_statements": []
-        },
-        {
-          "function": "test_uncommitted_worktree_changes_not_leaked_to_audit_branch",
-          "file": "tests/automation/test_hos_cron.py",
-          "line": 2010,
+          "function": "test_audit_sink_failure_does_not_mask_refusal",
+          "file": "tests/automation/test_submit_pr.py",
+          "line": 689,
           "risk_number": 0.0,
           "top_statements": []
         }

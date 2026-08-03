@@ -9,6 +9,7 @@ impossible:
 """
 
 import hashlib
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -141,14 +142,6 @@ class TestArtifactNames:
 OWNER = "thurlow-research"
 REPO = "HumanOversightSystem"
 CID = derive_cid(CANONICAL_URL, ISSUE_NUMBER)
-BRANCH = branch_name(CID)
-
-
-def _mock_get_branch(return_value):
-    return patch(
-        "scripts.automation.lib.correlation.get_branch",
-        return_value=return_value,
-    )
 
 
 def _mock_list_pulls(return_value):
@@ -168,7 +161,6 @@ def _mock_list_comments(return_value):
 class TestAlreadyExists:
     def test_not_started_no_artifacts(self):
         with (
-            _mock_get_branch(None),
             _mock_list_pulls([]),
             _mock_list_comments([]),
         ):
@@ -178,26 +170,28 @@ class TestAlreadyExists:
     def test_claim_present_no_branch(self):
         comment_body = f"some text\n{envelope_cid_line(CID)}\nmore text"
         with (
-            _mock_get_branch(None),
             _mock_list_pulls([]),
             _mock_list_comments([{"body": comment_body}]),
         ):
             state = already_exists(OWNER, REPO, CID, ISSUE_NUMBER)
         assert state == ResumeState.CLAIM_PRESENT
 
-    def test_branch_exists_no_pr(self):
+    def test_branch_without_pr_is_not_started(self):
+        """
+        A branch's existence is not evidence of anything (#967, ADR-037 AD-1/
+        AD-2) — with no PR and no claim envelope, the cid is NOT_STARTED even
+        if a branch happens to exist for it (e.g. a foreign in-progress branch).
+        """
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([]),
             _mock_list_comments([]),
         ):
             state = already_exists(OWNER, REPO, CID, ISSUE_NUMBER)
-        assert state == ResumeState.BRANCH_EXISTS
+        assert state == ResumeState.NOT_STARTED
 
     def test_pr_exists_open(self):
         pr = {"number": 42, "merged_at": None, "mergeable_state": "unknown"}
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([pr]),
             _mock_list_comments([]),
         ):
@@ -207,7 +201,6 @@ class TestAlreadyExists:
     def test_gates_complete_clean_pr(self):
         pr = {"number": 42, "merged_at": None, "mergeable_state": "clean"}
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([pr]),
             _mock_list_comments([]),
         ):
@@ -217,7 +210,6 @@ class TestAlreadyExists:
     def test_merged(self):
         pr = {"number": 42, "merged_at": "2026-06-15T10:00:00Z", "mergeable_state": "clean"}
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([pr]),
             _mock_list_comments([]),
         ):
@@ -228,18 +220,16 @@ class TestAlreadyExists:
         """merged_at presence is the highest-priority state."""
         pr = {"number": 42, "merged_at": "2026-06-15T10:00:00Z", "mergeable_state": "clean"}
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([pr]),
             _mock_list_comments([{"body": envelope_cid_line(CID)}]),
         ):
             state = already_exists(OWNER, REPO, CID, ISSUE_NUMBER)
         assert state == ResumeState.MERGED
 
-    def test_pr_beats_branch(self):
-        """A PR's existence overrides a bare branch finding."""
+    def test_open_pr_returns_pr_exists(self):
+        """An open PR's existence is sufficient on its own (no branch premise)."""
         pr = {"number": 42, "merged_at": None, "mergeable_state": "unknown"}
         with (
-            _mock_get_branch({"ref": f"refs/heads/{BRANCH}"}),
             _mock_list_pulls([pr]),
             _mock_list_comments([]),
         ):
@@ -252,7 +242,6 @@ class TestAlreadyExists:
         assert wrong_cid != CID  # sanity
         comment_body = f"{envelope_cid_line(wrong_cid)}"
         with (
-            _mock_get_branch(None),
             _mock_list_pulls([]),
             _mock_list_comments([{"body": comment_body}]),
         ):
@@ -272,3 +261,23 @@ class TestColdStartTable:
     def test_entries_are_non_empty_strings(self):
         for state, description in COLD_START_TABLE.items():
             assert isinstance(description, str) and description.strip()
+
+
+# ---------------------------------------------------------------------------
+# Inference removal (T6, #967, ADR-037 AD-2) — structural guard
+# ---------------------------------------------------------------------------
+
+class TestNoBranchInferenceSites:
+    def test_no_branch_inference_sites(self):
+        """
+        The worker's completion-by-inference bug (#967) was codified here as
+        ResumeState.BRANCH_EXISTS and a get_branch() call. Both must be gone,
+        permanently — a re-added import, enum member, or the literal cold-start
+        prose is exactly the regression this guard exists to catch.
+        """
+        import scripts.automation.lib.correlation as correlation_module
+
+        source = inspect.getsource(correlation_module)
+        assert "BRANCH_EXISTS" not in source
+        assert "get_branch" not in source
+        assert "Branch exists" not in source
