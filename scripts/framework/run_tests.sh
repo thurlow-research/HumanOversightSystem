@@ -57,8 +57,8 @@ if ! $MUTATION_ONLY; then
     echo ""
 
     "$VENV_PYTHON" -m pytest tests/ \
-        --cov=scripts/oversight/validators \
-        --cov=scripts/oversight/token_tracker \
+        --cov=scripts/oversight \
+        --cov=scripts/automation/lib \
         --cov-report=term-missing \
         --cov-fail-under=$COVERAGE_TARGET \
         -v
