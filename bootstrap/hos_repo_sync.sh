@@ -91,10 +91,24 @@ _pipe_stderr() {
   fi
 }
 
+# Classifies a failure message as structural (a filesystem/permission
+# restriction that will never resolve by retrying — e.g. a sandboxed
+# read-only working tree) vs benign (network/auth/divergence — retry next
+# session). See #1200: the two demand different responses and must not be
+# reported identically.
+_is_structural_failure() {
+  printf '%s' "$1" | grep -qiE 'read-only file system|permission denied|unable to unlink|unable to create'
+}
+
 fetch_out="$(git fetch origin 2>&1)"; fetch_status=$?
 _pipe_stderr "$fetch_out"
 if [ "$fetch_status" -ne 0 ]; then
   echo "hos-repo-sync: git fetch failed — $repo_root" >&2
+  if _is_structural_failure "$fetch_out"; then
+    echo "hos-repo-sync: STRUCTURAL cause — a filesystem/permission restriction is blocking the fetch and will not resolve by retrying. See #1183/#1185 for the sandbox write-protection this is likely caused by." >&2
+  else
+    echo "hos-repo-sync: transient cause — likely network/auth; safe to retry next session." >&2
+  fi
   exit 1
 fi
 
@@ -113,27 +127,51 @@ else
   behind="${behind:-0}"
 fi
 
+sync_ok=false
+sync_failure_out=""
+
 if [ "$behind" -eq 0 ]; then
+  sync_ok=true
   echo "hos-repo-sync: $default_branch up to date — $repo_root"
 elif [ "$current_branch" = "$default_branch" ]; then
   if [ -z "$(git status --porcelain)" ]; then
     pull_out="$(git pull --ff-only 2>&1)"; pull_status=$?
     _pipe_stderr "$pull_out"
     if [ "$pull_status" -eq 0 ]; then
+      sync_ok=true
       echo "hos-repo-sync: fast-forwarded $default_branch — $repo_root"
     else
       echo "hos-repo-sync: fetch OK, pull --ff-only failed on '$default_branch' (diverged?) — $repo_root" >&2
+      sync_failure_out="$pull_out"
     fi
   else
     echo "hos-repo-sync: $default_branch is behind but working tree is dirty, fetch-only — $repo_root"
+    sync_failure_out="(fetch-only: working tree dirty)"
   fi
 else
   ff_out="$(git fetch origin "${default_branch}:${default_branch}" 2>&1)"; ff_status=$?
   _pipe_stderr "$ff_out"
   if [ "$ff_status" -eq 0 ]; then
+    sync_ok=true
     echo "hos-repo-sync: fast-forwarded local $default_branch (checked-out branch '$current_branch' untouched) — $repo_root"
   else
     echo "hos-repo-sync: fetch OK, fast-forward of '$default_branch' failed (diverged?) — $repo_root" >&2
+    sync_failure_out="$ff_out"
+  fi
+fi
+
+# Loud, unmissable staleness report (#1200) — a session must always be able
+# to tell it may be working against superseded code, even when the sync
+# itself could not fix it. Printed to stderr so it survives being piped
+# through anything that filters stdout.
+if ! $sync_ok; then
+  head_short="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "" >&2
+  echo "hos-repo-sync: STALE — HEAD is ${behind} commit(s) behind origin/${default_branch} (current HEAD: ${head_short}). File/line references and analysis in this session may be against superseded code." >&2
+  if _is_structural_failure "$sync_failure_out"; then
+    echo "hos-repo-sync: STRUCTURAL cause — a filesystem/permission restriction is blocking the sync and will not resolve by retrying. See #1183/#1185 for the sandbox write-protection this is likely caused by." >&2
+  else
+    echo "hos-repo-sync: transient cause — likely network/auth, a dirty working tree, or a genuinely diverged branch; safe to retry next session." >&2
   fi
 fi
 

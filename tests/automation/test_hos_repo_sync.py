@@ -151,11 +151,6 @@ class TestFastForward:
                        cwd=repo.clone).stdout.strip()
         assert local == remote
 
-    # TODO: the diverged-branch case (default branch checked out, clean, but
-    # locally ahead so pull --ff-only fails) is an intentional test gap for now
-    # — the script warns and exits 0, which is the correct observable behaviour,
-    # but exercising it requires crafting a diverged local commit, which is more
-    # setup than the current fixture supports cleanly.
     def test_skips_fast_forward_when_working_tree_dirty(self, repo, state_dir):
         repo.advance_remote()
         (repo.clone / "README.md").write_text("dirty local edit\n")
@@ -172,6 +167,78 @@ class TestFastForward:
         r = _run_script(repo.clone, state_dir, interval=0)
         assert r.returncode == 0, r.stdout + r.stderr
         assert "up to date" in (r.stdout + r.stderr)
+
+
+class TestStaleReportingOnSyncFailure:
+    """#1200 — a session must always be able to tell it may be working
+    against superseded code, and a structural (never-going-to-resolve)
+    failure must be reported distinctly from a benign/transient one."""
+
+    def test_diverged_branch_reported_as_stale_and_transient(self, repo, state_dir):
+        # Default branch checked out, clean, but locally ahead so
+        # pull --ff-only fails and diverged — fills the gap the previous
+        # TODO in TestFastForward used to note, and verifies the benign
+        # classification (#1200).
+        (repo.clone / "local.txt").write_text("local change\n")
+        _git("add", "local.txt", cwd=repo.clone)
+        _git("commit", "-m", "local diverge", cwd=repo.clone)
+        repo.advance_remote()
+
+        r = _run_script(repo.clone, state_dir, interval=0)
+        combined = r.stdout + r.stderr
+        assert r.returncode == 0, combined
+        assert "diverged" in combined
+        assert "STALE" in combined
+        assert "transient cause" in combined
+        assert "STRUCTURAL" not in combined
+
+    def test_dirty_tree_reported_as_stale_and_transient(self, repo, state_dir):
+        repo.advance_remote()
+        (repo.clone / "README.md").write_text("dirty local edit\n")
+
+        r = _run_script(repo.clone, state_dir, interval=0)
+        combined = r.stdout + r.stderr
+        assert r.returncode == 0, combined
+        assert "STALE" in combined
+        assert "transient cause" in combined
+        assert "STRUCTURAL" not in combined
+
+    def test_readonly_working_tree_reported_as_stale_and_structural(self, repo, state_dir):
+        repo.advance_remote()
+        os.chmod(repo.clone, 0o555)
+        try:
+            r = _run_script(repo.clone, state_dir, interval=0)
+        finally:
+            os.chmod(repo.clone, 0o755)
+
+        combined = r.stdout + r.stderr
+        assert r.returncode == 0, combined
+        assert "STALE" in combined
+        assert "STRUCTURAL" in combined
+        assert "#1183" in combined
+
+    def test_up_to_date_emits_no_stale_warning(self, repo, state_dir):
+        r = _run_script(repo.clone, state_dir, interval=0)
+        combined = r.stdout + r.stderr
+        assert "STALE" not in combined
+
+    def test_successful_fast_forward_emits_no_stale_warning(self, repo, state_dir):
+        repo.advance_remote()
+        r = _run_script(repo.clone, state_dir, interval=0)
+        combined = r.stdout + r.stderr
+        assert "STALE" not in combined
+
+
+class TestFetchFailure:
+    def test_fetch_failure_is_reported_and_classified_transient(self, repo, state_dir):
+        _git("remote", "set-url", "origin", str(repo.tmp / "does-not-exist.git"), cwd=repo.clone)
+
+        r = _run_script(repo.clone, state_dir, interval=0)
+        combined = r.stdout + r.stderr
+        assert r.returncode == 1
+        assert "git fetch failed" in combined
+        assert "transient cause" in combined
+        assert "STRUCTURAL" not in combined
 
 
 class TestPerRepoStateIsolation:
