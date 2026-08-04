@@ -2,8 +2,8 @@
 
 **Date:** 2026-08-03 / 2026-08-04
 **Role:** Human-proxy orchestrator (interactive), Human clone
-**Duration:** ~9 hours
-**Artifacts:** 3 PRs opened and merged (#1235, #1246, #1258); 14 issues filed; 3 closed (#1029, #1199, #1230); ~20 issues commented; 1 milestone created and 4 renumbered; 1 architect ADR commissioned
+**Duration:** ~11 hours
+**Artifacts:** 4 PRs opened — #1235, #1246, #1258 merged, plus this one; 14 issues filed; 4 closed (#1029, #1199, #1230, #1256); ~25 issues commented; 1 milestone created and 4 renumbered; 1 architect ADR commissioned
 
 ---
 
@@ -149,13 +149,26 @@ Scott's observation that protected-surface approvals are *"robo approved"* is th
 governance point of the session. In this repo the protected list covers most of the product,
 so the gate fires on nearly every PR and human approval degrades into rubber-stamping.
 
-Meanwhile `fail_under` moved **80 → 79** in PR #1247 and merged with no human approval, because
-`pyproject.toml` is not a protected surface — a genuine loosening, on the same day the ratchet
-was adopted for that regime.
+Meanwhile `fail_under` moved **80 → 79 → 78** across PR #1247 and PR #1262, in a single day.
 
-**Path-based gating caught the wrong things in both directions on the same day.** The proposed
-discriminator is the ratchet rather than the path: tightening or neutral changes take
-cross-vendor review; loosening changes always take a human.
+An earlier draft of this log asserted those merged without human approval. **That was wrong**,
+and the error is worth recording because it is the same failure this session kept finding: a
+claim about state, made from memory, that a single query would have falsified. Both PRs carry
+`ScottThurlow APPROVED` and were merged by him. The Ratchet Principle was satisfied
+procedurally.
+
+The observation that survives the correction is subtler, and more useful. In both cases the
+threshold *reduction* rode along inside a PR whose stated purpose was **widening the measured
+surface** — a tightening. The loosening was a side effect of a change framed as the opposite,
+and nothing in review surfaced it as one. Approval was real; attention to that specific line
+was not.
+
+**So path-based gating caught the wrong things in both directions on the same day**: it fired
+on dozens of neutral protected-surface edits, consuming the attention that would have caught a
+threshold drop it did not fire on at all. The proposed discriminator is the ratchet rather than
+the path — tightening or neutral changes take cross-vendor review; loosening changes always take
+a human — and #1242's ratchet baseline is what would make a threshold decrease a distinct,
+deliberate act rather than a line inside an unrelated diff.
 
 ---
 
