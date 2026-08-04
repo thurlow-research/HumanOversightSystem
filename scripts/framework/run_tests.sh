@@ -61,6 +61,7 @@ if ! $MUTATION_ONLY; then
     "$VENV_PYTHON" -m pytest tests/ \
         --cov=scripts/oversight \
         --cov=scripts/automation/lib \
+        --cov=scripts/framework \
         --cov-report=term-missing \
         --cov-fail-under=$COVERAGE_TARGET \
         -v
