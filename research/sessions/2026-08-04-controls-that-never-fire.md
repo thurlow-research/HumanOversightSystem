@@ -172,10 +172,81 @@ deliberate act rather than a line inside an unrelated diff.
 
 ---
 
+## The remedy the session converged on
+
+Late in the session the human named the corrective directly:
+
+> *"Enforcing through LLM instructions has been very much hit and miss."*
+
+Measured, on the overseer's own required comment format: the last overseer comment on each of
+**35 merged PRs** since 2026-08-01 contained the mandated executive summary **13 times — 37%**.
+`overseer.md:486` states the rule unambiguously (*"a comment missing any element … is a
+malformed escalation — rewrite it before posting"*). Stated, self-policed, honoured about a
+third of the time.
+
+### Validate at the write path, not in the instructions
+
+The remedy is not a better instruction. It is a **static check where the artifact is written**,
+and the precedent already exists and has held: `bootstrap/post_comment.sh:70` refuses a body
+beginning with `@/`, added after that exact bug shipped a delivered-nothing comment (#1155). One
+content check, at the one invocation site, enforced rather than requested.
+
+That generalises to every LLM-produced structured artifact currently governed by prose alone —
+sign-off register entries (#1125 is precisely this: `check_register_completeness` specified and
+never written), PR bodies, audit events.
+
+Two implementation facts that decide whether it works:
+
+- **There are two write paths, and the one that matters is the second.** `post_comment.sh` takes
+  conversation comments; `post_review_thread.sh` (#1207) takes the §8.2 escalations and blocking
+  findings — the comments the rule actually governs. A check on the first alone would miss the
+  entire class.
+- **It enforces form, not truth.** It can require that the summary leads, that exactly one enum
+  value is present, that a "what was not verified" clause exists. It cannot know whether the
+  recommendation is correct. That is the right trade: all 22 non-compliant comments failed on
+  form.
+
+### The corollary that keeps it from eating everything
+
+Not every rule wants a validator. The distinction that emerged:
+
+> **Enforce controls; suggest aids.**
+
+A **control** whose failure mode is an unguarded gap must be mechanically enforced — 37%
+compliance is a broken control. An **aid** whose failure mode is merely *status quo* is fine in
+prose. The worked example is the human's own proposal to have the overseer request a
+cross-vendor review when it and the worker thrash (#1205): if the instruction is missed, the
+human intervenes manually exactly as today. Upside-only, so demanding a validator would cost
+throughput for no safety gain.
+
+This corrects an over-generalisation this session drifted into — that everything unreliable
+should be mechanised. The line is the *consequence of non-compliance*, not the unreliability
+itself.
+
+### And where the human gate actually sits
+
+The same conversation established something that reframes the review architecture: the human
+does not review the diff.
+
+> *"I cannot review the code; there is too much, and I lack context to be effective. So I judge
+> based on the comment trail and discussions."*
+
+That is a rational adaptation to 79 merged PRs in seven days, not a degraded review. But it
+means **the overseer's comment is the human review surface**, and its completeness is the gate's
+completeness. A trail reporting only what it verified is indistinguishable from one reporting
+complete coverage — which is how #1235's review read as thorough while silently omitting the
+security dimension that #1266 shows never ran.
+
+Hence the requirement that every overseer comment state **what it could not check**. Applied to
+the review surface, it is the same finding as everything above: absence has to be *reported*,
+because it cannot be *seen*.
+
+---
+
 ## Related
 
 - `research/findings/state-assertions-decay-faster-than-their-documents.md` — recurred twice here
 - `research/findings/unenforceable-rules-need-verification-mechanisms.md` — the adjacent, distinct case
 - `research/findings/ratchet-principle.md` — applied to the test regime this session
 - `research/findings/enforcement-gate-scope-gap.md` — *"the function exists; it simply never ran"*; #1253 is the same shape one level deeper
-- Issues: #1241, #1242, #1243, #1244, #1253, #1255, #1265, #1266
+- Issues: #1241, #1242, #1243, #1244, #1253, #1255, #1265, #1266, #1268 (prose), #1270 (enforcement), #1205 (cross-vendor triggers)
