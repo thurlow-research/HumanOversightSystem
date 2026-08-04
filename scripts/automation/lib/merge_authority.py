@@ -397,6 +397,45 @@ def _touches_protected_surface(changed_files: list[str], repo_root: str = ".") -
 
 
 # ---------------------------------------------------------------------------
+# Security-relevant surface check (#1253 — deterministic source, mirrors the
+# protected-surface check above)
+# ---------------------------------------------------------------------------
+
+def _touches_security_surface(changed_files: list[str], repo_root: str = ".") -> bool:
+    """
+    Check if any changed file is on the security-relevant surface (#1253).
+
+    Before this existed, `security_relevant` was a caller-supplied bool with no
+    real caller — the matrix row forcing HUMAN_REQUIRED and the "never approve a
+    security-relevant change without human sign-off" hard limit were both
+    silently unenforced. This derives the signal from
+    scripts/framework/security_surfaces.txt so it no longer depends on a caller
+    remembering to pass it. Same fail-closed contract as
+    _touches_protected_surface: an unreadable surfaces file assumes relevant; a
+    surfaces file that simply does not exist is not itself treated as relevant,
+    because security_surfaces.txt lives under scripts/framework/**, which
+    protected_surfaces.txt already protects — deleting or tampering with it is
+    independently caught by the protected-surface check.
+    """
+    surfaces_path = Path(repo_root) / "scripts" / "framework" / "security_surfaces.txt"
+    if not surfaces_path.is_file():
+        return False
+    try:
+        globs = []
+        for line in surfaces_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                globs.append(line)
+        for f in changed_files:
+            for pattern in globs:
+                if fnmatch.fnmatch(f, pattern) or fnmatch.fnmatch(f, f"**/{pattern}"):
+                    return True
+        return False
+    except Exception:
+        return True  # Fail-closed: if we can't read, assume security-relevant
+
+
+# ---------------------------------------------------------------------------
 # Authorship backstop (R9.1.4)
 # ---------------------------------------------------------------------------
 
@@ -429,7 +468,8 @@ def decide_merge_authority(
     changed_files: list[str],
     pr_title: str = "",
     pr_author: str = "",
-    security_relevant: bool = False,
+    security_relevant: bool = False,  # explicit override; OR'd with the derived
+                                       # scripts/framework/security_surfaces.txt check (#1253)
     agent_class: str = "worker",     # "worker" | "overseer"
     overseer_handle: str = DEFAULT_OVERSEER_HANDLE,
     worker_handle: str = "hos-worker-hos[bot]",  # GitHub App; updated from PAT account (#547)
@@ -565,6 +605,12 @@ def decide_merge_authority(
     # Security-relevant: requires human approval.  If a verified human has
     # already approved the current head SHA, authorization is satisfied and
     # the overseer may execute the merge (#741).
+    #
+    # #1253: security_relevant is no longer trusted from the caller alone — it
+    # is OR'd with the deterministic surface-file derivation, so the gate fires
+    # even when a caller forgets to compute and pass it (which is how it went
+    # unenforced: no real caller ever did).
+    security_relevant = security_relevant or _touches_security_surface(changed_files, repo_root)
     if security_relevant:
         approval = _find_human_approval(reviews, human_reviewer, head_sha)
         if approval:
