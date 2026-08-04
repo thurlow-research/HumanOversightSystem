@@ -10,8 +10,8 @@
 #   ./scripts/framework/run_tests.sh --mutation-only  # mutmut only (skip pytest run)
 #
 # Targets (from unit-test agent):
-#   Coverage : ≥ 79% (ratcheted from the measured baseline after #1174 widened
-#                     the measured surface to scripts/oversight + scripts/automation/lib;
+#   Coverage : ≥ 78% (ratcheted from the measured baseline after #1256 widened
+#                     the measured surface to also include scripts/framework;
 #                     raise as gaps close, never lower without a recorded decision)
 #   Mutant score : ≥ 75% killed
 #
@@ -30,7 +30,7 @@ VENV_PIP="$VENV/bin/pip"
 
 MUTATION=false
 MUTATION_ONLY=false
-COVERAGE_TARGET=79
+COVERAGE_TARGET=78
 MUTANT_TARGET=75
 
 while [[ $# -gt 0 ]]; do
@@ -61,6 +61,7 @@ if ! $MUTATION_ONLY; then
     "$VENV_PYTHON" -m pytest tests/ \
         --cov=scripts/oversight \
         --cov=scripts/automation/lib \
+        --cov=scripts/framework \
         --cov-report=term-missing \
         --cov-fail-under=$COVERAGE_TARGET \
         -v
