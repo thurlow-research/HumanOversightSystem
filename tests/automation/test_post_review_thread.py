@@ -54,7 +54,15 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
 fi
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     if [[ "${FAIL_GRAPHQL:-}" == "1" ]]; then exit 1; fi
-    echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false}}}}'
+    if [[ "${NULL_REVIEW_ID:-}" == "1" ]]; then
+        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"pullRequestReview":null}}}}'
+    else
+        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"pullRequestReview":{"databaseId":4847880385}}}}}'
+    fi
+    exit 0
+fi
+if [[ "$1" == "api" && "$*" == *"/events"* ]]; then
+    if [[ "${FAIL_SUBMIT_REVIEW:-}" == "1" ]]; then exit 1; fi
     exit 0
 fi
 exit 1
@@ -200,6 +208,52 @@ def test_happy_path_posts_thread_and_revokes_token(h):
     assert "GH_CALLED_WITH:pr view 1207 --repo test-owner/test-repo --json id" in cap
     assert "GH_CALLED_WITH:pr view 1207 --repo test-owner/test-repo --json files" in cap
     assert "GH_CALLED_WITH:api graphql" in cap
+    assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+# --------------------------------------------------------------------------- #
+# #1248 regression guard: the implicitly-created PENDING review must be
+# submitted, or the thread stays invisible to the human.
+# --------------------------------------------------------------------------- #
+
+
+def test_happy_path_submits_the_pending_review(h):
+    result = h.run([
+        "--pr", "1207", "--body-file", str(h.body_file), "--app", "overseer",
+    ])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    submit_calls = [
+        line for line in cap.splitlines()
+        if line.startswith("GH_CALLED_WITH:") and "/events" in line
+    ]
+    assert len(submit_calls) == 1, cap
+    assert "repos/test-owner/test-repo/pulls/1207/reviews/4847880385/events" in submit_calls[0]
+    assert "event=COMMENT" in submit_calls[0]
+    assert "APPROVE" not in submit_calls[0]
+    assert "REQUEST_CHANGES" not in submit_calls[0]
+
+
+def test_missing_review_id_fails_closed_and_revokes_token(h):
+    result = h.run(
+        ["--pr", "1207", "--body-file", str(h.body_file), "--app", "overseer"],
+        env_overrides={"NULL_REVIEW_ID": "1"},
+    )
+    assert result.returncode != 0
+    assert "PENDING" in result.stderr
+    cap = h.capture()
+    assert "/events" not in cap
+    assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+def test_submit_review_failure_fails_closed_and_revokes_token(h):
+    result = h.run(
+        ["--pr", "1207", "--body-file", str(h.body_file), "--app", "overseer"],
+        env_overrides={"FAIL_SUBMIT_REVIEW": "1"},
+    )
+    assert result.returncode != 0
+    assert "PENDING" in result.stderr
+    cap = h.capture()
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
 
 
