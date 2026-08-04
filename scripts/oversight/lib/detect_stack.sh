@@ -3,25 +3,36 @@
 #
 # Sourced lib, two functions:
 #
-#   detect_required_tools()
+#   detect_required_tools [PY_FILES_PRESENT]
 #       Prints the required-tool keys (one per line, deduped) for the project
 #       at cwd, derived from repo MARKERS — never lone file extensions:
 #         tsconfig.json                                  -> tsc
 #         "astro" in package.json deps, or any .astro file -> astro, astro-check
 #         an eslint config file                          -> eslint
 #         any of the above (a JS/Astro project)           -> node-floor (Node >= 22)
-#       Python venv tools are NOT listed here — ensure_venv.sh already
-#       hard-fails when the venv can't build, so they are guaranteed present.
+#       PY_FILES_PRESENT: pass a non-empty value (e.g. "1") when the current
+#       changeset contains Python files (mirrors run_validators.sh's PY_FILES)
+#       to additionally require: bandit, radon. Unlike the JS markers above,
+#       this is changeset-scoped, not repo-wide — this repo is itself a
+#       Python project, so a repo-marker check would require bandit/radon on
+#       every run, including JS-only and docs-only changesets that never
+#       invoke the Python validators (#1266). ensure_venv.sh installs these
+#       into the oversight venv and smoke-tests their importability on every
+#       invocation, but a subprocess PATH gap could still make them
+#       unresolvable at call time (the actual failure mode fixed by #1266) —
+#       this preflight is the safety net for that.
 #
-#   tool_preflight_or_fail()
-#       Resolves every required tool (via resolve_node_tool) plus the Node
-#       floor. On any miss: writes a structured, actionable message to stderr
-#       and returns 1. No-op (returns 0 immediately) when detect_required_tools
-#       finds nothing to require (AC-4: no-op outside a JS/Astro project).
-#       Honors the audited `is_suspended "tools"` escape hatch (returns 0) and
-#       the non-default `HOS_REQUIRE_TOOLS=warn` downgrade (prints the same
-#       message but returns 0). Default mode is `enforce` (D1: ratified,
-#       no warn-grace) — a missing depended-on tool hard-fails.
+#   tool_preflight_or_fail [PY_FILES_PRESENT]
+#       Resolves every required tool (via resolve_node_tool for JS/Astro
+#       tools, the oversight venv bin then PATH for bandit/radon) plus the
+#       Node floor. On any miss: writes a structured, actionable message to
+#       stderr and returns 1. No-op (returns 0 immediately) when
+#       detect_required_tools finds nothing to require (AC-4: no-op outside a
+#       JS/Astro project and outside a Python changeset). Honors the audited
+#       `is_suspended "tools"` escape hatch (returns 0) and the non-default
+#       `HOS_REQUIRE_TOOLS=warn` downgrade (prints the same message but
+#       returns 0). Default mode is `enforce` (D1: ratified, no warn-grace) —
+#       a missing depended-on tool hard-fails.
 #
 # Usage:
 #   source ".../lib/detect_stack.sh"
@@ -61,6 +72,7 @@ _detect_astro_marker_present() {
 }
 
 detect_required_tools() {
+    local py_files_present="${1:-}"
     local -a keys=()
     local is_js_project=false
 
@@ -83,8 +95,34 @@ detect_required_tools() {
         keys+=("node-floor")
     fi
 
+    if [[ -n "$py_files_present" ]]; then
+        keys+=("bandit" "radon")
+    fi
+
     [[ ${#keys[@]} -eq 0 ]] && return 0
     printf '%s\n' "${keys[@]}"
+}
+
+# Python analysis tools are HOS-owned (installed into the oversight venv by
+# ensure_venv.sh, per requirements.txt) — unlike the JS/Astro tools above,
+# D2 ("HOS never installs tooling") does not apply to them. Resolve via the
+# venv's bin dir first (VENV_BIN is exported by ensure_venv.sh when sourced
+# ahead of this lib), falling back to PATH for a caller that manages these
+# some other way.
+_resolve_python_tool() {
+    local tool="$1"
+
+    if [[ -n "${VENV_BIN:-}" && -x "${VENV_BIN}/${tool}" ]]; then
+        printf '%s\n' "${VENV_BIN}/${tool}"
+        return 0
+    fi
+
+    if command -v "$tool" &>/dev/null; then
+        printf '%s\n' "$tool"
+        return 0
+    fi
+
+    return 1
 }
 
 _node_version_or_absent() {
@@ -106,6 +144,8 @@ _node_floor_ok() {
 }
 
 tool_preflight_or_fail() {
+    local py_files_present="${1:-}"
+
     # Audited escape hatch — SUSPENDED: tools in contract/gate-suspension.md.
     if is_suspended "tools"; then
         print_suspended "tools"
@@ -117,19 +157,24 @@ tool_preflight_or_fail() {
     local -a required=()
     while IFS= read -r key; do
         [[ -n "$key" ]] && required+=("$key")
-    done < <(detect_required_tools)
+    done < <(detect_required_tools "$py_files_present")
 
     [[ ${#required[@]} -eq 0 ]] && return 0
 
     local -a missing=()
+    local -a missing_js=()
+    local -a missing_py=()
     local key
     for key in "${required[@]}"; do
         case "$key" in
             node-floor)
-                _node_floor_ok || missing+=("node (>= ${HOS_NODE_FLOOR_MAJOR}; found: $(_node_version_or_absent))")
+                _node_floor_ok || { missing+=("node (>= ${HOS_NODE_FLOOR_MAJOR}; found: $(_node_version_or_absent))"); missing_js+=(1); }
+                ;;
+            bandit|radon)
+                _resolve_python_tool "$key" >/dev/null 2>&1 || { missing+=("$key"); missing_py+=(1); }
                 ;;
             *)
-                resolve_node_tool "$key" >/dev/null 2>&1 || missing+=("$key")
+                resolve_node_tool "$key" >/dev/null 2>&1 || { missing+=("$key"); missing_js+=(1); }
                 ;;
         esac
     done
@@ -142,11 +187,19 @@ tool_preflight_or_fail() {
             echo "  - $key"
         done
         echo ""
-        echo "HOS detected a JS/Astro project and these tools are depended-on but not"
-        echo "resolvable via ./node_modules/.bin, 'npx --no-install', or PATH. HOS never"
-        echo "installs tooling (D2) — install the missing tool(s) in the consumer"
-        echo "project, then re-run."
-        echo ""
+        if [[ ${#missing_js[@]} -gt 0 ]]; then
+            echo "HOS detected a JS/Astro project and these tools are depended-on but not"
+            echo "resolvable via ./node_modules/.bin, 'npx --no-install', or PATH. HOS never"
+            echo "installs tooling (D2) — install the missing tool(s) in the consumer"
+            echo "project, then re-run."
+            echo ""
+        fi
+        if [[ ${#missing_py[@]} -gt 0 ]]; then
+            echo "bandit/radon are HOS-owned and installed into the oversight venv by"
+            echo "scripts/oversight/ensure_venv.sh — they should already be present. Rebuild"
+            echo "the venv: rm -rf scripts/oversight/.venv && scripts/oversight/ensure_venv.sh"
+            echo ""
+        fi
         echo "Escape hatches (audited):"
         echo "  - HOS_REQUIRE_TOOLS=warn   downgrade this run to a non-fatal warning"
         echo "  - SUSPENDED: tools         in contract/gate-suspension.md (human-authorized)"
