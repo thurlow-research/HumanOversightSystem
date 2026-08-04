@@ -10,7 +10,7 @@
 ## What this session was
 
 It began as housekeeping — commit a branch-cleanup script — and turned into an audit of
-whether this repo's own controls do anything. Six times, the answer was no, and each time the
+whether this repo's own controls do anything. Seven times, the answer was no, and each time the
 control was present in prose, present in code, and covered by passing tests.
 
 The session's own working method was the second subject. Two claims were asserted from memory
@@ -21,7 +21,7 @@ earlier. That failure mode already had a finding written about it, two days prio
 
 ## The pattern: a control can be complete and inert
 
-Six independent instances, none of which a reviewer or a test suite would surface:
+Seven independent instances, none of which a reviewer or a test suite would surface:
 
 **1. The security gate never fires (#1253).** `decide_merge_authority()` takes
 `security_relevant: bool = False`. It is used once, correctly. `grep` across `scripts/`,
@@ -74,6 +74,36 @@ the validator artifact against everything merged since its last refresh, rather 
 the PR's own diff. It would route essentially every PR to `HUMAN_REQUIRED` — and the overseer
 demonstrably keeps auto-merging. **A gate that fires constantly is a gate that gets routed
 around**, which is indistinguishable from a gate that does not exist.
+
+### A seventh, found in the last hour — and the sharpest
+
+The session's final exchange overturned instance 2's diagnosis and produced the clearest case of
+all. The human asked whether he should *avoid* installing `bandit`, so the preflight fix would
+get a firm test. Checking the premise showed the tools were **already installed** — declared in
+`scripts/oversight/requirements.txt` and present in `scripts/oversight/.venv/bin/`.
+
+The validators invoke them by bare name — `static_analysis.py:49`, `static_analysis_js.py:68`,
+`complexity_metrics.py` — so they resolve against `PATH` and miss the venv. And
+`DECISIONS.md:305` had already ruled on exactly this, naming its own prior incident:
+
+> *Resolve tools through the oversight venv, never bare `PATH` … silently downgrading the gate
+> (e.g. `secret_scan.sh` fell back to a weak grep and reported a pass).*
+
+The rule was applied at the orchestration layer (`run_validators.sh:27-29` sources
+`ensure_venv.sh`) and never to the validators' own subprocess calls. **A recorded decision, with
+a named precedent, not applied to the code it governs** — second occurrence, two months on.
+
+Two things make this the sharpest instance. First, the compliant orchestrator made the
+non-compliant validators invisible: the system *looked* like it honoured the rule. Second, the
+error string — `"bandit not installed — run: pip install bandit"` — was **false**, and it had
+already redirected this session into filing a `priority:critical` issue scoped to provisioning,
+against which the autonomous worker had opened a branch. The obvious implementation of that
+wrong fix, a `command -v` presence check, would also have missed the venv and hard-failed a
+correctly provisioned machine — converting a silent wrong answer into a loud one while appearing
+to fix it.
+
+Both are recorded as findings: `a-decision-records-intent-not-enforcement.md` and
+`a-confidently-wrong-error-message-costs-more-than-no-message.md`.
 
 ### Why this is a variant, not a repeat
 
@@ -249,4 +279,6 @@ because it cannot be *seen*.
 - `research/findings/unenforceable-rules-need-verification-mechanisms.md` — the adjacent, distinct case
 - `research/findings/ratchet-principle.md` — applied to the test regime this session
 - `research/findings/enforcement-gate-scope-gap.md` — *"the function exists; it simply never ran"*; #1253 is the same shape one level deeper
+- `a-decision-records-intent-not-enforcement.md` — filed from this session
+- `a-confidently-wrong-error-message-costs-more-than-no-message.md` — filed from this session
 - Issues: #1241, #1242, #1243, #1244, #1253, #1255, #1265, #1266, #1268 (prose), #1270 (enforcement), #1205 (cross-vendor triggers)
