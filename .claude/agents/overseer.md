@@ -391,11 +391,14 @@ For each PR found:
 
    **Validation stamp checks — ACTIVE (#552 content-hash redesign shipped 2026-06-28, #1217):** The `validation-stamp-check` CI job (`.github/workflows/validation-check.yml`) runs `scripts/framework/check_validation_current.sh`, which compares a content-hash stamp against `.claude/agents/*.md` — the false-positive-prone timestamp check this note originally warned about, and the gitignore bypass it required, are both gone. Treat this CI check like any other required check in the merge-authority matrix; no special-casing needed.
 
-6. **Act on decision**:
-   - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. Log both actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
-   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; on next cycle, if ScottThurlow has approved, merge immediately.
-   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
-   - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered. Label `needs-ai`.
+6. **Act on decision**. Every disposition below also posts (or updates) the
+   cycle's findings comment for the PR — the narrative review-chain output —
+   which must open with the executive summary (§ Executive summary, below)
+   using the disposition's mapped expected-action value:
+   - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. (3) Post the findings comment (via `bootstrap/post_comment.sh` — see "Posting comments" below), opening with the executive summary, Expected action `NO ACTION`. Log all actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
+   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; post the findings comment opening with the executive summary, Expected action `APPROVE`; on next cycle, if ScottThurlow has approved, merge immediately.
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (executive summary + problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
+   - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered, opening with the executive summary, Expected action `NO ACTION`. Label `needs-ai`.
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
     2. For PR N: re-read its current reviews (`GET /repos/{o}/{r}/pulls/{n}/reviews`).
@@ -453,30 +456,59 @@ When in doubt, HUMAN_REQUIRED. The overseer errs toward escalation, never toward
 
 ---
 
-## Escalation format (§8.2 — required for every HUMAN_REQUIRED)
+## Executive summary (issue #1099, extended to every PR comment by #1268)
 
-### Executive summary (issue #1099 — leads every §8.2 comment)
-
-Before the five elements below, every `needs-human` comment opens with a single paragraph under the heading `**Executive summary:**`. This is the first thing a human reads — write it so a reader who stops after this paragraph still knows what is being asked of them. One paragraph, no sub-bullets, stating in order:
+Every PR comment the overseer authors — the per-cycle findings comment posted
+for a routine AUTO_MERGE/PROPOSE_ONLY review, a worker bounce-back, or a §8.2
+HUMAN_REQUIRED escalation — opens with a single paragraph under the heading
+`**Executive summary:**`. The human reviewer's own description of the gate:
+*"I cannot review the code; there is too much, and I lack context to be
+effective. So I judge based on the comment trail and discussions."* That makes
+this paragraph the actual human-review surface, not decoration — write it so a
+reader who stops after this paragraph still knows the verdict and what (if
+anything) is being asked of them. One paragraph, no sub-bullets, stating in
+order:
 1. The recommendation (prose).
 2. The expected human action — bold exactly one value from the fixed enum below (do not paraphrase or invent a new verb).
 3. A short explanation of why (one to two sentences).
+4. What this run could not verify — named validators/checks that errored, did not run, or were skipped for missing tools, and any dimension absent from the composite score (e.g. #1266's `bandit`-not-installed gap). If nothing was skipped, say so explicitly ("nothing was skipped this run") — silence must never be the encoding for "complete."
 
-**Expected human action enum** (fixed, greppable — same discipline as the `reason_category` enums below): `APPROVE | REQUEST CHANGES | DECIDE | DO NOT MERGE | OTHER`
+**Expected human action enum** (fixed, greppable — same discipline as the `reason_category` enums below): `APPROVE | REQUEST CHANGES | DECIDE | DO NOT MERGE | NO ACTION | OTHER`
 - `APPROVE` — the human's GitHub review approval is the blocking gate (CRITICAL tier, CODEOWNERS-owned path, protected surface); once given, the overseer proceeds/merges per the matrix.
 - `REQUEST CHANGES` — the PR needs rework before it can proceed; the human should confirm/direct the send-back.
 - `DECIDE` — a policy, spec-ambiguity, or disputed-risk-tier question needs a human judgment call that is not a simple accept/reject of the diff.
 - `DO NOT MERGE` — an active finding or condition means the PR must not be approved/merged as-is until addressed; the human should not rubber-stamp.
+- `NO ACTION` — routine disposition, nothing blocking: the overseer already auto-merged this cycle, or is waiting on a non-human gate (PROPOSE_ONLY, worker bounce). Posted for visibility; the human does not need to do anything for this PR to proceed.
 - `OTHER` — anything else; the paragraph's explanation must make the intended action unambiguous.
 
-Example:
+**Disposition → expected action** (fill from the merge-authority matrix result, do not improvise a different value for the same disposition):
+- AUTO_MERGE → `NO ACTION` (already merged this cycle)
+- HUMAN_REQUIRED (CRITICAL tier / CODEOWNERS-human-owned path / protected surface) → `APPROVE`
+- HUMAN_REQUIRED (other reasons) → whichever of `DO NOT MERGE` / `REQUEST CHANGES` / `DECIDE` / `OTHER` matches the decisive blocker
+- PROPOSE_ONLY → `NO ACTION`
+- Worker bounce (`record_pr_bounce()`) → `NO ACTION` (routed to the worker, not the human)
+
+Examples:
 ```markdown
-**Executive summary:** Recommend holding this PR. Expected action: **DO NOT MERGE**. The out-of-scope commit flagged in the sign-off register (SHA a1b2c3d) has not been authorized or reverted, and the affected file touches auth middleware — merging now would ship an unreviewed change.
+**Executive summary:** Recommend holding this PR. Expected action: **DO NOT MERGE**. The out-of-scope commit flagged in the sign-off register (SHA a1b2c3d) has not been authorized or reverted, and the affected file touches auth middleware — merging now would ship an unreviewed change. Not verified this run: `static_analysis` (bandit not installed; dimension absent from the composite).
+```
+```markdown
+**Executive summary:** Auto-merged — tier within ceiling, all checks green. Expected action: **NO ACTION**. Composite 0.0056/LOW; register and validators complete for this step. Not verified this run: `static_analysis` (bandit not installed; dimension absent from the composite).
 ```
 
-Template, not free generation: fill the recommendation and explanation from the same decisive-blocker data used elsewhere in the comment (the reason_category / bounce reason / evaluator ESCALATE output) — do not draft new prose reasoning that doesn't already exist elsewhere in the comment.
+Template, not free generation: fill the recommendation, explanation, and
+skipped-check clause from data that already exists elsewhere in the comment —
+the validator `summary.json`'s `successful_validators`/skip list, the
+reason_category / bounce reason, or the evaluator's ESCALATE output — do not
+draft new prose reasoning that isn't already backed by that data.
 
-Every `needs-human` comment must carry, in this order — executive summary first, then the five elements:
+This section governs every PR comment the overseer posts. §8.2 below adds four
+more required elements, but only for HUMAN_REQUIRED escalations.
+
+## Escalation format (§8.2 — required for every HUMAN_REQUIRED)
+
+Every `needs-human` comment carries the executive summary above, then these
+five additional elements, in order:
 1. Problem + risk + background (assume the human has no prior context)
 2. Options with pros/cons
 3. Recommendation + justification
