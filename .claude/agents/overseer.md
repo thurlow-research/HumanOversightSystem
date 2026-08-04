@@ -245,18 +245,25 @@ For each PR found:
    4. Verify `artifact_commit` is an ancestor of PR HEAD:
       `git merge-base --is-ancestor <artifact_commit> <pr_head_sha>`
       This ensures the artifact was not removed and re-added after the fact.
-   5. Verify no code files were modified between `artifact_commit` and PR HEAD.
-      Get the diff: `git diff --name-only <artifact_commit> <pr_head_sha>`
+   5. Verify no code files were modified **by the PR's own commits** since the artifact
+      was written. Scope the diff to the PR's own changes — not to unrelated `main`
+      progress that landed after `artifact_commit` (#1170: a raw two-dot diff between
+      an old `artifact_commit` and PR HEAD conflates the two, since `signoffs/validators/
+      step{N}/summary.json` in this repo is a shared, periodically-refreshed checkpoint
+      on `main`, not a per-PR artifact — every PR reviewed more than a few commits after
+      a refresh would otherwise trip this check regardless of what the PR itself touches):
+      `git diff --name-only $(git merge-base main <pr_head_sha>) <pr_head_sha>`
       Exempt files (not code): `audit/oversight-log.jsonl`, `audit/overnight-loop-log.md`,
       and any path under `audit/automation/`. If any non-exempt file appears in the
-      diff, the artifact is stale (code changed after artifact was written).
+      diff, the artifact is stale (the PR's own changes touch code after the artifact
+      was written).
    6. `head_sha_source` is present and is either `"step_range"` or `"git_head_fallback"` (schema check unchanged).
 
    **Fail-close rules (all route to HUMAN_REQUIRED / GATE_UNSATISFIED):**
    - Artifact absent or artifact_commit not found: detail = `"validator artifact missing for step N"`
    - `head_sha` != parent of artifact commit: detail = `"validator artifact head_sha <artifact_sha> != parent of artifact commit <artifact_commit_parent>"`
    - Artifact commit not ancestor of PR HEAD: detail = `"validator artifact commit <artifact_commit_short> not an ancestor of PR HEAD <pr_head_sha_short>"`
-   - Stale artifact (non-exempt code files modified after artifact commit): detail = `"validator artifact is stale: <N> non-exempt file(s) modified after artifact commit"`
+   - Stale artifact (non-exempt code files modified by the PR's own commits after artifact commit): detail = `"validator artifact is stale: <N> non-exempt file(s) modified by this PR after artifact commit"`
    - Schema error (missing/unrecognized `head_sha_source`): detail = `"validator artifact schema error: head_sha_source missing or unrecognized"`
 
    **Do not proceed to step 4 if any fail-close rule fires.**
