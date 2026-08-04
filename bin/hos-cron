@@ -483,6 +483,7 @@ if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app "$ROLE" > "$_auth_tmp" 2>/dev
   _audit cycle-preflight-fail reason=auth_failed
   exit 0
 fi
+# shellcheck source=/dev/null
 source "$_auth_tmp"; rm -f "$_auth_tmp"
 
 # ── Identity guard ────────────────────────────────────────────────────────────
@@ -525,7 +526,10 @@ if [[ ! -r "$_CLAUDE_AUTH_ENV" ]]; then
   _audit cycle-preflight-fail reason=claude_auth_env_missing
   exit 78  # EX_CONFIG
 fi
-set -a; . "$_CLAUDE_AUTH_ENV"; set +a
+set -a
+# shellcheck source=/dev/null
+. "$_CLAUDE_AUTH_ENV"
+set +a
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
   echo "$LOG_PREFIX FATAL: CLAUDE_CODE_OAUTH_TOKEN not set after sourcing $_CLAUDE_AUTH_ENV"
