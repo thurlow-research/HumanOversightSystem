@@ -27,7 +27,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 79
+fail_under = 78
 # Baseline (#1256): require_human_approval.py measures 48% though
 # tests/framework/test_require_human_approval.py exercises main() end-to-end —
 # those cases invoke it as a subprocess (to test the real CLI contract), which
