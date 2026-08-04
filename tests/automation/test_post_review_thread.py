@@ -55,9 +55,9 @@ fi
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     if [[ "${FAIL_GRAPHQL:-}" == "1" ]]; then exit 1; fi
     if [[ "${NULL_REVIEW_ID:-}" == "1" ]]; then
-        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"pullRequestReview":null}}}}'
+        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"comments":{"nodes":[{"pullRequestReview":null}]}}}}}'
     else
-        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"pullRequestReview":{"databaseId":4847880385}}}}}'
+        echo '{"data":{"addPullRequestReviewThread":{"thread":{"id":"RT_1","isResolved":false,"comments":{"nodes":[{"pullRequestReview":{"databaseId":4847880385}}]}}}}}'
     fi
     exit 0
 fi
@@ -296,3 +296,17 @@ def test_graphql_failure_still_revokes_token(h):
     assert result.returncode != 0
     cap = h.capture()
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+# --------------------------------------------------------------------------- #
+# #1259 / #1272 regression guard: `PullRequestReviewThread` has no
+# `pullRequestReview` field on GitHub's schema — the mutation must select it
+# through `comments(first: 1) { nodes { pullRequestReview { databaseId } } }`
+# instead of the flat (nonexistent) `thread.pullRequestReview`.
+# --------------------------------------------------------------------------- #
+
+
+def test_mutation_does_not_use_flat_pull_request_review_field(h):
+    script_text = h.script.read_text()
+    assert "thread { id isResolved pullRequestReview" not in script_text
+    assert "comments(first: 1) { nodes { pullRequestReview { databaseId } } }" in script_text
