@@ -28,6 +28,15 @@ OUT_DIR=".claudetmp/oversight/validators"
 source "$SCRIPT_DIR/ensure_venv.sh"
 PYTHON="${PYTHON:-$OVERSIGHT_PYTHON}"
 
+# Root-cause of #1266: static_analysis.py/complexity_metrics.py invoke
+# bandit/radon via `subprocess.run(["bandit", ...])` — a PATH lookup, not a
+# Python import. Validators run as `$PYTHON script.py` (the venv interpreter
+# invoked directly, never `source .../activate`), so $VENV_BIN was never on
+# PATH and subprocess couldn't find console scripts that ARE pip-installed
+# in the oversight venv. Every Python changeset silently dropped
+# static_analysis/complexity from the composite score with no visible error.
+export PATH="$VENV_BIN:$PATH"
+
 # shellcheck source=scripts/oversight/run_with_retry.sh
 source "$SCRIPT_DIR/run_with_retry.sh"
 
@@ -137,13 +146,22 @@ if [[ -n "${RUN_VALIDATORS_FILELIST_ONLY:-}" ]]; then
     exit 0
 fi
 
-# Tool preflight (D1, ADR-032): a depended-on-but-missing consumer tool now
-# hard-fails here instead of letting each validator/gate silently SKIP.
-# Runs AFTER the RUN_VALIDATORS_FILELIST_ONLY seam above, so the byte-identical
-# regression harness in a bare tmp repo never triggers a tool check (AC-2), and
-# BEFORE the validator loop so a missing tool blocks scoring rather than
-# producing partial/misleading signal. No-op outside a JS/Astro project (AC-4).
-if ! tool_preflight_or_fail; then
+# Tool preflight (D1, ADR-032; extended to Python analysis tools by #1266): a
+# depended-on-but-missing tool now hard-fails here instead of letting each
+# validator/gate silently SKIP. Runs AFTER the RUN_VALIDATORS_FILELIST_ONLY
+# seam above, so the byte-identical regression harness in a bare tmp repo
+# never triggers a tool check (AC-2), and BEFORE the validator loop so a
+# missing tool blocks scoring rather than producing partial/misleading
+# signal. No-op outside a JS/Astro project and outside a Python changeset
+# (AC-4). bandit/radon are required only when PY_FILES is non-empty — same
+# changeset-scoped skip-not-fail semantics as the JS_FILES validator gate
+# below, not a repo-wide marker, so a JS-only or docs-only changeset is never
+# blocked on a Python toolchain it will never invoke.
+HAS_PY_FILES=""
+if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+    HAS_PY_FILES=1
+fi
+if ! tool_preflight_or_fail "$HAS_PY_FILES"; then
     mkdir -p "$OUT_DIR"
     PYTHONSAFEPATH=1 "$PYTHON" -c "
 import json; from pathlib import Path
