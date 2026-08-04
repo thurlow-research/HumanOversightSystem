@@ -1,12 +1,22 @@
 name: Shellcheck
 
-# Static analysis of all *.sh files with shellcheck --shell=bash.
+# Static analysis of all shell scripts with shellcheck --shell=bash.
 # Findings block the PR (#768).
+#
+# Discovery is NOT keyed on the '.sh' extension alone (#1245) — a tracked file
+# is treated as shell if it has a bash/sh shebang, a "# shellcheck shell=bash"
+# directive (for sourced-only libraries with no shebang), or a '.sh' name.
+# That union means a shell script added anywhere tracked, with or without a
+# '.sh' name, is picked up automatically.
 #
 # shellcheck is available on all GitHub-hosted ubuntu runners — no install step
 # needed. The workflow checks out the PR head (not pull_request_target) because
 # shellcheck only READS source files; it does not execute them, so there is no
 # code-execution attack surface that would require the trusted-base model.
+#
+# No `paths:` filter — discovery is content-based, so GitHub's path-glob
+# trigger filter (itself extension-based) would reintroduce the same blind
+# spot at the trigger level.
 #
 # To baseline existing findings: add "# shellcheck disable=SCxxxx" at the
 # relevant line, or create a .shellcheckrc at the repo root.
@@ -14,8 +24,6 @@ name: Shellcheck
 on:
   pull_request:
     branches: [main, "release/v*"]
-    paths:
-      - '**.sh'
 
 permissions:
   contents: read
@@ -28,19 +36,33 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@v4
 
-      - name: Run shellcheck on all *.sh files
+      - name: Run shellcheck on all shell files
         run: |
           set -euo pipefail
           echo "=== shellcheck $(shellcheck --version | head -1) ==="
-          # Collect all .sh files, excluding venvs and node_modules.
-          mapfile -t SH_FILES < <(find . -type f -name '*.sh' \
-            -not -path './.git/*' \
-            -not -path './.venv/*' \
-            -not -path './scripts/oversight/.venv/*' \
-            -not -path './node_modules/*' | sort)
+          # Collect tracked shell files by content (shebang or shellcheck
+          # directive), not by extension — excludes venvs and node_modules.
+          mapfile -t SH_FILES < <(
+            git ls-files \
+              | grep -v -e '/\.venv/' -e '^\.venv/' -e '/node_modules/' -e '^node_modules/' \
+              | while IFS= read -r f; do
+                  [[ -f "$f" ]] || continue
+                  if [[ "$f" == *.sh ]]; then
+                    printf '%s\n' "$f"
+                    continue
+                  fi
+                  if head -1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b'; then
+                    printf '%s\n' "$f"
+                    continue
+                  fi
+                  if grep -qm1 -E '^#\s*shellcheck\s+shell=' "$f" 2>/dev/null; then
+                    printf '%s\n' "$f"
+                  fi
+                done | sort
+          )
 
           if [[ ${#SH_FILES[@]} -eq 0 ]]; then
-            echo "No .sh files found — nothing to check."
+            echo "No shell files found — nothing to check."
             exit 0
           fi
 
