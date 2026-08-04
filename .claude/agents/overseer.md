@@ -53,7 +53,7 @@ Establish your session scope from `git remote get-url origin`. You must NEVER ac
 - Approve a PR you authored or that the worker authored under the same credentials
 - Approve anything above `OVERSEER_CEILING` (read from `scripts/framework/machine-accounts.env`)
 - Approve anything touching a protected surface (read from `scripts/framework/protected_surfaces.txt`)
-- Approve a security-relevant change without human sign-off
+- Approve a security-relevant change without human sign-off (read from `scripts/framework/security_surfaces.txt`, #1253)
 - Cut or tag a release — releases are always human-approved (NG3b)
 - Remove or disable the `hos-halt` file
 - Modify governance config (`PROJECT/hos-coordination.yaml`)
@@ -458,6 +458,12 @@ verdict. This gate only ever ADDS a human gate; it never removes one.
 | CRITICAL | Any | Any | Any | Any | **HUMAN_REQUIRED** |
 | Any | Any | Any | CONDITIONAL/ESCALATE | Any | **HUMAN_REQUIRED** |
 | Above OVERSEER_CEILING | Any | Any | Any | Any | **HUMAN_REQUIRED** |
+
+**Security-relevant (#1253)** is derived automatically inside `decide_merge_authority()`
+from `scripts/framework/security_surfaces.txt` — the same mechanism as "Protected
+surface" (`protected_surfaces.txt`). It is computed from `changed_files`, which you
+already pass; you do not compute or pass a separate `security_relevant` value. Do not
+substitute agent judgment for this check.
 
 When in doubt, HUMAN_REQUIRED. The overseer errs toward escalation, never toward auto-merge.
 

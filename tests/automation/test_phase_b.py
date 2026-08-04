@@ -672,6 +672,84 @@ class TestDecideMergeAuthority:
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
 
+    def test_security_surface_without_flag_requires_human(self, tmp_path):
+        """#1253: a security_surfaces.txt match forces HUMAN_REQUIRED even when the
+        caller never passes security_relevant=True — the bug #1253 found (no real
+        caller ever passed it)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": ["scripts/automation/lib/merge_authority.py"]},
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_security_surface_with_human_approval_allows_auto_merge(self, tmp_path):
+        """A verified human approval on the current head satisfies the derived
+        security-surface gate, same treatment as protected-surface (#741)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha123"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": ["scripts/automation/lib/merge_authority.py"]},
+                repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="sha123",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_no_match_does_not_force_human(self, tmp_path):
+        """A changed file that matches no security-surface pattern does not, by
+        itself, force HUMAN_REQUIRED."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="abc",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_missing_file_does_not_force_human(self, tmp_path):
+        """No scripts/framework/security_surfaces.txt in repo_root: not itself
+        treated as relevant (mirrors _touches_protected_surface's missing-file
+        behavior) — the file's own path is covered by protected_surfaces.txt, so
+        its absence is independently caught by that check."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="abc",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_unreadable_file_fails_closed(self, tmp_path):
+        """An unreadable security_surfaces.txt fails closed to security_relevant=True
+        (#1253 acceptance: 'missing/uncomputable signal fails closed to Yes, never
+        No'), mirroring _touches_protected_surface's exception handling."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+        surfaces_path.chmod(0o000)
+        try:
+            with _patch_gate(True):
+                result = decide_merge_authority(
+                    **self.BASE, repo_root=str(tmp_path),
+                )
+        finally:
+            surfaces_path.chmod(0o644)  # restore so tmp_path cleanup can remove it
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
     def test_needs_human_label_blocks_auto_merge(self, tmp_path):
         """PR carrying needs-human label must not auto-merge, regardless of risk tier (#756)."""
         with _patch_gate(True):
