@@ -193,12 +193,19 @@ def test_detect_python_files_flag_unset_does_not_require_bandit_radon(tmp_path):
 
 
 def test_python_files_present_and_tool_missing_blocks(tmp_path):
-    # VENV_BIN pointed at a dir with nothing in it — deterministic "missing"
-    # regardless of whether this repo's own oversight venv happens to be on
-    # the test runner's PATH.
+    # VENV_BIN pointed at a dir with nothing in it, AND PATH pinned to the
+    # base system dirs — _resolve_python_tool() falls back to `command -v`
+    # on PATH, so leaving the test runner's real PATH in place would make
+    # "missing" depend on whether bandit/radon happen to be pip-installed
+    # somewhere on it (venv, ~/.local/bin, pipx). /usr/bin:/bin still has
+    # the coreutils the helper script itself needs (dirname, etc.) but never
+    # has console scripts pip installs.
     res = _preflight(
         tmp_path,
-        env={"VENV_BIN": str(tmp_path / "no-such-venv-bin")},
+        env={
+            "VENV_BIN": str(tmp_path / "no-such-venv-bin"),
+            "PATH": "/usr/bin:/bin",
+        },
         py_files_present="1",
     )
     assert res.returncode == 1

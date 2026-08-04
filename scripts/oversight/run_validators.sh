@@ -35,7 +35,10 @@ PYTHON="${PYTHON:-$OVERSIGHT_PYTHON}"
 # PATH and subprocess couldn't find console scripts that ARE pip-installed
 # in the oversight venv. Every Python changeset silently dropped
 # static_analysis/complexity from the composite score with no visible error.
-export PATH="$VENV_BIN:$PATH"
+# Guard against a leading `:` in PATH (treated as cwd by POSIX shells) if
+# VENV_BIN were ever empty — not reachable today (ensure_venv.sh always
+# derives it as an absolute path) but cheap to make structurally impossible.
+[[ -n "$VENV_BIN" ]] && export PATH="$VENV_BIN:$PATH"
 
 # shellcheck source=scripts/oversight/run_with_retry.sh
 source "$SCRIPT_DIR/run_with_retry.sh"
