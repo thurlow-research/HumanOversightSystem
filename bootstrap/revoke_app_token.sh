@@ -22,6 +22,11 @@
 # (#1086); only a confirmation line on stderr, following get_app_token.sh's
 # convention.
 #
+# Being a child process, this script cannot unset GH_TOKEN in the caller's
+# shell. After a successful revoke the caller's environment still holds the
+# now-dead token string — callers must not treat "GH_TOKEN is set" as
+# "GH_TOKEN is valid".
+#
 # Requires: curl
 #
 # See also: get_app_token.sh (mints the token this script revokes),

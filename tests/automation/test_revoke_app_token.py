@@ -109,9 +109,9 @@ def test_successful_revoke_exits_zero_and_calls_delete(h):
     assert "https://api.github.com/installation/token" in cap
 
 
-def test_token_value_never_reaches_stdout(h):
+def test_token_value_never_reaches_output_streams(h):
     result = h.run(env_overrides={"GH_TOKEN": "super-secret-token", "REVOKE_HTTP_CODE": "204"})
-    assert "super-secret-token" not in result.stdout
+    assert "super-secret-token" not in result.stdout + result.stderr
 
 
 # --------------------------------------------------------------------------- #
