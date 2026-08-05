@@ -45,3 +45,11 @@ scripts/framework/provision_agent_account.sh
 scripts/framework/run_post_change_sweep.sh
 scripts/framework/run_tests_inner_loop.sh
 scripts/framework/setup_branch_protection.sh
+
+# ── scripts/framework/ — required-check gate scripts (#1278) ─────────────────────
+# require-human-approval.yml, require-overseer-approval.yml, and
+# require-tier-ceiling.yml (already shipped above) invoke these. Without them the
+# workflow runs, fails to find its script, and the required check can never pass.
+scripts/framework/require_human_approval.py
+scripts/framework/require_overseer_approval.py
+scripts/framework/require_tier_ceiling.py

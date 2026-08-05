@@ -84,6 +84,20 @@ def test_consumer_governance_tools_present():
         assert tool in files, f"{tool} must be in the consumer ship-set (#769)"
 
 
+def test_required_gate_scripts_present():
+    """The require_*.py scripts the branch-protection workflows execute must ship (#1278)."""
+    files = set(_consumer_files())
+    for script in (
+        "scripts/framework/require_human_approval.py",
+        "scripts/framework/require_overseer_approval.py",
+        "scripts/framework/require_tier_ceiling.py",
+    ):
+        assert script in files, (
+            f"{script} must be in the consumer ship-set — the required-check "
+            "workflow that invokes it cannot pass without it (#1278)"
+        )
+
+
 def test_hos_dev_only_tools_excluded():
     """HOS internal tools must not leak into the consumer ship-set."""
     files = set(_consumer_files())
