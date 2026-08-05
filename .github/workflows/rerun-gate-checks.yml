@@ -1,0 +1,83 @@
+name: Rerun gate checks on review
+
+# DISPATCHER, NOT A GATE (#1299). Branch protection evaluates check runs on the
+# PR's HEAD SHA. A gate that ran and FAILED before an approval landed leaves a
+# stale FAILURE there; nothing re-evaluates it, so overseer AUTO_MERGE stays
+# blocked after the approval. The #795 fix (concurrency cancel-in-progress) only
+# cancels runs still IN PROGRESS. Re-triggering the gate workflows on
+# pull_request_review created a SECOND check run of the same name instead of
+# clearing the first — so that trigger has been REMOVED from all three gates and
+# replaced by this dispatcher, which reruns each gate's EXISTING workflow run in
+# place (POST /actions/runs/{id}/rerun). A rerun updates the existing check run
+# and replays the run's original pull_request_target event.
+#
+# This workflow MUST NEVER be added to branch protection's required-status-check
+# list. It only runs on review events, so on a PR with no review yet the context
+# would sit permanently "expected" and block every merge — the #737 failure mode.
+# tests/framework/test_branch_protection_contexts.py enforces this.
+#
+# SECURITY — this is the ONLY workflow in the repo with `actions: write`.
+# It executes NO PR-authored code:
+#   * pull_request_review is a base-repo event: the workflow definition and the
+#     dispatch script always come from the trusted BASE branch, never the PR.
+#   * the checkout below pins `ref: base.sha` with `persist-credentials: false`
+#     (the #972 pattern), so the PR head / merge ref is never checked out.
+#   * every input to the dispatch logic is a GitHub-COMPUTED value — PR number,
+#     head SHA, review state, and check-run / workflow-run ids resolved
+#     server-side. No PR body, title, or branch name is ever read, and the
+#     script refuses to rerun any workflow whose `path` is not one of the three
+#     gate workflows (scripts/framework/rerun_gate_checks.py:GATE_WORKFLOW_PATHS).
+#   * the job is restricted to same-repo PRs (see the `if:` below), so the
+#     `actions: write` token is never exercised on fork-authored PRs.
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+# NOTE: cancel-in-progress is deliberately FALSE. Cancelling a dispatcher
+# mid-poll would leave a stale check run un-rerun — exactly the #795 lesson
+# that produced #1299. Reruns are idempotent and cheap; let them all finish.
+concurrency:
+  group: rerun-gate-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+jobs:
+  rerun-gate-checks:
+    # NOT a required status-check context — see the header. The name is kept
+    # distinct from every gate context so it can never be mistaken for one.
+    name: rerun-gate-checks
+    # Same-repo PRs only. This repo uses branch PRs; a fork PR must not be able
+    # to reach an `actions: write` token, even indirectly.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (TRUSTED base — never the PR head or merge ref)
+        # Under pull_request_review GITHUB_REF is the PR's MERGE ref (base+head),
+        # so a bare checkout would run the PR's own copy of the dispatch script
+        # — and this job holds `actions: write`. Pin base.sha explicitly (#972).
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Rerun stale gate check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+        run: |
+          set -euo pipefail
+          python3 scripts/framework/rerun_gate_checks.py \
+            --pr "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --event-action "$EVENT_ACTION" \
+            --review-state "$REVIEW_STATE"

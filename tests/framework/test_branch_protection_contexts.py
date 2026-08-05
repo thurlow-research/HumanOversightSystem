@@ -76,3 +76,17 @@ def test_known_gate_contexts_present():
     for gate in ("require-overseer-approval", "require-human-approval", "require-tier-ceiling"):
         assert gate in contexts, f"{gate} is no longer a required status check"
         assert gate in produced, f"{gate} has no producing workflow job named {gate!r}"
+
+
+def test_rerun_gate_checks_not_a_required_context():
+    """The rerun-gate-checks dispatcher (#1299) must NEVER be a required status
+    check. It only runs on pull_request_review events, so on a PR with no
+    review yet the context would sit permanently "expected" and block every
+    merge — the #737 failure mode this repo has already hit once. It reruns
+    EXISTING gate workflow runs rather than gating anything itself."""
+    contexts = set(_required_contexts())
+    assert "rerun-gate-checks" not in contexts, (
+        "rerun-gate-checks must not be a required status check — it only "
+        "fires on review events, so it would stay permanently 'expected' on "
+        "any PR without a review yet and block every merge (#737)."
+    )

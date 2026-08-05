@@ -13,8 +13,7 @@ name: Overseer tier-ceiling gate
 # Pairs with "require-human-approval" to form the two-gate server-side
 # enforcement layer.
 #
-# Re-runs on pull_request_review so the gate re-evaluates each time the
-# overseer submits or withdraws an approval.
+# Re-evaluated on review submit/dismiss by .github/workflows/rerun-gate-checks.yml (#1299).
 
 # SECURITY: uses pull_request_TARGET, not pull_request. Under pull_request_target
 # the workflow definition, the gate script, and machine-accounts.env all run from
@@ -23,18 +22,23 @@ name: Overseer tier-ceiling gate
 # files and reviews are read as DATA via `gh` API calls, never checked out and
 # executed. (Same security model as require-human-approval.yml.)
 #
-# SECURITY (#972): this workflow also re-runs on pull_request_review, and under
-# that event GITHUB_REF is the PR's MERGE ref (base + head), not the base branch
-# — unlike pull_request_target. A bare `actions/checkout@v4` on a review-submit
-# run would therefore check out and execute the PR's OWN copy of the gate script,
-# reintroducing the exact self-bypass this file's header warns against. The
-# checkout step below pins `ref: base.sha` explicitly so BOTH trigger types
-# always check out the trusted base, never the PR head or merge ref.
+# SECURITY (#972, #1299): this workflow triggers on pull_request_TARGET ONLY.
+# It used to ALSO trigger on pull_request_review, where GITHUB_REF is the PR's
+# MERGE ref (base+head) rather than the base branch — a bare `actions/checkout@v4`
+# there would check out and execute the PR's OWN copy of the gate script,
+# reintroducing the self-bypass this header warns about. That second trigger also
+# produced a SECOND check run of this job's name for the PR, so a stale FAILURE
+# from the first one kept blocking merge even after an approval landed (#1299).
+# Review-triggered re-evaluation now happens by RERUNNING this workflow run in
+# place — see .github/workflows/rerun-gate-checks.yml, which invokes
+# scripts/framework/rerun_gate_checks.py. A rerun replays this run's ORIGINAL
+# pull_request_target event, so it UPDATES the existing check run instead of
+# creating a duplicate. Do NOT re-add a pull_request_review trigger here;
+# tests/framework/test_gate_checkout_pinned_base.py fails if you do. The
+# `ref: base.sha` pin below STAYS as defence-in-depth.
 on:
   pull_request_target:
     branches: [main, "release/v*"]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -56,13 +60,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (TRUSTED base — never the PR head or merge ref)
-        # Explicitly pin the base SHA so this is correct under BOTH trigger
-        # types: pull_request_target (where the default ref is already base,
-        # so this is a no-op) and pull_request_review (where the default ref
-        # is the PR's merge ref — base+head — and a bare checkout would run
-        # the PR's own copy of the gate script; see #972). Do NOT change this
-        # to `${{ github.event.pull_request.head.sha }}` or the merge ref —
-        # that would reintroduce the self-bypass.
+        # Pin the base SHA explicitly. Under pull_request_target the default ref
+        # is already the base, so this is a no-op today — it is kept as
+        # defence-in-depth so that re-adding any non-target trigger (see #972 /
+        # #1299 above) cannot silently start executing PR content. Do NOT change
+        # this to `${{ github.event.pull_request.head.sha }}` or the merge ref.
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
