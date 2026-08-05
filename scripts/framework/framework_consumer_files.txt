@@ -38,6 +38,13 @@ bootstrap/create_branch.sh
 .github/workflows/require-tier-ceiling.yml
 .github/workflows/validation-check.yml
 
+# ── .github/workflows/ — gate re-evaluation dispatcher (#1299) ───────────────────
+# NOT itself a required status check (see test_branch_protection_contexts.py) — it
+# only runs on pull_request_review events. The three gates above depend on it for
+# review-triggered re-evaluation: without it, a gate that failed before an approval
+# landed leaves a stale FAILURE check run that nothing re-evaluates.
+.github/workflows/rerun-gate-checks.yml
+
 # ── scripts/framework/ — consumer-facing governance tools (#769) ─────────────────
 scripts/framework/gen_codeowners.sh
 scripts/framework/gen_scripts_index.sh
@@ -54,3 +61,9 @@ scripts/framework/setup_branch_protection.sh
 scripts/framework/require_human_approval.py
 scripts/framework/require_overseer_approval.py
 scripts/framework/require_tier_ceiling.py
+
+# ── scripts/framework/ — gate re-evaluation dispatcher script (#1299) ────────────
+# Invoked by rerun-gate-checks.yml above. Reruns the three gates' EXISTING
+# workflow runs in place on review submit/dismiss so a stale FAILURE check run
+# doesn't block merge after an approval lands. Not itself a required check.
+scripts/framework/rerun_gate_checks.py

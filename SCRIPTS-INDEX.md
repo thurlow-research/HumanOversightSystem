@@ -100,6 +100,7 @@ excluded.
 - `scripts/framework/require_human_approval.py` — server-side §9 protected-surface gate.
 - `scripts/framework/require_overseer_approval.py` — server-side overseer-review gate.
 - `scripts/framework/require_tier_ceiling.py` — server-side overseer ceiling gate.
+- `scripts/framework/rerun_gate_checks.py` — review-triggered re-evaluation of the server-side gates.
 - `scripts/framework/run_framework_validation.sh` — run the full framework validation suite.
 - `scripts/framework/run_post_change_sweep.sh` — shell entrypoint for the post-change sweep.
 - `scripts/framework/run_tests_inner_loop.sh` — Run the inner-loop test suite (required for PR approval).
