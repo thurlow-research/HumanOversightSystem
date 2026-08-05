@@ -2003,6 +2003,29 @@ else
   rm -f "$_human_generated"
 fi
 
+# ── bin/hos-human — session-start launcher (#1143) ─────────────────────────────
+# The installer must place this, not just tell the human to `cp` it — a
+# hand-copied launcher has no upgrade path (fixes to auth/identity-guard/sync
+# behavior never reach an existing clone). bin/ can be a read-only mount in
+# sandboxed agent environments (the reason HUMAN-SETUP.md's manual step
+# exists at all) — degrade to a warning + the manual fallback rather than
+# aborting the whole install.
+_human_launcher="$HOS_SOURCE/bin/hos-human"
+if [[ ! -f "$_human_launcher" ]]; then
+  warn "bin/hos-human not found in release — skipping (create manually, see docs/HUMAN-SETUP.md Step 6)"
+elif $DRY_RUN; then
+  dry_run "Would install bin/hos-human"
+else
+  if mkdir -p "$TARGET_REPO/bin" 2>/dev/null \
+      && cp "$_human_launcher" "$TARGET_REPO/bin/hos-human" 2>/dev/null \
+      && chmod +x "$TARGET_REPO/bin/hos-human" 2>/dev/null; then
+    ok "bin/hos-human (framework — updated)"
+  else
+    warn "bin/hos-human — could not write to $TARGET_REPO/bin (read-only mount?). Install manually:"
+    warn "  cp $_human_launcher $TARGET_REPO/bin/hos-human && chmod +x $TARGET_REPO/bin/hos-human"
+  fi
+fi
+
 fi  # end if ! $ROLE_HUMAN
 
 # ── contract/ — oversight contract + step manifest template ───────────────────
