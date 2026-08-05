@@ -151,7 +151,8 @@ For each recently-merged PR (merged in the last 2 hours):
 1. Read `pr.merged_by.login`.
 2. **If `pr.merged_by.login` is the human operator** (`HUMAN_REVIEWER` from `machine-accounts.env`, currently `ScottThurlow`):
    - This is a **human-authorized merge**. Human merge authority supersedes the overseer review requirement.
-   - Append to audit log: `{"event":"human-authorized-merge","pr":<n>,"merged_by":"ScottThurlow","timestamp":"<ISO>"}`.
+   - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#, mirrors the bot-merge branch below (#1250).** A merged PR stays in the rolling 2-hour window across multiple cycles; without this precheck the overseer re-appends the same audit line every cycle. Before appending: grep `audit/oversight-log.jsonl` for an existing line matching `"event":"human-authorized-merge"` with `"pr":<n>`. If present → do **NOT** append a duplicate.
+   - Append to audit log (only if the precheck found none): `{"event":"human-authorized-merge","pr":<n>,"merged_by":"ScottThurlow","timestamp":"<ISO>"}`.
    - Do **NOT** file a process-gap issue. Do NOT post a comment. Log and continue.
 3. **If `pr.merged_by.login` is a bot** (login is in `BOT_ACCOUNTS` from `machine-accounts.env`):
    - This is a process violation — bots must not merge without overseer approval.
@@ -334,14 +335,27 @@ For each PR found:
 
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
 
+   **Head-SHA freshness (#1251) — pass on every call.** `decide_merge_authority()`
+   takes a `head_sha` parameter (`pr.head.sha`, already present on the PR object read
+   in step 3) and threads it into every human-approval lookup — the #589 protected-surface
+   bypass below, the security-relevant check, and the universal #757 assertion all share
+   the same `_find_human_approval(reviews, human_reviewer, head_sha)` call, which rejects
+   an `APPROVED` review whose `commit_id` does not match `head_sha`. This parameter
+   defaults to `None`, which disables SHA filtering entirely — a stale approval from
+   before a later push would then satisfy any of these gates. **Always pass
+   `head_sha=<pr_head_sha>`.** Do not rely on `dismiss_stale_reviews_on_push` alone: that
+   branch-protection setting is a second, independent line of defense (already load-bearing
+   for §6b's batch-merge serialization), not a substitute for this explicit check.
+
    **Issue #589 — human approval override for protected surfaces:**
    Before calling `decide_merge_authority()`, fetch the PR's reviews via:
    ```
    GET /repos/{o}/{r}/pulls/{n}/reviews
    ```
-   Pass the reviews list to `decide_merge_authority(..., reviews=<reviews_list>)`.
+   Pass the reviews list to `decide_merge_authority(..., reviews=<reviews_list>, head_sha=<pr_head_sha>)`.
    If the PR touches a protected surface and has an APPROVED review from HUMAN_REVIEWER
-   (ScottThurlow), the function will allow auto-merge (bypassing the human-gate).
+   (ScottThurlow) **on the current head SHA**, the function will allow auto-merge
+   (bypassing the human-gate); an approval left on an earlier commit does not qualify.
    Log this as `human-approval-detected` in the audit trail.
 
    **Issue #761 — idempotency guard and requested-reviewer gate:**
