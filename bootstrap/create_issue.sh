@@ -10,7 +10,7 @@
 #
 # Usage:
 #   bash bootstrap/create_issue.sh --title <text> --body-file <path> \
-#     --label <labels> --app <worker|overseer|human>
+#     --label <labels> --app <worker|overseer|human> [--milestone <title-prefix>]
 #
 #   --label accepts a comma-separated list, e.g. --label "priority:high,needs-ai"
 #
@@ -18,8 +18,14 @@
 # newlines and quotes, which is exactly the unallowlistable $(...)/quoted-
 # shell pattern this script exists to eliminate.
 #
+# Milestone titles in this repo are full strings with an em dash (e.g.
+# "v0.6.0 — Astro & JS Support"), so --milestone is matched by PREFIX and
+# resolved to its exact title before being sent to `gh issue create
+# --milestone` — same convention as bootstrap/edit_issue.sh (#1175). Omitting
+# --milestone behaves exactly as before (no milestone set).
+#
 # Requires: bootstrap/get_app_token.sh, gh, git (to resolve owner/repo from
-# the 'origin' remote), curl (token revocation).
+# the 'origin' remote), curl (token revocation), jq (milestone prefix match).
 
 set -euo pipefail
 
@@ -33,6 +39,7 @@ TITLE=""
 BODY_FILE=""
 LABELS=""
 APP_ROLE=""
+MILESTONE_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -40,8 +47,9 @@ while [[ $# -gt 0 ]]; do
         --body-file) BODY_FILE="$2"; shift 2 ;;
         --label)     LABELS="$2"; shift 2 ;;
         --app)       APP_ROLE="$2"; shift 2 ;;
+        --milestone) MILESTONE_ARG="$2"; shift 2 ;;
         --body)      err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
-        *)           err "Usage: $0 --title <text> --body-file <path> --label <labels> --app <worker|overseer|human>" ;;
+        *)           err "Usage: $0 --title <text> --body-file <path> --label <labels> --app <worker|overseer|human> [--milestone <title-prefix>]" ;;
     esac
 done
 
@@ -77,10 +85,37 @@ revoke_token() {
         || warn "failed to revoke installation token (it will expire naturally within 1 hour)"
 }
 
+fail() {
+    revoke_token
+    err "$1"
+}
+
+# ── Resolve a milestone title prefix to its exact title (never assume the
+# caller passed the full em-dash title — see header comment) ─────────────────
+resolve_milestone_title() {
+    local prefix="$1" milestones matches count
+    milestones="$(gh api "repos/${REPO_SLUG}/milestones?state=all&per_page=100")" \
+        || fail "failed to list milestones"
+    matches="$(printf '%s' "$milestones" | jq -r --arg prefix "$prefix" \
+        '.[] | select(.title | startswith($prefix)) | .title')"
+    [[ -n "$matches" ]] || fail "no milestone found matching prefix: $prefix"
+    count="$(printf '%s\n' "$matches" | wc -l)"
+    if [[ "$count" -gt 1 ]]; then
+        fail "milestone prefix '$prefix' is ambiguous — matches: $(printf '%s' "$matches" | tr '\n' '|')"
+    fi
+    printf '%s' "$matches"
+}
+
 LABEL_ARGS=()
 [[ -n "$LABELS" ]] && LABEL_ARGS=(--label "$LABELS")
 
-if ! ISSUE_URL="$(gh issue create --repo "$REPO_SLUG" --title "$TITLE" --body-file "$BODY_FILE" "${LABEL_ARGS[@]}")"; then
+MILESTONE_ARGS=()
+if [[ -n "$MILESTONE_ARG" ]]; then
+    MILESTONE_TITLE="$(resolve_milestone_title "$MILESTONE_ARG")"
+    MILESTONE_ARGS=(--milestone "$MILESTONE_TITLE")
+fi
+
+if ! ISSUE_URL="$(gh issue create --repo "$REPO_SLUG" --title "$TITLE" --body-file "$BODY_FILE" "${LABEL_ARGS[@]}" "${MILESTONE_ARGS[@]}")"; then
     revoke_token
     err "gh issue create failed"
 fi
