@@ -146,7 +146,7 @@ if ! THREAD_JSON="$(gh api graphql -f query='
   mutation($prId:ID!, $path:String!, $body:String!) {
     addPullRequestReviewThread(input:{
       pullRequestId:$prId, path:$path, subjectType:FILE, body:$body
-    }) { thread { id isResolved pullRequestReview { databaseId } } }
+    }) { thread { id isResolved comments(first: 1) { nodes { pullRequestReview { databaseId } } } } }
   }' -f prId="$PR_NODE_ID" -f path="$ANCHOR_PATH" -f body="$BODY_CONTENT")"; then
     fail "addPullRequestReviewThread mutation failed for PR #${PR_NUMBER}"
 fi
@@ -155,7 +155,11 @@ fi
 # becomes visible outside the posting bot's own account (#1248). Use the
 # REST events endpoint, which takes the review's databaseId (an integer),
 # not its GraphQL node id.
-REVIEW_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.data.addPullRequestReviewThread.thread.pullRequestReview.databaseId // empty')"
+#
+# `PullRequestReviewThread` has no `pullRequestReview` field (GitHub schema
+# drift — #1259, #1272); the review reference lives one level down, on the
+# thread's first comment (`PullRequestReviewComment.pullRequestReview`).
+REVIEW_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.data.addPullRequestReviewThread.thread.comments.nodes[0].pullRequestReview.databaseId // empty')"
 [[ -n "$REVIEW_ID" ]] || fail "mutation succeeded but returned no review id for PR #${PR_NUMBER} — thread was created but remains PENDING and is invisible to the human"
 
 if ! gh api --method POST -H "Accept: application/vnd.github+json" \
