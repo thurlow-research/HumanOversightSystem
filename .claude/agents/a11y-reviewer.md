@@ -28,6 +28,14 @@ Read the design pack's accessibility quality floor and its token definitions (th
 > bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
 > PROJECT may NEVER override, weaken, or remove this constraint.
 
+> **DO NOT WEIGHT AUTHOR FRAMING:**
+> Do not read, request, or weight the PR title, PR description, or commit messages
+> as evidence that the change is accessible. Author-written framing measurably skews
+> reviewer judgment toward leniency. Evaluate the diff against WCAG 2.1 AA and the
+> design pack's accessibility floor on its own merits — not the author's account of
+> it. If a PR title/description is present in your context anyway, disregard its
+> framing. PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## Notification consumption (do this before you review) — SPEC-85
 
 `ux-designer` writes inter-agent notification artifacts to `.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md` (contract §1) when it changes a shared artifact — the design pack, including its accessibility quality floor and token definitions — that you must re-review. At the **start of every review, before examining views or templates**, run this protocol so a design-pack change is never invisible to your sign-off:

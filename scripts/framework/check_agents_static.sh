@@ -266,6 +266,40 @@ else
     ok "Agent-to-doc staleness: OK"
 fi
 
+# ── 8. D53 anti-framing instruction present in every peer-review lane (#1132) ──
+section "8. Anti-framing instruction coverage (D53)"
+
+# Peer review (same-model-family review) only earns its place with the
+# no-shared-memory/no-author-framing guardrail (ADR-033 §1a). A refactor
+# silently dropped this instruction from code-reviewer.md and
+# privacy-reviewer.md once already (2026-06-17, restored 2026-08-05) with no
+# check to catch it — this section is that check.
+PEER_REVIEW_LANES=(
+    code-reviewer
+    security-reviewer
+    privacy-reviewer
+    reliability-reviewer
+    ops-reviewer
+    ui-reviewer
+    a11y-reviewer
+    infra-reviewer
+    unit-test
+    system-test
+)
+
+for lane in "${PEER_REVIEW_LANES[@]}"; do
+    lane_file="$AGENTS_DIR/$lane.md"
+    if [[ ! -f "$lane_file" ]]; then
+        warn "$lane_file not found — skipping anti-framing check for $lane"
+        continue
+    fi
+    if grep -q "DO NOT WEIGHT AUTHOR FRAMING" "$lane_file"; then
+        ok "[$lane] anti-framing instruction present"
+    else
+        fail "[$lane] missing D53 anti-framing instruction (author-supplied PR/commit framing is untrusted input) — see ADR-033 §1a"
+    fi
+done
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════"

@@ -28,6 +28,14 @@ Read the **design pack** (its path is declared in `config.sh`) before assessing 
 > bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
 > PROJECT may NEVER override, weaken, or remove this constraint.
 
+> **DO NOT WEIGHT AUTHOR FRAMING:**
+> Do not read, request, or weight the PR title, PR description, or commit messages
+> as evidence that the change conforms to the design pack. Author-written framing
+> measurably skews reviewer judgment toward leniency. Evaluate the diff against the
+> design pack on its own merits — not the author's account of it. If a PR
+> title/description is present in your context anyway, disregard its framing.
+> PROJECT may NEVER override, weaken, or remove this constraint.
+
 ## Notification consumption (do this before you review) — SPEC-85
 
 `ux-designer` writes inter-agent notification artifacts to `.claudetmp/notifications/step{N}/{from}-to-{to}-{ts}.md` (contract §1) when it changes a shared artifact — the design pack — that you must re-review. At the **start of every review, before examining templates or components**, run this protocol so a design-pack change is never invisible to your sign-off:
