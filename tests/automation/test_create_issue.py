@@ -35,12 +35,33 @@ esac
 exit 0
 """
 
-GH_STUB = """#!/usr/bin/env bash
+GH_STUB = r"""#!/usr/bin/env bash
 echo "GH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
     if [[ "${GH_FAIL:-}" == "1" ]]; then exit 1; fi
     echo "https://github.com/test-owner/test-repo/issues/999"
     exit 0
+fi
+if [[ "$1" == "api" ]]; then
+    shift
+    JQ_EXPR=""
+    POSITIONAL=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --jq) JQ_EXPR="$2"; shift 2 ;;
+            *) POSITIONAL+=("$1"); shift ;;
+        esac
+    done
+    PATH_ARG="${POSITIONAL[0]:-}"
+    case "$PATH_ARG" in
+        */milestones\?*)
+            [[ "${GH_FAIL_MILESTONES:-}" == "1" ]] && exit 1
+            BODY='[{"number":10,"title":"v0.6.0 — Astro & JS Support"},{"number":11,"title":"v0.7.0 — Quality"},{"number":12,"title":"v0.6.1 — patch"}]'
+            if [[ -n "$JQ_EXPR" ]]; then printf '%s' "$BODY" | jq -r "$JQ_EXPR"; else printf '%s\n' "$BODY"; fi
+            exit 0
+            ;;
+        *) exit 1 ;;
+    esac
 fi
 exit 1
 """
@@ -184,6 +205,62 @@ def test_gh_failure_still_revokes_token(h):
     result = h.run(
         ["--title", "t", "--body-file", str(h.body_file), "--app", "worker"],
         env_overrides={"GH_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    cap = h.capture()
+    assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+# --------------------------------------------------------------------------- #
+# Milestone prefix resolution (real jq filtering against stub JSON)
+# --------------------------------------------------------------------------- #
+
+
+def test_milestone_omitted_when_not_passed(h):
+    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--app", "worker"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    gh_create_line = [ln for ln in cap.splitlines() if "issue create" in ln][0]
+    assert "--milestone" not in gh_create_line
+    assert not any("milestones?" in ln for ln in cap.splitlines())
+
+
+def test_milestone_unambiguous_prefix_resolves_and_passes_full_title(h):
+    result = h.run([
+        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
+        "--milestone", "v0.7.0",
+    ])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    gh_create_line = [ln for ln in cap.splitlines() if "issue create" in ln][0]
+    assert "--milestone v0.7.0 — Quality" in gh_create_line
+
+
+def test_milestone_ambiguous_prefix_aborts_before_create(h):
+    result = h.run([
+        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
+        "--milestone", "v0.6",
+    ])
+    assert result.returncode != 0
+    assert "ambiguous" in result.stderr
+    cap = h.capture()
+    assert not any("issue create" in ln for ln in cap.splitlines())
+    assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+def test_milestone_unknown_prefix_errors(h):
+    result = h.run([
+        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
+        "--milestone", "v9.9.9",
+    ])
+    assert result.returncode != 0
+    assert "no milestone found" in result.stderr
+
+
+def test_milestone_lookup_failure_still_revokes_token(h):
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--app", "worker", "--milestone", "v0.7.0"],
+        env_overrides={"GH_FAIL_MILESTONES": "1"},
     )
     assert result.returncode != 0
     cap = h.capture()
