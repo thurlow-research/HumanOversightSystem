@@ -116,10 +116,18 @@ You should see `Authenticated as: <appname>[bot]`.
 
 ---
 
-## Step 6 — Create `bin/hos-human`  *(human; one-time)*
+## Step 6 — Verify `bin/hos-human`  *(human; one-time)*
 
-The `bin/` launcher cannot be created by the installer in all environments
-(e.g. read-only filesystem mounts in sandboxed agents). Create it manually:
+`hos_install.sh --human` installs this launcher for you. Verify it's present
+and executable:
+
+```sh
+test -x <human-clone-root>/bin/hos-human && echo OK
+```
+
+If it's missing — some environments have a read-only `bin/` mount (e.g.
+sandboxed agents) that the installer cannot write to, in which case it will
+have printed a warning with a manual fallback — create it yourself:
 
 ```sh
 cp /tmp/claude/hos-human <human-clone-root>/bin/hos-human
