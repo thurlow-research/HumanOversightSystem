@@ -66,8 +66,8 @@ git rm PROJECT/hos-halt && git commit -m "chore: remove hos-halt" && git push
 # Verify the governance config is enabled
 cat PROJECT/hos-coordination.yaml | grep enabled
 
-# Run the launcher by hand (idle-backoff disabled so it actually fires)
-HOS_IDLE_INTERVAL=0 $HOME/Code/HOS/Worker/bin/hos-cron --role worker --project hos
+# Run the launcher by hand
+$HOME/Code/HOS/Worker/bin/hos-cron --role worker --project hos
 # Expected: "Authenticated as hos-worker-hos[bot] — starting worker cycle"
 ```
 

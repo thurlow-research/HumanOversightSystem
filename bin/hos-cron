@@ -26,7 +26,6 @@
 #   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables)
 #   HOS_CRON_MAX_TURNS          optional --max-turns backstop (default unset = no cap)
 #   HOS_CRON_AUTH_PROBE         1 = run a model auth probe before work (default 0; costs a turn)
-#   HOS_IDLE_INTERVAL           idle-backoff threshold in seconds (default 1800)
 #   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
 #   HOS_TARGET_RELEASE          override the active release title (e.g. v0.4.2); default from projects.conf
 #   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
@@ -129,7 +128,6 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}-${PROJECT}"
 _WAKEUP_FILE_LEGACY="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
-IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
 mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
 
@@ -366,7 +364,18 @@ _validate_env() {
 }
 _validate_env
 
-# ── Wakeup / idle backoff ─────────────────────────────────────────────────────
+# ── Wakeup ────────────────────────────────────────────────────────────────────
+# #1196: the idle backoff this mechanism used to bypass is gone (it suppressed
+# cron fires to at most once per HOS_IDLE_INTERVAL, based on a GitHub-throttling
+# diagnosis later traced to a different cause — see DECISIONS.md). Every cron
+# fire now runs the cycle unconditionally, so a wakeup file no longer unblocks
+# anything. It is kept anyway: it still hands off role-to-role ("worker just
+# opened a PR, overseer should look now" / "overseer just merged, worker can
+# proceed") faster than waiting for each role's own next scheduled fire, it
+# costs one file write per cycle, and the cycle-wakeup audit event remains a
+# useful trace of that coordination. Removing it was considered and rejected —
+# see DECISIONS.md.
+#
 # #995: prefer the project-scoped wakeup file. Fall back to the legacy unscoped
 # path ONLY when its JSON "project" field is absent (a truly pre-scoping signal)
 # or matches this project — never consume/rm a wakeup that names another project,
@@ -404,11 +413,7 @@ elif [[ -f "$_LAST_RUN_FILE" ]]; then
   _last=$(cat "$_LAST_RUN_FILE" 2>/dev/null || echo 0)
   _now=$(date +%s)
   _elapsed=$(( _now - _last ))
-  if [[ "$_elapsed" -lt "$IDLE_INTERVAL" ]]; then
-    echo "$LOG_PREFIX idle backoff — ${_elapsed}s since last run (threshold ${IDLE_INTERVAL}s)"
-    exit 0
-  fi
-  echo "$LOG_PREFIX idle poll — ${_elapsed}s since last run"
+  echo "$LOG_PREFIX ${_elapsed}s since last run"
 fi
 # Timestamp written only after successful Claude exit (#711)
 
@@ -811,11 +816,9 @@ if [[ "$ROLE" == "overseer" ]]; then
   # Capture gh's exit status separately from its output (#915). A bare
   # `$(... || true)` swallows a transient API failure into an empty result,
   # which the empty-check below would misread as "no open PRs" — masking the
-  # cause (logged as reason=no_open_prs), stamping _LAST_RUN_FILE and thereby
-  # arming the 1800s idle backoff, so pending review/merge work is dropped for
-  # up to 30 min on an API blip. Treat empty as "no PRs" ONLY when the fetch
-  # succeeded; on failure do NOT stamp last-run (so the next cycle retries
-  # immediately) and exit with a distinct reason. (Idle-backoff family: #711.)
+  # cause (logged as reason=no_open_prs). Treat empty as "no PRs" ONLY when the
+  # fetch succeeded; on failure do NOT stamp last-run (so the next cycle
+  # retries immediately) and exit with a distinct reason. (#711, #1196.)
   if _open_pr_nums=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
       --jq '.[].number' 2>/dev/null); then
     _pr_fetch_ok=1
@@ -823,7 +826,7 @@ if [[ "$ROLE" == "overseer" ]]; then
     _pr_fetch_ok=0
   fi
   if [[ "$_pr_fetch_ok" -eq 0 ]]; then
-    echo "$LOG_PREFIX open-PR fetch failed — skipping cycle without arming idle backoff"
+    echo "$LOG_PREFIX open-PR fetch failed — skipping cycle without stamping last-run"
     _audit cycle-skip reason=pr_fetch_unavailable
     exit 0
   fi
@@ -1014,9 +1017,8 @@ fi
 # ── Post-cycle bookkeeping ────────────────────────────────────────────────────
 if [[ $_claude_exit -eq 0 ]]; then
   date +%s > "$_LAST_RUN_FILE"
-  # If work was done this cycle, drop a self-wakeup so the next cron fire bypasses
-  # the idle backoff and picks up any remaining items without waiting IDLE_INTERVAL.
-  # Reuses the existing wakeup mechanism — no new file type needed.
+  # If work was done this cycle, drop a self-wakeup for traceability (#1196 kept
+  # the wakeup mechanism after removing the idle backoff it used to bypass).
   _did_work=0
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
     _run_start_iso=$(python3 -c "

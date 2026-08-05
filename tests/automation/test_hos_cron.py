@@ -2,7 +2,7 @@
 Tests for bin/hos-cron — the parameterized HOS cron launcher.
 
 `bin/hos-cron` was hardened reactively all through the v0.4.1 cron bring-up
-(arg validation, registry resolution, thin-env, overlap lock, idle backoff,
+(arg validation, registry resolution, thin-env, overlap lock, wakeup handoff,
 auth bootstrap #728, identity guard, deterministic git credentials #738) with
 every fix verified by hand and none captured as a test (#743). This suite
 codifies those manual checks so the launcher can't silently regress.
@@ -254,7 +254,6 @@ class CronEnv:
             "HOS_STATE_DIR": str(self.state),
             "HOS_CRON_JITTER_MAX": "0",      # deterministic: no 0–60s sleep
             "HOS_CRON_MAX_SECONDS": "0",     # don't wrap claude stub in `timeout`
-            "HOS_IDLE_INTERVAL": "1800",
             "HOS_TEST_CLAUDE_LOG": str(self.claude_log),
             # Provide a synthetic repo slug so gh-API checks have a target without
             # needing a real git remote configured in the temporary repo directory.
@@ -593,7 +592,7 @@ class TestOverlapLock:
         assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
 
 
-# ──────────────────────────── Wakeup / idle backoff ────────────────────────
+# ─────────────────────────────────── Wakeup ────────────────────────────────
 class TestWakeupBackoff:
     def test_wakeup_file_is_consumed_and_cycle_runs(self, cron):
         cron.wakeup_worker.parent.mkdir(parents=True, exist_ok=True)
@@ -639,23 +638,25 @@ class TestWakeupBackoff:
         assert cron.wakeup_worker_legacy.exists(), "another project's wakeup must not be stolen"
         assert "reason=legacy-theirs" not in r.stdout
 
-    def test_recent_last_run_triggers_idle_backoff(self, cron):
-        # last-run = now, no wakeup → within IDLE_INTERVAL → skip with exit 0.
+    def test_recent_last_run_no_longer_blocks_cycle(self, cron):
+        # #1196: the idle backoff that used to skip a cycle when the last run was
+        # recent is gone — every fire runs the cycle regardless of last-run age.
         cron.last_run_file.parent.mkdir(parents=True, exist_ok=True)
         now = int(subprocess.run(["date", "+%s"], capture_output=True, text=True).stdout)
         cron.last_run_file.write_text(str(now))
         r = cron.run()
-        assert r.returncode == 0
-        assert "idle backoff" in r.stdout
-        assert not cron.claude_ran(), "backoff must skip the cycle entirely"
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "idle backoff" not in r.stdout
+        assert "s since last run" in r.stdout
+        assert cron.claude_ran(), "a recent last-run must not skip the cycle"
 
-    def test_stale_last_run_polls_and_runs(self, cron):
+    def test_stale_last_run_logs_elapsed_and_runs(self, cron):
         cron.last_run_file.parent.mkdir(parents=True, exist_ok=True)
         now = int(subprocess.run(["date", "+%s"], capture_output=True, text=True).stdout)
-        cron.last_run_file.write_text(str(now - 100_000))  # far past the threshold
+        cron.last_run_file.write_text(str(now - 100_000))
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "idle poll" in r.stdout
+        assert "s since last run" in r.stdout
         assert cron.claude_ran()
 
 
@@ -823,10 +824,8 @@ class TestCycleIdentity:
 
     def test_two_invocations_mint_different_cycle_ids(self, cron):
         env1 = self._env(cron)
-        # Clear bookkeeping from the first run so idle backoff doesn't
-        # short-circuit the second invocation before Claude launches.
-        if cron.last_run_file.exists():
-            cron.last_run_file.unlink()
+        # Clear the claude log so the second invocation's record isn't confused
+        # with the first's.
         if cron.claude_log.exists():
             cron.claude_log.unlink()
         env2 = self._env(cron)
@@ -1058,11 +1057,8 @@ class TestPreJitterDepsCheck:
         assert any(cache_dir.glob("deps-*"))
         # Remove venv python to simulate broken environment
         (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
-        # Clear bookkeeping state so idle backoff doesn't fire on the second run
         if cron.claude_log.exists():
             cron.claude_log.unlink()
-        if cron.last_run_file.exists():
-            cron.last_run_file.unlink()
         # Second run: marker is fresh → validation skipped → cycle proceeds
         r2 = cron.run()
         assert r2.returncode == 0, r2.stdout + r2.stderr
@@ -1491,7 +1487,7 @@ class TestPRRoutingSkip:
         assert "worker-cycle-skip" in payload
 
     def test_awaiting_merge_stamps_last_run(self, cron):
-        """Skipped cycle stamps last-run so idle backoff applies normally."""
+        """Skipped cycle still stamps last-run for diagnostic visibility."""
         r = cron.run(env_overrides={
             "HOS_TEST_OPEN_PR_NUMS": "856",
             "HOS_TEST_PR_CR": "0",
@@ -1539,9 +1535,9 @@ class TestOverseerPRFetchFailure:
     """A transient open-PR fetch error must NOT be misread as 'no open PRs'.
 
     The old `$(... || true)` swallowed gh's non-zero exit into an empty result,
-    arming the 1800s idle backoff and dropping pending merge work for ~30 min on
-    an API blip. The fetch failure must skip the cycle WITHOUT stamping last-run
-    so the next cycle retries immediately, under a distinct audit reason.
+    misreading a transient API blip as a genuine empty PR queue. The fetch
+    failure must skip the cycle WITHOUT stamping last-run so the next cycle
+    retries immediately, under a distinct audit reason.
     """
 
     @staticmethod
@@ -1553,7 +1549,7 @@ class TestOverseerPRFetchFailure:
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
         assert r.returncode == 0, r.stdout + r.stderr
         assert not self._overseer_last_run(cron).exists(), (
-            "a fetch failure must not arm the idle backoff — next cycle must retry"
+            "a fetch failure must not stamp last-run — next cycle must retry"
         )
 
     def test_fetch_failure_is_distinct_from_empty(self, cron):
@@ -1570,12 +1566,12 @@ class TestOverseerPRFetchFailure:
         assert not cron.claude_ran(), "no AI turn on an unfetchable PR queue"
 
     def test_genuine_empty_pr_list_stamps_last_run(self, cron):
-        """A SUCCESSFUL fetch returning zero PRs is still a real idle cycle."""
+        """A SUCCESSFUL fetch returning zero PRs still stamps last-run."""
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "no open PRs" in r.stdout
         assert self._overseer_last_run(cron).exists(), (
-            "a genuine empty-PR cycle still arms the idle backoff"
+            "a genuine empty-PR cycle still stamps last-run"
         )
         assert not cron.claude_ran()
 
@@ -1599,7 +1595,7 @@ class TestMissingPromptFile:
         assert "role prompt file missing" in r.stdout
 
     def test_missing_worker_prompt_does_not_stamp_last_run(self, cron):
-        # Fail-closed config errors must not arm idle backoff — next fire retries.
+        # Fail-closed config errors must not stamp last-run — next fire retries.
         cron.prompt_file("worker").unlink()
         r = cron.run()
         assert r.returncode == 78, r.stdout + r.stderr
