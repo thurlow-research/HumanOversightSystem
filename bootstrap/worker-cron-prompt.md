@@ -31,10 +31,9 @@ TRIAGE RULE (for new issues): v0.5.1 is drained — closed to new triage, do not
 LOOP:
 
 **Step 0 — Triage milestone-less issues:**
-Before picking up build work, triage all open issues with no milestone. Fetch them:
+Before picking up build work, triage all open issues with no milestone. Fetch them (this wrapper already filters out PRs — the raw `issues` REST endpoint returns both issues and PRs sharing one number sequence, #1236):
 ```bash
-gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=none&per_page=100" \
-  --jq '.[] | "#\(.number) [\(.labels | map(.name) | join(","))] \(.title | .[0:80])"'
+bash bootstrap/query_issues.sh --app worker --list --milestone-less
 ```
 For each:
 1. **Assign a milestone** per `docs/planning/README.md` triage criteria: `v0.6.0`=Astro/JS stack support or a governance/security gap in the active line; `v0.7.0`=quality/non-blocking or worker/overseer finalization; `v0.7.4`=testability (coverage/mutation scope, test-exemption accounting, shell→Python migration of decision logic, or a CI gate enforcing them); `v0.8.0`=agility; `Backlog`=no fit or needs human design decision. `v0.5.1` is drained — never select it. **`docs/planning/README.md` is the source of truth** — read it and prefer it over this list, which is a summary and may lag.
