@@ -116,7 +116,7 @@ or the milestone hasn't been created yet.
 
 **Override without changing the file** (useful for testing):
 ```bash
-HOS_TARGET_RELEASE=v0.4.3 HOS_IDLE_INTERVAL=0 bin/hos-cron --role worker --project hos
+HOS_TARGET_RELEASE=v0.4.3 bin/hos-cron --role worker --project hos
 ```
 
 Set `HOS_TARGET_MILESTONE_NUMBER` alongside to skip the REST lookup entirely.
@@ -132,7 +132,7 @@ The wrapper pins its own PATH, so **no `PATH=` prefix is required**. Schedule
 each role; offset projects so they don't collide.
 
 ```cron
-# HOS worker & overseer — every 5 min, wakeup/backoff suppresses idle fires
+# HOS worker & overseer — every 5 min; each fire runs the cycle (#1196)
 1,6,11,16,21,26,31,36,41,46,51,56 * * * *  $HOME/Code/HOS/Worker/bin/hos-cron --role worker   --project hos >> /tmp/hos-worker-hos.log 2>&1
 4,9,14,19,24,29,34,39,44,49,54,59 * * * *  $HOME/Code/HOS/Worker/bin/hos-cron --role overseer  --project hos >> /tmp/hos-overseer-hos.log 2>&1
 
@@ -174,20 +174,27 @@ Controls (all optional env overrides):
 |---|---|---|
 | `HOS_CRON_MAX_SECONDS` | `1800` | Wall-clock cap per session (`0` disables). Kills a hung/runaway session. |
 | `HOS_CRON_MAX_TURNS` | unset | Optional `--max-turns` backstop. Leave unset — a low cap truncates legitimate pipeline work. |
-| `HOS_IDLE_INTERVAL` | `1800` | Idle-backoff threshold. Fires with no work and a recent run exit immediately (zero cost). |
 | `HOS_CRON_AUTH_PROBE` | `0` | `1` spends a model turn pre-flighting auth. Off by default to save rate limit. |
 
-Idle-backoff (#628) is the main cost control: idle fires never spawn `claude`.
-Only active cycles (real work) consume the subscription.
+Every fire runs the cycle and spawns `claude` (#1196 removed the idle backoff
+that used to suppress fires with no recent activity — it existed to reduce
+"is there work?" polling during a suspected GitHub throttling incident that was
+later traced to a different cause). The remaining cost controls are the
+pre-Claude fast paths that already existed independent of the backoff: the
+overseer skips the Claude launch entirely when the open-PR queue has nothing
+actionable (all conflicting/draft, or none open), and the worker skips it when
+all of its own open PRs are awaiting human merge. A worker fire with genuinely
+no candidate work still spends a turn on Step 0/1/2 triage, since that
+requires judgment the wrapper can't pre-filter.
 
 ---
 
 ## 6. Verify it works
 
-Run the wrapper once by hand (idle-backoff disabled so it actually runs):
+Run the wrapper once by hand:
 
 ```bash
-HOS_IDLE_INTERVAL=0 $HOME/Code/HOS/Worker/bin/hos-cron --role worker --project hos
+$HOME/Code/HOS/Worker/bin/hos-cron --role worker --project hos
 ```
 
 Expected: authenticates as the bot, runs inner-loop tests, starts a worker cycle —
@@ -199,8 +206,9 @@ Then watch a real cron fire:
 tail -f /tmp/hos-worker-hos.log
 ```
 
-A healthy idle fire logs `idle backoff — …s since last run`. An active fire logs
-`Authenticated as <bot> — starting worker cycle`.
+A fire with nothing actionable in the queue logs a `skipping cycle` line before
+launching `claude`. An active fire logs `Authenticated as <bot> — starting
+worker cycle`.
 
 ---
 

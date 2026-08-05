@@ -53,9 +53,14 @@ of it before any agent is invoked:
 - **PR pre-filtering** — for the overseer, the shell checks each PR's `mergeable_state`
   via REST and passes only actionable PRs onward, so the model never reasons about PRs it
   cannot act on.
-- **Idle backoff** — when a cycle finds no work, the launcher backs off (default 1800s)
-  rather than re-invoking the model. This idle-backoff suppression is load-bearing for
-  cron cost control (see `DECISIONS.md`, the 2026-06-21 cron entry, and #628).
+- **Overseer / worker PR pre-filters** — when the open-PR queue has nothing actionable
+  (overseer: none open, or all conflicting/draft; worker: all own PRs awaiting human
+  merge), the launcher skips the model invocation entirely. #1196 removed the
+  time-based idle backoff that previously suppressed cron fires with no recent
+  activity (added under a GitHub-throttling diagnosis later traced to a different
+  cause — see `DECISIONS.md`, the 2026-06-21 cron entry, #628, and the #1196 entry);
+  cost control for genuinely empty queues now rests on these provable-emptiness
+  pre-filters alone.
 
 **Rationale:** an agent is invoked only with the minimal boilerplate it needs; discovery,
 sync, auth, and filtering are completed deterministically so model attention goes to
@@ -271,7 +276,7 @@ review outcomes are not conflated with LLM spend.
 
 | Decision | What it saves | What it risks | Mitigation |
 |---|---|---|---|
-| Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles; idle backoff |
+| Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles (PR pre-filters) |
 | Diff-centric / scoped context (§3) | Tokens per reviewer; better signal | Misses cross-cutting issues | Multi-agent split; security gets extra context; cross-vendor panel |
 | Sonnet default, Opus only for design (§4) | Per-token cost across 28 agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
 | Risk-stratified effort (§5) | Exhaustive review on LOW/MEDIUM | Mis-triaged defect slips auto-pass | SQC random red-team sample → escaped-defect rate |
