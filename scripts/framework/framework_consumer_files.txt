@@ -40,6 +40,7 @@ bootstrap/create_branch.sh
 
 # ── scripts/framework/ — consumer-facing governance tools (#769) ─────────────────
 scripts/framework/gen_codeowners.sh
+scripts/framework/gen_scripts_index.sh
 scripts/framework/protected_surfaces.txt
 scripts/framework/provision_agent_account.sh
 scripts/framework/run_post_change_sweep.sh
