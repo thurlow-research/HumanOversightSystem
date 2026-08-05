@@ -198,16 +198,28 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 
 This session runs inside an OS-enforced sandbox. Filesystem and network boundaries
 are enforced by the kernel, so **permission prompts are not the security control —
-they are friction.** On Worker and Overseer they are worse: nobody is present to
-answer, so an unallowlistable command is a **hang**.
+they are friction.**
 
 **The rule: a command can be allowlisted only if its full text is known before it
 runs.** Claude Code matches the command against rules like `Bash(git *)`. If any
-part is determined at runtime, no rule can match and it prompts *every time*,
-regardless of what is in the settings file.
+part is determined at runtime, no rule can match.
 
-**The tell:** if the prompt has no "Always allow" button, the command was
-unallowlistable. No configuration change fixes it — rewrite the command.
+In an **interactive** session a human is present, so it prompts *every time*,
+regardless of what is in the settings file. On **Worker and Overseer**, which run
+unattended under `claude --print`, there is no one to answer an interactive
+prompt, so none appears: the command is **denied outright**, the denial is
+reported back to the model, and the cycle continues having silently skipped that
+step. Measured 2026-08-01 (Test B, #1146): an unmatched Bash call exited 0 under
+a 90s timeout, where a genuine hang would have surfaced as exit 124 — there is no
+hang. The silent skip is the real failure mode to guard against, not a hang. This
+is distinct from a genuine timeout — an *allowed* command that stalls on network,
+a subprocess, or a lock. That is not a permission event and no permission rule
+catches it; it's `HOS_CRON_MAX_SECONDS`' job (currently optional, no
+`--kill-after`, no process-group kill — tracked in #1146).
+
+**The tell (interactive sessions):** if the prompt has no "Always allow" button,
+the command was unallowlistable. No configuration change fixes it — rewrite the
+command.
 
 #### What breaks allowlisting
 
@@ -267,6 +279,10 @@ unallowlistable. No configuration change fixes it — rewrite the command.
 7. **Use literal paths.** Write `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`.
 
 #### When a prompt does appear
+
+This applies verbatim to interactive sessions. On Worker and Overseer there is no
+prompt UI — the same three causes surface instead in the denial text reported
+back to the model, with no "Always allow" button to check.
 
 Diagnose before asking for a rule. Three causes; only one is fixed by adding rules.
 **Report which one it is.**
