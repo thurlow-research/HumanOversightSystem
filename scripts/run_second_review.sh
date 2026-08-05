@@ -585,20 +585,20 @@ Return JSON only:
     # tree. agy is an AGENTIC CLI — without this it has run pytest and created
     # files mid-review (HOS#113). A review step must never write to the tree.
     #
-    # agy has no JSON-output mode and intermittently returns prose narration
-    # instead of the requested JSON (HOS#113), which previously degraded to a
-    # SILENT zero-findings "pass" and let the release gate through. Salvage the
-    # JSON from any prose wrapper; if the first response is pure narration, retry
-    # ONCE with a hard JSON-only reinforcement; only then fail — and fail with a
-    # DISTINCT, honest error so the gate sees "review NOT performed", not "clean".
+    # --output-format json: agy gained a JSON-output mode after HOS#113 was
+    # filed (verified against the installed CLI, 2026-07-31, #1133). The salvage
+    # + single-retry fallback below is kept regardless — the flag's payload
+    # shape under real failure conditions (timeout, partial output, agy still
+    # narrating despite the flag) hasn't been exercised yet, so this is
+    # belt-and-braces, not a replacement for defensive parsing.
     local raw clean
-    raw=$(agy --sandbox -p "$prompt" 2>/dev/null) || raw=""
+    raw=$(agy --sandbox --output-format json -p "$prompt" 2>/dev/null) || raw=""
     clean=$(salvage_review_json "$raw") || clean=""
     if [[ -z "$clean" ]]; then
         local reinforce="$prompt
 
 CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object and nothing else — no prose, no explanation, no markdown code fences. Start with { and end with }. Do not narrate tool use or your reasoning."
-        raw=$(agy --sandbox -p "$reinforce" 2>/dev/null) || raw=""
+        raw=$(agy --sandbox --output-format json -p "$reinforce" 2>/dev/null) || raw=""
         clean=$(salvage_review_json "$raw") || clean=""
     fi
     if [[ -n "$clean" ]]; then

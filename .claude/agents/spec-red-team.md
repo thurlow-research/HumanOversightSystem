@@ -58,7 +58,7 @@ You will be invoked with a step number and optionally the relevant spec sections
 3. Run agy with an adversarial prompt:
 
 ```bash
-agy --print "You are an adversarial spec reviewer for the application described in the spec section below. Your job is to find gaming vectors, contradictions, implicit assumptions, and missing edge cases in the following spec section.
+agy --sandbox --print "You are an adversarial spec reviewer for the application described in the spec section below. Your job is to find gaming vectors, contradictions, implicit assumptions, and missing edge cases in the following spec section.
 
 Be specific. For each finding, state:
 - What the issue is
