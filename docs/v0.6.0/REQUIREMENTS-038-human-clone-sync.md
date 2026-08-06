@@ -5,6 +5,11 @@ carried here as bound premises, not re-opened (§1). Six points remain genuinely
 escalated (§4); architect may proceed on the settled requirements but MUST NOT bind the
 escalated points until the human rules them.
 **Date:** 2026-08-05
+**Amended:** 2026-08-06 — §6 records the pm-agent rulings on three downstream escalations. **ESC-B**
+corrects FR9's anchoring and acceptance test in place; **ESC-C** corrects the FR18/FR20 boundary in
+place (both **clarifying** — no behaviour added); **TD-ESC-3** is confirmed and adds **FR37–FR39**
+(**structural** — not settled here, carried to the human). No other FR is changed. **ESC-A and Q1–Q6
+are untouched and remain the human's; the design set is still *not cleared to build*.**
 **Author:** pm-agent
 **Source issue:** #1202 — "design: Human clone sync via cron — cadence, repair pass, and
 drift-safety markers." Thread comprises the desktop design handoff (2026-08-02), a
@@ -253,14 +258,35 @@ executed copy is byte-identical to what it was before the check ran; only a huma
 changes it.
 
 **FR9 — The check MUST distinguish *stale* from *unrecognised*, and MUST treat them differently.**
-A copy that matches some earlier committed state of its source is **stale** — old but reviewed. A
-copy that matches *no* committed state of its source has been modified outside the install path and
-is **unrecognised** — a tamper signal. Stale MUST warn and escalate on persistence; unrecognised
-MUST fail closed (refuse to run) and escalate immediately.
-*Verify:* a copy set to a prior committed revision of its source is classified stale and the
-launcher still runs; a copy with a hand-edited byte is classified unrecognised, the launcher
-refuses to run, and an escalation is produced. *(The stale-path response — warn-and-escalate vs
-halt — is §4-Q3.)*
+*(Body and Verify amended 2026-08-06 in response to ESC-B — see the amendment note below; the
+requirement's intent is unchanged.)*
+A copy that **is what an install placed there, from an older source**, is **stale** — old but
+reviewed. A copy whose executed bytes are **not what an install placed there** — any content the
+install did not place, or a declared file missing or extra — has been modified outside the install
+path and is **unrecognised** — a tamper signal. Stale MUST warn and escalate on persistence;
+unrecognised MUST fail closed (refuse to run) and escalate immediately.
+*Verify:* a copy produced by **running an install from an older source revision** is classified
+stale and the launcher still runs; a copy with a hand-edited byte is classified unrecognised, the
+launcher refuses to run, and an escalation is produced — **and a copy hand-set to a prior committed
+revision of its source *without* an install is also classified unrecognised**, because the install
+did not place those bytes. *(The stale-path response — warn-and-escalate vs halt — is §4-Q3.)*
+
+> **Amendment note (2026-08-06, ESC-B — pm-agent).** As originally written, FR9 defined both classes
+> by reference to *committed state of the source* and its acceptance test asserted that a copy set to
+> a prior committed revision is *stale*. That was wrong, and wrong in the unsafe direction: it makes
+> agent-writable repository content the integrity authority, so anyone who can write the repo can
+> manufacture a matching blob and launder a modified copy into "recognised." ADR-038 **AD-6** anchors
+> integrity on the **install record** (written only by a human-run install, held outside every clone)
+> and uses the committed source only for the *currency* signal — a maintenance judgement, where a
+> spoofable input is acceptable. Under that anchoring the corrected rule is: **stale is produced by
+> installing from an older source; it is not produced by hand-editing the executed copy to an older
+> revision. Any content the install did not place is unrecognised, whatever it happens to match in
+> git history.** "Someone changed the executed bytes outside the install path" is exactly the tamper
+> signal that must fail closed, and an attacker choosing a real historical revision as their payload
+> is not a reason to trust it. The FR9 *intent* — old-but-reviewed code is not the same thing as
+> tampered code, and the two get different responses — survives intact; only the anchoring and the
+> literal test were wrong. Implementers: AD-6's four outcomes (CURRENT / STALE / CURRENCY-UNKNOWN /
+> UNRECOGNISED) are the binding refinement of this FR's two.
 
 ### C. Migration and sequencing (derives from P1 + VF-038-2 + VF-038-6)
 
@@ -334,9 +360,24 @@ uncommitted edits MUST survive. This restriction is what makes an unreviewed aut
 clone acceptable: fast-forwarding from the upstream default branch introduces only commits that
 already passed the PR gate. Any operation that could introduce un-gated content invalidates the
 argument.
-*Verify:* each prohibited operation is absent from the mechanism; a dirty tree produces a recorded
-skip and no tree change; an uncommitted local edit is present and unchanged after a successful sync;
-a divergent branch produces a recorded failure, never a merge or reset.
+
+**Scope of the prohibition list (added 2026-08-06, ESC-C).** This list constrains the **sync path** —
+the operations by which content is *introduced* into the clone. It is **not** a ban on git vocabulary
+everywhere in the mechanism, and it does **not** override FR20. FR20's repair path *removes* content
+that was never gated and returns the tree to a commit that was **already present in the clone before
+the attempt began**; it introduces nothing, so the argument this requirement protects is untouched.
+The two requirements govern different operations with opposite content-introduction properties. An
+implementer who reads this list as a blanket ban and therefore ships FR20 unimplemented has satisfied
+FR18's letter and defeated its purpose: an unrestorable partially-applied tree is precisely the
+un-reviewed, corresponds-to-no-gated-commit state this requirement exists to prevent. See FR20 for
+the single primitive the repair path may use and the limits on it.
+
+*Verify:* each prohibited operation is absent from the **sync path** — the path that introduces
+content (FR20's repair path is outside this list's scope and is verified against FR20 instead); a
+dirty tree produces a recorded skip and no tree change; an uncommitted local edit is present and
+unchanged after a successful sync; a divergent branch produces a recorded failure, and is never
+*reconciled* by a merge or a reset (restoration to the recorded pre-state under FR20 is a different
+operation and is not this).
 
 ### E. Atomicity and repair (the thread's sharpest unaddressed item)
 
@@ -348,8 +389,21 @@ runs, and is durable across a kill of the sync process at any point.
 result MUST NOT be left behind.** A partially applied pull is strictly worse than a stale clone: the
 tree matches neither the old commit nor the new one, `git status` looks plausible, and the agent's
 file and line citations refer to content that corresponds to no reviewed commit.
+
+**Permitted primitive, and its limits (added 2026-08-06, ESC-C).** Restoration MAY use the one
+primitive that can effect it — a **hard reset of tracked files to the pre-operation commit recorded
+under FR19**, and nothing else. FR18's prohibition list does not reach this operation: FR18 governs
+what the sync may *introduce*, and this introduces nothing — it removes content that was never
+gated and returns the tree to a commit the clone already held. The permission is narrow and the
+limits are part of the requirement: the target MUST be the recorded pre-operation commit and no
+other; the repair path MUST NOT fetch, MUST NOT touch any branch other than the checked-out one,
+and MUST NOT delete untracked files. Restoration is therefore never a route by which un-gated
+content, or any content at all, enters the clone.
+
 *Verify:* an induced failure part-way through leaves the tree at the recorded pre-state; no file
-differs from that commit except pre-existing tracked local edits; the failure is recorded, not
+differs from that commit except pre-existing tracked local edits; untracked files are unaffected;
+the restore reaches no target other than the recorded pre-operation commit and introduces no commit
+that was not already present in the clone before the attempt; the failure is recorded, not
 swallowed.
 
 **FR21 — On success the tree MUST be verified clean at the new commit before the operation is
@@ -484,6 +538,12 @@ remediation (this document) stay separate concerns.
 here removes, softens, or re-implements that report; the marker (FR24) and the staleness report
 agree about the clone's state when both are available.
 
+### L. Launcher invocation contract (added 2026-08-06 — see §6.3)
+
+**FR37, FR38 and FR39 are stated in §6.3**, where the ruling that produced them is recorded. They
+are part of the requirement set and are traceable like FR1–FR36; they are placed there rather than
+here so the reasoning and the requirement stay together.
+
 ---
 
 ## 3. What this document deliberately does not decide
@@ -557,6 +617,150 @@ issue versus a loud session-start failure versus both).
 
 ---
 
+## 6. pm-agent rulings on downstream escalations (2026-08-06)
+
+Three escalations from downstream documents were addressed to me. All three are resolved here.
+Nothing in this section touches **ESC-A** (ADR-038 §3.2 — the closure scope of the executed set) or
+**Q1–Q6** (§4): those remain the human's alone and are not affected by anything below. **The design
+set as a whole remains *not cleared to build*.**
+
+| Escalation | Source | Disposition |
+|---|---|---|
+| **ESC-B** | ADR-038 §3.2 (`architect`) | **Accepted in full.** FR9's body and *Verify* corrected in place (§2, FR9 + amendment note). Classification: **clarifying** — the intent was already right; the anchoring and the test were wrong. |
+| **ESC-C** | ADR-038 §3.2 (`architect`) | **Accepted in full.** FR18 gains a scope-of-prohibition paragraph and a corrected *Verify*; FR20 gains a permitted-primitive paragraph with explicit limits and a corrected *Verify* (§2). Classification: **clarifying** — makes the FR18/FR20 boundary explicit; adds no behaviour. |
+| **TD-ESC-3** | TECHNICAL-DESIGN-038 §15 (`technical-design`) | **Confirmed acceptable, subject to FR37–FR39 below.** Classification: **structural** — it creates a new operator obligation. Carried to the human for sign-off with the rest of this document; I do not settle it. |
+
+### 6.1 ESC-B — the currency check's anchor (FR9)
+
+Resolved in place at FR9 in §2. Summary of the correction: **stale is produced by installing from an
+older source, not by hand-editing the executed copy to an older revision; any content the install
+did not place is unrecognised, whatever it matches in git history.** The architect is right that
+anchoring integrity on git history makes agent-writable repository content the integrity authority,
+which VF-038-6 measured as writable in two of three roles — the original FR9 wording would have
+required an implementation with a laundering path built into its acceptance test. AD-6's install-record
+anchor is the correct one and is adopted. The FR9 intent is unchanged: old-but-reviewed code and
+tampered code are different things and get different responses.
+
+### 6.2 ESC-C — FR18 vs FR20 (the sync path vs the repair path)
+
+Resolved in place at FR18 and FR20 in §2. Summary: **FR18's prohibition list constrains the sync
+path — what may *introduce* content into the clone. FR20's repair path *removes* content that was
+never gated and returns the tree to a commit the clone already held; it introduces nothing, and it
+is not reached by FR18's list.** FR20 now names the single primitive the repair path may use (a hard
+reset of tracked files to the FR19-recorded pre-operation commit) together with its limits (that
+target and no other; no fetch; no other branch; no deletion of untracked files), so an implementer
+reading either requirement literally reaches the same conclusion the architect did in AD-11(6).
+
+The architect's framing is adopted rather than merely accepted, because the failure mode it protects
+against is the one this section of the document exists for: an implementer who reads FR18 as a
+blanket ban ships FR20 unimplemented and leaves partially-applied trees in place — which is *worse*
+than the stale clone FR18 protects, since a partially-applied tree corresponds to no reviewed commit
+at all while `git status` looks plausible.
+
+### 6.3 TD-ESC-3 — cwd-sensitive launchers that refuse to start on ambiguity
+
+**The question.** TECHNICAL-DESIGN-038 §9.2 step 1 and §6.2 make `hos-human`, `hos-worker` and
+`hos-overseer` resolve which project they operate on from the **current working directory** (via a
+reverse-resolver over `~/.config/hos/projects.conf`) rather than from their own location, and make
+them **refuse to start** when the project is ambiguous (more than one match) or unregistered (no
+match), with a `--project` flag as the escape hatch. This extends AD-10(3)'s already-notified change
+(the launchers stop `exec`-ing the CLI, so exit codes and signal handling become the launcher's to
+propagate). Is this acceptable operator-facing behaviour?
+
+**RULING — acceptable. Refusing is correct; guessing is not.** Three reasons, in the order that
+decided it.
+
+1. **The failure being avoided is unrecoverable and silent; the failure being introduced is
+   immediate and loud.** A launcher that guesses its project authenticates as a role against the
+   *wrong repository* — it can commit, push, comment and merge in the wrong place under a bot
+   identity, and the operator finds out afterwards. A launcher that refuses costs the operator one
+   command. That asymmetry is not close, and it is the same reasoning P1 itself rests on.
+2. **cwd-sensitivity is not a new burden in the common case; it is the invocation people already
+   use.** These launchers are run from inside the project clone being worked on — that is what
+   `.envrc`'s `PATH_add` exists for and what every documented step shows. The change makes the
+   existing habit *load-bearing* rather than incidental. It is also *forced*: under P1 a single
+   relocated copy serves every project, so `$0` no longer identifies one. There is no
+   "keep the old behaviour" option to choose — `$(dirname "$0")/..` is not merely worse after
+   relocation, it is wrong (TD-VF-038-1).
+3. **The alternative rules are all worse.** *Guess the sole registered project* silently converts a
+   correct refusal today into a wrong-repo action the day a second project is registered — it makes
+   the system less safe as it grows, which is the wrong direction for a rule to point. *Prompt
+   interactively* cannot work for `hos-worker`/`hos-overseer` when run non-interactively and puts a
+   destructive default one keypress away. *Fall back to the last-used project* adds hidden state
+   that survives across sessions.
+
+**The cost I am accepting on the operator's behalf, stated plainly:** an operator who today runs a
+launcher by absolute path from an arbitrary directory (e.g. from `$HOME`) will find it refuses after
+this change, and must either `cd` into the clone or pass `--project`. That is a real regression for
+that invocation style and it must be documented as one (FR38), not discovered.
+
+The AD-10(3) half — CLI as a child process rather than `exec` — is likewise **acceptable**, on the
+condition that exit status is genuinely indistinguishable to anything that reads it (FR39).
+TECHNICAL-DESIGN-038 §9.2 already binds propagation including the `128+N` signal-death convention;
+FR39 makes that a tested property rather than a stated intention, because it is the sort of parity
+that is easy to assert and easy to lose.
+
+**FR37 — A launcher that refuses to start MUST tell the operator which of the two refusals it is,
+and MUST give the remedy for that one.** "Ambiguous" (the cwd resolves to more than one registered
+project) and "unregistered" (it resolves to none) are different operator problems with different
+fixes, and a message that conflates them sends the operator to the wrong one. The message MUST name
+the path that was resolved, the registry consulted, and — for the ambiguous case — the candidate
+project keys and the `--project` remedy; for the unregistered case, how to register the clone or
+which command to run instead.
+*Verify:* invoking from a directory matching two registered projects produces a message naming both
+candidates and the `--project` remedy; invoking from a directory matching none produces a *different*
+message naming the registry and the registration remedy; neither message is produced by the other
+condition; in both cases the launcher starts no CLI, mints no token, and exits non-zero.
+
+**FR38 — The change in invocation contract MUST be documented as a breaking operator-facing change,
+in the migration steps and in the release notes, before it ships.** The affected invocation — running
+a launcher by absolute path from outside any registered clone — works today and stops working. Per
+FR10 nothing may break silently; this breaks visibly, but only if it is written down first.
+*Verify:* the migration documentation and the release notes each state the new resolution rule, the
+`--project` escape hatch, and the specific invocation that stops working; a reader following only the
+migration steps is not surprised at first run.
+
+**FR39 — `--project` MUST be sufficient on its own, from any working directory, and the child-process
+change MUST NOT alter any launcher's observable exit status.** `--project` is the escape hatch for
+every case in FR37, so it MUST NOT itself require the operator to be inside a clone; and the AD-10(3)
+`exec` removal MUST be invisible to anything that reads a launcher's exit status, including the
+`128+N` signal-death convention.
+*Verify:* each interactive launcher invoked with `--project <key>` from an unrelated directory starts
+correctly and consults the reverse-resolver not at all; a matrix of normal exits, non-zero exits, and
+signal-terminated children yields byte-identical exit statuses before and after the change; the
+session lock (FR17) is released on every one of those paths.
+
+### 6.4 Self-flag for this amendment
+
+**RISK: LOW–MEDIUM.** ESC-B and ESC-C are corrections that *remove* two defects an implementer could
+have shipped while passing the acceptance tests as written: an integrity check anchored on
+agent-writable content (FR9) and an unimplemented repair path (FR20). Both corrections tighten. The
+residual risk sits in FR37–FR39: they add operator-facing obligations, and FR38 in particular is the
+kind of documentation requirement that gets dropped under schedule pressure — at which point the
+regression it describes is discovered by an operator at 2am instead of read in a release note.
+
+**CONFIDENCE: HIGH** on ESC-B and ESC-C — the architect's reasoning is checkable from AD-6 and
+AD-11(6), which I read in full, and in both cases the original wording is wrong on its own terms
+rather than merely differently-scoped. **MEDIUM–HIGH** on TD-ESC-3: the safety argument is solid, but
+I am ruling on an operator experience for operators other than the one in front of me, from the
+documented invocation patterns rather than from measured usage. If the human's actual habit is to
+invoke launchers by absolute path from outside the clone, FR38 becomes the load-bearing part of this
+ruling and the human should say so.
+
+**BLAST RADIUS:** FR9 changes what an implementation of the currency check must anchor on; FR18/FR20
+change no behaviour, only the text an implementer reads. FR37–FR39 reach the three interactive
+launchers' startup path and the migration documentation.
+
+**Change classification:** ESC-B **clarifying**, ESC-C **clarifying**, TD-ESC-3 **structural** (new
+operator obligation) — the structural item is *not* settled by me. It is recorded here as the PM
+position and carried to the human for explicit sign-off alongside ESC-A and Q1–Q6, consistent with
+this document's existing STRUCTURAL classification and its "not cleared to build" status. `architect`
+and `technical-design` are notified: FR9's amendment confirms AD-6 needs no change; FR18/FR20's
+amendments confirm AD-11(6) needs no change; **FR37–FR39 are new and require a TECHNICAL-DESIGN-038
+revision** (§6.2 and §9.2 already satisfy most of FR37 and FR39; FR38 has no current home).
+
+---
+
 ## Human Review Required
 
 This document authors new requirements that redefine a security-relevant execution boundary and
@@ -600,3 +804,9 @@ operators must perform), and it changes the trust boundary around what cron exec
 premises in §1 already carry the human's explicit sign-off and are not re-opened; the six decisions
 in §4 do not, and architect MUST NOT bind them until the human rules. Architect may begin design
 against FR1–FR36 now.
+
+**Addendum, 2026-08-06.** The block above covers the original authoring (2026-08-05). The
+2026-08-06 amendment recorded in **§6** carries its own self-flag at **§6.4** and does not alter the
+risk statement above: FR9's and FR18/FR20's corrections tighten requirements that were defective as
+written, and the one structural item (TD-ESC-3 → FR37–FR39) is recorded as a PM position awaiting
+human sign-off rather than applied as settled. Everything in the block above still stands.
