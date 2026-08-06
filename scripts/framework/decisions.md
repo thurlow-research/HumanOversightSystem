@@ -117,8 +117,10 @@ future validation.
 ## DEC-009: risk-historian Haiku model assignment is an intentional REQ-004 exception
 
 **Date:** 2026-06-12
-**Status:** implemented
+**Status:** superseded — risk-historian now runs `claude-sonnet-4-6`, not Haiku (see 2026-08-06 note below)
 **Decision:** `risk-historian` uses `model: claude-haiku-4-5-20251001`. This is an intentional exception to REQ-004 ("no agent uses Haiku for judgment calls"). risk-historian is a pure data retrieval agent — it queries GitHub issue history and git log for filenames and returns structured counts. It makes no governance judgments; its output is read by risk-assessor which applies the judgment. Haiku is appropriate for this bounded retrieval role.
 **Rationale:** REQ-004 prohibits Haiku for judgment calls. risk-historian makes no judgment calls — it is the pipeline equivalent of a SELECT query. Using Opus or Sonnet here would waste quota on a task that requires no reasoning.
 **Implemented in:** `.claude/agents/risk-historian.md` (frontmatter `model:` field)
-**Verification:** risk-historian.md must declare `model: claude-haiku-4-5-20251001`. Its system prompt must not ask the agent to classify risk or make governance decisions — only to retrieve and return data. Downstream judgment is risk-assessor's responsibility.
+**Verification:** ~~risk-historian.md must declare `model: claude-haiku-4-5-20251001`~~ — no longer holds; risk-historian.md currently declares `model: sonnet`.
+
+**Superseded note (2026-08-06, #1141):** the Haiku assignment drifted to `claude-sonnet-4-6` in commit `5faae17` (2026-06-17, "tests and updated reviewer agents for SLR proposals" — a batch update to 10 reviewer agent files for an unrelated diff-centric-review-context change) with no rationale recorded and no decision entry updating this one. This entry's own verification criterion has been failing since that commit. #1141 corrects the doc-vs-frontmatter mismatch by recording current reality here rather than reverting agent behavior, which is out of scope for a docs-consistency fix. Whether risk-historian should move back to Haiku (restoring the REQ-004 exception this decision argued for) is an open question for a human/architect, not resolved by this note.
