@@ -346,6 +346,16 @@ here often means *masked*, not *missing*.
 A blocked operation reported plainly is useful. A boundary quietly routed around is
 not.
 
+**Known benign warning:** `git fetch`/`git pull` may print `warning: unable to
+access '.gitmodules': Permission denied` in Human/Worker/Overseer sessions. This
+repo has no `.gitmodules` file — the sandbox bind-mounts `/dev/null` over that
+path (a pre-emptive mask against the known class of git-submodule-hook attacks),
+independent of the path-based deny rules that produce the `ENOENT` behavior
+above. Git's "Permission denied" text is git reacting to finding a non-regular
+file where it expected either a real `.gitmodules` or nothing — it does not go
+through the same policy surface as `.env`-style denials, and it is expected and
+benign: no action needed, and it does not affect fetch/pull success (#1180).
+
 ### Submitting a PR
 
 **Merge from the base branch, resolve conflicts, then submit.** This applies to
