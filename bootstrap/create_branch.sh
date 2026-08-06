@@ -15,12 +15,17 @@
 #   bash bootstrap/create_branch.sh --issue <N> --slug <text> [--prefix <p>] [--from <ref>]
 #
 # Branch name (cycle-unique by construction — ADR-037 AD-3):
-#   <prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>
-#   e.g. worker-967-branch-ownership-260802191500
+#   <prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>-<pid>
+#   e.g. worker-967-branch-ownership-260802191500-111
 #
-# Binding the cycle token into the name makes "the rebuilt branch after a
-# crashed cycle collides with the orphan it left behind" structurally
-# impossible — a fresh cycle always mints a fresh token.
+# <pid> is the trailing '-'-delimited field of HOS_CYCLE_ID (the cron
+# process's $$), extracted — never re-derived — via
+# pid="${HOS_CYCLE_ID##*-}". HOS_CYCLE_TOKEN alone is only second-precision,
+# so two cycles minted in the same UTC second would otherwise collide (#1229,
+# ADR-037 §6). Binding both the cycle token and the PID into the name makes
+# "the rebuilt branch after a crashed cycle collides with the orphan it left
+# behind" structurally impossible — a fresh cycle always mints a fresh token
+# and PID pair.
 #
 # Requires HOS_CYCLE_ID, HOS_CYCLE_TOKEN, and HOS_CYCLE_ROLE=worker in the
 # environment. These are minted exactly once per invocation by bin/hos-cron
@@ -88,8 +93,18 @@ if [[ -z "${HOS_CYCLE_ID:-}" || -z "${HOS_CYCLE_TOKEN:-}" || "${HOS_CYCLE_ROLE:-
     err "HOS_CYCLE_ID / HOS_CYCLE_TOKEN / HOS_CYCLE_ROLE=worker are not set in this environment. bootstrap/create_branch.sh is for autonomous worker cycles launched by bin/hos-cron only (#967) — an interactive session creates a branch directly with git and never writes an ownership record."
 fi
 
-# ── Step 2 — compute the cycle-unique branch name (ADR-037 AD-3) ────────────
-BRANCH_NAME="${PREFIX}-${ISSUE}-${SLUG_SANITIZED}-${HOS_CYCLE_TOKEN}"
+# ── Step 2 — compute the cycle-unique branch name (ADR-037 AD-3, §6) ────────
+# HOS_CYCLE_TOKEN alone is second-precision; the trailing PID segment of
+# HOS_CYCLE_ID closes the same-second collision window (#1229). Extracted,
+# never re-derived — a fresh $$ here would be this script's own PID, not the
+# cron process's.
+[[ "$HOS_CYCLE_ID" == *-* ]] \
+    || err "HOS_CYCLE_ID '$HOS_CYCLE_ID' contains no '-' — cannot extract the trailing PID segment required for the branch name (expected grammar \${ROLE}-\${PROJECT}-\${ts}-\$\$)."
+pid="${HOS_CYCLE_ID##*-}"
+[[ "$pid" =~ ^[0-9]+$ ]] \
+    || err "HOS_CYCLE_ID '$HOS_CYCLE_ID' trailing field '$pid' is not purely numeric — expected the cron process PID as the last '-'-delimited segment."
+
+BRANCH_NAME="${PREFIX}-${ISSUE}-${SLUG_SANITIZED}-${HOS_CYCLE_TOKEN}-${pid}"
 
 # ── Step 3 — idempotent re-entry within this cycle, or refuse (never adopt) ──
 if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
