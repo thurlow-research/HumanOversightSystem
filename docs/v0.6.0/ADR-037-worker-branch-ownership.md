@@ -179,6 +179,16 @@ I reviewed the rest of SPEC-967 for architectural soundness and **confirm it**, 
 
 ---
 
+## 6. Addendum — 2026-08-06: AD-3's uniqueness binding is completed, not changed (BINDING; narrow)
+
+**The gap, found post-implementation.** AD-3 bound the *principle* — the branch name must not be able to collide with one left by an earlier cycle — and left the grammar to `technical-design`. The grammar delivered (TECHNICAL-DESIGN-967 §5.2, `bootstrap/create_branch.sh:87`) is `<prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>`, and `HOS_CYCLE_TOKEN` is `date -u +%y%m%d%H%M%S` — **second precision only** (`bin/hos-cron:219-220`). That binds the cycle's *timestamp*, not the cycle's identity: `HOS_CYCLE_ID` (`bin/hos-cron:226`) is `${ROLE}-${project}-${ts}-$$`, and the branch name omits the `$$` segment that carries the rest of the uniqueness. Two worker cycles for the same issue and slug minted within the same UTC second therefore compute an identical name, and the second one meets a foreign-ownership record and refuses — the §10 mode-2 lockout, reached by exactly the route AD-3 exists to close. The window is narrow (a lock-reclaim race, not a literal same-second launch) but it is real, and "narrow" is not the standard AD-3 set: it said *cannot* collide.
+
+**BOUND.** The branch name MUST incorporate the same PID-derived uniqueness segment already carried in `HOS_CYCLE_ID`, **extracted from the existing `HOS_CYCLE_ID` value** — the trailing `-`-delimited field, validated as digits, refusing fail-closed (AD-5/AD-6) if it does not match rather than defaulting or omitting it. **Do not introduce a new exported environment variable.** `HOS_CYCLE_ID` / `HOS_CYCLE_ROLE` / `HOS_CYCLE_TOKEN` are the documented, minted, T10-tested set; widening that set is a launcher/chokepoint version-skew surface (VF-7) and is out of scope here. This is not a revision of AD-3 — AD-3's principle stands verbatim and AD-1 … AD-8 are unchanged; this completes the binding the delivered grammar left half-done.
+
+**Scope, and affected sign-offs.** This should **not** have been settled in the initial review: AD-3 correctly delegated the grammar and stated a sufficient constraint; the design under-satisfied it. No `startup-artifact-gap`. The single change closing this MUST amend TECHNICAL-DESIGN-967 §5.2/T11, `bootstrap/create_branch.sh`, and `tests/automation/test_branch_ownership.py`'s T11 assertions together. Prior #967 sign-offs stand except those resting on T11's uniqueness claim, which re-review as part of that change. Closes the follow-up tracked in **#1229** — a tier2, codex-only (agy-uncorroborated) finding on PR #1228, whose disposition was to land separately rather than block that PR. No change to this ADR's HIGH tier or blast radius.
+
+---
+
 ## Human Review Required
 
 **RISK: HIGH** (confirmed, §10). The architecture *reduces* the governance risk that produced #967, and the residual risk is concentrated entirely in the fail-closed direction — an over-strict or mis-placed check silently halts autonomous delivery while looking like an idle worker. AD-3 and AD-4 exist specifically to bound that, and the §10 requirement to run T1 and T2 together is the proof obligation.

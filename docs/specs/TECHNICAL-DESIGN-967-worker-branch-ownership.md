@@ -6,7 +6,7 @@
 **Status:** For implementation (phased — P1 → P2 → P3, order load-bearing)
 **Milestone:** v0.6.0 as labelled (re-triage is ADR §3 N3, not a blocker)
 **Risk tier:** **HIGH** (confirmed — SPEC §10, ADR §4)
-**Date:** 2026-08-02
+**Date:** 2026-08-02 (amended 2026-08-06 — see §15 A1: branch-name grammar, #1229)
 **Author:** technical-design
 
 ---
@@ -323,11 +323,30 @@ usage: bash bootstrap/create_branch.sh --issue <N> --slug <text> [--prefix <p>] 
 **Branch name (AD-3 — cycle-unique by construction):**
 
 ```
-<prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>
-e.g. worker-967-branch-ownership-260802191500
+<prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>-<pid>
+e.g. worker-967-branch-ownership-260802191500-111
 ```
 
-Binding the cycle token into the name makes the "rebuild after a crashed cycle collides
+`<pid>` is the **trailing `-`-delimited field of `HOS_CYCLE_ID`** (Bash:
+`${HOS_CYCLE_ID##*-}`) — the cron process's `$$`, which §3.1's grammar
+(`${ROLE}-${PROJECT}-${_cycle_ts}-$$`) always places last and which is always purely
+numeric. Trailing-field extraction is the robust reading of that grammar: `ROLE` and the
+sanitized `PROJECT` may themselves contain `-`, so no leading-field or field-count parse is
+safe, whereas the last field is unambiguous. It is **extracted, never re-derived** — the
+script must not substitute its own `$$` (a different process), and **no new environment
+variable is introduced**: `HOS_CYCLE_ID`, `HOS_CYCLE_ROLE`, `HOS_CYCLE_TOKEN` remain the
+entire minted, T10-tested set.
+
+Why the token alone is insufficient (#1229): `HOS_CYCLE_TOKEN` has one-second resolution, so
+two worker cycles minted within the same UTC second compute an identical branch name and
+collide — narrow, but reachable. Appending the PID segment gives the name the same
+discriminating power that `HOS_CYCLE_ID` already has (§3.1's uniqueness argument), so name
+uniqueness is exactly as strong as cycle identity rather than strictly weaker than it. The
+PID is a discriminator here, never an identity: it is only ever combined with the timestamp,
+so the #1002 PID-reuse-across-reboots failure class does not apply.
+
+Binding the cycle identity (token **and** PID) into the name makes the "rebuild after a
+crashed cycle collides
 with the orphan" class structurally impossible (AD-3's preferred form), rather than
 detect-and-suffix.
 
@@ -337,7 +356,14 @@ detect-and-suffix.
    `HOS_CYCLE_ROLE == worker`. Message names the missing variable and states that this
    script is for autonomous worker cycles only; an interactive session uses `git` directly
    and does not create records. Exit non-zero.
-2. Compute the branch name.
+2. Compute the branch name: sanitize `--slug` per the argument table above, extract
+   `pid="${HOS_CYCLE_ID##*-}"`, and assemble
+   `<prefix>-<issue>-<slug>-<HOS_CYCLE_TOKEN>-<pid>`. Refuse (non-zero, named message)
+   if `HOS_CYCLE_ID` contains no `-`, or if the extracted field does not match `^[0-9]+$` —
+   a `HOS_CYCLE_ID` without a trailing numeric PID segment is malformed, and a branch name
+   is never built from a partial cycle identity. §3.1's launcher assertion and grammar make
+   this unreachable on the supported path; the check is a fail-closed guard against a
+   hand-set or skewed-launcher value, not an expected branch.
 3. If `refs/heads/<name>` already exists locally: if `hos_bo_verify` passes for it (same
    cycle, same role), `git checkout <name>`, print the name, exit 0 (idempotent re-run
    within one cycle). Otherwise **refuse** — never adopt an existing branch (AD-3).
@@ -629,7 +655,7 @@ ADR §3 N2 class of pre-existing gap and is **out of scope** here — filed sepa
 | **T8** | **AD-7 cross-clone.** Two temp clones, same branch name, record written in clone A ⇒ verify fails in clone B (`no_record`). | `test_branch_ownership.py` | |
 | **T9** | **AD-4 update path is not captured by R4.** `--update-pr N` with **no** ownership record present succeeds when the server-side check passes, and refuses when `state`/`head.ref`/`user.login`/`base.ref` mismatch. | `test_submit_pr.py` | gh stub returns a PR JSON |
 | **T10** | **Cycle identity is minted and exported.** `HOS_CYCLE_ID`, `HOS_CYCLE_ROLE`, `HOS_CYCLE_TOKEN` are non-empty in the launched session's environment, match the documented grammar, and differ between two invocations. | `tests/automation/test_hos_cron.py` | add `echo "cycle_id=${HOS_CYCLE_ID:-UNSET}"` (and siblings) to the existing `claude` stub, which already dumps env to `claude_log` |
-| **T11** | **Branch-name cycle-uniqueness (AD-3).** Two `create_branch.sh` runs with different `HOS_CYCLE_TOKEN` and identical `--issue/--slug` produce different branch names; a second run in the *same* cycle is idempotent; an existing same-named branch without a valid record is refused. | `test_branch_ownership.py` | |
+| **T11** | **Branch-name cycle-uniqueness (AD-3, #1229).** With identical `--issue/--slug`, two `create_branch.sh` runs produce different branch names in **both** distinguishing cases: (a) different `HOS_CYCLE_TOKEN`; (b) **same `HOS_CYCLE_TOKEN`, different trailing PID field in `HOS_CYCLE_ID`** — two cycles minted in the same UTC second. Also: the emitted name ends with `-<HOS_CYCLE_TOKEN>-<pid>` where `<pid>` is `HOS_CYCLE_ID`'s trailing `-`-delimited field (§5.2); a `HOS_CYCLE_ID` whose trailing field is non-numeric or absent is **refused**; a second run in the *same* cycle is idempotent; an existing same-named branch without a valid record is refused. | `test_branch_ownership.py` | |
 
 ### 11.1 Harness notes (concrete, so the coder does not rediscover them)
 
@@ -695,7 +721,7 @@ the launcher exports, and `create_branch.sh` are inert if nothing reads them.
 | **Fail-open** — check silently passes when the store is missing (restores #967 while looking fixed) | Eight explicit conditions, each with a reason class (§4.3); `no_store`/`no_cycle_id`/`unreadable` are refusals, not skips; T3 asserts every class; the check is unconditional for `--app worker` with no override (T5) |
 | **Fail-closed lockout** — worker builds every cycle, submits none | P1-before-P2 phasing; T2 run with T1; `create_branch.sh` is the single seam and is prose-mandated in P1; refusal messages name the cause; `--from` recovery for timed-out cycles (§5.3) |
 | Bounce path captured by R4 ⇒ worker can never answer review feedback | EF-1 establishes the bounce push does not traverse `submit_pr.sh`; the check is additionally scoped to open mode only (`$UPDATE_PR == ""`), and T9 asserts it |
-| Branch-name collision with a crashed cycle's orphan ⇒ non-fast-forward push | Cycle token in the branch name (AD-3); existing-branch-without-valid-record is refused, never adopted (T11) |
+| Branch-name collision with a crashed cycle's orphan ⇒ non-fast-forward push | Cycle token **plus the `HOS_CYCLE_ID` PID segment** in the branch name (AD-3; §5.2, #1229 — the PID segment closes the same-UTC-second case the token alone left open); existing-branch-without-valid-record is refused, never adopted (T11) |
 | Record becomes a resume/completion signal | Read in exactly one place (§6); AD-2 anti-loophole restated in `correlation.py`'s docstring; T6 guards the removal; `--from` carries an explicit re-review rule (§5.3) |
 | Launcher/chokepoint version skew (consumer points cron at another checkout) | `no_cycle_id` message names the cause explicitly (AD-6); both files move together in one install (ADR VF-7) and are listed in the same ship-set (§10) |
 | Existing `--app worker` tests break on the new precondition | Called out explicitly in §11.1 — fixture writes a valid record by default |
@@ -752,9 +778,38 @@ Mandating it is the ADR §3 N2 class of pre-existing gap and is out of scope for
 **TD-N4 — orphan sweep and the missing push wrapper** remain ADR §3 N1/N2: separate
 low-priority issues, explicitly not absorbed here.
 
-**Startup-gap analysis (CORE).** This is the initial technical design for #967, not a
-reactive revision. No prior technical design covers this surface and no code sign-off exists
-against a superseded contract, so **no sign-off is orphaned and none requires re-review**.
+**A1 — Branch-name grammar amendment (#1229, 2026-08-06).** §5.2's grammar gains a trailing
+`-<pid>` segment extracted from `HOS_CYCLE_ID`, and T11 gains the same-token/different-PID
+case. Scope: grammar only. AD-3's binding decision (cycle identity in the name) is
+**unchanged** — see ADR-037's AD-3 addendum, which records the architect's decision that the
+segment must be extracted from the existing `HOS_CYCLE_ID` rather than exported anew.
+`HOS_CYCLE_ID`, `HOS_CYCLE_ROLE`, `HOS_CYCLE_TOKEN` remain the entire minted set (§3.1
+unchanged; T10 unaffected). **Change classification: `additive`** — one new required segment
+in an existing name grammar, plus one fail-closed validation; no new component, no new
+control flow, no new environment variable, no change to the record schema (§4.3), the
+verification predicate (§4.3/§6), or the phasing (§12). Its three artifacts —
+§5.2/T11 here, `bootstrap/create_branch.sh:92` (and its `:18` header comment), and
+`tests/automation/test_branch_ownership.py`'s T11 assertions — MUST land together; a
+grammar change in one without the others is the mode-2 lockout it exists to prevent.
+
+**Startup-gap analysis (CORE) — amendment A1.** Asked directly: *should the PID segment have
+been settled in the initial technical design, before code was written against it?* At the
+**design** level, yes — §3.1 of this same document already stated `HOS_CYCLE_ID`'s grammar
+and named `$$` as the third discriminator, so §5.2 could have carried it at authoring time
+without new information; I record A1 as a design-authoring gap on my own record. ADR-037's
+addendum reaches a different label at the **architecture** level (AD-3 delegated the grammar
+and stated a sufficient constraint; the design under-satisfied it — "No `startup-artifact-gap`"),
+and that judgment is the architect's to make and is not disputed here. Both labels produce
+the **same affected-sign-offs outcome**, which is what governs: **prior #967 sign-offs stand,
+except any resting on T11's branch-name-uniqueness claim, which are orphaned against the old
+grammar and re-review as part of the landing change set.** No separate `startup-artifact-gap`
+issue is opened — #1229 already tracks this follow-up and is annotated by this amendment
+rather than duplicated.
+
+**Startup-gap analysis (CORE) — original document.** This is the initial technical design for
+#967, not a reactive revision. No prior technical design covers this surface and no code
+sign-off exists against a superseded contract, so **no sign-off is orphaned and none requires
+re-review**.
 The one adjacent contract is `correlation.py`'s `BRANCH_EXISTS`/cold-start lineage
 (`UNATTENDED-WORKER-TECH-DESIGN.md:371-383`), which AD-2 narrows; ADR VF-1/VF-2 establish that
 path was never executed, so nothing was built or approved against the behaviour being removed.
@@ -775,6 +830,15 @@ is written against an explicit human decision already given on #967 (2026-08-02)
 ACCEPTED architect ADR (ADR-037) that resolves every open question. Every structural element
 traces to SPEC R1–R11 or ADR AD-1–AD-8 (§14); the material not covered by either is confined
 to §15 and routed, not written into the contract silently.
+
+**Amendment A1 (2026-08-06, #1229) — classification: `additive`, RISK: MEDIUM.** The
+branch-name grammar change in §5.2/T11 is scoped to one appended segment and one fail-closed
+validation; it does not reopen the structural elements above and does not change AD-3's
+binding decision, the record schema, the refusal predicate, or the phasing. It **does** change
+a contract that shipped code already implements, so it is not merely clarifying: its blast
+radius is the branch-creation seam only (`create_branch.sh`'s name construction), and its
+failure mode if landed partially — spec and code disagreeing on the name — is the same mode-2
+lockout AD-3 exists to close. Affected sign-offs are analysed in §15.
 
 ```
 BLAST RADIUS: The autonomous worker's ability to open PRs at all, on every deployment that

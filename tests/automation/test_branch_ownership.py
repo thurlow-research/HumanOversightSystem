@@ -19,9 +19,12 @@ Covers:
         never valid when checked against a different clone, even with an
         identical branch name and cycle id.
   T11 — AD-3 branch-name cycle-uniqueness: different cycle tokens produce
-        different branch names; a second run in the SAME cycle is idempotent;
-        an existing same-named branch with no valid record is refused, never
-        adopted.
+        different branch names; the SAME cycle token with a DIFFERENT PID
+        (the same-second collision case #1229 fixes) also produces different
+        branch names; a second run in the SAME cycle is idempotent; an
+        existing same-named branch with no valid record is refused, never
+        adopted; and the two fail-closed guards on a malformed HOS_CYCLE_ID
+        (no '-', or a non-numeric trailing field) refuse rather than proceed.
 """
 
 import os
@@ -229,8 +232,36 @@ class TestCycleUniqueBranchNames:
         assert r2.returncode == 0, r2.stdout + r2.stderr
         b1, b2 = r1.stdout.strip(), r2.stdout.strip()
         assert b1 != b2
-        assert b1.endswith("260802000001")
-        assert b2.endswith("260802000002")
+        # Branch name is now "...-<token>-<pid>", not "...-<token>" — assert
+        # the token is present and the trailing pid segment is correct,
+        # rather than the old (now-wrong) endswith(token) assumption.
+        assert "260802000001" in b1
+        assert "260802000002" in b2
+        assert b1.endswith("-260802000001-1")
+        assert b2.endswith("-260802000002-2")
+
+    def test_same_token_different_pid_produces_different_branch_names(self, repo):
+        # The actual regression case #1229 fixes: two cycles minted in the
+        # SAME UTC second share HOS_CYCLE_TOKEN, but are distinct cron
+        # processes with distinct PIDs. Without the trailing pid segment,
+        # these two calls would compute the identical branch name and the
+        # second create_branch.sh invocation would either collide or
+        # (worse) silently re-enter the first cycle's branch.
+        same_tok = "260802000005"
+        r1 = repo.create_branch(
+            "--issue", "967", "--slug", "thing",
+            cycle_token=same_tok, cycle_id="worker-hos-260802000005-100",
+        )
+        r2 = repo.create_branch(
+            "--issue", "967", "--slug", "thing",
+            cycle_token=same_tok, cycle_id="worker-hos-260802000005-200",
+        )
+        assert r1.returncode == 0, r1.stdout + r1.stderr
+        assert r2.returncode == 0, r2.stdout + r2.stderr
+        b1, b2 = r1.stdout.strip(), r2.stdout.strip()
+        assert b1 != b2, "same-token, different-pid cycles must not collide (#1229)"
+        assert b1.endswith("-260802000005-100")
+        assert b2.endswith("-260802000005-200")
 
     def test_second_run_in_same_cycle_is_idempotent(self, repo):
         cid = "worker-hos-260802000003-3"
@@ -260,7 +291,9 @@ class TestCycleUniqueBranchNames:
     def test_existing_samename_branch_without_valid_record_is_refused(self, repo):
         cid = "worker-hos-260802000004-4"
         tok = "260802000004"
-        branch_name = f"worker-967-thing-{tok}"
+        # Must match the real computed name (<prefix>-<issue>-<slug>-<token>-<pid>)
+        # or this isn't actually exercising the collision path.
+        branch_name = f"worker-967-thing-{tok}-4"
         _git(repo.root, "branch", branch_name)  # exists, but no ownership record
 
         r = repo.create_branch("--issue", "967", "--slug", "thing", cycle_token=tok, cycle_id=cid)
@@ -268,3 +301,27 @@ class TestCycleUniqueBranchNames:
         combined = (r.stdout + r.stderr).lower()
         assert "never adopt" in combined or "adopt" in combined
         assert "no_record" in combined
+
+
+# ────────────── T11 (§6) — fail-closed guards on malformed HOS_CYCLE_ID ─────
+class TestCycleIdPidGuards:
+    """The two guards added ahead of the branch-name assembly (#1229, §6):
+    HOS_CYCLE_ID must contain a '-' (so a trailing pid segment can be
+    extracted), and that trailing segment must be purely numeric. Both are
+    fail-closed refusals, not silent fallbacks."""
+
+    def test_cycle_id_with_no_dash_is_refused(self, repo):
+        r = repo.create_branch(
+            "--issue", "967", "--slug", "thing",
+            cycle_id="nodashesatall",
+        )
+        assert r.returncode != 0
+        assert "contains no '-'" in r.stderr, r.stdout + r.stderr
+
+    def test_cycle_id_with_nonnumeric_trailing_field_is_refused(self, repo):
+        r = repo.create_branch(
+            "--issue", "967", "--slug", "thing",
+            cycle_id="worker-hos-abc",
+        )
+        assert r.returncode != 0
+        assert "is not purely numeric" in r.stderr, r.stdout + r.stderr
