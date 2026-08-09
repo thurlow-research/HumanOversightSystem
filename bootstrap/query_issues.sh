@@ -9,10 +9,15 @@
 # command hangs with nobody present to approve it).
 #
 # Usage (exactly one query mode per invocation):
-#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --issue <N[,N,...]>
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --issue <N[,N,...]> [--full]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments <N>
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --assignable-users
+#
+# --full (--issue only) appends the raw issue body after the summary line, so
+# a caller can grep it for a `Decision:` block (#1277) without a hand-rolled
+# `gh api` read. Omitted by default so existing callers and their output
+# parsing are unaffected.
 #
 # REST only (GITHUB API — REST only rule in bootstrap/worker-cron-prompt.md):
 # no `gh issue list`, no `gh pr view --json`. The REST issues endpoints return
@@ -37,6 +42,7 @@ warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 
 APP_ROLE=""
 ISSUE_NUMBERS=""
+FULL_MODE=0
 LIST_MODE=0
 MILESTONE_ARG=""
 MILESTONE_LESS=0
@@ -49,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --app)              APP_ROLE="$2"; shift 2 ;;
         --issue)            ISSUE_NUMBERS="$2"; shift 2 ;;
+        --full)             FULL_MODE=1; shift ;;
         --list)             LIST_MODE=1; shift ;;
         --milestone)        MILESTONE_ARG="$2"; shift 2 ;;
         --milestone-less)   MILESTONE_LESS=1; shift ;;
@@ -56,7 +63,7 @@ while [[ $# -gt 0 ]]; do
         --state)            STATE_FILTER="$2"; shift 2 ;;
         --comments)         COMMENTS_NUMBER="$2"; shift 2 ;;
         --assignable-users) ASSIGNABLE_USERS=1; shift ;;
-        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users)" ;;
+        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users)" ;;
     esac
 done
 
@@ -75,6 +82,9 @@ MODE_COUNT=0
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
     err "--milestone and --milestone-less are mutually exclusive"
+fi
+if [[ "$FULL_MODE" -eq 1 && -z "$ISSUE_NUMBERS" ]]; then
+    err "--full requires --issue"
 fi
 if [[ -n "$STATE_FILTER" ]]; then
     case "$STATE_FILTER" in
@@ -126,14 +136,17 @@ resolve_milestone_id() {
 }
 
 ISSUE_LINE_FILTER='"#\(.number) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) \(.title)"'
+ISSUE_FULL_FILTER="${ISSUE_LINE_FILTER} + \"\n\n\" + (.body // \"\")"
 
 if [[ -n "$ISSUE_NUMBERS" ]]; then
+    ISSUE_FILTER="$ISSUE_LINE_FILTER"
+    [[ "$FULL_MODE" -eq 1 ]] && ISSUE_FILTER="$ISSUE_FULL_FILTER"
     IFS=',' read -r -a NUMS <<< "$ISSUE_NUMBERS"
     for n in "${NUMS[@]}"; do
         case "$n" in
             ''|*[!0-9]*) fail "--issue must be a comma-separated list of positive integers, got: $ISSUE_NUMBERS" ;;
         esac
-        gh api "repos/${REPO_SLUG}/issues/${n}" --jq "$ISSUE_LINE_FILTER" \
+        gh api "repos/${REPO_SLUG}/issues/${n}" --jq "$ISSUE_FILTER" \
             || fail "failed to read issue #${n}"
     done
 

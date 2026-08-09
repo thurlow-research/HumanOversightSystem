@@ -281,10 +281,12 @@ command.
    — milestones are matched by **prefix**, not exact title, since this repo's
    milestone titles contain an em dash. Reads (single/multiple issues,
    milestone-scoped listings, PR-filtered, comments, assignable users) go
-   through `bootstrap/query_issues.sh --app <role> (--issue <n[,n,...]> |
-   --list [--milestone <prefix>|--milestone-less] [--label ...] [--state ...]
-   | --comments <n> | --assignable-users)` — never hand-rolled `gh api` reads
-   (#1175, #1192, #1204).
+   through `bootstrap/query_issues.sh --app <role> (--issue <n[,n,...]>
+   [--full] | --list [--milestone <prefix>|--milestone-less] [--label ...]
+   [--state ...] | --comments <n> | --assignable-users)` — never hand-rolled
+   `gh api` reads (#1175, #1192, #1204). `--full` (issue mode only) appends
+   the raw issue body after the summary line, so callers can grep it for a
+   `Decision:` block (#1277).
 6. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 7. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
