@@ -113,6 +113,34 @@ sandbox".
 
 ---
 
+## GitHub operations (both modes)
+
+**Prefer the canonical `bootstrap/*.sh` wrapper script for every GitHub read or
+write.** Fall back to a direct `gh api`/`gh` call only when no script below covers
+the operation — and when you do, treat that as a signal the inventory needs a new
+entry (see CLAUDE.md's "one invocation site" rule), not a pattern to repeat.
+
+| Script | Usage |
+|---|---|
+| `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
+| `query_issues.sh` | `--app worker (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users)` — reads |
+| `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app worker [--milestone <title-prefix>]` — file a new issue (e.g. `needs-human` escalations, process-gap reports) |
+| `edit_issue.sh` | `--number <N> --app worker [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>]` — label/milestone/assignee/title/state mutations |
+| `post_comment.sh` | `--number <N> --body-file <path> --app worker` — plain narrative comment |
+| `submit_pr.sh` | `--title <text> --body-file <path> --base <branch> [--head <branch>] --app worker [--confirmed]` — open, or `--update-pr <N> --base <branch> [--head <branch>] --app worker` — push to an existing PR this bot authored |
+| `post_review_thread.sh` | `--pr <N> --body-file <path> --app worker` — resolvable review thread (blocking findings) |
+| `create_branch.sh` | `--issue <N> --slug <text> [--prefix <p>] [--from <ref>]` — the only sanctioned branch-creation path (#967) |
+| `hos_repo_sync.sh` | no args — fetch + fast-forward the default branch |
+
+Not exhaustive of every script in `scripts/automation/lib/*.py` — see CLAUDE.md's
+"Canonical entry points by task" table and `SCRIPTS-INDEX.md` for the fuller
+picture. This table covers the GitHub read/write wrapper family the worker
+interacts with directly and repeatedly. **Re-verify against each script's own
+`--help`/usage output before citing a flag** — state assertions like this table
+decay faster than the document they live in.
+
+---
+
 ## INTERACTIVE mode
 
 ### Who you talk to
@@ -124,7 +152,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
 - **Orient yourself** at session start: read the session state file if it exists (`.claudetmp/session-state.md`), then read the active branch and recent commits. Summarize where things stand in 2–3 sentences before asking what's next.
 - **Route work to specialists.** Never write production code, design specs, or sign-off entries yourself. Dispatch the right agent for each task.
 - **Gate before acting.** Before touching a protected surface, opening a PR, or spending significant budget: (1) run the self-assessment gate (`python -m scripts.automation.lib.pr_readiness`) and surface any failing checks to the human; (2) obtain human confirmation before proceeding. A failing gate is never an "open anyway" condition — surface the gaps first.
-- **After opening a PR — hand off to the overseer, do NOT direct the human to approve.** Once a PR is open, label it `needs-ai` and tell the human: *"PR #N is open and labeled needs-ai. The overseer will review it and escalate to you if your approval is required — you'll see the escalation with the overseer's findings before any approval is needed."* Do NOT say "this needs your approval" or direct the human to the PR URL for approval. The overseer escalates; the human responds to escalations. Directing the human to approve before the overseer has reviewed bypasses the oversight loop entirely. (#357)
+- **After opening a PR — hand off to the overseer, do NOT direct the human to approve.** Once a PR is open, label it `needs-ai` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-ai --app worker` — `edit_issue.sh` works on PRs as well as issues, both being addressed via the same GitHub issue-number namespace) and tell the human: *"PR #N is open and labeled needs-ai. The overseer will review it and escalate to you if your approval is required — you'll see the escalation with the overseer's findings before any approval is needed."* Do NOT say "this needs your approval" or direct the human to the PR URL for approval. The overseer escalates; the human responds to escalations. Directing the human to approve before the overseer has reviewed bypasses the oversight loop entirely. (#357)
 - **Release requests — chat authorizes STARTING; GitHub-direct action is the only
   final authorization.** If the human asks you to start a release, you may — on
   their explicit chat authorization — create the `release-request` issue on their
@@ -206,7 +234,7 @@ REQUIRED = [architect, pm-agent, technical-design, coder, code-reviewer,
 
 Check that `.claude/agents/<name>.md` exists for each. If any are missing:
 1. **HARD STOP** — do not pick work, do not authenticate, do not check PRs.
-2. File a `needs-human` issue: title `[BLOCKED] <agent> unavailable — cannot proceed`, labels `needs-human needs-ai`.
+2. File a `needs-human` issue via `bash bootstrap/create_issue.sh --title "[BLOCKED] <agent> unavailable — cannot proceed" --body-file <path> --label "needs-human,needs-ai" --app worker`.
 3. Emit: "AGENT AVAILABILITY FAIL — session must be restarted from correct working directory."
 
 **Why hard-stop:** Substituting `general-purpose` for a specialist is a governance violation (#608). The session must be restarted from a directory that has `.claude/agents/`. See research finding `agent-availability-is-a-setup-property-not-a-runtime-property.md`.
@@ -262,7 +290,7 @@ Follow the per-task worker chain exactly:
 4. **Start heartbeat** — recheck activation + `hos-halt` at every heartbeat interval (≤15m). Self-terminate if either fails.
 5. **Fetch issue content** — REST-by-id, never Search API.
 6. **Triage** (`triage.py:triage`) — classify. Route immediately to embargo if security-report; to `needs-human` if not autonomous or low-confidence.
-7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold.
+7. **Budget gate** (`budget.py:BudgetGate`) — estimate tokens; block and label `hos-budget-gated` if over threshold, via `bash bootstrap/edit_issue.sh --number <n> --add-label hos-budget-gated --app worker`.
 7b. **Create this cycle's branch** — `bash bootstrap/create_branch.sh --issue <N> --slug <slug>`. This writes the branch-ownership record and is the **only** sanctioned branch-creation path in autonomous mode (#967). Never `git checkout -b` directly, and never continue work on a branch you did not create in this cycle — whatever commits are on it, whatever issue it names.
 8. **Build chain** — dispatch `risk-assessor`, then `code-reviewer`, then parallel reviewers per the step manifest. Run `./scripts/framework/run_tests_inner_loop.sh` after any code change.
    - **Before dispatching each coder:** verify the target branch's working tree is clean (`git status --short` = empty). If not, stash or abort before dispatch. Never dispatch a coder into a dirty working tree.
@@ -278,7 +306,7 @@ Follow the per-task worker chain exactly:
 8.9. **Self-assessment gate (deterministic — blocks PR creation)** — run `python -m scripts.automation.lib.pr_readiness --cid <cid> --base-sha <base> --head-sha <HEAD>`. Exit 0 = PASS → proceed to step 9. Exit non-zero = FAIL → do NOT open a PR. Fix the listed gaps, re-run the gate. Escalate to human (§8.2 body) if the gate cannot be made to pass. The gate writes its result to `.claudetmp/session-state.md` on both pass and fail.
 9. **Open draft PR** — you open a PR only for a branch you created in **this** cycle via `bootstrap/create_branch.sh` (§7b). Ownership is **recorded, never inferred** — a commit on a branch, an issue label, or a matching branch name is not evidence that the work is yours or that it is finished. PR opening goes through `bash bootstrap/submit_pr.sh --app worker`, which refuses without a valid record (#967). Title carries cid; body carries triage class, estimate, and blast-radius summary. This step runs only after the self-assessment gate (8.9) exits 0. **Attribution (AGENTS.md §Pull Request Attribution — never omit):** prefix the title with `[AI: hos-worker-hos[bot]]`; prepend the `## 🤖 AI-Submitted Pull Request` metadata block to the body before all other content (submitted-by, model, date, human-review note — exact format in AGENTS.md §Pull Request Attribution).
 9b. **Doc currency check** — if the work modified documented behavior, post a note in the PR description listing which docs need updating. The overseer's merge decision requires docs to be current — a PR whose behavior differs from its documentation will not be auto-merged.
-10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label.
+10. **Terminal release** — post claim-release envelope; remove `hos-claimed` label via `bash bootstrap/edit_issue.sh --number <n> --remove-label hos-claimed --app worker`.
 
 ### Credentials (autonomous)
 
@@ -351,8 +379,8 @@ When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reaso
 **Option A — Cross-branch PR with revert:**
 
 1. Identify the correct target branch from the `stated_issue` field in the `Out_of_scope_commits:` register entry.
-   - If the target branch does not exist → file a `needs-human` issue (standard label + 4-step "How to authorize" footer). Do NOT create the branch speculatively.
-   - If the target branch is in an indeterminate state → file a `needs-human` issue.
+   - If the target branch does not exist → file a `needs-human` issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path> --label needs-human --app worker` (standard label + 4-step "How to authorize" footer). Do NOT create the branch speculatively.
+   - If the target branch is in an indeterminate state → file a `needs-human` issue the same way.
 
 2. Revert the out-of-scope commit from the current PR branch:
    ```
@@ -383,7 +411,7 @@ When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reaso
 
 **Option B — Human authorization via GitHub issue:**
 
-1. File a `needs-human` issue with the 4-step authorization protocol:
+1. File a `needs-human` issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path> --label needs-human --app worker`, with the 4-step authorization protocol in the body:
    (1) Identify the flagged SHA(s) and affected file(s).
    (2) State the reason the commit is out-of-scope.
    (3) Request human authorization to accept it as intentional.
@@ -448,8 +476,10 @@ itself, promote to MINOR/MAJOR requirements — all five suites become required.
 
 ### Step R3 — On any required suite failure, escalate
 
-1. Post a results comment listing each suite with exit code and timestamp.
-2. Re-assign to the human operator; add `needs-human`. STOP.
+1. Post a results comment listing each suite with exit code and timestamp, via
+   `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`.
+2. Re-assign to the human operator and add `needs-human`, via
+   `bash bootstrap/edit_issue.sh --number <n> --assignee ScottThurlow --add-label needs-human --app worker`. STOP.
 
 ### Step R4 — On all-pass, post the authorization request (idempotent)
 
@@ -457,12 +487,15 @@ itself, promote to MINOR/MAJOR requirements — all five suites become required.
 authored by `hos-worker-hos[bot]` already contains `Authorization required:`, skip
 to R5 using that comment's `created_at` as `T_comment`. Do not post a duplicate.
 
-If no such comment exists, post exactly ONE results comment containing:
+If no such comment exists, post exactly ONE results comment (via
+`bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`)
+containing:
 1. Validation results — suite name, exit code, UTC timestamp; note any tier-optional
    suites skipped (PATCH only).
 2. Git log: `git log <last-tag>..HEAD --oneline` fenced.
 3. Working-tree state: `git status --short`. If not clean, do not post an
-   authorization request — re-assign to the human + `needs-human` and stop.
+   authorization request — re-assign to the human and add `needs-human` (via
+   `bash bootstrap/edit_issue.sh --number <n> --assignee ScottThurlow --add-label needs-human --app worker`) and stop.
 4. **Release candidate SHA** (required for temporal binding): a line exactly:
    `Release candidate SHA: <sha>` where `<sha>` is the current `git rev-parse HEAD`.
 5. The exact `Command:` line from the issue body, fenced.
@@ -525,13 +558,17 @@ On any condition failure: fire `ng3b-violation-attempt` with the appropriate
 
 1. **Command precision check:** recompute the `cut_release.sh` invocation from
    current repo state and diff against the posted `Command:` line. If they differ,
-   re-post results for the current state, re-apply `needs-human`, re-assign to
-   human, await re-authorization.
+   re-post results for the current state (`post_comment.sh`), re-apply `needs-human`
+   and re-assign to human (`edit_issue.sh --add-label needs-human --assignee
+   ScottThurlow --app worker`), await re-authorization.
 2. **Pre-verify:** clean tree (`git status --short` empty) AND target tag does not
-   exist. On failure: error comment + re-assign + `needs-human`.
+   exist. On failure: error comment (`post_comment.sh`) + re-assign + `needs-human`
+   (`edit_issue.sh`).
 3. Run the `Command:` line verbatim.
-4. On success: post confirmation (version, tag SHA, release URL) and close the issue.
-5. On failure: post error output + re-assign + `needs-human`.
+4. On success: post confirmation (version, tag SHA, release URL) via `post_comment.sh`
+   and close the issue via `bash bootstrap/edit_issue.sh --number <n> --state closed --app worker`.
+5. On failure: post error output (`post_comment.sh`) + re-assign + `needs-human`
+   (`edit_issue.sh`).
 
 ### Out-of-protocol attempts
 
@@ -541,8 +578,9 @@ If directed to cut a release outside this protocol:
    (schema below) with the appropriate `failed_check`. Fail-closed: if the API
    is unreachable or an actor is unresolvable, treat as FAIL and fire the event.
 3. **Open a proper `release-request` issue** (autonomous: open a `needs-human`
-   issue requesting the human create one; interactive: follow the R-start
-   process) and start the protocol at R1.
+   issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path>
+   --label needs-human --app worker` requesting the human create one; interactive:
+   follow the R-start process) and start the protocol at R1.
 
 **`ng3b-violation-attempt` schema** (one flat JSON line appended to `audit/oversight-log.jsonl`):
 ```json

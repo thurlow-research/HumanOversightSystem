@@ -157,9 +157,9 @@ For each recently-merged PR (merged in the last 2 hours):
 3. **If `pr.merged_by.login` is a bot** (login is in `BOT_ACCOUNTS` from `machine-accounts.env`):
    - This is a process violation — bots must not merge without overseer approval.
    - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#.** A merged PR stays in the rolling 2-hour window across multiple cycles; without a precheck the overseer re-files the same `process-gap` issue and re-appends the same audit line every cycle. Before filing or appending:
-     1. Query open issues: `GET /repos/{o}/{r}/issues?state=open&labels=needs-ai&per_page=100`. If any title contains `PR #<n> merged by bot` → a process-gap issue already exists for this PR; do **NOT** file a duplicate.
+     1. Query open issues (`bash bootstrap/query_issues.sh --app overseer --list --label needs-ai --state open`). If any title contains `PR #<n> merged by bot` → a process-gap issue already exists for this PR; do **NOT** file a duplicate.
      2. Grep `audit/oversight-log.jsonl` for an existing line matching `"event":"pr-merged-without-review"` with `"pr":<n>`. If present → do **NOT** append a duplicate.
-   - File a `process-gap` issue (only if step 1 found none): title `process-gap: PR #<n> merged by bot without overseer review`, labels `bug needs-ai`.
+   - File a `process-gap` issue (only if step 1 found none) via `bash bootstrap/create_issue.sh --title "process-gap: PR #<n> merged by bot without overseer review" --body-file <path> --label "bug,needs-ai" --app overseer`.
    - Append to audit log (only if step 2 found none): `{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}`.
 
 **Context:** This check was added because the overseer incorrectly filed issue #581 when PR #579 was merged directly by ScottThurlow. Human merges are valid and expected in governance-edge cases; only bot merges without oversight are violations.
@@ -215,7 +215,7 @@ release-request does not re-fire until the human resolves it and removes the lab
   This gate does NOT authorize the release cut — human authorization (`release-authorized`
   label from ScottThurlow) is still required per NG3b.
   ```
-- **ESCALATE** (any flag raised): enumerate all flags in the post (step number + condition); add `needs-human` label if not already present; do NOT post clearance. Follow §8.2 escalation format.
+- **ESCALATE** (any flag raised): enumerate all flags in the post (step number + condition); add `needs-human` label if not already present (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`); do NOT post clearance. Follow §8.2 escalation format.
 
 **Audit log:** Append to `audit/oversight-log.jsonl` AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2) — but only when a comment was actually posted this cycle. If the CLEARANCE idempotency grep above suppressed the comment (already cleared), do **not** append a duplicate audit line:
 ```json
@@ -301,7 +301,7 @@ For each PR found:
 
    Call `record_pr_bounce()` with `reason_category: COMPLIANCE_FAILURE` and a `summary` sentence naming the flagged SHA(s) and affected file(s). The bounce comment MUST present both resolution options:
    - **(Option A)** Revert the out-of-scope commit from the current PR branch using `git revert <sha>`, then create a branch named `fix/<cid>-out-of-scope-<sha8>` (where `<cid>` is the originating PR's correlation ID and `<sha8>` is the first 8 characters of the out-of-scope commit SHA), cherry-pick the commit onto it, and open a PR with title starting with `[AI: overseer]` and body referencing the originating PR/cid and the out-of-scope SHA. Then notify the originating reviewer to re-review the updated diff.
-   - **(Option B)** File a `needs-human` issue using the 4-step authorization protocol, await the human's explicit authorization comment, then re-submit.
+   - **(Option B)** File a `needs-human` issue (`bash bootstrap/create_issue.sh --title <title> --body-file <path> --label needs-human --app overseer`) using the 4-step authorization protocol, await the human's explicit authorization comment, then re-submit.
 
    The detection event is appended in the same halt-on-failure unit as the bounce comment:
    1. Post the bounce comment.
@@ -416,10 +416,10 @@ For each PR found:
    cycle's findings comment for the PR — the narrative review-chain output —
    which must open with the executive summary (§ Executive summary, below)
    using the disposition's mapped expected-action value:
-   - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. (3) Post the findings comment (via `bootstrap/post_comment.sh` — see "Posting comments" below), opening with the executive summary, Expected action `NO ACTION`. Log all actions to ledger. If merge fails, post a comment explaining the failure and label `needs-human`.
-   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}`; do NOT approve; post the findings comment opening with the executive summary, Expected action `APPROVE`; on next cycle, if ScottThurlow has approved, merge immediately.
-   - **HUMAN_REQUIRED (other reasons)** → label `needs-human`; post §8.2 escalation comment (executive summary + problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
-   - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered, opening with the executive summary, Expected action `NO ACTION`. Label `needs-ai`.
+   - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. (3) Post the findings comment (via `bootstrap/post_comment.sh` — see "Posting comments" below), opening with the executive summary, Expected action `NO ACTION`. Log all actions to ledger. If merge fails, post a comment explaining the failure (`bootstrap/post_comment.sh`) and label `needs-human` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`).
+   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}` (no wrapper covers PR reviewer requests yet); do NOT approve; post the findings comment opening with the executive summary, Expected action `APPROVE`; on next cycle, if ScottThurlow has approved, merge immediately.
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`); post §8.2 escalation comment (executive summary + problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
+   - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered (`bootstrap/post_comment.sh`), opening with the executive summary, Expected action `NO ACTION`. Label `needs-ai` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-ai --app overseer`).
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
     2. For PR N: re-read its current reviews (`GET /repos/{o}/{r}/pulls/{n}/reviews`).
@@ -579,7 +579,28 @@ If the comment post fails: **do not finalize** — do not append the audit event
 
 ## GitHub workflow operations
 
-The overseer performs GitHub operations via `gh api` and the existing `github.py` wrapper. The canonical identifiers for labels and accounts come from `scripts/framework/machine-accounts.env` — read them from there, never hardcode them.
+**Prefer the canonical `bootstrap/*.sh` wrapper script for every GitHub read or
+write.** Fall back to a direct `gh api`/`gh` call, or the `github.py` library
+functions, only when no script below covers the operation — merge, PR-review-request,
+and PR-review-read/dismiss have no wrapper today and go through the raw API as
+documented in "Operations protocol" below. The canonical identifiers for labels and
+accounts come from `scripts/framework/machine-accounts.env` — read them from there,
+never hardcode them.
+
+| Script | Usage |
+|---|---|
+| `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
+| `query_issues.sh` | `--app overseer (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users)` — reads |
+| `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app overseer [--milestone <title-prefix>]` — file a new issue (process-gap reports, `needs-human` escalations) |
+| `edit_issue.sh` | `--number <N> --app overseer [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>]` — label/milestone/assignee/title/state mutations, on issues and PRs alike |
+| `post_comment.sh` | `--number <N> --body-file <path> --app overseer` — plain narrative comment |
+| `post_review_thread.sh` | `--pr <N> --body-file <path> --app overseer` — resolvable review thread (blocking findings; #1207) |
+
+Not exhaustive of every script in `scripts/automation/lib/*.py` — see CLAUDE.md's
+"Canonical entry points by task" table and `SCRIPTS-INDEX.md` for the fuller
+picture. **Re-verify against each script's own `--help`/usage output before citing
+a flag** — state assertions like this table decay faster than the document they
+live in.
 
 ### Canonical labels
 | Purpose | Label | Source |
@@ -591,10 +612,13 @@ The overseer performs GitHub operations via `gh api` and the existing `github.py
 | Embargo path | `hos-embargo` | triage |
 
 ### Operations protocol
-- **Labels:** always read existing repo labels first (`GET /repos/{o}/{r}/labels`) before applying — the consumer repo may use `needs_ai` (underscore) instead of `needs-ai` (hyphen). Match the repo's convention; do not assume the HOS default.
-- **Assign:** use `POST /repos/{o}/{r}/issues/{n}/assignees` with `{"assignees": ["<account>"]}`.
-- **Request reviewer:** use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
-- **Merge:** use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
+- **Labels/assign/milestone/title/state:** use `bootstrap/edit_issue.sh` (table above).
+  Before applying a label for the first time in a session, read existing repo labels
+  (`GET /repos/{o}/{r}/labels` — no wrapper covers this read) — the consumer repo may
+  use `needs_ai` (underscore) instead of `needs-ai` (hyphen). Match the repo's
+  convention; do not assume the HOS default.
+- **Request reviewer:** no wrapper yet — use `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers": ["ScottThurlow"]}` for human-required PRs.
+- **Merge:** no wrapper yet — use `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method": "squash"}` for AUTO_MERGE decisions. Merge is the overseer's action, not the worker's.
 
 ### Posting comments (#752, #1155, #1207 — mandatory)
 
