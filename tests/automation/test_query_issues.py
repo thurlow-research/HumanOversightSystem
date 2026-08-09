@@ -92,7 +92,7 @@ case "$PATH_ARG" in
         else
             MILESTONE_FIELD='{"title":"v0.6.0 — Astro & JS Support"}'
         fi
-        emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\",\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}]}"
+        emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\",\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],\"body\":\"line one\\nDecision: ship it\"}"
         ;;
     */assignees\?*)
         [[ "${GH_FAIL_ASSIGNABLE:-}" == "1" ]] && exit 1
@@ -225,6 +225,32 @@ def test_issue_with_no_milestone_renders_none(h):
     result = h.run(["--app", "worker", "--issue", "888"])
     assert result.returncode == 0, result.stderr
     assert "milestone=NONE" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# --full: raw issue body
+# --------------------------------------------------------------------------- #
+
+
+def test_full_appends_raw_body_after_summary_line(h):
+    result = h.run(["--app", "worker", "--issue", "201", "--full"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith(
+        "#201 milestone=v0.6.0 — Astro & JS Support state=open labels=needs-ai Test issue 201"
+    )
+    assert "Decision: ship it" in result.stdout
+
+
+def test_default_issue_query_omits_body(h):
+    result = h.run(["--app", "worker", "--issue", "201"])
+    assert result.returncode == 0, result.stderr
+    assert "Decision: ship it" not in result.stdout
+
+
+def test_full_without_issue_rejected(h):
+    result = h.run(["--app", "worker", "--list", "--full"])
+    assert result.returncode != 0
+    assert "--full" in result.stderr
 
 
 # --------------------------------------------------------------------------- #
