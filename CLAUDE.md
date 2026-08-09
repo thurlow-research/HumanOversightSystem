@@ -370,15 +370,18 @@ reaching you. A branch built on a stale base does not merely miss that work — 
 PR **proposes reverting it**, and the PR looks entirely normal.
 
 This is not hypothetical. On 2026-08-01 a branch was built while the worker was
-merging PRs concurrently; `git diff --stat origin/main <branch>` showed **6,114
+merging PRs concurrently; `git diff --stat origin/main...<branch>` showed **6,114
 deletions** across four of the worker's merged PRs. It was caught by inspecting
-the diff before pushing. Nothing in the tooling would have stopped it.
+the diff before pushing. Nothing in the tooling would have stopped it at the time.
 
 Before opening any PR:
 
 1. `git fetch origin` — always, regardless of when you last synced.
 2. Merge the base into your branch and resolve any conflicts.
-3. **Check the diff before pushing:** `git diff --stat origin/main <branch>`.
+3. **Check the diff before pushing:** `git diff --stat origin/main...<branch>`
+   (three-dot — the base and head may each carry commits the other lacks;
+   two-dot/no-dot notation includes the base's own unrelated commits and fires
+   spuriously on a branch that is merely behind, not reverting anything).
    **Unexpected deletions are the tell** — purely additive work must show zero.
    If you see deletions in files you never touched, your base is stale; stop and
    rebuild rather than pushing.
@@ -388,10 +391,14 @@ commits *already present* in `main` (redundant commits) and rebases them away �
 a different failure. In the stale-base case the commits are unique and the *base*
 is old, so that check passes clean. The two are complementary.
 
-Mechanical enforcement in `bootstrap/submit_pr.sh` is tracked as **#1162**; until
-it lands, step 3 is the only defence. Note that a periodic `git fetch` alone is
-**not sufficient** — it updates refs, which makes you *aware*; it does not
-integrate the base *into* an already-built branch.
+Mechanical enforcement in `bootstrap/submit_pr.sh` landed in **#1162** (closed
+2026-08-01): before any push, it fetches the base and merges it into the branch,
+fail-closed on conflicts (the merge-from-base guard now also audits when it
+fires). Step 3 remains a useful independent check — manual, human-visible, and
+it catches the residual gaps #1162 doesn't cover (a force-push path in
+`worker-cron-prompt.md`'s conflict-resolution step that bypasses
+`submit_pr.sh` entirely, and divergence that happens *after* submission) — but
+it is no longer the *only* defence.
 
 <!-- HOS:HUMAN-PROXY start -->
 ## HOS: Human-proxy session identity

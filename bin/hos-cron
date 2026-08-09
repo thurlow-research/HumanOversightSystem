@@ -769,7 +769,17 @@ if [[ "$ROLE" == "worker" ]]; then
   fi
 fi
 
-# ── Worker: skip Claude if all own PRs are awaiting human merge (#791) ────────
+# ── Worker: PR-routing decision authority (#791, #1198 Stage 0) ──────────────
+# bin/hos-cron computes the routing and is the single decision authority for
+# whether the worker may pick new work this cycle (#1198 Q6) — the cron
+# prompt and worker.md read the NEW WORK directive _build_context emits below
+# and obey it rather than re-deriving the same routing independently. #1198
+# Stage 0 item 3: a fully-blocked cycle (awaiting-merge) used to `exit 0`
+# here, before Claude ever launched — silently skipping Step 0 triage for as
+# long as the block lasted. Compute routing and fall through instead; Claude
+# still launches every cycle and sees the directive in its prompt context.
+_PR_ROUTING=""
+_OPEN_PR_NUMS=""
 if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
   _OPEN_PR_NUMS=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
     --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | .number" 2>/dev/null || echo "")
@@ -792,15 +802,22 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       _pr_ap="${_pr_ap:-0}"
       if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
     done <<< "$_OPEN_PR_NUMS"
+
+    _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
     if [[ "$_PR_ROUTING" == "awaiting-merge" ]]; then
-      _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
-      echo "$LOG_PREFIX all ${_pr_count} open PR(s) awaiting human merge — skipping Claude launch"
+      echo "$LOG_PREFIX all ${_pr_count} open PR(s) awaiting human merge — new work blocked, Step 0 triage still runs (#1198)"
       _audit cycle-skip reason=awaiting-merge
+      # This wakeup normally gets overwritten by the unconditional
+      # "worker-cycle-complete" signal at the end of a successful run (Claude
+      # now always launches, #1198 item 3) — it's the signal of record only
+      # for the rarer case where the script exits before reaching that point
+      # (e.g. the #989 missing-prompt-file fatal exit).
       printf '{"reason":"worker-cycle-skip","project":"%s","timestamp":"%s"}\n' \
         "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         > "$_HOS_DIR/wakeup/overseer-${PROJECT}"
-      date +%s > "$_LAST_RUN_FILE"
-      exit 0
+    elif [[ "$_PR_ROUTING" == "needs-attention" ]]; then
+      echo "$LOG_PREFIX ${_pr_count} open PR(s) unreviewed — new work blocked, Step 0 triage still runs (#1198)"
+      _audit cycle-needs-attention "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
     fi
   fi
 fi
@@ -964,6 +981,29 @@ _build_context() {
   fi
 
   printf '\n'
+
+  if [[ "${ROLE:-}" == "worker" ]]; then
+    printf '### New work directive (#1198) — single decision authority; obey, do not re-derive\n'
+    if [[ -n "${_OPEN_PR_NUMS:-}" ]]; then
+      _ctx_pr_list="$(printf '%s' "$_OPEN_PR_NUMS" | tr '\n' ',' | sed 's/,$//; s/,/, #/g')"
+      printf 'NEW WORK: BLOCKED\n'
+      printf 'Reason: routing=%s for open PR(s) #%s. ' "${_PR_ROUTING:-unknown}" "${_ctx_pr_list:-?}"
+      case "${_PR_ROUTING:-}" in
+        needs-fix)
+          printf 'At least one PR has CHANGES_REQUESTED or is conflicting — fix and push, then STOP.\n' ;;
+        awaiting-merge)
+          printf 'All open PRs are approved/clean, awaiting a human merge — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
+        needs-attention)
+          printf 'At least one PR is open and not yet reviewed — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
+        *)
+          printf 'STOP — do not proceed to Step 2.\n' ;;
+      esac
+    else
+      printf 'NEW WORK: ALLOWED\n'
+      printf 'Reason: no open PRs authored by this worker.\n'
+    fi
+    printf '\n'
+  fi
 
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
     printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"

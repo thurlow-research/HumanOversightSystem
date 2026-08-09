@@ -43,11 +43,16 @@ For each:
 Triage is a **pure API operation** — no code changes, no test run, no PR. Continue to Step 1.
 
 **Step 1 — Check open PRs:**
-Context pre-computed — see "Open bot PRs" in the context block at the bottom of this prompt. For each open PR authored by this worker: read all reviews AND comments. CHANGES_REQUESTED → fix, push, STOP. All approved/clean → STOP. No open PRs → Step 2.
+Read the **New work directive** in the "Pre-computed cycle context" block at the bottom of this prompt — `bin/hos-cron` is the single decision authority for whether picking new work is allowed this cycle (#1198 Q6); do not re-derive the routing yourself.
+
+- `NEW WORK: ALLOWED` → proceed to Step 2.
+- `NEW WORK: BLOCKED`, reason cites `needs-fix` (a PR has `CHANGES_REQUESTED` or is conflicting) → read that PR's reviews AND comments, fix the listed gaps, push a new commit, then STOP this iteration.
+- `NEW WORK: BLOCKED`, reason cites `awaiting-merge` or `needs-attention` → nothing to fix. Step 0 triage above still ran even though this cycle is blocked (the launcher no longer skips Claude entirely when blocked, #1198) — STOP here, do not proceed to Step 2. If `awaiting-merge` and no existing comment on the named PR(s) contains the marker `<!-- hos-worker-merge-block -->` (check via `bash bootstrap/query_issues.sh --app worker --comments <n>`), post a one-time visibility notice — include that marker in the body — via `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`, so this fires once per block, not every cycle.
+- **Directive line absent** (fail-open context builder) → fall back to the strictest rule below: treat any open PR authored by this worker as blocking.
 
 Pushing a fix here **updates a PR this bot already authored** — it is never a path to open a new PR, and it does not make the branch this cycle's to submit (#967): the branch was created by a prior cycle, not this one, and no ownership record for it belongs to this cycle.
 
-Fallback (if context block is absent):
+Fallback (if directive line or context block is absent):
 ```bash
 gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=open&per_page=20" --jq '.[] | "#\(.number) @\(.user.login) \(.title | .[0:60])"'
 ```
