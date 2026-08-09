@@ -439,6 +439,41 @@ def test_merge_conflict_aborts_and_does_not_push(h):
     assert any("--abort" in ln for ln in cap.splitlines())
 
 
+def test_stale_base_merge_emits_audit_event(h):
+    """A successful merge-from-base fires the #1198 Stage 0 item 6 audit
+    event, previously only a warn()."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "3"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "AUDIT_EVENT:" in cap
+    assert '"event":"stale-base-merged"' in cap
+
+
+def test_up_to_date_base_does_not_emit_audit_event(h):
+    """No merge needed (BEHIND_COUNT=0) → no stale-base-merged audit event."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "0"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert '"event":"stale-base-merged"' not in cap
+
+
+def test_merge_conflict_does_not_emit_audit_event(h):
+    """A merge conflict aborts before the audit call is reached — no event."""
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"],
+        env_overrides={"GIT_BEHIND_COUNT": "3", "GIT_MERGE_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    cap = h.capture()
+    assert '"event":"stale-base-merged"' not in cap
+
+
 # --------------------------------------------------------------------------- #
 # Push-source correctness for a non-checked-out branch (#1166)
 # --------------------------------------------------------------------------- #

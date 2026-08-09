@@ -61,6 +61,39 @@ RED="\033[31m"; YELLOW="\033[33m"; RESET="\033[0m"
 err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 
+# _hos_pr_json_escape <string>
+# Minimal JSON string escaping (backslash, double-quote), matching
+# bootstrap/lib/branch_ownership.sh's _hos_bo_json_escape.
+_hos_pr_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+# _hos_audit_stale_base_merge <head> <base> <behind_count>
+# Best-effort audit event for the #1162 merge-from-base guard actually firing
+# (#1198 Stage 0 item 6 — today it only warns). Written through the standard
+# per-entry audit writer; a missing/failing sink must never block the push
+# it's merely recording. Always returns 0.
+_hos_audit_stale_base_merge() {
+    local head="$1" base="$2" behind="$3"
+    local audit_lib="$SCRIPT_DIR/../scripts/oversight/lib/audit_log.sh"
+    [[ -f "$audit_lib" ]] || return 0
+    # shellcheck disable=SC1090
+    source "$audit_lib" 2>/dev/null || return 0
+    command -v audit_write_event >/dev/null 2>&1 || return 0
+
+    local ts json head_esc base_esc
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    head_esc="$(_hos_pr_json_escape "$head")"
+    base_esc="$(_hos_pr_json_escape "$base")"
+    json="$(printf '{"event":"stale-base-merged","branch":"%s","base":"%s","behind_count":%s,"timestamp":"%s"}' \
+        "$head_esc" "$base_esc" "$behind" "$ts")"
+    audit_write_event "$json" "$SCRIPT_DIR/.." >/dev/null 2>&1 || true
+    return 0
+}
+
 TITLE=""
 BODY_FILE=""
 BASE=""
@@ -168,6 +201,7 @@ if [[ "$BEHIND_COUNT" -gt 0 ]]; then
         git -C "$SCRIPT_DIR/.." merge --abort 2>/dev/null || true
         err "Merging origin/${BASE} into ${HEAD} produced conflicts — resolve manually (git fetch origin ${BASE} && git merge origin/${BASE}, fix conflicts, commit), then retry submit_pr.sh. Never push a branch built on a stale base: its PR would silently propose reverting the commits it's missing (#1162)."
     fi
+    _hos_audit_stale_base_merge "$HEAD" "$BASE" "$BEHIND_COUNT"
 fi
 
 # ── Resolve owner/repo from the origin remote (no auth required) ──────────────

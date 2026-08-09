@@ -1463,8 +1463,16 @@ class TestPRRoutingSkip:
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
 
-    def test_awaiting_merge_skips_claude(self, cron):
-        """One open PR with APPROVED and no CHANGES_REQUESTED → skip launch."""
+    def test_awaiting_merge_still_launches_claude_for_triage(self, cron):
+        """One open PR with APPROVED and no CHANGES_REQUESTED → new work blocked,
+        but Claude still launches so Step 0 triage can run (#1198 Stage 0 item 3)."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
         r = cron.run(env_overrides={
             "HOS_TEST_OPEN_PR_NUMS": "856",
             "HOS_TEST_PR_CR": "0",
@@ -1472,10 +1480,20 @@ class TestPRRoutingSkip:
         })
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting human merge" in r.stdout
-        assert not cron.claude_ran()
+        assert stdin_capture.exists(), "claude must still launch for Step 0 triage"
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
 
     def test_awaiting_merge_drops_overseer_wakeup(self, cron):
-        """Skipped cycle still signals overseer so it can act on the ready PR."""
+        """Blocked cycle still signals overseer so it can act on the ready PR.
+
+        The `awaiting-merge` branch writes an explicit "worker-cycle-skip"
+        wakeup as its own side effect (#1198 Stage 0 item 3 keeps this write).
+        Since Claude now runs to completion instead of exiting early, the
+        unconditional end-of-cycle "signal the other agent" block (unrelated
+        to #1198) overwrites it with "worker-cycle-complete" before the script
+        exits — a superset outcome (the overseer still gets pinged, now with
+        confirmation the full cycle, including Step 0 triage, ran)."""
         r = cron.run(env_overrides={
             "HOS_TEST_OPEN_PR_NUMS": "856",
             "HOS_TEST_PR_CR": "0",
@@ -1484,7 +1502,7 @@ class TestPRRoutingSkip:
         assert r.returncode == 0, r.stdout + r.stderr
         assert cron.wakeup_overseer.exists(), "overseer wakeup must be dropped"
         payload = cron.wakeup_overseer.read_text()
-        assert "worker-cycle-skip" in payload
+        assert "worker-cycle-complete" in payload
 
     def test_awaiting_merge_stamps_last_run(self, cron):
         """Skipped cycle still stamps last-run for diagnostic visibility."""
@@ -1528,6 +1546,25 @@ class TestPRRoutingSkip:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
+
+    def test_overseer_role_gets_no_new_work_directive(self, cron):
+        """The "New work directive" section is worker-only (#1198) — the overseer
+        must never see a NEW WORK: line in its prompt context."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        r = cron.run(role="overseer", env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK:" not in context
 
 
 # ──────────────────── Overseer open-PR fetch failure (#915) ──────────────────
@@ -1720,9 +1757,12 @@ class TestCycleContextBlock:
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
         assert "None." in context
+        assert "NEW WORK: ALLOWED" in context
 
     def test_context_block_one_open_pr(self, cron):
-        """1 open bot PR → context block shows that PR number."""
+        """1 open bot PR → context block shows that PR number and the
+        needs-attention directive; the launcher also audits the case (#1198
+        Stage 0 item 2 — previously invisible)."""
         stdin_capture = self._setup_stdin_capture(cron)
         # PR_AP=0: unapproved → routing marks needs-attention → Claude launched
         r = cron.run(env_overrides={
@@ -1735,6 +1775,21 @@ class TestCycleContextBlock:
         assert "Pre-computed cycle context" in context
         assert "856" in context
         assert "None." not in context
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-attention" in context
+
+    def test_context_block_needs_fix_directive(self, cron):
+        """A PR with CHANGES_REQUESTED → BLOCKED directive cites needs-fix."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "1",
+            "HOS_TEST_PR_AP": "1",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix" in context
 
     def test_context_block_three_open_prs(self, cron):
         """3 open bot PRs → context block lists all three numbers."""
@@ -1763,8 +1818,10 @@ class TestCycleContextBlock:
         assert ctx_pos >= 0, "context block must be present"
         assert prompt_pos < ctx_pos, "context block must follow prompt content"
 
-    def test_context_block_absent_when_routing_skips_claude(self, cron):
-        """All PRs awaiting merge → routing skips Claude launch; no context delivered."""
+    def test_context_block_present_when_awaiting_merge(self, cron):
+        """All PRs awaiting merge → new work blocked, but Claude still launches
+        for Step 0 triage and receives the context block (#1198 Stage 0 item 3)."""
+        stdin_capture = self._setup_stdin_capture(cron)
         r = cron.run(env_overrides={
             "HOS_TEST_OPEN_PR_NUMS": "856",
             "HOS_TEST_PR_AP": "1",
@@ -1772,6 +1829,9 @@ class TestCycleContextBlock:
         })
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting human merge" in r.stdout
+        context = stdin_capture.read_text()
+        assert "Pre-computed cycle context" in context
+        assert "NEW WORK: BLOCKED" in context
 
 
 # ───────────────────────── _sync_audit_logs ────────────────────────────────

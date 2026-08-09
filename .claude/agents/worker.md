@@ -213,39 +213,42 @@ Check that `.claude/agents/<name>.md` exists for each. If any are missing:
 
 ---
 
-**Step 1 — Check open PRs (#550, #551):**
+**Step 1 — Check open PRs (#550, #551, #1198):**
 
 **Before picking any new work item, check the state of all open PRs you authored.**
 This step runs at the top of every autonomous loop iteration — before the per-task chain.
 
-**Required order:**
+**`bin/hos-cron` is the single decision authority for whether picking new work is
+allowed this cycle (#1198 Q6).** Read the `NEW WORK: ALLOWED` / `NEW WORK: BLOCKED`
+directive in the "Pre-computed cycle context" block the launcher injects into this
+prompt. Obey it — do not re-derive the routing yourself:
 
-1. **List open PRs** (REST, never GraphQL):
-   ```
-   gh api "repos/{owner}/{repo}/pulls?state=open&per_page=20"
-   ```
-   Filter to PRs where `user.login == hos-worker-hos[bot]`.
-
-2. **For each open PR — read reviews AND comments:**
-   ```
-   gh api "repos/{owner}/{repo}/pulls/{number}/reviews"
-   gh api "repos/{owner}/{repo}/issues/{number}/comments"
-   ```
-   Read both. `mergeable: CONFLICTING` alone is not sufficient — it misses
-   CHANGES_REQUESTED reviews and overseer comment threads requesting action.
-
-3. **Routing:**
-   - Any PR has `state: CHANGES_REQUESTED` (formal review) **or** an overseer
-     comment requesting worker action → address that PR before picking new work.
-     Fix the listed gaps, push a new commit, then STOP this iteration.
-   - All open PRs are approved/clean (no blocking state) → STOP. Wait for the
-     overseer to merge before picking new work.
-   - No open PRs → proceed to the per-task chain below.
+- `NEW WORK: BLOCKED` naming a PR with `CHANGES_REQUESTED` or a merge conflict →
+  address that PR: read its reviews (`gh api "repos/{owner}/{repo}/pulls/{number}/reviews"`
+  — no wrapper covers PR review reads yet) AND comments (`bash bootstrap/query_issues.sh
+  --app worker --comments {number}`), fix the listed gaps, push a new commit, then
+  STOP this iteration.
+- `NEW WORK: BLOCKED` naming a PR that is approved/clean or open-but-unreviewed →
+  nothing to fix this cycle. Step 0 triage still runs even while blocked (the
+  launcher no longer skips Claude entirely in this state, #1198) — run it, then
+  STOP. Do not proceed to the per-task chain below. If the reason is
+  `awaiting-merge` and no existing comment on the named PR(s) contains the
+  marker `<!-- hos-worker-merge-block -->` (check via `bash
+  bootstrap/query_issues.sh --app worker --comments <n>`), post a one-time
+  visibility notice — include that marker in the body — via `bash
+  bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`, so
+  this fires once per block, not every cycle.
+- `NEW WORK: ALLOWED` → proceed to the per-task chain below.
+- **Directive line absent** (fail-open context builder) → fall back to the
+  strictest rule: list open PRs (`gh api "repos/{owner}/{repo}/pulls?state=open&per_page=20"`,
+  filter to `user.login == hos-worker-hos[bot]`) and treat ANY open PR as
+  blocking new work; read its reviews and comments as above to decide fix-and-push
+  vs. STOP.
 
 **Why:** Checking only `mergeable` status misses CHANGES_REQUESTED reviews and
 overseer comment threads that have been waiting for action — the root cause of
 the v0.4.0 missed-feedback incidents (#550). Reading review bodies and all comments
-is non-negotiable on every loop iteration.
+is non-negotiable whenever a PR needs a fix.
 
 ---
 
