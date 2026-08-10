@@ -1910,7 +1910,27 @@ class TestSyncAuditLogs:
     """Unit tests for _sync_audit_logs() in bin/hos-cron (#861)."""
 
     def test_changed_audit_files_pushed_to_audit_log_branch(self, tmp_path):
-        """Audit files present and changed → committed and pushed to audit-log (not main)."""
+        """Per-entry audit records present and new → committed and pushed to audit-log (not main)."""
+        remote, local = _make_repos(tmp_path)
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"cycle-start"}\n'
+        )
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _remote_branch_exists(remote, "audit-log")
+        tree = _files_on_branch(remote, "audit-log")
+        assert any("cycle-start" in f for f in tree), (
+            f"Expected audit record on audit-log branch, got: {tree}"
+        )
+
+    def test_retired_oversight_log_jsonl_not_synced(self, tmp_path):
+        """Regression (#1303): the retired single-file audit/oversight-log.jsonl
+        is no longer a sync target — only audit/log/**/*.json per-entry records
+        and audit/overnight-loop-log.md are. A file at the old path alone must
+        not create the audit-log branch."""
         remote, local = _make_repos(tmp_path)
         audit_dir = local / "audit"
         audit_dir.mkdir(parents=True)
@@ -1918,11 +1938,40 @@ class TestSyncAuditLogs:
 
         r = _run_sync(local)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert _remote_branch_exists(remote, "audit-log")
-        tree = _files_on_branch(remote, "audit-log")
-        assert any("oversight-log" in f for f in tree), (
-            f"Expected audit file on audit-log branch, got: {tree}"
+        assert not _remote_branch_exists(remote, "audit-log"), (
+            "the retired oversight-log.jsonl path must not trigger a sync"
         )
+
+    def test_already_synced_record_not_recopied(self, tmp_path):
+        """A per-entry record already present on the base branch is skipped, but
+        a genuinely new one alongside it still syncs (write-once/content-addressed
+        dedup, not an all-or-nothing skip)."""
+        remote, local = _make_repos(tmp_path)
+
+        seed_local = tmp_path / "seed"
+        _git("clone", str(remote), str(seed_local))
+        _git("-C", str(seed_local), "config", "user.email", "test@hos.test")
+        _git("-C", str(seed_local), "config", "user.name", "HOS Test")
+        _git("-C", str(seed_local), "checkout", "-b", "audit-log", "--quiet")
+        seed_record_dir = seed_local / "audit" / "log" / "2026" / "06"
+        seed_record_dir.mkdir(parents=True)
+        existing_record = "2026-06-23T200555Z-cycle-start-a28b130933d0.json"
+        (seed_record_dir / existing_record).write_text('{"event":"old"}\n')
+        _git("-C", str(seed_local), "add", f"audit/log/2026/06/{existing_record}")
+        _git("-C", str(seed_local), "commit", "-m", "prior audit", "--quiet")
+        _git("-C", str(seed_local), "push", "origin", "HEAD:audit-log", "--quiet")
+
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / existing_record).write_text('{"event":"old"}\n')
+        new_record = "2026-06-23T201425Z-human-authorized-merge-2035673c0319.json"
+        (record_dir / new_record).write_text('{"event":"new"}\n')
+
+        r = _run_sync(local)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "audit logs pushed" in r.stdout
+        tree = _files_on_branch(remote, "audit-log")
+        assert any(new_record in f for f in tree), f"new record missing from tree: {tree}"
 
     def test_no_audit_files_on_disk_no_push(self, tmp_path):
         """No audit files on disk → function returns early, audit-log branch not created."""
@@ -1937,8 +1986,11 @@ class TestSyncAuditLogs:
         remote, local = _make_repos(tmp_path)
         assert not _remote_branch_exists(remote, "audit-log")
 
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"test"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"test"}\n'
+        )
 
         r = _run_sync(local)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -1962,8 +2014,11 @@ class TestSyncAuditLogs:
         _git("-C", str(seed_local), "push", "origin", "HEAD:audit-log", "--quiet")
 
         # Now add new content to local and sync
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"new"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T201425Z-human-authorized-merge-2035673c0319.json").write_text(
+            '{"event":"new"}\n'
+        )
 
         r = _run_sync(local)
         assert r.returncode == 0, r.stdout + r.stderr
@@ -1972,8 +2027,11 @@ class TestSyncAuditLogs:
     def test_push_failure_warns_and_exits_zero(self, tmp_path):
         """Push failure prints WARN line but the function exits 0 (retry next cycle)."""
         remote, local = _make_repos(tmp_path)
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"test"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"test"}\n'
+        )
 
         # Fake git that succeeds on all operations except push
         fake_bin = tmp_path / "fakebin"
@@ -2006,8 +2064,11 @@ class TestSyncAuditLogs:
         `_audit-sync-*` branch there.
         """
         remote, local = _make_repos(tmp_path)
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"cycle"}\n'
+        )
 
         # A git wrapper that records every subcommand, then delegates to real git.
         log_file = tmp_path / "git-calls.log"
@@ -2046,8 +2107,11 @@ class TestSyncAuditLogs:
         _git("-C", str(local), "checkout", "-b", "feature-x", "--quiet")
         (local / "work.py").write_text("x = 1\n")
         _git("-C", str(local), "add", "work.py")
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"cycle"}\n'
+        )
         before_head = _git("-C", str(local), "rev-parse", "HEAD").stdout.strip()
 
         r = _run_sync(local)
@@ -2073,14 +2137,17 @@ class TestSyncAuditLogs:
         remote, local = _make_repos(tmp_path)
         (local / "secret_feature.py").write_text("leaked = True\n")
         _git("-C", str(local), "add", "secret_feature.py")
-        (local / "audit").mkdir(parents=True)
-        (local / "audit" / "oversight-log.jsonl").write_text('{"event":"cycle"}\n')
+        record_dir = local / "audit" / "log" / "2026" / "06"
+        record_dir.mkdir(parents=True)
+        (record_dir / "2026-06-23T200555Z-cycle-start-a28b130933d0.json").write_text(
+            '{"event":"cycle"}\n'
+        )
 
         r = _run_sync(local)
         assert r.returncode == 0, r.stdout + r.stderr
         assert _remote_branch_exists(remote, "audit-log")
         tree = _files_on_branch(remote, "audit-log")
-        assert any("oversight-log" in f for f in tree), tree
+        assert any("cycle-start" in f for f in tree), tree
         assert "secret_feature.py" not in tree, (
             f"feature change leaked onto audit-log branch: {tree}"
         )
