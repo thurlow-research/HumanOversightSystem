@@ -125,7 +125,7 @@ entry (see CLAUDE.md's "one invocation site" rule), not a pattern to repeat.
 | `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
 | `query_issues.sh` | `--app worker (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users)` — reads |
 | `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app worker [--milestone <title-prefix>]` — file a new issue (e.g. `needs-human` escalations, process-gap reports) |
-| `edit_issue.sh` | `--number <N> --app worker [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>]` — label/milestone/assignee/title/state mutations |
+| `edit_issue.sh` | `--number <N> --app worker [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations |
 | `post_comment.sh` | `--number <N> --body-file <path> --app worker` — plain narrative comment |
 | `submit_pr.sh` | `--title <text> --body-file <path> --base <branch> [--head <branch>] --app worker [--confirmed]` — open, or `--update-pr <N> --base <branch> [--head <branch>] --app worker` — push to an existing PR this bot authored |
 | `post_review_thread.sh` | `--pr <N> --body-file <path> --app worker` — resolvable review thread (blocking findings) |
