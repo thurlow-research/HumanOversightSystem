@@ -82,7 +82,7 @@ case "$PATH_ARG" in
         ;;
     */issues\?*)
         [[ "${GH_FAIL_LIST:-}" == "1" ]] && exit 1
-        emit '[{"number":201,"title":"Issue A","state":"open","milestone":{"title":"v0.6.0 — Astro & JS Support"},"labels":[{"name":"needs-ai"}],"pull_request":null},{"number":202,"title":"A PR not an issue","state":"open","milestone":null,"labels":[],"pull_request":{"url":"x"}},{"number":203,"title":"Issue B no milestone","state":"open","milestone":null,"labels":[{"name":"needs-human"}],"pull_request":null}]'
+        emit '[{"number":201,"title":"Issue A","state":"open","milestone":{"title":"v0.6.0 — Astro & JS Support"},"labels":[{"name":"needs-ai"}],"pull_request":null,"body":"body has a WIDGET reference in it"},{"number":202,"title":"A PR not an issue","state":"open","milestone":null,"labels":[],"pull_request":{"url":"x"},"body":"widget also here but it is a PR"},{"number":203,"title":"Issue B no milestone","state":"open","milestone":null,"labels":[{"name":"needs-human"}],"pull_request":null,"body":"nothing relevant here"}]'
         ;;
     */issues/*)
         [[ "${GH_FAIL_GET_ISSUE:-}" == "1" ]] && exit 1
@@ -284,6 +284,65 @@ def test_list_milestone_ambiguous_prefix_errors(h):
     result = h.run(["--app", "worker", "--list", "--milestone", "v0.6"])
     assert result.returncode != 0
     assert "ambiguous" in result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# --search: body content, case-insensitivity, PR filtering, composability
+# --------------------------------------------------------------------------- #
+
+
+def test_search_matches_body_not_title(h):
+    result = h.run(["--app", "worker", "--search", "widget"])
+    assert result.returncode == 0, result.stderr
+    assert "#201" in result.stdout
+    assert "#203" not in result.stdout
+
+
+def test_search_is_case_insensitive(h):
+    result = h.run(["--app", "worker", "--search", "WIDGET"])
+    assert result.returncode == 0, result.stderr
+    assert "#201" in result.stdout
+
+
+def test_search_filters_out_pull_requests(h):
+    result = h.run(["--app", "worker", "--search", "widget"])
+    assert result.returncode == 0, result.stderr
+    assert "#202" not in result.stdout
+
+
+def test_search_no_match_returns_empty_success(h):
+    result = h.run(["--app", "worker", "--search", "no-such-term-anywhere"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+
+
+def test_search_composes_with_milestone_less(h):
+    result = h.run(["--app", "worker", "--search", "widget", "--milestone-less"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "milestone=none" in cap
+
+
+def test_search_composes_with_milestone_prefix(h):
+    result = h.run(["--app", "worker", "--search", "widget", "--milestone", "v0.7.0"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "milestone=11" in cap
+
+
+def test_search_and_list_mutually_exclusive(h):
+    result = h.run(["--app", "worker", "--list", "--search", "widget"])
+    assert result.returncode != 0
+    assert "exactly one of" in result.stderr
+
+
+def test_search_failure_propagates(h):
+    result = h.run(
+        ["--app", "worker", "--search", "widget"],
+        env_overrides={"GH_FAIL_LIST": "1"},
+    )
+    assert result.returncode != 0
+    assert "failed to search issues" in result.stderr
 
 
 # --------------------------------------------------------------------------- #
