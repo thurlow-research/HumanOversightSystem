@@ -590,7 +590,7 @@ never hardcode them.
 | Script | Usage |
 |---|---|
 | `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
-| `query_issues.sh` | `--app overseer (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users)` — reads |
+| `query_issues.sh` | `--app overseer (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users \| --list-milestones)` — reads |
 | `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app overseer [--milestone <title-prefix>]` — file a new issue (process-gap reports, `needs-human` escalations) |
 | `edit_issue.sh` | `--number <N> --app overseer [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations, on issues and PRs alike |
 | `post_comment.sh` | `--number <N> --body-file <path> --app overseer` — plain narrative comment |
