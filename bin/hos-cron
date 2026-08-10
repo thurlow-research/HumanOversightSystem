@@ -240,15 +240,20 @@ _audit() {
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
-# ── Audit log sync (#861) ─────────────────────────────────────────────────────
-# Push audit/oversight-log.jsonl and audit/overnight-loop-log.md to the
-# unprotected `audit-log` branch. A GitHub Actions workflow reads from that
-# branch and commits only those files to main, keeping feature PRs free of
+# ── Audit log sync (#861, updated #1303) ──────────────────────────────────────
+# Push per-entry audit records under audit/log/**/*.json (write-once,
+# content-addressed filenames — #888 retired the single-file
+# audit/oversight-log.jsonl this used to target) and audit/overnight-loop-log.md
+# to the unprotected `audit-log` branch. A GitHub Actions workflow reads from
+# that branch and commits only those files to main, keeping feature PRs free of
 # append-only conflicts while maintaining an auditable sync path.
 _sync_audit_logs() {
   local _repo="$1"
   local _files=()
-  [[ -f "$_repo/audit/oversight-log.jsonl"   ]] && _files+=("audit/oversight-log.jsonl")
+  local _f
+  while IFS= read -r -d '' _f; do
+    _files+=("${_f#"$_repo"/}")
+  done < <(find "$_repo/audit/log" -type f -name '*.json' -print0 2>/dev/null)
   [[ -f "$_repo/audit/overnight-loop-log.md" ]] && _files+=("audit/overnight-loop-log.md")
   [[ ${#_files[@]} -eq 0 ]] && return 0
 
@@ -278,6 +283,10 @@ _sync_audit_logs() {
 
     local _changed=0
     for _f in "${_files[@]}"; do
+      # Write-once, content-addressed filenames: a file already present at this
+      # path on the base is identical by construction, so skip it rather than
+      # re-copy/re-hash it every cycle (the backlog is thousands of files deep).
+      [[ -e "$_wt/$_f" ]] && continue
       mkdir -p "$_wt/$(dirname "$_f")" 2>/dev/null || true
       cp -f "$_repo/$_f" "$_wt/$_f" 2>/dev/null || continue
       git -C "$_wt" add -f "$_f" 2>/dev/null
