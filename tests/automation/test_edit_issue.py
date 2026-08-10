@@ -206,6 +206,33 @@ def test_no_edit_flag_rejected(h):
     assert "GET_APP_TOKEN_CALLED_WITH" not in cap
 
 
+def test_body_flag_rejected(h):
+    result = h.run(["--number", "42", "--app", "worker", "--body", "inline text"])
+    assert result.returncode != 0
+    assert "--body-file" in result.stderr
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+
+
+def test_body_file_missing_rejected(h, tmp_path):
+    missing = tmp_path / "does-not-exist.md"
+    result = h.run(["--number", "201", "--app", "worker", "--body-file", str(missing)])
+    assert result.returncode != 0
+    assert "not found" in result.stderr
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+
+
+def test_body_file_at_path_literal_rejected(h, tmp_path):
+    body_file = tmp_path / "body.md"
+    body_file.write_text("@/tmp/claude/body.md")
+    result = h.run(["--number", "201", "--app", "worker", "--body-file", str(body_file)])
+    assert result.returncode != 0
+    assert "@path literal" in result.stderr
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+
+
 # --------------------------------------------------------------------------- #
 # Milestone prefix resolution (real jq filtering against stub JSON)
 # --------------------------------------------------------------------------- #
@@ -215,7 +242,7 @@ def test_milestone_unambiguous_prefix_resolves_and_patches(h):
     result = h.run(["--number", "201", "--app", "worker", "--milestone", "v0.7.0"])
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    assert "milestone=11" in cap
+    assert 'GH_STDIN:{"milestone":11}' in cap
 
 
 def test_milestone_ambiguous_prefix_aborts_before_patch(h):
@@ -236,7 +263,7 @@ def test_milestone_none_clears_via_patch(h):
     result = h.run(["--number", "201", "--app", "worker", "--milestone", "none"])
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    assert "milestone=null" in cap
+    assert 'GH_STDIN:{"milestone":null}' in cap
 
 
 # --------------------------------------------------------------------------- #
@@ -272,6 +299,41 @@ def test_add_assignee_posts_json_body(h):
     assert result.returncode == 0, result.stderr
     cap = h.capture()
     assert '"assignees":["octocat"]' in cap
+
+
+# --------------------------------------------------------------------------- #
+# Body edits (#1312)
+# --------------------------------------------------------------------------- #
+
+
+def test_body_file_sent_as_json_body_via_input(h, tmp_path):
+    body_file = tmp_path / "body.md"
+    body_file.write_text('New body with a "quote" and\na newline.\n')
+    result = h.run(["--number", "201", "--app", "worker", "--body-file", str(body_file)])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert 'GH_STDIN:{"body":"New body with a \\"quote\\" and\\na newline.\\n"}' in cap
+
+
+def test_body_file_combines_with_title_in_single_patch(h, tmp_path):
+    body_file = tmp_path / "body.md"
+    body_file.write_text("Updated scope.\n")
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--title", "New title", "--body-file", str(body_file)]
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert '"title":"New title"' in cap
+    assert '"body":"Updated scope.\\n"' in cap
+    # single PATCH to the issue resource, not two round trips
+    assert cap.count("GH_STDIN:") == 1
+
+
+def test_body_file_only_edit_does_not_require_other_flags(h, tmp_path):
+    body_file = tmp_path / "body.md"
+    body_file.write_text("Body only.\n")
+    result = h.run(["--number", "201", "--app", "worker", "--body-file", str(body_file)])
+    assert result.returncode == 0, result.stderr
 
 
 # --------------------------------------------------------------------------- #

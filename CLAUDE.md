@@ -274,12 +274,16 @@ command.
    through `bootstrap/post_comment.sh --number <n> --body-file <path> --app
    <role>` (same pattern) — never `gh api --field body=@path` /
    `-f body=@path`, which silently posts the literal `@path` string instead
-   of the file's contents (#1155). Issue/PR metadata edits (labels, milestone,
-   title, state, assignees) go through `bootstrap/edit_issue.sh --number <n>
-   --app <role> [--add-label ...] [--remove-label ...] [--milestone
-   <title-prefix>|none] [--title ...] [--state open|closed] [--assignee ...]`
-   — milestones are matched by **prefix**, not exact title, since this repo's
-   milestone titles contain an em dash. Reads (single/multiple issues,
+   of the file's contents (#1155). Issue/PR metadata and body edits (labels,
+   milestone, title, state, assignees, body) go through `bootstrap/edit_issue.sh
+   --number <n> --app <role> [--add-label ...] [--remove-label ...] [--milestone
+   <title-prefix>|none] [--title ...] [--state open|closed] [--assignee ...]
+   [--body-file <path>]` — milestones are matched by **prefix**, not exact
+   title, since this repo's milestone titles contain an em dash. `--body-file`
+   replaces the body wholesale (same `--body-file`-only convention as the
+   other write scripts, never inline `--body <text>`); callers that want to
+   preserve existing content read the current body first via `query_issues.sh
+   --full` and compose the new version themselves (#1312). Reads (single/multiple issues,
    milestone-scoped listings, PR-filtered, comments, assignable users) go
    through `bootstrap/query_issues.sh --app <role> (--issue <n[,n,...]>
    [--full] | --list [--milestone <prefix>|--milestone-less] [--label ...]
