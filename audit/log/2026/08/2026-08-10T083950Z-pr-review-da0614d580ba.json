@@ -1,0 +1,1 @@
+{"event":"pr-review","pr":1322,"tier":"LOW","composite_score":0.0582,"decision":"BLOCKED_EXTERNAL","reason":"content clean, blocked by unrelated Validation-stamps-current CI failure (repo-wide drift from PR #1321)","linked_issue":1323,"timestamp":"2026-08-10T08:39:50Z"}
