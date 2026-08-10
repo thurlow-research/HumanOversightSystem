@@ -11,6 +11,7 @@
 # Usage (exactly one query mode per invocation):
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --issue <N[,N,...]> [--full]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --search <term> [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments <N>
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --assignable-users
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list-milestones
@@ -20,6 +21,12 @@
 # resolve_milestone_id() already fetches internally to turn a --milestone
 # prefix into a numeric id, exposed here as its own read mode so a caller can
 # look up an exact title instead of inferring it (#1314).
+#
+# --search <term> greps issue BODY text (case-insensitive substring match),
+# printing matches in the same one-line summary format as --list. It does not
+# search titles — a caller wanting both does `--list | grep` for titles and
+# adds `--search` for bodies (#1315). Composable with --milestone/
+# --milestone-less/--label/--state, same as --list.
 #
 # --full (--issue only) appends the raw issue body after the summary line, so
 # a caller can grep it for a `Decision:` block (#1277) without a hand-rolled
@@ -51,6 +58,7 @@ APP_ROLE=""
 ISSUE_NUMBERS=""
 FULL_MODE=0
 LIST_MODE=0
+SEARCH_TERM=""
 MILESTONE_ARG=""
 MILESTONE_LESS=0
 LABEL_FILTER=""
@@ -65,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --issue)            ISSUE_NUMBERS="$2"; shift 2 ;;
         --full)             FULL_MODE=1; shift ;;
         --list)             LIST_MODE=1; shift ;;
+        --search)           SEARCH_TERM="$2"; shift 2 ;;
         --milestone)        MILESTONE_ARG="$2"; shift 2 ;;
         --milestone-less)   MILESTONE_LESS=1; shift ;;
         --label)            LABEL_FILTER="$2"; shift 2 ;;
@@ -72,7 +81,7 @@ while [[ $# -gt 0 ]]; do
         --comments)         COMMENTS_NUMBER="$2"; shift 2 ;;
         --assignable-users) ASSIGNABLE_USERS=1; shift ;;
         --list-milestones)  LIST_MILESTONES=1; shift ;;
-        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users | --list-milestones)" ;;
+        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --search <term> [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users | --list-milestones)" ;;
     esac
 done
 
@@ -85,10 +94,11 @@ esac
 MODE_COUNT=0
 [[ -n "$ISSUE_NUMBERS" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$LIST_MODE" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
+[[ -n "$SEARCH_TERM" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ -n "$COMMENTS_NUMBER" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$ASSIGNABLE_USERS" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$LIST_MILESTONES" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
-[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --comments, --assignable-users, --list-milestones is required"
+[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --search, --comments, --assignable-users, --list-milestones is required"
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
     err "--milestone and --milestone-less are mutually exclusive"
@@ -173,6 +183,20 @@ elif [[ "$LIST_MODE" -eq 1 ]]; then
     gh api "repos/${REPO_SLUG}/issues?${QUERY}" --jq \
         ".[] | select(.pull_request == null) | ${ISSUE_LINE_FILTER}" \
         || fail "failed to list issues"
+
+elif [[ -n "$SEARCH_TERM" ]]; then
+    QUERY="per_page=100"
+    if [[ -n "$MILESTONE_ARG" ]]; then
+        MILESTONE_ID="$(resolve_milestone_id "$MILESTONE_ARG")"
+        QUERY="${QUERY}&milestone=${MILESTONE_ID}"
+    elif [[ "$MILESTONE_LESS" -eq 1 ]]; then
+        QUERY="${QUERY}&milestone=none"
+    fi
+    [[ -n "$LABEL_FILTER" ]] && QUERY="${QUERY}&labels=${LABEL_FILTER}"
+    QUERY="${QUERY}&state=${STATE_FILTER:-open}"
+    gh api "repos/${REPO_SLUG}/issues?${QUERY}" | jq -r --arg term "$SEARCH_TERM" \
+        ".[] | select(.pull_request == null) | select((.body // \"\" | ascii_downcase) | contains(\$term | ascii_downcase)) | ${ISSUE_LINE_FILTER}" \
+        || fail "failed to search issues"
 
 elif [[ -n "$COMMENTS_NUMBER" ]]; then
     case "$COMMENTS_NUMBER" in
