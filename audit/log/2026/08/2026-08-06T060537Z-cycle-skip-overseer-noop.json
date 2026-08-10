@@ -1,0 +1,1 @@
+{"event":"cycle-skip","role":"overseer","timestamp":"2026-08-06T06:05:37Z","reason":"no actionable work: PR #1305 already reviewed at current head SHA (9d4152731aa72262e8ee70331de6877d4112f7e8), no bot merges in audit window, no release-gate issues pending"}

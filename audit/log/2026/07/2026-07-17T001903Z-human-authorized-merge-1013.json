@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T00:19:03Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1013,"reason":"fix #985 untrusted .env reviewer-threshold clamp; overseer-reviewed HUMAN_REQUIRED (security-relevant); human ScottThurlow merged unchanged head — authorized, no process-gap","timestamp":"2026-07-17T00:19:03Z"}

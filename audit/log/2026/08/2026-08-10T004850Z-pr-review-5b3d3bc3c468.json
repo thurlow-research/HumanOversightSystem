@@ -1,0 +1,1 @@
+{"author":"hos-worker-hos[bot]","decision":"HUMAN_REQUIRED","event":"pr-review","labels_added":[],"oversight_verdict":"PROCEED","pr":1319,"reason":"protected-surface (.claude/agents/overseer.md, .claude/agents/worker.md, CLAUDE.md, bootstrap/edit_issue.sh)","risk_tier":"LOW","role":"overseer","size":"5 files +119/-24","validators":"pass"}

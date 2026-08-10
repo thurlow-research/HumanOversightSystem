@@ -1,0 +1,1 @@
+{"event":"pr-review","pr":1120,"repo":"thurlow-research/HumanOversightSystem","risk_tier":"LOW","composite_score":0.1358,"decision":"HUMAN_REQUIRED","reason":"PR touches protected surface bootstrap/hos_install.sh (bootstrap/** glob) — human approval required regardless of risk tier","labels_added":["needs-human"],"timestamp":"2026-07-30T23:45:41Z"}

@@ -1,0 +1,1 @@
+{"agent_class":"overseer","ci":{"require-human-approval":"failure","require-overseer-approval":"failure","require-tier-ceiling":"success","shellcheck":"success","validation-stamps-current":"success"},"commits":1,"decision":"HUMAN_REQUIRED","event":"pr-review","files":1,"pr":963,"size_ok":true,"tier":"LOW","timestamp":"2026-06-29T04:49:19Z"}

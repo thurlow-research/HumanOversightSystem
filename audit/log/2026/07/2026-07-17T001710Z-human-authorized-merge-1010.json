@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T00:17:10Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1010,"reason":"fix #980 run_validators blanket-rm gate-results.json; overseer-reviewed HUMAN_REQUIRED (protected surface); human ScottThurlow merged unchanged head — authorized, no process-gap","timestamp":"2026-07-17T00:17:10Z"}

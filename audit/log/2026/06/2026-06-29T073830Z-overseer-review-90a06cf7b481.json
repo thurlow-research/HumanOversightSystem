@@ -1,0 +1,1 @@
+{"event":"overseer-review","pr":965,"decision":"HUMAN_REQUIRED","reason":"outstanding review request from ScottThurlow (#761); protected-surface bootstrap/** + no human approval on head SHA (#589/#757)","risk_tier":"LOW","verdict":"PROCEED","labels_added":["needs-human"],"head_sha":"0b23bb90ec0cf4ea930e85d59f7adb1fa2b0f808","timestamp":"2026-06-29T07:38:30Z"}

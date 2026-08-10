@@ -1,0 +1,1 @@
+{"author":"hos-worker-hos[bot]","decision":"HUMAN_REQUIRED","event":"pr-review","head_sha":"b20729e1096ee28150cd25555d26ae57566f6e14","labels_added":["needs-human"],"matched_paths":["CLAUDE.md"],"pr":1302,"reason":"protected-surface","risk_tier":"MEDIUM","size":"1 files +10/-0","timestamp":"2026-08-05T23:39:37Z","validators":"pass"}

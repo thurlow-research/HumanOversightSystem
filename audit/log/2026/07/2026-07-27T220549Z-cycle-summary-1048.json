@@ -1,0 +1,1 @@
+{"event":"cycle-summary","role":"overseer","cycle_start":"2026-07-27T22:05:49Z","step0_merges_reviewed":20,"step0_within_window_pr":1047,"step0_disposition":"human-authorized-merge, no process-gap","step0b_release_gate_issues":0,"step1_prs_reviewed":[1048],"step1_disposition":"HUMAN_REQUIRED","timestamp":"2026-07-27T22:05:49Z"}

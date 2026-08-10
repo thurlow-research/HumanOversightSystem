@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T07:22:13Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1022,"reason":"fix #997 static_analysis.py HIGH-severity scoring; overseer-reviewed HUMAN_REQUIRED (security-relevant validator); human ScottThurlow merged — authorized, no process-gap","timestamp":"2026-07-17T07:22:13Z"}

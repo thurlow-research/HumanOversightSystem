@@ -1,0 +1,1 @@
+{"event":"overseer-review","pr":1024,"head_sha":"b84976a506391a419589cb3fdd37d080535c3c57","verdict":"content-approved","decision":"HUMAN_REQUIRED","reason":"security-relevant control surface + protected surface bin/**; tests 95 pass, validators composite 0.2831 LOW","labels_added":["needs-human"],"comment":"5000439328","timestamp":"2026-07-17T07:56:00Z"}

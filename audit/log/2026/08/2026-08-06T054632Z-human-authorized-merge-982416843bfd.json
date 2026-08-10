@@ -1,0 +1,1 @@
+{"event": "human-authorized-merge", "pr": 1304, "merged_by": "ScottThurlow", "reason": "Escalated HUMAN_REQUIRED for protected-surface touch (bootstrap/create_branch.sh, protected_surfaces.txt); human merged directly at 2026-08-06T05:04:58Z", "timestamp": "2026-08-06T054632Z"}

@@ -1,0 +1,14 @@
+{
+  "event": "human-required",
+  "ts": "2026-07-17T00:09:12Z",
+  "role": "overseer",
+  "pr": 1015,
+  "head_sha": "88c317d9a0d0ec024fc6c2b74563a01392ebb12f",
+  "issue": 988,
+  "risk_tier": "LOW",
+  "content_verdict": "APPROVE",
+  "merge_decision": "HUMAN_REQUIRED",
+  "reason": "protected-surface bin/** (CODEOWNERS /bin/ @ScottThurlow); no verified maintainer approval on head",
+  "labels_added": ["needs-human"],
+  "escalated_to": "ScottThurlow"
+}

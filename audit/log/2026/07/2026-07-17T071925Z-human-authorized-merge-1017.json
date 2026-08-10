@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T07:19:25Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1017,"reason":"fix #981 run_validators.sh --diff py-only filter; overseer-reviewed HUMAN_REQUIRED (protected surface); human ScottThurlow merged — authorized, no process-gap","timestamp":"2026-07-17T07:19:25Z"}

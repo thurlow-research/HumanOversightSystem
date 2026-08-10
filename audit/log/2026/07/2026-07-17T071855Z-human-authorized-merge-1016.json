@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T07:18:55Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1016,"reason":"fix hos_install.sh #991/#992/#993; overseer-reviewed HUMAN_REQUIRED (NG3b release-related + protected surface); human ScottThurlow merged unchanged head — authorized, no process-gap","timestamp":"2026-07-17T07:18:55Z"}

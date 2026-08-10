@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1119,"reason_category":"GATE_UNSATISFIED","summary":"Protected-surface path .claude/agents/overseer.md forces HUMAN_REQUIRED unconditionally; additionally CI Validation stamps current check fails — worker did not regenerate scripts/framework/validation-stamps/phase1-<hash>.stamp for the new agent content hash","timestamp":"2026-07-30T21:25:10Z"}

@@ -1,0 +1,1 @@
+{"event":"human-approval-received","pr":1121,"role":"overseer","summary":"ScottThurlow APPROVED PR #1121 on head SHA 1643dd1 (protected-surface, CRITICAL tier). decide_merge_authority still returns HUMAN_REQUIRED (tier exceeds OVERSEER_CEILING=HIGH) — overseer cannot execute the merge; ScottThurlow to merge directly.","timestamp":"2026-07-31T06:10:09Z"}

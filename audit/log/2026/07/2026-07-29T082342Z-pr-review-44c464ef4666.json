@@ -1,0 +1,1 @@
+{"decision":"PROPOSE_ONLY","event":"pr-review","pr":1076,"reason":"agent_class=worker never merges; independently AUTO_MERGE unreachable pending DEP #152-followup; validators re-run 12/12 succeeded tier MEDIUM 0.3207; tests 1941 passed; CODEOWNERS gate does not fire; register trailers present; verdict PROCEED; comment posted, labeled needs-ai","timestamp":"2026-07-29T08:23:42Z"}

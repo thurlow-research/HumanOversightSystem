@@ -1,0 +1,1 @@
+{"agent_class":"worker","ci":{"require-human-approval":"failure","require-overseer-approval":"failure","require-tier-ceiling":"success"},"commits":1,"decision":"HUMAN_REQUIRED","event":"pr-review","files":4,"pr":955,"size_ok":true,"tier":"CRITICAL","timestamp":"2026-06-29T00:35:18Z"}

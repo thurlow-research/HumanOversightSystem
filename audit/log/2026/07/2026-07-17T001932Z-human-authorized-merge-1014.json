@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T00:19:32Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1014,"reason":"fix #987 stale-commit guard skipping all bot PRs; overseer-reviewed HUMAN_REQUIRED (MEDIUM>LOW ceiling); human ScottThurlow merged unchanged head — authorized, no process-gap","timestamp":"2026-07-17T00:19:32Z"}

@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1306,"reason_category":"GATE_UNSATISFIED","summary":"Docs-only design addendum self-flagged RISK MEDIUM-HIGH (security-relevant execution boundary); no human approval on current head SHA, matrix universal-approval gate not satisfied.","timestamp":"2026-08-06T11:49:50Z"}

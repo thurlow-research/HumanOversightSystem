@@ -1,0 +1,14 @@
+{
+    "decision": "HUMAN_REQUIRED",
+    "event": "overseer-review",
+    "head_sha": "3c801d0",
+    "labels_added": [
+        "needs-human"
+    ],
+    "pr": 1017,
+    "reason": "fix #981 run_validators.sh --diff filtered changed files to *.py, blinding ip_check (license/provenance) + issue_query to dependency manifests (requirements*.txt/pyproject.toml/package.json) at the release gate. content APPROVED \u2014 verified against source: fix drops the .py filter at --diff collection; ALL_FILES/PY_FILES split (lines 83-87) routes every file to ip_check/issue_query/migration_risk while PY_FILES stays .py-only behind [[ ${#PY_FILES[@]} -gt 0 ]] guards for all Python validators \u2014 no non-.py leak. RUN_VALIDATORS_FILELIST_ONLY seam gated off by default, prints only filenames. 3 new tests pass, bash -n clean. decide_merge_authority()=HUMAN_REQUIRED: protected surface scripts/oversight/run_validators.sh (protected_surfaces.txt:28) + 0 approvals on head (#589/#757).",
+    "risk_tier": "LOW",
+    "security_relevant": false,
+    "timestamp": "2026-07-17T02:08:57Z",
+    "verdict": "PROCEED"
+}

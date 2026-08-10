@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T07:22:45Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1023,"reason":"fix #999 cut_release.sh release-target resolution; overseer-reviewed HUMAN_REQUIRED (NG3b release-related + protected surface); human ScottThurlow merged — authorized, no process-gap","timestamp":"2026-07-17T07:22:45Z"}

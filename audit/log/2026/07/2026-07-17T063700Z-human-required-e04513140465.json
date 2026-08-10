@@ -1,0 +1,16 @@
+{
+  "event": "human-required",
+  "ts": "2026-07-17T06:37:00Z",
+  "role": "overseer",
+  "pr": 1022,
+  "head_sha": "2aac718",
+  "issue": 997,
+  "risk_tier": "LOW",
+  "content_verdict": "APPROVE",
+  "merge_decision": "HUMAN_REQUIRED",
+  "reason": "security-relevant change to static_analysis security-findings scoring validator (HIGH bandit scoring + tier_floor promotion); not protected-surface, but security-relevant requires verified maintainer approval on head; none present",
+  "labels_added": [
+    "needs-human"
+  ],
+  "escalated_to": "ScottThurlow"
+}

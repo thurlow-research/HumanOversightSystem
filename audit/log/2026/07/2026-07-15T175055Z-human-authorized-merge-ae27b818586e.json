@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-15T16:54:18Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1007,"reason":"PR previously escalated HUMAN_REQUIRED (expensive-gates fix #977, security-relevant + protected surface); human ScottThurlow merged — authorized, no process-gap","timestamp":"2026-07-15T17:50:55Z"}

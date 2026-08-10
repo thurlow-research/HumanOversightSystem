@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T00:17:56Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1011,"reason":"fix #982 second-review verdict pipeline drop/mask; overseer-reviewed HUMAN_REQUIRED (control surface + #757); human ScottThurlow merged unchanged head — authorized, no process-gap","timestamp":"2026-07-17T00:17:56Z"}

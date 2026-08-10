@@ -1,0 +1,1 @@
+{"action":"posted_blocking_review_thread","disposition":"DIRTY","event":"pr-review","expected_action":"REQUEST CHANGES","head_sha":"d86109678aeee601768e392a8d6f1e7c5298367d","pr":1321,"reason":"validation-stamp check failing (missing stamp for changed agent content hash)"}

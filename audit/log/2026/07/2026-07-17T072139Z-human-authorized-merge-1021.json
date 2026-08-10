@@ -1,0 +1,1 @@
+{"event":"human-authorized-merge","merged_at":"2026-07-17T07:21:39Z","merged_by":"ScottThurlow","merged_by_type":"User","pr":1021,"reason":"fix #994 require_human_approval bot-reviewer/empty-BOT_ACCOUNTS fail-open; overseer-reviewed HUMAN_REQUIRED (security-relevant + protected surface); human ScottThurlow merged — authorized, no process-gap","timestamp":"2026-07-17T07:21:39Z"}

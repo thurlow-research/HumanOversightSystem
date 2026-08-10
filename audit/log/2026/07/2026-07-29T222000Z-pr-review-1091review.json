@@ -1,0 +1,1 @@
+{"event": "pr-review", "pr": 1091, "decision": "PROPOSE_ONLY", "oversight_verdict": "PROCEED", "risk_tier": "LOW", "size": "5 files +459/-2", "validators": "pass", "author": "hos-worker-hos[bot]", "head_sha": "90db621613f694e8ac2386da0d19f91eecc1ee89", "labels_added": ["needs-ai"], "timestamp": "2026-07-29T22:20:00Z"}

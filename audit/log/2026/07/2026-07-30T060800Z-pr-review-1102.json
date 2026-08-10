@@ -1,0 +1,1 @@
+{"event": "pr-review", "pr": 1102, "decision": "HUMAN_REQUIRED", "reason": "PR touches a protected surface — human approval required", "risk_tier": "LOW", "labels_added": ["needs-human"], "timestamp": "2026-07-30T06:08:00Z"}

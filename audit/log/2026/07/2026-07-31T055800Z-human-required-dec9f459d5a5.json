@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1121,"reason_category":"GATE_UNSATISFIED","role":"overseer","summary":"PR #1121 touches protected surfaces (CODEOWNERS, bin/**, bootstrap/**, docs/AGENT-IDENTITY.md, scripts/framework/**) — CRITICAL tier, requires ScottThurlow approval per merge-authority matrix.","timestamp":"2026-07-31T05:58:00Z"}
