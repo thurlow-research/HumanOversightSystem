@@ -456,6 +456,7 @@ from scripts.automation.lib.merge_authority import (
     detect_human_hold_directive,
     detect_server_side_gate,
     route_embargo,
+    touches_protected_surface,
 )
 
 
@@ -632,6 +633,39 @@ class TestDecideMergeAuthority:
             )
         assert result.decision == MergeDecision.AUTO_MERGE
         assert "approval by ScottThurlow on abc123" in result.reason
+
+    def test_touches_protected_surface_public_wrapper(self, tmp_path):
+        """#1325: overseer.md's pre-matrix gate calls this directly, not the
+        private helper — it must exist as a public, importable function."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        assert touches_protected_surface([".claude/agents/worker.md"], str(tmp_path)) is True
+        assert touches_protected_surface(["src/foo.py"], str(tmp_path)) is False
+
+    @pytest.mark.parametrize(
+        "risk_tier", [RiskTier.LOW, RiskTier.MEDIUM, RiskTier.HIGH],
+    )
+    def test_protected_surface_never_auto_merges_without_approval(self, tmp_path, risk_tier):
+        """#1325 regression: a protected-surface diff must never decide
+        AUTO_MERGE without a verified human approval on the current head SHA,
+        at any tier within the overseer's own ceiling."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **self.BASE,
+                    "changed_files": [".claude/agents/worker.md"],
+                    "risk_tier": risk_tier,
+                    "overseer_ceiling": RiskTier.HIGH,
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.decision != MergeDecision.AUTO_MERGE
 
     def test_security_relevant_with_human_approval_allows_auto_merge(self, tmp_path):
         """Security-relevant PR is mergeable once a human has approved (#741)."""

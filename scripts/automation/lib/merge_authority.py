@@ -339,7 +339,7 @@ _RELEASE_TITLE_RE = re.compile(
 # scripts/framework/protected_surfaces.txt.  That list covers every control
 # surface (bin/**, .claude/agents/**, …); reusing it here would label unrelated
 # control-surface PRs as releases and widen NG3b with a misleading reason.  Those
-# surfaces are already gated by _touches_protected_surface().  Keep the entries
+# surfaces are already gated by touches_protected_surface().  Keep the entries
 # below in sync with the "Release artifacts (#761)" block of that file.
 _RELEASE_PATH_GLOBS = [
     "docs/releases/**",
@@ -378,8 +378,15 @@ def _is_release_related(pr_title: str, changed_files: list[str]) -> bool:
 # Protected-surface check (re-uses require_human_approval.py)
 # ---------------------------------------------------------------------------
 
-def _touches_protected_surface(changed_files: list[str], repo_root: str = ".") -> bool:
-    """Check if any changed file is on the protected surface."""
+def touches_protected_surface(changed_files: list[str], repo_root: str = ".") -> bool:
+    """Check if any changed file is on the protected surface.
+
+    Public (#1325): overseer.md's pre-matrix protected-surface gate calls this
+    directly, before any other computation, so the check runs deterministically
+    every cycle rather than being reachable only via decide_merge_authority()'s
+    internal call — a prior cycle's narrative conclusion ("Auto-merging") is
+    never a substitute for calling this fresh.
+    """
     surfaces_path = Path(repo_root) / "scripts" / "framework" / "protected_surfaces.txt"
     if not surfaces_path.is_file():
         return False
@@ -413,7 +420,7 @@ def _touches_security_surface(changed_files: list[str], repo_root: str = ".") ->
     silently unenforced. This derives the signal from
     scripts/framework/security_surfaces.txt so it no longer depends on a caller
     remembering to pass it. Same fail-closed contract as
-    _touches_protected_surface: an unreadable surfaces file assumes relevant; a
+    touches_protected_surface: an unreadable surfaces file assumes relevant; a
     surfaces file that simply does not exist is not itself treated as relevant,
     because security_surfaces.txt lives under scripts/framework/**, which
     protected_surfaces.txt already protects — deleting or tampering with it is
@@ -633,7 +640,7 @@ def decide_merge_authority(
     # Protected surface: requires human approval.  Same treatment as
     # security-relevant — a verified maintainer approval on the current head
     # satisfies the authorization condition (#589, #741).
-    if _touches_protected_surface(changed_files, repo_root):
+    if touches_protected_surface(changed_files, repo_root):
         approval = _find_human_approval(reviews, human_reviewer, head_sha)
         if approval:
             approver = approval.get("user", {}).get("login", human_reviewer)

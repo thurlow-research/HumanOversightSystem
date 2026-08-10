@@ -463,6 +463,39 @@ Log to the ledger / `audit/oversight-log.jsonl`: whether a CODEOWNERS file was f
 the matched CODEOWNERS-human-owned paths (may be empty), and which check produced the
 verdict. This gate only ever ADDS a human gate; it never removes one.
 
+### Pre-matrix protected-surface gate (#1325 — run BEFORE applying the matrix, every cycle)
+
+Call `touches_protected_surface(changed_files, repo_root)` from
+`scripts/automation/lib/merge_authority.py` directly, on **every cycle this PR is
+reviewed** — never skip this call because a prior cycle already reached a
+conclusion, and never write "Auto-merging" (or any other decision) from memory of
+what an earlier comment on this PR said. A prior cycle's narrative is not a
+substitute for calling this function fresh; the printed decision must come from
+this call and (if it returns `False`) `decide_merge_authority()`, not from
+recollection.
+
+- If it returns **True** → check for a verified human approval from
+  `HUMAN_REVIEWER` on the current head SHA (`has_human_approval(reviews,
+  human_reviewer, head_sha)` — same function `decide_merge_authority()` uses
+  internally, #589/#741). No such approval → the decision for this cycle
+  **is HUMAN_REQUIRED**; do not self-approve and do not merge, regardless of
+  risk tier or any other input. Post the §8.2 escalation comment naming the
+  matched protected-surface globs. A verified approval on the current head SHA
+  → authorization is satisfied; proceed to the matrix (which will re-derive the
+  same result via its own internal call — this is a deliberate redundant check,
+  not dead code: it is what makes "Auto-merge" unreachable for a protected-surface
+  diff when this pre-check is skipped in error).
+- This is additive to the CODEOWNERS gate above: if both gates fire, emit a
+  single HUMAN_REQUIRED verdict, not two.
+- If it returns **False** → proceed to the matrix below unchanged.
+
+This gate exists because #1325 found a cycle where the overseer re-reviewed a
+PR that a prior cycle had already flagged HUMAN_REQUIRED for touching a
+protected surface, did not re-run this check, and printed "Auto-merging" from
+narrative memory of the PR instead. Branch protection caught it that time; this
+gate makes the failure mode structurally unreachable rather than relying on a
+second independent layer to catch it after the fact.
+
 | Risk tier | Security-relevant | Protected surface | Oversight verdict | Gate detected | Decision |
 |---|---|---|---|---|---|
 | ≤ OVERSEER_CEILING | No | No | PROCEED | Yes | **AUTO_MERGE** |
