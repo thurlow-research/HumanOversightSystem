@@ -1,0 +1,1 @@
+{"composite_score":1.0,"decision":"HUMAN_REQUIRED","event":"pr-review","linked_issue":1323,"pr":1324,"reason":"protected-surface touch (scripts/framework/**) plus validator fail-closed (0/4 dimensions produced signal for non-code .stamp artifact); content independently verified correct","tier":"CRITICAL","timestamp":"2026-08-10T13:08:55Z"}
