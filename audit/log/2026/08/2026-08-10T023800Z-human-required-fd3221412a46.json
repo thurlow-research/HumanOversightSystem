@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"human-required","paths":[".claude/agents/overseer.md",".claude/agents/worker.md","CLAUDE.md","bootstrap/query_issues.sh"],"pr":1321,"reason":"codeowners-protected-surface"}
