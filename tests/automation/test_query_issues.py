@@ -74,7 +74,7 @@ emit() {
 case "$PATH_ARG" in
     */milestones\?*)
         [[ "${GH_FAIL_MILESTONES:-}" == "1" ]] && exit 1
-        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support"},{"number":11,"title":"v0.7.0 — Quality"},{"number":12,"title":"v0.6.1 — patch"}]'
+        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support","state":"open"},{"number":11,"title":"v0.7.0 — Quality","state":"open"},{"number":12,"title":"v0.6.1 — patch","state":"closed"}]'
         ;;
     */issues/*/comments\?*)
         [[ "${GH_FAIL_COMMENTS:-}" == "1" ]] && exit 1
@@ -305,6 +305,35 @@ def test_assignable_users_lists_logins(h):
     assert result.returncode == 0, result.stderr
     assert "octocat" in result.stdout.splitlines()
     assert "monalisa" in result.stdout.splitlines()
+
+
+# --------------------------------------------------------------------------- #
+# --list-milestones
+# --------------------------------------------------------------------------- #
+
+
+def test_list_milestones_prints_number_title_state(h):
+    result = h.run(["--app", "worker", "--list-milestones"])
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.strip().splitlines()
+    assert "#10 v0.6.0 — Astro & JS Support [open]" in lines
+    assert "#11 v0.7.0 — Quality [open]" in lines
+    assert "#12 v0.6.1 — patch [closed]" in lines
+
+
+def test_list_milestones_failure_propagates(h):
+    result = h.run(
+        ["--app", "worker", "--list-milestones"],
+        env_overrides={"GH_FAIL_MILESTONES": "1"},
+    )
+    assert result.returncode != 0
+    assert "failed to list milestones" in result.stderr
+
+
+def test_list_milestones_mutually_exclusive_with_list(h):
+    result = h.run(["--app", "worker", "--list", "--list-milestones"])
+    assert result.returncode != 0
+    assert "exactly one of" in result.stderr
 
 
 # --------------------------------------------------------------------------- #

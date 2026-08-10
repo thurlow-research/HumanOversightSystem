@@ -284,13 +284,16 @@ command.
    other write scripts, never inline `--body <text>`); callers that want to
    preserve existing content read the current body first via `query_issues.sh
    --full` and compose the new version themselves (#1312). Reads (single/multiple issues,
-   milestone-scoped listings, PR-filtered, comments, assignable users) go
-   through `bootstrap/query_issues.sh --app <role> (--issue <n[,n,...]>
-   [--full] | --list [--milestone <prefix>|--milestone-less] [--label ...]
-   [--state ...] | --comments <n> | --assignable-users)` — never hand-rolled
-   `gh api` reads (#1175, #1192, #1204). `--full` (issue mode only) appends
-   the raw issue body after the summary line, so callers can grep it for a
-   `Decision:` block (#1277).
+   milestone-scoped listings, PR-filtered, comments, assignable users,
+   milestone listings) go through `bootstrap/query_issues.sh --app <role>
+   (--issue <n[,n,...]> [--full] | --list [--milestone <prefix>|--milestone-less]
+   [--label ...] [--state ...] | --comments <n> | --assignable-users |
+   --list-milestones)` — never hand-rolled `gh api` reads (#1175, #1192,
+   #1204). `--full` (issue mode only) appends the raw issue body after the
+   summary line, so callers can grep it for a `Decision:` block (#1277).
+   `--list-milestones` prints every milestone's exact number/title/state, so
+   a caller resolving a `--milestone` prefix can confirm the exact title
+   instead of inferring it from planning docs (#1314).
 6. **Write long text to a file, then pass the path.** This is what forces heredocs.
    Use `--body-file /tmp/claude/body.md`, never `--body "$(…)"`.
 7. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each

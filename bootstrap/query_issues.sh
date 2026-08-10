@@ -13,6 +13,13 @@
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments <N>
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --assignable-users
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list-milestones
+#
+# --list-milestones prints every milestone (open and closed) as
+# "#<number> <exact title> [<state>]", one per line — the same listing
+# resolve_milestone_id() already fetches internally to turn a --milestone
+# prefix into a numeric id, exposed here as its own read mode so a caller can
+# look up an exact title instead of inferring it (#1314).
 #
 # --full (--issue only) appends the raw issue body after the summary line, so
 # a caller can grep it for a `Decision:` block (#1277) without a hand-rolled
@@ -50,6 +57,7 @@ LABEL_FILTER=""
 STATE_FILTER=""
 COMMENTS_NUMBER=""
 ASSIGNABLE_USERS=0
+LIST_MILESTONES=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -63,7 +71,8 @@ while [[ $# -gt 0 ]]; do
         --state)            STATE_FILTER="$2"; shift 2 ;;
         --comments)         COMMENTS_NUMBER="$2"; shift 2 ;;
         --assignable-users) ASSIGNABLE_USERS=1; shift ;;
-        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users)" ;;
+        --list-milestones)  LIST_MILESTONES=1; shift ;;
+        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users | --list-milestones)" ;;
     esac
 done
 
@@ -78,7 +87,8 @@ MODE_COUNT=0
 [[ "$LIST_MODE" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ -n "$COMMENTS_NUMBER" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$ASSIGNABLE_USERS" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
-[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --comments, --assignable-users is required"
+[[ "$LIST_MILESTONES" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
+[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --comments, --assignable-users, --list-milestones is required"
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
     err "--milestone and --milestone-less are mutually exclusive"
@@ -175,6 +185,11 @@ elif [[ -n "$COMMENTS_NUMBER" ]]; then
 elif [[ "$ASSIGNABLE_USERS" -eq 1 ]]; then
     gh api "repos/${REPO_SLUG}/assignees?per_page=100" --jq '.[].login' \
         || fail "failed to list assignable users"
+
+elif [[ "$LIST_MILESTONES" -eq 1 ]]; then
+    gh api "repos/${REPO_SLUG}/milestones?state=all&per_page=100" --jq \
+        '.[] | "#\(.number) \(.title) [\(.state)]"' \
+        || fail "failed to list milestones"
 fi
 
 revoke_token
