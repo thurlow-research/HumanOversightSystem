@@ -110,7 +110,7 @@ This framework treats prompts — and their summaries — as first-class source 
 
 ```
 Prompt-Artifact: prompts/auth/middleware.md
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: HIGH
 ```
 
