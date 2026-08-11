@@ -404,6 +404,35 @@ For each PR found:
    review. This closes the #900 gap where a stale `APPROVED` review was posted
    against an explicit human directive to send the PR back.
 
+   **Duplicate-comment precheck (#1215, no-idempotency class)** — using the SAME
+   `comments` list and `head_committed_at` fetched above (do not re-fetch). A PR
+   that stays HUMAN_REQUIRED across multiple cron cycles (e.g. awaiting a human
+   decision) carries no new information on a cycle where nothing changed — same
+   head_sha, no new comments — yet without this precheck the overseer re-derives
+   and re-posts an identical full findings comment, and re-appends an identical
+   `human-required` audit event, every cycle until a human acts (same
+   no-idempotency class as #849; this is the concrete case from #1215's
+   reproduction on PR #1212 — two independently-written full review comments
+   ten minutes apart with nothing about the PR having changed).
+
+   Filter `comments` to those with `created_at` after `head_committed_at`
+   (`comments_since_push`). If `comments_since_push` is non-empty, let `latest`
+   be the most recent by `created_at`. If `latest.user.login == HOS_BOT_LOGIN`
+   AND `latest.body` contains the literal string `**Decision: HUMAN_REQUIRED**`
+   (the canonical header, §8.2) AND this cycle's `decide_merge_authority()`
+   result is also HUMAN_REQUIRED → **skip**: do not post a new findings comment
+   in step 6 below, and do not append a new `human-required` audit event this
+   cycle. Every other step-6 action for this PR still runs as normal — a fresh
+   human approval landing still triggers a merge next cycle per the
+   CRITICAL-tier rule below; this precheck only suppresses the redundant
+   comment/audit pair, never a merge decision.
+
+   If `comments_since_push` is empty (first review of this head), or `latest`
+   is not the overseer's own comment (something new happened since — a human
+   reply, a fresh review, another bot's notice), or this cycle's disposition is
+   not HUMAN_REQUIRED (e.g. a human approval flipped it to AUTO_MERGE) — this
+   precheck does not apply; post normally.
+
    **v0.4.0 rules (authorized by ScottThurlow 2026-06-19, #598/#599/#600):**
    - **LOW / MEDIUM / HIGH tier + all checks green** → AUTO_MERGE (overseer approves + merges autonomously; no human wait)
    - **CRITICAL tier** → HUMAN_REQUIRED path: add ScottThurlow as required reviewer (`POST /pulls/{n}/requested_reviewers`); do NOT approve or merge; merge on next cycle after his approval satisfies branch protection
@@ -417,8 +446,8 @@ For each PR found:
    which must open with the executive summary (§ Executive summary, below)
    using the disposition's mapped expected-action value:
    - **AUTO_MERGE** → (1) POST formal GitHub approval review (`{"event":"APPROVE","body":"Auto-approved by HOS overseer — tier within ceiling, all checks passed."}`) via `POST /repos/{o}/{r}/pulls/{n}/reviews` — this satisfies the branch protection 1-approver requirement; (2) immediately merge via `PUT /repos/{o}/{r}/pulls/{n}/merge` with `{"merge_method":"squash"}`. Both calls are required — approve without merging leaves the PR open. (3) Post the findings comment (via `bootstrap/post_comment.sh` — see "Posting comments" below), opening with the executive summary, Expected action `NO ACTION`. Log all actions to ledger. If merge fails, post a comment explaining the failure (`bootstrap/post_comment.sh`) and label `needs-human` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`).
-   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}` (no wrapper covers PR reviewer requests yet); do NOT approve; post the findings comment opening with the executive summary, Expected action `APPROVE`; on next cycle, if ScottThurlow has approved, merge immediately.
-   - **HUMAN_REQUIRED (other reasons)** → label `needs-human` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`); post §8.2 escalation comment (executive summary + problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision.
+   - **HUMAN_REQUIRED (CRITICAL tier)** → `POST /repos/{o}/{r}/pulls/{n}/requested_reviewers` with `{"reviewers":["ScottThurlow"]}` (no wrapper covers PR reviewer requests yet; idempotent — a repeat call against an already-requested reviewer is harmless, so run it every cycle regardless of the precheck below); do NOT approve; if ScottThurlow has approved, merge immediately (also unconditional — a fresh approval must never be missed because a stale precheck suppressed this cycle's comment). Posting the findings comment (executive summary, Expected action `APPROVE`) is subject to the #1215 duplicate-comment precheck above — skip it when the precheck fires.
+   - **HUMAN_REQUIRED (other reasons)** → label `needs-human` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`; idempotent, run every cycle). If the reason is a **human hold directive (#902)** and this overseer App has a standing `APPROVED` review on the PR, **dismiss it** (`PUT /repos/{o}/{r}/pulls/{n}/reviews/{review_id}/dismissals` with a short reason) so no bot approval stands against the human's bounce-back decision — also unconditional. Posting the §8.2 escalation comment (executive summary + problem + options + recommendation) as a resolvable review thread (`bootstrap/post_review_thread.sh` — #1207, see "Posting comments" below) is subject to the #1215 duplicate-comment precheck above — skip it when the precheck fires.
    - **PROPOSE_ONLY** → gate not yet detected (DEP[#152-followup]). Leave PR open; post a comment explaining the gate is not registered (`bootstrap/post_comment.sh`), opening with the executive summary, Expected action `NO ACTION`. Label `needs-ai` (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-ai --app overseer`).
 6b. **Batch merge serialization (dismiss_stale_reviews guard):** When merging multiple PRs in one cycle against the same base branch, merge them ONE AT A TIME and re-check each PR's approval status before each merge. `dismiss_stale_reviews_on_push: true` dismisses sibling PR approvals when any PR merges (because the base branch advances). Protocol:
     1. Sort candidate PRs by creation date (oldest first).
@@ -567,15 +596,27 @@ more required elements, but only for HUMAN_REQUIRED escalations.
 
 ## Escalation format (§8.2 — required for every HUMAN_REQUIRED)
 
-Every `needs-human` comment carries the executive summary above, then these
-five additional elements, in order:
+Every `needs-human` comment carries the executive summary above, immediately
+followed by the canonical decision header on its own line:
+
+```markdown
+**Decision: HUMAN_REQUIRED**
+```
+
+Write this verbatim on every HUMAN_REQUIRED comment, regardless of which app
+opened the PR — it is the marker the #761 `prior_overseer_decision` guard and
+the #1215 duplicate-comment precheck (Step 1, below) both scan for. This is
+broader than the SPEC-378 structured-rationale fields below, which apply only
+to PRs the overseer itself opened.
+
+Then these five additional elements, in order:
 1. Problem + risk + background (assume the human has no prior context)
 2. Options with pros/cons
 3. Recommendation + justification
 4. Token estimate + blast-radius summary
 5. Default-deny deadline if applicable
 
-A comment missing any element — including the executive summary — is a malformed escalation — rewrite it before posting.
+A comment missing any element — including the executive summary or the decision header — is a malformed escalation — rewrite it before posting.
 
 ### Structured rationale (SPEC-378 R1.1)
 
@@ -594,7 +635,7 @@ Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review find
 
 Both non-merge dispositions append an audit event ONLY after the comment is confirmed posted, and finalize ONLY after the audit append succeeds.
 
-- **HUMAN_REQUIRED:** (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
+- **HUMAN_REQUIRED:** if the #1215 duplicate-comment precheck above suppressed this cycle's comment, skip straight to (4). Otherwise: (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
 - **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — assign, `needs-ai`, convert-to-draft.
 
 If the comment post fails: **do not finalize** — do not append the audit event, do not treat the disposition as recorded; halt and print the failure. If the audit append fails: **do not finalize**; halt and print the failure. The audit log is append-only and committed; a missing entry is an audit-trail gap. The overseer must never silently continue past a comment-post or audit-append failure.
