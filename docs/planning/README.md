@@ -7,7 +7,7 @@ Forward-looking release plans for HOS development. Each file captures the theme,
 | [v0.4.0.md](v0.4.0.md) | v0.4.0 — Autonomous Worker | Make the loop truly autonomous | ✅ **Shipped** 2026-06-20 |
 | [v0.4.1.md](v0.4.1.md) | v0.4.1 — Operational Polish | Fix what broke, stabilize what shipped | ✅ **Shipped** |
 | [v0.5.0.md](v0.5.0.md) | v0.5.0 — Governance, Accuracy & Usability | Tighten governance, improve accuracy, fix usability gaps | ✅ **Shipped** 2026-07-13 |
-| v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | 🚫 **Drained, closed to new triage** (#1173) |
+| v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | ☠️ **Dead — no further updates.** Closed to new triage (#1173); its last remaining issue (#1215) was moved to v0.6.0 on 2026-08-10, leaving it with zero open issues. Do not re-target work here. |
 | [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | 🔄 **Active** (accelerated for tutelare.ai) |
 | [v0.7.0.md](v0.7.0.md) | v0.7.0 — Quality | Measure and improve quality over time | Planning — see the v0.7.x line below |
 | [v0.8.0.md](v0.8.0.md) | v0.8.0 — Agility | Fully embrace agile | Planning (early) |
@@ -52,7 +52,7 @@ When a new issue is filed, triage it to the appropriate release:
 | **v0.8.0** | Agility improvement — reduces friction, improves throughput, pull-system flow, developer experience. Not blocking anything today. |
 | **Backlog** | Nice-to-have with no clear theme fit, or requires human design decision before scoping. |
 
-**v0.5.1 is drained and closed to new triage (#1173).** No decision rule above may select it — a bug or governance gap found today, even one that traces back to shipped v0.5.0 code, routes to v0.6.0 (the active line) unless a human explicitly authorizes a maintenance-branch fix.
+**v0.5.1 is dead — closed to new triage and receiving no further updates (#1173).** No decision rule above may select it — a bug or governance gap found today, even one that traces back to shipped v0.5.0 code, routes to v0.6.0 (the active line) unless a human explicitly authorizes a maintenance-branch fix. This isn't just a triage preference: until #1173's worker milestone-eligibility fix lands (`milestone == active` → `milestone <= active`), any issue left in v0.5.1 is permanently unreachable to the autonomous worker the moment the active milestone moves past it — exactly what stranded #1166, #1155, and (until 2026-08-10) #1215. Treat v0.5.1 as closed for good; if it ever needs one more fix, that requires explicit human authorization of a maintenance-branch exception, not a milestone re-open.
 
 **Decision rule:** Astro/JS stack work or a governance/security gap in the active line → v0.6.0. Testability, coverage scope, or shell→Python logic migration → v0.7.4. Quality measurement or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
 
