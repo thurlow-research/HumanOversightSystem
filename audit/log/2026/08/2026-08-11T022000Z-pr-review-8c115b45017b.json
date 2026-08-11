@@ -1,0 +1,1 @@
+{"author":"hos-worker-hos[bot]","decision":"HUMAN_REQUIRED","event":"pr-review","head_sha":"d2570aa4b983de99c7282d6d7bfdbf5990b3aab1","labels_added":[],"oversight_verdict":"PROCEED","pr":1329,"risk_tier":"MEDIUM","size":"9 files +113/-14","timestamp":"2026-08-11T02:20:00Z","validators":"pass (composite 0.4575, tier MEDIUM)"}
