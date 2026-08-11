@@ -343,7 +343,11 @@ The split is load-bearing: `hos-worker-hos[bot]` literally cannot approve its ow
 
 ### Git Commit Trailer Convention
 
-For every commit containing AI-generated code, append trailers:
+For every commit containing AI-generated code, append trailers. `AI-Model:` must be the
+model ID actually running this session — your own system context states it directly (e.g.
+"You are powered by the model named Sonnet 5. The exact model ID is claude-sonnet-5").
+Substitute that value; never copy the example below literally — it is a placeholder, not a
+value to reuse:
 
 ```
 git commit -m "Add auth middleware
@@ -351,7 +355,7 @@ git commit -m "Add auth middleware
 Implements JWT validation with refresh token rotation.
 
 Prompt-Artifact: prompts/auth/middleware.md
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: HIGH
 Supervised-by: ScottThurlow"
 ```
@@ -359,7 +363,7 @@ Supervised-by: ScottThurlow"
 For LOW risk changes with no artifact file:
 ```
 Prompt-Artifact: none (LOW risk)
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: LOW
 Supervised-by: ScottThurlow
 ```

@@ -451,7 +451,7 @@ Implements three-gate booking creation: horizon check, one-active check,
 and GiST exclusion constraint for overlap safety.
 
 Prompt-Artifact: prompts/parking/views.md
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: CRITICAL"
 ```
 

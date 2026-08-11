@@ -122,7 +122,7 @@ bash bootstrap/submit_pr.sh --title <title> --body-file <path> --base main --hea
   | | |
   |---|---|
   | **Submitted by** | `hos-worker-hos[bot]` |
-  | **Model** | `claude-sonnet-4-6` |
+  | **Model** | `<actual-model-id-running-this-session>` |
   | **Submitted** | YYYY-MM-DD |
   | **Human review required** | yes — overseer reviews; human authorization required for MEDIUM+ risk |
   ```
@@ -130,11 +130,13 @@ bash bootstrap/submit_pr.sh --title <title> --body-file <path> --base main --hea
 **Commit trailers (every commit with AI-generated code, no exceptions):**
 ```
 Prompt-Artifact: none (LOW risk)
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: LOW
 Supervised-by: ScottThurlow
 ```
-Adjust `AI-Risk` to the actual risk tier. For MEDIUM+, set `Prompt-Artifact` to the artifact path.
+Replace `AI-Model` and `Model` above with the model ID actually running this session (your
+own system context states it) — never copy the placeholder literally. Adjust `AI-Risk` to
+the actual risk tier. For MEDIUM+, set `Prompt-Artifact` to the artifact path.
 
 IDENTITY GUARD: `[ "$HOS_BOT_LOGIN" = "hos-worker-hos[bot]" ] || exit 1`
 
