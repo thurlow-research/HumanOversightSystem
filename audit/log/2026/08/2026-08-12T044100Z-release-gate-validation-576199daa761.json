@@ -1,0 +1,1 @@
+{"decision":"ESCALATE","event":"release-gate-validation","flags":["no_step_artifacts_discovered: 0 of 18 milestone build steps (S1-S18) have a signoffs/validators/step{N} artifact tied to their merged PR"],"release":"v0.6.0 — Astro & JS Support","steps_checked":[],"timestamp":"2026-08-12T04:41:00Z"}
