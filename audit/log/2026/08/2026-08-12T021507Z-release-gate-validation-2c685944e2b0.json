@@ -1,0 +1,1 @@
+{"decision":"ESCALATE","event":"release-gate-validation","flags":["structural_gate_mismatch","incomplete_register step1 role=code-review","incomplete_register step1 role=security","incomplete_register step1 role=privacy"],"release":"v0.6.0 — Astro & JS Support","steps_checked":[1],"timestamp":"2026-08-12T02:15:07Z"}
