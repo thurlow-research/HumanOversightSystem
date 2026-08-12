@@ -8,7 +8,7 @@ Forward-looking release plans for HOS development. Each file captures the theme,
 | [v0.4.1.md](v0.4.1.md) | v0.4.1 — Operational Polish | Fix what broke, stabilize what shipped | ✅ **Shipped** |
 | [v0.5.0.md](v0.5.0.md) | v0.5.0 — Governance, Accuracy & Usability | Tighten governance, improve accuracy, fix usability gaps | ✅ **Shipped** 2026-07-13 |
 | v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | ☠️ **Dead — no further updates.** Closed to new triage (#1173); its last remaining issue (#1215) was moved to v0.6.0 on 2026-08-10, leaving it with zero open issues. Do not re-target work here. |
-| [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | 🔄 **Active** (accelerated for tutelare.ai) |
+| [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | ✅ **Shipped** 2026-08-12 |
 | [v0.7.0.md](v0.7.0.md) | v0.7.0 — Quality | Measure and improve quality over time | Planning — see the v0.7.x line below |
 | [v0.8.0.md](v0.8.0.md) | v0.8.0 — Agility | Fully embrace agile | Planning (early) |
 
