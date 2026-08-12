@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"pr-review","pr":1345,"reason":"NG3b release-related: title matches release-title regex and docs/releases/v0.6.0.md matches protected release-artifact glob; content reviewed, issue references verified accurate, no substantive findings.","risk_tier":"LOW","timestamp":"2026-08-12T211748Z"}
