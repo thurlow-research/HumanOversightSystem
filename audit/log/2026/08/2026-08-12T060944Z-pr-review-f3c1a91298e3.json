@@ -1,0 +1,1 @@
+{"decision":"AUTO_MERGE","event":"pr-review","merged_by":"app/hos-overseer-hos","pr":1341,"reason":"Additive audit-log-only data commit (5 subagent-model-resolved records), no code touched, not protected/security-relevant, validator artifact not stale (non-code tail commit), all status checks green.","risk_tier":"LOW","timestamp":"2026-08-12T060944Z"}
