@@ -154,14 +154,15 @@ own say-so. See `research/findings/actor-identity-vs-determination-honesty.md`.
 gh label create release-request    --color B60205 \
   --description "Requests the worker prepare a release for human authorization"
 gh label create release-authorized --color 0E8A16 \
-  --description "Human authorized the release — paired with re-assignment to the worker"
+  --description "Human authorized the release — paired with self-assignment by the same CODEOWNER"
 ```
 
 These labels are part of the NG3b human-approval gate. `release-request` marks
 a valid release-preparation request; `release-authorized` is one of the three
-required authorization signals (add this label + remove `needs-human` + re-assign
-to the worker, ALL by the same human CODEOWNER). See `worker.md` Release
-authorization protocol.
+required authorization signals (add this label + remove `needs-human` + self-assign,
+ALL by the same human CODEOWNER — GitHub Apps cannot be assigned to issues on this
+repo, #1347, so the third signal is the CODEOWNER assigning the issue to
+themselves, not to the worker). See `worker.md` Release authorization protocol.
 
 ---
 

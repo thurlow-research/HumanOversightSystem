@@ -1065,15 +1065,14 @@ def record_pr_bounce(
     reason_category: str,
     summary: str,
     failures: list[str],
-    assignee: str = "hos-worker-hos[bot]",
     label: str = "needs-ai",
     repo_root: str = ".",
 ) -> BounceResult:
     """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
 
     (1) post the bounce comment, (2) confirmed via post_comment's read-back,
-    (3) append the `pr-bounced` audit event, (4) finalize — assign, label,
-    convert to draft. Steps 1-3 raise on failure (GitHubError / audit-write
+    (3) append the `pr-bounced` audit event, (4) finalize — label, convert to
+    draft. Steps 1-3 raise on failure (GitHubError / audit-write
     error) and halt before any finalize action runs, per overseer.md's
     "Halt-on-failure ordering for non-merge dispositions" — a bounce must
     never be finalized without a confirmed comment and a committed audit
@@ -1098,7 +1097,7 @@ def record_pr_bounce(
         "cid": cid,
         "bounce_number": bounce_number,
         "failures": list(failures),
-        "assigned_to": assignee,
+        "assigned_to": None,
         "repo": f"{owner}/{repo}",
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reason_category": reason_category,
@@ -1108,14 +1107,6 @@ def record_pr_bounce(
     audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)  # raises on hash collision
 
     finalize_errors: list[str] = []
-    try:
-        _run_gh(
-            [f"/repos/{owner}/{repo}/issues/{pr_number}/assignees", "--method", "POST"],
-            stdin_json={"assignees": [assignee]},
-        )
-    except GitHubError as exc:
-        finalize_errors.append(f"assign failed: {exc}")
-
     try:
         _run_gh(
             [f"/repos/{owner}/{repo}/issues/{pr_number}/labels", "--method", "POST"],

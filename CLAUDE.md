@@ -191,6 +191,7 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 
 - When writing or editing scripts, follow the conventions in `bootstrap/setup_clis.sh` (colours, idempotency, platform detection).
 - Agent files in `.claude/agents/` follow the contract in `contract/OVERSIGHT-CONTRACT.md`. CORE and PACK regions are HOS-owned — consumer project logic belongs only in PROJECT regions. Stack depth belongs in `packs/<name>/`, not in the base agent files.
+- **Agent-definition edits (HOS source repo only).** In this repo `.claude/agents/*.md` are the framework's *source artifacts*, not installed governance copies. Governance-artifact edits to them are authored **directly by the top-level worker/human-proxy session**, never delegated to the `coder` subagent — `coder`'s CORE prohibition on writing agent definition files stands unchanged and correctly refuses (that prohibition is defence-in-depth for *consumer* projects, where no protected-surface gate exists on the installed copies; do not add a self-hosted-repo carve-out to it, since a shipped CORE rule must not carry a self-assessed exemption a consumer's coder could reason itself into). The control on these edits is the protected-surface human-approval gate (`scripts/framework/protected_surfaces.txt` → CODEOWNERS — `.claude/agents/**` is its first entry), not the authoring agent (#1347).
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.
 

@@ -10,6 +10,7 @@ Covers the three functions overseer.md's step 4a names but that never existed:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -259,11 +260,17 @@ class TestRecordPrBounce:
         assert "**Summary:** missing security sign-off" in posted_body
         assert "register-missing-role:security" in posted_body
         mock_draft.assert_called_once_with(OWNER, REPO, 123)
-        # assignee + label calls went through _run_gh
-        assert mock_run_gh.call_count == 2
+        # label call went through _run_gh
+        assert mock_run_gh.call_count == 1
+        assert "/labels" in mock_run_gh.call_args[0][0][0]
 
         # audit event was committed and is counted by bounce_count
         assert bounce_count("cid-1", repo_root=str(tmp_path)) == 1
+
+        audit_event = json.loads(
+            (tmp_path / "audit" / "log" / result.audit_relpath).read_text()
+        )
+        assert audit_event["assigned_to"] is None
 
     def test_second_bounce_increments_bounce_number(self, tmp_path):
         with patch(
@@ -307,7 +314,7 @@ class TestRecordPrBounce:
             return_value={"id": 1, "html_url": "https://example/pr/123#comment-1"},
         ), patch(
             "scripts.automation.lib.merge_authority._run_gh",
-            side_effect=GitHubError("assign failed"),
+            side_effect=GitHubError("label failed"),
         ), patch(
             "scripts.automation.lib.merge_authority._convert_pr_to_draft",
             side_effect=GitHubError("draft failed"),
@@ -319,4 +326,21 @@ class TestRecordPrBounce:
             )
         # Audit event still committed -- only finalize sub-steps failed.
         assert bounce_count("cid-1", repo_root=str(tmp_path)) == 1
-        assert len(result.finalize_errors) == 3  # assign, label, draft all failed
+        assert len(result.finalize_errors) == 2  # label, draft failed
+
+    def test_no_assignee_api_call_is_ever_made(self, tmp_path):
+        with patch(
+            "scripts.automation.lib.merge_authority.post_comment",
+            return_value={"id": 1, "html_url": "https://example/pr/123#comment-1"},
+        ), patch(
+            "scripts.automation.lib.merge_authority._run_gh", return_value={}
+        ) as mock_run_gh, patch(
+            "scripts.automation.lib.merge_authority._convert_pr_to_draft"
+        ):
+            record_pr_bounce(
+                OWNER, REPO, 123,
+                cid="cid-1", reason_category="REGISTER_GAP", summary="x",
+                failures=["register-missing"], repo_root=str(tmp_path),
+            )
+        for call in mock_run_gh.call_args_list:
+            assert "/assignees" not in call[0][0][0]

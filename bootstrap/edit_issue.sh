@@ -13,9 +13,17 @@
 #   bash bootstrap/edit_issue.sh --number <N> --app <worker|overseer|human> \
 #     [--add-label <a,b>] [--remove-label <a,b>] \
 #     [--milestone <title-prefix>|none] [--title <text>] \
-#     [--state open|closed] [--assignee <user,user>] [--body-file <path>]
+#     [--state open|closed] [--assignee <user,user>] \
+#     [--set-assignee <user,user|none>] [--body-file <path>]
 #
 # At least one edit flag is required.
+#
+# --assignee adds to the existing assignee list (POST /assignees,
+# non-destructive). --set-assignee wholesale-REPLACES the assignee list via
+# the same PATCH request as title/state/milestone/body (GitHub's "Update an
+# issue" endpoint accepts an `assignees` array that replaces, not appends);
+# pass --set-assignee none to clear all assignees. The two flags are
+# mutually exclusive — pick add-only or replace-wholesale, not both.
 #
 # Milestone titles in this repo are full strings with an em dash (e.g.
 # "v0.6.0 — Astro & JS Support"), so they are matched by PREFIX and resolved
@@ -59,6 +67,7 @@ MILESTONE_ARG=""
 TITLE=""
 STATE=""
 ASSIGNEES=""
+SET_ASSIGNEES=""
 BODY_FILE=""
 
 while [[ $# -gt 0 ]]; do
@@ -71,9 +80,10 @@ while [[ $# -gt 0 ]]; do
         --title)        TITLE="$2"; shift 2 ;;
         --state)        STATE="$2"; shift 2 ;;
         --assignee)     ASSIGNEES="$2"; shift 2 ;;
+        --set-assignee) SET_ASSIGNEES="$2"; shift 2 ;;
         --body-file)    BODY_FILE="$2"; shift 2 ;;
         --body)         err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
-        *) err "Usage: $0 --number <N> --app <worker|overseer|human> [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>|none] [--title <text>] [--state open|closed] [--assignee <user,user>] [--body-file <path>]" ;;
+        *) err "Usage: $0 --number <N> --app <worker|overseer|human> [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>|none] [--title <text>] [--state open|closed] [--assignee <user,user>] [--set-assignee <user,user|none>] [--body-file <path>]" ;;
     esac
 done
 
@@ -92,8 +102,11 @@ if [[ -n "$STATE" ]]; then
         *) err "--state must be 'open' or 'closed'" ;;
     esac
 fi
-if [[ -z "$ADD_LABELS$REMOVE_LABELS$MILESTONE_ARG$TITLE$STATE$ASSIGNEES$BODY_FILE" ]]; then
-    err "at least one edit flag is required (--add-label, --remove-label, --milestone, --title, --state, --assignee, --body-file)"
+if [[ -z "$ADD_LABELS$REMOVE_LABELS$MILESTONE_ARG$TITLE$STATE$ASSIGNEES$SET_ASSIGNEES$BODY_FILE" ]]; then
+    err "at least one edit flag is required (--add-label, --remove-label, --milestone, --title, --state, --assignee, --set-assignee, --body-file)"
+fi
+if [[ -n "$ASSIGNEES" && -n "$SET_ASSIGNEES" ]]; then
+    err "--assignee and --set-assignee are mutually exclusive (add-only vs wholesale-replace)"
 fi
 if [[ -n "$BODY_FILE" ]]; then
     [[ -f "$BODY_FILE" ]] || err "--body-file not found: $BODY_FILE"
@@ -165,6 +178,13 @@ if [[ -n "$MILESTONE_ARG" ]]; then
     fi
 fi
 [[ -n "$BODY_FILE" ]] && PATCH_JSON="$(jq -c --rawfile v "$BODY_FILE" '. + {body: $v}' <<<"$PATCH_JSON")"
+if [[ -n "$SET_ASSIGNEES" ]]; then
+    if [[ "$SET_ASSIGNEES" == "none" ]]; then
+        PATCH_JSON="$(jq -c '. + {assignees: []}' <<<"$PATCH_JSON")"
+    else
+        PATCH_JSON="$(jq -c --arg v "$SET_ASSIGNEES" '. + {assignees: ($v | split(","))}' <<<"$PATCH_JSON")"
+    fi
+fi
 if [[ "$PATCH_JSON" != '{}' ]]; then
     printf '%s' "$PATCH_JSON" | gh api --method PATCH "repos/${REPO_SLUG}/issues/${NUMBER}" --input - >/dev/null \
         || fail "failed to update issue #${NUMBER} (title/state/milestone/body)"
