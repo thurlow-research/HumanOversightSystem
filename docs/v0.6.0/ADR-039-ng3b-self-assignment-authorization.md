@@ -68,7 +68,7 @@ Implemented in the same PR as this ADR (issue #1347):
 
 | File | Change |
 |---|---|
-| `.claude/agents/worker.md` | R1 condition 3 → issue state `open` (assignee removed as a trigger condition); new R0 assignee-write ban (M2); R4 idempotency keyed on `Release candidate SHA`, new step 0 anchor reset (M3), steps 6–7 and the "How to authorize this release" block reworded for self-assignment; R5 replaced in full (current-state conditions, M1 identity-triple check on the authorizing event, three-signal actor check, M4 AWAITING/VIOLATION split with one-time diagnostic comment); R3/R4/R6 failure paths no longer write the assignee field; `ng3b-violation-attempt` `failed_check` enum and example updated; "Re-entry after a bounce" section and the generic `needs-human` "How to authorize" footer no longer reference bot-assignment; script-inventory table documents the new `edit_issue.sh --set-assignee` flag |
+| `.claude/agents/worker.md` | R1 condition 3 → issue state `open` (assignee removed as a trigger condition); new R0 assignee-write ban (M2); R4 idempotency keyed on `Release candidate SHA`, new step 0 anchor reset (M3), steps 6–7 and the "How to authorize this release" block reworded for self-assignment; R5 replaced in full (current-state conditions, M1 identity-triple check on the authorizing event, three-signal actor check, M4 AWAITING/VIOLATION split with one-time diagnostic comment); R3/R4/R6 failure paths no longer write the assignee field; `ng3b-violation-attempt` `failed_check` enum and example updated; "Re-entry after a bounce" section and the generic `needs-human` "How to authorize" footer no longer reference bot-assignment; script-inventory table documents the new `edit_issue.sh --set-assignee` flag; **Amendment 1** — Step 0.5 in the loop-start precheck, new R1.9 (idempotency-before-R2 precedence + directive-aware R2 deferral), R4 step 0b applies `needs-human`, R5 absent-event→AWAITING split, diagnostic next-actor line |
 | `.claude/agents/overseer.md` | Bounce-protocol descriptions (`record_pr_bounce()` mentions, the finalize-step list, the canonical-labels table, the `edit_issue.sh` inventory row) no longer describe an assign-to-bot step |
 | `CLAUDE.md` | New clause in "Working in this repo" recording §3 |
 | `contract/OVERSIGHT-CONTRACT.md` | `pr-bounced` description and `assigned_to` example updated to reflect the field is always `null` (retained for schema stability) |
@@ -76,9 +76,54 @@ Implemented in the same PR as this ADR (issue #1347):
 | `scripts/automation/lib/merge_authority.py` | `record_pr_bounce()` — removed the doomed `/assignees` POST call, its `try/except`, and the `assignee` parameter; `assigned_to` is now always `None` in the emitted event |
 | `bootstrap/edit_issue.sh` | New `--set-assignee <user\|none>` mode (`PATCH` with a replacing `assignees` array) alongside the existing add-only `--assignee`; required by R4 step 0 |
 | `tests/automation/test_bounce_gate.py`, `tests/automation/test_edit_issue.py` | Updated/added to match |
+| `bin/hos-cron` | **Amendment 1** — `_build_context()` gains a worker-only `### Open release requests (NG3b)` section, emitted before the "New work directive" section; one `issues?state=open&labels=release-request` call; fail-open |
+| `bootstrap/worker-cron-prompt.md` | **Amendment 1** — new LOOP "Step 0.5 — Open release requests" between Step 0 (triage) and Step 1 (check PRs), with context-absent fallback and the R2-deferral rule |
+| `docs/OVERSIGHT-RUNBOOK.md` | **Amendment 1** — "Intervening" §1 gains the release-request carve-out: `needs-human` is worker-applied and its removal is an authorization signal |
 
 **Verification obligation — blocking on declaring #1338 unblocked, not on merging this PR.** Before relying on this protocol for an actual release cut, the implementation must capture a live `assigned` event payload from a real human self-assignment on this repo and confirm `actor`/`assignee`/`assigner` resolve as R5 conditions 4–6 expect, and append the finding to `research/findings/api-field-shape-verification.md`. A mocked test cannot catch a wrong field name — it will faithfully mock the wrong field. That is exactly how this repo reached #1347's bug in the first place. This will happen naturally the first time a human authorizes a release under the new protocol (e.g. re-authorizing #1338); no separate drill is required, but the finding must be recorded when it does.
 
 **Affected sign-offs.** Stand unchanged: NG3b's R0 identity guard, R1.5 creator check, R2 tier matrix, R4 HEAD-SHA binding, R6 command-precision check — none of these are touched by this ADR. Also stand: prior approvals of the bounce mechanism's finalize *behavior* (posting the comment, applying `needs-ai`, converting to draft) — the assign call never succeeded, so no reviewed behavior actually changes there, only a dead call and a false audit field are removed. Orphaned by this ADR, requiring re-review against it if revisited: the original R1/R4/R5 assignment-signal design.
 
 **On #1338 specifically:** at the time this ADR was written, #1338 carried `release-request`, `release-authorized`, and `needs-human`, with no assignees. Under the revised R5 it reads AWAITING on two counts (`needs-human` still present; no self-assignment event). Once this fix lands, the next worker cycle re-runs R2–R4 for the current HEAD and posts a fresh authorization request; #1338 does not need to be reset or recreated.
+
+---
+
+## 5. Amendment 1 — protocol wiring and happy-path gaps (2026-08-13)
+
+These were gaps in this ADR's original scope: §1–4 specified the protocol's
+*semantics* correctly but did not specify how a release request reaches the
+worker on a cron cycle, nor did they trace the happy path end-to-end through
+R5's three-signal check. Both are corrected here rather than in a new ADR,
+since neither reverses a §1 decision — they complete it. Raised in PR #1348
+review (human CODEOWNER, CHANGES_REQUESTED: "This needs a pass through pm,
+architect, and tech design agents... docs need updating").
+
+| # | Gap | Ruling |
+|---|---|---|
+| A1.1 | No trigger — nothing caused the worker to evaluate an open release request on a cycle. A release-request issue never carries `needs-ai`, so it was invisible to the worker's per-cycle work-selection logic (`bootstrap/worker-cron-prompt.md` Step 2 / `next_candidates.jq`), and §4's "the next worker cycle re-runs R2–R4" claim about #1338 was not actually wired to anything. | `bin/hos-cron` `_build_context()` emits a worker-only `### Open release requests (NG3b)` section before the "New work directive"; both `worker-cron-prompt.md` and `worker.md` gain a Step 0.5 that runs NG3b from R1 for each listed issue, **regardless of the New work directive** — NG3b is a standing gate, not new work. Fail-open on the context fetch: omission delays a release but can never authorize one (R5 reads all state live), so failing open costs latency, not safety. |
+| A1.2 | R2 ran unconditionally every cycle, re-running the full release validation suite while waiting on a human. | New R1.9 check 1: R4's existing SHA-keyed idempotency condition is evaluated **before** R2; if satisfied, skip straight to R5 (read-only). R1.9 must change no issue state — re-applying `needs-human` there would erase authorization signal 2. |
+| A1.3 | A cycle owing a PR fix (`needs-fix`) could instead be consumed by a release validation run. | New R1.9 check 2: `NEW WORK: BLOCKED` / reason `needs-fix` defers R2 for that cycle (stdout log only, no comment, no label). `awaiting-merge` / `needs-attention` do not defer. R5 and R6 are never deferred — an already-authorized release is always verified and executed. |
+| A1.4 | **Bug.** On the happy path (validation passes first try) `needs-human` was never applied to the release-request issue, so no `unlabeled` event existed for R5's third signal; with the fail-closed "actor unresolvable → FAIL" rule this misfired `R5.6.3-label` — a false `ng3b-violation-attempt` — on a *legitimate* release. | Two-part, both required: (a) R4's all-pass path applies `needs-human` (new step 0b) after the step-0 anchor reset and before the results comment, fail-closed identically; (b) independently, "no `unlabeled` event exists at all" is AWAITING, not VIOLATION — `R5.6.3-label` fires only on a present-but-disqualified actor. The third signal is **not** made optional: (a) makes it unconditionally present in normal operation, (b) covers only the residual where (a)'s own write failed. `needs-human` does **not** become an R1 trigger condition — R1 stays label-authorization-agnostic. |
+| A1.5 | The `<!-- hos-ng3b-awaiting -->` diagnostic said what was missing but not whose move it was — the same "silently unsatisfiable, no signal to the human" failure class as #1347/#1338 itself, one layer down. | Its first line now names the next actor: `Waiting on you (@<CODEOWNER>)` when conditions 1–3 or 9 are outstanding; `Waiting on the worker` when the state is worker-side (HEAD advanced, R2 deferred, or the A1.4(b) residual). |
+
+**Affected sign-offs.** Stand unchanged: R0 identity guard, R1.5 creator check,
+R2 tier matrix, R4 HEAD-SHA binding, M1 identity-triple check, M2
+assignee-write ban, M3 anchor reset, R6 command-precision check — Amendment 1
+touches none of them, and A1.4 strengthens (never relaxes) the three-signal
+requirement. Re-review required: none — no code has yet been approved against
+the pre-Amendment R4/R5 happy path (the protocol has not executed a release
+since this ADR landed; #1338 is still unauthorized). The §4 verification
+obligation is unchanged and still blocking on declaring #1338 unblocked.
+
+**On #1338 specifically:** unchanged from §4, with one addition — the next
+cycle's R4 re-post now also (re-)applies `needs-human`, so the human's removal
+of it becomes a readable third signal. #1338 still needs no reset or
+recreation.
+
+**Deferred, not resolved here:** `R5.6.4` (HEAD-advanced) remains classified
+VIOLATION rather than AWAITING, even though it is a routine worker-side state
+(the worker merges its own PRs) — reclassifying it changes the violation
+taxonomy and is out of this amendment's scope; flagged for a future ruling.
+The reviewer's `needs-worker`/`needs-overseer` label-taxonomy question is a
+separate, larger initiative and is tracked in #1349 rather than folded into
+NG3b.

@@ -240,6 +240,25 @@ Check that `.claude/agents/<name>.md` exists for each. If any are missing:
 
 ---
 
+**Step 0.5 — Open release requests (NG3b standing gate) (#1347 Amendment 1):**
+
+Read the `### Open release requests (NG3b)` section in the "Pre-computed cycle
+context" block at the bottom of the cron prompt. For **each** issue listed there,
+run the Release authorization protocol below starting at **R1**. This runs on
+**every** cycle **regardless of the New work directive** computed for Step 1 —
+NG3b is a standing human-authorization gate, not new work, and a release request
+left unevaluated is a release stalled indefinitely (this is exactly how #1338 got
+stuck).
+
+- Section reads `None.` → nothing to do; continue to Step 1.
+- **Section absent** (fail-open context builder) → fall back to:
+  `bash bootstrap/query_issues.sh --app worker --list --label release-request --state open`.
+- After processing all listed release requests: continue to Step 1, **unless R6
+  executed a release this cycle** (attempted, success or failure) — in that case
+  STOP; do not pick up new work in a cycle that just moved the release tag.
+
+---
+
 **Step 1 — Check open PRs (#550, #551, #1198):**
 
 **Before picking any new work item, check the state of all open PRs you authored.**
@@ -470,7 +489,42 @@ Assignee state is deliberately NOT a trigger condition here — GitHub Apps cann
 be assignees at all (#1347), so "assigned to the bot" could never pass.
 Authorization is verified at R5, never at R1.
 
+`needs-human` presence or absence is likewise NOT an R1 trigger condition. R4
+applies `needs-human` as part of posting an authorization request and R5 reads
+its *removal* as one of the three signals — both are authorization concerns,
+evaluated at R4/R5 only. R1 stays assignee- and label-authorization-agnostic.
+
+### Step R1.9 — Pre-R2 checks (run in this order, before any validation suite)
+
+**1. Authorization-request idempotency — evaluate BEFORE R2.** Read the issue's
+comments (`bash bootstrap/query_issues.sh --app worker --comments <n>`). If a
+comment authored by `hos-worker-hos[bot]` contains `Authorization required:`
+**and** its `Release candidate SHA:` line equals the current `git rev-parse
+HEAD`, a live authorization request already exists for this HEAD: **skip R2, R3
+and R4 entirely and go straight to R5**, using that comment's `created_at` as
+`T_comment`. R5 is read-only and cheap; re-running the release validation suites
+on an unchanged HEAD, every cycle, for as long as the human takes to act, buys
+nothing. If no such comment exists — including the case where one exists but
+records a *different* SHA — fall through to check 2, then R2. This restates R4's
+existing idempotency condition; the only change is that it is now evaluated
+first, where R2 previously ran unconditionally every cycle (#1347 Amendment 1).
+
+**On this path, change nothing on the issue.** Do not re-apply `needs-human`, do
+not touch labels or assignees — the human may already have produced one or more
+of the three signals, and re-applying `needs-human` here would erase signal 2
+and deadlock the request.
+
+**2. Directive-aware R2 deferral (this cycle only).** If check 1 was NOT
+satisfied and the cycle's New work directive (Step 1) is `NEW WORK: BLOCKED`
+with reason `needs-fix`, defer R2 to a later cycle: log one line to stdout
+(`NG3b: R2 deferred for #<n> — directive needs-fix`), post **no** comment,
+change **no** labels, and move on. Reasons `awaiting-merge` and
+`needs-attention` do not defer — run R2 normally. **R5 and R6 are never
+deferred for any directive.**
+
 ### Step R2 — Run the validation gate
+
+Runs only when R1.9 check 1 was not satisfied and check 2 did not defer.
 
 Determine the release tier from the semver bump vs. the last tag
 (`git describe --tags --abbrev=0`):
@@ -513,6 +567,21 @@ authorization anchor). Never post two authorization comments for the same HEAD.
    consecutive failure, post an error comment, add `needs-human` (no
    assignment), and stop.
 
+0b. **Apply the `needs-human` label.**
+    `bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app worker`.
+    On a release-request issue this is **not** an escalation — it is the
+    authorization handle. R5's three-signal check reads the human's *removal* of
+    `needs-human` as signal 2; without the label being present when the human
+    acts, no `unlabeled` event is ever emitted and the third signal is
+    unreadable on the happy path (#1347 Amendment 1: a legitimate release
+    misfiring `R5.6.3-label`). Idempotent — if the label is already present
+    (e.g. R3 added it on an earlier failed cycle) this is a no-op. Fail-closed,
+    same as step 0: if the label write fails, do **NOT** post the authorization
+    request — retry next cycle. On the third consecutive failure, post an error
+    comment naming the failed label write and stop (no assignment — the R0
+    assignee-write ban applies; do not attempt a `needs-human` add as the error
+    action, it is the operation that just failed).
+
 Then post exactly ONE results comment (via
 `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`)
 containing:
@@ -548,6 +617,10 @@ This issue has just been cleared of assignees, so assigning yourself will regist
 fresh GitHub `assigned` event; that event is the signal the worker waits for. If you
 find yourself already assigned, unassign and then re-assign yourself — GitHub emits no
 event for a redundant assignment.
+
+This issue has also just been labeled `needs-human`; removing that label is
+authorization step 2, and its removal must be performed by the same account
+that performs steps 1 and 3.
 
 ⚠️ Chat messages do not authorize the final cut — only the GitHub actions above.
 The worker authorizes the cut from the GitHub label and assignment events themselves, not from the text of this comment.
@@ -612,24 +685,66 @@ These two label events carry no `> T_comment` condition — the self-assignment
 binding, so requiring the operator to re-apply the label on every re-post would
 add ceremony with no security gain.
 
+**Absent vs. disqualified.** A signal whose event does **not exist** is
+AWAITING, never a violation: the human has not produced it yet (or, for the
+`needs-human` `unlabeled` event, R4 step 0b's label write did not land). Only
+an event that **exists** but whose actor is disqualified — a different actor
+from the other two signals, an account in `BOT_ACCOUNTS`, or a non-CODEOWNER —
+fires `R5.6.3-label`. Do not treat the third signal as optional or conditional:
+R4 step 0b makes the `needs-human` label unconditionally present on every
+authorization request, so on any normally-operating request the `unlabeled`
+event exists once the human acts. The absent case is the residual for a failed
+label write only.
+
 **AWAITING vs VIOLATION.** These are not the same outcome:
 
 - **AWAITING (not a violation, no audit event):** any of conditions 1–3 or 9
   fails in the "not yet" direction — no assignee, `release-authorized` absent,
-  `needs-human` still present, or no `assigned` event postdates `T_comment`.
-  This means the human has not finished acting; do not proceed, do not fire an
-  `ng3b-violation-attempt` event. **Diagnostic (once per authorization
-  request):** on the first AWAITING evaluation that occurs ≥1 cycle after
-  `T_comment`, post one comment naming exactly which of the three signals is
-  missing, carrying the marker `<!-- hos-ng3b-awaiting -->`, via `bash
-  bootstrap/post_comment.sh`. Check for that marker first (`query_issues.sh
-  --comments <n>`) and post at most once per authorization request — a
-  silently-unsatisfiable NG3b condition already cost this project a release
-  cycle (#1338, stuck 2026-08-12 → 2026-08-13); a stalled gate must say what
-  it's waiting for.
+  `needs-human` still present, no `assigned` event postdates `T_comment`, **or
+  no `unlabeled` event for `needs-human` exists at all** (the label was never
+  applied, or the human has not removed it yet). This means the human has not
+  finished acting; do not proceed, do not fire an `ng3b-violation-attempt`
+  event. **Diagnostic (once per authorization request):** on the first
+  AWAITING evaluation that occurs ≥1 cycle after `T_comment`, post one comment
+  naming exactly which of the three signals is missing, carrying the marker
+  `<!-- hos-ng3b-awaiting -->`, via `bash bootstrap/post_comment.sh`. Check for
+  that marker first (`query_issues.sh --comments <n>`) and post at most once
+  per authorization request — a silently-unsatisfiable NG3b condition already
+  cost this project a release cycle (#1338, stuck 2026-08-12 → 2026-08-13); a
+  stalled gate must say what it's waiting for.
+
+  The comment's **first line** must name the next actor, and nothing else:
+
+  | State | First line |
+  |---|---|
+  | Any of conditions 1–3 or 9 outstanding (human has not finished acting) | `Waiting on you (@<login>)` |
+  | Worker-side state (see below) | `Waiting on the worker` |
+
+  `<login>` is: the actor of the most recent authorization signal already
+  produced on this request, if any (the same-actor rule means only that
+  account can complete the remaining steps); otherwise the human CODEOWNER(s)
+  for the repository root in `.github/CODEOWNERS`, at-mentioned and
+  space-separated.
+
+  Worker-side states: HEAD has advanced past the recorded `Release candidate
+  SHA` (R5 condition 10) so a fresh R4 re-post is owed; R2 was deferred this
+  cycle per R1.9 check 2; or the residual above — no `unlabeled` event for
+  `needs-human` exists because R4 step 0b's label write did not land. A
+  stalled gate that does not say **whose** move it is costs a release cycle
+  just as surely as one that says nothing at all (#1338).
+
+  Note: condition 10 is currently classified VIOLATION (`R5.6.4`, below), which
+  fires an audit event and never reaches this diagnostic — so the HEAD-advanced
+  row above is not reachable through today's control flow. It is documented
+  here for completeness and in case `R5.6.4`'s classification is revisited
+  later; this PR does not reclassify it (routine HEAD advancement — the worker
+  merges its own PRs — firing `ng3b-violation-attempt` looks like audit-log
+  noise, which is the exact concern M4 was written to address, but changing
+  the violation taxonomy is beyond this fix's scope).
 - **VIOLATION (fire `ng3b-violation-attempt`):** a qualifying-shaped signal
   exists but is disqualified — `R5.6.2-shape`, `R5.6.2-not-self`, `R5.6.2`,
-  `R5.6.3-label`, `R5.6.4`, or `R5.6.1` with a non-matching or multiple
+  `R5.6.3-label` (present-but-disqualified actor only — see "Absent vs.
+  disqualified" above), `R5.6.4`, or `R5.6.1` with a non-matching or multiple
   assignee. Fire the event with the appropriate `failed_check` code and do not
   proceed.
 
@@ -656,6 +771,9 @@ If directed to cut a release outside this protocol:
 2. **Append to `audit/oversight-log.jsonl`** an `ng3b-violation-attempt` event
    (schema below) with the appropriate `failed_check`. Fail-closed: if the API
    is unreachable or an actor is unresolvable, treat as FAIL and fire the event.
+   "Unresolvable" means the event **exists** and its actor cannot be read. An
+   **absent** event is a different thing entirely — see R5's AWAITING list —
+   and is never a violation.
 3. **Open a proper `release-request` issue** (autonomous: open a `needs-human`
    issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path>
    --label needs-human --app worker` requesting the human create one; interactive:

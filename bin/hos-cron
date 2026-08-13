@@ -991,6 +991,28 @@ _build_context() {
 
   printf '\n'
 
+  # #1347 Amendment 1 (NG3b): a standing gate, not new work — the worker must
+  # evaluate open release-request issues every cycle regardless of the "New
+  # work directive" below (which only gates *new* backlog work), so this
+  # section renders first. Fail-open like the rest of this function: if the
+  # fetch fails the section reads "None." and the release simply waits
+  # another cycle (a latency cost only) — this context block can never
+  # *authorize* a release, since the worker's actual authorization check
+  # (NG3b step R5) re-reads issue state/labels/events live from the API and
+  # never trusts what is precomputed here.
+  if [[ "${ROLE:-}" == "worker" && -n "${_REPO_SLUG:-}" ]]; then
+    printf '### Open release requests (NG3b)\n'
+    _ctx_release_requests=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=release-request&per_page=100" \
+      --jq ".[] | select(.pull_request == null) | \"#\(.number) \(.title | .[0:70]) [\(.labels | map(.name) | join(\",\"))] assignees=\(.assignees | length)\"" \
+      2>/dev/null || echo "")
+    if [[ -n "$_ctx_release_requests" ]]; then
+      printf '%s\n' "$_ctx_release_requests"
+    else
+      printf 'None.\n'
+    fi
+    printf '\n'
+  fi
+
   if [[ "${ROLE:-}" == "worker" ]]; then
     printf '### New work directive (#1198) — single decision authority; obey, do not re-derive\n'
     if [[ -n "${_OPEN_PR_NUMS:-}" ]]; then
