@@ -1,0 +1,1 @@
+{"bot":"hos-overseer-hos[bot]","event":"cycle-skip","role":"overseer","timestamp":"2026-08-13T094722Z","summary":"PRs #1345 (headSha 5af843f) and #1342 (headSha e7c8770) already reviewed at current head SHA (HUMAN_REQUIRED, needs-human label present, unchanged since prior cycles); no bot merges in last 2h; no actionable release-gate issues in milestone 10. No action taken."}
