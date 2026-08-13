@@ -1,0 +1,7 @@
+{
+  "event": "cycle-skip",
+  "role": "overseer",
+  "timestamp": "2026-08-13T234649Z",
+  "pr": 1342,
+  "reason": "head SHA unchanged since last full review (e7c87704de78df482976bfdc2771f8918ead95d6); HUMAN_REQUIRED decision already posted 2026-08-13T18:39:03Z; human CHANGES_REQUESTED review ('Retract PR. Release not done yet.') still latest state; no new commits or comments since. Step 0: no merges in last 2h (most recent #1348 human-merged at 18:32:59Z). Step 0b: no open release-request issue in milestone 10."
+}
