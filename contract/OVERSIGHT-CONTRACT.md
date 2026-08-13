@@ -426,7 +426,7 @@ Both requirements apply to all projects that install this framework.
 | `governance-artifact-untracked` | A human-only governance artifact exists on disk but has no git commit history (untracked / never committed) — a tamper-evidence signal (COMPLIANCE WARN → CONDITIONAL_PROCEED), SPEC-82 | oversight-evaluator | `step`, `artifact` |
 | `conditional_proceed` | The orchestrator opened a CONDITIONAL_PROCEED PR — the step's process record. Carries the conditional-item count and the count of merge-blocking review threads posted (SPEC-222 R4.3). Read by the evaluator's CONDITIONAL_PROCEED thread-compliance checks (R3.1/R3.4). `conditional_threads_opened` is `0` until SPEC-222 R1 (per-item thread posting) ships — pending #399 + R1.5 API verification. | oversight-orchestrator | `step`, `pr`, `conditional_items`, `conditional_threads_opened`, `review_requested` |
 | `hos-prune` | A file removed from the framework during an install/upgrade was archived (provenance + content hash recorded) | hos_install.sh | `file`, `archived_to`, `release`, `sha256` |
-| `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, assigned to worker, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp`, `reason_category` (`REGISTER_GAP \| COMPLIANCE_FAILURE \| SPEC_AMBIGUITY \| OTHER`), `summary` |
+| `pr-bounced` | Overseer returned PR to worker for register/completeness gaps; PR left open, labeled `needs-ai`, not a task failure | overseer (`record_pr_bounce`) | `pr`, `cid`, `bounce_number`, `failures` (check_id list), `assigned_to`, `repo`, `timestamp`, `reason_category` (`REGISTER_GAP \| COMPLIANCE_FAILURE \| SPEC_AMBIGUITY \| OTHER`), `summary` |
 | `human-required` | Overseer escalated a PR to a human (label `needs-human` + §8.2 comment); PR left open. Logs a non-merge disposition the overseer already performs so all non-merge dispositions are queryable/categorizable. | overseer | `pr`, `step`, `reason_category` (`FINDINGS_NOT_RESOLVED \| ESCALATION \| GATE_UNSATISFIED \| OTHER`), `summary`, `agent`, `comment_posted` |
 | `out-of-scope-commit` (phase: `detected`) | A reviewer flagged one or more commits as not belonging in the PR; the overseer bounced or escalated and confirmed the comment was posted before appending this event. The detection event is NOT a standalone event emitted independently — it is appended in the same halt-on-failure unit as the bounce or escalation comment post (SPEC-328 R4.1). `comment_posted` is always `true` in a committed detection event. | overseer | `pr`, `step`, `flagged_by`, `commits` (array of `{sha, files, stated_issue}`), `disposition` (`bounced\|escalated`), `comment_posted` (always `true`) |
 | `out-of-scope-commit` (phase: `resolved`) | The out-of-scope commit was resolved — either by cross-branch PR with revert (worker completed R3.2 workflow) or by human authorization via GitHub issue (R2.5 verification passed). Emitted as a separate standalone event when resolution is confirmed. | overseer or worker | `pr`, `step`, `resolution` (`cherry-pick-pr-opened\|human-accepted`), `authorized_by`, `authorizing_issue` (required when `human-accepted`; null when `cherry-pick-pr-opened`), `cross_branch_pr` (required when `cherry-pick-pr-opened`; null when `human-accepted`), `commits` |
@@ -441,7 +441,7 @@ The two non-merge dispositions carry structured rationale (SPEC-378). The `reaso
   "cid": "<worker correlation id>",
   "bounce_number": "<integer>",
   "failures": ["<check_id>", "..."],
-  "assigned_to": "<hos-worker-hos[bot]>",
+  "assigned_to": null,
   "repo": "<owner/repo>",
   "timestamp": "<ISO-8601>",
   "reason_category": "REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER",
@@ -449,6 +449,11 @@ The two non-merge dispositions carry structured rationale (SPEC-378). The `reaso
   "comment_posted": true
 }
 ```
+
+`assigned_to` is retained for schema stability but is always `null`: GitHub Apps
+cannot be assigned to issues or PRs on this repo (#1347), so `record_pr_bounce()`
+never attempts the assignment it previously (and always unsuccessfully) tried —
+`needs-ai` is the actual dispatch signal that drives worker pickup.
 
 New `human-required` schema:
 

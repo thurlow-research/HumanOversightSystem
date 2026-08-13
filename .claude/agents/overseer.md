@@ -276,7 +276,7 @@ For each PR found:
    These limits are derived empirically from this project's review history; 8–11 file PRs review fastest and 20+ cause reviewer fatigue. The hard ceiling reflects the point where merge conflicts compound faster than reviews complete.
 4. **Re-detect server-side gate** (`merge_authority.py:detect_server_side_gate`) — R9.1.1: never use a cached result for a merge decision.
 4a. **Register-completeness check (bounce-back gate)** (`merge_authority.py:check_register_completeness`) — before the matrix, check that the worker's PR is procedurally complete. Evaluate bounce conditions using the existing readiness checks:
-   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + assign to hos-worker-hos[bot] + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
+   - If any bounce condition holds AND `bounce_count(cid) < 2` → call `record_pr_bounce(...)` (comment + `needs-ai` + convert-to-draft + audit event); the bounce comment and the `pr-bounced` audit event must both carry the structured rationale fields below (SPEC-378 R1.2); stop processing; do NOT apply the matrix.
    - If `bounce_count(cid) >= 2` → escalate to human instead (`needs-human` + §8.2 body naming the repeated procedural failures); do NOT apply the matrix.
    - If no bounce conditions → proceed to step 4b.
 
@@ -307,7 +307,7 @@ For each PR found:
    1. Post the bounce comment.
    2. Confirm the comment posted (HTTP success / comment URL returned).
    3. Append the `out-of-scope-commit / detected` audit event with `disposition: "bounced"` and `comment_posted: true`.
-   4. Finalize the bounce (assign, `needs-ai`, convert-to-draft).
+   4. Finalize the bounce (`needs-ai`, convert-to-draft).
    If the comment post fails or the audit append fails, halt without finalizing. A detection event with `comment_posted: false` is not a valid log entry and MUST NOT be written.
 
    **Path B — human escalation:**
@@ -324,7 +324,7 @@ For each PR found:
 
    If all flagged SHAs are resolved → proceed to step 5.
 
-   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, assigns to hos-worker-hos[bot], applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
+   **Bounce rationale (SPEC-378 R1.2 — structured fields):** `record_pr_bounce()` already posts a single comment, applies `needs-ai`, converts the PR to draft, and appends a `pr-bounced` audit event. This adds two fields to that **existing** comment body and to the audit event payload — it is NOT a separate additional comment. Append to the bounce comment body:
 
    ```markdown
    **Reason category:** <REGISTER_GAP | COMPLIANCE_FAILURE | SPEC_AMBIGUITY | OTHER>
@@ -636,7 +636,7 @@ Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review find
 Both non-merge dispositions append an audit event ONLY after the comment is confirmed posted, and finalize ONLY after the audit append succeeds.
 
 - **HUMAN_REQUIRED:** if the #1215 duplicate-comment precheck above suppressed this cycle's comment, skip straight to (4). Otherwise: (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
-- **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — assign, `needs-ai`, convert-to-draft.
+- **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — `needs-ai`, convert-to-draft.
 
 If the comment post fails: **do not finalize** — do not append the audit event, do not treat the disposition as recorded; halt and print the failure. If the audit append fails: **do not finalize**; halt and print the failure. The audit log is append-only and committed; a missing entry is an audit-trail gap. The overseer must never silently continue past a comment-post or audit-append failure.
 
@@ -666,7 +666,7 @@ never hardcode them.
 | `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
 | `query_issues.sh` | `--app overseer (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users \| --list-milestones)` — reads |
 | `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app overseer [--milestone <title-prefix>]` — file a new issue (process-gap reports, `needs-human` escalations) |
-| `edit_issue.sh` | `--number <N> --app overseer [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations, on issues and PRs alike |
+| `edit_issue.sh` | `--number <N> --app overseer [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--set-assignee <user,user\|none>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations, on issues and PRs alike; `--assignee` is add-only, `--set-assignee` replaces the assignee list wholesale (`none` clears it) |
 | `post_comment.sh` | `--number <N> --body-file <path> --app overseer` — plain narrative comment |
 | `post_review_thread.sh` | `--pr <N> --body-file <path> --app overseer` — resolvable review thread (blocking findings; #1207) |
 
@@ -681,7 +681,7 @@ live in.
 |---|---|---|
 | Needs the worker | `needs-ai` | `machine-accounts.env` or default |
 | Needs human review | `needs-human` | convention |
-| Overseer bounced PR | `needs-ai` + assign to hos-worker-hos[bot] | bounce protocol |
+| Overseer bounced PR | `needs-ai` | bounce protocol |
 | Budget gate blocked | `hos-budget-gated` | budget.py |
 | Embargo path | `hos-embargo` | triage |
 

@@ -125,7 +125,7 @@ entry (see CLAUDE.md's "one invocation site" rule), not a pattern to repeat.
 | `get_app_token.sh` | `--app <worker\|overseer\|human>` — authenticate; sets `GH_TOKEN`/`HOS_BOT_LOGIN` |
 | `query_issues.sh` | `--app worker (--issue <N[,N,...]> [--full] \| --list [--milestone <prefix>\|--milestone-less] [--label <l>] [--state <s>] \| --comments <N> \| --assignable-users \| --list-milestones)` — reads |
 | `create_issue.sh` | `--title <text> --body-file <path> --label <labels> --app worker [--milestone <title-prefix>]` — file a new issue (e.g. `needs-human` escalations, process-gap reports) |
-| `edit_issue.sh` | `--number <N> --app worker [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations |
+| `edit_issue.sh` | `--number <N> --app worker [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>\|none] [--title <text>] [--state open\|closed] [--assignee <user,user>] [--set-assignee <user,user\|none>] [--body-file <path>]` — label/milestone/assignee/title/state/body mutations; `--assignee` is add-only, `--set-assignee` replaces the assignee list wholesale (`none` clears it) |
 | `post_comment.sh` | `--number <N> --body-file <path> --app worker` — plain narrative comment |
 | `submit_pr.sh` | `--title <text> --body-file <path> --base <branch> [--head <branch>] --app worker [--confirmed]` — open, or `--update-pr <N> --base <branch> [--head <branch>] --app worker` — push to an existing PR this bot authored |
 | `post_review_thread.sh` | `--pr <N> --body-file <path> --app worker` — resolvable review thread (blocking findings) |
@@ -174,7 +174,6 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   1. Comment with your decision (APPROVED / DECLINED / APPROVED WITH MODIFICATION).
   2. Remove the `needs-human` label.
   3. Add the `needs-ai` label.
-  4. Reassign this issue to hos-worker-hos[bot].
   ```
 - **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.5.0 — Governance, Accuracy & Usability`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
 - **Select by priority, then number.** Among eligible issues (`needs-ai`, not `needs-human`, in the active milestone), pick the **highest priority** first — `priority:critical` > `priority:high` > `priority:medium` > `priority:low`; an issue with no `priority:*` label is treated as `priority:low`. Break ties by **lowest issue number** (preserving FIFO within a band). Priority is a worker-side *selection* signal only — it confers no merge, risk, or gate privilege. The ordering is implemented once in `scripts/automation/lib/next_candidates.jq` and consumed by both the pre-computed candidates block (`bin/hos-cron`) and the cron-prompt Step-2 fallback. (#901)
@@ -238,6 +237,25 @@ Check that `.claude/agents/<name>.md` exists for each. If any are missing:
 3. Emit: "AGENT AVAILABILITY FAIL — session must be restarted from correct working directory."
 
 **Why hard-stop:** Substituting `general-purpose` for a specialist is a governance violation (#608). The session must be restarted from a directory that has `.claude/agents/`. See research finding `agent-availability-is-a-setup-property-not-a-runtime-property.md`.
+
+---
+
+**Step 0.5 — Open release requests (NG3b standing gate) (#1347 Amendment 1):**
+
+Read the `### Open release requests (NG3b)` section in the "Pre-computed cycle
+context" block at the bottom of the cron prompt. For **each** issue listed there,
+run the Release authorization protocol below starting at **R1**. This runs on
+**every** cycle **regardless of the New work directive** computed for Step 1 —
+NG3b is a standing human-authorization gate, not new work, and a release request
+left unevaluated is a release stalled indefinitely (this is exactly how #1338 got
+stuck).
+
+- Section reads `None.` → nothing to do; continue to Step 1.
+- **Section absent** (fail-open context builder) → fall back to:
+  `bash bootstrap/query_issues.sh --app worker --list --label release-request --state open`.
+- After processing all listed release requests: continue to Step 1, **unless R6
+  executed a release this cycle** (attempted, success or failure) — in that case
+  STOP; do not pick up new work in a cycle that just moved the release tag.
 
 ---
 
@@ -344,7 +362,7 @@ This applies in interactive mode too. If `HOS_BOT_LOGIN` is unset or wrong, push
 
 ### Re-entry after a bounce (autonomous)
 
-When your PR is bounced (assigned to hos-worker-hos[bot] + `needs-ai` label + `pr-bounced` audit event):
+When your PR is bounced (`needs-ai` label + converted to draft + `pr-bounced` audit event):
 
 1. Read `### Specific failures` in the bounce comment — each `- [<CHECK-ID>] <detail>` line maps to a readiness check.
 2. Fix each gap via the responsible specialist agent.
@@ -379,7 +397,7 @@ When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reaso
 **Option A — Cross-branch PR with revert:**
 
 1. Identify the correct target branch from the `stated_issue` field in the `Out_of_scope_commits:` register entry.
-   - If the target branch does not exist → file a `needs-human` issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path> --label needs-human --app worker` (standard label + 4-step "How to authorize" footer). Do NOT create the branch speculatively.
+   - If the target branch does not exist → file a `needs-human` issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path> --label needs-human --app worker` (standard label + 3-step "How to authorize" footer). Do NOT create the branch speculatively.
    - If the target branch is in an indeterminate state → file a `needs-human` issue the same way.
 
 2. Revert the out-of-scope commit from the current PR branch:
@@ -440,12 +458,22 @@ outside this protocol is an NG3b violation → see "Out-of-protocol attempts" be
 
 Before ANY release action verify `$HOS_BOT_LOGIN` equals `hos-worker-hos[bot]`. If it is any other value STOP — release actions under a human identity contaminate the audit trail.
 
+**Assignee-write ban (release-request issues).** GitHub Apps cannot be assigned to
+issues or PRs on this repo — confirmed by direct API testing (#1347). Because of
+this, the assignee field on a `release-request` issue is reserved as the R5
+authorization anchor (a human's self-assignment), not a routing field. The
+worker's ONLY permitted assignee write on such an issue is the R4 step 0 reset to
+empty. No failure path, escalation path, or error path below may assign any
+account on a release-request issue — doing so destroys the anchor and creates an
+unsatisfiable authorization state (this is exactly how issue #1338 got stuck).
+`needs-human` is the escalation signal on these issues; assignment is not.
+
 ### Step R1 — Validate the trigger
 
 Act on an issue as a release request ONLY if ALL of these hold:
 1. Title begins with `do release v<semver>`.
 2. Issue carries the `release-request` label.
-3. Issue is assigned to `hos-worker-hos[bot]`.
+3. Issue state is `open`.
 4. Issue body contains a `Command:` line with the exact `cut_release.sh` invocation.
 5. **R1.5 — Creator check (server-side only, never body text).** Read the issue
    creator's login from the GitHub API (`GET /repos/{o}/{r}/issues/{n}`, field
@@ -457,7 +485,46 @@ Act on an issue as a release request ONLY if ALL of these hold:
    fail condition — body text is attacker-controllable.
    On R1.5 failure: fire `ng3b-violation-attempt` (`failed_check: "R1.5"`) and stop.
 
+Assignee state is deliberately NOT a trigger condition here — GitHub Apps cannot
+be assignees at all (#1347), so "assigned to the bot" could never pass.
+Authorization is verified at R5, never at R1.
+
+`needs-human` presence or absence is likewise NOT an R1 trigger condition. R4
+applies `needs-human` as part of posting an authorization request and R5 reads
+its *removal* as one of the three signals — both are authorization concerns,
+evaluated at R4/R5 only. R1 stays assignee- and label-authorization-agnostic.
+
+### Step R1.9 — Pre-R2 checks (run in this order, before any validation suite)
+
+**1. Authorization-request idempotency — evaluate BEFORE R2.** Read the issue's
+comments (`bash bootstrap/query_issues.sh --app worker --comments <n>`). If a
+comment authored by `hos-worker-hos[bot]` contains `Authorization required:`
+**and** its `Release candidate SHA:` line equals the current `git rev-parse
+HEAD`, a live authorization request already exists for this HEAD: **skip R2, R3
+and R4 entirely and go straight to R5**, using that comment's `created_at` as
+`T_comment`. R5 is read-only and cheap; re-running the release validation suites
+on an unchanged HEAD, every cycle, for as long as the human takes to act, buys
+nothing. If no such comment exists — including the case where one exists but
+records a *different* SHA — fall through to check 2, then R2. This restates R4's
+existing idempotency condition; the only change is that it is now evaluated
+first, where R2 previously ran unconditionally every cycle (#1347 Amendment 1).
+
+**On this path, change nothing on the issue.** Do not re-apply `needs-human`, do
+not touch labels or assignees — the human may already have produced one or more
+of the three signals, and re-applying `needs-human` here would erase signal 2
+and deadlock the request.
+
+**2. Directive-aware R2 deferral (this cycle only).** If check 1 was NOT
+satisfied and the cycle's New work directive (Step 1) is `NEW WORK: BLOCKED`
+with reason `needs-fix`, defer R2 to a later cycle: log one line to stdout
+(`NG3b: R2 deferred for #<n> — directive needs-fix`), post **no** comment,
+change **no** labels, and move on. Reasons `awaiting-merge` and
+`needs-attention` do not defer — run R2 normally. **R5 and R6 are never
+deferred for any directive.**
+
 ### Step R2 — Run the validation gate
+
+Runs only when R1.9 check 1 was not satisfied and check 2 did not defer.
 
 Determine the release tier from the semver bump vs. the last tag
 (`git describe --tags --abbrev=0`):
@@ -478,29 +545,57 @@ itself, promote to MINOR/MAJOR requirements — all five suites become required.
 
 1. Post a results comment listing each suite with exit code and timestamp, via
    `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`.
-2. Re-assign to the human operator and add `needs-human`, via
-   `bash bootstrap/edit_issue.sh --number <n> --assignee ScottThurlow --add-label needs-human --app worker`. STOP.
+2. Add `needs-human`, via
+   `bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app worker`. STOP.
 
 ### Step R4 — On all-pass, post the authorization request (idempotent)
 
-**Idempotency check first:** read this issue's comments (REST-by-id). If a comment
-authored by `hos-worker-hos[bot]` already contains `Authorization required:`, skip
-to R5 using that comment's `created_at` as `T_comment`. Do not post a duplicate.
+**Idempotency check first:** read this issue's comments (REST-by-id). Skip to R5
+using that comment's `created_at` as `T_comment` **only if** a comment authored by
+`hos-worker-hos[bot]` contains `Authorization required:` **and** its `Release
+candidate SHA:` line equals the current `git rev-parse HEAD`. If no such comment
+exists — including the case where one exists but records a different SHA — run
+the post path below (which re-posts for the new HEAD and resets the
+authorization anchor). Never post two authorization comments for the same HEAD.
 
-If no such comment exists, post exactly ONE results comment (via
+0. **Reset the authorization anchor.** Clear all assignees on the issue:
+   `bash bootstrap/edit_issue.sh --number <n> --set-assignee none --app worker`.
+   Do this immediately **before** posting the results comment, so the comment's
+   claim that the issue is unassigned is true when the human reads it, and so
+   the human's self-assignment necessarily postdates `T_comment`. On failure: do
+   NOT post the authorization request; retry next cycle. On the third
+   consecutive failure, post an error comment, add `needs-human` (no
+   assignment), and stop.
+
+0b. **Apply the `needs-human` label.**
+    `bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app worker`.
+    On a release-request issue this is **not** an escalation — it is the
+    authorization handle. R5's three-signal check reads the human's *removal* of
+    `needs-human` as signal 2; without the label being present when the human
+    acts, no `unlabeled` event is ever emitted and the third signal is
+    unreadable on the happy path (#1347 Amendment 1: a legitimate release
+    misfiring `R5.6.3-label`). Idempotent — if the label is already present
+    (e.g. R3 added it on an earlier failed cycle) this is a no-op. Fail-closed,
+    same as step 0: if the label write fails, do **NOT** post the authorization
+    request — retry next cycle. On the third consecutive failure, post an error
+    comment naming the failed label write and stop (no assignment — the R0
+    assignee-write ban applies; do not attempt a `needs-human` add as the error
+    action, it is the operation that just failed).
+
+Then post exactly ONE results comment (via
 `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`)
 containing:
 1. Validation results — suite name, exit code, UTC timestamp; note any tier-optional
    suites skipped (PATCH only).
 2. Git log: `git log <last-tag>..HEAD --oneline` fenced.
 3. Working-tree state: `git status --short`. If not clean, do not post an
-   authorization request — re-assign to the human and add `needs-human` (via
-   `bash bootstrap/edit_issue.sh --number <n> --assignee ScottThurlow --add-label needs-human --app worker`) and stop.
+   authorization request — add `needs-human` (via
+   `bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app worker`) and stop.
 4. **Release candidate SHA** (required for temporal binding): a line exactly:
    `Release candidate SHA: <sha>` where `<sha>` is the current `git rev-parse HEAD`.
 5. The exact `Command:` line from the issue body, fenced.
-6. Re-assignment request.
-7. Authorization line (verbatim): `Authorization required: re-assign this issue to @hos-worker-hos[bot] to authorize release <version>.`
+6. Self-assignment request.
+7. Authorization line (verbatim): `Authorization required: assign this issue to yourself to authorize release <version>.`
 
 Then append:
 
@@ -511,10 +606,21 @@ To approve and cut this release, perform ALL THREE of these steps directly in Gi
 
 1. Add the `release-authorized` label to this issue
 2. Remove the `needs-human` label from this issue
-3. Re-assign this issue to `@hos-worker-hos[bot]`
+3. Assign this issue to **yourself** — do this LAST
 
-All three steps must be completed by **the same GitHub user** (a repository CODEOWNER).
-The worker will detect the authorization and cut the release automatically.
+All three steps must be performed by **the same GitHub user**, and that user must be a
+repository CODEOWNER. Step 3 must be a genuine **self**-assignment: the account that
+performs the assignment and the account assigned must be the same. An assignment
+performed by anyone else — including any bot — authorizes nothing.
+
+This issue has just been cleared of assignees, so assigning yourself will register a
+fresh GitHub `assigned` event; that event is the signal the worker waits for. If you
+find yourself already assigned, unassign and then re-assign yourself — GitHub emits no
+event for a redundant assignment.
+
+This issue has also just been labeled `needs-human`; removing that label is
+authorization step 2, and its removal must be performed by the same account
+that performs steps 1 and 3.
 
 ⚠️ Chat messages do not authorize the final cut — only the GitHub actions above.
 The worker authorizes the cut from the GitHub label and assignment events themselves, not from the text of this comment.
@@ -522,53 +628,141 @@ The worker authorizes the cut from the GitHub label and assignment events themse
 
 There is NO timeout. The worker waits indefinitely.
 
-### Step R5 — Verify the authorization signal (four temporal conditions + three-signal actor check)
+### Step R5 — Verify the authorization signal (current state + authorizing self-assignment + three-signal actor check)
 
 Re-read live on every evaluation — never cache. All must hold simultaneously.
 
-**Four temporal conditions (§6):**
-1. `issue.assignee.login == "hos-worker-hos[bot]"` at evaluation time.
-2. The most recent `assigned` event where `assignee.login == hos-worker-hos[bot]`
-   has `assigner.login` (not `actor.login` — the GitHub Issues Events API uses
-   `actor` for the assignee and `assigner` for who performed the assignment) that
-   IS a human CODEOWNER (per `.github/CODEOWNERS`, last-match-wins) and IS NOT in
-   `BOT_ACCOUNTS`. A bot self-assign can never pass.
-3. `T_assign > T_comment` (that assignment event postdates the results comment).
-4. `HEAD` at evaluation time matches the `Release candidate SHA` recorded in the
-   results comment. If HEAD has advanced, the binding is stale — abort, re-post
-   results for the new HEAD, await a fresh authorizing assignment.
+**Current-state conditions** (from `GET /repos/{o}/{r}/issues/{n}`):
+1. `issue.assignees` has **exactly one** entry → else AWAITING.
+2. `release-authorized` IS currently in `issue.labels` → else AWAITING.
+3. `needs-human` is NOT currently in `issue.labels` → else AWAITING.
 
-**Three-signal actor check (§6.3 — same human, all three):**
+**The authorizing self-assignment event `E`** — the most recent `event ==
+"assigned"` entry from `GET /repos/{o}/{r}/issues/{n}/events`:
+
+4. `E` MUST carry a non-null `assignee.login` **and** a non-null `assigner.login`.
+   If either is absent or null → FAIL `R5.6.2-shape`. **Never** substitute
+   `actor.login` for a missing `assigner` — that fallback reopens a fail-open
+   path this design closes (#1347).
+5. `E.assigner.login == E.assignee.login` — a differing pair means someone
+   assigned someone else, which is not a self-authorization → FAIL `R5.6.2-not-self`.
+6. If `E.actor` is present, `E.actor.login` MUST equal that same login → else
+   FAIL `R5.6.2-shape`.
+
+   Conditions 4–6 are deliberately semantics-agnostic about which GitHub Issues
+   Events API field means "who performed the assignment" — this repo has
+   previously observed `actor` on an `assigned` event carrying the *assignee*
+   rather than the performer (contradicting GitHub's documented behavior; see
+   `research/findings/api-field-shape-verification.md`, #348). In a genuine
+   self-assignment `actor`, `assignee`, and `assigner` all name the same
+   account under either reading, so requiring all present identity fields to
+   agree is correct regardless of which reading holds, and any disagreement
+   fails closed. Do not simplify conditions 4–6 down to a single field read.
+7. Let `A` := that single login (from `E.assignee.login`, per condition 5 equal
+   to `E.assigner.login` and any present `E.actor.login`). `A` MUST be a human
+   CODEOWNER per `.github/CODEOWNERS` (last-match-wins) AND MUST NOT be in
+   `BOT_ACCOUNTS` → else FAIL `R5.6.2`.
+8. `issue.assignees[0].login == A` → else FAIL `R5.6.1`.
+9. `T_E > T_comment` (the self-assignment event postdates the results comment)
+   → else AWAITING.
+10. `HEAD` at evaluation time matches the `Release candidate SHA` recorded in
+    the results comment. If HEAD has advanced, the binding is stale — abort,
+    return to R4 (which re-posts for the new HEAD and resets the anchor), await
+    a fresh authorizing self-assignment → FAIL `R5.6.4`.
+
+**Three-signal actor check (same human, all three):**
 All three signals must have been performed by THE SAME human CODEOWNER:
-- `labeled` event for `release-authorized` — `actor.login`
-- `unlabeled` event for `needs-human` — `actor.login`
-- `assigned` event for `hos-worker-hos[bot]` — `assigner.login` (the GitHub Issues
-  Events API uses `actor` for the assignee and `assigner` for who performed the
-  assignment; use `assigner.login` here, not `actor.login`)
+- most recent `labeled` event for `release-authorized` — `actor.login`
+- most recent `unlabeled` event for `needs-human` — `actor.login`
+- `E` — the login `A` established above (condition 7)
 
-The `actor.login` values from the labeled and unlabeled events and the `assigner.login`
-from the assigned event must all be equal AND must be in `.github/CODEOWNERS` AND must
-NOT be in `BOT_ACCOUNTS`. Any single signal by a different actor or by a bot disqualifies
-the entire authorization. Re-read all three from issue events live on every evaluation.
+The two label-event `actor.login` values and `A` must all be equal AND must be
+in `.github/CODEOWNERS` AND must NOT be in `BOT_ACCOUNTS`. Any single signal by
+a different actor or by a bot disqualifies the entire authorization → FAIL
+`R5.6.3-label`. Re-read all three from issue events live on every evaluation.
+These two label events carry no `> T_comment` condition — the self-assignment
+(condition 9) carries the freshness anchor and condition 10 carries the HEAD
+binding, so requiring the operator to re-apply the label on every re-post would
+add ceremony with no security gain.
 
-On any condition failure: fire `ng3b-violation-attempt` with the appropriate
-`failed_check` code (R5.6.1 through R5.6.4, R5.6.3-label) and do not proceed.
+**Absent vs. disqualified.** A signal whose event does **not exist** is
+AWAITING, never a violation: the human has not produced it yet (or, for the
+`needs-human` `unlabeled` event, R4 step 0b's label write did not land). Only
+an event that **exists** but whose actor is disqualified — a different actor
+from the other two signals, an account in `BOT_ACCOUNTS`, or a non-CODEOWNER —
+fires `R5.6.3-label`. Do not treat the third signal as optional or conditional:
+R4 step 0b makes the `needs-human` label unconditionally present on every
+authorization request, so on any normally-operating request the `unlabeled`
+event exists once the human acts. The absent case is the residual for a failed
+label write only.
+
+**AWAITING vs VIOLATION.** These are not the same outcome:
+
+- **AWAITING (not a violation, no audit event):** any of conditions 1–3 or 9
+  fails in the "not yet" direction — no assignee, `release-authorized` absent,
+  `needs-human` still present, no `assigned` event postdates `T_comment`, **or
+  no `unlabeled` event for `needs-human` exists at all** (the label was never
+  applied, or the human has not removed it yet). This means the human has not
+  finished acting; do not proceed, do not fire an `ng3b-violation-attempt`
+  event. **Diagnostic (once per authorization request):** on the first
+  AWAITING evaluation that occurs ≥1 cycle after `T_comment`, post one comment
+  naming exactly which of the three signals is missing, carrying the marker
+  `<!-- hos-ng3b-awaiting -->`, via `bash bootstrap/post_comment.sh`. Check for
+  that marker first (`query_issues.sh --comments <n>`) and post at most once
+  per authorization request — a silently-unsatisfiable NG3b condition already
+  cost this project a release cycle (#1338, stuck 2026-08-12 → 2026-08-13); a
+  stalled gate must say what it's waiting for.
+
+  The comment's **first line** must name the next actor, and nothing else:
+
+  | State | First line |
+  |---|---|
+  | Any of conditions 1–3 or 9 outstanding (human has not finished acting) | `Waiting on you (@<login>)` |
+  | Worker-side state (see below) | `Waiting on the worker` |
+
+  `<login>` is: the actor of the most recent authorization signal already
+  produced on this request, if any (the same-actor rule means only that
+  account can complete the remaining steps); otherwise the human CODEOWNER(s)
+  for the repository root in `.github/CODEOWNERS`, at-mentioned and
+  space-separated.
+
+  Worker-side states: HEAD has advanced past the recorded `Release candidate
+  SHA` (R5 condition 10) so a fresh R4 re-post is owed; R2 was deferred this
+  cycle per R1.9 check 2; or the residual above — no `unlabeled` event for
+  `needs-human` exists because R4 step 0b's label write did not land. A
+  stalled gate that does not say **whose** move it is costs a release cycle
+  just as surely as one that says nothing at all (#1338).
+
+  Note: condition 10 is currently classified VIOLATION (`R5.6.4`, below), which
+  fires an audit event and never reaches this diagnostic — so the HEAD-advanced
+  row above is not reachable through today's control flow. It is documented
+  here for completeness and in case `R5.6.4`'s classification is revisited
+  later; this PR does not reclassify it (routine HEAD advancement — the worker
+  merges its own PRs — firing `ng3b-violation-attempt` looks like audit-log
+  noise, which is the exact concern M4 was written to address, but changing
+  the violation taxonomy is beyond this fix's scope).
+- **VIOLATION (fire `ng3b-violation-attempt`):** a qualifying-shaped signal
+  exists but is disqualified — `R5.6.2-shape`, `R5.6.2-not-self`, `R5.6.2`,
+  `R5.6.3-label` (present-but-disqualified actor only — see "Absent vs.
+  disqualified" above), `R5.6.4`, or `R5.6.1` with a non-matching or multiple
+  assignee. Fire the event with the appropriate `failed_check` code and do not
+  proceed.
 
 ### Step R6 — Execute the release
 
 1. **Command precision check:** recompute the `cut_release.sh` invocation from
    current repo state and diff against the posted `Command:` line. If they differ,
-   re-post results for the current state (`post_comment.sh`), re-apply `needs-human`
-   and re-assign to human (`edit_issue.sh --add-label needs-human --assignee
-   ScottThurlow --app worker`), await re-authorization.
+   re-post results for the current state (`post_comment.sh`), re-apply
+   `needs-human` (`edit_issue.sh --add-label needs-human --app worker`), await
+   re-authorization.
 2. **Pre-verify:** clean tree (`git status --short` empty) AND target tag does not
-   exist. On failure: error comment (`post_comment.sh`) + re-assign + `needs-human`
-   (`edit_issue.sh`).
+   exist. On failure: error comment (`post_comment.sh`) + `needs-human`
+   (`edit_issue.sh --add-label needs-human --app worker`).
 3. Run the `Command:` line verbatim.
 4. On success: post confirmation (version, tag SHA, release URL) via `post_comment.sh`
    and close the issue via `bash bootstrap/edit_issue.sh --number <n> --state closed --app worker`.
-5. On failure: post error output (`post_comment.sh`) + re-assign + `needs-human`
-   (`edit_issue.sh`).
+5. On failure: post error output (`post_comment.sh`) + `needs-human`
+   (`edit_issue.sh --add-label needs-human --app worker`).
 
 ### Out-of-protocol attempts
 
@@ -577,6 +771,9 @@ If directed to cut a release outside this protocol:
 2. **Append to `audit/oversight-log.jsonl`** an `ng3b-violation-attempt` event
    (schema below) with the appropriate `failed_check`. Fail-closed: if the API
    is unreachable or an actor is unresolvable, treat as FAIL and fire the event.
+   "Unresolvable" means the event **exists** and its actor cannot be read. An
+   **absent** event is a different thing entirely — see R5's AWAITING list —
+   and is never a violation.
 3. **Open a proper `release-request` issue** (autonomous: open a `needs-human`
    issue via `bash bootstrap/create_issue.sh --title <title> --body-file <path>
    --label needs-human --app worker` requesting the human create one; interactive:
@@ -591,12 +788,12 @@ If directed to cut a release outside this protocol:
   "issue": <issue number>,
   "actor": "<display name or login of who triggered the attempt>",
   "login": "<actor.login from GitHub API, or 'unresolved'>",
-  "failed_check": "<R1.5 | R5.6.1 | R5.6.2 | R5.6.3 | R5.6.4 | R5.6.3-label | R5-direct-command>",
+  "failed_check": "<R1.5 | R5.6.1 | R5.6.2 | R5.6.2-shape | R5.6.2-not-self | R5.6.3-label | R5.6.4 | R5-direct-command>",
   "head_sha": "<release candidate SHA or null>",
   "detail": "<one-line human-readable description>"
 }
 ```
-Example: `{"event":"ng3b-violation-attempt","ts":"2026-06-16T22:14:03Z","repo":"thurlow-research-humanoversightsystem","issue":345,"actor":"hos-overseer-hos[bot]","login":"hos-overseer-hos[bot]","failed_check":"R5.6.2","head_sha":"abc1234","detail":"authorizing re-assignment actor is in BOT_ACCOUNTS"}`
+Example: `{"event":"ng3b-violation-attempt","ts":"2026-06-16T22:14:03Z","repo":"thurlow-research-humanoversightsystem","issue":345,"actor":"hos-overseer-hos[bot]","login":"hos-overseer-hos[bot]","failed_check":"R5.6.2","head_sha":"abc1234","detail":"authorizing self-assignment actor is in BOT_ACCOUNTS"}`
 
 ---
 

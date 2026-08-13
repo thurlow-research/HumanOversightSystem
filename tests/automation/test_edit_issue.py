@@ -301,6 +301,35 @@ def test_add_assignee_posts_json_body(h):
     assert '"assignees":["octocat"]' in cap
 
 
+def test_set_assignee_single_user_replaces_via_patch(h):
+    result = h.run(["--number", "201", "--app", "worker", "--set-assignee", "someuser"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert 'GH_STDIN:{"assignees":["someuser"]}' in cap
+
+
+def test_set_assignee_multiple_users_replaces_via_patch(h):
+    result = h.run(["--number", "201", "--app", "worker", "--set-assignee", "user1,user2"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert 'GH_STDIN:{"assignees":["user1","user2"]}' in cap
+
+
+def test_set_assignee_none_clears_via_patch(h):
+    result = h.run(["--number", "201", "--app", "worker", "--set-assignee", "none"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert 'GH_STDIN:{"assignees":[]}' in cap
+
+
+def test_assignee_and_set_assignee_together_rejected(h):
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--assignee", "x", "--set-assignee", "y"]
+    )
+    assert result.returncode != 0
+    assert "mutually exclusive" in result.stderr
+
+
 # --------------------------------------------------------------------------- #
 # Body edits (#1312)
 # --------------------------------------------------------------------------- #

@@ -40,7 +40,32 @@ For each:
 2. **Apply `priority:*`** if missing (`priority:critical` / `high` / `medium` / `low`).
 3. **Apply routing:** `needs-human` if the issue requires human decision or admin action; `needs-ai` if the worker can implement it directly.
 
-Triage is a **pure API operation** — no code changes, no test run, no PR. Continue to Step 1.
+Triage is a **pure API operation** — no code changes, no test run, no PR. Continue to Step 0.5.
+
+**Step 0.5 — Open release requests (NG3b standing gate):**
+Read the `### Open release requests (NG3b)` section in the "Pre-computed cycle
+context" block at the bottom of this prompt. For **each** issue listed there, run
+the Release authorization protocol (`.claude/agents/worker.md` §"Release
+authorization protocol (NG3b)") starting at **R1**. This runs on **every** cycle
+**regardless of the New work directive** below — NG3b is a standing gate, not new
+work, and a release request left unevaluated is a release stalled indefinitely
+(#1347).
+
+- Section says `None.` → nothing to do; continue to Step 1.
+- **Section absent** (fail-open context builder) → fall back to:
+  ```bash
+  bash bootstrap/query_issues.sh --app worker --list --label release-request --state open
+  ```
+- **R2 deferral (this cycle only):** if the New work directive below is
+  `NEW WORK: BLOCKED` with reason `needs-fix`, skip **R2** for this cycle — the
+  worker has a real fix to push and a full release-validation run would consume
+  the cycle. Log one line to stdout (`NG3b: R2 deferred for #<n> — directive
+  needs-fix`) and post no comment and change no labels. For `awaiting-merge` or
+  `needs-attention`, run R2 normally. **R5 and R6 always run**, whatever the
+  directive — never defer verifying or executing an already-authorized release.
+- After processing release requests, continue to Step 1 **unless R6 executed a
+  release this cycle** (success or failure), in which case STOP — do not pick up
+  new work in a cycle that moved the release tag.
 
 **Step 1 — Check open PRs:**
 Read the **New work directive** in the "Pre-computed cycle context" block at the bottom of this prompt — `bin/hos-cron` is the single decision authority for whether picking new work is allowed this cycle (#1198 Q6); do not re-derive the routing yourself.

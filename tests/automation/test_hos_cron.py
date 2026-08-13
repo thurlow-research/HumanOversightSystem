@@ -107,6 +107,11 @@ class CronEnv:
             # Context: next work candidates (needs-ai issues, not needs-human)
             '  *"labels=needs-ai"*)\n'
             '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
+            # #1347 Amendment 1 (NG3b): open release-request issues. Quoted (unlike
+            # the space-joined number lists above) so a fake issue line's embedded
+            # spaces (title text) survive as one line instead of being word-split.
+            '  *"labels=release-request"*)\n'
+            '    printf "%s\\n" "${HOS_TEST_RELEASE_REQUESTS:-}" ;;\n'
             # #959 auto-close: broken-state issue *numbers* (not the dedup count) —
             # matched first since it's the more specific pattern (the jq expression
             # ending in ".[].number" vs the plain "| length" count query below).
@@ -1774,7 +1779,11 @@ class TestCycleContextBlock:
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
         assert "856" in context
-        assert "None." not in context
+        # Scoped to the "Open bot PRs" section: it must show the PR, not
+        # "None." — the NG3b release-requests section below it legitimately
+        # prints "None." here since HOS_TEST_RELEASE_REQUESTS isn't set.
+        pr_section = context.split("### Open bot PRs", 1)[1].split("###", 1)[0]
+        assert "None." not in pr_section
         assert "NEW WORK: BLOCKED" in context
         assert "routing=needs-attention" in context
 
@@ -1832,6 +1841,86 @@ class TestCycleContextBlock:
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
         assert "NEW WORK: BLOCKED" in context
+
+
+# ────────────── Open release requests (NG3b, #1347 Amendment 1) ───────────────
+class TestReleaseRequestContextBlock:
+    """_build_context() surfaces open release-request issues (worker only) so
+    Step 0.5 in worker.md / worker-cron-prompt.md has something to read every
+    cycle — a standing gate, not new-work discovery (#1347 Amendment 1)."""
+
+    def _setup_stdin_capture(self, cron: CronEnv) -> Path:
+        """Replace claude stub to capture its stdin; write a minimal prompt file."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
+        prompt_file.parent.mkdir(parents=True, exist_ok=True)
+        prompt_file.write_text("## Worker step instructions\n")
+        return stdin_capture
+
+    def test_open_release_request_appears_in_worker_prompt(self, cron):
+        stdin_capture = self._setup_stdin_capture(cron)
+        fake_line = "#1300 Ship v0.6.1 [release-request] assignees=0"
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "",
+            "HOS_TEST_RELEASE_REQUESTS": fake_line,
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "### Open release requests (NG3b)" in context
+        assert fake_line in context
+
+    def test_no_release_requests_shows_none(self, cron):
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "",
+            "HOS_TEST_RELEASE_REQUESTS": "",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "### Open release requests (NG3b)" in context
+        # The heading's own "None." — not some other section's.
+        heading_pos = context.index("### Open release requests (NG3b)")
+        following = context[heading_pos:]
+        assert "None." in following.splitlines()[1]
+
+    def test_overseer_role_gets_no_release_request_section(self, cron):
+        """Worker-only (mirrors the "New work directive" gate) — the overseer
+        never sees this heading or any release-request content."""
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            "exit 0\n",
+        )
+        r = cron.run(role="overseer", env_overrides={
+            "HOS_TEST_OPEN_PR_NUMS": "856",
+            "HOS_TEST_PR_CR": "0",
+            "HOS_TEST_PR_AP": "1",
+            "HOS_TEST_RELEASE_REQUESTS": "#1300 Ship v0.6.1 [release-request] assignees=0",
+        })
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "Open release requests (NG3b)" not in context
+        assert "release-request" not in context
+
+    def test_release_requests_precede_new_work_directive(self, cron):
+        """The NG3b section renders before "New work directive" — it is a
+        standing gate the worker must evaluate every cycle, independent of
+        whether new backlog work is allowed this cycle."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        release_pos = context.index("### Open release requests (NG3b)")
+        directive_pos = context.index("### New work directive")
+        assert release_pos < directive_pos
 
 
 # ───────────────────────── _sync_audit_logs ────────────────────────────────
