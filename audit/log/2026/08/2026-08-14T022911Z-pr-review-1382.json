@@ -1,0 +1,1 @@
+{"event":"pr-review","pr":1382,"author":"app/scottthurlow-claude","risk_tier":"LOW","size":"1 file +4/-0","validators":"pass","protected_surface":true,"protected_surface_override":"human-approval-589","decision":"AUTO_MERGE","head_sha":"90df4d05","timestamp":"2026-08-14T02:29:11Z"}
