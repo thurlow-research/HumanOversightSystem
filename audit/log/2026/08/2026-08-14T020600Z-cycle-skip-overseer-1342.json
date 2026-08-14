@@ -1,0 +1,7 @@
+{
+  "event": "cycle-skip",
+  "pr": 1342,
+  "reason": "no-change-since-last-review",
+  "detail": "head SHA unchanged (e7c8770); human CHANGES_REQUESTED review from 2026-08-13T17:49:59Z already acknowledged in overseer comment at 2026-08-13T18:39:03Z; no new commits, reviews, or comments since",
+  "role": "overseer"
+}
