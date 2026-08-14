@@ -54,7 +54,7 @@ ok "bootstrap/get_app_token.sh present and executable"
 
 # ── 3. Config / credentials ───────────────────────────────────────────────────
 # Check in priority order: project-level → global
-PROJECT_CONFIG="$(cd "$REPO_ROOT/../.." 2>/dev/null && pwd)/.config/hos/apps.env"
+PROJECT_CONFIG="$(cd "$REPO_ROOT/.." 2>/dev/null && pwd)/.config/hos/apps.env"
 GLOBAL_CONFIG="${HOS_CONFIG_DIR:-$HOME/.config/hos}/apps.env"
 
 if [[ -f "$PROJECT_CONFIG" ]]; then
