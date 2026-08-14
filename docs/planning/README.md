@@ -8,7 +8,8 @@ Forward-looking release plans for HOS development. Each file captures the theme,
 | [v0.4.1.md](v0.4.1.md) | v0.4.1 — Operational Polish | Fix what broke, stabilize what shipped | ✅ **Shipped** |
 | [v0.5.0.md](v0.5.0.md) | v0.5.0 — Governance, Accuracy & Usability | Tighten governance, improve accuracy, fix usability gaps | ✅ **Shipped** 2026-07-13 |
 | v0.5.1 — Patch | Bug/governance fixes to shipped v0.5.0 code — on the `release/0.5.x` branch | ☠️ **Dead — no further updates.** Closed to new triage (#1173); its last remaining issue (#1215) was moved to v0.6.0 on 2026-08-10, leaving it with zero open issues. Do not re-target work here. |
-| [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | ✅ **Shipped** 2026-08-12 |
+| [v0.6.0.md](v0.6.0.md) | v0.6.0 — Astro & JS Support | node + astro packs, JS/TS validator & gate parity | ✅ **Shipped** 2026-08-12. Closed to new triage — patches route to v0.6.1. |
+| v0.6.1 — Stabilization | Bug/patch fixes to shipped v0.6.0 code (node/astro packs, JS/TS validators & gates) | 🔄 **Active** — the patch line for v0.6.0, same role v0.5.1 played for v0.5.0. |
 | [v0.7.0.md](v0.7.0.md) | v0.7.0 — Quality | Measure and improve quality over time | Planning — see the v0.7.x line below |
 | [v0.8.0.md](v0.8.0.md) | v0.8.0 — Agility | Fully embrace agile | Planning (early) |
 
@@ -46,15 +47,17 @@ When a new issue is filed, triage it to the appropriate release:
 
 | Release | Take if... |
 |---------|-----------|
-| **v0.6.0** | Astro / JS-TS stack support — node/astro packs, JS validator or gate parity, pack `requires` resolution (epic #1029). Also: governance/security/accuracy gaps surfaced during active development (Human-clone beta, oversight-pipeline gaps) — the active line absorbs these while v0.5.1 is drained. |
-| **v0.7.0** | Quality or reliability improvement that isn't blocking — measurement, MTTF certification, lean waste, quality ratchet. Also: autonomous worker/overseer finalization (e.g. sandbox hardening) that isn't required to unblock v0.6.0. |
+| **v0.6.1** | Bug/patch fix to already-shipped v0.6.0 code — node/astro packs, JS/TS validator or gate parity, pack `requires` resolution (epic #1029). The role v0.6.0 played while active (absorbing this class of fix) now belongs to v0.6.1; v0.6.0 itself is closed to new triage. |
+| **v0.7.0** | Quality or reliability improvement that isn't blocking — measurement, MTTF certification, lean waste, quality ratchet. Also: general governance/security/accuracy gaps not specific to shipped v0.6.0 code (the role v0.6.0 played while it was the active development line), and autonomous worker/overseer finalization (e.g. sandbox hardening). |
 | **v0.7.4** | Test-regime work — coverage/mutation scope, test-exemption accounting, shell→Python migration of decision logic, or a CI gate that enforces any of it. See [v0.7.4.md](v0.7.4.md). |
 | **v0.8.0** | Agility improvement — reduces friction, improves throughput, pull-system flow, developer experience. Not blocking anything today. |
 | **Backlog** | Nice-to-have with no clear theme fit, or requires human design decision before scoping. |
 
-**v0.5.1 is dead — closed to new triage and receiving no further updates (#1173).** No decision rule above may select it — a bug or governance gap found today, even one that traces back to shipped v0.5.0 code, routes to v0.6.0 (the active line) unless a human explicitly authorizes a maintenance-branch fix. This isn't just a triage preference: until #1173's worker milestone-eligibility fix lands (`milestone == active` → `milestone <= active`), any issue left in v0.5.1 is permanently unreachable to the autonomous worker the moment the active milestone moves past it — exactly what stranded #1166, #1155, and (until 2026-08-10) #1215. Treat v0.5.1 as closed for good; if it ever needs one more fix, that requires explicit human authorization of a maintenance-branch exception, not a milestone re-open.
+**v0.5.1 is dead — closed to new triage and receiving no further updates (#1173).** No decision rule above may select it. This isn't just a triage preference: until #1173's worker milestone-eligibility fix lands (`milestone == active` → `milestone <= active`), any issue left in v0.5.1 is permanently unreachable to the autonomous worker the moment the active milestone moves past it — exactly what stranded #1166, #1155, and (until 2026-08-10) #1215. Treat v0.5.1 as closed for good; if it ever needs one more fix, that requires explicit human authorization of a maintenance-branch exception, not a milestone re-open.
 
-**Decision rule:** Astro/JS stack work or a governance/security gap in the active line → v0.6.0. Testability, coverage scope, or shell→Python logic migration → v0.7.4. Quality measurement or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
+**v0.6.0 is shipped (2026-08-12) — closed to new triage.** A bug found today in v0.6.0's own delivered code (node/astro packs, JS/TS validators, gates) routes to **v0.6.1**, its patch line — not back to v0.6.0. This mirrors the v0.5.0 → v0.5.1 pattern; unlike v0.5.1, v0.6.1 is not dead and stays open to absorb this work (subject to the same #1173 milestone-eligibility caveat above once the active line moves past it).
+
+**Decision rule:** Bug in shipped v0.6.0 code → v0.6.1. Testability, coverage scope, or shell→Python logic migration → v0.7.4. Quality measurement, general governance/security gaps, or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
 
 **Scope of triage:** only issues filed **without** a milestone are triaged (worker Step 0). Issues that already carry a milestone are left as-is — corrections made here are stable and won't be re-triaged on a later cycle.
 
