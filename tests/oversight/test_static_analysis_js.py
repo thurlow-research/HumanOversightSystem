@@ -65,6 +65,29 @@ class TestRunSemgrep:
         assert findings == []
         assert err is not None
 
+    # ── #1369: a nonzero semgrep exit or a populated `errors` array must not
+    # read the same as "semgrep ran clean" ────────────────────────────────────
+
+    def test_nonzero_returncode_signals_error(self):
+        # semgrep exited 2 (a genuine scan failure) but still emitted valid,
+        # empty-findings JSON. Before #1369 the returncode was never checked,
+        # so this scored as a clean scan.
+        mock = MagicMock(stdout=_semgrep_json([]), returncode=2)
+        with patch("static_analysis_js.subprocess.run", return_value=mock):
+            findings, err = _run_semgrep(["test.ts"])
+        assert findings == []
+        assert err is not None
+
+    def test_errors_array_signals_error(self):
+        mock = MagicMock(
+            stdout=json.dumps({"results": [], "errors": [{"message": "rule parse error"}]}),
+            returncode=0,
+        )
+        with patch("static_analysis_js.subprocess.run", return_value=mock):
+            findings, err = _run_semgrep(["test.ts"])
+        assert findings == []
+        assert err is not None
+
 
 class TestAnalyseFilesMocked:
     def test_semgrep_not_installed_excludes_dimension(self):
@@ -81,6 +104,25 @@ class TestAnalyseFilesMocked:
 
     def test_semgrep_unparseable_excludes_dimension(self):
         mock = MagicMock(stdout="not-json", returncode=0)
+        with patch("static_analysis_js.subprocess.run", return_value=mock):
+            result = saj_analyse(["test.ts"])
+        assert result["error"] is not None
+        assert result["score"] == pytest.approx(0.0)
+
+    def test_semgrep_nonzero_returncode_excludes_dimension(self):
+        # semgrep is the sole tool here, so a scan failure must exclude the
+        # dimension, not score a clean 0.0 (#1369, mirrors #917).
+        mock = MagicMock(stdout=_semgrep_json([]), returncode=2)
+        with patch("static_analysis_js.subprocess.run", return_value=mock):
+            result = saj_analyse(["test.ts"])
+        assert result["error"] is not None
+        assert result["score"] == pytest.approx(0.0)
+
+    def test_semgrep_errors_array_excludes_dimension(self):
+        mock = MagicMock(
+            stdout=json.dumps({"results": [], "errors": [{"message": "rule parse error"}]}),
+            returncode=0,
+        )
         with patch("static_analysis_js.subprocess.run", return_value=mock):
             result = saj_analyse(["test.ts"])
         assert result["error"] is not None
