@@ -465,11 +465,11 @@ class CronEnv:
         other = self.repo.parent / "other_clone"
         git = ["git", "-C", str(self.repo)]
         gito = ["git", "-C", str(other)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         (self.repo / "config.txt").write_text("v1\n")
