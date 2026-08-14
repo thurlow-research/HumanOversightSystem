@@ -449,6 +449,46 @@ class CronEnv:
             check=True,
         )
 
+    def git_init_dirty_main_blocks_ff(self) -> None:
+        """Make the fake repo a git repo on `main`, with a real `origin/main`
+        that has advanced past local main, and an uncommitted tracked-file
+        change that conflicts with the incoming diff — the #1393 repro.
+
+        Unlike `git_init_diverged_main`, local main carries no unpushed
+        *commits* (the #996 stray-commit cherry-check finds nothing), so the
+        only thing standing between local main and a clean fast-forward is
+        the dirty working tree. `git merge --ff-only` fails on this for a
+        real reason (uncommitted local edits would be clobbered), not because
+        origin/main is unset (that's the plain-repo case tested separately).
+        """
+        origin = self.repo.parent / "origin.git"
+        other = self.repo.parent / "other_clone"
+        git = ["git", "-C", str(self.repo)]
+        gito = ["git", "-C", str(other)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
+                 "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
+                        "refs/heads/main"], check=True)
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        (self.repo / "config.txt").write_text("v1\n")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "base"], check=True)
+        subprocess.run(git + ["remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(git + ["push", "-q", "-u", "origin", "main"], check=True)
+        # Advance origin/main via an independent clone, touching the same file
+        # local will later dirty — a genuine fast-forward for anyone whose
+        # tree is clean.
+        subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
+        (other / "config.txt").write_text("v2-from-origin\n")
+        subprocess.run(gito + ["add", "-A"], check=True)
+        subprocess.run(gito + ident + ["commit", "-q", "-m", "origin-advance"], check=True)
+        subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
+        # Dirty the same tracked file locally, uncommitted — this is what
+        # blocks the fast-forward merge (not a divergent commit history).
+        (self.repo / "config.txt").write_text("local-dirty-uncommitted\n")
+
     def current_branch(self) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), "symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -730,6 +770,19 @@ class TestGitSyncDivergence:
         assert cron.current_branch() == "main"
         assert "returned to main" in r.stdout
         assert "#1044" in r.stdout
+
+    def test_dirty_tree_blocking_ff_only_skips_cycle_fail_closed(self, cron):
+        # #1393: local main has no unpushed commits (the #996 stray-commit
+        # check finds nothing), but an uncommitted tracked-file change blocks
+        # `merge --ff-only`. Previously this was masked by `|| true` and the
+        # cycle proceeded to build against a stale main with no signal
+        # anywhere. It must now be detected and fail closed, same as #996.
+        cron.git_init_dirty_main_blocks_ff()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "could not fast-forward" in r.stdout
+        assert "#1393" in r.stdout
+        assert not cron.claude_ran(), "blocked fast-forward must skip the cycle (no build)"
 
     def test_open_feature_branch_with_live_upstream_is_left_alone(self, cron):
         # A feature branch whose PR is still open (remote branch still exists)
