@@ -471,7 +471,21 @@ fi
 # main carries nothing origin/main doesn't already have (by content) — safe to
 # bring it to origin/main's tip, whether or not HEAD is currently on main.
 if [[ "$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")" == "main" ]]; then
-  git -C "$REPO_ROOT" merge --ff-only --quiet origin/main 2>/dev/null || true
+  # #1393: only treat a failed fast-forward as meaningful when origin/main
+  # actually exists — an unconfigured/test-fixture repo with no remote fails
+  # this merge trivially and must not be mistaken for a real sync problem.
+  # When origin/main does exist, a failure here means the working tree is
+  # genuinely dirty or diverged in a way the #996 stray-commit check above
+  # didn't catch (that check only looks at committed history, not uncommitted
+  # tracked-file changes) — masking it with `|| true` would let the cycle
+  # proceed and build against a stale main with no signal anywhere.
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    if ! git -C "$REPO_ROOT" merge --ff-only --quiet origin/main 2>/dev/null; then
+      echo "$LOG_PREFIX ⚠ local main could not fast-forward to origin/main (dirty tree or unresolved divergence) — skipping cycle fail-closed (#1393); inspect: git -C \"$REPO_ROOT\" status"
+      _audit cycle-preflight-fail reason=local_main_ff_only_failed
+      exit 0
+    fi
+  fi
 else
   git -C "$REPO_ROOT" update-ref refs/heads/main refs/remotes/origin/main 2>/dev/null || true
 fi
