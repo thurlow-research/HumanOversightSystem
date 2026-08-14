@@ -43,11 +43,31 @@ v0.7 is split into themed point releases rather than one release.
 
 ## Triage criteria (worker decision guide)
 
-When a new issue is filed, triage it to the appropriate release:
+When a new issue is filed, triage it to the appropriate release.
+
+**Precedence rule — priority and field-reports override theme match (#1387):**
+
+1. **`priority:critical` always routes to the active release track** — the current
+   active thematic milestone or its patch/stabilization companion (whichever is
+   nearer to shipping), never deferred to a later thematic milestone on
+   theme-match grounds alone. As of this writing the active track is v0.6.0
+   (shipped, closed to new triage) with **v0.6.1** as its open patch line, so a
+   `priority:critical` bug lands in v0.6.1 unless it's a v0.6.0-unrelated new
+   capability, in which case it still takes the *nearest* open milestone, not
+   the theme-correct-but-later one.
+2. **`field-report` issues are biased toward the active patch/stabilization
+   milestone** (v0.6.1 today; its future v0.7.1/v0.7.x-odd successors per the
+   even=theme/odd=stabilization convention above) when the fix is **isolated and
+   minor** — small, contained, doesn't require redesigning already-shipped
+   functionality. This is a bias, not an automatic rule: a field report that
+   turns out to be a larger design gap still routes by theme as below.
+
+Apply this precedence rule first; if neither clause applies, fall through to the
+theme table:
 
 | Release | Take if... |
 |---------|-----------|
-| **v0.6.1** | Bug/patch fix to already-shipped v0.6.0 code — node/astro packs, JS/TS validator or gate parity, pack `requires` resolution (epic #1029). The role v0.6.0 played while active (absorbing this class of fix) now belongs to v0.6.1; v0.6.0 itself is closed to new triage. |
+| **v0.6.1** | Bug/patch fix to already-shipped v0.6.0 code — node/astro packs, JS/TS validator or gate parity, pack `requires` resolution (epic #1029). The role v0.6.0 played while active (absorbing this class of fix) now belongs to v0.6.1; v0.6.0 itself is closed to new triage. Also takes any `priority:critical` bug or isolated/minor `field-report` fix per the precedence rule above, regardless of theme. |
 | **v0.7.0** | Quality or reliability improvement that isn't blocking — measurement, MTTF certification, lean waste, quality ratchet. Also: general governance/security/accuracy gaps not specific to shipped v0.6.0 code (the role v0.6.0 played while it was the active development line), and autonomous worker/overseer finalization (e.g. sandbox hardening). |
 | **v0.7.4** | Test-regime work — coverage/mutation scope, test-exemption accounting, shell→Python migration of decision logic, or a CI gate that enforces any of it. See [v0.7.4.md](v0.7.4.md). |
 | **v0.8.0** | Agility improvement — reduces friction, improves throughput, pull-system flow, developer experience. Not blocking anything today. |
@@ -57,7 +77,7 @@ When a new issue is filed, triage it to the appropriate release:
 
 **v0.6.0 is shipped (2026-08-12) — closed to new triage.** A bug found today in v0.6.0's own delivered code (node/astro packs, JS/TS validators, gates) routes to **v0.6.1**, its patch line — not back to v0.6.0. This mirrors the v0.5.0 → v0.5.1 pattern; unlike v0.5.1, v0.6.1 is not dead and stays open to absorb this work (subject to the same #1173 milestone-eligibility caveat above once the active line moves past it).
 
-**Decision rule:** Bug in shipped v0.6.0 code → v0.6.1. Testability, coverage scope, or shell→Python logic migration → v0.7.4. Quality measurement, general governance/security gaps, or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
+**Decision rule:** `priority:critical` → active release track (v0.6.1 today), regardless of theme. Isolated/minor `field-report` fix → biased toward v0.6.1. Otherwise: bug in shipped v0.6.0 code → v0.6.1. Testability, coverage scope, or shell→Python logic migration → v0.7.4. Quality measurement, general governance/security gaps, or worker/overseer finalization → v0.7.0. Agility/DX → v0.8.0.
 
 **Scope of triage:** only issues filed **without** a milestone are triaged (worker Step 0). Issues that already carry a milestone are left as-is — corrections made here are stable and won't be re-triaged on a later cycle.
 
