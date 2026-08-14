@@ -73,7 +73,7 @@ class CronEnv:
         _write_exec(
             self.bindir / "claude",
             "#!/usr/bin/env bash\n"
-            'cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n'
+            "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
             "{\n"
             '  echo "argv0=$0"\n'
             '  echo "api_key=${ANTHROPIC_API_KEY:-UNSET}"\n'
@@ -95,18 +95,17 @@ class CronEnv:
         # fall through to exit 0 (safe default for non-targeted invocations).
         _write_exec(
             self.bindir / "gh",
-            "#!/usr/bin/env bash\n"
-            'ARGS="$*"\n'
-            'case "$ARGS" in\n'
+            "#!/usr/bin/env bash\n" 'ARGS="$*"\n' 'case "$ARGS" in\n'
             # Halt check: issues?labels=hos-halt.
             # HOS_TEST_HALT_QUERY_FAIL simulates a gh API failure (non-zero exit)
             # so the #912 fail-closed halt path can be exercised.
             '  *"labels=hos-halt"*)\n'
             '    [[ -n "${HOS_TEST_HALT_QUERY_FAIL:-}" ]] && exit 1\n'
             '    echo "${HOS_TEST_HALT_COUNT:-0}" ;;\n'
+            # Milestone-less issues (#1395 actionable-work gate) — one issue number per line.
+            '  *"milestone=none"*)\n' '    printf "%s\\n" ${HOS_TEST_MILESTONELESS_ISSUES:-} ;;\n'
             # Context: next work candidates (needs-ai issues, not needs-human)
-            '  *"labels=needs-ai"*)\n'
-            '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
+            '  *"labels=needs-ai"*)\n' '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
             # #1347 Amendment 1 (NG3b): open release-request issues. Quoted (unlike
             # the space-joined number lists above) so a fake issue line's embedded
             # spaces (title text) survive as one line instead of being word-split.
@@ -130,21 +129,18 @@ class CronEnv:
             '    [[ -n "${HOS_TEST_PR_FETCH_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
             # PR reviews — CHANGES_REQUESTED count
-            '  *"reviews"*"CHANGES_REQUESTED"*)\n'
-            '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
+            '  *"reviews"*"CHANGES_REQUESTED"*)\n' '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
             # PR reviews — APPROVED count
-            '  *"reviews"*"APPROVED"*)\n'
-            '    echo "${HOS_TEST_PR_AP:-1}" ;;\n'
-            'esac\n'
+            '  *"reviews"*"APPROVED"*)\n' '    echo "${HOS_TEST_PR_AP:-1}" ;;\n' "esac\n"
             # issue create — record the invocation, then confirm and exit
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  echo "https://github.com/test/repo/issues/999"\n'
-            'fi\n'
+            "fi\n"
             # issue close — record which issue number was closed (#959 auto-close)
             'if [[ "$1" == "issue" && "$2" == "close" ]]; then\n'
             f'  echo "$3" >> "{self.aa_issue_close_marker}"\n'
-            'fi\n'
+            "fi\n"
             "exit 0\n",
         )
 
@@ -165,7 +161,9 @@ class CronEnv:
             # `-` (not `:-`) so a test can deliver an explicitly-empty value to
             # exercise the fail-closed unset/empty guard.
             "echo \"export HOS_BOT_LOGIN='${HOS_TEST_BOT_LOGIN-" + EXPECTED_BOT + "}'\"\n"
-            "echo \"export HOS_EXPECTED_BOT_LOGIN='${HOS_TEST_EXPECTED_BOT-" + EXPECTED_BOT + "}'\"\n"
+            "echo \"export HOS_EXPECTED_BOT_LOGIN='${HOS_TEST_EXPECTED_BOT-"
+            + EXPECTED_BOT
+            + "}'\"\n"
             'echo "export GH_TOKEN=fake-token"\n',
         )
         # inner-loop test runner stub — records each invocation so the #789
@@ -182,8 +180,7 @@ class CronEnv:
         # HOS_TEST_ENSURE_VENV_EXIT to simulate a broken venv.
         _write_exec(
             self.repo / "scripts" / "oversight" / "ensure_venv.sh",
-            "#!/usr/bin/env bash\n"
-            'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
+            "#!/usr/bin/env bash\n" 'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
         )
         # fake oversight venv — satisfies the pre-jitter dependency check
         _write_exec(
@@ -248,8 +245,9 @@ class CronEnv:
         """The role prompt file the launcher requires (#989)."""
         return self.repo / "bootstrap" / f"{role}-cron-prompt.md"
 
-    def run(self, *args, env_overrides=None, role="worker", project="hos",
-            timeout=30) -> subprocess.CompletedProcess:
+    def run(
+        self, *args, env_overrides=None, role="worker", project="hos", timeout=30
+    ) -> subprocess.CompletedProcess:
         """Invoke the real bin/hos-cron with the stubbed world."""
         env = {
             "HOME": str(self.home),
@@ -257,12 +255,19 @@ class CronEnv:
             # stub lives in $HOME/.local/bin, which the launcher prepends first.
             "PATH": "/usr/bin:/bin",
             "HOS_STATE_DIR": str(self.state),
-            "HOS_CRON_JITTER_MAX": "0",      # deterministic: no 0–60s sleep
-            "HOS_CRON_MAX_SECONDS": "0",     # don't wrap claude stub in `timeout`
+            "HOS_CRON_JITTER_MAX": "0",  # deterministic: no 0–60s sleep
+            "HOS_CRON_MAX_SECONDS": "0",  # don't wrap claude stub in `timeout`
             "HOS_TEST_CLAUDE_LOG": str(self.claude_log),
             # Provide a synthetic repo slug so gh-API checks have a target without
             # needing a real git remote configured in the temporary repo directory.
             "HOS_REPO_SLUG": "test-org/test-repo",
+            # #1395: the worker's actionable-work gate skips the cycle (before git
+            # sync) when there's no milestone-less issue, release request, open PR,
+            # or next-work candidate. Default one dummy milestone-less issue so the
+            # many existing tests that aren't about this gate keep exercising the
+            # rest of the launcher unchanged; tests that specifically target the
+            # gate override this to "" (see TestActionableWorkGate).
+            "HOS_TEST_MILESTONELESS_ISSUES": "9001",
         }
         if env_overrides:
             env.update(env_overrides)
@@ -272,8 +277,12 @@ class CronEnv:
         else:
             argv += ["--role", role, "--project", project]
         return subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout,
-            check=False, env=env,
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
         )
 
     def add_agent_files(self, *slugs: str) -> None:
@@ -302,8 +311,7 @@ class CronEnv:
         launcher resolve. Identity is passed via -c so no global config is needed.
         """
         git = ["git", "-C", str(self.repo)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + ident + ["commit", "-q", "-m", "init"], check=True)
@@ -324,13 +332,13 @@ class CronEnv:
         other = self.repo.parent / "other_clone"
         git = ["git", "-C", str(self.repo)]
         gito = ["git", "-C", str(other)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
         # Point the bare's HEAD at main so a fresh clone checks out main (not the
         # nonexistent default master).
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         subprocess.run(git + ["add", "-A"], check=True)
@@ -370,11 +378,11 @@ class CronEnv:
         other = self.repo.parent / "other_clone"
         git = ["git", "-C", str(self.repo)]
         gito = ["git", "-C", str(other)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         subprocess.run(git + ["add", "-A"], check=True)
@@ -390,22 +398,26 @@ class CronEnv:
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + ident + ["commit", "-q", "-m", "feat: change2"], check=True)
         subprocess.run(
-            git + ["push", "-q", "-u", "origin", "feat/1032-thing"], check=True,
+            git + ["push", "-q", "-u", "origin", "feat/1032-thing"],
+            check=True,
         )
         # Simulate GitHub's squash-merge (same content, one new commit, new SHA)
         # plus its "delete head branch on merge" auto-cleanup — from an
         # independent clone, so the local repo's feature branch is untouched.
         subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
         subprocess.run(
-            gito + ["fetch", "-q", "origin", "feat/1032-thing"], check=True,
+            gito + ["fetch", "-q", "origin", "feat/1032-thing"],
+            check=True,
         )
         subprocess.run(
-            gito + ["merge", "-q", "--squash", "FETCH_HEAD"], check=True,
+            gito + ["merge", "-q", "--squash", "FETCH_HEAD"],
+            check=True,
         )
         subprocess.run(gito + ident + ["commit", "-q", "-m", "feat: squashed (#1032)"], check=True)
         subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
         subprocess.run(
-            gito + ["push", "-q", "origin", "--delete", "feat/1032-thing"], check=True,
+            gito + ["push", "-q", "origin", "--delete", "feat/1032-thing"],
+            check=True,
         )
         # Local repo is still parked on the (now-merged) feature branch.
         subprocess.run(git + ["checkout", "-q", "feat/1032-thing"], check=True)
@@ -417,11 +429,11 @@ class CronEnv:
         """
         origin = self.repo.parent / "origin.git"
         git = ["git", "-C", str(self.repo)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         subprocess.run(git + ["add", "-A"], check=True)
@@ -433,7 +445,8 @@ class CronEnv:
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + ident + ["commit", "-q", "-m", "feat: wip"], check=True)
         subprocess.run(
-            git + ["push", "-q", "-u", "origin", "feat/in-progress"], check=True,
+            git + ["push", "-q", "-u", "origin", "feat/in-progress"],
+            check=True,
         )
 
     def git_init_dirty_main_blocks_ff(self) -> None:
@@ -452,11 +465,11 @@ class CronEnv:
         other = self.repo.parent / "other_clone"
         git = ["git", "-C", str(self.repo)]
         gito = ["git", "-C", str(other)]
-        ident = ["-c", "user.email=t@t", "-c", "user.name=t",
-                 "-c", "commit.gpgsign=false"]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(git + ["init", "-q"], check=True)
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
         (self.repo / "config.txt").write_text("v1\n")
@@ -479,7 +492,9 @@ class CronEnv:
     def current_branch(self) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         ).stdout.strip()
 
     def write_cowpat(self, sha: str) -> None:
@@ -658,7 +673,9 @@ class TestWakeupBackoff:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "wakeup signal received" in r.stdout
         assert "reason=legacy-mine" in r.stdout
-        assert not cron.wakeup_worker_legacy.exists(), "legacy wakeup for this project must be consumed"
+        assert (
+            not cron.wakeup_worker_legacy.exists()
+        ), "legacy wakeup for this project must be consumed"
         assert cron.claude_ran()
 
     def test_legacy_wakeup_without_project_is_consumed(self, cron):
@@ -854,12 +871,14 @@ class TestCycleIdentity:
 
     def test_cycle_id_matches_the_documented_grammar(self, cron):
         import re
+
         env = self._env(cron)
         assert re.match(r"^[A-Za-z0-9._-]+$", env["cycle_id"]), env["cycle_id"]
         assert env["cycle_id"].startswith("worker-hos-")
 
     def test_cycle_token_is_a_12_digit_utc_timestamp(self, cron):
         import re
+
         env = self._env(cron)
         assert re.match(r"^\d{12}$", env["cycle_token"]), env["cycle_token"]
 
@@ -874,9 +893,13 @@ class TestCycleIdentity:
         # role= value in the ownership record (P2), not by minting selectively.
         # An actionable open PR is stubbed so the overseer's own PR pre-filter
         # (unrelated to #967) reaches the Claude launch at all.
-        env = self._env(cron, role="overseer", env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-        })
+        env = self._env(
+            cron,
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+            },
+        )
         assert env.get("cycle_id", "UNSET") != "UNSET"
         assert env["cycle_role"] == "overseer"
 
@@ -901,9 +924,9 @@ class TestThinEnv:
             (l for l in cron.claude_record().splitlines() if l.startswith("argv0=")),
             "",
         )
-        assert argv0 == f"argv0={cron.bindir}/claude", (
-            "claude must be invoked by its absolute pinned-PATH location"
-        )
+        assert (
+            argv0 == f"argv0={cron.bindir}/claude"
+        ), "claude must be invoked by its absolute pinned-PATH location"
 
     def test_pinned_path_includes_standard_bins(self, cron):
         r = cron.run()
@@ -943,8 +966,9 @@ class TestGitCredentialsGuard:
         origin = tmp_path / "origin.git"
         repo = tmp_path / "repo"
         subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-        subprocess.run(["git", "-C", str(origin), "symbolic-ref", "HEAD",
-                        "refs/heads/main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+        )
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         git = ["git", "-C", str(repo)]
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
@@ -966,7 +990,11 @@ class TestGitCredentialsGuard:
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "HOS_CRON_JITTER_MAX": "0"}
         return subprocess.run(
             [BASH, str(repo / "bin" / "hos-cron")],
-            capture_output=True, text=True, timeout=15, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env=env,
         )
 
     def test_present_file_sources_normally(self, tmp_path):
@@ -997,7 +1025,9 @@ class TestGitCredentialsGuard:
         shutil.copy(self.REAL_GIT_CREDS_LIB, other / "bin" / "lib" / "git-credentials.sh")
         gito = ["git", "-C", str(other)]
         subprocess.run(gito + ["add", "-A"], check=True)
-        subprocess.run(gito + self.IDENT + ["commit", "-q", "-m", "add git-credentials.sh"], check=True)
+        subprocess.run(
+            gito + self.IDENT + ["commit", "-q", "-m", "add git-credentials.sh"], check=True
+        )
         subprocess.run(gito + ["push", "-q", "origin", "main"], check=True)
 
         r = self._run(repo, tmp_path)
@@ -1005,9 +1035,9 @@ class TestGitCredentialsGuard:
         assert "attempting self-update" in r.stderr
         assert "still missing after self-update attempt" not in r.stderr
         assert "hos-cron: --role and --project required" in combined
-        assert (repo / "bin" / "lib" / "git-credentials.sh").exists(), (
-            "local checkout must actually be fast-forwarded onto origin/main"
-        )
+        assert (
+            repo / "bin" / "lib" / "git-credentials.sh"
+        ).exists(), "local checkout must actually be fast-forwarded onto origin/main"
 
 
 # ──────────── last-run written only on exit 0 + wakeup hand-off ─────────────
@@ -1023,9 +1053,9 @@ class TestPostCycleBookkeeping:
         # The launcher itself still exits 0 (it logs the claude failure); the
         # contract is that last-run is NOT stamped, so the next fire retries.
         assert "claude exited 7" in r.stdout
-        assert not cron.last_run_file.exists(), (
-            "last-run must NOT be written when the claude session fails (#711)"
-        )
+        assert (
+            not cron.last_run_file.exists()
+        ), "last-run must NOT be written when the claude session fails (#711)"
 
     def test_wakeup_dropped_to_overseer(self, cron):
         r = cron.run()
@@ -1154,6 +1184,7 @@ class TestSuspension:
     def test_suspended_project_exits_0_without_claude(self, cron):
         """Marker present → exit 0, Claude never invoked."""
         import json
+
         cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
         cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
         r = cron.run()
@@ -1164,6 +1195,7 @@ class TestSuspension:
     def test_suspended_project_logs_clear_hint(self, cron):
         """Log message includes the --clear hint so the operator knows how to resume."""
         import json
+
         cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
         cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
         r = cron.run()
@@ -1172,8 +1204,11 @@ class TestSuspension:
     def test_suspended_until_future_exits_0(self, cron):
         """Marker with future --until date → still suspended."""
         import json
+
         cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
-        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z", "until": "2099-12-31"}))
+        cron.suspend_file().write_text(
+            json.dumps({"suspended_at": "2026-06-23T00:00:00Z", "until": "2099-12-31"})
+        )
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert "[SUSPENDED]" in r.stdout
@@ -1182,8 +1217,11 @@ class TestSuspension:
     def test_suspended_until_past_removes_marker_and_runs(self, cron):
         """Marker with expired --until → marker removed, cycle proceeds normally."""
         import json
+
         cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
-        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-01-01T00:00:00Z", "until": "2026-01-02"}))
+        cron.suspend_file().write_text(
+            json.dumps({"suspended_at": "2026-01-01T00:00:00Z", "until": "2026-01-02"})
+        )
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert "expired" in r.stdout
@@ -1290,9 +1328,9 @@ class TestAgentAvailability:
         r = cron.run(env_overrides={"HOS_TEST_AA_QUERY_FAIL": "1"})
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.claude_ran()
-        assert not cron.aa_issue_created(), (
-            "dedup query failed → must fail closed and NOT file an issue"
-        )
+        assert (
+            not cron.aa_issue_created()
+        ), "dedup query failed → must fail closed and NOT file an issue"
         assert "fail-closed" in r.stdout
 
     def test_comments_and_blanks_in_agents_list_ignored(self, cron):
@@ -1373,10 +1411,12 @@ class TestCycleStartBaselineCowpat:
         """Baseline fails with no existing broken-state issue → needs-human issue
         filed, Claude not launched, exit 1."""
         cron.git_init_repo()
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "1",
-            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
         assert r.returncode == 1, r.stdout + r.stderr
         assert "BASELINE TESTS FAILED" in r.stdout
         assert cron.aa_issue_created(), "expected a broken-state needs-human issue"
@@ -1385,10 +1425,12 @@ class TestCycleStartBaselineCowpat:
     def test_baseline_failure_duplicate_issue_guard(self, cron):
         """Baseline fails but a broken-state issue is already open → no duplicate."""
         cron.git_init_repo()
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "1",
-            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1",
+            }
+        )
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.aa_issue_created(), "existing issue → must not file a duplicate"
         assert "already open" in r.stdout
@@ -1398,14 +1440,16 @@ class TestCycleStartBaselineCowpat:
         """A broken-state dedup-query error must NOT default the count to 0 and
         file a fresh issue every cycle — fail closed, skip filing, warn."""
         cron.git_init_repo()
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "1",
-            "HOS_TEST_AA_QUERY_FAIL": "1",
-        })
-        assert r.returncode == 1, r.stdout + r.stderr
-        assert not cron.aa_issue_created(), (
-            "dedup query failed → must fail closed and NOT file an issue"
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_AA_QUERY_FAIL": "1",
+            }
         )
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert (
+            not cron.aa_issue_created()
+        ), "dedup query failed → must fail closed and NOT file an issue"
         assert "fail-closed" in r.stdout
         assert not cron.claude_ran()
 
@@ -1438,10 +1482,12 @@ class TestBaselineRepairMode:
     def test_default_mode_still_halts_on_assertion_failure(self, cron):
         """No <project>_baseline_on_red set → unchanged legacy halt behavior."""
         cron.git_init_repo()
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "1",
-            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.claude_ran()
         assert not cron.baseline_repair_state_file().exists()
@@ -1464,9 +1510,7 @@ class TestBaselineRepairMode:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
         prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1485,10 +1529,12 @@ class TestBaselineRepairMode:
         worker cannot fix broken infrastructure."""
         cron.git_init_repo()
         cron.set_baseline_on_red("repair")
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "2",
-            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "2",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
         assert r.returncode == 1, r.stdout + r.stderr
         assert not cron.claude_ran()
         assert cron.aa_issue_created()
@@ -1501,11 +1547,13 @@ class TestBaselineRepairMode:
         cron.set_baseline_on_red("repair")
         cron.baseline_repair_state_file().parent.mkdir(parents=True, exist_ok=True)
         cron.baseline_repair_state_file().write_text("3\n")  # already used all 3 attempts
-        r = cron.run(env_overrides={
-            "HOS_TEST_INNER_LOOP_EXIT": "1",
-            "HOS_BASELINE_REPAIR_MAX_ATTEMPTS": "3",
-            "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_BASELINE_REPAIR_MAX_ATTEMPTS": "3",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
         assert r.returncode == 1, r.stdout + r.stderr
         assert "repair exhausted" in r.stdout
         assert cron.aa_issue_created(), "exhausted repair mode must still escalate to a human"
@@ -1527,15 +1575,15 @@ class TestPRRoutingSkip:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting human merge" in r.stdout
         assert stdin_capture.exists(), "claude must still launch for Step 0 triage"
@@ -1552,11 +1600,13 @@ class TestPRRoutingSkip:
         to #1198) overwrites it with "worker-cycle-complete" before the script
         exits — a superset outcome (the overseer still gets pinged, now with
         confirmation the full cycle, including Step 0 triage, ran)."""
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert cron.wakeup_overseer.exists(), "overseer wakeup must be dropped"
         payload = cron.wakeup_overseer.read_text()
@@ -1564,43 +1614,52 @@ class TestPRRoutingSkip:
 
     def test_awaiting_merge_stamps_last_run(self, cron):
         """Skipped cycle still stamps last-run for diagnostic visibility."""
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert cron.last_run_file.exists(), "last-run must be stamped on skip"
 
     def test_changes_requested_launches_claude(self, cron):
         """PR with CHANGES_REQUESTED → worker must fix, Claude is launched."""
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "1",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "1",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
 
     def test_unapproved_pr_launches_claude(self, cron):
         """PR with no approvals yet → not 'awaiting merge', Claude launched."""
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "0",  # not yet approved
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",  # not yet approved
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
 
     def test_overseer_role_not_subject_to_pr_routing(self, cron):
         """PR routing skip applies only to worker — overseer always launches."""
-        r = cron.run(role="overseer", env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            },
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting" not in r.stdout
         assert cron.claude_ran()
@@ -1611,18 +1670,131 @@ class TestPRRoutingSkip:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
-        r = cron.run(role="overseer", env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            },
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "NEW WORK:" not in context
+
+
+# ───────────────────────── Actionable-work gate (#1395) ───────────────────────
+class TestActionableWorkGate:
+    """The worker's actionable-work gate runs before git sync and the baseline
+    test suite, skipping the cycle early when there is genuinely nothing to do.
+
+    A single query failure must never be misread as "empty" (mirrors #915) —
+    the gate only skips when every signal query succeeds AND every signal is
+    empty. The `cron` fixture's default env already sets
+    HOS_TEST_MILESTONELESS_ISSUES=9001, so tests here override it (and any
+    other signal under test) explicitly.
+    """
+
+    def test_no_signals_skips_before_sync_and_baseline(self, cron):
+        """No milestone-less issue, release request, open PR, or next-work
+        candidate → cycle exits 0 before git sync/baseline, Claude never runs,
+        but last-run is still stamped."""
+        r = cron.run(env_overrides={"HOS_TEST_MILESTONELESS_ISSUES": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" in r.stdout
+        assert not cron.claude_ran()
+        assert not cron.baseline_ran()
+        assert cron.last_run_file.exists()
+
+    def test_milestoneless_issue_alone_proceeds(self, cron):
+        """A milestone-less issue alone is sufficient to make the cycle proceed."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "42",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_open_pr_alone_proceeds(self, cron):
+        """An open PR alone is sufficient to make the cycle proceed."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_release_request_alone_proceeds(self, cron):
+        """An open release-request issue alone is sufficient to make the cycle
+        proceed."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_RELEASE_REQUESTS": "#1300 Ship v0.6.1 [release-request] assignees=0",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_next_work_candidate_alone_proceeds(self, cron):
+        """A next-work candidate alone is sufficient to make the cycle proceed.
+        Milestone resolution is skipped by setting HOS_TARGET_MILESTONE_NUMBER
+        directly (mirrors the REST-lookup-skip pattern the launcher itself
+        supports)."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES": "#901 Some candidate issue",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_query_failure_does_not_skip(self, cron):
+        """A query failure is "unknown", never "empty" — it must never cause a
+        skip on its own (mirrors #915)."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_PR_FETCH_FAIL": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_overseer_role_not_subject_to_this_gate(self, cron):
+        """The gate's signals are worker-only — an overseer cycle with no
+        milestone-less issues and no open PRs still hits the (unchanged,
+        pre-existing) overseer "no open PRs" skip, not this gate. Confirms the
+        two skip paths don't cross-contaminate."""
+        r = cron.run(
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+            },
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert "no open PRs" in r.stdout
+        assert not cron.claude_ran()
 
 
 # ──────────────────── Overseer open-PR fetch failure (#915) ──────────────────
@@ -1643,17 +1815,17 @@ class TestOverseerPRFetchFailure:
     def test_fetch_failure_does_not_stamp_last_run(self, cron):
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
         assert r.returncode == 0, r.stdout + r.stderr
-        assert not self._overseer_last_run(cron).exists(), (
-            "a fetch failure must not stamp last-run — next cycle must retry"
-        )
+        assert not self._overseer_last_run(
+            cron
+        ).exists(), "a fetch failure must not stamp last-run — next cycle must retry"
 
     def test_fetch_failure_is_distinct_from_empty(self, cron):
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "open-PR fetch failed" in r.stdout
-        assert "no open PRs" not in r.stdout, (
-            "fetch failure must not be masked as a genuine empty-PR cycle"
-        )
+        assert (
+            "no open PRs" not in r.stdout
+        ), "fetch failure must not be masked as a genuine empty-PR cycle"
 
     def test_fetch_failure_does_not_launch_claude(self, cron):
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_PR_FETCH_FAIL": "1"})
@@ -1665,9 +1837,9 @@ class TestOverseerPRFetchFailure:
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": ""})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "no open PRs" in r.stdout
-        assert self._overseer_last_run(cron).exists(), (
-            "a genuine empty-PR cycle still stamps last-run"
-        )
+        assert self._overseer_last_run(
+            cron
+        ).exists(), "a genuine empty-PR cycle still stamps last-run"
         assert not cron.claude_ran()
 
 
@@ -1684,9 +1856,9 @@ class TestMissingPromptFile:
         cron.prompt_file("worker").unlink()
         r = cron.run()
         assert r.returncode == 78, r.stdout + r.stderr
-        assert not cron.claude_ran(), (
-            "a missing prompt must NOT launch a guardrail-free bypassPermissions session"
-        )
+        assert (
+            not cron.claude_ran()
+        ), "a missing prompt must NOT launch a guardrail-free bypassPermissions session"
         assert "role prompt file missing" in r.stdout
 
     def test_missing_worker_prompt_does_not_stamp_last_run(self, cron):
@@ -1724,16 +1896,14 @@ class TestWorkingDirectoryInjection:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         stdin_text = stdin_capture.read_text()
-        assert stdin_text.startswith("WORKING DIRECTORY:"), (
-            "First line must be the injected WORKING DIRECTORY"
-        )
+        assert stdin_text.startswith(
+            "WORKING DIRECTORY:"
+        ), "First line must be the injected WORKING DIRECTORY"
         assert str(cron.repo) in stdin_text, "Injected path must match REPO_ROOT"
         assert "hello from prompt" in stdin_text
 
@@ -1751,7 +1921,7 @@ class TestWorkingDirectoryInjection:
         _write_exec(
             cron.bindir / "claude",
             "#!/usr/bin/env bash\n"
-            'cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n'
+            "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
             f'pwd -P > "{pwd_capture}"\n'
             "exit 0\n",
         )
@@ -1767,26 +1937,26 @@ class TestWorkingDirectoryInjection:
     def test_no_hardcoded_paths_in_worker_prompt(self):
         """worker-cron-prompt.md must contain no absolute paths (regression guard)."""
         prompt = (
-            Path(__file__).parent.parent.parent
-            / "bootstrap" / "worker-cron-prompt.md"
+            Path(__file__).parent.parent.parent / "bootstrap" / "worker-cron-prompt.md"
         ).read_text()
         import re
-        hardcoded = re.findall(r'(?:^|\s)(/(?:home|Users)/\S+)', prompt, re.MULTILINE)
-        assert not hardcoded, (
-            f"Hardcoded absolute paths found in worker-cron-prompt.md: {hardcoded}"
-        )
+
+        hardcoded = re.findall(r"(?:^|\s)(/(?:home|Users)/\S+)", prompt, re.MULTILINE)
+        assert (
+            not hardcoded
+        ), f"Hardcoded absolute paths found in worker-cron-prompt.md: {hardcoded}"
 
     def test_no_hardcoded_paths_in_overseer_prompt(self):
         """overseer-cron-prompt.md must contain no absolute paths (regression guard)."""
         prompt = (
-            Path(__file__).parent.parent.parent
-            / "bootstrap" / "overseer-cron-prompt.md"
+            Path(__file__).parent.parent.parent / "bootstrap" / "overseer-cron-prompt.md"
         ).read_text()
         import re
-        hardcoded = re.findall(r'(?:^|\s)(/(?:home|Users)/\S+)', prompt, re.MULTILINE)
-        assert not hardcoded, (
-            f"Hardcoded absolute paths found in overseer-cron-prompt.md: {hardcoded}"
-        )
+
+        hardcoded = re.findall(r"(?:^|\s)(/(?:home|Users)/\S+)", prompt, re.MULTILINE)
+        assert (
+            not hardcoded
+        ), f"Hardcoded absolute paths found in overseer-cron-prompt.md: {hardcoded}"
 
 
 # ─────────────────────── Pre-computed cycle context (#792) ─────────────────────
@@ -1798,9 +1968,7 @@ class TestCycleContextBlock:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
         prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1823,11 +1991,13 @@ class TestCycleContextBlock:
         Stage 0 item 2 — previously invisible)."""
         stdin_capture = self._setup_stdin_capture(cron)
         # PR_AP=0: unapproved → routing marks needs-attention → Claude launched
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_AP": "0",
-            "HOS_TEST_PR_CR": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_CR": "0",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
@@ -1843,11 +2013,13 @@ class TestCycleContextBlock:
     def test_context_block_needs_fix_directive(self, cron):
         """A PR with CHANGES_REQUESTED → BLOCKED directive cites needs-fix."""
         stdin_capture = self._setup_stdin_capture(cron)
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "1",
-            "HOS_TEST_PR_AP": "1",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "1",
+                "HOS_TEST_PR_AP": "1",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "NEW WORK: BLOCKED" in context
@@ -1856,11 +2028,13 @@ class TestCycleContextBlock:
     def test_context_block_three_open_prs(self, cron):
         """3 open bot PRs → context block lists all three numbers."""
         stdin_capture = self._setup_stdin_capture(cron)
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856 857 858",
-            "HOS_TEST_PR_AP": "0",
-            "HOS_TEST_PR_CR": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857 858",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_CR": "0",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
@@ -1884,11 +2058,13 @@ class TestCycleContextBlock:
         """All PRs awaiting merge → new work blocked, but Claude still launches
         for Step 0 triage and receives the context block (#1198 Stage 0 item 3)."""
         stdin_capture = self._setup_stdin_capture(cron)
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_AP": "1",
-            "HOS_TEST_PR_CR": "0",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_CR": "0",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "awaiting human merge" in r.stdout
         context = stdin_capture.read_text()
@@ -1907,9 +2083,7 @@ class TestReleaseRequestContextBlock:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
         prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1919,10 +2093,12 @@ class TestReleaseRequestContextBlock:
     def test_open_release_request_appears_in_worker_prompt(self, cron):
         stdin_capture = self._setup_stdin_capture(cron)
         fake_line = "#1300 Ship v0.6.1 [release-request] assignees=0"
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "",
-            "HOS_TEST_RELEASE_REQUESTS": fake_line,
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_RELEASE_REQUESTS": fake_line,
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "### Open release requests (NG3b)" in context
@@ -1930,10 +2106,12 @@ class TestReleaseRequestContextBlock:
 
     def test_no_release_requests_shows_none(self, cron):
         stdin_capture = self._setup_stdin_capture(cron)
-        r = cron.run(env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "",
-            "HOS_TEST_RELEASE_REQUESTS": "",
-        })
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_RELEASE_REQUESTS": "",
+            }
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "### Open release requests (NG3b)" in context
@@ -1948,16 +2126,17 @@ class TestReleaseRequestContextBlock:
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
-            "#!/usr/bin/env bash\n"
-            f'cat > "{stdin_capture}"\n'
-            "exit 0\n",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
         )
-        r = cron.run(role="overseer", env_overrides={
-            "HOS_TEST_OPEN_PR_NUMS": "856",
-            "HOS_TEST_PR_CR": "0",
-            "HOS_TEST_PR_AP": "1",
-            "HOS_TEST_RELEASE_REQUESTS": "#1300 Ship v0.6.1 [release-request] assignees=0",
-        })
+        r = cron.run(
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_RELEASE_REQUESTS": "#1300 Ship v0.6.1 [release-request] assignees=0",
+            },
+        )
         assert r.returncode == 0, r.stdout + r.stderr
         context = stdin_capture.read_text()
         assert "Open release requests (NG3b)" not in context
@@ -1996,9 +2175,7 @@ _SYNC_FUNC = _extract_sync_audit_logs_func()
 
 
 def _git(*args, cwd=None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git"] + list(args), cwd=cwd, check=True, capture_output=True, text=True
-    )
+    return subprocess.run(["git"] + list(args), cwd=cwd, check=True, capture_output=True, text=True)
 
 
 def _make_repos(tmp_path: Path) -> tuple[Path, Path]:
@@ -2022,20 +2199,23 @@ def _run_sync(local: Path, env_extra=None) -> subprocess.CompletedProcess:
     script = (
         "#!/usr/bin/env bash\n"
         "set -uo pipefail\n"
-        'LOG_PREFIX="[test]"\n'
-        + _SYNC_FUNC
-        + f'\n_sync_audit_logs "{local}"\n'
+        'LOG_PREFIX="[test]"\n' + _SYNC_FUNC + f'\n_sync_audit_logs "{local}"\n'
     )
     return subprocess.run(
         [BASH, "-c", script],
-        capture_output=True, text=True, timeout=30, check=False, env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env=env,
     )
 
 
 def _remote_branch_exists(remote: Path, branch: str) -> bool:
     r = subprocess.run(
         ["git", "ls-remote", "--exit-code", str(remote), branch],
-        capture_output=True, check=False,
+        capture_output=True,
+        check=False,
     )
     return r.returncode == 0
 
@@ -2043,7 +2223,10 @@ def _remote_branch_exists(remote: Path, branch: str) -> bool:
 def _files_on_branch(remote: Path, branch: str) -> list[str]:
     r = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", f"refs/heads/{branch}"],
-        cwd=remote, capture_output=True, text=True, check=False,
+        cwd=remote,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return r.stdout.splitlines()
 
@@ -2064,9 +2247,9 @@ class TestSyncAuditLogs:
         assert r.returncode == 0, r.stdout + r.stderr
         assert _remote_branch_exists(remote, "audit-log")
         tree = _files_on_branch(remote, "audit-log")
-        assert any("cycle-start" in f for f in tree), (
-            f"Expected audit record on audit-log branch, got: {tree}"
-        )
+        assert any(
+            "cycle-start" in f for f in tree
+        ), f"Expected audit record on audit-log branch, got: {tree}"
 
     def test_retired_oversight_log_jsonl_not_synced(self, tmp_path):
         """Regression (#1303): the retired single-file audit/oversight-log.jsonl
@@ -2080,9 +2263,9 @@ class TestSyncAuditLogs:
 
         r = _run_sync(local)
         assert r.returncode == 0, r.stdout + r.stderr
-        assert not _remote_branch_exists(remote, "audit-log"), (
-            "the retired oversight-log.jsonl path must not trigger a sync"
-        )
+        assert not _remote_branch_exists(
+            remote, "audit-log"
+        ), "the retired oversight-log.jsonl path must not trigger a sync"
 
     def test_already_synced_record_not_recopied(self, tmp_path):
         """A per-entry record already present on the base branch is skipped, but
@@ -2260,8 +2443,7 @@ class TestSyncAuditLogs:
         assert r.returncode == 0, r.stdout + r.stderr
 
         assert (
-            _git("-C", str(local), "symbolic-ref", "--short", "HEAD").stdout.strip()
-            == "feature-x"
+            _git("-C", str(local), "symbolic-ref", "--short", "HEAD").stdout.strip() == "feature-x"
         )
         assert _git("-C", str(local), "rev-parse", "HEAD").stdout.strip() == before_head
         staged = _git("-C", str(local), "diff", "--cached", "--name-only").stdout.split()
@@ -2290,6 +2472,6 @@ class TestSyncAuditLogs:
         assert _remote_branch_exists(remote, "audit-log")
         tree = _files_on_branch(remote, "audit-log")
         assert any("cycle-start" in f for f in tree), tree
-        assert "secret_feature.py" not in tree, (
-            f"feature change leaked onto audit-log branch: {tree}"
-        )
+        assert (
+            "secret_feature.py" not in tree
+        ), f"feature change leaked onto audit-log branch: {tree}"
