@@ -1,0 +1,1 @@
+{"event":"human-required","head_sha":"16e9d7cb5cf9b366a6ba17263b792a54c12fd6bf","pr":1402,"reason_category":"GATE_UNSATISFIED","summary":"docs/releases/v0.6.0.md is a protected surface (docs/releases/**, #761) -- release artifacts always require human approval regardless of risk tier; no human approval exists on current head SHA 16e9d7cb","timestamp":"2026-08-14T210514Z"}
