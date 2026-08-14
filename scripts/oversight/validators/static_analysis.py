@@ -69,8 +69,9 @@ def _run_semgrep(files: list[str]) -> tuple[list[dict], str, str | None]:
     to collapse to the same empty `[]`, making a broken scan indistinguishable
     from a clean one (#1087). status distinguishes the two: "not_installed"
     (expected/accepted degraded mode, callers stay silent) vs "error" (semgrep
-    ran but produced no usable output — a timeout or an output-format break —
-    which callers must surface, not silently score as clean).
+    ran but produced no usable output — a timeout, an output-format break, a
+    nonzero exit, or a partial scan reported in its own `errors` array — which
+    callers must surface, not silently score as clean) (#1369).
     """
     try:
         subprocess.run(["semgrep", "--version"], capture_output=True, check=True)
@@ -89,6 +90,20 @@ def _run_semgrep(files: list[str]) -> tuple[list[dict], str, str | None]:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return [], "error", "semgrep output unparseable — scan failed, cannot assess this signal"
+    # semgrep exit codes: 0 = clean scan, 1 = scan ran and found findings (also
+    # success). Anything else is a scan failure — the returncode was never
+    # checked, so a broken scan that still emitted a valid-but-empty JSON
+    # document (e.g. a rule-load or engine error) read as "ran clean" (#1369).
+    if result.returncode not in (0, 1):
+        return [], "error", (
+            f"semgrep exited {result.returncode} — scan failed, cannot assess this signal"
+        )
+    scan_errors = data.get("errors", [])
+    if scan_errors:
+        return [], "error", (
+            f"semgrep reported {len(scan_errors)} scan error(s) — partial scan, "
+            "cannot assess this signal"
+        )
     return data.get("results", []), "ok", None
 
 

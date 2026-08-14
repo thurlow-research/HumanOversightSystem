@@ -55,11 +55,12 @@ def _run_semgrep(files: list[str]) -> tuple[list[dict], str | None]:
     Run semgrep against the vendored ruleset and return (results, error).
 
     error is non-None when semgrep could not produce a usable result — the
-    tool is missing, the vendored ruleset is missing, or its output was
-    unparseable. Callers must propagate this as a validator-level ``error=``
-    so the aggregator EXCLUDES the highest-weight security dimension rather
-    than scoring a clean 0.0 (fail-open), matching the Python sibling's #917
-    fix.
+    tool is missing, the vendored ruleset is missing, its output was
+    unparseable, it exited with a failure code, or it reported partial-scan
+    errors in its own output. Callers must propagate this as a validator-level
+    ``error=`` so the aggregator EXCLUDES the highest-weight security
+    dimension rather than scoring a clean 0.0 (fail-open), matching the Python
+    sibling's #917 fix and its #1369 returncode/errors-array follow-up.
     """
     if not _RULESET.exists():
         return [], f"vendored semgrep ruleset missing: {_RULESET}"
@@ -75,6 +76,18 @@ def _run_semgrep(files: list[str]) -> tuple[list[dict], str | None]:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         return [], "semgrep output unparseable — scan failed, cannot assess security risk"
+    # semgrep exit codes: 0 = clean scan, 1 = scan ran and found findings (also
+    # success). Anything else is a scan failure — the returncode was never
+    # checked, so a broken scan that still emitted a valid-but-empty JSON
+    # document read as "ran clean" (#1369).
+    if result.returncode not in (0, 1):
+        return [], f"semgrep exited {result.returncode} — scan failed, cannot assess security risk"
+    scan_errors = data.get("errors", [])
+    if scan_errors:
+        return [], (
+            f"semgrep reported {len(scan_errors)} scan error(s) — partial scan, "
+            "cannot assess security risk"
+        )
     return data.get("results", []), None
 
 

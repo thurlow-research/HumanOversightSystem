@@ -372,6 +372,64 @@ class TestStaticAnalysisMocked:
         assert "semgrep_error" in result["raw_value"]
         assert any("semgrep did not complete" in item for item in result["checklist_items"])
 
+    # ── #1369: a nonzero semgrep exit or a populated `errors` array must not
+    # read the same as "semgrep ran clean" ────────────────────────────────────
+
+    def test_run_semgrep_nonzero_returncode_signals_error(self):
+        # semgrep exited 2 (a genuine scan failure, e.g. a rule-load or engine
+        # error) but still emitted valid, empty-findings JSON. Before #1369 the
+        # returncode was never checked, so this scored as a clean scan.
+        from static_analysis import _run_semgrep
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            return MagicMock(stdout=json.dumps({"results": [], "errors": []}), returncode=2)
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            results, status, error = _run_semgrep(["test.py"])
+        assert results == []
+        assert status == "error"
+        assert error is not None
+
+    def test_run_semgrep_errors_array_signals_error(self):
+        # semgrep exited 0 (findings-shaped success) but its own `errors` array
+        # is non-empty — a partial scan reported as if it were clean.
+        from static_analysis import _run_semgrep
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            return MagicMock(
+                stdout=json.dumps({"results": [], "errors": [{"message": "rule parse error"}]}),
+                returncode=0,
+            )
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            results, status, error = _run_semgrep(["test.py"])
+        assert results == []
+        assert status == "error"
+        assert error is not None
+
+    def test_semgrep_nonzero_returncode_does_not_exclude_dimension_but_is_flagged(self):
+        # Same shape as test_semgrep_failure_does_not_exclude_dimension_but_is_flagged
+        # above, but for the returncode failure mode rather than a timeout.
+        empty_bandit = json.dumps({"results": [], "metrics": {}})
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "bandit":
+                return MagicMock(stdout=empty_bandit, returncode=0)
+            if cmd[:2] == ["semgrep", "--version"]:
+                return MagicMock(returncode=0)
+            return MagicMock(stdout=json.dumps({"results": [], "errors": []}), returncode=2)
+
+        with patch("static_analysis.subprocess.run", side_effect=_side_effect):
+            result = sa_analyse(["test.py"])
+        assert result["error"] is None
+        assert result["raw_value"]["semgrep_status"] == "error"
+        assert "semgrep_error" in result["raw_value"]
+        assert any("semgrep did not complete" in item for item in result["checklist_items"])
+
 
 # ── hallucination_surface (mocked) ────────────────────────────────────────────
 
