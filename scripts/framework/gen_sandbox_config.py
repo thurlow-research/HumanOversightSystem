@@ -247,6 +247,16 @@ def validate_clone_dir(raw: str) -> Path:
     return resolved
 
 
+_GLOB_METACHARS = ("*", "?", "[", "]")
+# Printable ASCII plus the values this generator's own values are known to
+# need (none — paths are plain). Anything below 0x20 (control chars, tab, the
+# ESC that begins an ANSI escape sequence) or DEL (0x7f) is rejected outright:
+# these values are echoed back verbatim to the operator by echo_values(),
+# format_divergences(), and regenerate_command(), and a control/escape
+# character in one could visually spoof that output (cf. #1114).
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def normalize_path(raw: str, flag_name: str) -> str:
     """§3.3: applied identically to derived, env-sourced, flag-supplied, and
     sidecar-read values. A value is used literally: no ~ expansion, no
@@ -267,6 +277,20 @@ def normalize_path(raw: str, flag_name: str) -> str:
         raise UsageError(
             f"{flag_name} value {raw!r} itself contains a __PLACEHOLDER__ token — "
             "this is a usage error, not a template defect"
+        )
+    if any(ch in raw for ch in _GLOB_METACHARS):
+        raise UsageError(
+            f"{flag_name} value {raw!r} contains a glob metacharacter "
+            f"({', '.join(_GLOB_METACHARS)!s}); these values are substituted "
+            "directly into Claude Code permission-glob strings and a "
+            "metacharacter would silently broaden the resulting glob's "
+            "match scope"
+        )
+    if _CONTROL_CHAR_RE.search(raw):
+        raise UsageError(
+            f"{flag_name} value {raw!r} contains a non-printable or control "
+            "character (including ANSI escapes); these values are echoed back "
+            "to the operator and a control character could spoof that output"
         )
     return raw.rstrip("/")
 

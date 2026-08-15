@@ -607,6 +607,17 @@ def test_template_denies_values_sidecar_all_spellings():
     assert "Edit(/__PROJECT_ROOT__/.claude/hos-sandbox.values)" in deny
 
 
+def test_template_denywrite_covers_values_sidecar():
+    # The Edit-tool denies above stop the Edit tool only; a Bash-level write
+    # (python3 -c, tee, cp, ...) is allowlisted and would still be able to
+    # poison the sidecar without a matching OS-level sandbox.filesystem.denyWrite
+    # entry (the same class of gap fixed for bin/** — see the entry above it).
+    tmpl = json.loads(REAL_TEMPLATE_PATH.read_text())
+    deny_write = tmpl["sandbox"]["filesystem"]["denyWrite"]
+    assert "__PROJECT_ROOT__/bin" in deny_write
+    assert "__PROJECT_ROOT__/.claude/hos-sandbox.values" in deny_write
+
+
 def test_template_does_not_allow_bash_claude():
     tmpl = json.loads(REAL_TEMPLATE_PATH.read_text())
     assert "Bash(claude *)" not in tmpl["permissions"]["allow"]
