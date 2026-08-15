@@ -153,6 +153,8 @@
         "__HOME__/.codex",
         "__HOME__/.gemini",
         "__HOME__/.cache",
+        "__HOME__/.nvm",
+        "__HOME__/.config/hos/claude-auth.env",
         "__CLAUDE_PROJECT_STATE__"
       ],
       "allowWrite": [
