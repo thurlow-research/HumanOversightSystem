@@ -145,6 +145,14 @@ only. (`denyWrite` is a supported sibling of `denyRead`/`allowRead`/`allowWrite`
 in the filesystem sandbox schema — confirmed present in the Claude Code binary,
 resolving the "unverified, needs checking" flagged in #1185.)
 
+`denyWrite` also carries a second entry,
+`"__PROJECT_ROOT__/.claude/hos-sandbox.values"`, for the same reason: the
+`permissions.deny` `Edit(...)` denies on the `hos-sandbox.values` sidecar
+(#1221) stop only the Edit tool, and a Bash-level write is still allowlisted
+and would otherwise be able to poison the sidecar `--check` reads back for
+reproducibility. This closes that gap at the OS layer, matching `bin/**`'s
+treatment above.
+
 ### Arbitrary code execution is intentional, not an oversight
 
 `permissions.allow` grants `Bash(python3 *)`, `Bash(node *)`, `Bash(curl *)`,

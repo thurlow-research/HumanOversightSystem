@@ -175,7 +175,8 @@
         "/tmp"
       ],
       "denyWrite": [
-        "__PROJECT_ROOT__/bin"
+        "__PROJECT_ROOT__/bin",
+        "__PROJECT_ROOT__/.claude/hos-sandbox.values"
       ]
     },
     "network": {
