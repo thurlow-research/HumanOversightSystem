@@ -7,10 +7,17 @@ sandbox and permission policy.
 profile proven in production*, reconciled against the live config as of
 2026-08-02 (#1185). It is checked in so the policy is source-controlled and
 reviewable rather than living only in one operator's untracked
-`.claude/settings.local.json`. **It is not yet installed by `hos_install.sh`,
-and it is not yet applied to `worker` or `overseer`.** Both of those are
-v0.7.0 work, tracked at **#1146**. Reconciliation is not automatic — see §4
-item 7 for what still needs re-checking by hand after any further live edit.
+`.claude/settings.local.json`. As of #1221, the template is **generatable for
+`human`** via `scripts/framework/gen_sandbox_config.py`: it writes a clone's
+`.claude/settings.local.json` **only into a clone that has no existing policy
+file** — an existing file (usable or not) is always left untouched, never
+overwritten (2026-08-15 human ruling; there is no `--force`). `bin/hos-human`'s
+preflight (`--role human`) separately warns, non-blocking, on stderr when a
+clone's live file has since diverged from a fresh generation. **It is not yet
+installed by `hos_install.sh`, and it is not yet applied to `worker` or
+`overseer`.** Both of those are v0.7.0 work, tracked at **#1146**.
+Reconciliation is not automatic — see §4 item 7 for what still needs
+re-checking by hand after any further live edit.
 
 ---
 
@@ -200,11 +207,12 @@ as it exists; it does not pre-empt the design.
    on 2026-08-02; this template now matches, plus closes the Bash-write gap
    the hand-edit didn't cover.
 
-6. **Placeholder substitution must fail closed.** Every `__NAME__` must be
-   substituted at install time. An *unsubstituted* placeholder produces a policy
-   that silently denies what it was meant to allow, presenting as unexplained
-   tool failures rather than as a misconfiguration — the exact class of bug
-   already filed as #1114. Install must hard-fail on a surviving `__`.
+6. ~~**Placeholder substitution must fail closed.**~~ **Discharged (#1221,
+   AD-3).** `scripts/framework/gen_sandbox_config.py` hard-fails (exit 5) on
+   any surviving `__NAME__` in the serialized output *before* any filesystem
+   write of any kind — no partial file is ever written. Every `__NAME__` must
+   still be substituted at generation time; the generator now enforces this
+   mechanically rather than relying on install-time discipline.
 
 7. **Live-vs-template reconciliation is not fully closed.** Comparing this
    template (placeholders substituted) against the live, hand-edited
@@ -215,27 +223,44 @@ as it exists; it does not pre-empt the design.
      nested-Claude invocation should be a Human-only allowance or belong in the
      shared template for all roles (an autonomous role invoking `claude` on
      itself is a different risk shape than an interactive one doing so).
+     **#1221** confirms this stays live-only: `permissions.allow` is never
+     edited by the generator or its template reconciliation (an allow is not
+     monotonic — importing a live-only allow grants capability no reviewer
+     approved).
    - The live config's absolute-path `Read(...)`/`Edit(...)`/`Write(...)` entries
      are consistently double-slash (e.g. `Read(//home/scott/.../Worker/**)`),
      while this template's placeholder substitution (`__HOS_ROOT__/Worker/**` →
      a single leading slash) produces single-slash paths. Whether Claude Code's
      permission-glob matcher treats these differently is **unverified** — flag
      for the #1146 design chain rather than guess at security-relevant glob
-     semantics.
+     semantics. **#1221's** template reconciliation deliberately emits three
+     `bin/**` and six force-push deny spellings (relative, single-slash
+     absolute, double-slash absolute; see §3 above) *because* this item is
+     unresolved — the redundancy costs zero capability and may be pruned once
+     #1146 verifies the matcher.
+   - **New, routed to #1146:** `Edit(./.claude/settings.json)` and
+     `Edit(./.claude/settings.local.json)` carry the same latent
+     single-spelling gap as the pre-#1221 `bin/**` entry did, but #1221's
+     template reconciliation deliberately does not widen them — that is
+     outside its stated remit (the §5/#1221 reconciliation plus the new
+     `.claude/hos-sandbox.values` entries it introduces), not an oversight.
 
 ---
 
 ## 5. Placeholders
 
-| Placeholder | Meaning |
-|---|---|
-| `__HOS_ROOT__` | Parent directory holding the per-role clones |
-| `__PROJECT_ROOT__` | This role's own clone |
-| `__CONFIG_DIR__` | HOS config dir (`apps.env`, App private keys) |
-| `__HANDOFF_DIR__` | This role's handoff directory |
-| `__HOME__` | The service account's home directory |
-| `__ROLE__` | `human` \| `worker` \| `overseer` |
-| `__CLAUDE_PROJECT_STATE__` | Claude Code's per-project state dir for this clone |
+`scripts/framework/gen_sandbox_config.py` (#1221) is the generator that
+substitutes these. Third column per its §3.2 flag table.
+
+| Placeholder | Meaning | Generator flag / default |
+|---|---|---|
+| `__HOS_ROOT__` | Parent directory holding the per-role clones | `--hos-root`, derived: `--clone-dir`'s parent |
+| `__PROJECT_ROOT__` | This role's own clone | `--project-root`, derived: `realpath(--clone-dir)` |
+| `__CONFIG_DIR__` | HOS config dir (`apps.env`, App private keys) | `--config-dir`, derived: `${HOS_CONFIG_DIR:-$HOME/.config/hos}` |
+| `__HANDOFF_DIR__` | This role's handoff directory | `--handoff-dir`, **required-explicit — no default** |
+| `__HOME__` | The service account's home directory | `--home`, derived: `$HOME` |
+| `__ROLE__` | `human` \| `worker` \| `overseer` | `--role` (no separate flag of its own); only `human` is generatable — `worker`/`overseer` fail closed naming #1146 |
+| `__CLAUDE_PROJECT_STATE__` | Claude Code's per-project state dir for this clone | `--claude-project-state`, **required-explicit — no default** |
 
 ---
 
