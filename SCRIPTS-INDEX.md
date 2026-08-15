@@ -94,6 +94,7 @@ excluded.
 - `scripts/framework/config.sh` — HumanOversightSystem framework source configuration.
 - `scripts/framework/cut_release.sh` — cut a validated HOS release.
 - `scripts/framework/gen_codeowners.sh` — generate .github/CODEOWNERS from the canonical protected surface list (scripts/framework/protected_surfaces.txt), so CODEOWNERS and the require_human_approval status check can never drift (AGENT-IDENTITY.md §9).
+- `scripts/framework/gen_sandbox_config.py` — generate or check a clone's sandbox policy (#1221).
 - `scripts/framework/gen_scripts_index.sh` — generate SCRIPTS-INDEX.md, a directory-grouped index of every script and library module under bin/ (top-level), bootstrap/ (top-level), and scripts/ (recursive, including scripts/automation/lib/*.py), with a one-line description pulled from each file's header comment (.sh) or module docstring (.py).
 - `scripts/framework/install.sh` — install or update the agent pipeline framework in a project repo.
 - `scripts/framework/provision_agent_account.sh` — Configure a checkout to operate as an HOS machine account.
