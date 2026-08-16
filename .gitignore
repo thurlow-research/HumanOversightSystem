@@ -38,6 +38,8 @@ htmlcov/
 
 # Claude Code machine-local settings — host-specific paths, never commit
 .claude/settings.local.json
+.claude/hos-sandbox.values
+.claude/settings.local.json.bak-*
 .claude/hooks
 .claude/launch.json
 .claude/loop.md

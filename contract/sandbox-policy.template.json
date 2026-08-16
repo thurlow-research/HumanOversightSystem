@@ -102,9 +102,14 @@
       "Read(__CONFIG_DIR__/auditsync.pem)",
       "Edit(./.claude/settings.json)",
       "Edit(./.claude/settings.local.json)",
+      "Edit(./.claude/hos-sandbox.values)",
+      "Edit(__PROJECT_ROOT__/.claude/hos-sandbox.values)",
+      "Edit(/__PROJECT_ROOT__/.claude/hos-sandbox.values)",
       "Edit(./.claude/hooks/**)",
       "Edit(./.envrc)",
       "Edit(./bin/**)",
+      "Edit(__PROJECT_ROOT__/bin/**)",
+      "Edit(/__PROJECT_ROOT__/bin/**)",
       "Edit(__CONFIG_DIR__/**)",
       "Edit(__HOS_ROOT__/Worker/**)",
       "Edit(__HOS_ROOT__/Overseer/**)",
@@ -119,6 +124,8 @@
 
       "Bash(crontab *)",
       "Bash(sudo *)",
+      "Bash(git push* -f*)",
+      "Bash(git push*--force*)",
       "Bash(git push * --force*)",
       "Bash(git push * -f)",
       "Bash(git push -f *)",
@@ -168,7 +175,8 @@
         "/tmp"
       ],
       "denyWrite": [
-        "__PROJECT_ROOT__/bin"
+        "__PROJECT_ROOT__/bin",
+        "__PROJECT_ROOT__/.claude/hos-sandbox.values"
       ]
     },
     "network": {

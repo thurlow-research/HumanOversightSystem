@@ -21,8 +21,10 @@
 set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
 
-# Preflight -- fail fast before spending any tokens.
-bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" \
+# Preflight -- fail fast before spending any tokens. --role human enables the
+# opt-in sandbox-policy currency check (#1221, AD-6); a divergence warns on
+# stderr without blocking session start.
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --role human \
   || { echo "Preflight failed -- fix setup before starting a session"; exit 1; }
 
 # Auth -- temp-file source pattern (NOT `source <(...)`; see get_app_token.sh
