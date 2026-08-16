@@ -747,3 +747,55 @@ def test_untouched_run_leaves_existing_sidecar_byte_identical(tmp_path):
 
     assert gsc.main(_gen_args(clone)) == gsc.EXIT_OK  # USABLE branch this time
     assert sidecar.read_bytes() == before
+
+
+# ── New tests (#1423 follow-up) ──────────────────────────────────────────────
+# _compare_nodes()'s positional/canonicalize() branch (arrays of objects, e.g.
+# hooks.SessionStart — the case its own comment cites as motivating) was live,
+# reachable code with no direct coverage: the --check CLI tests above only
+# cover the missing-live-file and surviving-placeholder cases, and the AC4
+# delta-table tests re-derive set differences without calling compare() at
+# all. These call gsc.compare() directly against object-array shapes.
+
+
+def _hook_doc(command: str) -> str:
+    return json.dumps(
+        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}
+    )
+
+
+def test_compare_real_template_session_start_hook_is_object_array():
+    template = json.loads(REAL_TEMPLATE_PATH.read_text())
+    session_start = template["hooks"]["SessionStart"]
+    assert isinstance(session_start, list) and session_start
+    assert isinstance(session_start[0], dict)
+
+
+def test_compare_object_array_key_order_is_not_a_divergence():
+    generated = json.dumps({"hooks": {"SessionStart": [{"a": 1, "b": 2}]}})
+    live = json.dumps({"hooks": {"SessionStart": [{"b": 2, "a": 1}]}})
+    assert gsc.compare(generated, live) == []
+
+
+def test_compare_object_array_element_change_is_positional_changed():
+    generated = _hook_doc("echo one")
+    live = _hook_doc("echo two")
+    findings = gsc.compare(generated, live)
+    assert len(findings) == 1
+    assert findings[0].kind == "CHANGED"
+    assert findings[0].path == "hooks.SessionStart[0]"
+
+
+def test_compare_object_array_extra_and_missing_elements():
+    shorter = json.dumps({"a": [{"x": 1}]})
+    longer = json.dumps({"a": [{"x": 1}, {"x": 2}]})
+
+    findings = gsc.compare(shorter, longer)
+    assert len(findings) == 1
+    assert findings[0].kind == "EXTRA"
+    assert findings[0].path == "a[1]"
+
+    findings = gsc.compare(longer, shorter)
+    assert len(findings) == 1
+    assert findings[0].kind == "MISSING"
+    assert findings[0].path == "a[1]"
