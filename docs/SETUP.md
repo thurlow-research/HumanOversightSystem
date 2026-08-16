@@ -239,6 +239,21 @@ The sweep agent categorizes your diff and drives all relevant reviews (code-revi
 
 ---
 
+## Optional: autonomous worker/overseer operation
+
+Everything above installs the framework for **interactive** use in a single
+repo. Running worker and overseer as **unattended cron agents** — the operating
+model this project uses on itself — is a separate, additional setup: three
+sibling clones (Human/Worker/Overseer), a shared `~/.config/hos/` project
+registry, and per-role GitHub App identities. It is not covered by Steps 0-7
+above. Set it up in this order:
+
+1. **[MACHINE-ACCOUNTS-SETUP.md](MACHINE-ACCOUNTS-SETUP.md)** — register the worker/overseer GitHub Apps and bot accounts.
+2. **[HUMAN-SETUP.md](HUMAN-SETUP.md)** — register the Human App and wire the human-proxy clone.
+3. **[CRON-SETUP.md](CRON-SETUP.md)** — create the Worker/Overseer sibling clones and register them in `~/.config/hos/projects.conf` so `bin/hos-cron` can drive them.
+
+---
+
 ## Reference: directory structure after install
 
 ```
