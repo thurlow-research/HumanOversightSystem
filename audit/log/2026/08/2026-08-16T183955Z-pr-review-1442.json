@@ -1,0 +1,9 @@
+{
+  "event": "pr-review",
+  "pr": 1442,
+  "decision": "AUTO_MERGE",
+  "tier": "LOW",
+  "reason": "docs-only rewrite of docs/MACHINE-ACCOUNTS-SETUP.md Steps 1-4 (fixes #1385), no protected surface, no CODEOWNERS match, not security-relevant, register completeness N/A (no step-manifest.yaml in this repo), within OVERSEER_CEILING",
+  "merge_commit_sha": "85f7abbb44f138e6675e3994ee1c95d4d6a8de6f",
+  "timestamp": "2026-08-16T18:39:55Z"
+}
