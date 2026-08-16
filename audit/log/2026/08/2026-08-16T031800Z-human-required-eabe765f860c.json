@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1432,"reason_category":"GATE_UNSATISFIED","summary":"PR #1432 touches bin/hos-human, matching the bin/** protected-surface glob and CODEOWNERS-human-owned /bin/ entry; no verified human approval exists on head c0f43b8d, so decide_merge_authority() returns HUMAN_REQUIRED regardless of the self-reported LOW tier.","timestamp":"2026-08-16T03:18:00Z"}
