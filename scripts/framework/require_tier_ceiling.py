@@ -340,6 +340,27 @@ def tier_exceeds_ceiling(tier: str, ceiling: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# compute_tier_for_pr — single source of truth for "what tier is this PR",
+# reused by require_overseer_approval.py's above-ceiling bypass (#1426) so
+# the tier-computation logic is not duplicated across the two gates.
+# ---------------------------------------------------------------------------
+
+def compute_tier_for_pr(repo: str, pr: str) -> str | None:
+    """Compute the PR's risk tier, or None if a real Python risk surface
+    exists but could not be scored (caller should fail closed).
+
+    A PR with no changed files is treated as SAFE (nothing to score).
+    """
+    changed = get_changed_files(pr)
+    if not changed:
+        print(
+            "require_tier_ceiling: no changed files reported (treating as SAFE)."
+        )
+        return "SAFE"
+    return compute_tier(repo, pr, changed)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -387,15 +408,9 @@ def main() -> int:
         return 0
 
     # Overseer has approved: compute the tier and compare to ceiling
-    changed = get_changed_files(args.pr)
-    if not changed:
-        # No changed files is unusual but not an error — treat as SAFE
-        print(
-            "require_tier_ceiling: no changed files reported (treating as SAFE — pass)."
-        )
-        return 0
-
-    tier = compute_tier(repo, args.pr, changed)
+    # (no changed files reported → compute_tier_for_pr returns "SAFE", which
+    # trivially passes below since SAFE is the lowest tier.)
+    tier = compute_tier_for_pr(repo, args.pr)
     if tier is None:
         print(
             "require_tier_ceiling: overseer approved, but the PR's changed "

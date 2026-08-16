@@ -13,6 +13,13 @@ name: Overseer tier-ceiling gate
 # Pairs with "require-human-approval" to form the two-gate server-side
 # enforcement layer.
 #
+# Above-ceiling bypass (#1426): when a PR's tier exceeds OVERSEER_CEILING the
+# overseer correctly withholds APPROVED authority (docs/FABERIX-ROLES.md §5),
+# so this check's "overseer has not approved → pass" path above is how the PR
+# clears here. require-overseer-approval.py separately requires either the
+# overseer's APPROVED review or a human APPROVED review on such a PR — see
+# that script's header for the full above-ceiling bypass condition.
+#
 # Re-evaluated on review submit/dismiss by .github/workflows/rerun-gate-checks.yml (#1299).
 
 # SECURITY: uses pull_request_TARGET, not pull_request. Under pull_request_target
