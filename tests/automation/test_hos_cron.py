@@ -85,6 +85,9 @@ class CronEnv:
             '  echo "cycle_id=${HOS_CYCLE_ID:-UNSET}"\n'
             '  echo "cycle_role=${HOS_CYCLE_ROLE:-UNSET}"\n'
             '  echo "cycle_token=${HOS_CYCLE_TOKEN:-UNSET}"\n'
+            # #1434: proves the resolved session-timeout value (flag/env/conf/
+            # default precedence) reached the launched session's environment.
+            '  echo "max_seconds=${HOS_CRON_MAX_SECONDS:-UNSET}"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -532,6 +535,19 @@ class CronEnv:
         with conf.open("a") as f:
             f.write(f"{project}_baseline_on_red={mode}\n")
 
+    def set_max_seconds_conf(self, value: str, project="hos") -> None:
+        """Append <project>_max_seconds=<value> to projects.conf (#1434)."""
+        conf = self.home / ".config" / "hos" / "projects.conf"
+        with conf.open("a") as f:
+            f.write(f"{project}_max_seconds={value}\n")
+
+    def resolved_max_seconds(self) -> str:
+        """The HOS_CRON_MAX_SECONDS value seen by the launched claude session."""
+        for line in self.claude_record().splitlines():
+            if line.startswith("max_seconds="):
+                return line.split("=", 1)[1]
+        return ""
+
     def claude_record(self) -> str:
         return self.claude_log.read_text() if self.claude_log.exists() else ""
 
@@ -586,6 +602,71 @@ class TestRegistryResolution:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "no hos_config_dir" not in r.stdout
         assert cron.claude_ran()
+
+
+# ───────────────────── Session timeout resolution (#1434) ──────────────────
+# Precedence: --max-seconds flag > HOS_CRON_MAX_SECONDS env > <project>_max_seconds
+# in projects.conf > 1800 default. `run()`'s default env always sets
+# HOS_CRON_MAX_SECONDS=0 (so the launcher doesn't wrap the claude stub in
+# `timeout`) — tests below that exercise the conf/default tiers must override
+# it to "" so the "env absent" branch is genuinely reached.
+class TestMaxSecondsResolution:
+    def test_flag_wins_over_env_and_conf(self, cron):
+        cron.set_max_seconds_conf("300")
+        r = cron.run(
+            "--role", "worker", "--project", "hos", "--max-seconds", "5400",
+            env_overrides={"HOS_CRON_MAX_SECONDS": "900"},
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.resolved_max_seconds() == "5400"
+
+    def test_env_wins_over_conf(self, cron):
+        cron.set_max_seconds_conf("300")
+        r = cron.run(env_overrides={"HOS_CRON_MAX_SECONDS": "900"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.resolved_max_seconds() == "900"
+
+    def test_conf_used_when_flag_and_env_absent(self, cron):
+        cron.set_max_seconds_conf("300")
+        r = cron.run(env_overrides={"HOS_CRON_MAX_SECONDS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.resolved_max_seconds() == "300"
+
+    def test_default_used_when_nothing_set(self, cron):
+        r = cron.run(env_overrides={"HOS_CRON_MAX_SECONDS": ""})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.resolved_max_seconds() == "1800"
+
+    def test_zero_disables_cap_via_flag(self, cron):
+        r = cron.run("--role", "worker", "--project", "hos", "--max-seconds", "0")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.resolved_max_seconds() == "0"
+        assert cron.claude_ran()
+
+    def test_malformed_flag_value_fails_loudly(self, cron):
+        r = cron.run("--role", "worker", "--project", "hos", "--max-seconds", "notanumber")
+        assert r.returncode == 1
+        out = r.stdout + r.stderr
+        assert "invalid max-seconds value 'notanumber'" in out
+        assert "--max-seconds flag" in out
+        assert not cron.claude_ran()
+
+    def test_malformed_env_value_fails_loudly(self, cron):
+        r = cron.run(env_overrides={"HOS_CRON_MAX_SECONDS": "notanumber"})
+        assert r.returncode == 1
+        out = r.stdout + r.stderr
+        assert "invalid max-seconds value 'notanumber'" in out
+        assert "HOS_CRON_MAX_SECONDS env" in out
+        assert not cron.claude_ran()
+
+    def test_malformed_conf_value_fails_loudly(self, cron):
+        cron.set_max_seconds_conf("notanumber")
+        r = cron.run(env_overrides={"HOS_CRON_MAX_SECONDS": ""})
+        assert r.returncode == 1
+        out = r.stdout + r.stderr
+        assert "invalid max-seconds value 'notanumber'" in out
+        assert "hos_max_seconds in" in out
+        assert not cron.claude_ran()
 
 
 # ────────────────────────────── Overlap lock ───────────────────────────────

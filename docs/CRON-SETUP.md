@@ -77,7 +77,7 @@ logs a clear "refresh the token" hint; re-run `claude setup-token`.
 machine-local registry. Create `~/.config/hos/projects.conf`:
 
 ```ini
-# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release
+# <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release, max_seconds
 hos_config_dir=/home/scott/Code/HumanOversightSystem/.config/hos
 hos_worker_root=/home/scott/Code/HumanOversightSystem/Worker
 hos_overseer_root=/home/scott/Code/HumanOversightSystem/Overseer
@@ -172,9 +172,42 @@ Controls (all optional env overrides):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HOS_CRON_MAX_SECONDS` | `1800` | Wall-clock cap per session (`0` disables). Kills a hung/runaway session. |
+| `HOS_CRON_MAX_SECONDS` | `1800` | Wall-clock cap per session (`0` disables). Kills a hung/runaway session. See precedence below. |
 | `HOS_CRON_MAX_TURNS` | unset | Optional `--max-turns` backstop. Leave unset — a low cap truncates legitimate pipeline work. |
 | `HOS_CRON_AUTH_PROBE` | `0` | `1` spends a model turn pre-flighting auth. Off by default to save rate limit. |
+
+### Session timeout precedence (`--max-seconds`, #1434)
+
+The wall-clock cap has three ways to override the default, resolved in this
+order (highest wins):
+
+```
+--max-seconds <N>                 (highest — one-off invocation)
+HOS_CRON_MAX_SECONDS env          (crontab-wide, applies to every entry)
+<project>_max_seconds in projects.conf   (per-project default)
+1800 default                      (lowest)
+```
+
+`0` disables the cap at any tier. A non-numeric value from any source fails
+loudly and names the offending source — it never silently falls back to the
+default.
+
+```bash
+# One-off: this fire only, e.g. a work item known to be large.
+bin/hos-cron --role worker --project hos --max-seconds 5400
+
+# Per-project default: every fire for this project, without touching the
+# crontab or other projects' entries.
+echo "cps_max_seconds=3600" >> ~/.config/hos/projects.conf
+```
+
+**The default stays 1800 deliberately.** The cap is currently the only bound
+that reliably stops a hung/runaway session (`timeout` with no `--kill-after`
+or process-group kill — see #1146), and a cap that's routinely too small is a
+signal the work item should have been split, not a reason to raise the
+ceiling everywhere. Use `--max-seconds` for runs known to need more room, not
+as a blanket increase — each use is a data point that a build step was
+oversized.
 
 Every fire runs the cycle and spawns `claude` (#1196 removed the idle backoff
 that used to suppress fires with no recent activity — it existed to reduce

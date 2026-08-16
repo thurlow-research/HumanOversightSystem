@@ -5,7 +5,7 @@
 # with this wrapper so fixes propagate to all projects automatically.
 #
 # Usage:
-#   hos-cron --role worker|overseer --project <name>
+#   hos-cron --role worker|overseer --project <name> [--max-seconds <N>]
 #
 # Project registry: ~/.config/hos/projects.conf
 #   hos_config_dir=$HOME/Code/HOS/.config/hos
@@ -15,15 +15,27 @@
 #   cps_worker_root=$HOME/Code/CPS/Main
 #   cps_overseer_root=$HOME/Code/CPS/Main
 #   cps_baseline_on_red=repair   # optional (#959); default "halt" — see below
+#   cps_max_seconds=3600         # optional (#1434); default 1800 — see below
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
 # This runs headless claude on the user's Claude subscription. Without it, cron falls
 # through to API-key billing. Override path with HOS_CLAUDE_AUTH_ENV.
 #
+# Session timeout (#1434): the wall-clock cap on the claude session is resolved
+# in this order, highest wins — a non-numeric value from any source fails
+# loudly and names the offending source, rather than silently falling back:
+#   --max-seconds <N>                 (highest)
+#   HOS_CRON_MAX_SECONDS env
+#   <project>_max_seconds in projects.conf
+#   1800 default                      (lowest)
+# `0` disables the cap at any tier. The default stays 1800 deliberately — see
+# the "Explicit non-goal" section of #1434; use the flag for runs known to be
+# large, not a blanket raise.
+#
 # Env overrides:
 #   HOS_CLAUDE_AUTH_ENV         path to the OAuth token file (default ~/.config/hos/claude-auth.env)
-#   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables)
+#   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables) — see precedence above
 #   HOS_CRON_MAX_TURNS          optional --max-turns backstop (default unset = no cap)
 #   HOS_CRON_AUTH_PROBE         1 = run a model auth probe before work (default 0; costs a turn)
 #   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
@@ -85,12 +97,13 @@ fi
 source "$_GIT_CREDS_LIB"
 
 # ── Args ─────────────────────────────────────────────────────────────────────
-ROLE="" PROJECT=""
+ROLE="" PROJECT="" _MAX_SECONDS_FLAG=""
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --role)    ROLE="$2";    shift 2 ;;
-    --project) PROJECT="$2"; shift 2 ;;
-    *) echo "Usage: $0 --role worker|overseer --project <name>"; exit 1 ;;
+    --role)         ROLE="$2";            shift 2 ;;
+    --project)      PROJECT="$2";         shift 2 ;;
+    --max-seconds)  _MAX_SECONDS_FLAG="$2"; shift 2 ;;
+    *) echo "Usage: $0 --role worker|overseer --project <name> [--max-seconds <N>]"; exit 1 ;;
   esac
 done
 [[ -n "$ROLE" && -n "$PROJECT" ]] \
@@ -116,6 +129,34 @@ REPO_ROOT="$(_conf_val ${ROLE}_root)"
   || { echo "hos-cron: no ${PROJECT}_${ROLE}_root in $PROJECTS_CONF"; exit 1; }
 
 export HOS_CONFIG_DIR REPO_ROOT
+
+# ── Session timeout resolution (#1434) ────────────────────────────────────────
+# Precedence: --max-seconds flag > HOS_CRON_MAX_SECONDS env > <project>_max_seconds
+# in projects.conf > 1800 default. Resolved here — before the overlap lock below
+# derives its ceiling from HOS_CRON_MAX_SECONDS, and before the per-fire bounds
+# section reads it again — so both follow this resolution automatically. A
+# non-numeric value from any source fails loudly and names the offending
+# source, rather than silently falling back to the default (the #1398
+# anti-pattern this deliberately avoids).
+if [[ -n "$_MAX_SECONDS_FLAG" ]]; then
+  _max_secs_val="$_MAX_SECONDS_FLAG"
+  _max_secs_src="--max-seconds flag"
+elif [[ -n "${HOS_CRON_MAX_SECONDS:-}" ]]; then
+  _max_secs_val="$HOS_CRON_MAX_SECONDS"
+  _max_secs_src="HOS_CRON_MAX_SECONDS env"
+else
+  _max_secs_val="$(_conf_val max_seconds)"
+  if [[ -n "$_max_secs_val" ]]; then
+    _max_secs_src="${PROJECT}_max_seconds in $PROJECTS_CONF"
+  else
+    _max_secs_val="1800"
+    _max_secs_src="default"
+  fi
+fi
+[[ "$_max_secs_val" =~ ^[0-9]+$ ]] \
+  || { echo "hos-cron: invalid max-seconds value '$_max_secs_val' from $_max_secs_src — must be a non-negative integer"; exit 1; }
+HOS_CRON_MAX_SECONDS="$_max_secs_val"
+export HOS_CRON_MAX_SECONDS
 
 LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -985,13 +1026,13 @@ echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 # a hung/runaway autonomous session could burn it. The always-on bound is a
 # WALL-CLOCK timeout — it kills a stuck session without truncating legitimate
 # turn-by-turn pipeline work (a low --max-turns would leave a half-done task).
-#   HOS_CRON_MAX_SECONDS  wall-clock cap (default 1800 = 30m); 0 disables.
+#   HOS_CRON_MAX_SECONDS  wall-clock cap (default 1800 = 30m); 0 disables. Resolved
+#                         (flag/env/conf/default, #1434) well above — see there.
 #   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap).
 # NOTE: --allowedTools is intentionally NOT set. The worker dispatches sub-agents
 # (architect/coder/reviewers) and edits files; CLI-level tool restriction is the
 # wrong layer and would silently break autonomous work. Tool scope is governed by
 # the agent definitions and the LOOP prompt, not the launcher.
-HOS_CRON_MAX_SECONDS="${HOS_CRON_MAX_SECONDS:-1800}"
 # Portable timeout (GNU `timeout` absent on macOS; `gtimeout` via coreutils)
 if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
 elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"
