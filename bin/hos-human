@@ -21,6 +21,61 @@
 set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
 
+# Resolve HOS_CONFIG_DIR ourselves (#1411) -- do not rely on direnv/.envrc,
+# which is undocumented and uninstalled on consumer clones. Without this,
+# get_app_token.sh's `${HOS_CONFIG_DIR:-${HOME}/.config/hos}` fallback
+# silently mints from the machine-global apps.env instead of this project's
+# on any host that happens to have one configured (#1407) -- and the
+# identity guard below does not catch it, since HOS_EXPECTED_BOT_LOGIN is
+# read from that same wrongly-resolved file.
+#
+# Registry-first: reverse-match this clone's parent directory against a
+# <project>_worker_root / <project>_overseer_root entry in
+# ~/.config/hos/projects.conf (the same registry bin/hos-cron treats as
+# authoritative -- see its _conf_val) and take that project's config_dir.
+# There is no <project>_human_root key (docs/CRON-SETUP.md documents only
+# config_dir/worker_root/overseer_root/target_release), so a Human clone
+# can't key off its own root -- it keys off being the sibling of a
+# registered Worker or Overseer under the shared project parent directory.
+#
+# Falls back to path arithmetic (this clone's parent + /.config/hos) for an
+# unregistered project -- the same convention bootstrap/validate_setup.sh
+# already uses for its own project-level check (fixed in #1386) -- so a
+# first-install preflight still works before the project is registered.
+#
+# A single resolver shared by every call site (validate_setup.sh, hos-cron,
+# hos-human) is proposed in #1406; this is a smaller, Human-scoped fix.
+_PROJECTS_CONF="${HOME}/.config/hos/projects.conf"
+_config_dir=""
+if [[ -f "$_PROJECTS_CONF" ]]; then
+  while IFS='=' read -r _key _val; do
+    [[ "$_key" =~ ^([A-Za-z0-9_]+)_(worker|overseer)_root$ ]] || continue
+    _prefix="${BASH_REMATCH[1]}"
+    _root="${_val%/}"
+    [[ -n "$_root" && "$(dirname "$_root")" == "$(dirname "$REPO_ROOT")" ]] || continue
+    _cfg="$(grep "^${_prefix}_config_dir=" "$_PROJECTS_CONF" | head -1 | cut -d= -f2-)"
+    [[ -n "$_cfg" ]] || continue
+    if [[ -n "$_config_dir" && "$_cfg" != "$_config_dir" ]]; then
+      echo "hos-human: ambiguous project match for $REPO_ROOT in $_PROJECTS_CONF (candidates: $_config_dir, $_cfg) -- fix the registry" >&2
+      exit 1
+    fi
+    _config_dir="$_cfg"
+  done < <(grep -E '^[A-Za-z0-9_]+_(worker|overseer)_root=' "$_PROJECTS_CONF")
+fi
+[[ -n "$_config_dir" ]] || _config_dir="$(dirname "$REPO_ROOT")/.config/hos"
+export HOS_CONFIG_DIR="$_config_dir"
+
+# Fail loudly rather than let get_app_token.sh silently fall through to the
+# machine-global apps.env -- name both paths so the operator can tell which
+# one is missing and which one would otherwise have been used instead.
+_global_apps_env="${HOME}/.config/hos/apps.env"
+if [[ ! -f "$HOS_CONFIG_DIR/apps.env" ]]; then
+  echo "hos-human: apps.env not found at $HOS_CONFIG_DIR/apps.env (this clone's resolved project-level config)." >&2
+  echo "           Refusing to fall back to the machine-global $_global_apps_env." >&2
+  echo "           Fix: run hos_bootstrap.sh, or add/correct this project's entry in $_PROJECTS_CONF." >&2
+  exit 1
+fi
+
 # Preflight -- fail fast before spending any tokens. --role human enables the
 # opt-in sandbox-policy currency check (#1221, AD-6); a divergence warns on
 # stderr without blocking session start.
