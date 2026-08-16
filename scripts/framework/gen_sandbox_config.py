@@ -22,6 +22,16 @@ FR-7 "refuse without --force" design; see docs/v0.6.0/ADDENDUM-1221-…md):
     operator's own hand — `mv <live> <live>.bak-<UTC>` — is the only way to
     clear a file out of the way, and the tool prints that exact command.
 
+ENROLLMENT (2026-08-16 human ruling on #1221 — resolves the "remaining
+scope" item 2 raised against the ruling above): a present, parseable
+`settings.local.json` with no values sidecar yet is a hand-maintained clone
+that has never been enrolled. `generate` in that case writes ONLY the
+`.claude/hos-sandbox.values` sidecar, adopting the existing live file as this
+clone's baseline — `settings.local.json` itself is still never touched. This
+is what lets `--check` compare going forward instead of returning
+`EXIT_NOT_ENROLLED` forever. If the sidecar already exists, generate is a
+true no-op in this branch (nothing written, matching the invariant above).
+
 Usage:
     # Generate (writes only into a clone with no existing sandbox policy):
     python3 scripts/framework/gen_sandbox_config.py \\
@@ -785,10 +795,34 @@ def run_generate(
         return EXIT_UNUSABLE_EXISTING
 
     if state == "USABLE":
-        print(
-            "Sandbox policy: an existing settings.local.json already exists and "
-            "was LEFT UNCHANGED — nothing was written by this run."
-        )
+        values_path = clone_dir / VALUES_RELPATH
+        if values_path.exists():
+            # Already enrolled — a true no-op, matching the never-overwrite
+            # invariant for the sidecar too (ADDENDUM-1221 §3-follow-up,
+            # 2026-08-16 ruling).
+            print(
+                "Sandbox policy: an existing settings.local.json already exists and "
+                "was LEFT UNCHANGED — nothing was written by this run."
+            )
+        else:
+            # Not yet enrolled — write only the values sidecar, adopting the
+            # existing live file as this clone's baseline (2026-08-16 human
+            # ruling: enrollment never writes or modifies settings.local.json).
+            blob_sha, _dirty = provenance
+            meta = {
+                "META_VALUES_VERSION": VALUES_VERSION,
+                "META_GENERATED_AT": _now_iso(),
+                "META_GENERATOR": GENERATOR_RELPATH,
+                "META_TEMPLATE_BLOB_SHA": blob_sha if blob_sha else "unavailable",
+            }
+            write_values_file(values_path, values, meta)
+            print(
+                "Sandbox policy: an existing settings.local.json already exists and "
+                "was LEFT UNCHANGED — nothing was written to it by this run.\n"
+                f"Enrolled this clone: wrote {values_path}, adopting the existing "
+                "settings.local.json as its baseline. Future --check runs can now "
+                "compare it against the template instead of reporting NOT ENROLLED."
+            )
         try:
             findings = compare(rendered, live_text)  # type: ignore[arg-type]
             print(format_advisory(findings, live))

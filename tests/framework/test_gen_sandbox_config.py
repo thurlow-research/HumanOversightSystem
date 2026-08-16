@@ -357,9 +357,50 @@ def test_present_usable_file_is_left_untouched_and_exits_zero(tmp_path, capsys):
     assert rc == gsc.EXIT_OK
     assert live.read_bytes() == before_bytes
     assert live.stat().st_mtime_ns == before_mtime
-    assert not (clone / ".claude" / "hos-sandbox.values").exists()
     assert "already exists" in out.out
     assert "LEFT UNCHANGED" in out.out
+
+
+def test_present_usable_unenrolled_file_gets_sidecar_written_live_untouched(tmp_path, capsys):
+    """2026-08-16 enrollment ruling: a hand-maintained (present, no sidecar)
+    clone gets ONLY the values sidecar written, adopting the live file as
+    baseline — settings.local.json itself is still never touched."""
+    clone = _clone(tmp_path)
+    live = clone / ".claude" / "settings.local.json"
+    content = (
+        json.dumps({"hand": "edited", "permissions": {"allow": [], "deny": []}}, indent=2) + "\n"
+    )
+    live.write_text(content)
+    before_bytes = live.read_bytes()
+
+    rc = gsc.main(_gen_args(clone))
+    out = capsys.readouterr()
+
+    assert rc == gsc.EXIT_OK
+    assert live.read_bytes() == before_bytes
+    sidecar = clone / ".claude" / "hos-sandbox.values"
+    assert sidecar.exists()
+    assert "Enrolled this clone" in out.out
+
+    # Enrollment unblocks --check instead of reporting NOT ENROLLED forever.
+    check_rc = gsc.main(_gen_args(clone, check=True))
+    assert check_rc != gsc.EXIT_NOT_ENROLLED
+
+
+def test_present_usable_already_enrolled_file_leaves_sidecar_untouched(tmp_path):
+    clone = _clone(tmp_path)
+    live = clone / ".claude" / "settings.local.json"
+    content = (
+        json.dumps({"hand": "edited", "permissions": {"allow": [], "deny": []}}, indent=2) + "\n"
+    )
+    live.write_text(content)
+
+    assert gsc.main(_gen_args(clone)) == gsc.EXIT_OK  # enrolls: writes the sidecar
+    sidecar = clone / ".claude" / "hos-sandbox.values"
+    before = sidecar.read_bytes()
+
+    assert gsc.main(_gen_args(clone)) == gsc.EXIT_OK  # already enrolled: no-op
+    assert sidecar.read_bytes() == before
 
 
 @pytest.mark.parametrize("content", ["", "   \n\t  ", "{not json", "[1, 2, 3]"])
@@ -671,16 +712,41 @@ def test_validate_setup_without_role_does_not_run_check(tmp_path):
 
 
 def test_validate_setup_reports_not_enrolled_distinctly(tmp_path):
+    """2026-08-16 E-2 ruling: a missing policy (never enrolled) hard-blocks
+    the human preflight — distinct from divergence, which stays a warning."""
     config_dir = tmp_path / "config"
     repo = _preflight_tree(tmp_path, config_dir)
     _copy_generator_and_template(repo)
     # No generate call: no live file, no sidecar — never enrolled.
 
     result = _run_validate_setup(repo, config_dir, role="human")
-    assert result.returncode == 0
-    combined = result.stderr.lower()
+    assert result.returncode == 1
+    combined = (result.stdout + result.stderr).lower()
     assert "never" in combined or "hand-maintained" in combined
     assert "divergent" not in combined
+    assert "setup fail" in combined
+
+
+def test_validate_setup_enrolled_hand_maintained_clone_no_longer_blocks(tmp_path):
+    """The sidecar-only enrollment path (generate on a USABLE, unenrolled
+    live file) is what turns the hard block back into pass/warn."""
+    config_dir = tmp_path / "config"
+    repo = _preflight_tree(tmp_path, config_dir)
+    _copy_generator_and_template(repo)
+
+    live = repo / ".claude" / "settings.local.json"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text(
+        json.dumps({"hand": "edited", "permissions": {"allow": [], "deny": []}}, indent=2) + "\n"
+    )
+    before = live.read_bytes()
+
+    assert gsc.main(_gen_args(repo)) == gsc.EXIT_OK  # enrolls: sidecar only
+    assert live.read_bytes() == before  # never touched
+
+    result = _run_validate_setup(repo, config_dir, role="human")
+    assert result.returncode == 0
+    assert "setup fail" not in (result.stdout + result.stderr).lower()
 
 
 def test_validate_setup_reports_broken_checker_distinctly(tmp_path):

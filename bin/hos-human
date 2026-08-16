@@ -78,7 +78,9 @@ fi
 
 # Preflight -- fail fast before spending any tokens. --role human enables the
 # opt-in sandbox-policy currency check (#1221, AD-6); a divergence warns on
-# stderr without blocking session start.
+# stderr without blocking session start, but a MISSING policy now hard-blocks
+# (2026-08-16 E-2 ruling) -- enroll with gen_sandbox_config.py (see the
+# preflight's own message) rather than bypassing this check.
 bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --role human \
   || { echo "Preflight failed -- fix setup before starting a session"; exit 1; }
 
