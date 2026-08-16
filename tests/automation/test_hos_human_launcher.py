@@ -166,6 +166,72 @@ def test_repo_sync_called():
 
 
 # --------------------------------------------------------------------------- #
+# HOS_CONFIG_DIR resolution (#1411) -- must not depend on direnv/.envrc
+# --------------------------------------------------------------------------- #
+
+
+def test_resolves_hos_config_dir_itself():
+    """hos-human must export HOS_CONFIG_DIR itself, not just inherit it.
+
+    Relying solely on an inherited environment variable means an operator
+    without direnv silently falls through to get_app_token.sh's
+    ${HOME}/.config/hos default (#1411). The script must compute and export
+    the value before calling get_app_token.sh.
+    """
+    src = _src()
+    assert "export HOS_CONFIG_DIR=" in src, (
+        "bin/hos-human does not export HOS_CONFIG_DIR itself -- "
+        "it must resolve the value rather than rely on inherited env/direnv"
+    )
+    # The export must appear before get_app_token.sh is actually invoked
+    # (comment mentions of "get_app_token.sh" earlier in the file are fine).
+    export_idx = src.index("export HOS_CONFIG_DIR=")
+    invoke_idx = src.index('get_app_token.sh" --app human')
+    assert export_idx < invoke_idx, (
+        "bin/hos-human exports HOS_CONFIG_DIR after invoking get_app_token.sh -- "
+        "too late to affect credential resolution"
+    )
+
+
+def test_config_dir_resolution_checks_projects_conf():
+    """Resolution should prefer the same registry bin/hos-cron treats as
+    authoritative (~/.config/hos/projects.conf) before falling back to path
+    arithmetic, so a registered project with a non-default layout still
+    resolves correctly."""
+    src = _src()
+    assert "projects.conf" in src, (
+        "bin/hos-human does not consult projects.conf when resolving "
+        "HOS_CONFIG_DIR -- it should reverse-match the registry bin/hos-cron uses"
+    )
+
+
+def test_fails_loudly_when_project_apps_env_missing():
+    """Must refuse to silently fall through to the machine-global apps.env.
+
+    Once HOS_CONFIG_DIR is exported, get_app_token.sh will only ever look at
+    the resolved project path -- but if that project-level apps.env does not
+    exist, hos-human itself must fail loudly and name both the project path
+    and the global path it is refusing to fall back to, rather than letting
+    an unset variable silently resolve the wrong project's credentials.
+    """
+    src = _src()
+    # Isolate the resolution block: after the HOS_CONFIG_DIR export, before
+    # the actual preflight invocation (not just the word "Preflight", which
+    # also appears in the file's header comment).
+    pre_preflight = src.split('bash "$REPO_ROOT/bootstrap/validate_setup.sh"')[0]
+    resolution_block = pre_preflight.split("export HOS_CONFIG_DIR=", 1)[1]
+    assert "apps.env" in resolution_block, (
+        "bin/hos-human does not check for the resolved project's apps.env "
+        "before preflight -- it may silently let get_app_token.sh fall "
+        "through to the machine-global config"
+    )
+    assert "exit 1" in resolution_block, (
+        "bin/hos-human's HOS_CONFIG_DIR resolution block has no fail-loudly "
+        "exit path for a missing project-level apps.env"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # hos-cron rejects --role human
 # --------------------------------------------------------------------------- #
 
