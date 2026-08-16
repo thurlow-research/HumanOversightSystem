@@ -8,9 +8,11 @@ human may).
 This file covers the **worker and overseer** GitHub Apps. For the third account
 (human-proxy), see `docs/HUMAN-SETUP.md`.
 
-This is hosting-agnostic. The default path below is a **personal repo +
-collaborators** (no GitHub org required). If you later move to an org, the same
-config works — you just manage the bots via a team instead of collaborators.
+This is hosting-agnostic. The default path below is a **personal repo with two
+GitHub Apps installed on it** (no GitHub org required) — the Apps authenticate
+via installation tokens, not as collaborator accounts. If you later move to an
+org, the same config works — you just install the Apps on the org's repo
+instead of a personal one.
 
 > **Nothing here changes behavior until you enable branch protection (Step 5).**
 > The workflow + CODEOWNERS ship inert; Step 5 is the deliberate switch-on.
@@ -28,28 +30,70 @@ A **human** is required to approve: any **protected surface** (§9), any PR abov
 
 ---
 
-## Step 1 — Create the worker and overseer accounts  *(human; one-time)*
+## Step 1 — Register the worker and overseer GitHub Apps  *(human; one-time)*
 
-Create two GitHub App installations (worker + overseer). For this repo they are:
-- worker → `hos_worker@tutelare.ai`
-- overseer → `hos_oversight@tutelare.ai`
+Register two GitHub Apps — one per role. Repeat for each:
 
-> GitHub **usernames** cannot contain `_`; the emails above are login addresses, not handles. Note each account's actual **username** — you need it in Step 3.
+1. Go to **https://github.com/settings/apps/new**
+2. **GitHub App name**: any unique name, e.g. `hos-worker-<yourproject>` /
+   `hos-overseer-<yourproject>`. GitHub appends `[bot]` to its login
+   automatically (e.g. `hos-worker-yourproject[bot]`) — note the exact login,
+   you need it in Step 2.
+3. **Homepage URL**: your repo URL
+4. **Webhook**: uncheck **Active**
+5. **Repository permissions**: `Contents: Read & write`, `Pull requests: Read
+   & write`, `Issues: Read & write`, `Metadata: Read-only`. The **overseer**
+   App additionally needs `Administration: Read-only` (to inspect branch
+   protection state at review time — never write). Neither App gets Admin —
+   only the human keeps that, so only the human can `--admin`-bypass the gate.
+6. **Where can this be installed**: `Only on this account`
+7. Click **Create GitHub App**
+8. Note the **App ID** shown on the next page
+9. Scroll to **Private keys** → **Generate a private key** → save the `.pem`
+   file
+10. Click **Install App** → install on your account → **Only select
+    repositories** → choose this repo → **Install**
 
-## Step 2 — PATs + collaborator access  *(human)*
+## Step 2 — Store credentials in apps.env  *(human)*
 
-For each bot, sign in and create a **fine-grained PAT** scoped to this repo:
-- **worker** PAT: Contents=Read/Write, Pull requests=Read/Write. *No* admin.
-- **overseer** PAT: Contents=Read/Write, Pull requests=Read/Write. *No* admin.
+Either run the guided setup script, or fill in the template by hand.
 
-Add both bots as **collaborators** (Settings → Collaborators): worker = **Write**, overseer = **Write**. (Neither gets Admin — only the human keeps admin, so only the human can `--admin`-bypass the gate.)
+**Guided (recommended):**
+```sh
+cd <project-parent>                              # e.g. ~/Code/CPS — NOT inside a git repo
+Worker/bootstrap/hos_setup_partner.sh \
+  --repo-owner <org-or-user> \
+  --worker-app-id <id> --worker-pem <path-to-worker.pem> --worker-bot-login '<worker-app>[bot]' \
+  --overseer-app-id <id> --overseer-pem <path-to-overseer.pem> --overseer-bot-login '<overseer-app>[bot]' \
+  --human-reviewer <your-github-login>
+```
+This creates `.config/hos/apps.env`, copies the `.pem` files with `chmod 600`,
+and runs `validate_setup.sh` to confirm the setup.
+
+**Manual:**
+```sh
+mkdir -p .config/hos
+cp Worker/bootstrap/apps.env.template .config/hos/apps.env
+chmod 600 .config/hos/apps.env
+# edit .config/hos/apps.env — replace every <PLACEHOLDER>: HOS_WORKER_APP_ID,
+# HOS_WORKER_PEM, HOS_WORKER_BOT_LOGIN, HOS_OVERSEER_APP_ID, HOS_OVERSEER_PEM,
+# HOS_OVERSEER_BOT_LOGIN, HUMAN_REVIEWER
+bash Worker/bootstrap/validate_setup.sh --repo Worker/
+```
+
+Neither App is ever added as a repo **collaborator** or authenticated via a
+personal access token. Each run mints a short-lived installation token from
+the App ID + private key (`bootstrap/get_app_token.sh`), scoped to the repos
+the App is installed on; the login returned by the mint is checked against
+`GET /app` (#703), so a misconfigured or forged identity fails closed instead
+of silently authenticating as the wrong bot.
 
 ## Step 3 — Tell HOS the bot handles  *(human edits config)*
 
 Edit `scripts/framework/machine-accounts.env`:
 ```sh
-BOT_WORKER_USERNAME="<worker-github-username>"
-BOT_OVERSEER_USERNAME="<overseer-github-username>"
+BOT_WORKER_USERNAME="<worker-app-login>[bot]"      # e.g. hos-worker-yourproject[bot]
+BOT_OVERSEER_USERNAME="<overseer-app-login>[bot]"  # e.g. hos-overseer-yourproject[bot]
 OVERSEER_CEILING="LOW"      # raise to MEDIUM later — one line, deliberate decision
 ```
 `BOT_ACCOUNTS` is derived from these; the status check uses it to tell a bot
@@ -58,14 +102,21 @@ a protected surface — it just can't yet exclude bot approvals.)
 
 ## Step 4 — Point each agent context at the right account  *(per machine)*
 
-In the worker's working copy:
+Nothing to configure per working copy — there is no `git config user.email` /
+`gh auth login` step. `bin/hos-cron --role worker|overseer` (and `bin/hos-human`
+for the human-proxy) each mint their own short-lived installation token at the
+start of every run, via `bootstrap/get_app_token.sh --app worker|overseer|human`,
+reading the App ID + `.pem` from `.config/hos/apps.env` (Step 2). The minted
+token authenticates `gh`/`git` for that run only and is never persisted to a
+global `gh auth` state, so worker, overseer, and human-proxy sessions on the
+same machine never share or clobber each other's identity. Each actor's
+commits and approvals still carry its own bot identity, so the audit trail is
+real — it's just resolved per-run instead of configured once per clone.
+
+Verify a clone is wired correctly:
 ```sh
-git config user.name  "hos-worker"   &&  git config user.email "hos_worker@tutelare.ai"
-gh auth login --with-token < worker.pat        # worker PAT, not the human's token
+bash Worker/bootstrap/validate_setup.sh --repo Worker/
 ```
-In the overseer's working copy, the same with the overseer identity + PAT. The
-human's own clone keeps the human identity. The point: each actor's commits and
-approvals carry its own identity, so the audit trail is real.
 
 ## Step 5 — Create the `hos-auditsync-hos` GitHub App  *(human; one-time per repo)*
 
