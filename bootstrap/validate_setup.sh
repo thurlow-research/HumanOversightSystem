@@ -37,10 +37,14 @@ fail() { echo "SETUP FAIL: $*" >&2; exit 1; }
 ok()   { "$QUIET" || echo "  ✔  $*"; }
 
 # sandbox_config_check ROLE REPO_ROOT — the opt-in #1221 currency check (AD-6).
-# Returns 0 when the policy is current, non-zero otherwise. NEVER calls exit
-# and never uses fail() — a stale/absent/broken sandbox policy must warn, not
-# abort the preflight (E-2 stays deferred). Every command that can fail sits
-# inside a conditional so `set -euo pipefail` cannot abort this function.
+# Returns 0 when the policy is current. Never calls exit or fail() itself —
+# it only classifies the outcome; the caller decides whether to block
+# (2026-08-16 E-2 ruling: divergent/unknown warn, missing hard-blocks for
+# sandboxed roles). Every command that can fail sits inside a conditional so
+# `set -euo pipefail` cannot abort this function.
+#
+# Return codes: 0 current | 1 divergent or check-could-not-run (warn, UNKNOWN
+# for the latter) | 2 policy missing entirely (this clone was never enrolled).
 sandbox_config_check() {
   local role="$1" repo="$2"
   local gen="$repo/scripts/framework/gen_sandbox_config.py"
@@ -72,7 +76,7 @@ sandbox_config_check() {
       echo "  note: this clone's sandbox policy was never generated — it is hand-maintained" >&2
       echo "        (no .claude/hos-sandbox.values). Enroll with:" >&2
       echo "        scripts/framework/gen_sandbox_config.py --role $role --clone-dir $repo --handoff-dir <path> --claude-project-state <path>" >&2
-      return 1
+      return 2
       ;;
     *)
       echo "  WARN: sandbox config CHECK FAILED (exit $rc) — the check did not run." >&2
@@ -136,8 +140,17 @@ else
 fi
 
 # ── 5. Sandbox policy currency (opt-in: --role) ────────────────────────────
+# 2026-08-16 E-2 ruling: a divergent or inconclusive check still only warns,
+# but a MISSING policy (rc 2 — never enrolled, or the live file is gone) now
+# hard-blocks for sandboxed roles. Only `human` is sandboxed today; worker and
+# overseer run under bypassPermissions and don't pass --role, so they never
+# reach this branch.
 if [[ -n "$SANDBOX_ROLE" ]]; then
-  if ! sandbox_config_check "$SANDBOX_ROLE" "$REPO_ROOT"; then
+  sandbox_rc=0
+  sandbox_config_check "$SANDBOX_ROLE" "$REPO_ROOT" || sandbox_rc=$?
+  if [[ "$sandbox_rc" -eq 2 && "$SANDBOX_ROLE" == "human" ]]; then
+    fail "Sandbox policy missing for role '$SANDBOX_ROLE' — enroll before continuing (see message above)."
+  elif [[ "$sandbox_rc" -ne 0 ]]; then
     echo "  WARN: sandbox policy check reported a problem (see above) — session continues." >&2
   fi
 fi

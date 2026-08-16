@@ -8,14 +8,22 @@ profile proven in production*, reconciled against the live config as of
 2026-08-02 (#1185). It is checked in so the policy is source-controlled and
 reviewable rather than living only in one operator's untracked
 `.claude/settings.local.json`. As of #1221, the template is **generatable for
-`human`** via `scripts/framework/gen_sandbox_config.py`: it writes a clone's
-`.claude/settings.local.json` **only into a clone that has no existing policy
-file** — an existing file (usable or not) is always left untouched, never
-overwritten (2026-08-15 human ruling; there is no `--force`). `bin/hos-human`'s
-preflight (`--role human`) separately warns, non-blocking, on stderr when a
-clone's live file has since diverged from a fresh generation. **It is not yet
-installed by `hos_install.sh`, and it is not yet applied to `worker` or
-`overseer`.** Both of those are v0.7.0 work, tracked at **#1146**.
+`human`** via `scripts/framework/gen_sandbox_config.py`, and `hos_install.sh`
+runs that generation at install time (never overwriting a pre-existing file).
+`generate` writes `.claude/settings.local.json` **only into a clone that has
+no existing policy file** — an existing, parseable file is always left
+untouched, never overwritten (2026-08-15 human ruling; there is no
+`--force`). A hand-maintained clone (an existing file with no values sidecar
+yet) gets *enrolled* on the next `generate` run: only the
+`.claude/hos-sandbox.values` sidecar is written, adopting the existing file
+as baseline — `settings.local.json` itself is still never touched
+(2026-08-16 ruling). `bin/hos-human`'s preflight (`--role human`) warns,
+non-blocking, on stderr when a clone's live file has since diverged from a
+fresh generation, but now **hard-blocks session start when the policy is
+missing entirely** (no sidecar / not enrolled) — E-2 resolved 2026-08-16;
+divergence stays a warning. **It is not yet applied to `worker` or
+`overseer`** — both currently run under `bypassPermissions` and don't opt
+into this check; extending it is v0.7.0 work, tracked at **#1146**.
 Reconciliation is not automatic — see §4 item 7 for what still needs
 re-checking by hand after any further live edit.
 
