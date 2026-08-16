@@ -1,0 +1,9 @@
+{
+  "event": "pr-review",
+  "pr": 1443,
+  "decision": "HUMAN_REQUIRED",
+  "tier": "LOW",
+  "reason": "docs-only fix for #1438 (stale .claudetmp/HANDOFF.md reference in CLAUDE.md and templates/CLAUDE.human.md), content review found no issues, but both files are listed in protected_surfaces.txt so human approval is required regardless of tier; require-human-approval check correctly FAILURE pending that approval",
+  "head_sha": "72c41bb165b018f6c1730e66350bef6defc80b04",
+  "timestamp": "2026-08-16T18:57:00Z"
+}
