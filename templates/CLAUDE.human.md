@@ -17,7 +17,12 @@ clone at `__CLONE_ROOT__`. You authenticate as the Human GitHub App bot:
    ```
 3. Identity guard: abort if `HOS_BOT_LOGIN != HOS_EXPECTED_BOT_LOGIN` (both exported by `get_app_token.sh`)
 4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session, but a residual behind-count is always reported loudly on stderr, with the cause classified structural — e.g. sandbox write-protection, will not resolve by retrying — or transient/benign — e.g. network, dirty tree, retry next session; #1200)
-5. Orient: read `.claudetmp/HANDOFF.md` before acting
+5. Orient: read the handoff the SessionStart hook already printed above (from
+   this clone's `HANDOFF_DIR`, configured in `.claude/settings.local.json` —
+   see `docs/SANDBOX-POLICY.md` §5) before acting. Do not read
+   `.claudetmp/HANDOFF.md`: per `contract/OVERSIGHT-CONTRACT.md` §1,
+   `.claudetmp/` is ephemeral working state (gitignored), not the durable
+   handoff location, and nothing writes a handoff there.
 
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do
 not wire this session into cron.
