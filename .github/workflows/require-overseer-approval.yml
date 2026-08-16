@@ -11,6 +11,16 @@ name: Require overseer approval (all PRs)
 # own "Merge without waiting for requirements" admin override (explicit, logged
 # by GitHub), NOT a label or comment mechanism.
 #
+# Above-ceiling bypass (#1426): require-overseer-approval (this check) and
+# require-tier-ceiling were jointly unsatisfiable for a PR whose tier exceeds
+# OVERSEER_CEILING — the overseer correctly withholds APPROVED authority above
+# its ceiling (docs/FABERIX-ROLES.md §5), which left this gate permanently
+# unsatisfied. This script now also passes when the overseer posted SOME
+# review (any state — it looked at the PR and deliberately did not approve
+# above its ceiling) AND the PR's computed tier exceeds OVERSEER_CEILING AND a
+# human (non-bot) has approved instead. This does not weaken #621: a human
+# approval with NO overseer review at all still fails this gate.
+#
 # Pairs with:
 #   require-human-approval  — protected-surface / CRITICAL tier gate
 #   require-tier-ceiling    — overseer cannot merge above its ceiling

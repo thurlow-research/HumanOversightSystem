@@ -10,18 +10,32 @@ require-tier-ceiling (ceiling gate). Together the three checks close the gap
 where a human approval satisfied GitHub's "1 approving review" branch-protection
 requirement without the overseer ever having looked at the PR (#621).
 
+Above-ceiling bypass (#1426): when the PR's computed tier exceeds
+OVERSEER_CEILING, the overseer correctly does NOT assert APPROVED authority
+(docs/FABERIX-ROLES.md §5: "MEDIUM and HIGH tier → recommend, do NOT
+approve") — but that left require-overseer-approval and require-tier-ceiling
+jointly unsatisfiable: an overseer APPROVED review is required here, while
+require-tier-ceiling FAILS any PR the overseer approved above its ceiling.
+This gate now also passes when ALL of the following hold: the overseer
+posted *some* review (any state — it looked at the PR and deliberately
+withheld APPROVED authority), the PR's computed tier exceeds
+OVERSEER_CEILING, and a human (non-bot, per BOT_ACCOUNTS) has an APPROVED
+review present. The bypass never fires when the overseer review is absent
+entirely — a human approval alone still fails this gate (#621).
+
 Usage (CI):
   python3 require_overseer_approval.py --pr <number> [--repo owner/repo]
 
 Exit codes:
-  0 — overseer has approved this PR
-  1 — FAIL: no overseer approval present
+  0 — overseer has approved this PR, or the above-ceiling bypass applies
+  1 — FAIL: no overseer approval present (and the bypass does not apply)
   2 — error (missing config or tooling failure — fail-closed)
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -30,6 +44,17 @@ import sys
 from pathlib import Path
 
 ENV_FILE = Path(__file__).with_name("machine-accounts.env")
+
+
+def _load_sibling_module(name: str):
+    """Load a sibling script module by file path (no sys.path mutation),
+    matching the idiom used by tests/framework/test_require_tier_ceiling.py.
+    """
+    path = Path(__file__).with_name(name)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -105,6 +130,22 @@ def overseer_has_approved(reviews: list[dict], overseer_login: str) -> bool:
     return False
 
 
+def overseer_posted_any_review(reviews: list[dict], overseer_login: str) -> bool:
+    """Return True if the overseer authored a review in any state.
+
+    Used by the above-ceiling bypass (#1426): distinguishes "the overseer
+    looked at this PR and deliberately withheld APPROVED authority above its
+    ceiling" from "the overseer never reviewed this PR at all" — only the
+    former may bypass, preserving the #621 property that a human approval
+    alone (no overseer review whatsoever) still fails this gate.
+    """
+    for review in reviews:
+        login = (review.get("user") or {}).get("login", "")
+        if login.lower() == overseer_login.lower():
+            return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Overseer approval required gate")
     ap.add_argument("--pr", required=True, help="PR number")
@@ -135,6 +176,30 @@ def main() -> int:
         )
         return 0
 
+    # Above-ceiling bypass (#1426): the overseer may have deliberately withheld
+    # APPROVED authority because the PR's tier exceeds its ceiling — that is
+    # correct behavior (docs/FABERIX-ROLES.md §5), not a missing review. If so,
+    # and a human has approved instead, the gate is satisfied.
+    if overseer_posted_any_review(reviews, overseer_login):
+        ceiling = env.get("OVERSEER_CEILING", "").strip().upper()
+        rtc = _load_sibling_module("require_tier_ceiling.py")
+        if ceiling in rtc.TIER_ORDER:
+            tier = rtc.compute_tier_for_pr(repo, args.pr)
+            if tier is not None and rtc.tier_exceeds_ceiling(tier, ceiling):
+                bot_accounts = {b for b in env.get("BOT_ACCOUNTS", "").split() if b}
+                if bot_accounts:
+                    rha = _load_sibling_module("require_human_approval.py")
+                    humans = rha.human_approval_present(reviews, bot_accounts)
+                    if humans:
+                        print(
+                            f"✔ require-overseer-approval: {overseer_login} reviewed this PR "
+                            f"(tier={tier} exceeds ceiling={ceiling}, so it did not assert "
+                            f"APPROVED authority above its ceiling — see docs/FABERIX-ROLES.md "
+                            f"§5) and a human ({', '.join(humans)}) approved instead — gate "
+                            "satisfied."
+                        )
+                        return 0
+
     print("", file=sys.stderr)
     print(
         f"✘ require-overseer-approval: FAIL — {overseer_login} has not approved this PR.",
@@ -150,6 +215,18 @@ def main() -> int:
     )
     print(
         "  but does NOT substitute for the overseer review.",
+        file=sys.stderr,
+    )
+    print(
+        "  Above-ceiling bypass: if the overseer reviewed this PR (any state) and",
+        file=sys.stderr,
+    )
+    print(
+        "  its computed tier exceeds OVERSEER_CEILING, a human APPROVED review",
+        file=sys.stderr,
+    )
+    print(
+        "  satisfies this gate instead (#1426, docs/FABERIX-ROLES.md §5).",
         file=sys.stderr,
     )
     print(

@@ -365,6 +365,29 @@ def test_try_rn_calculator_empty_paths_returns_none():
 
 
 # ---------------------------------------------------------------------------
+# compute_tier_for_pr — single source of truth reused by
+# require_overseer_approval.py's above-ceiling bypass (#1426)
+# ---------------------------------------------------------------------------
+
+def test_compute_tier_for_pr_no_changed_files_is_safe(monkeypatch):
+    monkeypatch.setattr(rtc, "get_changed_files", lambda pr: [])
+    assert rtc.compute_tier_for_pr("org/repo", "1") == "SAFE"
+
+
+def test_compute_tier_for_pr_delegates_to_compute_tier(monkeypatch):
+    monkeypatch.setattr(rtc, "get_changed_files", lambda pr: _LOW_FILES)
+    calls: list = []
+
+    def _fake_compute_tier(repo, pr, changed_files):
+        calls.append((repo, pr, changed_files))
+        return "HIGH"
+
+    monkeypatch.setattr(rtc, "compute_tier", _fake_compute_tier)
+    assert rtc.compute_tier_for_pr("org/repo", "1") == "HIGH"
+    assert calls == [("org/repo", "1", _LOW_FILES)]
+
+
+# ---------------------------------------------------------------------------
 # _fetch_head_python — DATA-only head fetch, skip deleted, fail-closed on error
 # ---------------------------------------------------------------------------
 
