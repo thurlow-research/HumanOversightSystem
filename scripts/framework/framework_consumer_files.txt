@@ -29,6 +29,12 @@ bin/lib/git-credentials.sh
 bootstrap/lib/branch_ownership.sh
 bootstrap/create_branch.sh
 
+# ── bootstrap/lib/ — sandbox-policy path helpers (#1221) ─────────────────────
+# Sourced by hos_install.sh's --human sandbox-policy block. Guarded at the call
+# site (declare -f check) so its absence degrades to a warn, not a hard-fail —
+# but shipping it means fresh installs get it without a follow-up upgrade.
+bootstrap/lib/sandbox_paths.sh
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,

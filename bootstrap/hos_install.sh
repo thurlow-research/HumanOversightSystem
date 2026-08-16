@@ -66,6 +66,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # case release mode fetches the tarball and the repo root is never needed.
 HOS_REPO_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "$SCRIPT_DIR")"
 
+# Sandbox-policy path helpers (#1221, human role only). Guarded, not required —
+# an installer running from a source tree that lacks this file (e.g. a release
+# predating #1221) must not hard-fail; the sandbox-policy block below checks
+# `declare -f` before use and warns instead.
+# shellcheck source=lib/sandbox_paths.sh
+[[ -f "$SCRIPT_DIR/lib/sandbox_paths.sh" ]] && source "$SCRIPT_DIR/lib/sandbox_paths.sh"
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 TARGET_REPO="$(pwd)"
 DRY_RUN=false
@@ -733,6 +740,14 @@ ensure_line     "$GITIGNORE" ".hos-brownfield/" ".hos-brownfield/ (brownfield mi
 # merges the block into CLAUDE.md, and removes it — so it must not be committed.
 $ROLE_HUMAN && ensure_line "$GITIGNORE" "CLAUDE.human.generated.md" \
   "CLAUDE.human.generated.md (human-proxy block staging file — merge into CLAUDE.md then remove)"
+# Sandbox policy (#1221): machine-local, generated/values files, and the
+# operator's own move-aside backups — none of these are tracked.
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/settings.local.json" \
+  ".claude/settings.local.json (generated sandbox policy — #1221)"
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/hos-sandbox.values" \
+  ".claude/hos-sandbox.values (sandbox policy values sidecar — #1221)"
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/settings.local.json.bak-*" \
+  ".claude/settings.local.json.bak-* (move-aside backups — #1221)"
 ensure_not_ignored "$GITIGNORE" "audit/"     "audit/ (committed audit trail)"
 ensure_not_ignored "$GITIGNORE" "AGENTS.md"  "AGENTS.md (governance protocol)"
 ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
@@ -1754,6 +1769,65 @@ else
   # No existing settings — create from HOS template
   SETTINGS_SRC="$HOS_SOURCE/.claude/settings.json"
   cp_file "$SETTINGS_SRC" "$SETTINGS_DST" ".claude/settings.json"
+fi
+
+# ── .claude/settings.local.json — sandbox policy (#1221, human role only) ────
+if $ROLE_HUMAN; then
+  echo ""
+  info ".claude/settings.local.json — sandbox policy (#1221)"
+  _sandbox_live="$TARGET_REPO/.claude/settings.local.json"
+  if $DRY_RUN; then
+    dry_run "Would generate $_sandbox_live via scripts/framework/gen_sandbox_config.py --role human"
+  elif [[ -e "$_sandbox_live" ]]; then
+    info "settings.local.json already present — left untouched (never-overwrite, #1221)"
+  elif ! declare -f _hos_claude_project_state >/dev/null 2>&1; then
+    warn "bootstrap/lib/sandbox_paths.sh not available — skipping sandbox policy generation."
+  else
+    _sb_gen=""
+    for _d in "$TARGET_REPO" "$HOS_SOURCE"; do
+      if [[ -f "$_d/scripts/framework/gen_sandbox_config.py" && -f "$_d/contract/sandbox-policy.template.json" ]]; then
+        _sb_gen="$_d/scripts/framework/gen_sandbox_config.py"; break
+      fi
+    done
+    _sb_state=""
+    _sb_state="$(_hos_claude_project_state "${HOME:-}" "$TARGET_REPO")" || _sb_state=""
+    [[ -n "$_sb_state" ]] || warn "Could not derive --claude-project-state for $TARGET_REPO (unset HOME, or path has characters outside [A-Za-z0-9/-])."
+    _sb_hos_root="$(dirname "$TARGET_REPO")"
+    _sb_handoff=""
+    if [[ -n "${HOS_HANDOFF_DIR:-}" ]]; then
+      _sb_handoff="$HOS_HANDOFF_DIR"
+    elif [[ -t 0 && "${HOS_NO_CONFIG:-}" != "1" ]]; then
+      printf "  Handoff directory for this Human clone (absolute path, no default): "
+      read -r _sb_handoff </dev/tty || _sb_handoff=""
+    fi
+    if [[ -n "$_sb_handoff" ]]; then
+      if [[ "$_sb_handoff" != /* || "$_sb_handoff" == "/" ]]; then
+        warn "Handoff dir must be an absolute path (got '$_sb_handoff') — ignoring."
+        _sb_handoff=""
+      elif _hos_path_is_ancestor_or_equal "$_sb_handoff" "${HOME:-/nonexistent}" \
+        || _hos_path_is_ancestor_or_equal "$_sb_handoff" "$_sb_hos_root"; then
+        warn "Refusing handoff dir '$_sb_handoff': it contains \$HOME or the clone root, and the policy grants Write on it."
+        _sb_handoff=""
+      else
+        info "Using handoff dir: $_sb_handoff"
+      fi
+    fi
+    if [[ -n "$_sb_gen" && -n "$_sb_state" && -n "$_sb_handoff" ]]; then
+      _sb_rc=0
+      python3 "$_sb_gen" --role human --clone-dir "$TARGET_REPO" \
+        --handoff-dir "$_sb_handoff" --claude-project-state "$_sb_state" || _sb_rc=$?
+      if [[ "$_sb_rc" -eq 0 ]]; then
+        ok "Sandbox policy generated — restart the session for it to take effect"
+      else
+        warn "Sandbox policy generation failed (exit $_sb_rc) — install continues; see the generator output above."
+      fi
+    elif [[ -z "$_sb_gen" ]]; then
+      warn "gen_sandbox_config.py / sandbox-policy.template.json not found — skipping sandbox policy generation."
+    else
+      warn "Sandbox policy NOT generated (unresolved values). Run later:"
+      warn "  python3 scripts/framework/gen_sandbox_config.py --role human --clone-dir $TARGET_REPO --handoff-dir ${_sb_handoff:-<absolute-path>} --claude-project-state ${_sb_state:-<absolute-path>}"
+    fi
+  fi
 fi
 
 # ── scripts/ — HOS runner scripts ─────────────────────────────────────────────
