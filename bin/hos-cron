@@ -43,6 +43,9 @@
 #   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
 #   HOS_BASELINE_REPAIR_MAX_ATTEMPTS  consecutive red-baseline cycles allowed in
 #                               repair mode before escalating to needs-human (default 3)
+#   HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS  consecutive exit=124 cycles at an unchanged
+#                               cap before the project is suspended via hos-suspend
+#                               (default 2; #1435)
 #
 # <project>_baseline_on_red (projects.conf, worker only; #959): on a red cycle-start
 # baseline, "halt" (default) files a needs-human issue and exits — unchanged legacy
@@ -158,6 +161,11 @@ fi
 HOS_CRON_MAX_SECONDS="$_max_secs_val"
 export HOS_CRON_MAX_SECONDS
 
+# #1435: shared title prefix for the timeout-breaker's needs-human issue —
+# defined once here so both the trip path (exit=124 handling) and the clear
+# path (normal-completion bookkeeping) match the same issue.
+_TIMEOUT_BREAKER_TITLE_PREFIX="[SUSPENDED] ${ROLE} timeout breaker tripped on ${PROJECT}"
+
 LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 # ── State dirs ────────────────────────────────────────────────────────────────
@@ -169,7 +177,7 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}-${PROJECT}"
 _WAKEUP_FILE_LEGACY="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
-mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean"
+mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean" "$_HOS_DIR/timeout-breaker"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
 
 # ── Project suspension check (#778) — early exit before lock ─────────────────
@@ -1204,6 +1212,67 @@ fi
 if [[ $_claude_exit -eq 124 ]]; then
   echo "$LOG_PREFIX claude TIMED OUT after ${HOS_CRON_MAX_SECONDS}s — session killed (no last-run written; will retry next fire)"
   _audit cycle-claude-timeout "limit=$HOS_CRON_MAX_SECONDS"
+
+  # #1435: a work item that cannot finish inside the cap becomes a
+  # token-burning loop — each fire spends a full session, is killed at the
+  # ceiling, discards its work, and the next fire starts over. Trip a breaker
+  # after HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS consecutive exit=124s AT AN
+  # UNCHANGED CAP. A cap change is a legitimate operator response (human
+  # ruling 2, not a blind retry) — it resets the counter instead of tripping,
+  # so raising --max-seconds is never a trap.
+  _tb_state="$_HOS_DIR/timeout-breaker/${ROLE}-${PROJECT}"
+  _tb_max="${HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS:-2}"
+  _tb_prev_attempts=0 _tb_prev_cap=""
+  if [[ -f "$_tb_state" ]]; then
+    _tb_prev_attempts="$(sed -n '1p' "$_tb_state" 2>/dev/null || echo 0)"
+    _tb_prev_cap="$(sed -n '2p' "$_tb_state" 2>/dev/null || echo "")"
+  fi
+  if [[ "$_tb_prev_cap" == "$HOS_CRON_MAX_SECONDS" ]]; then
+    _tb_attempts=$(( _tb_prev_attempts + 1 ))
+  else
+    _tb_attempts=1
+  fi
+  printf '%s\n%s\n' "$_tb_attempts" "$HOS_CRON_MAX_SECONDS" > "$_tb_state"
+
+  if [[ "$_tb_attempts" -ge "$_tb_max" ]]; then
+    echo "$LOG_PREFIX TIMEOUT BREAKER TRIPPED — ${_tb_attempts} consecutive timeouts at ${HOS_CRON_MAX_SECONDS}s cap — suspending project '$PROJECT'"
+    _tb_reason="${ROLE} timed out ${_tb_attempts} consecutive cycles at ${HOS_CRON_MAX_SECONDS}s (exit 124); raise with --max-seconds, split the work item, or fix the cause"
+    if bash "$_HOS_CRON_DIR/hos-suspend" --project "$PROJECT" --reason "$_tb_reason" >/dev/null 2>&1; then
+      echo "$LOG_PREFIX suspended project '$PROJECT' via hos-suspend (no --until — requires explicit --clear, a cap change, or a successful cycle)"
+    else
+      echo "$LOG_PREFIX WARN: hos-suspend call failed — project NOT suspended, manual action required"
+    fi
+    _audit cycle-timeout-breaker-tripped "role=$ROLE cap=$HOS_CRON_MAX_SECONDS attempts=$_tb_attempts"
+
+    # Surface the trip as a needs-human issue too — the suspension marker
+    # alone is discoverable only via `hos-suspend --list`; this makes it
+    # visible in the normal issue queue. Fail-closed dedup mirrors #789/#849:
+    # only file when the query SUCCEEDS and confirms zero already-open
+    # breaker issues — a query error must never default to "none open" and
+    # flood the queue.
+    if [[ -n "$_REPO_SLUG" ]]; then
+      if _tb_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+          --jq "[.[] | select(.title | startswith(\"${_TIMEOUT_BREAKER_TITLE_PREFIX}\"))] | length" \
+          2>/dev/null); then
+        _tb_existing="${_tb_existing:-0}"
+        if [[ "$_tb_existing" == "0" ]]; then
+          gh issue create \
+            --repo "$_REPO_SLUG" \
+            --title "${_TIMEOUT_BREAKER_TITLE_PREFIX} — worker halted" \
+            --label "needs-human,needs-ai" \
+            --body "$(printf '`%s` timed out %s consecutive cycles at a %ss cap (exit 124). Each fire spent a full session, was killed at the cap, and discarded its work with no output — the project has been suspended via `hos-suspend` to stop the burn.\n\nA human should investigate the cause, then either:\n\n- raise the cap (`--max-seconds <N>` flag, or `%s_max_seconds` in projects.conf) if the work genuinely needs more time, or\n- split the work item so it fits inside the existing cap, or\n- fix the underlying hang.\n\nResume with:\n\n    hos-suspend --project %s --clear\n' "$ROLE" "$_tb_attempts" "$HOS_CRON_MAX_SECONDS" "$PROJECT" "$PROJECT")" \
+            2>/dev/null && echo "$LOG_PREFIX filed timeout-breaker needs-human issue" \
+            || echo "$LOG_PREFIX WARN: timeout-breaker issue filing failed"
+        else
+          echo "$LOG_PREFIX timeout-breaker issue already open — not filing a duplicate"
+        fi
+      else
+        echo "$LOG_PREFIX WARN: timeout-breaker dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+      fi
+    fi
+  else
+    echo "$LOG_PREFIX timeout breaker: attempt ${_tb_attempts}/${_tb_max} at ${HOS_CRON_MAX_SECONDS}s cap"
+  fi
 elif [[ $_claude_exit -ne 0 ]]; then
   echo "$LOG_PREFIX claude exited $_claude_exit — if auth-related, refresh the token: 'claude setup-token' → $_CLAUDE_AUTH_ENV"
   _audit cycle-claude-fail "exit=$_claude_exit"
@@ -1211,6 +1280,27 @@ fi
 
 # ── Post-cycle bookkeeping ────────────────────────────────────────────────────
 if [[ $_claude_exit -eq 0 ]]; then
+  # #1435: a normally-completing cycle clears the timeout-breaker counter and
+  # auto-closes any standing breaker issue — the steady state must not stay
+  # "permanently suspended + stale human issue" once the cause is fixed.
+  # Mirrors the #959 baseline-green auto-close pattern above.
+  _tb_state="$_HOS_DIR/timeout-breaker/${ROLE}-${PROJECT}"
+  if [[ -f "$_tb_state" ]]; then
+    rm -f "$_tb_state"
+    if [[ -n "${_REPO_SLUG:-}" ]]; then
+      if _tb_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+          --jq "[.[] | select(.title | startswith(\"${_TIMEOUT_BREAKER_TITLE_PREFIX}\"))] | .[].number" \
+          2>/dev/null); then
+        while IFS= read -r _tb_num; do
+          [[ -z "$_tb_num" ]] && continue
+          gh issue close "$_tb_num" --repo "$_REPO_SLUG" \
+            --comment "Cycle completed normally — auto-closing the timeout-breaker issue." \
+            2>/dev/null && echo "$LOG_PREFIX auto-closed timeout-breaker issue #${_tb_num}" \
+            || echo "$LOG_PREFIX WARN: failed to auto-close timeout-breaker issue #${_tb_num}"
+        done <<< "$_tb_open_nums"
+      fi
+    fi
+  fi
   date +%s > "$_LAST_RUN_FILE"
   # If work was done this cycle, drop a self-wakeup for traceability (#1196 kept
   # the wakeup mechanism after removing the idle backoff it used to bypass).

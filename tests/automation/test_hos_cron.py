@@ -529,6 +529,10 @@ class CronEnv:
         """The #959 repair-attempt counter file for worker/<project>."""
         return self.state / "baseline-repair" / f"worker-{project}"
 
+    def timeout_breaker_state_file(self, project="hos", role="worker") -> Path:
+        """The #1435 consecutive-exit=124 counter file for <role>/<project>."""
+        return self.state / "timeout-breaker" / f"{role}-{project}"
+
     def set_baseline_on_red(self, mode: str, project="hos") -> None:
         """Append <project>_baseline_on_red=<mode> to projects.conf (#959)."""
         conf = self.home / ".config" / "hos" / "projects.conf"
@@ -1639,6 +1643,104 @@ class TestBaselineRepairMode:
         assert "repair exhausted" in r.stdout
         assert cron.aa_issue_created(), "exhausted repair mode must still escalate to a human"
         assert not cron.claude_ran()
+
+
+# ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
+class TestTimeoutBreaker:
+    """A claude session killed at the wall-clock cap (exit=124) becomes a
+    token-burning loop if the next fire just retries forever — each fire spends
+    a full session, is killed at the ceiling, discards its work, and starts
+    over. After HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS consecutive timeouts AT AN
+    UNCHANGED CAP the project is suspended via the real bin/hos-suspend (never
+    stubbed — this is an integration point, not a unit boundary) and a
+    needs-human issue is filed so the suspension is visible in the queue. A
+    cap change resets the counter instead of tripping (human ruling 2: a
+    changed cap is a legitimate operator response, not a blind retry). A
+    normally-completing cycle clears the counter and auto-closes any standing
+    breaker issue.
+    """
+
+    def test_first_timeout_no_trip(self, cron):
+        """One exit=124 at the default (0s/disabled) cap → counter stamped at
+        1, no suspend, no issue filed."""
+        r = cron.run(env_overrides={"HOS_TEST_CLAUDE_EXIT": "124"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "claude TIMED OUT" in r.stdout
+        assert "timeout breaker: attempt 1/2" in r.stdout
+        assert cron.timeout_breaker_state_file().read_text().splitlines() == ["1", "0"]
+        assert not cron.suspend_file().exists()
+        assert not cron.aa_issue_created()
+
+    def test_second_timeout_same_cap_trips_breaker(self, cron):
+        """A second consecutive exit=124 at the SAME cap reaches the default
+        threshold (2) → suspends via the real hos-suspend and files a
+        needs-human issue."""
+        sf = cron.timeout_breaker_state_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text("1\n0\n")
+        r = cron.run(env_overrides={"HOS_TEST_CLAUDE_EXIT": "124"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "TIMEOUT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists(), "expected hos-suspend to write a suspension marker"
+        marker = cron.suspend_file().read_text()
+        assert "timed out 2 consecutive cycles at 0s" in marker
+        assert '"until"' not in marker, "the breaker must never set --until (silent auto-resume)"
+        assert cron.aa_issue_created()
+        assert cron.timeout_breaker_state_file().read_text().splitlines() == ["2", "0"]
+
+    def test_second_timeout_changed_cap_resets_not_trips(self, cron):
+        """A second exit=124 under a DIFFERENT cap than the recorded one is not
+        a repetition under unchanged conditions (ruling 2) — reset to 1, no
+        trip, no suspend."""
+        sf = cron.timeout_breaker_state_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text("1\n0\n")
+        r = cron.run(
+            env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_CRON_MAX_SECONDS": "60"}
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "TIMEOUT BREAKER TRIPPED" not in r.stdout
+        assert "timeout breaker: attempt 1/2" in r.stdout
+        assert not cron.suspend_file().exists()
+        assert not cron.aa_issue_created()
+        assert cron.timeout_breaker_state_file().read_text().splitlines() == ["1", "60"]
+
+    def test_trip_dedup_query_failure_still_suspends(self, cron):
+        """The needs-human dedup query failing must not block the suspend
+        itself (#1435 acceptance: dedup failure skips filing, still
+        suspends) — fail-closed only withholds the duplicate-issue filing."""
+        sf = cron.timeout_breaker_state_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text("1\n0\n")
+        r = cron.run(
+            env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_TEST_AA_QUERY_FAIL": "1"}
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "TIMEOUT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists(), "dedup query failure must not block the suspend"
+        assert not cron.aa_issue_created(), "dedup query failed → must fail closed, no issue"
+        assert "fail-closed" in r.stdout
+
+    def test_normal_completion_clears_breaker_and_closes_issue(self, cron):
+        """A cycle that completes normally (exit 0) clears the standing
+        counter and auto-closes any open breaker issue — the steady state
+        must not stay 'permanently suspended + stale human issue'."""
+        sf = cron.timeout_breaker_state_file()
+        sf.parent.mkdir(parents=True, exist_ok=True)
+        sf.write_text("2\n0\n")
+        r = cron.run(env_overrides={"HOS_TEST_BROKEN_STATE_OPEN_NUMS": "555"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.timeout_breaker_state_file().exists()
+        assert "555" in cron.closed_issue_nums()
+        assert cron.claude_ran()
+
+    def test_normal_completion_no_standing_state_is_a_noop(self, cron):
+        """No prior timeout-breaker state → normal completion touches nothing
+        breaker-related."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.timeout_breaker_state_file().exists()
+        assert cron.claude_ran()
 
 
 # ──────────────────────────── PR routing skip (#791) ─────────────────────────
