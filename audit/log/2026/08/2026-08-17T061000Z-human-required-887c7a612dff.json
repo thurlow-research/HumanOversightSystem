@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1449,"reason_category":"GATE_UNSATISFIED","summary":"PR touches protected surface .claude/agents/worker.md with no human approval on current head, and the Validation stamps current required check is failing (no committed stamp for the current agent content hash).","timestamp":"2026-08-17T06:10:00Z"}
