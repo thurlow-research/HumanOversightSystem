@@ -127,3 +127,69 @@ taxonomy and is out of this amendment's scope; flagged for a future ruling.
 The reviewer's `needs-worker`/`needs-overseer` label-taxonomy question is a
 separate, larger initiative and is tracked in #1349 rather than folded into
 NG3b.
+
+---
+
+## 6. Amendment 2 — R2 failure-path idempotency (2026-08-17)
+
+Gap: R1.9 check 1's idempotency covers only the *success* path — once R2
+all-passes and R4 posts an authorization request, an unchanged HEAD skips
+straight to R5. There was no equivalent guard on the *failure* path: every
+cycle re-ran the full R2 suite from scratch, including any suite already
+known to fail deterministically against the current HEAD. On #1338, R2 suite
+5 (`scripts/run_second_review.sh`) failed identically across three
+consecutive cron cycles against the same HEAD, because the `v0.5.0..HEAD`
+release-scale diff (334 files / ~100 PRs / ~1.8M combined input tokens)
+exceeds what a single second-review call can process — a deterministic,
+diff-shaped failure, not a transient one. Each of the three re-runs re-paid
+the full cost: ~4.0M agy tokens (≈201% of its monthly plan allotment) and
+~3.2M codex tokens (≈644% of its monthly reserve) in a single day, for zero
+additional signal after the first failure established the pattern. Raised in
+#1355.
+
+Ruling: extend R1.9 with a third, per-suite check. For each required suite,
+find its **anchor comment** — the most recent results comment whose line for
+that suite is a fresh (non-restated) result. Skip re-running the suite in R2
+only when the anchor's recorded result is a FAIL against the *same* HEAD, *no
+human has commented since* the anchor, and *fewer than 6 hours have elapsed*
+since the anchor. Any of the three failing forces a fresh run: HEAD advancing
+means the diff that caused the failure changed; a human comment may carry new
+direction (a waiver, a narrower diff, a process fix); the backoff bounds the
+case where the failure is actually transient (e.g. a CLI outage) and would
+otherwise never be retried.
+
+The anchor must be a *fresh* result specifically, not simply "the most recent
+comment carrying the suite's line" — the first design of this amendment used
+the latter and had a self-defeating bug: R3 restates a carried-forward
+suite's line verbatim in every cycle's new comment, so "most recent comment"
+would keep resolving to the *previous cycle's restatement* rather than the
+original failure, and the restatement's `created_at` is the posting time, not
+the failure time. That let the 6-hour window reset itself every cycle the
+suite stayed skipped, turning the intended backoff into indefinite
+suppression — exactly what this amendment exists to prevent. Marking a
+restated line (identifiable by its `(skipped — ...)` suffix) permanently
+ineligible as an anchor fixes this: the elapsed-time and human-comment checks
+always measure from the original fresh failure, however many cycles have
+carried it forward since.
+
+This is deliberately per-suite, not R2-wide: cheap, fast, deterministic
+suites (`run_tests_release.sh`, `check_agents_static.sh`,
+`run_validators.sh`) still run every cycle for fresh-regression signal; only
+a suite with a matching anchor FAIL is skipped. R3's results-comment format
+gains a `Release candidate SHA:` line (mirroring R4's existing one) so a
+later cycle's anchor walk has something to match against, and each suite
+entry becomes a fixed, parseable `<suite>: PASS|FAIL (exit <code>) at
+<timestamp>` line with a fenced first-line excerpt on FAIL — needed so a
+carried-forward skip can restate the anchor's result verbatim rather than
+re-deriving it.
+
+**Affected sign-offs.** Stand unchanged: R0 identity guard, R1 trigger
+conditions, R1.9 checks 1–2, R4, R5, R6 — this amendment touches none of
+them. R2's tier table and PATCH promotion rule are unchanged; only whether a
+required suite executes this cycle changes. R3's escalation behavior
+(`needs-human`) is unchanged — only its comment format gains the SHA line and
+a fixed per-suite line shape.
+
+**On #1338 specifically:** moot — #1338 shipped as v0.6.0 and is closed. This
+amendment is prospective, for the next release request that hits a
+deterministic R2 failure.

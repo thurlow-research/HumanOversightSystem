@@ -522,9 +522,63 @@ change **no** labels, and move on. Reasons `awaiting-merge` and
 `needs-attention` do not defer — run R2 normally. **R5 and R6 are never
 deferred for any directive.**
 
+**3. Failure-path idempotency (per suite) — evaluate BEFORE R2, independent of
+check 2.** Applies only when checks 1 and 2 did not already dispose of this
+cycle. Read this issue's comments (`bash bootstrap/query_issues.sh --app
+worker --comments <n>`), restricted to those authored by `hos-worker-hos[bot]`
+that contain a `Release candidate SHA:` line (R3 failure comments and R4
+authorization comments both emit this line).
+
+For each suite required by R2's tier table, find that suite's **anchor
+comment**: the most recent such comment whose line for this suite (matched by
+script path) is FRESH — i.e. NOT suffixed `(skipped — ...)`. A restated
+(carry-forward) line is never itself eligible as an anchor — walk past it to
+an older comment — because it inherits its `created_at` from the *posting*
+cycle, not from when the suite actually last ran; treating it as an anchor
+would let the 6-hour window below reset itself indefinitely every time R3
+restates the same result. This is a per-suite walk, not one issue-wide
+reference point: two suites required by the same cycle can have different
+anchor comments (e.g. one failed 3 cycles ago and has been carried forward
+since; another failed only last cycle).
+
+Mark the suite a **carry-forward skip** — do not execute it this cycle — only
+if ALL of:
+- The suite has an anchor comment, and its `Release candidate SHA:` equals
+  current `git rev-parse HEAD` (no code has changed since the suite actually
+  last ran — the diff that produced the recorded failure is still exactly
+  what would run).
+- The anchor comment's line for this suite records a FAIL.
+- No comment on the issue from an account NOT in `BOT_ACCOUNTS` has
+  `created_at` after the anchor comment's `created_at` (a human has not
+  weighed in since — a waiver, a narrower-diff instruction, or a process fix
+  would supersede the deterministic-failure assumption, so any human comment
+  forces a fresh run).
+- Fewer than 6 hours have elapsed since the anchor comment's `created_at` —
+  the original fresh-failure timestamp, never a later cycle's restatement of
+  it, precisely because a restated line can't itself be an anchor (a
+  backoff, not a permanent suppression: long enough that repeating a
+  genuinely deterministic failure every cron cycle buys nothing, short
+  enough that a failure that is actually transient, e.g. a CLI outage, is
+  retried the same day).
+
+A carry-forward-skip suite contributes its anchor comment's recorded exit
+code, timestamp, and failure excerpt to this cycle's R3 comment verbatim,
+instead of a fresh run (see R3's format below) — the restated line keeps the
+`(skipped — ...)` suffix, and with it, its own permanent ineligibility as a
+future anchor. Every other required suite — including any suite whose most
+recent fresh line is a PASS, and any suite with no prior recorded line at
+this SHA (e.g. a tier promotion that added it since) — runs normally in R2.
+This is a per-suite decision, not an R2-wide skip: it mirrors R1.9 check 1's
+reasoning (don't repeat expensive, deterministic work when nothing has
+changed) applied to R2's failure path, while cheap, fast suites keep
+re-running every cycle for fresh-regression signal (#1355).
+
 ### Step R2 — Run the validation gate
 
-Runs only when R1.9 check 1 was not satisfied and check 2 did not defer.
+Runs only when R1.9 check 1 was not satisfied and check 2 did not defer. Run
+each required suite fresh **unless R1.9 check 3 marked it a carry-forward
+skip** — a carry-forward-skip suite contributes its prior recorded result to
+R3 without re-executing.
 
 Determine the release tier from the semver bump vs. the last tag
 (`git describe --tags --abbrev=0`):
@@ -543,8 +597,19 @@ itself, promote to MINOR/MAJOR requirements — all five suites become required.
 
 ### Step R3 — On any required suite failure, escalate
 
-1. Post a results comment listing each suite with exit code and timestamp, via
-   `bash bootstrap/post_comment.sh --number <n> --body-file <path> --app worker`.
+1. Post a results comment via `bash bootstrap/post_comment.sh --number <n>
+   --body-file <path> --app worker` containing:
+   - A `Release candidate SHA: <sha>` line (same format as R4's — required so
+     a later cycle's R1.9 check 3 anchor walk can find this comment).
+   - One line per required suite, in the fixed, parseable format
+     `- <suite-script-path>: PASS|FAIL (exit <code>) at <UTC timestamp>`. For
+     any FAIL that ran fresh this cycle, follow it with a fenced first-line
+     excerpt of the captured output (the failure signature). For any suite
+     R1.9 check 3 marked a carry-forward skip, restate that suite's anchor
+     comment's recorded line and excerpt verbatim, suffixed ` (skipped —
+     matches prior failure, unchanged HEAD, no human comment since, backoff
+     not yet elapsed)` — this suffix is also what makes the restated line
+     permanently ineligible as a future anchor (see R1.9 check 3).
 2. Add `needs-human`, via
    `bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app worker`. STOP.
 
