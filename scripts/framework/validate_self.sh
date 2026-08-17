@@ -226,13 +226,16 @@ Return JSON only — no prose outside the JSON block:
     #   --no-session-persistence              leave no session state behind.
     # The review package is fully self-contained (all files inline in the prompt),
     # so the reviewer needs no project context at all.
-    local tmpfile result rc=0
-    tmpfile=$(mktemp /tmp/validate_self_XXXXXX)
-    printf '%s' "$prompt" > "$tmpfile"
-    result=$(claude -p "$(cat "$tmpfile")" --model "$MODEL" \
+    local result rc=0
+    # Pass the prompt via stdin, not as a CLI argument (#1368): at release scale
+    # (--changed-only spanning a full minor release) the review package can
+    # exceed the OS ARG_MAX ceiling shared by argv and the environment, causing
+    # execve to fail (E2BIG, rc=126) before claude ever runs. Piping removes
+    # that ceiling entirely — matches the pattern already used for the same
+    # invocation in validate_scripts.sh.
+    result=$(printf '%s' "$prompt" | claude -p --model "$MODEL" \
         --exclude-dynamic-system-prompt-sections \
         --no-session-persistence 2>/dev/null) || rc=$?
-    rm -f "$tmpfile"
     # Fail-closed on an invocation that errored or produced empty/whitespace-only
     # output (same class of bug as #669/#670 in the sibling scripts): a broken
     # `claude` call must not read as "reviewed, found nothing". The synthesized
