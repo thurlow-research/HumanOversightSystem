@@ -70,10 +70,16 @@ class CronEnv:
         # $0 proves thin-env resolved it by absolute path off the pinned PATH;
         # the recorded env proves ANTHROPIC_API_KEY was unset and the OAuth token
         # is present. Exit code is overridable to exercise the non-zero path.
+        # HOS_TEST_CLAUDE_STDOUT (#1446) prints arbitrary text to the stub's REAL
+        # stdout (distinct from the diagnostic block below, which is redirected
+        # to self.claude_log) — this is what `_run_claude`'s `tee` in the real
+        # launcher would capture, so tests can drive the usage-limit breaker's
+        # detection grep against it.
         _write_exec(
             self.bindir / "claude",
             "#!/usr/bin/env bash\n"
             "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
+            '[[ -n "${HOS_TEST_CLAUDE_STDOUT:-}" ]] && printf "%s\\n" "$HOS_TEST_CLAUDE_STDOUT"\n'
             "{\n"
             '  echo "argv0=$0"\n'
             '  echo "api_key=${ANTHROPIC_API_KEY:-UNSET}"\n'
@@ -532,6 +538,11 @@ class CronEnv:
     def timeout_breaker_state_file(self, project="hos", role="worker") -> Path:
         """The #1435 consecutive-exit=124 counter file for <role>/<project>."""
         return self.state / "timeout-breaker" / f"{role}-{project}"
+
+    def claude_output_capture_file(self, project="hos", role="worker") -> Path:
+        """The #1446 fixed-path, overwrite-on-every-run capture of claude's
+        own stdout for <role>/<project> — what the usage-limit breaker greps."""
+        return self.state / "last-claude-output" / f"{role}-{project}"
 
     def set_baseline_on_red(self, mode: str, project="hos") -> None:
         """Append <project>_baseline_on_red=<mode> to projects.conf (#959)."""
@@ -1540,11 +1551,19 @@ class TestCycleStartBaselineCowpat:
 
     def test_baseline_green_auto_closes_standing_blocked_issue(self, cron):
         """#959: baseline passes → any standing [BLOCKED] issue is auto-closed,
-        even in default "halt" mode (this is the unconditional "at minimum" ask)."""
+        even in default "halt" mode (this is the unconditional "at minimum" ask).
+
+        Membership, not exact-list equality: the gh stub can't distinguish
+        which real title-prefix a `--jq ... .[].number` query was for, so
+        the #1446 usage-limit-breaker auto-close (also unconditional on any
+        exit=0 cycle — it has no state file to gate on, unlike the timeout
+        breaker below) sees the same fake "321" and issues its own harmless
+        `gh issue close 321` too. Same convention already used by the
+        timeout breaker's analogous test."""
         cron.git_init_repo()
         r = cron.run(env_overrides={"HOS_TEST_BROKEN_STATE_OPEN_NUMS": "321"})
         assert r.returncode == 0, r.stdout + r.stderr
-        assert cron.closed_issue_nums() == ["321"]
+        assert "321" in cron.closed_issue_nums()
         assert cron.claude_ran()
 
     def test_baseline_green_no_standing_issue_closes_nothing(self, cron):
@@ -1740,6 +1759,116 @@ class TestTimeoutBreaker:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert not cron.timeout_breaker_state_file().exists()
+        assert cron.claude_ran()
+
+
+# ──────────────────────────── Usage-limit breaker (#1446) ────────────────────
+class TestUsageLimitBreaker:
+    """A genuine Claude usage-limit refusal detected in the session's own
+    captured stdout (a hard signal from Anthropic's side) trips the project
+    into suspension via the real bin/hos-suspend on the FIRST detection — no
+    consecutive-attempt counter, unlike the timeout breaker above — and files
+    a needs-human issue so the pause is visible in the queue. v1 is
+    reactive-only: no sanctioned credential can read `/usage` percentages
+    headlessly (see #1446), so this only watches for the CLI's own refusal
+    text via a broad, case-insensitive match against multiple known
+    phrasings. Detection runs independent of $_claude_exit's value.
+    """
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "Claude usage limit reached. Your limit will reset at 3pm (UTC).",
+            "You've hit your session limit · resets 3pm",
+            "You've hit your weekly limit · resets Friday",
+            "You've hit your Opus limit · resets Friday",
+            # Case-insensitivity
+            "CLAUDE USAGE LIMIT REACHED.",
+        ],
+    )
+    def test_known_phrasing_trips_breaker(self, cron, phrase):
+        r = cron.run(env_overrides={"HOS_TEST_CLAUDE_STDOUT": phrase})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists(), "expected hos-suspend to write a suspension marker"
+        marker = cron.suspend_file().read_text()
+        assert '"until"' not in marker, "the breaker must never set --until (silent auto-resume)"
+        assert cron.aa_issue_created()
+        assert phrase in cron.claude_output_capture_file().read_text()
+
+    def test_normal_output_does_not_trip_breaker(self, cron):
+        """Ordinary session output with no usage-limit phrase → no trip."""
+        r = cron.run(
+            env_overrides={"HOS_TEST_CLAUDE_STDOUT": "Opened PR #123. Done for this cycle."}
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" not in r.stdout
+        assert not cron.suspend_file().exists()
+        assert not cron.aa_issue_created()
+
+    def test_no_captured_output_does_not_trip_breaker(self, cron):
+        """No HOS_TEST_CLAUDE_STDOUT at all (the ordinary happy path) → the
+        capture file still exists (claude always writes something to stdout
+        in real use) but contains no usage-limit phrasing, so no trip."""
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" not in r.stdout
+        assert not cron.suspend_file().exists()
+        assert not cron.aa_issue_created()
+
+    def test_dedup_skips_duplicate_issue(self, cron):
+        """A second cycle's dedup query reporting an existing open breaker
+        issue does not file a duplicate — the suspend still fires (it's the
+        very next cycle that's blocked by it, not this check)."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_CLAUDE_STDOUT": "Claude usage limit reached. Your limit will reset at 3pm (UTC).",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists()
+        assert "already open — not filing a duplicate" in r.stdout
+        assert not cron.aa_issue_created()
+
+    def test_trip_dedup_query_failure_still_suspends(self, cron):
+        """The needs-human dedup query failing must not block the suspend
+        itself — mirrors the timeout breaker's identical acceptance
+        criterion; fail-closed only withholds the duplicate-issue filing."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_CLAUDE_STDOUT": "Claude usage limit reached. Your limit will reset at 3pm (UTC).",
+                "HOS_TEST_AA_QUERY_FAIL": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists(), "dedup query failure must not block the suspend"
+        assert not cron.aa_issue_created(), "dedup query failed → must fail closed, no issue"
+        assert "fail-closed" in r.stdout
+
+    def test_trips_regardless_of_claude_exit_code(self, cron):
+        """A nonzero exit alongside a usage-limit refusal still trips the
+        breaker — detection is independent of $_claude_exit's value."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_CLAUDE_STDOUT": "You've hit your session limit · resets 3pm",
+                "HOS_TEST_CLAUDE_EXIT": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "USAGE LIMIT BREAKER TRIPPED" in r.stdout
+        assert cron.suspend_file().exists()
+
+    def test_normal_completion_auto_closes_standing_issue(self, cron):
+        """A cycle that completes normally (exit 0, no usage-limit phrase)
+        auto-closes any standing usage-limit-breaker issue — symmetry with
+        the timeout breaker's auto-close, defense-in-depth for a suspend
+        marker cleared without also closing the issue."""
+        r = cron.run(env_overrides={"HOS_TEST_BROKEN_STATE_OPEN_NUMS": "777"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "777" in cron.closed_issue_nums()
         assert cron.claude_ran()
 
 
