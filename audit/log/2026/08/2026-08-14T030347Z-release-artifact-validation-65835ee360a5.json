@@ -1,0 +1,1 @@
+{"artifacts_read":["signoffs/validators/step1/summary.json"],"escalation_reasons":[],"event":"release-artifact-validation","high_plus_steps":[],"missing_signoffs":[],"steps_found":1,"timestamp":"2026-08-14T03:03:47Z","verdict":"pass","version":"v0.6.0","warnings_count":0}
