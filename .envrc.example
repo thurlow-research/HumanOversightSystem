@@ -1,0 +1,43 @@
+# direnv configuration for HOS session launchers
+# Run: direnv allow   (once, after cloning)
+#
+# This file is git-tracked, so it is identical across the Worker/Overseer/
+# Human clones of a project -- it must not claim to belong to one role.
+#
+# This file is loaded automatically when you cd into this directory. It adds
+# bin/ to PATH (making hos-worker, hos-overseer, hos-human available as
+# commands) and sets HOS_CONFIG_DIR to the project-level config location.
+#
+# direnv is NOT a required prerequisite for every launcher: bin/hos-human
+# resolves HOS_CONFIG_DIR itself and does not depend on this file (#1411).
+# bin/hos-worker and bin/hos-overseer (interactive launchers) still rely on
+# it being exported here -- direnv remains load-bearing for those two.
+
+PATH_add bin
+
+# Project-level config: ~/Code/<Project>/.config/hos/apps.env
+# Keys and App IDs live here — never committed to git.
+# See docs/MACHINE-ACCOUNTS-SETUP.md for setup instructions.
+export HOS_CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.config/hos"
+
+# NOTE: keys NEVER belong in this file or in .envrc.
+# Secrets live in $HOS_CONFIG_DIR/apps.env (gitignored) or a parent .envrc
+# outside the repo. .envrc itself is gitignored — copy this template:
+#     cp .envrc.example .envrc && direnv allow
+
+# ─── ⚠ KNOWN NON-COMPLIANCE — do not copy this blindly (see #1485) ───────────
+# The `PATH_add bin` line above is the LEGACY form. ADR-038 AD-7 (BINDING)
+# says the opposite:
+#
+#   ".envrc puts the EXECUTION ROOT on PATH and never the clone's bin/. If the
+#    resolver reports no execution root (unmigrated), it adds NOTHING — typing
+#    `hos-human` then fails with 'not found', which is the correct, loud
+#    failure, rather than silently running the unexecuted source copy."
+#
+# This template reproduces the current tracked .envrc verbatim, which predates
+# and does not satisfy AD-7. It is shipped as-is so the untracking in #1484
+# does not strand existing clones — NOT as an endorsement of this form.
+#
+# #1485 resolves what .envrc should contain, or whether it is still needed at
+# all now that secrets live in $HOS_CONFIG_DIR/apps.env.
+# ─────────────────────────────────────────────────────────────────────────────

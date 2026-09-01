@@ -60,3 +60,9 @@ htmlcov/
 .ripgreprc
 .gitmodules
 nohup.out
+
+# direnv — .envrc is a KEYS file on real machines (it sources parent env and
+# exports credentials) and is NOT part of the project. Never commit it, nor any
+# local variant (.envrc.local, .envrc.prod, ...). Copy .envrc.example instead.
+.envrc*
+!.envrc.example
