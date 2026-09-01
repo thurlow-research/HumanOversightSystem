@@ -16,6 +16,7 @@
 #   cps_overseer_root=$HOME/Code/CPS/Main
 #   cps_baseline_on_red=repair   # optional (#959); default "halt" — see below
 #   cps_max_seconds=3600         # optional (#1434); default 1800 — see below
+#   cps_worktree_hygiene=preserve  # optional (#1415); default "off" — see below
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
@@ -46,6 +47,30 @@
 #   HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS  consecutive exit=124 cycles at an unchanged
 #                               cap before the project is suspended via hos-suspend
 #                               (default 2; #1435)
+#   HOS_WORKTREE_HYGIENE        override <project>_worktree_hygiene (off|preserve)
+#   HOS_WORKTREE_HYGIENE_MAX_BYTES  quarantine size ceiling in bytes before hygiene
+#                               refuses to sweep (default 268435456 = 256 MiB)
+#
+# <project>_worktree_hygiene (projects.conf, worker only; #1415): a dead cycle
+# can leave debris (untracked scratch files, uncommitted edits to tracked files)
+# in the worktree that fails the cycle-start baseline for every subsequent
+# cycle until a human intervenes. "off" (default) is a no-op — unchanged legacy
+# behavior. "preserve" runs a pre-baseline sweep that copies every uncommitted
+# path to a timestamped quarantine dir under $HOS_STATE_DIR/worktree-quarantine
+# (with a MANIFEST + RESTORE.md), verifies the copy byte-for-byte, THEN reverts
+# tracked files to HEAD and removes untracked ones — nothing is ever deleted
+# before it is safely copied elsewhere and verified. Refuses (leaves the tree
+# untouched, warns, and lets the baseline run as before) on an in-progress git
+# operation (merge/rebase/cherry-pick), a size ceiling breach, or any copy/
+# verify failure. The broken-state escalation issue (below) is annotated with
+# whether the tree was verified clean when the baseline still failed (genuine
+# breakage) or hygiene itself failed (the red baseline may be leftover debris,
+# not a regression) — never silent either way. Opt-in default reflects a real
+# incident: an earlier, less careful draft of this mechanism reverted tracked
+# files without first saving a patch and destroyed uncommitted work outright
+# (2026-09-01, see docs/v0.7.0/ADR-1415-worktree-hygiene.md). Does not clean up
+# stranded local branches or bound repeated-failure retry cost — both tracked
+# as a separate follow-up issue (#1498), not this mechanism's scope.
 #
 # Usage-limit breaker (#1446): a genuine Claude usage-limit refusal detected in
 # the session's own captured output (see $_HOS_DIR/last-claude-output/) trips
@@ -176,6 +201,23 @@ _TIMEOUT_BREAKER_TITLE_PREFIX="[SUSPENDED] ${ROLE} timeout breaker tripped on ${
 # same reason as above, one definition for both the trip path and the
 # normal-completion auto-close path.
 _USAGE_LIMIT_BREAKER_TITLE_PREFIX="[SUSPENDED] ${ROLE} usage-limit breaker tripped on ${PROJECT}"
+
+# ── Worktree hygiene mode (#1415) ────────────────────────────────────────────
+# Precedence: HOS_WORKTREE_HYGIENE env > <project>_worktree_hygiene > off
+_HYGIENE_MODE="${HOS_WORKTREE_HYGIENE:-$(_conf_val worktree_hygiene)}"
+_HYGIENE_MODE="${_HYGIENE_MODE:-off}"
+_HYGIENE_CONF_INVALID=""
+case "$_HYGIENE_MODE" in
+  off|preserve) ;;
+  *) _HYGIENE_CONF_INVALID="$_HYGIENE_MODE"; _HYGIENE_MODE="off" ;;
+esac
+_HYGIENE_RESULT="disabled"      # disabled|nothing_to_sweep|swept|failed
+_HYGIENE_REASON=""              # set only when result=failed
+_HYGIENE_COUNT=0
+_HYGIENE_QUARANTINE=""
+_HYGIENE_BASE_SHA=""
+_HYGIENE_RESIDUAL=""
+_HYGIENE_MAX_BYTES="${HOS_WORKTREE_HYGIENE_MAX_BYTES:-268435456}"   # 256 MiB
 
 LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
@@ -360,6 +402,272 @@ _sync_audit_logs() {
     fi
     # EXIT trap removes the scratch worktree; the live checkout is never touched.
   )
+}
+
+# ── Worktree hygiene (#1415) ──────────────────────────────────────────────────
+# Filesystem quarantine (copy → verify → remove) of debris left by a dead
+# cycle — untracked scratch files and uncommitted tracked-file edits — so a
+# stale worktree can no longer defeat the #1044 return-to-main check or the
+# #1393 ff-only guard. Opt-in via <project>_worktree_hygiene=preserve; a
+# no-op otherwise (default off, unchanged behavior). Nothing is ever deleted
+# before it is copied elsewhere and verified byte-for-byte; no git
+# stash/reset/clean, no ref manipulation anywhere. See
+# docs/v0.7.0/ADR-1415-worktree-hygiene.md for the full design rationale.
+_HY_EXCLUDE_PATHSPEC=':(exclude)audit'
+
+_stat_size() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0; }
+
+_hy_mode_desc() {
+  # symlink | octal permission bits | unpreserved (stat failed outright)
+  if [[ -L "$1" ]]; then
+    echo "symlink"
+  else
+    stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo "unpreserved"
+  fi
+}
+
+_worktree_hygiene_fail() {
+  # Sets result=failed + reason, warns, audits — and always returns 0. Never
+  # removes anything and never exits the cycle; the caller returns right
+  # after calling this.
+  local _reason="$1"; shift
+  _HYGIENE_RESULT="failed"
+  _HYGIENE_REASON="$_reason"
+  echo "$LOG_PREFIX WARN: worktree hygiene failed (${_reason}) — leaving the worktree as-is (#1415)"
+  _audit cycle-worktree-hygiene-fail "reason=${_reason}" "residual=${_HYGIENE_RESIDUAL}" "$@"
+}
+
+_worktree_hygiene() {
+  # ── Step 0: config diagnostics — always evaluated, independent of role/mode ──
+  if [[ -n "$_HYGIENE_CONF_INVALID" ]]; then
+    echo "$LOG_PREFIX WARN: unrecognized worktree_hygiene value '${_HYGIENE_CONF_INVALID}' — treating as off (#1415)"
+    _audit cycle-hygiene-config-invalid "value=${_HYGIENE_CONF_INVALID}"
+  fi
+  if [[ ! "$_HYGIENE_MAX_BYTES" =~ ^[0-9]+$ ]]; then
+    local _hy_bad_bytes="$_HYGIENE_MAX_BYTES"
+    _HYGIENE_MAX_BYTES=268435456
+    echo "$LOG_PREFIX WARN: non-numeric HOS_WORKTREE_HYGIENE_MAX_BYTES value '${_hy_bad_bytes}' — falling back to 256 MiB default (#1415)"
+    _audit cycle-hygiene-config-invalid "value=${_hy_bad_bytes}" "key=max_bytes"
+  fi
+
+  # ── Step 1: applicability gates — any true leaves result=disabled, removes nothing ──
+  [[ "$ROLE" == "worker" ]] || return 0
+  [[ "$_HYGIENE_MODE" == "preserve" ]] || return 0
+  git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  if ! git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo "$LOG_PREFIX worktree hygiene skipped — HEAD unresolvable (#1415)"
+    return 0
+  fi
+  _HYGIENE_BASE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
+  # ── Step 2: refuse during an in-progress git operation ───────────────────
+  local _hy_gd
+  _hy_gd="$(git -C "$REPO_ROOT" rev-parse --git-dir 2>/dev/null)"
+  case "$_hy_gd" in
+    /*) ;;
+    *) _hy_gd="$REPO_ROOT/$_hy_gd" ;;
+  esac
+  if [[ -e "$_hy_gd/MERGE_HEAD" || -e "$_hy_gd/CHERRY_PICK_HEAD" || -e "$_hy_gd/REVERT_HEAD" \
+        || -e "$_hy_gd/rebase-merge" || -e "$_hy_gd/rebase-apply" ]]; then
+    _worktree_hygiene_fail operation_in_progress
+    return 0
+  fi
+
+  # ── Step 3: enumerate (never --ignored) ───────────────────────────────────
+  local -a _hy_untracked_path=() _hy_untracked_xy=() _hy_tracked_path=() _hy_tracked_xy=()
+  local _hy_rec _hy_xy _hy_path _hy_orig
+  while IFS= read -r -d '' _hy_rec; do
+    _hy_xy="${_hy_rec:0:2}"
+    _hy_path="${_hy_rec:3}"
+    if [[ "$_hy_xy" == "??" ]]; then
+      [[ "$_hy_path" == audit/* || "$_hy_path" == "audit" ]] && continue
+      _hy_untracked_xy+=("$_hy_xy")
+      _hy_untracked_path+=("$_hy_path")
+      continue
+    fi
+    if [[ "$_hy_xy" == *U* || "$_hy_xy" == "AA" || "$_hy_xy" == "DD" ]]; then
+      _worktree_hygiene_fail unmerged_paths
+      return 0
+    fi
+    if [[ "${_hy_xy:0:1}" == "R" || "${_hy_xy:0:1}" == "C" ]]; then
+      IFS= read -r -d '' _hy_orig || true
+    fi
+    [[ "$_hy_path" == audit/* || "$_hy_path" == "audit" ]] && continue
+    _hy_tracked_xy+=("$_hy_xy")
+    _hy_tracked_path+=("$_hy_path")
+  done < <(git -C "$REPO_ROOT" status --porcelain -uall -z 2>/dev/null)
+
+  if [[ ${#_hy_untracked_path[@]} -eq 0 && ${#_hy_tracked_path[@]} -eq 0 ]]; then
+    _HYGIENE_RESULT="nothing_to_sweep"
+    return 0
+  fi
+
+  # ── Step 4: size ceiling — before any copy ────────────────────────────────
+  local _hy_bytes=0 _hy_i _hy_untracked_bytes=0
+  for ((_hy_i = 0; _hy_i < ${#_hy_untracked_path[@]}; _hy_i++)); do
+    _hy_untracked_bytes=$(( _hy_untracked_bytes + $(_stat_size "$REPO_ROOT/${_hy_untracked_path[_hy_i]}") ))
+  done
+  local _hy_diff_bytes
+  _hy_diff_bytes=$(git -C "$REPO_ROOT" diff --binary HEAD -- . "$_HY_EXCLUDE_PATHSPEC" 2>/dev/null | wc -c)
+  _hy_bytes=$(( _hy_untracked_bytes + _hy_diff_bytes ))
+  if (( _hy_bytes > _HYGIENE_MAX_BYTES )); then
+    _worktree_hygiene_fail size_ceiling_exceeded "bytes=${_hy_bytes}" "ceiling=${_HYGIENE_MAX_BYTES}"
+    return 0
+  fi
+
+  # ── Step 5: create quarantine (copy phase) ────────────────────────────────
+  local _hy_ts _hy_q
+  _hy_ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  _hy_q="$_HOS_DIR/worktree-quarantine/${ROLE}-${PROJECT}/${_hy_ts}-${HOS_CYCLE_ID}"
+  if ! mkdir -p "$_hy_q/untracked"; then
+    _worktree_hygiene_fail quarantine_mkdir_failed
+    return 0
+  fi
+  _HYGIENE_QUARANTINE="$_hy_q"
+
+  git -C "$REPO_ROOT" diff --binary HEAD -- . "$_HY_EXCLUDE_PATHSPEC" > "$_hy_q/tracked.patch" 2>/dev/null
+
+  local _hy_copy_failed=0
+  for ((_hy_i = 0; _hy_i < ${#_hy_untracked_path[@]}; _hy_i++)); do
+    _hy_path="${_hy_untracked_path[_hy_i]}"
+    if ! mkdir -p "$_hy_q/untracked/$(dirname "$_hy_path")" 2>/dev/null; then
+      _hy_copy_failed=1; break
+    fi
+    if ! cp -a -- "$REPO_ROOT/$_hy_path" "$_hy_q/untracked/$_hy_path" 2>/dev/null; then
+      _hy_copy_failed=1; break
+    fi
+  done
+  if [[ "$_hy_copy_failed" -eq 1 ]]; then
+    _worktree_hygiene_fail copy_failed
+    return 0
+  fi
+
+  local _hy_branch
+  _hy_branch="$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+  local _hy_tracked_patch_bytes
+  _hy_tracked_patch_bytes="$(_stat_size "$_hy_q/tracked.patch")"
+  local _hy_total_bytes=$(( _hy_tracked_patch_bytes + _hy_untracked_bytes ))
+
+  {
+    echo "base_sha=${_HYGIENE_BASE_SHA}"
+    echo "branch=${_hy_branch}"
+    echo "cycle_id=${HOS_CYCLE_ID}"
+    echo "utc=${_hy_ts}"
+    echo "mode=preserve"
+    echo "tracked_patch_bytes=${_hy_tracked_patch_bytes}"
+    echo "untracked_bytes=${_hy_untracked_bytes}"
+    echo "total_bytes=${_hy_total_bytes}"
+    for ((_hy_i = 0; _hy_i < ${#_hy_untracked_path[@]}; _hy_i++)); do
+      printf '%s\t%s\t%s\n' "${_hy_untracked_xy[_hy_i]}" "${_hy_untracked_path[_hy_i]}" \
+        "$(_hy_mode_desc "$REPO_ROOT/${_hy_untracked_path[_hy_i]}")"
+    done
+    for ((_hy_i = 0; _hy_i < ${#_hy_tracked_path[@]}; _hy_i++)); do
+      printf '%s\t%s\tin:tracked.patch\n' "${_hy_tracked_xy[_hy_i]}" "${_hy_tracked_path[_hy_i]}"
+    done
+  } > "$_hy_q/MANIFEST.txt"
+
+  cat > "$_hy_q/RESTORE.md" <<RESTORE_EOF
+# Recovering quarantined work (#1415)
+
+This directory holds work swept out of $REPO_ROOT by bin/hos-cron's
+pre-baseline worktree hygiene at $_hy_ts. Nothing was deleted before it was
+copied here and verified. See MANIFEST.txt for the full path list.
+
+Base commit: $_HYGIENE_BASE_SHA   Branch: $_hy_branch   Cycle: $HOS_CYCLE_ID
+
+## Restore everything
+
+    cd $REPO_ROOT
+    git checkout $_HYGIENE_BASE_SHA          # or a branch at that commit
+    git apply --binary "$_hy_q/tracked.patch"     # skip if 0 bytes
+    cp -a "$_hy_q/untracked/." .
+
+## Restore one file
+
+    cp -a "$_hy_q/untracked/<path>" "$REPO_ROOT/<path>"
+
+## Discard
+
+    rm -rf "$_hy_q"
+RESTORE_EOF
+
+  # ── Step 6: verify (before any removal) ───────────────────────────────────
+  local _hy_verify_ok=1
+  [[ -f "$_hy_q/tracked.patch" && -f "$_hy_q/MANIFEST.txt" ]] || _hy_verify_ok=0
+  if [[ "$_hy_verify_ok" -eq 1 && -s "$_hy_q/tracked.patch" ]]; then
+    git -C "$REPO_ROOT" apply --check --reverse --binary "$_hy_q/tracked.patch" 2>/dev/null \
+      || _hy_verify_ok=0
+  fi
+  if [[ "$_hy_verify_ok" -eq 1 ]]; then
+    for ((_hy_i = 0; _hy_i < ${#_hy_untracked_path[@]}; _hy_i++)); do
+      _hy_path="${_hy_untracked_path[_hy_i]}"
+      if [[ ! -e "$_hy_q/untracked/$_hy_path" && ! -L "$_hy_q/untracked/$_hy_path" ]]; then
+        _hy_verify_ok=0; break
+      fi
+      if [[ "$(_stat_size "$REPO_ROOT/$_hy_path")" != "$(_stat_size "$_hy_q/untracked/$_hy_path")" ]]; then
+        _hy_verify_ok=0; break
+      fi
+    done
+  fi
+  if [[ "$_hy_verify_ok" -eq 1 ]]; then
+    local _hy_qcount
+    _hy_qcount="$(find "$_hy_q/untracked" \( -type f -o -type l \) 2>/dev/null | wc -l)"
+    [[ "$_hy_qcount" -eq "${#_hy_untracked_path[@]}" ]] || _hy_verify_ok=0
+  fi
+  if [[ "$_hy_verify_ok" -ne 1 ]]; then
+    _worktree_hygiene_fail verify_failed
+    return 0
+  fi
+
+  # ── Step 7: remove (only after verify passes) ─────────────────────────────
+  for ((_hy_i = 0; _hy_i < ${#_hy_tracked_path[@]}; _hy_i++)); do
+    _hy_path="${_hy_tracked_path[_hy_i]}"
+    if git -C "$REPO_ROOT" cat-file -e "HEAD:$_hy_path" 2>/dev/null; then
+      git -C "$REPO_ROOT" checkout HEAD -- "$_hy_path"
+    else
+      git -C "$REPO_ROOT" rm -q --cached -- "$_hy_path" 2>/dev/null
+      rm -f -- "$REPO_ROOT/$_hy_path"
+    fi
+  done
+  for ((_hy_i = 0; _hy_i < ${#_hy_untracked_path[@]}; _hy_i++)); do
+    rm -f -- "$REPO_ROOT/${_hy_untracked_path[_hy_i]}"
+  done
+
+  # ── Step 8: post-removal residual check ───────────────────────────────────
+  local -a _hy_residual=()
+  while IFS= read -r -d '' _hy_rec; do
+    _hy_xy="${_hy_rec:0:2}"
+    _hy_path="${_hy_rec:3}"
+    if [[ "${_hy_xy:0:1}" == "R" || "${_hy_xy:0:1}" == "C" ]]; then
+      IFS= read -r -d '' _hy_orig || true
+    fi
+    [[ "$_hy_path" == audit/* || "$_hy_path" == "audit" ]] && continue
+    _hy_residual+=("$_hy_path")
+  done < <(git -C "$REPO_ROOT" status --porcelain -uall -z 2>/dev/null)
+
+  if [[ ${#_hy_residual[@]} -gt 0 ]]; then
+    _HYGIENE_RESIDUAL="${_hy_residual[*]:0:50}"
+    _worktree_hygiene_fail residual_dirty
+    return 0
+  fi
+
+  _HYGIENE_RESULT="swept"
+  _HYGIENE_COUNT=$(( ${#_hy_untracked_path[@]} + ${#_hy_tracked_path[@]} ))
+
+  # ── Step 9: report ─────────────────────────────────────────────────────────
+  local -a _hy_all_paths=("${_hy_untracked_path[@]}" "${_hy_tracked_path[@]}")
+  local _hy_paths_summary
+  if [[ ${#_hy_all_paths[@]} -gt 50 ]]; then
+    _hy_paths_summary="${_hy_all_paths[*]:0:50} (+$(( ${#_hy_all_paths[@]} - 50 )) more)"
+  else
+    _hy_paths_summary="${_hy_all_paths[*]}"
+  fi
+  local _hy_qdirs
+  _hy_qdirs="$(find "$_HOS_DIR/worktree-quarantine/${ROLE}-${PROJECT}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+  echo "$LOG_PREFIX worktree hygiene: swept ${_HYGIENE_COUNT} path(s) to ${_HYGIENE_QUARANTINE} (#1415)"
+  _audit cycle-worktree-hygiene "result=swept" "count=${_HYGIENE_COUNT}" "quarantine=${_HYGIENE_QUARANTINE}" \
+    "base_sha=${_HYGIENE_BASE_SHA}" "paths=${_hy_paths_summary}" "quarantine_dirs=${_hy_qdirs}"
+  return 0
 }
 
 # ── Pre-jitter dependency check (fail-closed, marker-cached) ─────────────────
@@ -882,6 +1190,11 @@ fi
 # below would never fire.
 git -C "$REPO_ROOT" fetch origin --prune --quiet 2>/dev/null || true
 
+# #1415: sweep leftover debris from a dead cycle BEFORE the #1044 return-to-main
+# check and the #1393 ff-only guard — both of which a dirty tree defeats. Opt-in
+# (<project>_worktree_hygiene=preserve); a no-op otherwise. Never exits.
+_worktree_hygiene
+
 # #1044: return to main once a feature branch's PR has merged (its remote branch
 # is now gone). Without this the checkout never leaves the branch it just built
 # work on, and the #996 guard below — which must test `main` itself, not
@@ -950,6 +1263,28 @@ fi
 if [[ "$ROLE" == "worker" ]]; then
   _COWPAT_FILE="$_HOS_DIR/test-clean/${ROLE}-${PROJECT}"
   _CURRENT_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+
+  # #1415: a note appended to the broken-state escalation body below, telling a
+  # human whether the worktree was verified clean (this is genuine breakage) or
+  # hygiene itself failed (the red baseline may be leftover debris, not a real
+  # regression). Empty when hygiene is off/disabled — must stay byte-identical
+  # to the pre-#1415 escalation body in that case.
+  _HYGIENE_NOTE=""
+  case "$_HYGIENE_RESULT" in
+    disabled) ;;
+    nothing_to_sweep|swept)
+      if [[ "$_HYGIENE_RESULT" == "swept" ]]; then
+        _hy_preserved="${_HYGIENE_COUNT} path(s) swept to \`$_HYGIENE_QUARANTINE\`"
+      else
+        _hy_preserved="nothing to sweep"
+      fi
+      _HYGIENE_NOTE="$(printf '**Worktree hygiene (#1415):** the worktree was verified clean (%s) at pre-merge `%s` / post-merge `%s` and the suite still failed — this is genuine breakage, not debris.' \
+        "$_hy_preserved" "${_HYGIENE_BASE_SHA:-unknown}" "${_CURRENT_HEAD:-unknown}")" ;;
+    failed)
+      _HYGIENE_NOTE="$(printf '**Worktree hygiene (#1415): FAILED — %s.** Residual dirty path(s): `%s`. The red baseline may be a consequence of this leftover debris rather than genuine breakage — inspect the worktree (`git -C %s status`) before assuming the code itself is broken.' \
+        "$_HYGIENE_REASON" "${_HYGIENE_RESIDUAL:-unknown}" "$REPO_ROOT")" ;;
+  esac
+
   _CLEAN_SHA=$(cat "$_COWPAT_FILE" 2>/dev/null || echo "")
   _WORKTREE_DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || echo "")
 
@@ -1013,11 +1348,16 @@ if [[ "$ROLE" == "worker" ]]; then
               2>/dev/null); then
             _bs_existing="${_bs_existing:-0}"
             if [[ "$_bs_existing" == "0" ]]; then
+              # #1415: the format string and args are UNCHANGED from before this
+              # feature — with hygiene off/disabled, _HYGIENE_NOTE is empty and
+              # _bs_body is byte-identical to the old inline --body value.
+              _bs_body="$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")"
+              [[ -n "$_HYGIENE_NOTE" ]] && _bs_body="${_bs_body}"$'\n\n'"${_HYGIENE_NOTE}"
               gh issue create \
                 --repo "$_REPO_SLUG" \
                 --title "${_bs_title_prefix} — worker halted" \
                 --label "needs-human,needs-ai" \
-                --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
+                --body "$_bs_body" \
                 2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
                 || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
             else

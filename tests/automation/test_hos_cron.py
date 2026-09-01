@@ -63,6 +63,11 @@ class CronEnv:
         # Records each `gh issue create` invocation so dedup/fail-closed tests
         # (#849) can assert whether a [BLOCKED] issue was actually filed.
         self.aa_issue_marker = tmp_path / "aa_issue_create.log"
+        # Captures the verbatim `--body` value of the most recent `gh issue
+        # create` call (#1415) so tests can assert on escalation-note text
+        # (e.g. the worktree-hygiene note appended to the broken-state body).
+        # Overwritten on each call — no history, just the latest body.
+        self.aa_issue_body_capture = tmp_path / "aa_issue_body.log"
         # Records each `gh issue close` invocation (#959 auto-close on green baseline).
         self.aa_issue_close_marker = tmp_path / "aa_issue_close.log"
 
@@ -159,9 +164,19 @@ class CronEnv:
             '  *"reviews"*"CHANGES_REQUESTED"*)\n' '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
             # PR reviews — APPROVED count
             '  *"reviews"*"APPROVED"*)\n' '    echo "${HOS_TEST_PR_AP:-1}" ;;\n' "esac\n"
-            # issue create — record the invocation, then confirm and exit
+            # issue create — record the invocation, then confirm and exit.
+            # Also scan "$@" for the value immediately following a literal
+            # --body token and capture it verbatim (#1415) so tests can
+            # assert on escalation-note body text.
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
+            '  _hy_prev=""\n'
+            '  for _hy_arg in "$@"; do\n'
+            '    if [[ "$_hy_prev" == "--body" ]]; then\n'
+            f'      printf "%s" "$_hy_arg" > "{self.aa_issue_body_capture}"\n'
+            "    fi\n"
+            '    _hy_prev="$_hy_arg"\n'
+            "  done\n"
             '  echo "https://github.com/test/repo/issues/999"\n'
             "fi\n"
             # issue close — record which issue number was closed (#959 auto-close)
@@ -543,6 +558,15 @@ class CronEnv:
         """True if the launcher filed a [BLOCKED] agent-unavailable issue."""
         return self.aa_issue_marker.exists()
 
+    def aa_issue_body(self) -> str:
+        """The verbatim --body value of the most recent `gh issue create` call,
+        or "" if none was captured (#1415)."""
+        return (
+            self.aa_issue_body_capture.read_text()
+            if self.aa_issue_body_capture.exists()
+            else ""
+        )
+
     def closed_issue_nums(self) -> list[str]:
         """Issue numbers the launcher closed via `gh issue close` (#959 auto-close)."""
         if not self.aa_issue_close_marker.exists():
@@ -567,6 +591,12 @@ class CronEnv:
         conf = self.home / ".config" / "hos" / "projects.conf"
         with conf.open("a") as f:
             f.write(f"{project}_baseline_on_red={mode}\n")
+
+    def set_worktree_hygiene(self, mode: str, project="hos") -> None:
+        """Append <project>_worktree_hygiene=<mode> to projects.conf (#1415)."""
+        conf = self.home / ".config" / "hos" / "projects.conf"
+        with conf.open("a") as f:
+            f.write(f"{project}_worktree_hygiene={mode}\n")
 
     def set_max_seconds_conf(self, value: str, project="hos") -> None:
         """Append <project>_max_seconds=<value> to projects.conf (#1434)."""
@@ -1680,6 +1710,145 @@ class TestBaselineRepairMode:
         assert "repair exhausted" in r.stdout
         assert cron.aa_issue_created(), "exhausted repair mode must still escalate to a human"
         assert not cron.claude_ran()
+
+
+# ───────────────── Worktree hygiene, opt-in, cycle-start only (#1415) ────────
+class TestWorktreeHygiene:
+    """Pre-baseline sweep that quarantines-then-verifies-then-reverts debris left
+    by a dead cycle (untracked scratch files, uncommitted tracked-file edits) so
+    it doesn't defeat the #1044 return-to-main check / #1393 ff-only guard and
+    doesn't block every subsequent cycle's baseline. Opt-in
+    (<project>_worktree_hygiene=preserve or HOS_WORKTREE_HYGIENE=preserve;
+    default "off", worker-only). See docs/v0.7.0/ADR-1415-worktree-hygiene.md.
+    """
+
+    def test_default_off_is_true_noop(self, cron):
+        """Hygiene not configured (default off) → untracked debris survives the
+        cycle untouched, and the broken-state escalation body is byte-identical
+        to pre-#1415 (no "Worktree hygiene" note appended)."""
+        cron.git_init_repo()
+        cron.make_dirty()
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert (cron.repo / "uncommitted.tmp").exists(), "default off must not touch the worktree"
+        assert cron.aa_issue_created()
+        assert "Worktree hygiene" not in cron.aa_issue_body()
+
+    def test_enabled_clean_tree_is_noop_sweep(self, cron):
+        """Hygiene enabled but the tree is already clean → nothing_to_sweep, the
+        common case, and the cycle proceeds normally."""
+        cron.set_worktree_hygiene("preserve")
+        cron.git_init_repo()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.claude_ran()
+
+    def test_untracked_debris_swept_and_quarantined(self, cron):
+        """An untracked scratch file is copied to a timestamped quarantine dir
+        (with MANIFEST.txt + RESTORE.md) and removed from the worktree; the
+        baseline then runs clean and the cycle completes normally."""
+        cron.set_worktree_hygiene("preserve")
+        cron.git_init_repo()
+        cron.make_dirty()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not (cron.repo / "uncommitted.tmp").exists(), "swept debris must be removed"
+
+        qbase = cron.state / "worktree-quarantine" / "worker-hos"
+        qdirs = sorted(qbase.iterdir()) if qbase.exists() else []
+        assert len(qdirs) == 1, f"expected exactly one quarantine dir, got {qdirs}"
+        qdir = qdirs[0]
+        assert (qdir / "MANIFEST.txt").exists()
+        assert (qdir / "RESTORE.md").exists()
+        swept_copy = qdir / "untracked" / "uncommitted.tmp"
+        assert swept_copy.exists(), "quarantine must hold a copy of the swept file's content"
+        assert swept_copy.read_text() == "crashed mid-work\n"
+        assert cron.claude_ran()
+
+    def test_dirty_tracked_file_reverted_and_patched(self, cron):
+        """An uncommitted edit to an already-tracked file is reverted to HEAD and
+        its diff preserved as a non-empty tracked.patch in the quarantine dir."""
+        cron.git_init_repo()
+        target = cron.repo / "bootstrap" / "validate_setup.sh"
+        original = target.read_text()
+        with target.open("a") as f:
+            f.write("# dirty edit from a dead cycle\n")
+        assert target.read_text() != original, "test setup must actually dirty the file"
+        cron.set_worktree_hygiene("preserve")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert target.read_text() == original, "tracked file must be reverted to HEAD"
+
+        qbase = cron.state / "worktree-quarantine" / "worker-hos"
+        qdirs = sorted(qbase.iterdir()) if qbase.exists() else []
+        assert len(qdirs) == 1, f"expected exactly one quarantine dir, got {qdirs}"
+        patch = qdirs[0] / "tracked.patch"
+        assert patch.exists()
+        assert patch.stat().st_size > 0, "tracked.patch must preserve the reverted diff"
+
+    def test_escalation_note_genuine_breakage(self, cron):
+        """Hygiene ran and verified the tree clean, but the baseline still
+        failed → the escalation note says this is genuine breakage, not debris."""
+        cron.set_worktree_hygiene("preserve")
+        cron.git_init_repo()
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
+        assert r.returncode == 1, r.stdout + r.stderr
+        body = cron.aa_issue_body()
+        assert "Worktree hygiene (#1415):" in body
+        assert "genuine breakage, not debris" in body
+
+    def test_escalation_note_hygiene_failed_size_ceiling(self, cron):
+        """Hygiene itself refuses (size ceiling exceeded) → it must touch
+        nothing, never crash the cycle, and the escalation note must say the red
+        baseline may be a consequence of the leftover debris, not the code."""
+        cron.set_worktree_hygiene("preserve")
+        cron.git_init_repo()
+        cron.make_dirty()
+        r = cron.run(
+            env_overrides={
+                "HOS_WORKTREE_HYGIENE_MAX_BYTES": "1",
+                "HOS_TEST_INNER_LOOP_EXIT": "1",
+                "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0",
+            }
+        )
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert (cron.repo / "uncommitted.tmp").exists(), "a refused sweep must touch nothing"
+        body = cron.aa_issue_body()
+        assert "Worktree hygiene (#1415): FAILED" in body
+        assert "size_ceiling_exceeded" in body
+
+    def test_invalid_config_value_falls_back_to_off(self, cron):
+        """An unrecognized worktree_hygiene value warns and falls back to off
+        rather than blocking the cycle or crashing the launcher."""
+        cron.set_worktree_hygiene("bogus")
+        cron.git_init_repo()
+        cron.make_dirty()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "worktree_hygiene" in r.stdout
+        assert "bogus" in r.stdout
+        assert (cron.repo / "uncommitted.tmp").exists(), "invalid config must fall back to off, not sweep"
+        assert cron.claude_ran()
+
+    def test_overseer_role_never_triggers_hygiene(self, cron):
+        """Hygiene is gated `[[ "$ROLE" == "worker" ]] || return 0` — an
+        overseer cycle must never sweep, even with hygiene enabled and debris
+        present."""
+        cron.set_worktree_hygiene("preserve")
+        cron.git_init_repo()
+        cron.make_dirty()
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert (cron.repo / "uncommitted.tmp").exists(), "hygiene must never run for role=overseer"
 
 
 # ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
