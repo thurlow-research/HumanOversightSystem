@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"pr-review","pr":1488,"reason":"protected-surface (bin/**, bootstrap/**) + CI test failures","timestamp":"2026-09-01T07:45:30Z"}
