@@ -136,7 +136,17 @@ def test_js_only_run_exits_zero_and_is_not_critical(tmp_path: Path):
     install_node_tool_stub(tmp_path, "astro")
     install_node_tool_stub(tmp_path, "astro-check")
 
-    proc = hermetic_run(tmp_path, "src/page.astro", "src/lib.ts")
+    proc = hermetic_run(
+        tmp_path,
+        "src/page.astro",
+        "src/lib.ts",
+        # Same override as test_detect_stack.py's node-floor tests: the node
+        # floor check resolves `node` off the real PATH (not node_modules/.bin,
+        # unlike the astro/astro-check stubs above), so on a machine whose
+        # ambient PATH puts an older system node ahead of a newer one the
+        # preflight fails closed on a version this test isn't exercising.
+        extra_env={"HOS_NODE_FLOOR_MAJOR": "1"},
+    )
 
     assert proc.returncode == 0, f"run failed:\n{proc.stdout}\n{proc.stderr}"
     summary = json.loads((tmp_path / OUT_REL / "summary.json").read_text())

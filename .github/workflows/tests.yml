@@ -1,0 +1,51 @@
+name: Tests
+
+# Runs the HOS Python test suite + coverage gate on every PR (#1244).
+#
+# ADVISORY ONLY (non-required) by design — see #1244's "product-boundary
+# decision" section. This workflow is deliberately NOT added to branch
+# protection's required-status-check list (tests/framework/test_branch_protection_contexts.py
+# would need updating, and that update is a policy call for @ScottThurlow, not
+# an implementation detail). A red run here is visible on the PR but does not
+# block merge until that decision is made.
+#
+# Runs the same entry point a human runs locally — scripts/framework/run_tests.sh
+# — so local and CI cannot diverge (AC in #1244). That script runs pytest +
+# coverage only; --mutation is NOT passed here (mutmut re-runs the full suite
+# per mutant and is far too slow for a per-PR gate).
+#
+# Regular `pull_request` (not `pull_request_target`): the job executes the PR's
+# own code (the test suite itself), so it must run with the PR head checked out
+# and the restricted default GITHUB_TOKEN pull_request grants — never the
+# elevated pull_request_target token.
+
+on:
+  pull_request:
+    branches: [main, "release/v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run test suite + coverage gate
+        run: bash scripts/framework/run_tests.sh
