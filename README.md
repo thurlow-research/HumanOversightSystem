@@ -276,7 +276,7 @@ shasum -a 256 -c SHA256SUMS    # or: sha256sum -c SHA256SUMS
 
 This framework is the subject of doctoral research examining how human oversight of AI-generated code can be made both rigorous and scalable. The empirical substrate is real software ([CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)) built under the framework — not a controlled lab setting. The system is simultaneously the tool being studied and the instrument conducting the study.
 
-The research draws on a systematic literature review of ~1,000 papers on AI code governance, multi-agent systems, and software quality assurance, and is grounded in three theoretical traditions described in the [Theoretical Basis](#theoretical-basis) section above.
+The research draws on a systematic literature review of AI code governance, multi-agent systems, and software quality assurance — 9,518 records screened across ten sources, 1,040 retained in the final set, of which 148 are classified core — and is grounded in three theoretical traditions described in the [Theoretical Basis](#theoretical-basis) section above.
 
 **Core research constructs:**
 
