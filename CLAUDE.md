@@ -324,6 +324,7 @@ issue/PR reads) are not repeated here.
 | Running blocking pre-review gates | `scripts/oversight/run_gates.sh` |
 | Running risk-assessment validators | `scripts/oversight/run_validators.sh` |
 | Post-change review sweep (dispatches the right review agents) | `scripts/framework/run_post_change_sweep.sh` |
+| Regenerate or check all self-healing generated artifacts (index + CODEOWNERS) in one step | `scripts/framework/regen_all.sh [--check]` |
 | CODEOWNERS regeneration | `scripts/framework/gen_codeowners.sh` |
 | Full script/module index regeneration | `scripts/framework/gen_scripts_index.sh` |
 

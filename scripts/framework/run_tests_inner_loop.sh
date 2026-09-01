@@ -46,4 +46,9 @@ else
 fi
 
 cd "$REPO_ROOT"
+
+echo -e "  ${CYAN}→${RESET}  Regenerating derived artifacts (SCRIPTS-INDEX.md, CODEOWNERS)..."
+"$SCRIPT_DIR/regen_all.sh"
+echo ""
+
 "$PYTHON" -m pytest -m "not slow and not integration" "$@"
