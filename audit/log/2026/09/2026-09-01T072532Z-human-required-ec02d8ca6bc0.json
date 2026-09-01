@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1488,"reason_category":"GATE_UNSATISFIED","summary":"PR touches protected surfaces bin/** and bootstrap/**, requiring mandatory human approval regardless of tier; tests check also failing on PR head (stale SCRIPTS-INDEX.md).","timestamp":"2026-09-01T07:25:32Z"}
