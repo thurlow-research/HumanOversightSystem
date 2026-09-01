@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1495,"reason_category":"GATE_UNSATISFIED","summary":"scripts/framework/gen_scripts_index.sh is CODEOWNERS-owned (@ScottThurlow) and protected-surface; human approval on current head SHA required regardless of LOW risk tier","timestamp":"2026-09-01T21:30:18Z"}
