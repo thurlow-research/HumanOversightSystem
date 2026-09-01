@@ -137,6 +137,24 @@ class CronEnv:
             '  *"pulls?state=open"*)\n'
             '    [[ -n "${HOS_TEST_PR_FETCH_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
+            # PR detail endpoint (single-PR `pulls/<n>` fetch — worker routing's
+            # bounce/dirty check #1350 and the overseer's own draft/dirty
+            # pre-filter both request `.mergeable_state`, so match on that
+            # substring; it never appears in the list/reviews endpoints above).
+            # Defaults (ms=clean, d=false, no labels) preserve prior test
+            # behavior, when this call fell through unmatched to an empty
+            # `exit 0` and the caller's `_pr_ms` ended up "" — never "dirty".
+            '  *"mergeable_state"*)\n'
+            '    _labels_json="[]"\n'
+            '    if [[ -n "${HOS_TEST_PR_LABELS:-}" ]]; then\n'
+            '      _labels_json="["\n'
+            '      for _l in ${HOS_TEST_PR_LABELS}; do\n'
+            '        _labels_json="${_labels_json}\\"${_l}\\","\n'
+            '      done\n'
+            '      _labels_json="${_labels_json%,}]"\n'
+            '    fi\n'
+            '    printf "{\\"ms\\":\\"%s\\",\\"d\\":%s,\\"labels\\":%s}\\n" '
+            '"${HOS_TEST_PR_MS:-clean}" "${HOS_TEST_PR_DRAFT:-false}" "$_labels_json" ;;\n'
             # PR reviews — CHANGES_REQUESTED count
             '  *"reviews"*"CHANGES_REQUESTED"*)\n' '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
             # PR reviews — APPROVED count
@@ -2388,6 +2406,51 @@ class TestCycleContextBlock:
         context = stdin_capture.read_text()
         assert "Pre-computed cycle context" in context
         assert "NEW WORK: BLOCKED" in context
+
+    def test_context_block_bounced_pr_routes_needs_fix_bounce(self, cron):
+        """A PR the overseer bounced (draft + `needs-ai`) must route to the
+        distinct `needs-fix-bounce` directive, not `needs-attention` — #1350.
+        Zero CHANGES_REQUESTED/APPROVED reviews mirrors record_pr_bounce()'s
+        actual signal: it posts a COMMENT review (never CHANGES_REQUESTED, by
+        design), so the bounce is invisible to the review-state checks alone."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "needs-ai",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix-bounce" in context
+        assert "routing=needs-attention" not in context
+
+    def test_context_block_dirty_and_bounced_pr_routes_needs_fix(self, cron):
+        """A PR that is BOTH conflicting and bounced must still route to plain
+        `needs-fix` — the dirty check is ordered first (a merge conflict takes
+        priority over the bounce signal), guarding against an ordering
+        regression in the routing loop (#1350)."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "dirty",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "needs-ai",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix" in context
+        assert "routing=needs-fix-bounce" not in context
 
 
 # ────────────── Open release requests (NG3b, #1347 Amendment 1) ───────────────
