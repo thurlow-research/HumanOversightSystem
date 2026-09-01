@@ -184,7 +184,7 @@ ip_agent() {  # $1 = the standard review prompt/diff
   fi
 
   local ip_script
-  ip_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/validators/ip_check.py"
+  ip_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/validators/ip_check.py"
 
   if [[ ! -f "$ip_script" ]]; then
     # Try relative to CWD (when run from project root)
@@ -284,7 +284,7 @@ info "head $HEAD_SHA · $(echo "$CHANGED_FILES" | grep -c . ) file(s) · +${ADDE
 # The deterministic floor rules + SQC sample hash now live in panel_logic.py
 # (SPEC-332 / #314 — Python owns the logic, shell launches it). Resolve the module
 # path the same way the SPEC-376 ranking call below does.
-PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/oversight/panel_logic.py"
+PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/panel_logic.py"
 [[ -f "$PANEL_LOGIC" ]] || PANEL_LOGIC="scripts/oversight/panel_logic.py"
 
 # Deterministic floor: file list on stdin, added-line count + size floor as flags.
