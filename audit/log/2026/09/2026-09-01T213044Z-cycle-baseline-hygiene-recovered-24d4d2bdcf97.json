@@ -1,0 +1,1 @@
+{"event":"cycle-baseline-hygiene-recovered","quarantine_dir":"/home/scott/.hos/quarantine/worker-hos/worker-hos-260901213001-3271241","quarantined_count":1,"quarantined_paths":"audit/log/2026/09/","reverted_count":3,"reverted_paths":"DECISIONS.md,bin/hos-cron,tests/automation/test_hos_cron.py","role":"worker","timestamp":"2026-09-01T21:30:44Z"}
