@@ -730,9 +730,31 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       # Check mergeable_state first via detail endpoint — a conflicting PR must
       # be fixed before anything else, even if it has prior APPROVED reviews
       # (#867). REST API uses mergeable_state="dirty" not "CONFLICTING" (GraphQL).
-      _pr_ms=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-        --jq '.mergeable_state' 2>/dev/null || echo "unknown")
+      # Same call also pulls draft + label names (#1350) to detect an overseer
+      # bounce (record_pr_bounce() converts the PR to draft + applies
+      # `needs-ai`, but never posts a CHANGES_REQUESTED review — see
+      # bootstrap/post_review_thread.sh, which always submits COMMENT — so
+      # without this the bounce is invisible to the checks below and falls
+      # through to needs-attention, whose directive text is the opposite of
+      # what's true).
+      _pr_detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
+        --jq '{ms: .mergeable_state, d: .draft, labels: [.labels[].name]}' 2>/dev/null \
+        || echo '{"ms":"unknown","d":false,"labels":[]}')
+      _pr_ms=$(printf '%s' "$_pr_detail" | python3 -c \
+        "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
+      _pr_draft=$(printf '%s' "$_pr_detail" | python3 -c \
+        "import json,sys; print(json.load(sys.stdin).get('d', False))" 2>/dev/null || echo "False")
+      _pr_labels=$(printf '%s' "$_pr_detail" | python3 -c \
+        "import json,sys; print(' '.join(json.load(sys.stdin).get('labels', [])))" 2>/dev/null || echo "")
       if [[ "$_pr_ms" == "dirty" ]]; then _PR_ROUTING="needs-fix"; break; fi
+      # Bounce check: draft PR carrying `needs-ai` is the overseer's bounce
+      # signal (record_pr_bounce()). Checked after `dirty` (a conflicting PR
+      # takes priority even if also bounced) and before CHANGES_REQUESTED (the
+      # overseer never posts one on a bounce, so that check alone would never
+      # catch this case anyway).
+      if [[ "$_pr_draft" == "True" && " $_pr_labels " == *" needs-ai "* ]]; then
+        _PR_ROUTING="needs-fix-bounce"; break
+      fi
       _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
         --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
       _pr_cr="${_pr_cr:-0}"
@@ -1182,6 +1204,8 @@ _build_context() {
       case "${_PR_ROUTING:-}" in
         needs-fix)
           printf 'At least one PR has CHANGES_REQUESTED or is conflicting — fix and push, then STOP.\n' ;;
+        needs-fix-bounce)
+          printf 'At least one PR was BOUNCED by the overseer (converted to draft + labeled `needs-ai`) — this is NOT "nothing to fix". Follow .claude/agents/worker.md "Re-entry after a bounce (autonomous)": read the bounce comment'"'"'s ### Specific failures, fix each gap, then open a NEW PR referencing the bounced one (pushing a commit to the draft PR is not enough — it stays excluded from the overseer'"'"'s actionable-PR list while in draft). Then STOP.\n' ;;
         awaiting-merge)
           printf 'All open PRs are approved/clean, awaiting a human merge — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
         needs-attention)
