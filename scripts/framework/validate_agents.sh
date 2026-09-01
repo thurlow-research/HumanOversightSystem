@@ -139,6 +139,15 @@ fi
 # present and otherwise fall back to a portable background-poll-and-kill.
 # Override per-call budget with AI_REVIEW_TIMEOUT (seconds).
 AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
+
+# codex's `turn/start` API rejects any single input over this many characters
+# with `input_too_large` (#1384) — confirmed empirically 2026-09-01: a 1,500,169-
+# char stdin payload was rejected in ~3s (not a timeout) with
+# "Input exceeds the maximum length of 1048576 characters." This is a hard
+# API-level cap, independent of argv vs stdin delivery. Pre-check locally and
+# fail with a specific, diagnosable message rather than let codex's generic
+# nonzero exit get flattened into "codex invocation failed" downstream.
+CODEX_MAX_INPUT_CHARS="${CODEX_MAX_INPUT_CHARS:-1048576}"
 _TIMEOUT_BIN=""
 if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
 elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"; fi
@@ -274,12 +283,24 @@ Return JSON only — no prose outside the JSON block:
   \"summary\": \"one paragraph overall assessment\"
 }"
 
-    local tmpfile outfile
-    tmpfile=$(mktemp /tmp/validate_agents_agy_XXXXXX)
+    # Pass the prompt via a file agy reads itself, not a CLI argument (#1384,
+    # same class as #1368): at release scale the review package alone can run
+    # to ~2MB, well past the combined argv+environment ARG_MAX ceiling on this
+    # host (2,097,152 bytes, shared with GH_TOKEN and other env vars — see
+    # #1368's evidence). agy's `-p` flag has no stdin-reading form (confirmed:
+    # `-p` with no value errors `flag needs an argument`), so the fix is a
+    # private, per-invocation directory granted via --add-dir containing only
+    # the prompt file, with a short instruction (well under ARG_MAX) telling
+    # agy to read it. Verified empirically against a 1.5MB payload.
+    local tmpdir tmpfile outfile
+    tmpdir=$(mktemp -d /tmp/validate_agents_agy_XXXXXX)
+    tmpfile="$tmpdir/review-prompt.txt"
     outfile=$(mktemp /tmp/validate_agents_agy_out_XXXXXX)
     echo "$prompt" > "$tmpfile"
     local result rc=0
-    run_capped "$AI_REVIEW_TIMEOUT" "$outfile" agy -p "$(cat "$tmpfile")" || rc=$?
+    run_capped "$AI_REVIEW_TIMEOUT" "$outfile" agy --add-dir "$tmpdir" -p \
+        "Read the file at $tmpfile in full — it contains your complete review instructions and the content to review. Follow it exactly and output only the JSON it specifies, no other text." \
+        || rc=$?
     if [[ $rc -eq 0 ]]; then
         result=$(cat "$outfile")
     elif [[ $rc -eq 124 ]]; then
@@ -288,7 +309,8 @@ Return JSON only — no prose outside the JSON block:
     else
         result='{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error","summary":"agy failed"}'
     fi
-    rm -f "$tmpfile" "$outfile"
+    rm -rf "$tmpdir"
+    rm -f "$outfile"
     echo "$result"
 }
 
@@ -335,6 +357,26 @@ Return JSON only:
     outfile=$(mktemp /tmp/validate_agents_codex_out_XXXXXX)
     echo "$prompt" > "$tmpfile"
     local result rc=0
+
+    # codex's turn/start API hard-rejects any input over CODEX_MAX_INPUT_CHARS
+    # (#1384) — this is unrelated to ARG_MAX (codex already reads via stdin,
+    # below) and unrelated to AI_REVIEW_TIMEOUT (the real API rejects an
+    # oversized input in seconds, it does not hang). A release-scale review
+    # package can exceed this cap on its own. Check locally before invoking so
+    # the failure carries an exact, diagnosable reason instead of the generic
+    # "codex invocation failed" a downstream nonzero exit would otherwise
+    # produce (stderr is discarded by run_capped, so that message would
+    # otherwise be lost).
+    local prompt_chars
+    prompt_chars=$(wc -c < "$tmpfile")
+    if (( prompt_chars > CODEX_MAX_INPUT_CHARS )); then
+        echo "  WARN: codex input is ${prompt_chars} chars, over the ${CODEX_MAX_INPUT_CHARS}-char hard cap — skipping invocation, recorded as error" >&2
+        result='{"reviewer":"codex","error":"codex input exceeds its '"$CODEX_MAX_INPUT_CHARS"'-char hard limit ('"$prompt_chars"' chars) — this diff/review package is too large for a single codex call; needs chunking or a smaller --base","attacks":[],"verdict":"error","summary":"codex input too large: '"$prompt_chars"' > '"$CODEX_MAX_INPUT_CHARS"' chars"}'
+        rm -f "$tmpfile" "$outfile"
+        echo "$result"
+        return
+    fi
+
     # codex reads the prompt on stdin; run_capped runs codex with stdin redirected.
     run_capped "$AI_REVIEW_TIMEOUT" "$outfile" sh -c 'exec codex exec < "$1"' _ "$tmpfile" || rc=$?
     if [[ $rc -eq 0 ]]; then
@@ -418,7 +460,7 @@ if [[ "$VERDICT" == "approve" ]]; then
     rm -f "$PASS_COUNT_FILE"   # converged — reset for the next change set
     STAMP_DIR="scripts/framework/validation-stamps"
     mkdir -p "$STAMP_DIR"
-    CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+    CONTENT_HASH=$(find "$AGENTS_DIR" -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
     printf "validated_at: %s\nhash: %s\nphase: 2-agents\nresult: pass\n" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTENT_HASH" > "$STAMP_DIR/phase2-${CONTENT_HASH}.stamp"
     exit 0
