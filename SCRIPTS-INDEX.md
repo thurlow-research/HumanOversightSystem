@@ -182,5 +182,6 @@ excluded.
 - `scripts/oversight/validators/rn_calculator_js.py` — Dai et al. (2024) Risk Number for JS/TS via tree-sitter.
 - `scripts/oversight/validators/rn_calculator.py` — Dai et al. (2024) Risk Number for Python source files.
 - `scripts/oversight/validators/schema.py` — shared output contract for all oversight validators.
+- `scripts/oversight/validators/shell_logic_check.py` — detect decision logic (branching/looping constructs) embedded in shell scripts, where coverage/mutation tooling does not reach.
 - `scripts/oversight/validators/static_analysis_js.py` — semgrep JS/TS security findings as a risk score.
 - `scripts/oversight/validators/static_analysis.py` — bandit security findings as a risk score.

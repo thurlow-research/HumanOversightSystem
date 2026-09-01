@@ -70,6 +70,7 @@ WEIGHTS = {
     "historical_density": 0.12,
     "hallucination_surface": 0.06,
     "portability": 0.06,
+    "shell_logic": 0.05,
     "ip_check": 0.08,
     "prompt_ambiguity": 0.07,
     "diff_size": 0.0,  # inert in composite; floor is a discrete signal (#377)

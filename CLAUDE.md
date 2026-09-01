@@ -62,6 +62,7 @@ scripts/
                              + regurgitation stub (ai-gen-code-search, Level 3)
       prompt_audit_risk.py   Prompt ambiguity + fidelity surface scoring
       hallucination_surface.py  Version-sensitive API detection
+      shell_logic_check.py   Decision-construct density in changed .sh files (#314, #1241)
       issue_query.py         Historical bug density from GitHub issues + git churn
       schema.py              Shared output schema, weights, tier thresholds (infra, not a dimension)
       regions.py             Shared region/parsing helpers (infra, not a dimension)

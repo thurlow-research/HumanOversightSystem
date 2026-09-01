@@ -55,6 +55,17 @@ The technical design is the standard; the spec is background.
 - Names self-document; a comment appears only where the *why* is non-obvious.
 - No secrets or PII in log statements.
 
+**Testability (shell vs. logic-bearing language):** the question is not "does it have
+tests" but "is it structured so it CAN have unit tests." A shell script (`.sh`) that
+contains a *decision* — a conditional evaluating an API response or program output, a
+retry/backoff loop, a data transformation, or any construct with more than one outcome —
+is untestable in place, because coverage and mutation tooling do not reach shell. Flag it
+and recommend extracting the decision into a language inside the test regime, leaving the
+shell as a thin invoker (fixed flag parsing, literal paths, exec into a tested module).
+This does **not** apply to genuine launcher shell: fixed-shape flag parsing, the sanctioned
+token mint/source/revoke dance, or single-outcome guard clauses. Do not bounce a script for
+being long — length is not the signal; decision density is.
+
 **`# pragma: no cover` scrutiny:**
 For every `# pragma: no cover` annotation in the diff:
 - (a) A comment must explain the untestable scenario
