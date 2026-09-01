@@ -15,6 +15,14 @@ Two functions under test:
 node-floor assertions do not depend on the actual Node major installed on the
 test machine. `VENV_BIN` is overridden the same way for the bandit/radon
 assertions so they do not depend on this repo's own oversight venv.
+
+The two "missing tool" assertions (`test_missing_tool_blocks_with_structured_
+message`, `test_warn_mode_downgrades_missing_tool_to_non_fatal`) run with a
+hermetic PATH (`_preflight(..., hermetic=True)`) rather than the ambient one:
+a hosted CI runner image can ship a global tsc/npx that this repo's own dev
+sandbox does not, and resolve_node_tool's PATH/npx fallback (D2) is ambient
+by design — without isolation these tests assert something that is only
+sometimes true of the host, not of the code. See `_hermetic_path`.
 """
 from __future__ import annotations
 
@@ -61,11 +69,39 @@ def _detect(tmp_path: Path, py_files_present: str = "") -> list[str]:
     return sorted(line for line in res.stdout.splitlines() if line)
 
 
+def _hermetic_path(tmp_path: Path) -> str:
+    """A PATH containing only the binaries tool_preflight_or_fail actually
+    needs (node, find, grep, python3), each symlinked in individually rather
+    than adding its parent directory to PATH.
+
+    Without this, a "missing tool" assertion is only true by accident of the
+    host's ambient PATH — a hosted CI runner image that happens to ship a
+    global tsc/npx (unlike this repo's own dev sandbox) makes
+    resolve_node_tool's npx/PATH fallback (D2) resolve it for real, so the
+    test silently asserts something false about the environment it runs in.
+    Symlinking each binary individually (not its directory) means whatever
+    else lives alongside node — npm, npx, a global tsc — is not incidentally
+    exposed.
+    """
+    bin_dir = tmp_path / "_hermetic_bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name in ("node", "find", "grep", "dirname", "python3"):
+        real = shutil.which(name)
+        if real and not (bin_dir / name).exists():
+            (bin_dir / name).symlink_to(real)
+    return str(bin_dir)
+
+
 def _preflight(
-    tmp_path: Path, env: dict | None = None, py_files_present: str = ""
+    tmp_path: Path,
+    env: dict | None = None,
+    py_files_present: str = "",
+    hermetic: bool = False,
 ) -> subprocess.CompletedProcess:
     script = f'set -euo pipefail; . "{HELPER}"; tool_preflight_or_fail "$1"'
     full_env = {**os.environ}
+    if hermetic:
+        full_env["PATH"] = _hermetic_path(tmp_path)
     if env:
         full_env.update(env)
     return subprocess.run(
@@ -139,7 +175,7 @@ def test_all_tools_present_passes(tmp_path):
 
 def test_missing_tool_blocks_with_structured_message(tmp_path):
     (tmp_path / "tsconfig.json").write_text("{}\n")
-    res = _preflight(tmp_path, env={"HOS_NODE_FLOOR_MAJOR": "1"})
+    res = _preflight(tmp_path, env={"HOS_NODE_FLOOR_MAJOR": "1"}, hermetic=True)
     assert res.returncode == 1
     assert "tsc" in res.stderr
     assert "ADR-032" in res.stderr
@@ -159,7 +195,9 @@ def test_node_floor_violation_blocks(tmp_path):
 def test_warn_mode_downgrades_missing_tool_to_non_fatal(tmp_path):
     (tmp_path / "tsconfig.json").write_text("{}\n")
     res = _preflight(
-        tmp_path, env={"HOS_NODE_FLOOR_MAJOR": "1", "HOS_REQUIRE_TOOLS": "warn"}
+        tmp_path,
+        env={"HOS_NODE_FLOOR_MAJOR": "1", "HOS_REQUIRE_TOOLS": "warn"},
+        hermetic=True,
     )
     assert res.returncode == 0, res.stderr
     assert "WARN" in res.stderr
