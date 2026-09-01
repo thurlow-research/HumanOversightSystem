@@ -1763,6 +1763,12 @@ class TestTimeoutBreaker:
 
 
 # ──────────────────────────── Usage-limit breaker (#1446) ────────────────────
+@pytest.mark.skip(
+    reason="#1446 usage-limit breaker is commented out in bin/hos-cron "
+           "(operator request 2026-09-01) — false-positive trips on any session "
+           "whose transcript merely contains the phrase. Un-skip when the block "
+           "is re-enabled with a narrower match."
+)
 class TestUsageLimitBreaker:
     """A genuine Claude usage-limit refusal detected in the session's own
     captured stdout (a hard signal from Anthropic's side) trips the project
