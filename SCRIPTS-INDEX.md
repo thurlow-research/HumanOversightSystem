@@ -51,8 +51,8 @@ excluded.
 - `scripts/reverify_self.sh` — send agy a targeted re-review of the fixes made in response to its initial self-review findings.
 - `scripts/review_self.sh` — run an external reviewer (agy or codex) against the HOS itself.
 - `scripts/run_panel.sh` — the local cross-vendor multi-agent review panel (Layer 2).
-- `scripts/run_redteam_sample.sh` — statistical sampling red-team for LOW-tier escaped-defect rate.
 - `scripts/run_red_team.sh` — system-level adversarial red-team at build milestones.
+- `scripts/run_redteam_sample.sh` — statistical sampling red-team for LOW-tier escaped-defect rate.
 - `scripts/run_review_chain.sh` — orchestrate the full HOS oversight pipeline in tier-gated order.
 - `scripts/run_second_review.sh` — pre-PR cross-vendor second code review.
 
@@ -77,8 +77,8 @@ excluded.
 - `scripts/automation/lib/multi_customer.py` — Multi-customer fairness wiring (B14, R12.1–R12.3, O15).
 - `scripts/automation/lib/observability.py` — Observability — JSONL-first run ledger consumers and derived Markdown log (T14, R11.8).
 - `scripts/automation/lib/overseer_state.py` — Deterministic state helpers for the HOS oversight loop.
-- `scripts/automation/lib/probe.py` — Token-free "is there work?" probe across customer repos (T4, §10, R10.1b).
 - `scripts/automation/lib/pr_readiness.py` — worker pre-PR deterministic self-assessment gate (#317, #1131).
+- `scripts/automation/lib/probe.py` — Token-free "is there work?" probe across customer repos (T4, §10, R10.1b).
 - `scripts/automation/lib/self_review_source.py` — Scheduled self-review work source (T12, §3.2, O6, O9).
 - `scripts/automation/lib/stale_commit_detector.py` — Pre-PR stale-commit guard (#850).
 - `scripts/automation/lib/triage.py` — Issue triage for the HOS automation loop (T6, §5).
@@ -104,9 +104,9 @@ excluded.
 - `scripts/framework/rerun_gate_checks.py` — review-triggered re-evaluation of the server-side gates.
 - `scripts/framework/run_framework_validation.sh` — run the full framework validation suite.
 - `scripts/framework/run_post_change_sweep.sh` — shell entrypoint for the post-change sweep.
+- `scripts/framework/run_tests.sh` — run unit tests and optionally mutation tests for HOS validators.
 - `scripts/framework/run_tests_inner_loop.sh` — Run the inner-loop test suite (required for PR approval).
 - `scripts/framework/run_tests_release.sh` — Run the full test suite (required for release).
-- `scripts/framework/run_tests.sh` — run unit tests and optionally mutation tests for HOS validators.
 - `scripts/framework/setup_branch_protection.sh` — Apply HOS §9 branch protection rules via gh api.
 - `scripts/framework/strip_internal_paths.sh` — strip HOS-internal-path lines from CORE regions of agent files before they are shipped to consumers.
 - `scripts/framework/validate_agents.sh` — AI-powered cross-vendor review of agent definitions and docs.
@@ -131,8 +131,8 @@ excluded.
 - `scripts/oversight/run_validators.sh` — orchestrate all risk assessment validators for a file set.
 - `scripts/oversight/run_with_retry.sh` — shared timeout + retry wrapper for validators and gates.
 - `scripts/oversight/second_review_logic.py` — reviewer selection + verdict aggregation for second review.
-- `scripts/oversight/signoff_gate.py` — validation-suite sign-off gate (HOS framework script).
 - `scripts/oversight/sign_off.sh` — write a validation-suite sign-off stamp.
+- `scripts/oversight/signoff_gate.py` — validation-suite sign-off gate (HOS framework script).
 - `scripts/oversight/smoke_test.sh` — one-shot health check for every dependency a HOS session relies on: agent CLIs, oversight venv scanners, the IP/provenance scanner, and the validator orchestrator.
 - `scripts/oversight/suspension_manager.py` — manage contract/gate-suspension.md.
 - `scripts/oversight/token_tracker.py` — track and report external CLI token usage across oversight runs.
@@ -164,24 +164,24 @@ excluded.
 ## scripts/oversight/validators/
 
 - `scripts/oversight/validators/brownfield.py` — brownfield classification for HOS layered-agent migration (#275).
-- `scripts/oversight/validators/complexity_metrics_js.py` — cyclomatic complexity for JS/TS via tree-sitter.
 - `scripts/oversight/validators/complexity_metrics.py` — cyclomatic complexity via radon.
+- `scripts/oversight/validators/complexity_metrics_js.py` — cyclomatic complexity for JS/TS via tree-sitter.
 - `scripts/oversight/validators/diff_size.py` — Diff-size risk-tier floor and multi-purpose split trigger (#377).
-- `scripts/oversight/validators/function_metrics_js.py` — function-level size/structure metrics for JS/TS via tree-sitter (S5, ADR-032 D5).
 - `scripts/oversight/validators/function_metrics.py` — function-level size and structure metrics via AST.
-- `scripts/oversight/validators/hallucination_surface_js.py` — npm-ecosystem version-sensitive API detection + package.json dependency-existence check (S7, ADR-032, epic #1029).
+- `scripts/oversight/validators/function_metrics_js.py` — function-level size/structure metrics for JS/TS via tree-sitter (S5, ADR-032 D5).
 - `scripts/oversight/validators/hallucination_surface.py` — version-sensitive API usage detection.
+- `scripts/oversight/validators/hallucination_surface_js.py` — npm-ecosystem version-sensitive API detection + package.json dependency-existence check (S7, ADR-032, epic #1029).
 - `scripts/oversight/validators/ip_check.py` — IP/provenance validator for the Human Oversight System.
 - `scripts/oversight/validators/issue_query.py` — historical bug density from GitHub issues and git churn.
 - `scripts/oversight/validators/migration_scorer.py` — Django migration risk classification.
-- `scripts/oversight/validators/n1_detector_js.py` — JS/TS N+1 analog via tree-sitter (S9, ADR-032 D8).
 - `scripts/oversight/validators/n1_detector.py` — Django N+1 query heuristic via AST pattern matching.
+- `scripts/oversight/validators/n1_detector_js.py` — JS/TS N+1 analog via tree-sitter (S9, ADR-032 D8).
 - `scripts/oversight/validators/portability_check.py` — detect portability defects that prevent code from running on any host other than the developer's own machine.
 - `scripts/oversight/validators/prompt_audit_risk.py` — Prompt provenance and ambiguity risk validator.
 - `scripts/oversight/validators/regions.py` — the byte-exact region mechanism for HOS layered agent files.
-- `scripts/oversight/validators/rn_calculator_js.py` — Dai et al. (2024) Risk Number for JS/TS via tree-sitter.
 - `scripts/oversight/validators/rn_calculator.py` — Dai et al. (2024) Risk Number for Python source files.
+- `scripts/oversight/validators/rn_calculator_js.py` — Dai et al. (2024) Risk Number for JS/TS via tree-sitter.
 - `scripts/oversight/validators/schema.py` — shared output contract for all oversight validators.
 - `scripts/oversight/validators/shell_logic_check.py` — detect decision logic (branching/looping constructs) embedded in shell scripts, where coverage/mutation tooling does not reach.
-- `scripts/oversight/validators/static_analysis_js.py` — semgrep JS/TS security findings as a risk score.
 - `scripts/oversight/validators/static_analysis.py` — bandit security findings as a risk score.
+- `scripts/oversight/validators/static_analysis_js.py` — semgrep JS/TS security findings as a risk score.

@@ -17,6 +17,15 @@
 #   committed file without touching the working tree.
 set -euo pipefail
 
+# Force byte-order collation for every `sort` below, regardless of the caller's
+# locale (#1494): under en_US.UTF-8, `sort` treats punctuation as low-weight
+# (e.g. "run_redteam_sample.sh" collates before "run_red_team.sh"), but under
+# C/POSIX (GitHub's hosted-runner default) the same input sorts the other way.
+# A generator whose output order depends on the invoking machine's locale
+# makes the freshness test (tests/framework/test_scripts_index.py) fail
+# non-deterministically on content that hasn't actually changed.
+export LC_ALL=C
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
