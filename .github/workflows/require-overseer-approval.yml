@@ -11,6 +11,16 @@ name: Require overseer approval (all PRs)
 # own "Merge without waiting for requirements" admin override (explicit, logged
 # by GitHub), NOT a label or comment mechanism.
 #
+# Above-ceiling bypass (#1426): require-overseer-approval (this check) and
+# require-tier-ceiling were jointly unsatisfiable for a PR whose tier exceeds
+# OVERSEER_CEILING — the overseer correctly withholds APPROVED authority above
+# its ceiling (docs/FABERIX-ROLES.md §5), which left this gate permanently
+# unsatisfied. This script now also passes when the overseer posted SOME
+# review (any state — it looked at the PR and deliberately did not approve
+# above its ceiling) AND the PR's computed tier exceeds OVERSEER_CEILING AND a
+# human (non-bot) has approved instead. This does not weaken #621: a human
+# approval with NO overseer review at all still fails this gate.
+#
 # Pairs with:
 #   require-human-approval  — protected-surface / CRITICAL tier gate
 #   require-tier-ceiling    — overseer cannot merge above its ceiling
@@ -25,11 +35,24 @@ name: Require overseer approval (all PRs)
 # workflow or the gate script to neuter the check that gates it. The PR's reviews
 # are read as DATA via gh API calls, never checked out and executed. (Same
 # security model as require-human-approval.yml and require-tier-ceiling.yml.)
+#
+# SECURITY (#972, #1299): this workflow triggers on pull_request_TARGET ONLY.
+# It used to ALSO trigger on pull_request_review, where GITHUB_REF is the PR's
+# MERGE ref (base+head) rather than the base branch — a bare `actions/checkout@v4`
+# there would check out and execute the PR's OWN copy of the gate script,
+# reintroducing the self-bypass this header warns about. That second trigger also
+# produced a SECOND check run of this job's name for the PR, so a stale FAILURE
+# from the first one kept blocking merge even after an approval landed (#1299).
+# Review-triggered re-evaluation now happens by RERUNNING this workflow run in
+# place — see .github/workflows/rerun-gate-checks.yml, which invokes
+# scripts/framework/rerun_gate_checks.py. A rerun replays this run's ORIGINAL
+# pull_request_target event, so it UPDATES the existing check run instead of
+# creating a duplicate. Do NOT re-add a pull_request_review trigger here;
+# tests/framework/test_gate_checkout_pinned_base.py fails if you do. The
+# `ref: base.sha` pin below STAYS as defence-in-depth.
 on:
   pull_request_target:
     branches: [main, "release/v*"]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -50,12 +73,15 @@ jobs:
     name: require-overseer-approval
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (TRUSTED base — never the PR head)
-        # Under pull_request_target the default ref is the base branch, so this
-        # checks out the trusted gate script and machine-accounts.env. Do NOT add
-        # `ref: ${{ github.event.pull_request.head.sha }}` — that would run the
-        # PR's version of the gate and reintroduce the self-bypass.
+      - name: Checkout (TRUSTED base — never the PR head or merge ref)
+        # Pin the base SHA explicitly. Under pull_request_target the default ref
+        # is already the base, so this is a no-op today — it is kept as
+        # defence-in-depth so that re-adding any non-target trigger (see #972 /
+        # #1299 above) cannot silently start executing PR content. Do NOT change
+        # this to `${{ github.event.pull_request.head.sha }}` or the merge ref.
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Overseer approval gate
         env:

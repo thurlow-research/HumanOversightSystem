@@ -11,6 +11,8 @@
 /.claude/agents/                           @ScottThurlow
 /contract/                                 @ScottThurlow
 /AGENTS.md                                 @ScottThurlow
+/CLAUDE.md                                 @ScottThurlow
+/templates/CLAUDE.human.md                 @ScottThurlow
 /docs/AGENTS.md                            @ScottThurlow
 /docs/AGENT-IDENTITY.md                    @ScottThurlow
 /METHODOLOGY.md                            @ScottThurlow
@@ -26,3 +28,5 @@
 /.github/workflows/                        @ScottThurlow
 /PROJECT/hos-coordination.yaml             @ScottThurlow
 /PROJECT/hos-halt                          @ScottThurlow
+/docs/releases/                            @ScottThurlow
+/.hos-release                              @ScottThurlow

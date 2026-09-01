@@ -451,10 +451,12 @@ class TestKnownDivergenceFromOversightCodeowners:
 from scripts.automation.lib.merge_authority import (
     MergeDecision,
     RiskTier,
+    _is_release_related,
     decide_merge_authority,
     detect_human_hold_directive,
     detect_server_side_gate,
     route_embargo,
+    touches_protected_surface,
 )
 
 
@@ -632,6 +634,39 @@ class TestDecideMergeAuthority:
         assert result.decision == MergeDecision.AUTO_MERGE
         assert "approval by ScottThurlow on abc123" in result.reason
 
+    def test_touches_protected_surface_public_wrapper(self, tmp_path):
+        """#1325: overseer.md's pre-matrix gate calls this directly, not the
+        private helper — it must exist as a public, importable function."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        assert touches_protected_surface([".claude/agents/worker.md"], str(tmp_path)) is True
+        assert touches_protected_surface(["src/foo.py"], str(tmp_path)) is False
+
+    @pytest.mark.parametrize(
+        "risk_tier", [RiskTier.LOW, RiskTier.MEDIUM, RiskTier.HIGH],
+    )
+    def test_protected_surface_never_auto_merges_without_approval(self, tmp_path, risk_tier):
+        """#1325 regression: a protected-surface diff must never decide
+        AUTO_MERGE without a verified human approval on the current head SHA,
+        at any tier within the overseer's own ceiling."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "protected_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text(".claude/agents/worker.md\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **self.BASE,
+                    "changed_files": [".claude/agents/worker.md"],
+                    "risk_tier": risk_tier,
+                    "overseer_ceiling": RiskTier.HIGH,
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.decision != MergeDecision.AUTO_MERGE
+
     def test_security_relevant_with_human_approval_allows_auto_merge(self, tmp_path):
         """Security-relevant PR is mergeable once a human has approved (#741)."""
         review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha123"}]
@@ -669,6 +704,84 @@ class TestDecideMergeAuthority:
                 security_relevant=True,
                 repo_root=str(tmp_path),
             )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_security_surface_without_flag_requires_human(self, tmp_path):
+        """#1253: a security_surfaces.txt match forces HUMAN_REQUIRED even when the
+        caller never passes security_relevant=True — the bug #1253 found (no real
+        caller ever passed it)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": ["scripts/automation/lib/merge_authority.py"]},
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+    def test_security_surface_with_human_approval_allows_auto_merge(self, tmp_path):
+        """A verified human approval on the current head satisfies the derived
+        security-surface gate, same treatment as protected-surface (#741)."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "sha123"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{**self.BASE, "changed_files": ["scripts/automation/lib/merge_authority.py"]},
+                repo_root=str(tmp_path),
+                reviews=review,
+                head_sha="sha123",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_no_match_does_not_force_human(self, tmp_path):
+        """A changed file that matches no security-surface pattern does not, by
+        itself, force HUMAN_REQUIRED."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="abc",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_missing_file_does_not_force_human(self, tmp_path):
+        """No scripts/framework/security_surfaces.txt in repo_root: not itself
+        treated as relevant (mirrors _touches_protected_surface's missing-file
+        behavior) — the file's own path is covered by protected_surfaces.txt, so
+        its absence is independently caught by that check."""
+        review = [{"state": "APPROVED", "user": {"login": "ScottThurlow"}, "commit_id": "abc"}]
+
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **self.BASE, repo_root=str(tmp_path), reviews=review, head_sha="abc",
+            )
+        assert result.decision == MergeDecision.AUTO_MERGE
+
+    def test_security_surface_unreadable_file_fails_closed(self, tmp_path):
+        """An unreadable security_surfaces.txt fails closed to security_relevant=True
+        (#1253 acceptance: 'missing/uncomputable signal fails closed to Yes, never
+        No'), mirroring _touches_protected_surface's exception handling."""
+        surfaces_path = tmp_path / "scripts" / "framework" / "security_surfaces.txt"
+        surfaces_path.parent.mkdir(parents=True, exist_ok=True)
+        surfaces_path.write_text("scripts/automation/lib/**\n")
+        surfaces_path.chmod(0o000)
+        try:
+            with _patch_gate(True):
+                result = decide_merge_authority(
+                    **self.BASE, repo_root=str(tmp_path),
+                )
+        finally:
+            surfaces_path.chmod(0o644)  # restore so tmp_path cleanup can remove it
         assert result.decision == MergeDecision.HUMAN_REQUIRED
 
     def test_needs_human_label_blocks_auto_merge(self, tmp_path):
@@ -1064,6 +1177,104 @@ class TestDecideMergeAuthority:
                 repo_root=str(tmp_path),
             )
         assert result.decision == MergeDecision.HUMAN_REQUIRED
+
+
+class TestIsReleaseRelated:
+    """
+    NG3b release detection — title patterns and path globs are evaluated
+    independently, so a milestone docs path is not a release (#1032).
+
+    Pinned in BOTH directions: every historical true positive must stay True,
+    and the substring false positives must become False.
+    """
+
+    # ── True positives (must never regress) ───────────────────────────────────
+
+    @pytest.mark.parametrize("title", [
+        "chore: cut release v1.0.0",
+        "chore(release): v0.5.1",
+        "release v0.6.0",
+        "chore: publish the v0.5.1 packages",
+        "chore: ship v0.5.1",
+        "chore: bump semver minor",
+        "chore: tag v0.6.0",
+        "chore: cut-release for the patch milestone",
+    ])
+    def test_release_titles_detected(self, title):
+        assert _is_release_related(title, ["src/foo.py"]) is True
+
+    @pytest.mark.parametrize("path", [
+        "docs/releases/v0.5.1.md",
+        "docs/releases/v0.4.1-release-notes.md",
+        ".hos-release",
+        "CHANGELOG.md",
+        "docs/CHANGELOG.md",
+        "release/v0.6.0",
+        "release/v0.6.0/notes.md",
+    ])
+    def test_release_paths_detected(self, path):
+        assert _is_release_related("fix: something small", [path]) is True
+
+    def test_release_path_detected_among_unrelated_files(self):
+        assert _is_release_related(
+            "fix: something small",
+            ["src/foo.py", "docs/releases/v0.5.1.md", "README.md"],
+        ) is True
+
+    # ── False positives that #1032 removes ────────────────────────────────────
+
+    def test_milestone_docs_path_is_not_a_release(self):
+        """The #1032 reproducer: PR #1031, docs-only, no release artifact."""
+        assert _is_release_related(
+            "docs(adr): ADR-032 — Astro/JS stack support",
+            ["docs/v0.6.0/ADR-032-astro-js-support.md", "DECISIONS.md"],
+        ) is False
+
+    @pytest.mark.parametrize("path", [
+        "docs/v0.6.0/ADR-032-astro-js-support.md",
+        "docs/v0.7.0/design-notes.md",
+        "docs/v1.0/roadmap.md",
+        "packs/astro/tag-helpers.md",
+        "packs/django/metadata.md",
+        "scripts/deploy/staging.sh",
+        "src/tagging/util.py",
+    ])
+    def test_substring_paths_are_not_releases(self, path):
+        assert _is_release_related("fix: something small", [path]) is False
+
+    def test_empty_inputs_are_not_releases(self):
+        assert _is_release_related("", []) is False
+
+
+class TestReleaseGuardDecision:
+    """The narrowed heuristic reaches decide_merge_authority() unchanged."""
+
+    def test_milestone_docs_pr_is_not_routed_as_release(self, tmp_path):
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **TestDecideMergeAuthority.BASE,
+                    "pr_title": "docs(adr): ADR-032 — Astro/JS stack support",
+                    "changed_files": ["docs/v0.6.0/ADR-032-astro-js-support.md"],
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.is_release is False
+        assert "NG3b" not in result.reason
+
+    def test_genuine_release_pr_still_human_required(self, tmp_path):
+        with _patch_gate(True):
+            result = decide_merge_authority(
+                **{
+                    **TestDecideMergeAuthority.BASE,
+                    "pr_title": "chore: prepare notes",
+                    "changed_files": ["docs/releases/v0.5.1.md"],
+                },
+                repo_root=str(tmp_path),
+            )
+        assert result.decision == MergeDecision.HUMAN_REQUIRED
+        assert result.is_release is True
+        assert "needs-human" in result.labels_to_add
 
 
 class TestRiskTierEnum:

@@ -1,7 +1,7 @@
 ---
 name: prompt-fidelity
 description: Subagent of risk-assessor. Performs semantic comparison of prompt artifacts against generated code — verifies the code faithfully implements the prompt intent without additions, omissions, or drift. Reads captured prompt artifacts from prompts/ directory and the corresponding source files. Invoked by risk-assessor at MEDIUM+. Status: designed and stubbed; full semantic comparison logic is pending implementation.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

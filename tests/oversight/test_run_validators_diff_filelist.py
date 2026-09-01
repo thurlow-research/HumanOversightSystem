@@ -65,7 +65,12 @@ def _run_filelist(cwd: Path, diff_ref: str) -> dict[str, list[str]]:
         env=env,
     )
     assert res.returncode == 0, res.stderr
-    split: dict[str, list[str]] = {"ALL_FILES": [], "PY_FILES": []}
+    split: dict[str, list[str]] = {
+        "ALL_FILES": [],
+        "PY_FILES": [],
+        "JS_FILES": [],
+        "PKG_JSON_FILES": [],
+    }
     for line in res.stdout.splitlines():
         if "\t" not in line:
             continue
@@ -120,3 +125,19 @@ def test_diff_python_only_change_unaffected(tmp_path):
 
     assert split["ALL_FILES"] == ["only.py"]
     assert split["PY_FILES"] == ["only.py"]
+
+
+def test_diff_package_json_only_routes_to_pkg_json_files(tmp_path):
+    """A package.json-only bump (no .ts/.js touched) must still reach
+    PKG_JSON_FILES (#1063) — this is what lets hallucination_surface_js.py's
+    dependency-existence check fire without any JS_FILES present."""
+    _init_repo(tmp_path)
+    (tmp_path / "package.json").write_text('{"dependencies": {"react": "^18.0.0"}}\n')
+    _git(tmp_path, "add", "package.json")
+    _git(tmp_path, "commit", "-q", "-m", "bump dep")
+
+    split = _run_filelist(tmp_path, "HEAD~1")
+
+    assert split["PKG_JSON_FILES"] == ["package.json"]
+    assert split["JS_FILES"] == []
+    assert "package.json" in split["ALL_FILES"]

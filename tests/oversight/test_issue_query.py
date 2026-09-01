@@ -3,7 +3,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-from issue_query import _gh_issues_for_files, analyse_files as iq_analyse
+from issue_query import _gh_issues_for_files, _RISK_LABELS, analyse_files as iq_analyse
 
 
 # ── issue_query mocked ────────────────────────────────────────────────────────
@@ -16,8 +16,10 @@ class TestGhIssuesForFiles:
     def test_gh_not_installed_returns_empty(self):
         with patch("issue_query.subprocess.run",
                    side_effect=FileNotFoundError("gh not found")):
-            result = _gh_issues_for_files(["auth/views.py"])
-        assert result == []
+            issues, status, failed = _gh_issues_for_files(["auth/views.py"])
+        assert issues == []
+        assert status == "not_installed"
+        assert failed == 0
 
     def test_file_mentioned_in_issue_body_matched(self):
         issues = [{
@@ -31,8 +33,10 @@ class TestGhIssuesForFiles:
         issue_mock = _make_gh_mock(issues)
         with patch("issue_query.subprocess.run",
                    side_effect=[help_mock] + [issue_mock] * 8):
-            result = _gh_issues_for_files(["auth/views.py"])
+            result, status, failed = _gh_issues_for_files(["auth/views.py"])
         assert any(i["number"] == 42 for i in result)
+        assert status == "ok"
+        assert failed == 0
 
     def test_unrelated_issues_not_matched(self):
         issues = [{
@@ -46,8 +50,9 @@ class TestGhIssuesForFiles:
         issue_mock = _make_gh_mock(issues)
         with patch("issue_query.subprocess.run",
                    side_effect=[help_mock] + [issue_mock] * 8):
-            result = _gh_issues_for_files(["auth/views.py"])
+            result, status, failed = _gh_issues_for_files(["auth/views.py"])
         assert result == []
+        assert status == "ok"
 
     def test_duplicate_issues_deduplicated(self):
         # Same issue matches on two different labels
@@ -63,18 +68,22 @@ class TestGhIssuesForFiles:
         issue_mock = _make_gh_mock([issue])
         with patch("issue_query.subprocess.run",
                    side_effect=[help_mock] + [issue_mock] * 8):
-            result = _gh_issues_for_files(["views.py"])
+            result, status, failed = _gh_issues_for_files(["views.py"])
         # Should appear only once despite matching on multiple labels
         numbers = [i["number"] for i in result]
         assert numbers.count(1) == 1
 
     def test_json_error_skipped(self):
+        # Every label query fails to parse → status reflects a total failure,
+        # not "genuinely zero historical issues" (#1087).
         help_mock = MagicMock(returncode=0)
         bad_mock = MagicMock(stdout="not-json", returncode=0)
         with patch("issue_query.subprocess.run",
                    side_effect=[help_mock] + [bad_mock] * 8):
-            result = _gh_issues_for_files(["views.py"])
+            result, status, failed = _gh_issues_for_files(["views.py"])
         assert result == []
+        assert status == "error"
+        assert failed == len(_RISK_LABELS)
 
 
 class TestIssueQueryAnalyse:
@@ -84,11 +93,33 @@ class TestIssueQueryAnalyse:
 
     def test_gh_unavailable_zero_score(self):
         # gh issues unavailable → _gh_issues_for_files returns []
-        with patch("issue_query._gh_issues_for_files", return_value=[]):
+        with patch("issue_query._gh_issues_for_files", return_value=([], "ok", 0)):
             with patch("issue_query._git_churn", return_value={}):
                 result = iq_analyse(["auth/views.py"])
         assert result["score"] == pytest.approx(0.0)
         assert result["error"] is None
+
+    def test_gh_query_failure_flagged_not_silently_clean(self):
+        # #1087: a gh query failure must not read the same as "genuinely no
+        # historical issues" — it should surface via raw_value + checklist,
+        # even though the dimension is not excluded (historical density is
+        # legitimately 0 on new projects, so error= is not appropriate here).
+        with patch("issue_query._gh_issues_for_files", return_value=([], "error", len(_RISK_LABELS))):
+            with patch("issue_query._git_churn", return_value={}):
+                result = iq_analyse(["auth/views.py"])
+        assert result["error"] is None
+        assert result["raw_value"]["gh_status"] == "error"
+        assert result["raw_value"]["gh_failed_labels"] == len(_RISK_LABELS)
+        assert any("GitHub issue query failed" in item for item in result["checklist_items"])
+
+    def test_gh_not_installed_not_flagged_as_failure(self):
+        # "not_installed" is an accepted degraded mode, distinct from a query
+        # that ran and failed — it must not trigger the failure checklist item.
+        with patch("issue_query._gh_issues_for_files", return_value=([], "not_installed", 0)):
+            with patch("issue_query._git_churn", return_value={}):
+                result = iq_analyse(["auth/views.py"])
+        assert result["raw_value"]["gh_status"] == "not_installed"
+        assert not any("GitHub issue query failed" in item for item in result["checklist_items"])
 
     def test_high_issue_density_raises_score(self):
         issues = [
@@ -98,7 +129,7 @@ class TestIssueQueryAnalyse:
              "matched_file": "views.py", "matched_label": "bug"}
             for i in range(5)
         ]
-        with patch("issue_query._gh_issues_for_files", return_value=issues):
+        with patch("issue_query._gh_issues_for_files", return_value=(issues, "ok", 0)):
             with patch("issue_query._git_churn", return_value={"views.py": 3}):
                 result = iq_analyse(["views.py"])
         assert result["score"] > 0.0
@@ -121,14 +152,14 @@ class TestIssueQueryAnalyse:
                 "matched_label": "security-finding",
             }
         ]
-        with patch("issue_query._gh_issues_for_files", return_value=issues):
+        with patch("issue_query._gh_issues_for_files", return_value=(issues, "ok", 0)):
             with patch("issue_query._git_churn", return_value={}):
                 result = iq_analyse(["views.py"])
         high_ev = [e for e in result["evidence"] if e["severity"] == "high"]
         assert len(high_ev) > 0
 
     def test_high_churn_file_appears_in_evidence(self):
-        with patch("issue_query._gh_issues_for_files", return_value=[]):
+        with patch("issue_query._gh_issues_for_files", return_value=([], "ok", 0)):
             with patch("issue_query._git_churn", return_value={"views.py": 10}):
                 result = iq_analyse(["views.py"])
         assert result["score"] > 0.0
@@ -136,7 +167,7 @@ class TestIssueQueryAnalyse:
         assert len(churn_ev) > 0
 
     def test_high_churn_adds_checklist_item(self):
-        with patch("issue_query._gh_issues_for_files", return_value=[]):
+        with patch("issue_query._gh_issues_for_files", return_value=([], "ok", 0)):
             with patch("issue_query._git_churn", return_value={"views.py": 8}):
                 result = iq_analyse(["views.py"])
         assert any("churn" in item for item in result["checklist_items"])
@@ -153,7 +184,7 @@ class TestIssueQueryAnalyse:
                 "matched_label": "escaped-defect",
             }
         ]
-        with patch("issue_query._gh_issues_for_files", return_value=issues):
+        with patch("issue_query._gh_issues_for_files", return_value=(issues, "ok", 0)):
             with patch("issue_query._git_churn", return_value={}):
                 result = iq_analyse(["views.py"])
         high_ev = [e for e in result["evidence"] if e["severity"] == "high"]
@@ -171,7 +202,7 @@ class TestIssueQueryAnalyse:
                 "matched_label": "bug",
             }
         ]
-        with patch("issue_query._gh_issues_for_files", return_value=issues):
+        with patch("issue_query._gh_issues_for_files", return_value=(issues, "ok", 0)):
             with patch("issue_query._git_churn", return_value={}):
                 result = iq_analyse(["views.py"])
         assert any("historical issue" in item for item in result["checklist_items"])
@@ -248,7 +279,7 @@ class TestIssueQueryMain:
         p.write_text("import os\n")
         monkeypatch.setattr(sys, "argv", ["issue_query.py", str(p)])
         import issue_query
-        with patch("issue_query._gh_issues_for_files", return_value=[]):
+        with patch("issue_query._gh_issues_for_files", return_value=([], "ok", 0)):
             with patch("issue_query._git_churn", return_value={str(p): 0}):
                 issue_query.main()
         captured = capsys.readouterr()

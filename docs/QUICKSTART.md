@@ -66,6 +66,14 @@ contract, and the audit trail. The installed version is recorded at
 3. Run the project-start sequence — see [SETUP.md Step 6](SETUP.md).
 4. **Before your first review cycle, read [HANDLING-FINDINGS.md](HANDLING-FINDINGS.md)** — how to tell a blocking gate from a signal validator, and how to triage false positives instead of chasing them. This is the single biggest source of wasted effort if skipped.
 
+**Want fully autonomous worker/overseer operation?** Everything above installs
+the framework into a single repo for interactive use. Running worker and
+overseer as unattended cron agents (the operating model this project uses on
+itself) is a separate, additional setup — three sibling clones (Human/Worker/
+Overseer), not covered by the steps above. Set it up in this order:
+[MACHINE-ACCOUNTS-SETUP.md](MACHINE-ACCOUNTS-SETUP.md) →
+[HUMAN-SETUP.md](HUMAN-SETUP.md) → [CRON-SETUP.md](CRON-SETUP.md).
+
 ## Notes
 
 - **No `curl | bash`.** HOS reviews what automation does to your code; piping a

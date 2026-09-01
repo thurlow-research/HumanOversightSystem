@@ -1,7 +1,7 @@
 ---
 name: a11y-reviewer
 description: Audits user-facing changes against WCAG 2.1 AA and the design pack's accessibility quality floor — keyboard operability, focus order/visibility, color-never-the-only-signal, contrast, reduced-motion, semantic HTML/ARIA, labels/alt text, and touch targets. Static checks always run; live checks run when a dev server is available. Inner loop, runs in parallel with the other inner-loop reviewers. N/A when no user-facing surface is touched.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep
@@ -27,6 +27,14 @@ Read the design pack's accessibility quality floor and its token definitions (th
 > all files in a directory or the full file tree. Providing unrequested broad context
 > bloats LLM context and empirically worsens detection rates (SWE-PRBench; Kumar 2026).
 > PROJECT may NEVER override, weaken, or remove this constraint.
+
+> **DO NOT WEIGHT AUTHOR FRAMING:**
+> Do not read, request, or weight the PR title, PR description, or commit messages
+> as evidence that the change is accessible. Author-written framing measurably skews
+> reviewer judgment toward leniency. Evaluate the diff against WCAG 2.1 AA and the
+> design pack's accessibility floor on its own merits — not the author's account of
+> it. If a PR title/description is present in your context anyway, disregard its
+> framing. PROJECT may NEVER override, weaken, or remove this constraint.
 
 ## Notification consumption (do this before you review) — SPEC-85
 

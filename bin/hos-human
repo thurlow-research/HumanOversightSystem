@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# bin/hos-human -- interactive HOS human-proxy session launcher
+#
+# Preflight -> authenticate as the Human GitHub App bot -> sync the shared repo ->
+# open Claude, for an interactive human-proxy (orchestrator) session. This is the
+# canonical session-start command for a Human clone.
+#
+# NOT an autonomous cron role. bin/hos-cron accepts only --role worker|overseer;
+# there is deliberately no human cron role and this launcher must never be wired
+# into cron.
+#
+# Token lifetime note: the sourced GH_TOKEN is a FIRST-HOUR CONVENIENCE for
+# interactive `gh` reads only. Commits are local (no token needed). The push/PR
+# procedure embeds a fresh token in the remote URL at push time, and the read
+# auth snippet (temp-file source, below) re-fetches a fresh token per use -- so a
+# stale session token never blocks a load-bearing operation. If a bare `gh` call
+# 401s mid-session: re-run the auth snippet, or restart via bin/hos-human.
+#
+# Usage: hos-human   (from the repo root, or via direnv PATH_add bin)
+
+set -euo pipefail
+REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+
+# Resolve HOS_CONFIG_DIR ourselves (#1411) -- do not rely on direnv/.envrc,
+# which is undocumented and uninstalled on consumer clones. Without this,
+# get_app_token.sh's `${HOS_CONFIG_DIR:-${HOME}/.config/hos}` fallback
+# silently mints from the machine-global apps.env instead of this project's
+# on any host that happens to have one configured (#1407) -- and the
+# identity guard below does not catch it, since HOS_EXPECTED_BOT_LOGIN is
+# read from that same wrongly-resolved file.
+#
+# Registry-first: reverse-match this clone's parent directory against a
+# <project>_worker_root / <project>_overseer_root entry in
+# ~/.config/hos/projects.conf (the same registry bin/hos-cron treats as
+# authoritative -- see its _conf_val) and take that project's config_dir.
+# There is no <project>_human_root key (docs/CRON-SETUP.md documents only
+# config_dir/worker_root/overseer_root/target_release), so a Human clone
+# can't key off its own root -- it keys off being the sibling of a
+# registered Worker or Overseer under the shared project parent directory.
+#
+# Falls back to path arithmetic (this clone's parent + /.config/hos) for an
+# unregistered project -- the same convention bootstrap/validate_setup.sh
+# already uses for its own project-level check (fixed in #1386) -- so a
+# first-install preflight still works before the project is registered.
+#
+# A single resolver shared by every call site (validate_setup.sh, hos-cron,
+# hos-human) is proposed in #1406; this is a smaller, Human-scoped fix.
+_PROJECTS_CONF="${HOME}/.config/hos/projects.conf"
+_config_dir=""
+if [[ -f "$_PROJECTS_CONF" ]]; then
+  while IFS='=' read -r _key _val; do
+    [[ "$_key" =~ ^([A-Za-z0-9_]+)_(worker|overseer)_root$ ]] || continue
+    _prefix="${BASH_REMATCH[1]}"
+    _root="${_val%/}"
+    [[ -n "$_root" && "$(dirname "$_root")" == "$(dirname "$REPO_ROOT")" ]] || continue
+    _cfg="$(grep "^${_prefix}_config_dir=" "$_PROJECTS_CONF" | head -1 | cut -d= -f2-)"
+    [[ -n "$_cfg" ]] || continue
+    if [[ -n "$_config_dir" && "$_cfg" != "$_config_dir" ]]; then
+      echo "hos-human: ambiguous project match for $REPO_ROOT in $_PROJECTS_CONF (candidates: $_config_dir, $_cfg) -- fix the registry" >&2
+      exit 1
+    fi
+    _config_dir="$_cfg"
+  done < <(grep -E '^[A-Za-z0-9_]+_(worker|overseer)_root=' "$_PROJECTS_CONF")
+fi
+[[ -n "$_config_dir" ]] || _config_dir="$(dirname "$REPO_ROOT")/.config/hos"
+export HOS_CONFIG_DIR="$_config_dir"
+
+# Fail loudly rather than let get_app_token.sh silently fall through to the
+# machine-global apps.env -- name both paths so the operator can tell which
+# one is missing and which one would otherwise have been used instead.
+_global_apps_env="${HOME}/.config/hos/apps.env"
+if [[ ! -f "$HOS_CONFIG_DIR/apps.env" ]]; then
+  echo "hos-human: apps.env not found at $HOS_CONFIG_DIR/apps.env (this clone's resolved project-level config)." >&2
+  echo "           Refusing to fall back to the machine-global $_global_apps_env." >&2
+  echo "           Fix: run hos_bootstrap.sh, or add/correct this project's entry in $_PROJECTS_CONF." >&2
+  exit 1
+fi
+
+# Preflight -- fail fast before spending any tokens. --role human enables the
+# opt-in sandbox-policy currency check (#1221, AD-6); a divergence warns on
+# stderr without blocking session start, but a MISSING policy now hard-blocks
+# (2026-08-16 E-2 ruling) -- enroll with gen_sandbox_config.py (see the
+# preflight's own message) rather than bypassing this check.
+bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" --role human \
+  || { echo "Preflight failed -- fix setup before starting a session"; exit 1; }
+
+# Auth -- temp-file source pattern (NOT `source <(...)`; see get_app_token.sh
+# header. worker/overseer still use source <() -- a known pre-existing
+# inconsistency, out of scope here; do not change those files).
+_t="$(mktemp)"
+# Trap ensures the token file is removed on every exit path, including a
+# non-zero return from `source "$_t"` that would otherwise skip the explicit
+# rm -f below under set -e.
+trap 'rm -f "$_t"' EXIT
+if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app human > "$_t"; then
+  echo "Authentication failed"; exit 1
+fi
+# shellcheck source=/dev/null
+source "$_t"
+
+# Identity guard -- portable: compare exported actual vs expected (both set by
+# get_app_token.sh), NOT a hardcoded literal. The Human App login does not follow
+# the hos-<role>-hos[bot] pattern, so a literal would be wrong.
+[[ "${HOS_BOT_LOGIN:-}" == "${HOS_EXPECTED_BOT_LOGIN:-}" && -n "${HOS_BOT_LOGIN:-}" ]] \
+  || { echo "Identity guard failed: '${HOS_BOT_LOGIN:-}' != '${HOS_EXPECTED_BOT_LOGIN:-}'"; exit 1; }
+
+# Sync the shared repo at session start (fast-forward only; no-ops if recent).
+# Best-effort -- a sync failure must not block the session.
+bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true
+
+echo "Authenticated as $HOS_BOT_LOGIN -- starting Claude..."
+exec claude

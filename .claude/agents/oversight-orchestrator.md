@@ -6,7 +6,7 @@ description: >
   CONDITIONAL_PROCEED: same, but adds "Human Review Required Before Merge" section.
   ESCALATE: surfaces specific, bounded questions to the human — does NOT open the PR.
   Invoke after oversight-evaluator produces its recommendation.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write
@@ -102,7 +102,7 @@ write or submit this PR. All supporting review artifacts are automated.
 | | |
 |---|---|
 | **Agent** | `oversight-orchestrator` |
-| **Model** | `claude-sonnet-4-6` |
+| **Model** | `{actual-model-id-running-this-session}` |
 | **Submitted** | {YYYY-MM-DD} |
 | **Step / context** | Step {N} — internal review chain approved; tier: {tier}; {SECOND_REVIEW_STATUS}; panel review required before merge. |
 

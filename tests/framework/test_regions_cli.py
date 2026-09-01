@@ -303,9 +303,11 @@ def test_inject_pack_stdout_default(tmp_path):
     assert Path(staged).read_bytes() == original
 
 
-def test_inject_pack_alpha_order_with_existing(tmp_path):
-    """Two successive injections produce alphabetical PACK order regardless of
-    injection order (compose re-sorts)."""
+def test_inject_pack_preserves_injection_order(tmp_path):
+    """Two successive injections land in INJECTION order, not alphabetical
+    order (#1080 — the installer relies on this to compose dependency-layered
+    packs deps-first, so the most-specific pack ends up last / highest
+    recency precedence)."""
     staged = _write(tmp_path, "staged.md", _core_project_agent())
     body_f = _write(tmp_path, "body.md", b"pack body\n")
 
@@ -319,7 +321,7 @@ def test_inject_pack_alpha_order_with_existing(tmp_path):
 
     final = Path(staged).read_bytes()
     ids = [reg.id for reg in parse(final).regions]
-    assert ids == ["CORE", "PACK:apache", "PACK:flask", "PROJECT"]
+    assert ids == ["CORE", "PACK:flask", "PACK:apache", "PROJECT"]
 
 
 def test_inject_pack_duplicate_rejected(tmp_path):

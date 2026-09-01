@@ -310,3 +310,87 @@ def strip_redundant_commits(base: str = "main") -> bool:
     except RuntimeError as exc:
         logger.error("Rebase onto %s failed — run `git rebase --abort`: %s", base, exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Base freshness (#1162)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BaseFreshnessResult:
+    """Whether a base ref is current with respect to the branch it targets.
+
+    Distinct from StaleCommitResult, which asks whether a branch carries
+    commits already present upstream (redundant work). This asks the opposite
+    question: does upstream carry commits the *base* is missing?
+    """
+    base: str
+    target: str
+    missing_commits: list[str]      # oneline summaries, newest first
+    behind_count: int
+    target_resolved: bool           # False → the check could not run
+
+    @property
+    def is_fresh(self) -> bool:
+        return self.behind_count == 0
+
+    @property
+    def could_not_check(self) -> bool:
+        return not self.target_resolved
+
+
+def _ref_exists(ref: str) -> bool:
+    try:
+        _run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+        return True
+    except RuntimeError:
+        return False
+
+
+def check_base_freshness(
+    base: str,
+    target: str = "origin/main",
+    sample: int = 5,
+) -> BaseFreshnessResult:
+    """
+    Report whether `target` contains commits that `base` does not.
+
+    Building a commit on a base the target has moved past produces a change
+    that proposes REVERTING the intervening work, because the tree seeded from
+    that base simply lacks it — and the resulting PR looks entirely normal.
+    Observed 2026-08-01: this shape would have reverted four merged PRs
+    (6,114 deletions), caught only by manually reading a diff stat.
+
+    Note this cannot be detected by diffing the base against the resulting
+    tree: the base *is* the stale thing, so that diff is clean by construction.
+    It has to be compared against the real upstream target — which is what this
+    function does.
+
+    `sample` bounds how many missing-commit summaries are returned; the full
+    count is always exact.
+
+    An unresolvable `target` returns target_resolved=False rather than raising
+    or silently passing — callers must treat that as "could not check", never
+    as "fresh". A silently-skipped staleness check is the fail-open this
+    function exists to prevent.
+    """
+    if not _ref_exists(target):
+        return BaseFreshnessResult(
+            base=base, target=target, missing_commits=[],
+            behind_count=0, target_resolved=False,
+        )
+
+    count_out = _run_git(["rev-list", "--count", f"{base}..{target}"])
+    behind = int(count_out or "0")
+
+    missing: list[str] = []
+    if behind:
+        log_out = _run_git(
+            ["log", "--oneline", f"-{sample}", f"{base}..{target}"]
+        )
+        missing = log_out.splitlines() if log_out else []
+
+    return BaseFreshnessResult(
+        base=base, target=target, missing_commits=missing,
+        behind_count=behind, target_resolved=True,
+    )

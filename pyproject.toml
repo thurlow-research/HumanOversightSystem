@@ -21,18 +21,49 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["scripts/oversight/validators", "scripts/oversight/token_tracker"]
-omit = ["*/test_*", "*/__init__.py", "*/conftest.py"]
+source = ["scripts/oversight", "scripts/automation/lib", "scripts/framework"]
+omit = ["*/test_*", "*/__init__.py", "*/conftest.py", "*/.venv/*", "*/__pycache__/*"]
 branch = true
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 80
+fail_under = 78
+# Baseline (#1256): require_human_approval.py measures 48% though
+# tests/framework/test_require_human_approval.py exercises main() end-to-end —
+# those cases invoke it as a subprocess (to test the real CLI contract), which
+# coverage.py cannot see without COVERAGE_PROCESS_START. The figure understates
+# real exercise; recorded here so the next ratchet has an honest starting point.
 
 [tool.mutmut]
-paths_to_mutate = "scripts/oversight/validators/"
-runner = "python -m pytest tests/ -x -q --no-header"
-tests_dir = "tests/"
-# Exclude __init__.py and files that are primarily subprocess wrappers
-# (those are integration-tested, not unit-tested)
-dict_synonyms = ""
+# mutmut 3.x config keys (paths_to_mutate/tests_dir/runner/dict_synonyms were
+# the 2.x-era names; 3.x's PytestRunner calls pytest.main() in-process instead
+# of shelling out to a runner command). See requirements.txt for the version pin.
+#
+# Listed file-by-file (not "scripts/oversight/") because mutmut's directory
+# walk has no venv-exclusion mechanism — it would recurse into the gitignored
+# scripts/oversight/.venv/ (482MB, 4k+ files) and copy all of it into
+# mutants/ on every run. A new top-level module under scripts/oversight/
+# needs a line added here.
+source_paths = [
+    "scripts/oversight/validators/",
+    "scripts/oversight/lib/",
+    "scripts/oversight/agents_static_logic.py",
+    "scripts/oversight/change_classifier.py",
+    "scripts/oversight/codeowners.py",
+    "scripts/oversight/panel_logic.py",
+    "scripts/oversight/prompt_audit_logic.py",
+    "scripts/oversight/record_agent_model.py",
+    "scripts/oversight/release_artifact_logic.py",
+    "scripts/oversight/release_logic.py",
+    "scripts/oversight/second_review_logic.py",
+    "scripts/oversight/signoff_gate.py",
+    "scripts/oversight/suspension_manager.py",
+    "scripts/oversight/token_tracker.py",
+    "scripts/oversight/validation_logic.py",
+    "scripts/automation/lib/",
+    "scripts/framework/require_human_approval.py",
+    "scripts/framework/require_overseer_approval.py",
+    "scripts/framework/require_tier_ceiling.py",
+]
+pytest_add_cli_args = ["--no-header"]
+pytest_add_cli_args_test_selection = ["tests/"]

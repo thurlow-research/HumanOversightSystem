@@ -22,8 +22,8 @@ build/
 Thumbs.db
 
 # editors
-.idea/
-.vscode/
+.idea
+.vscode
 *.swp
 
 # test artifacts
@@ -36,4 +36,27 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 
+# Claude Code machine-local settings — host-specific paths, never commit
+.claude/settings.local.json
+.claude/hos-sandbox.values
+.claude/settings.local.json.bak-*
+.claude/hooks
+.claude/launch.json
+.claude/loop.md
+.claude/output-styles
+.claude/routines
+.claude/scheduled_tasks.json
+.claude/skills
+.claude/workflows
+.mcp.json
 
+# shell/environment dotfiles — machine-local, not part of the product
+.bashrc
+.bash_profile
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.ripgreprc
+.gitmodules
+nohup.out

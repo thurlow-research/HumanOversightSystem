@@ -1,10 +1,10 @@
 {
-  "head_sha": "f7e323b0ce2caf3779843aaa91ef3a4ae3208534",
+  "head_sha": "8ed0daac85c1745824acfbddab9f3f77591039f8",
   "head_sha_source": "git_head_fallback",
   "artifact_version": "1",
   "step": 1,
-  "written_at": "2026-06-29T05:46:47Z",
-  "composite_score": 0.1637,
+  "written_at": "2026-08-03T12:54:02Z",
+  "composite_score": 0.1551,
   "tier": "LOW",
   "validator_count": 12,
   "successful_validators": 10,
@@ -26,13 +26,13 @@
       "dimension": "diff_size",
       "score": 0.0,
       "raw_value": {
-        "changed_lines": 147,
-        "changed_files": 2,
+        "changed_lines": 119,
+        "changed_files": 4,
         "floor_rule_fired": null,
         "domain_count": 2,
         "domains_detected": [
-          "bootstrap",
-          "other"
+          "other",
+          "bootstrap"
         ],
         "thresholds": {
           "diff_size_floor": 400,
@@ -51,11 +51,12 @@
       "dimension": "function_metrics",
       "score": 0.0,
       "raw_value": {
-        "total_functions": 7,
+        "total_functions": 21,
         "long_functions": 0,
         "high_param_count": 0,
         "deeply_nested": 0,
-        "many_return_paths": 0
+        "many_return_paths": 0,
+        "parse_errors": []
       },
       "weight": 0.07,
       "evidence": [],
@@ -69,7 +70,8 @@
       "score": 0.0,
       "raw_value": {
         "version_sensitive_count": 0,
-        "findings": []
+        "findings": [],
+        "parse_errors": []
       },
       "weight": 0.06,
       "evidence": [],
@@ -80,209 +82,159 @@
     },
     {
       "dimension": "historical_density",
-      "score": 1.0,
+      "score": 0.865,
       "raw_value": {
-        "issue_count": 20,
+        "issue_count": 11,
         "issues": [
           {
-            "number": 957,
-            "title": "Per-role checkouts drift across HOS releases: overseer silently crash-loops at hos-cron:54 (git-credentials source) before self-sync can heal it",
+            "number": 1230,
+            "title": "Worker cron sessions launch without HOS_CYCLE_ID exported \u2014 blocks all Step 2b branch creation (#967 P1 gap)",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "CLAUDE.md"
           },
           {
-            "number": 922,
-            "title": "bug: version-skip adjacency gate fails open on NOT_FOUND tag (hos_install.sh)",
+            "number": 1174,
+            "title": "coverage and mutation testing exclude every module the #314 shell\u2192Python policy produced \u2014 including merge_authority.py",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "CLAUDE.md"
           },
           {
-            "number": 914,
-            "title": "bug: --prune silently implies --squash, overwriting drifted CORE/PACK regions (hos_install.sh)",
+            "number": 1100,
+            "title": "merge_authority.py: agent_class has no model for the Human App bot identity vs. a real human account",
             "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "file": "CLAUDE.md"
           },
           {
-            "number": 805,
-            "title": "bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1114,
+            "title": "[AI: spec-red-team] spec-gap: __CLONE_ROOT__ unfilled placeholder not caught before session start",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 731,
-            "title": "bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1113,
+            "title": "[AI: spec-red-team] spec-gap: [AI:] commit-prefix and ephemeral identity injection have no automated test coverage",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 723,
-            "title": "bug(#722): _cron_repo_url unescaped in sed replacement \u2014 pipe char in git remote breaks prompt generation",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1112,
+            "title": "[AI: spec-red-team] spec-gap: _subst_prompt 'static source-guard' assertions underspecified \u2014 call-site format regression not caught",
+            "label": "spec-gap",
+            "file": "templates/CLAUDE.human.md"
           },
           {
-            "number": 717,
-            "title": "fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1111,
+            "title": "[AI: spec-red-team] spec-gap: second --human run silently overwrites CLAUDE.human.generated.md if operator hasn't merged it yet",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 715,
-            "title": "hos_setup_partner.sh / hos_install.sh: no mechanism to install bin/ cron launchers into consumer project",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1110,
+            "title": "[AI: spec-red-team] spec-gap: --human flag not declared mutually exclusive with --worker/--overseer",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 692,
-            "title": "portability_check.sh: nested .venv dirs not excluded (only root .venv/ is excluded)",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 1109,
+            "title": "[AI: spec-red-team] spec-gap: installer sequencing \u2014 orchestrator-block injection makes Human-template direct-write branch unreachable",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 691,
-            "title": "Bot identity (machine account names) should live in PROJECT config, not CORE agent files",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 236,
+            "title": "[AI: spec-red-team] spec-gap: \u00a74 implicit assumption that marker regions survive agent runtime \u2014 no enforcement mechanism specified",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           },
           {
-            "number": 687,
-            "title": "hos_setup_partner.sh: misleading 'not found' warning when clone exists but validate_setup.sh is absent",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 685,
-            "title": "bug: run_second_review.sh hardcodes CondoParkShare context \u2014 wrong project threat model for all consumers",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 653,
-            "title": "bug: hos_install.sh does not install bootstrap/get_app_token.sh \u2014 consumer has no auth mechanism",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 652,
-            "title": "bug: hos_install.sh does not install worker.md and overseer.md \u2014 validate_setup.sh fails after clean install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 623,
-            "title": "bug(#622): validate_setup.sh hard-codes canonical repo remote \u2014 false-warns on every consumer install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 609,
-            "title": "Bug + Design: worker startup must validate specialist agents; setup must be self-applicable and role-neutral",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 276,
-            "title": "hos_install.sh suppresses python stderr (2>/dev/null) \u2014 regions.py crashes fail silently and fall back, masking a degraded install",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 272,
-            "title": "\ud83e\udd16 [AI: claude] [ship-stopper] hos_install.sh --pr silently mutates consumer's working tree in-place when PR setup fails",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 241,
-            "title": "Pre-existing half-write: hos_install.sh A4 plan-failure path (L771-773) committed Phase B before exiting",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
-          },
-          {
-            "number": 226,
-            "title": "hos_install.sh --pr: generated upgrade PR carries no AI-disclosure (title prefix / trailers / needs_human / draft)",
-            "label": "bug",
-            "file": "bootstrap/hos_install.sh"
+            "number": 234,
+            "title": "[AI: spec-red-team] spec-gap: \u00a77 completeness gate regex cannot see all dispatch forms in existing agents",
+            "label": "spec-gap",
+            "file": "CLAUDE.md"
           }
         ],
         "churn": {
-          "bootstrap/hos_install.sh": 41,
-          "tests/framework/test_install_pr_branch_shared_remote.py": 1
+          "CLAUDE.md": 11,
+          "bootstrap/hos_repo_sync.sh": 2,
+          "templates/CLAUDE.human.md": 2,
+          "tests/automation/test_hos_repo_sync.py": 2
         },
+        "gh_status": "ok",
+        "gh_failed_labels": 0,
         "note": "empty on new projects \u2014 accumulates value over time"
       },
       "weight": 0.12,
       "evidence": [
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #957: Per-role checkouts drift across HOS releases: overseer silently crash-loops at hos-cron:54 (git-credentials source) before self-sync can heal it",
+          "message": "[bug] #1230: Worker cron sessions launch without HOS_CYCLE_ID exported \u2014 blocks all Step 2b branch creation (#967 P1 gap)",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #922: bug: version-skip adjacency gate fails open on NOT_FOUND tag (hos_install.sh)",
+          "message": "[bug] #1174: coverage and mutation testing exclude every module the #314 shell\u2192Python policy produced \u2014 including merge_authority.py",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #914: bug: --prune silently implies --squash, overwriting drifted CORE/PACK regions (hos_install.sh)",
+          "message": "[bug] #1100: merge_authority.py: agent_class has no model for the Human App bot identity vs. a real human account",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #805: bug: cron prompt files hardcode machine-specific paths \u2014 should be injected from REPO_ROOT",
+          "message": "[spec-gap] #1114: [AI: spec-red-team] spec-gap: __CLONE_ROOT__ unfilled placeholder not caught before session start",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #731: bug: hos_install.sh hardcodes developer home path in cron-prompt substitution",
+          "message": "[spec-gap] #1113: [AI: spec-red-team] spec-gap: [AI:] commit-prefix and ephemeral identity injection have no automated test coverage",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "templates/CLAUDE.human.md",
           "line": 0,
-          "message": "[bug] #723: bug(#722): _cron_repo_url unescaped in sed replacement \u2014 pipe char in git remote breaks prompt generation",
+          "message": "[spec-gap] #1112: [AI: spec-red-team] spec-gap: _subst_prompt 'static source-guard' assertions underspecified \u2014 call-site format regression not caught",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #717: fix: hos_install.sh must install bin/ cron launchers + prompt files into consumer project",
+          "message": "[spec-gap] #1111: [AI: spec-red-team] spec-gap: second --human run silently overwrites CLAUDE.human.generated.md if operator hasn't merged it yet",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #715: hos_setup_partner.sh / hos_install.sh: no mechanism to install bin/ cron launchers into consumer project",
+          "message": "[spec-gap] #1110: [AI: spec-red-team] spec-gap: --human flag not declared mutually exclusive with --worker/--overseer",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #692: portability_check.sh: nested .venv dirs not excluded (only root .venv/ is excluded)",
+          "message": "[spec-gap] #1109: [AI: spec-red-team] spec-gap: installer sequencing \u2014 orchestrator-block injection makes Human-template direct-write branch unreachable",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "[bug] #691: Bot identity (machine account names) should live in PROJECT config, not CORE agent files",
+          "message": "[spec-gap] #236: [AI: spec-red-team] spec-gap: \u00a74 implicit assumption that marker regions survive agent runtime \u2014 no enforcement mechanism specified",
           "severity": "medium"
         },
         {
-          "file": "bootstrap/hos_install.sh",
+          "file": "CLAUDE.md",
           "line": 0,
-          "message": "high churn: 41 commits in 90 days",
+          "message": "high churn: 11 commits in 90 days",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "20 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
-        "hos_install.sh: 41 commits in 90 days \u2014 high churn may indicate persistent complexity."
+        "11 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "CLAUDE.md: 11 commits in 90 days \u2014 high churn may indicate persistent complexity."
       ],
       "findings": [],
       "error": null,
@@ -299,7 +251,7 @@
           "integration_active": false,
           "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
           "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
-          "files_checked": 2,
+          "files_checked": 4,
           "ip_regurgitation_enabled_env": false,
           "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
         },
@@ -333,7 +285,8 @@
       "score": 0.0,
       "raw_value": {
         "candidate_count": 0,
-        "locations": []
+        "locations": [],
+        "parse_errors": []
       },
       "weight": 0.08,
       "evidence": [],
@@ -362,28 +315,28 @@
         "ambiguity_score": 0.25,
         "fidelity_surface_score": 0.0,
         "ambiguity_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+          "16 spec-gap issue(s) on record \u2014 historical spec ambiguity"
         ],
         "fidelity_signals": [],
         "process_signals": [
-          "9 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+          "16 spec-gap issue(s) on record \u2014 historical spec ambiguity"
         ],
         "missing_artifacts": [
-          "tests/framework/test_install_pr_branch_shared_remote.py"
+          "tests/automation/test_hos_repo_sync.py"
         ],
         "files_with_artifacts": 0
       },
       "weight": 0.07,
       "evidence": [
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
+          "file": "tests/automation/test_hos_repo_sync.py",
           "line": 0,
           "message": "1 file(s) have no prompt artifact \u2014 cannot verify authoring intent",
           "severity": "medium"
         }
       ],
       "checklist_items": [
-        "1 file(s) missing prompt artifacts: test_install_pr_branch_shared_remote.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
+        "1 file(s) missing prompt artifacts: test_hos_repo_sync.py. Run: ./scripts/capture_prompt.sh for each MEDIUM+ change."
       ],
       "findings": [],
       "error": null,
@@ -391,12 +344,12 @@
     },
     {
       "dimension": "risk_number",
-      "score": 0.0,
+      "score": 0.05,
       "raw_value": {
-        "max_rn": 0.0,
-        "mean_rn": 0.0,
+        "max_rn": 1.0,
+        "mean_rn": 0.14,
         "high_risk_functions": [],
-        "function_count": 7,
+        "function_count": 21,
         "parse_errors": [],
         "task_class": "fix",
         "task_class_source": "commit_prefix",
@@ -407,84 +360,210 @@
       "weight": 0.18,
       "evidence": [
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 36,
+          "message": "RN=1.0 \u2014 _run_script()",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 90,
+          "message": "RN=1.0 \u2014 repo()",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 245,
+          "message": "RN=1.0 \u2014 test_two_repos_get_independent_state_files()",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/automation/test_hos_repo_sync.py",
           "line": 29,
           "message": "RN=0.0 \u2014 _git()",
           "severity": "medium"
         },
         {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 58,
-          "message": "RN=0.0 \u2014 _pick_branch()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 67,
-          "message": "RN=0.0 \u2014 _make_clone()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 75,
-          "message": "RN=0.0 \u2014 shared_remote()",
-          "severity": "medium"
-        },
-        {
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 87,
-          "message": "RN=0.0 \u2014 test_plain_branch_when_no_collision()",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 52,
+          "message": "RN=0.0 \u2014 __init__()",
           "severity": "medium"
         }
       ],
-      "checklist_items": [],
+      "checklist_items": [
+        "_run_script:40 \u2014 can this condition be both true and false as expected?",
+        "_run_script:40 \u2014 are all branches (including implicit else) handled?",
+        "repo:91 \u2014 can this condition be both true and false as expected?",
+        "repo:91 \u2014 are all branches (including implicit else) handled?",
+        "test_two_repos_get_independent_state_files:246 \u2014 can this condition be both true and false as expected?",
+        "test_two_repos_get_independent_state_files:246 \u2014 are all branches (including implicit else) handled?"
+      ],
       "findings": [
         {
+          "function": "_run_script",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 36,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 40,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "repo",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 90,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 91,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_two_repos_get_independent_state_files",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 245,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 246,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
           "function": "_git",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
+          "file": "tests/automation/test_hos_repo_sync.py",
           "line": 29,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_pick_branch",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 58,
+          "function": "__init__",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 52,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "_make_clone",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 67,
+          "function": "_configure_identity",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 78,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "shared_remote",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 75,
+          "function": "advance_remote",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 82,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_plain_branch_when_no_collision",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 87,
+          "function": "state_dir",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 97,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_second_clone_disambiguates_and_pushes_cleanly",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 93,
+          "function": "test_skips_when_recently_synced",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 104,
           "risk_number": 0.0,
           "top_statements": []
         },
         {
-          "function": "test_installer_contains_949_disambiguation_guard",
-          "file": "tests/framework/test_install_pr_branch_shared_remote.py",
-          "line": 123,
+          "function": "test_runs_when_interval_is_zero",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 111,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_not_a_git_repo_is_a_noop_not_an_error",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 116,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_fast_forwards_local_ref_when_not_checked_out",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 125,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_ff_only_when_default_branch_checked_out_and_clean",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 142,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_skips_fast_forward_when_working_tree_dirty",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 154,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_reports_up_to_date_as_a_noop",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 166,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_diverged_branch_reported_as_stale_and_transient",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 177,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_dirty_tree_reported_as_stale_and_transient",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 195,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_readonly_working_tree_reported_as_stale_and_structural",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 206,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_up_to_date_emits_no_stale_warning",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 220,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_successful_fast_forward_emits_no_stale_warning",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 225,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_fetch_failure_is_reported_and_classified_transient",
+          "file": "tests/automation/test_hos_repo_sync.py",
+          "line": 233,
           "risk_number": 0.0,
           "top_statements": []
         }

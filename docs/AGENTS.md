@@ -211,7 +211,7 @@ before acting, because behavior differs.
 
 | | `worker` | `overseer` |
 |---|---|---|
-| **Model** | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| **Model** | `claude-sonnet-4-6` | `claude-opus-4-8` |
 | **Invoked by** | `bin/hos-cron --role worker` (autonomous); a human (interactive) | `bin/hos-cron --role overseer` (autonomous); a human (interactive) |
 | **INTERACTIVE mode** | Single human entry point for building work — routes the human's request to the right specialists | Answers questions about PR status, risk assessments, and pipeline state |
 | **AUTONOMOUS mode** | Picks the highest-priority open `needs-ai` issue (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`; ties broken by lowest issue number), runs the build pipeline through the specialists, and hands off to `oversight-orchestrator` to open a PR | Reviews open bot PRs, applies the merge-authority matrix, and auto-merges or escalates |
@@ -241,7 +241,7 @@ see `docs/OVERSIGHT-RUNBOOK.md`. For configuring this layer (the
 
 ### 1. `pm-agent` — Product Manager
 
-**Model:** `claude-sonnet-4-6`
+**Model:** `claude-opus-4-8`
 **Invoked:** At project start (first agent); anytime a product/requirements question arises during build.
 
 **Role:** Owns the spec. Answers "what should the product do?" questions. Never answers implementation or architecture questions.
@@ -910,7 +910,7 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 - `scripts/framework/decisions.md` — each decision's `Verification:` criterion checked against its stated implementation files
 
 **Key requirements:**
-- REQ-001: No Claude model in the independent reviewer seat (agy/codex only)
+- REQ-001: No Claude model recorded, counted, or reported as satisfying the *independent*-review requirement (agy/codex or the human only); a same-family model at a strictly higher class may still serve as a **peer** (class-differential) reviewer (ADR-033 AD-1/AD-10), which never substitutes for the independent vote
 - REQ-002: agy fires at MEDIUM+; codex at HIGH+; fail-closed when unavailable
 - REQ-003: Human gate mandatory at CRITICAL steps
 - REQ-004: Opus for high-judgment agents (architect, technical-design); Sonnet for reviewers
@@ -1086,9 +1086,9 @@ System prompt content
 ```
 
 ### Available model IDs (as of June 2026)
-- `claude-opus-4-8` — Opus (most capable; use for architect and technical-design)
-- `claude-sonnet-4-6` — Sonnet (strong reasoning; use for all reviewer/test/framework agents)
-- `claude-haiku-4-5-20251001` — Haiku (fast; suitable only for pure retrieval/lookup with no judgment calls)
+- `claude-opus-4-8` — Opus (most capable; use for architect, technical-design, pm-agent, and overseer)
+- `claude-sonnet-4-6` — Sonnet (strong reasoning; use for all other agents — reviewers, tests, coder, worker, framework agents)
+- `claude-haiku-4-5-20251001` — Haiku (fast; suitable only for pure retrieval/lookup with no judgment calls; not currently assigned to any shipped agent)
 
 ### Invoking agents
 

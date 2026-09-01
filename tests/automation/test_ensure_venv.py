@@ -53,14 +53,18 @@ class EnsureVenvEnv:
     def __init__(self, tmp_path: Path):
         self.tmp = tmp_path
         self.home = tmp_path / "home"
-        # Script dir simulates scripts/oversight/ — VENV = script_dir/.venv
-        self.script_dir = tmp_path / "oversight"
+        # repo_root simulates a consumer project checkout; script_dir simulates
+        # its scripts/oversight/ — VENV = script_dir/.venv. Two levels of nesting
+        # (matching the real repo layout) so ensure_venv.sh's REPO_ROOT resolves
+        # to repo_root, not some directory outside our sandbox.
+        self.repo_root = tmp_path / "repo"
+        self.script_dir = self.repo_root / "scripts" / "oversight"
         self.stub_bin = tmp_path / "stub_bin"
         self.venv = self.script_dir / ".venv"
         self.marker_dir = self.home / ".hos" / "setup-validation"
 
         self.home.mkdir()
-        self.script_dir.mkdir()
+        self.script_dir.mkdir(parents=True)
         self.stub_bin.mkdir()
 
         # Copy the real ensure_venv.sh — it will compute VENV relative to itself.
@@ -108,9 +112,17 @@ class EnsureVenvEnv:
             '  fi\n'
             '  exit "${HOS_TEST_SMOKE_EXIT:-0}"\n'
             'fi\n'
-            # Fallback: pip-via-shebang invocations (python3 /path/to/pip install ...)
+            # Fallback: pip-via-shebang invocations (python3 /path/to/pip install ...).
+            # Log args so tests can assert which -r files were installed.
+            '[[ -n "${HOS_TEST_PIP_CALL_LOG:-}" ]] && printf "%s\\n" "$*" >> "$HOS_TEST_PIP_CALL_LOG"\n'
+            # HOS_TEST_PIP_FAIL_ON_SUBSTRING: fail only the pip call whose args
+            # contain this substring (e.g. a specific requirements filename).
+            'if [[ -n "${HOS_TEST_PIP_FAIL_ON_SUBSTRING:-}" && "$*" == *"${HOS_TEST_PIP_FAIL_ON_SUBSTRING}"* ]]; then\n'
+            '  exit 1\n'
+            'fi\n'
             'exit 0\n',
         )
+        self.pip_call_log = self.tmp / "pip_calls.log"
 
     def create_fake_venv(self) -> None:
         """Pre-create a minimal fake venv (so ensure_venv.sh skips the creation step)."""
@@ -131,11 +143,25 @@ class EnsureVenvEnv:
             return False
         return bool(list(self.marker_dir.glob("oversight-venv-*")))
 
+    def write_project_requirements(self, name: str = "requirements.txt", content: str = "django\n") -> Path:
+        """Drop a consumer-project requirements file at the fake repo root."""
+        path = self.repo_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        return path
+
+    def pip_calls(self) -> list:
+        """Args logged by the stub pip fallback, one entry per invocation."""
+        if not self.pip_call_log.exists():
+            return []
+        return self.pip_call_log.read_text().splitlines()
+
     def run(self, env_overrides=None, quiet=True) -> subprocess.CompletedProcess:
         env = {
             "HOME": str(self.home),
             # Stub python3 precedes system bins so venv creation uses our stub
             "PATH": f"{self.stub_bin}:/usr/bin:/bin",
+            "HOS_TEST_PIP_CALL_LOG": str(self.pip_call_log),
         }
         if env_overrides:
             env.update(env_overrides)
@@ -225,3 +251,45 @@ class TestRebuildFails:
         assert not venv_env.marker_exists(), (
             "marker must not be written when venv cannot be repaired"
         )
+
+
+# ─────────── Consumer-project requirements installed on venv build (#956) ───────────
+class TestProjectRequirements:
+    def test_no_project_requirements_skips_install(self, venv_env):
+        """No requirements.txt at repo root → only the oversight requirements install runs."""
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        calls = venv_env.pip_calls()
+        project_req = str(venv_env.repo_root / "requirements.txt")
+        assert not any(project_req in c for c in calls)
+
+    def test_project_requirements_installed_on_fresh_build(self, venv_env):
+        """A project requirements.txt at repo root is pip-installed when the venv is built."""
+        req = venv_env.write_project_requirements()
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        calls = venv_env.pip_calls()
+        assert any(str(req) in c for c in calls), f"expected a pip install -r {req} call, got: {calls}"
+
+    def test_project_requirements_subdir_installed(self, venv_env):
+        """requirements/*.txt files are installed too (same convention as expensive_gates_stub.sh)."""
+        req = venv_env.write_project_requirements(name="requirements/base.txt")
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        calls = venv_env.pip_calls()
+        assert any(str(req) in c for c in calls), f"expected a pip install -r {req} call, got: {calls}"
+
+    def test_healthy_existing_venv_does_not_reinstall_project_requirements(self, venv_env):
+        """An already-built, healthy venv is left alone — no rebuild, no project pip calls."""
+        venv_env.create_fake_venv()
+        req = venv_env.write_project_requirements()
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        assert not any(str(req) in c for c in venv_env.pip_calls())
+
+    def test_project_requirements_install_failure_fails_build(self, venv_env):
+        """A broken project requirements.txt fails the whole venv build, no marker written."""
+        req = venv_env.write_project_requirements()
+        r = venv_env.run(env_overrides={"HOS_TEST_PIP_FAIL_ON_SUBSTRING": str(req)})
+        assert r.returncode != 0
+        assert not venv_env.marker_exists()

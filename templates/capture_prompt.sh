@@ -31,7 +31,13 @@ fi
 SOURCE_FILE="$1"
 DESCRIPTION="${2:-$(basename "$SOURCE_FILE")}"
 DATE=$(date -u +"%Y-%m-%d")
-MODEL="${AI_MODEL:-claude-sonnet-4-6}"   # override with: AI_MODEL=claude-opus-4-6 ./scripts/capture_prompt.sh ...
+if [[ -z "${AI_MODEL:-}" ]]; then
+  echo "AI_MODEL is not set. There is no safe default — the value must be the actual" >&2
+  echo "model ID running this session, not a guess. Set it explicitly, e.g.:" >&2
+  echo "  AI_MODEL=claude-sonnet-5 $0 ${SOURCE_FILE} ..." >&2
+  exit 1
+fi
+MODEL="${AI_MODEL}"
 
 # ── Derive artifact path ───────────────────────────────────────────────────────
 # Strip leading ./ if present

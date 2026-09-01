@@ -5,7 +5,7 @@
 # with this wrapper so fixes propagate to all projects automatically.
 #
 # Usage:
-#   hos-cron --role worker|overseer --project <name>
+#   hos-cron --role worker|overseer --project <name> [--max-seconds <N>]
 #
 # Project registry: ~/.config/hos/projects.conf
 #   hos_config_dir=$HOME/Code/HOS/.config/hos
@@ -14,21 +14,53 @@
 #   cps_config_dir=$HOME/Code/CPS/.config/hos
 #   cps_worker_root=$HOME/Code/CPS/Main
 #   cps_overseer_root=$HOME/Code/CPS/Main
+#   cps_baseline_on_red=repair   # optional (#959); default "halt" — see below
+#   cps_max_seconds=3600         # optional (#1434); default 1800 — see below
 #
 # Claude auth (#728): ~/.config/hos/claude-auth.env  (mode 0600), holding
 #   CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   (from `claude setup-token`)
 # This runs headless claude on the user's Claude subscription. Without it, cron falls
 # through to API-key billing. Override path with HOS_CLAUDE_AUTH_ENV.
 #
+# Session timeout (#1434): the wall-clock cap on the claude session is resolved
+# in this order, highest wins — a non-numeric value from any source fails
+# loudly and names the offending source, rather than silently falling back:
+#   --max-seconds <N>                 (highest)
+#   HOS_CRON_MAX_SECONDS env
+#   <project>_max_seconds in projects.conf
+#   1800 default                      (lowest)
+# `0` disables the cap at any tier. The default stays 1800 deliberately — see
+# the "Explicit non-goal" section of #1434; use the flag for runs known to be
+# large, not a blanket raise.
+#
 # Env overrides:
 #   HOS_CLAUDE_AUTH_ENV         path to the OAuth token file (default ~/.config/hos/claude-auth.env)
-#   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables)
+#   HOS_CRON_MAX_SECONDS        wall-clock cap on the claude session (default 1800; 0 disables) — see precedence above
 #   HOS_CRON_MAX_TURNS          optional --max-turns backstop (default unset = no cap)
 #   HOS_CRON_AUTH_PROBE         1 = run a model auth probe before work (default 0; costs a turn)
-#   HOS_IDLE_INTERVAL           idle-backoff threshold in seconds (default 1800)
 #   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
 #   HOS_TARGET_RELEASE          override the active release title (e.g. v0.4.2); default from projects.conf
 #   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
+#   HOS_BASELINE_REPAIR_MAX_ATTEMPTS  consecutive red-baseline cycles allowed in
+#                               repair mode before escalating to needs-human (default 3)
+#   HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS  consecutive exit=124 cycles at an unchanged
+#                               cap before the project is suspended via hos-suspend
+#                               (default 2; #1435)
+#
+# Usage-limit breaker (#1446): a genuine Claude usage-limit refusal detected in
+# the session's own captured output (see $_HOS_DIR/last-claude-output/) trips
+# the project into suspension via hos-suspend on the FIRST detection — no
+# attempt counter, unlike the timeout breaker above. v1 is reactive-only: no
+# sanctioned credential can read `/usage` percentages headlessly (see the
+# issue), so this only watches for the CLI's own refusal text.
+#
+# <project>_baseline_on_red (projects.conf, worker only; #959): on a red cycle-start
+# baseline, "halt" (default) files a needs-human issue and exits — unchanged legacy
+# behavior. "repair" instead scopes the cycle to fixing the failing tests (bounded by
+# HOS_BASELINE_REPAIR_MAX_ATTEMPTS) when the failure is an ordinary assertion failure
+# (pytest exit 1); a collection/session/environmental failure (any other nonzero exit)
+# always halts regardless of mode, since the worker cannot fix broken infrastructure.
+# Either mode auto-closes a standing [BLOCKED] issue once the baseline goes green.
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
@@ -52,16 +84,36 @@ CLAUDE_BIN="$(command -v claude || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "[hos-cron] FATAL: claude not found on PATH (cron thin env)"; exit 78; }
 
 # Deterministic git credentials (#738) — sourced now, applied after auth below.
+# #957: a checkout that missed an upgrade applied to a sibling role (e.g.
+# Overseer stuck on v0.4.1 while Worker moved to v0.5.0) has this file
+# missing outright, and a raw `source` under `set -e` crash-loops with a bare
+# "No such file" before the self-sync later in this script ever runs — the
+# staleness that breaks it also blocks the self-heal. Guard it: attempt a
+# fetch + fast-forward of this checkout first, then degrade to a clear
+# diagnostic instead of a silent crash-loop.
+_HOS_CRON_DIR="$(dirname "${BASH_SOURCE[0]}")"
+_GIT_CREDS_LIB="$_HOS_CRON_DIR/lib/git-credentials.sh"
+_HOS_CRON_SELF_ROOT="$(cd "$_HOS_CRON_DIR/.." && pwd)"
+if [[ ! -f "$_GIT_CREDS_LIB" ]]; then
+  echo "[hos-cron] WARNING: $_GIT_CREDS_LIB missing (stale checkout? #957) — attempting self-update" >&2
+  git -C "$_HOS_CRON_SELF_ROOT" fetch origin --quiet 2>/dev/null || true
+  git -C "$_HOS_CRON_SELF_ROOT" merge --ff-only --quiet origin/main 2>/dev/null || true
+fi
+if [[ ! -f "$_GIT_CREDS_LIB" ]]; then
+  echo "[hos-cron] FATAL: $_GIT_CREDS_LIB still missing after self-update attempt — checkout is stale and cannot self-heal; run: git -C \"$_HOS_CRON_SELF_ROOT\" pull --ff-only origin main" >&2
+  exit 78  # EX_CONFIG
+fi
 # shellcheck source=lib/git-credentials.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/git-credentials.sh"
+source "$_GIT_CREDS_LIB"
 
 # ── Args ─────────────────────────────────────────────────────────────────────
-ROLE="" PROJECT=""
+ROLE="" PROJECT="" _MAX_SECONDS_FLAG=""
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --role)    ROLE="$2";    shift 2 ;;
-    --project) PROJECT="$2"; shift 2 ;;
-    *) echo "Usage: $0 --role worker|overseer --project <name>"; exit 1 ;;
+    --role)         ROLE="$2";            shift 2 ;;
+    --project)      PROJECT="$2";         shift 2 ;;
+    --max-seconds)  _MAX_SECONDS_FLAG="$2"; shift 2 ;;
+    *) echo "Usage: $0 --role worker|overseer --project <name> [--max-seconds <N>]"; exit 1 ;;
   esac
 done
 [[ -n "$ROLE" && -n "$PROJECT" ]] \
@@ -88,6 +140,43 @@ REPO_ROOT="$(_conf_val ${ROLE}_root)"
 
 export HOS_CONFIG_DIR REPO_ROOT
 
+# ── Session timeout resolution (#1434) ────────────────────────────────────────
+# Precedence: --max-seconds flag > HOS_CRON_MAX_SECONDS env > <project>_max_seconds
+# in projects.conf > 1800 default. Resolved here — before the overlap lock below
+# derives its ceiling from HOS_CRON_MAX_SECONDS, and before the per-fire bounds
+# section reads it again — so both follow this resolution automatically. A
+# non-numeric value from any source fails loudly and names the offending
+# source, rather than silently falling back to the default (the #1398
+# anti-pattern this deliberately avoids).
+if [[ -n "$_MAX_SECONDS_FLAG" ]]; then
+  _max_secs_val="$_MAX_SECONDS_FLAG"
+  _max_secs_src="--max-seconds flag"
+elif [[ -n "${HOS_CRON_MAX_SECONDS:-}" ]]; then
+  _max_secs_val="$HOS_CRON_MAX_SECONDS"
+  _max_secs_src="HOS_CRON_MAX_SECONDS env"
+else
+  _max_secs_val="$(_conf_val max_seconds)"
+  if [[ -n "$_max_secs_val" ]]; then
+    _max_secs_src="${PROJECT}_max_seconds in $PROJECTS_CONF"
+  else
+    _max_secs_val="1800"
+    _max_secs_src="default"
+  fi
+fi
+[[ "$_max_secs_val" =~ ^[0-9]+$ ]] \
+  || { echo "hos-cron: invalid max-seconds value '$_max_secs_val' from $_max_secs_src — must be a non-negative integer"; exit 1; }
+HOS_CRON_MAX_SECONDS="$_max_secs_val"
+export HOS_CRON_MAX_SECONDS
+
+# #1435: shared title prefix for the timeout-breaker's needs-human issue —
+# defined once here so both the trip path (exit=124 handling) and the clear
+# path (normal-completion bookkeeping) match the same issue.
+_TIMEOUT_BREAKER_TITLE_PREFIX="[SUSPENDED] ${ROLE} timeout breaker tripped on ${PROJECT}"
+# #1446: shared title prefix for the usage-limit breaker's needs-human issue —
+# same reason as above, one definition for both the trip path and the
+# normal-completion auto-close path.
+_USAGE_LIMIT_BREAKER_TITLE_PREFIX="[SUSPENDED] ${ROLE} usage-limit breaker tripped on ${PROJECT}"
+
 LOG_PREFIX="[hos-${ROLE}-cron:${PROJECT}] $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 # ── State dirs ────────────────────────────────────────────────────────────────
@@ -99,8 +188,7 @@ _HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"
 _WAKEUP_FILE="$_HOS_DIR/wakeup/${ROLE}-${PROJECT}"
 _WAKEUP_FILE_LEGACY="$_HOS_DIR/wakeup/${ROLE}"
 _LAST_RUN_FILE="$_HOS_DIR/last-run/${ROLE}-${PROJECT}"
-IDLE_INTERVAL="${HOS_IDLE_INTERVAL:-1800}"
-mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean"
+mkdir -p "$_HOS_DIR/wakeup" "$_HOS_DIR/last-run" "$_HOS_DIR/locks" "$_HOS_DIR/validation-cache" "$_HOS_DIR/suspend" "$_HOS_DIR/test-clean" "$_HOS_DIR/timeout-breaker" "$_HOS_DIR/last-claude-output"
 _HOS_CACHE_DIR="$_HOS_DIR/validation-cache"
 
 # ── Project suspension check (#778) — early exit before lock ─────────────────
@@ -179,21 +267,53 @@ fi
 echo "$$" > "$_LOCK_DIR/pid"
 trap 'rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
 
+# ── Cycle identity (#967, ADR-037 AD-5) ───────────────────────────────────────
+# Minted exactly once per invocation, under the overlap lock, and exported into
+# the launched Claude session's environment. This is the ONLY place cycle
+# identity is minted — nothing downstream may derive, invent, or persist one.
+# Its ABSENCE is the fail-closed hinge for branch-ownership enforcement
+# (bootstrap/lib/branch_ownership.sh, bootstrap/submit_pr.sh): an interactive
+# session is never launched by this script, so it never has a cycle id, so it
+# can never write or satisfy a valid ownership record — role-scoping falls out
+# of the minting boundary with no separate role-detection heuristic needed.
+_cycle_ts="$(date -u +%y%m%d%H%M%S)"          # 12 digits, e.g. 260802191500
+HOS_CYCLE_TOKEN="$_cycle_ts"
+HOS_CYCLE_ROLE="$ROLE"
+# PROJECT is operator-supplied (registry key); sanitize before folding it into
+# an identifier so a stray character in projects.conf can't produce a cycle id
+# that fails its own grammar check below.
+_project_safe="$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9._-' '-')"
+HOS_CYCLE_ID="${ROLE}-${_project_safe}-${_cycle_ts}-$$"
+if [[ ! "$HOS_CYCLE_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "$LOG_PREFIX FATAL: minted HOS_CYCLE_ID '$HOS_CYCLE_ID' failed grammar validation — refusing to launch a session with a malformed cycle identity"
+  exit 78  # EX_CONFIG
+fi
+# Minted for BOTH roles (#967 ADR-037 AD-5) — the overseer creates no branches,
+# but giving it an identity costs nothing and keeps one code path; role scoping
+# is enforced by the recorded role= value in the ownership record, not by
+# withholding the identifier here.
+export HOS_CYCLE_ID HOS_CYCLE_ROLE HOS_CYCLE_TOKEN
+
 # ── Audit helper ──────────────────────────────────────────────────────────────
 _audit() {
   local event="$1"; shift
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
-# ── Audit log sync (#861) ─────────────────────────────────────────────────────
-# Push audit/oversight-log.jsonl and audit/overnight-loop-log.md to the
-# unprotected `audit-log` branch. A GitHub Actions workflow reads from that
-# branch and commits only those files to main, keeping feature PRs free of
+# ── Audit log sync (#861, updated #1303) ──────────────────────────────────────
+# Push per-entry audit records under audit/log/**/*.json (write-once,
+# content-addressed filenames — #888 retired the single-file
+# audit/oversight-log.jsonl this used to target) and audit/overnight-loop-log.md
+# to the unprotected `audit-log` branch. A GitHub Actions workflow reads from
+# that branch and commits only those files to main, keeping feature PRs free of
 # append-only conflicts while maintaining an auditable sync path.
 _sync_audit_logs() {
   local _repo="$1"
   local _files=()
-  [[ -f "$_repo/audit/oversight-log.jsonl"   ]] && _files+=("audit/oversight-log.jsonl")
+  local _f
+  while IFS= read -r -d '' _f; do
+    _files+=("${_f#"$_repo"/}")
+  done < <(find "$_repo/audit/log" -type f -name '*.json' -print0 2>/dev/null)
   [[ -f "$_repo/audit/overnight-loop-log.md" ]] && _files+=("audit/overnight-loop-log.md")
   [[ ${#_files[@]} -eq 0 ]] && return 0
 
@@ -223,6 +343,10 @@ _sync_audit_logs() {
 
     local _changed=0
     for _f in "${_files[@]}"; do
+      # Write-once, content-addressed filenames: a file already present at this
+      # path on the base is identical by construction, so skip it rather than
+      # re-copy/re-hash it every cycle (the backlog is thousands of files deep).
+      [[ -e "$_wt/$_f" ]] && continue
       mkdir -p "$_wt/$(dirname "$_f")" 2>/dev/null || true
       cp -f "$_repo/$_f" "$_wt/$_f" 2>/dev/null || continue
       git -C "$_wt" add -f "$_f" 2>/dev/null
@@ -309,7 +433,18 @@ _validate_env() {
 }
 _validate_env
 
-# ── Wakeup / idle backoff ─────────────────────────────────────────────────────
+# ── Wakeup ────────────────────────────────────────────────────────────────────
+# #1196: the idle backoff this mechanism used to bypass is gone (it suppressed
+# cron fires to at most once per HOS_IDLE_INTERVAL, based on a GitHub-throttling
+# diagnosis later traced to a different cause — see DECISIONS.md). Every cron
+# fire now runs the cycle unconditionally, so a wakeup file no longer unblocks
+# anything. It is kept anyway: it still hands off role-to-role ("worker just
+# opened a PR, overseer should look now" / "overseer just merged, worker can
+# proceed") faster than waiting for each role's own next scheduled fire, it
+# costs one file write per cycle, and the cycle-wakeup audit event remains a
+# useful trace of that coordination. Removing it was considered and rejected —
+# see DECISIONS.md.
+#
 # #995: prefer the project-scoped wakeup file. Fall back to the legacy unscoped
 # path ONLY when its JSON "project" field is absent (a truly pre-scoping signal)
 # or matches this project — never consume/rm a wakeup that names another project,
@@ -347,34 +482,9 @@ elif [[ -f "$_LAST_RUN_FILE" ]]; then
   _last=$(cat "$_LAST_RUN_FILE" 2>/dev/null || echo 0)
   _now=$(date +%s)
   _elapsed=$(( _now - _last ))
-  if [[ "$_elapsed" -lt "$IDLE_INTERVAL" ]]; then
-    echo "$LOG_PREFIX idle backoff — ${_elapsed}s since last run (threshold ${IDLE_INTERVAL}s)"
-    exit 0
-  fi
-  echo "$LOG_PREFIX idle poll — ${_elapsed}s since last run"
+  echo "$LOG_PREFIX ${_elapsed}s since last run"
 fi
 # Timestamp written only after successful Claude exit (#711)
-
-# ── Git sync ──────────────────────────────────────────────────────────────────
-git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
-# #996: never let a diverged local main be masked by `|| true`. A SIGTERM between
-# a session's commit and push can strand a stray commit on main; from then on
-# every `pull --ff-only` fails and silently discarding it would let the worker
-# keep cutting branches from a drifting base with no signal at all. Capture the
-# failure and, if local main carries commits not on origin/main, log loudly, emit
-# an audit event, and skip the cycle fail-closed — the stray commit is left in
-# place (reflog-recoverable) for a human to reconcile.
-if ! git -C "$REPO_ROOT" pull origin main --ff-only --quiet 2>/dev/null; then
-  _ahead=$(git -C "$REPO_ROOT" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
-  if [[ "${_ahead:-0}" -gt 0 ]]; then
-    echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_ahead} local commit(s) not on origin (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" log origin/main..HEAD"
-    _audit cycle-preflight-fail reason=local_main_diverged ahead="${_ahead}"
-    exit 0
-  fi
-  # ff-only could not fast-forward but local main is NOT ahead (e.g. no upstream
-  # configured yet, or a transient fetch failure) — nothing was masked; continue
-  # on the current HEAD, as the old `|| true` did.
-fi
 
 # ── Repo slug — shared by halt check, PR routing, and milestone resolution ────
 _REPO_SLUG="${HOS_REPO_SLUG:-$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
@@ -397,6 +507,7 @@ if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app "$ROLE" > "$_auth_tmp" 2>/dev
   _audit cycle-preflight-fail reason=auth_failed
   exit 0
 fi
+# shellcheck source=/dev/null
 source "$_auth_tmp"; rm -f "$_auth_tmp"
 
 # ── Identity guard ────────────────────────────────────────────────────────────
@@ -439,7 +550,10 @@ if [[ ! -r "$_CLAUDE_AUTH_ENV" ]]; then
   _audit cycle-preflight-fail reason=claude_auth_env_missing
   exit 78  # EX_CONFIG
 fi
-set -a; . "$_CLAUDE_AUTH_ENV"; set +a
+set -a
+# shellcheck source=/dev/null
+. "$_CLAUDE_AUTH_ENV"
+set +a
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 if [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
   echo "$LOG_PREFIX FATAL: CLAUDE_CODE_OAUTH_TOKEN not set after sourcing $_CLAUDE_AUTH_ENV"
@@ -556,74 +670,59 @@ else
     && echo "$LOG_PREFIX WARN: ${PROJECT}_target_release not set in $PROJECTS_CONF — prompt will not have milestone substituted"
 fi
 
-# ── Inner-loop baseline (worker only) — skip when repo is known-clean (#789) ──
-# Cycle-start tests exist to establish a known-good baseline before Claude touches
-# the repo, catching a broken tree left by a previously-crashed cycle. That only
-# has value when state is UNKNOWN. When HEAD matches the last SHA at which the
-# baseline passed (the "cowpat") and the worktree is clean, nothing has changed
-# since the last green run — skip the redundant ~2–3 min suite. The pre-PR §8.7
-# gate (Claude runs tests against its own changes before any PR) is unchanged and
-# is the real safety net; this only trims the redundant cycle-start run.
-if [[ "$ROLE" == "worker" ]]; then
-  _COWPAT_FILE="$_HOS_DIR/test-clean/${ROLE}-${PROJECT}"
-  _CURRENT_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
-  _CLEAN_SHA=$(cat "$_COWPAT_FILE" 2>/dev/null || echo "")
-  _WORKTREE_DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || echo "")
-
-  if [[ -n "$_CURRENT_HEAD" && "$_CURRENT_HEAD" == "$_CLEAN_SHA" && -z "$_WORKTREE_DIRTY" ]]; then
-    # Known clean: HEAD unchanged since the last green baseline and no uncommitted
-    # files. Skip — Claude still runs tests before any PR (§8.7). No audit event:
-    # the steady-state skip fires every cycle and would flood the audit log.
-    echo "$LOG_PREFIX environment clean (HEAD ${_CURRENT_HEAD:0:12} matches cowpat) — skipping cycle-start baseline test run"
-  else
-    # Unknown or dirty state — no cowpat (first run), HEAD moved since the last
-    # green run, a dirty tree from a crashed cycle, or HEAD unresolvable. Run the
-    # baseline before Claude starts so it never builds on a broken tree.
-    if ! bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null; then
-      echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED"
-      _audit cycle-preflight-fail reason=inner_loop_tests_failed
-      # Broken-state flow (#789): rather than a silent exit, file a needs-human
-      # issue so a human can investigate/authorize a fix — the worker is halted
-      # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
-      # agent-availability guard: only file when the dedup query SUCCEEDS and
-      # confirms zero existing broken-state issues. A query error must never
-      # default the count to 0 — that would file a fresh issue every cycle and
-      # flood the queue. On query failure, skip filing; the next cycle whose
-      # query succeeds files once.
-      if [[ -n "$_REPO_SLUG" ]]; then
-        _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
-        if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
-            --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
-            2>/dev/null); then
-          _bs_existing="${_bs_existing:-0}"
-          if [[ "$_bs_existing" == "0" ]]; then
-            gh issue create \
-              --repo "$_REPO_SLUG" \
-              --title "${_bs_title_prefix} — worker halted" \
-              --label "needs-human,needs-ai" \
-              --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
-              2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
-              || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
-          else
-            echo "$LOG_PREFIX broken-state issue already open — not filing a duplicate"
-          fi
-        else
-          echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
-        fi
-      fi
-      exit 1
-    fi
-    # Baseline green — stamp the cowpat with the SHA just verified so the next
-    # cycle on an unchanged repo skips the redundant run. Only when HEAD resolved
-    # (a non-git or unresolvable REPO_ROOT leaves no marker → always re-runs).
-    [[ -n "$_CURRENT_HEAD" ]] && printf '%s\n' "$_CURRENT_HEAD" > "$_COWPAT_FILE"
-  fi
-fi
-
-# ── Worker: skip Claude if all own PRs are awaiting human merge (#791) ────────
+# ── Actionable-work gate (#1395) ──────────────────────────────────────────────
+# Everything below is a `gh api` call against GitHub, not local git state, so it
+# can run BEFORE git sync and (worker) the baseline test run — the two expensive,
+# memory-heavy steps this gate exists to skip on a cycle with nothing to do. This
+# machine runs multiple projects' worker/overseer cron cycles concurrently, and
+# paying for a full sync + baseline run on a cycle that turns out to be idle
+# anyway wastes memory shared with co-located cycles.
+#
+# A query failure is "unknown", never "empty" — it must never cause a skip on
+# its own (mirrors #915: a PR-fetch failure must not be misread as "no open
+# PRs"). Skipping on unknown state risks silently dropping real work; the
+# self-correction cost of NOT skipping on a transient blip is just this one
+# cycle's sync+baseline cost, which is exactly the cost this gate is allowed to
+# spend when it can't prove the cycle is idle.
 if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
-  _OPEN_PR_NUMS=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
-    --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | .number" 2>/dev/null || echo "")
+  # Milestone-less issues (Step 0 triage) — ANY open issue with no milestone,
+  # unfiltered by label (Step 0 triages everything regardless of label; that's
+  # the point of Step 0). Uses GitHub's `milestone=none` server-side filter,
+  # same as `bootstrap/query_issues.sh --list --milestone-less`.
+  if _GATE_MILESTONELESS=$(gh api "repos/${_REPO_SLUG}/issues?milestone=none&state=open&per_page=100" \
+      --jq '.[] | select(.pull_request == null) | .number' 2>/dev/null); then
+    _gate_milestoneless_ok=1
+  else
+    _gate_milestoneless_ok=0
+    _GATE_MILESTONELESS=""
+  fi
+
+  # Open release-request issues (#1347 NG3b — standing gate). Same query/jq as
+  # the "Open release requests (NG3b)" section of _build_context below; cached
+  # here so that section reuses this result instead of querying twice.
+  if _GATE_RELEASE_REQUESTS=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=release-request&per_page=100" \
+      --jq ".[] | select(.pull_request == null) | \"#\(.number) \(.title | .[0:70]) [\(.labels | map(.name) | join(\",\"))] assignees=\(.assignees | length)\"" \
+      2>/dev/null); then
+    _gate_release_requests_ok=1
+  else
+    _gate_release_requests_ok=0
+    _GATE_RELEASE_REQUESTS=""
+  fi
+
+  # Open bot PRs + routing (#791, #1198 Stage 0) — this is the EXACT block that
+  # used to live under "Worker: PR-routing decision authority", moved here
+  # verbatim (same variables `_PR_ROUTING` / `_OPEN_PR_NUMS`, same stdout
+  # messages, same overseer-wakeup side effect, same _audit calls) with only
+  # the PR-fetch's success/failure now explicitly distinguished (mirrors #915)
+  # so a fetch failure can't be misread as "no open PRs" by this new gate.
+  _PR_ROUTING=""
+  if _OPEN_PR_NUMS=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
+      --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | .number" 2>/dev/null); then
+    _gate_pr_fetch_ok=1
+  else
+    _gate_pr_fetch_ok=0
+    _OPEN_PR_NUMS=""
+  fi
   if [[ -n "$_OPEN_PR_NUMS" ]]; then
     _PR_ROUTING="awaiting-merge"
     while IFS= read -r _pr_num; do
@@ -643,16 +742,59 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       _pr_ap="${_pr_ap:-0}"
       if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
     done <<< "$_OPEN_PR_NUMS"
+
+    _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
     if [[ "$_PR_ROUTING" == "awaiting-merge" ]]; then
-      _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
-      echo "$LOG_PREFIX all ${_pr_count} open PR(s) awaiting human merge — skipping Claude launch"
+      echo "$LOG_PREFIX all ${_pr_count} open PR(s) awaiting human merge — new work blocked, Step 0 triage still runs (#1198)"
       _audit cycle-skip reason=awaiting-merge
+      # This wakeup normally gets overwritten by the unconditional
+      # "worker-cycle-complete" signal at the end of a successful run (Claude
+      # now always launches when there IS actionable work, #1198 item 3) — it's
+      # the signal of record only for the rarer case where the script exits
+      # before reaching that point (e.g. the #989 missing-prompt-file fatal exit).
       printf '{"reason":"worker-cycle-skip","project":"%s","timestamp":"%s"}\n' \
         "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         > "$_HOS_DIR/wakeup/overseer-${PROJECT}"
-      date +%s > "$_LAST_RUN_FILE"
-      exit 0
+    elif [[ "$_PR_ROUTING" == "needs-attention" ]]; then
+      echo "$LOG_PREFIX ${_pr_count} open PR(s) unreviewed — new work blocked, Step 0 triage still runs (#1198)"
+      _audit cycle-needs-attention "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
     fi
+  fi
+
+  # Next-candidate issues in the target milestone — cached for reuse by the
+  # "Next work candidates" section of _build_context below (same query, same
+  # jq filter — next_candidates.jq is the single source of truth, per its own
+  # header comment; querying it twice here would violate that).
+  _GATE_CANDIDATES=""
+  _gate_candidates_ok=1
+  if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
+    if _GATE_CANDIDATES=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" \
+        --jq "$(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
+        2>/dev/null); then
+      _gate_candidates_ok=1
+    else
+      _gate_candidates_ok=0
+      _GATE_CANDIDATES=""
+    fi
+  fi
+
+  # Skip only when every query that COULD reveal work actually succeeded AND
+  # came back empty. A single query failure means "unknown" — proceed rather
+  # than risk silently skipping real work over a transient API blip (last-run
+  # is stamped either way, so this isn't a busy-retry loop; the next fire just
+  # resolves the ambiguity fresh).
+  _gate_all_ok=1
+  [[ "$_gate_milestoneless_ok" -eq 1 ]] || _gate_all_ok=0
+  [[ "$_gate_release_requests_ok" -eq 1 ]] || _gate_all_ok=0
+  [[ "$_gate_pr_fetch_ok" -eq 1 ]] || _gate_all_ok=0
+  [[ "$_gate_candidates_ok" -eq 1 ]] || _gate_all_ok=0
+
+  if [[ "$_gate_all_ok" -eq 1 && -z "$_GATE_MILESTONELESS" && -z "$_GATE_RELEASE_REQUESTS" \
+        && -z "$_OPEN_PR_NUMS" && -z "$_GATE_CANDIDATES" ]]; then
+    echo "$LOG_PREFIX no actionable work (no milestone-less issues, no release requests, no open PRs, no next-work candidates) — skipping before git sync (#1395)"
+    _audit cycle-skip reason=no_actionable_work
+    date +%s > "$_LAST_RUN_FILE"
+    exit 0
   fi
 fi
 
@@ -667,11 +809,9 @@ if [[ "$ROLE" == "overseer" ]]; then
   # Capture gh's exit status separately from its output (#915). A bare
   # `$(... || true)` swallows a transient API failure into an empty result,
   # which the empty-check below would misread as "no open PRs" — masking the
-  # cause (logged as reason=no_open_prs), stamping _LAST_RUN_FILE and thereby
-  # arming the 1800s idle backoff, so pending review/merge work is dropped for
-  # up to 30 min on an API blip. Treat empty as "no PRs" ONLY when the fetch
-  # succeeded; on failure do NOT stamp last-run (so the next cycle retries
-  # immediately) and exit with a distinct reason. (Idle-backoff family: #711.)
+  # cause (logged as reason=no_open_prs). Treat empty as "no PRs" ONLY when the
+  # fetch succeeded; on failure do NOT stamp last-run (so the next cycle
+  # retries immediately) and exit with a distinct reason. (#711, #1196.)
   if _open_pr_nums=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
       --jq '.[].number' 2>/dev/null); then
     _pr_fetch_ok=1
@@ -679,7 +819,7 @@ if [[ "$ROLE" == "overseer" ]]; then
     _pr_fetch_ok=0
   fi
   if [[ "$_pr_fetch_ok" -eq 0 ]]; then
-    echo "$LOG_PREFIX open-PR fetch failed — skipping cycle without arming idle backoff"
+    echo "$LOG_PREFIX open-PR fetch failed — skipping cycle without stamping last-run"
     _audit cycle-skip reason=pr_fetch_unavailable
     exit 0
   fi
@@ -713,9 +853,191 @@ if [[ "$ROLE" == "overseer" ]]; then
   echo "$LOG_PREFIX actionable: ${_HOS_ACTIONABLE_PRS} | skipped: ${_HOS_SKIPPED_PRS:-none}"
 fi
 
+# ── Git sync ──────────────────────────────────────────────────────────────────
+# Fetch the default refspec (not just `main`) — a single-ref `fetch origin main`
+# only prunes refs within that same explicit refspec, so a feature branch's
+# remote-tracking ref would never be pruned and #1044's "upstream gone" check
+# below would never fire.
+git -C "$REPO_ROOT" fetch origin --prune --quiet 2>/dev/null || true
+
+# #1044: return to main once a feature branch's PR has merged (its remote branch
+# is now gone). Without this the checkout never leaves the branch it just built
+# work on, and the #996 guard below — which must test `main` itself, not
+# whatever HEAD happens to be parked on — would have nothing meaningful to
+# reconcile. A branch whose PR is still open keeps its upstream and is left
+# alone; a dirty/conflicting working tree leaves HEAD as-is (nothing is
+# force-discarded). Local branch cleanup is a separate concern (#1044 scope note).
+_cur_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+if [[ -n "$_cur_branch" && "$_cur_branch" != "main" ]] \
+   && git -C "$REPO_ROOT" show-ref --verify --quiet refs/heads/main \
+   && ! git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  if git -C "$REPO_ROOT" checkout --quiet main 2>/dev/null; then
+    echo "$LOG_PREFIX returned to main from '$_cur_branch' (upstream gone — merged & pruned) (#1044)"
+  else
+    echo "$LOG_PREFIX could not return to main from '$_cur_branch' (dirty tree?) — leaving HEAD as-is"
+  fi
+fi
+
+# #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
+# between a session's commit and push can strand a stray commit on main; from
+# then on every fast-forward fails and silently discarding it would let the
+# worker keep cutting branches from a drifting base with no signal at all.
+# Tested against the local `main` branch itself — not HEAD, which may be parked
+# on an unrelated feature branch (#1044) — using patch-id equivalence
+# (`git cherry`) so a squash-merged commit (same content, new SHA on
+# origin/main) is never misread as a stray local commit.
+# `grep -c` already prints "0" on no-match but exits 1 — guard with `|| true`,
+# not `|| echo 0`, or the fallback appends a second "0" line and breaks the
+# numeric comparison below.
+_stray=$(git -C "$REPO_ROOT" cherry origin/main main 2>/dev/null | grep -c '^+' || true)
+if [[ "${_stray:-0}" -gt 0 ]]; then
+  echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_stray} local commit(s) on main with no upstream-equivalent (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" cherry -v origin/main main"
+  _audit cycle-preflight-fail reason=local_main_diverged stray="${_stray}"
+  exit 0
+fi
+# main carries nothing origin/main doesn't already have (by content) — safe to
+# bring it to origin/main's tip, whether or not HEAD is currently on main.
+if [[ "$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")" == "main" ]]; then
+  # #1393: only treat a failed fast-forward as meaningful when origin/main
+  # actually exists — an unconfigured/test-fixture repo with no remote fails
+  # this merge trivially and must not be mistaken for a real sync problem.
+  # When origin/main does exist, a failure here means the working tree is
+  # genuinely dirty or diverged in a way the #996 stray-commit check above
+  # didn't catch (that check only looks at committed history, not uncommitted
+  # tracked-file changes) — masking it with `|| true` would let the cycle
+  # proceed and build against a stale main with no signal anywhere.
+  if git -C "$REPO_ROOT" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+    if ! git -C "$REPO_ROOT" merge --ff-only --quiet origin/main 2>/dev/null; then
+      echo "$LOG_PREFIX ⚠ local main could not fast-forward to origin/main (dirty tree or unresolved divergence) — skipping cycle fail-closed (#1393); inspect: git -C \"$REPO_ROOT\" status"
+      _audit cycle-preflight-fail reason=local_main_ff_only_failed
+      exit 0
+    fi
+  fi
+else
+  git -C "$REPO_ROOT" update-ref refs/heads/main refs/remotes/origin/main 2>/dev/null || true
+fi
+
+# ── Inner-loop baseline (worker only) — skip when repo is known-clean (#789) ──
+# Cycle-start tests exist to establish a known-good baseline before Claude touches
+# the repo, catching a broken tree left by a previously-crashed cycle. That only
+# has value when state is UNKNOWN. When HEAD matches the last SHA at which the
+# baseline passed (the "cowpat") and the worktree is clean, nothing has changed
+# since the last green run — skip the redundant ~2–3 min suite. The pre-PR §8.7
+# gate (Claude runs tests against its own changes before any PR) is unchanged and
+# is the real safety net; this only trims the redundant cycle-start run.
+if [[ "$ROLE" == "worker" ]]; then
+  _COWPAT_FILE="$_HOS_DIR/test-clean/${ROLE}-${PROJECT}"
+  _CURRENT_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+  _CLEAN_SHA=$(cat "$_COWPAT_FILE" 2>/dev/null || echo "")
+  _WORKTREE_DIRTY=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || echo "")
+
+  if [[ -n "$_CURRENT_HEAD" && "$_CURRENT_HEAD" == "$_CLEAN_SHA" && -z "$_WORKTREE_DIRTY" ]]; then
+    # Known clean: HEAD unchanged since the last green baseline and no uncommitted
+    # files. Skip — Claude still runs tests before any PR (§8.7). No audit event:
+    # the steady-state skip fires every cycle and would flood the audit log.
+    echo "$LOG_PREFIX environment clean (HEAD ${_CURRENT_HEAD:0:12} matches cowpat) — skipping cycle-start baseline test run"
+  else
+    # Unknown or dirty state — no cowpat (first run), HEAD moved since the last
+    # green run, a dirty tree from a crashed cycle, or HEAD unresolvable. Run the
+    # baseline before Claude starts so it never builds on a broken tree.
+    _bs_exit=0
+    bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null || _bs_exit=$?
+    _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
+    _bs_repair_state="$_HOS_DIR/baseline-repair/${ROLE}-${PROJECT}"
+    if [[ "$_bs_exit" -ne 0 ]]; then
+      echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED (exit $_bs_exit)"
+      _audit cycle-preflight-fail "reason=inner_loop_tests_failed exit=$_bs_exit"
+
+      # #959: an unconditional halt deadlocks any project whose baseline isn't
+      # already green — the worker can never fix the very tests that block it.
+      # Classify instead: pytest exit 1 means tests were collected and RAN —
+      # ordinary, fixable assertion failures, no different from any other
+      # backlog bug. Any other nonzero exit (2=collection/session error,
+      # 3=internal error, 4=usage error, 5=no tests collected) means the
+      # environment itself is broken; the worker cannot fix infrastructure, so
+      # those always halt regardless of repair mode. Opt-in via
+      # <project>_baseline_on_red=repair in projects.conf — default stays
+      # "halt" (unchanged behavior) so existing installs are unaffected.
+      _bs_mode="$(_conf_val baseline_on_red)"; _bs_mode="${_bs_mode:-halt}"
+      _bs_halt=1
+      if [[ "$_bs_mode" == "repair" && "$_bs_exit" -eq 1 ]]; then
+        _bs_max="${HOS_BASELINE_REPAIR_MAX_ATTEMPTS:-3}"
+        _bs_attempts=$(( $(cat "$_bs_repair_state" 2>/dev/null || echo 0) + 1 ))
+        if [[ "$_bs_attempts" -le "$_bs_max" ]]; then
+          _bs_halt=0
+          mkdir -p "$(dirname "$_bs_repair_state")"
+          printf '%s\n' "$_bs_attempts" > "$_bs_repair_state"
+          export HOS_BASELINE_REPAIR_ACTIVE=1
+          export HOS_BASELINE_REPAIR_ATTEMPT="${_bs_attempts}/${_bs_max}"
+          echo "$LOG_PREFIX baseline repair mode: attempt ${_bs_attempts}/${_bs_max} — this cycle is scoped to the failing baseline, no new backlog"
+          _audit cycle-baseline-repair "attempt=${_bs_attempts}/${_bs_max}"
+        else
+          echo "$LOG_PREFIX baseline repair exhausted after ${_bs_attempts} attempts without a green baseline — escalating to human"
+        fi
+      fi
+
+      if [[ "$_bs_halt" -eq 1 ]]; then
+        # Broken-state flow (#789): rather than a silent exit, file a needs-human
+        # issue so a human can investigate/authorize a fix — the worker is halted
+        # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
+        # agent-availability guard: only file when the dedup query SUCCEEDS and
+        # confirms zero existing broken-state issues. A query error must never
+        # default the count to 0 — that would file a fresh issue every cycle and
+        # flood the queue. On query failure, skip filing; the next cycle whose
+        # query succeeds files once.
+        if [[ -n "$_REPO_SLUG" ]]; then
+          if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+              --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
+              2>/dev/null); then
+            _bs_existing="${_bs_existing:-0}"
+            if [[ "$_bs_existing" == "0" ]]; then
+              gh issue create \
+                --repo "$_REPO_SLUG" \
+                --title "${_bs_title_prefix} — worker halted" \
+                --label "needs-human,needs-ai" \
+                --body "$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. The worker is halted — it will not launch Claude or open PRs until the baseline is green.\n\nThis usually means a previous cycle left the repo in a broken state. A human should investigate, fix or revert the breakage, and close this issue (or authorize an AI fix).\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}")" \
+                2>/dev/null && echo "$LOG_PREFIX filed broken-state needs-human issue" \
+                || echo "$LOG_PREFIX WARN: broken-state issue filing failed"
+            else
+              echo "$LOG_PREFIX broken-state issue already open — not filing a duplicate"
+            fi
+          else
+            echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+          fi
+        fi
+        exit 1
+      fi
+      # Repair mode absorbed the failure above (fell through instead of exiting)
+      # — do NOT stamp the cowpat below; the baseline is still red.
+    else
+      # Baseline green — reset any standing repair-attempt counter and
+      # auto-close a standing [BLOCKED] issue (#959): the steady state must not
+      # stay "permanently parked + stale human issue" once the tree recovers.
+      rm -f "$_bs_repair_state"
+      if [[ -n "$_REPO_SLUG" ]]; then
+        if _bs_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+            --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | .[].number" \
+            2>/dev/null); then
+          while IFS= read -r _bs_num; do
+            [[ -z "$_bs_num" ]] && continue
+            gh issue close "$_bs_num" --repo "$_REPO_SLUG" \
+              --comment "Baseline is green again at HEAD \`${_CURRENT_HEAD:-unknown}\` — auto-closing." \
+              2>/dev/null && echo "$LOG_PREFIX auto-closed broken-state issue #${_bs_num}" \
+              || echo "$LOG_PREFIX WARN: failed to auto-close broken-state issue #${_bs_num}"
+          done <<< "$_bs_open_nums"
+        fi
+      fi
+      # Stamp the cowpat with the SHA just verified so the next cycle on an
+      # unchanged repo skips the redundant run. Only when HEAD resolved (a
+      # non-git or unresolvable REPO_ROOT leaves no marker → always re-runs).
+      [[ -n "$_CURRENT_HEAD" ]] && printf '%s\n' "$_CURRENT_HEAD" > "$_COWPAT_FILE"
+    fi
+  fi
+fi
+
 
 # ── Cycle start ───────────────────────────────────────────────────────────────
-_audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT"
+_audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT cycle_id=$HOS_CYCLE_ID"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 
 # ── Per-fire bounds (#728 Task 2) ─────────────────────────────────────────────
@@ -723,13 +1045,13 @@ echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 # a hung/runaway autonomous session could burn it. The always-on bound is a
 # WALL-CLOCK timeout — it kills a stuck session without truncating legitimate
 # turn-by-turn pipeline work (a low --max-turns would leave a half-done task).
-#   HOS_CRON_MAX_SECONDS  wall-clock cap (default 1800 = 30m); 0 disables.
+#   HOS_CRON_MAX_SECONDS  wall-clock cap (default 1800 = 30m); 0 disables. Resolved
+#                         (flag/env/conf/default, #1434) well above — see there.
 #   HOS_CRON_MAX_TURNS    optional --max-turns backstop (default unset = no cap).
 # NOTE: --allowedTools is intentionally NOT set. The worker dispatches sub-agents
 # (architect/coder/reviewers) and edits files; CLI-level tool restriction is the
 # wrong layer and would silently break autonomous work. Tool scope is governed by
 # the agent definitions and the LOOP prompt, not the launcher.
-HOS_CRON_MAX_SECONDS="${HOS_CRON_MAX_SECONDS:-1800}"
 # Portable timeout (GNU `timeout` absent on macOS; `gtimeout` via coreutils)
 if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
 elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"
@@ -743,12 +1065,35 @@ else _TIMEOUT_BIN=""; fi
 # as root and needs a separate enable flag (friction on unattended Linux servers).
 _claude_cmd=("$CLAUDE_BIN" --print --permission-mode bypassPermissions)
 [[ -n "${HOS_CRON_MAX_TURNS:-}" ]] && _claude_cmd+=(--max-turns "$HOS_CRON_MAX_TURNS")
+# #1446: fixed-path capture of claude's own stdout, rewritten in full on every
+# run (`tee` truncates by default — no `-a`) so the usage-limit breaker below
+# can grep the current cycle's output only, never a growing log (human ruling
+# in the issue: mirror sync_human_clone.sh's write_status() overwrite pattern).
+_CLAUDE_OUTPUT_CAPTURE="$_HOS_DIR/last-claude-output/${ROLE}-${PROJECT}"
 _run_claude() {  # stdin is inherited → passed through to claude
+  # #1126: claude's `.claude/agents/*.md` custom-subagent discovery is
+  # cwd-based at process start — NOT derived from the "WORKING DIRECTORY:"
+  # text injected into the prompt below. Without this `cd`, the process
+  # inherits cron's own launch cwd (unrelated to $REPO_ROOT), so the worker
+  # can dispatch none of its 26 shipped agents and silently falls back to
+  # built-ins (claude/Explore/general-purpose/Plan/statusline-setup) — the
+  # exact specialist-substitution the #608/#609 governance finding forbids.
+  # Scoped to a subshell (matches `_audit`'s `(cd "$REPO_ROOT" && ...)`
+  # pattern above) so it never perturbs the launcher's own cwd.
+  #
+  # #1446: `tee` streams the real output through unchanged (nothing is
+  # silenced) while also capturing it to $_CLAUDE_OUTPUT_CAPTURE. `tee`'s own
+  # exit code is always 0 and would otherwise mask a real claude/timeout
+  # failure, so the function's return value is taken explicitly from
+  # PIPESTATUS[0] (the left-hand side of the pipe) rather than trusted to
+  # `$?` after the pipeline.
   if [[ -n "$_TIMEOUT_BIN" && "$HOS_CRON_MAX_SECONDS" != "0" ]]; then
-    "$_TIMEOUT_BIN" "$HOS_CRON_MAX_SECONDS" "${_claude_cmd[@]}"
+    (cd "$REPO_ROOT" && "$_TIMEOUT_BIN" "$HOS_CRON_MAX_SECONDS" "${_claude_cmd[@]}") | tee "$_CLAUDE_OUTPUT_CAPTURE"
+    return "${PIPESTATUS[0]}"
   else
     [[ -z "$_TIMEOUT_BIN" ]] && echo "$LOG_PREFIX WARN: no timeout/gtimeout — claude runs unbounded"
-    "${_claude_cmd[@]}"
+    (cd "$REPO_ROOT" && "${_claude_cmd[@]}") | tee "$_CLAUDE_OUTPUT_CAPTURE"
+    return "${PIPESTATUS[0]}"
   fi
 }
 
@@ -779,6 +1124,20 @@ _build_prompt() {
 _build_context() {
   printf '\n## Pre-computed cycle context — %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
+  # #959: when the cycle-start baseline was red but repair mode absorbed it
+  # (see the inner-loop baseline block above) instead of halting, this cycle
+  # must not pick up new backlog — it must fix the failing baseline first.
+  if [[ "${HOS_BASELINE_REPAIR_ACTIVE:-0}" == "1" ]]; then
+    printf '### ⚠ BASELINE REPAIR MODE — attempt %s (#959)\n\n' "${HOS_BASELINE_REPAIR_ATTEMPT:-?}"
+    printf 'The cycle-start inner-loop baseline is RED (ordinary assertion failures,\n'
+    printf 'not an environmental error — those always halt instead of reaching this mode).\n'
+    printf 'This cycle is scoped to making `bash scripts/framework/run_tests_inner_loop.sh`\n'
+    printf 'pass again — do not pick up Step 2 backlog work until it is green. Treat the\n'
+    printf 'failing tests as this cycle'"'"'s only work item, fix them, then run Step 4\n'
+    printf '(tests + validators) and open a PR as usual. If repair attempts are exhausted\n'
+    printf 'without reaching green, the launcher escalates to a needs-human issue automatically.\n\n'
+  fi
+
   printf '### Open bot PRs\n'
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
     _ctx_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
@@ -795,6 +1154,48 @@ _build_context() {
 
   printf '\n'
 
+  # #1347 Amendment 1 (NG3b): a standing gate, not new work — the worker must
+  # evaluate open release-request issues every cycle regardless of the "New
+  # work directive" below (which only gates *new* backlog work), so this
+  # section renders first. Fail-open like the rest of this function: if the
+  # fetch fails the section reads "None." and the release simply waits
+  # another cycle (a latency cost only) — this context block can never
+  # *authorize* a release, since the worker's actual authorization check
+  # (NG3b step R5) re-reads issue state/labels/events live from the API and
+  # never trusts what is precomputed here.
+  if [[ "${ROLE:-}" == "worker" && -n "${_REPO_SLUG:-}" ]]; then
+    printf '### Open release requests (NG3b)\n'
+    if [[ -n "${_GATE_RELEASE_REQUESTS:-}" ]]; then
+      printf '%s\n' "$_GATE_RELEASE_REQUESTS"
+    else
+      printf 'None.\n'
+    fi
+    printf '\n'
+  fi
+
+  if [[ "${ROLE:-}" == "worker" ]]; then
+    printf '### New work directive (#1198) — single decision authority; obey, do not re-derive\n'
+    if [[ -n "${_OPEN_PR_NUMS:-}" ]]; then
+      _ctx_pr_list="$(printf '%s' "$_OPEN_PR_NUMS" | tr '\n' ',' | sed 's/,$//; s/,/, #/g')"
+      printf 'NEW WORK: BLOCKED\n'
+      printf 'Reason: routing=%s for open PR(s) #%s. ' "${_PR_ROUTING:-unknown}" "${_ctx_pr_list:-?}"
+      case "${_PR_ROUTING:-}" in
+        needs-fix)
+          printf 'At least one PR has CHANGES_REQUESTED or is conflicting — fix and push, then STOP.\n' ;;
+        awaiting-merge)
+          printf 'All open PRs are approved/clean, awaiting a human merge — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
+        needs-attention)
+          printf 'At least one PR is open and not yet reviewed — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
+        *)
+          printf 'STOP — do not proceed to Step 2.\n' ;;
+      esac
+    else
+      printf 'NEW WORK: ALLOWED\n'
+      printf 'Reason: no open PRs authored by this worker.\n'
+    fi
+    printf '\n'
+  fi
+
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
     printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"
     # #901: order by (priority desc, number asc) via the canonical jq filter so
@@ -804,11 +1205,8 @@ _build_context() {
     # milestone exceeding 100 open needs-ai issues is the (documented) ceiling.
     # Fail-open: a missing/broken filter yields no section. head -5 caps display
     # only — the worker picks the first non-blocked candidate.
-    _ctx_issues=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" \
-      --jq "$(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
-      2>/dev/null | head -5 || echo "")
-    if [[ -n "$_ctx_issues" ]]; then
-      printf '%s\n' "$_ctx_issues"
+    if [[ -n "${_GATE_CANDIDATES:-}" ]]; then
+      printf '%s\n' "$_GATE_CANDIDATES" | head -5
     else
       printf '(none available or fetch failed)\n'
     fi
@@ -839,17 +1237,169 @@ fi
 if [[ $_claude_exit -eq 124 ]]; then
   echo "$LOG_PREFIX claude TIMED OUT after ${HOS_CRON_MAX_SECONDS}s — session killed (no last-run written; will retry next fire)"
   _audit cycle-claude-timeout "limit=$HOS_CRON_MAX_SECONDS"
+
+  # #1435: a work item that cannot finish inside the cap becomes a
+  # token-burning loop — each fire spends a full session, is killed at the
+  # ceiling, discards its work, and the next fire starts over. Trip a breaker
+  # after HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS consecutive exit=124s AT AN
+  # UNCHANGED CAP. A cap change is a legitimate operator response (human
+  # ruling 2, not a blind retry) — it resets the counter instead of tripping,
+  # so raising --max-seconds is never a trap.
+  _tb_state="$_HOS_DIR/timeout-breaker/${ROLE}-${PROJECT}"
+  _tb_max="${HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS:-2}"
+  _tb_prev_attempts=0 _tb_prev_cap=""
+  if [[ -f "$_tb_state" ]]; then
+    _tb_prev_attempts="$(sed -n '1p' "$_tb_state" 2>/dev/null || echo 0)"
+    _tb_prev_cap="$(sed -n '2p' "$_tb_state" 2>/dev/null || echo "")"
+  fi
+  if [[ "$_tb_prev_cap" == "$HOS_CRON_MAX_SECONDS" ]]; then
+    _tb_attempts=$(( _tb_prev_attempts + 1 ))
+  else
+    _tb_attempts=1
+  fi
+  printf '%s\n%s\n' "$_tb_attempts" "$HOS_CRON_MAX_SECONDS" > "$_tb_state"
+
+  if [[ "$_tb_attempts" -ge "$_tb_max" ]]; then
+    echo "$LOG_PREFIX TIMEOUT BREAKER TRIPPED — ${_tb_attempts} consecutive timeouts at ${HOS_CRON_MAX_SECONDS}s cap — suspending project '$PROJECT'"
+    _tb_reason="${ROLE} timed out ${_tb_attempts} consecutive cycles at ${HOS_CRON_MAX_SECONDS}s (exit 124); raise with --max-seconds, split the work item, or fix the cause"
+    if bash "$_HOS_CRON_DIR/hos-suspend" --project "$PROJECT" --reason "$_tb_reason" >/dev/null 2>&1; then
+      echo "$LOG_PREFIX suspended project '$PROJECT' via hos-suspend (no --until — requires explicit --clear, a cap change, or a successful cycle)"
+    else
+      echo "$LOG_PREFIX WARN: hos-suspend call failed — project NOT suspended, manual action required"
+    fi
+    _audit cycle-timeout-breaker-tripped "role=$ROLE cap=$HOS_CRON_MAX_SECONDS attempts=$_tb_attempts"
+
+    # Surface the trip as a needs-human issue too — the suspension marker
+    # alone is discoverable only via `hos-suspend --list`; this makes it
+    # visible in the normal issue queue. Fail-closed dedup mirrors #789/#849:
+    # only file when the query SUCCEEDS and confirms zero already-open
+    # breaker issues — a query error must never default to "none open" and
+    # flood the queue.
+    if [[ -n "$_REPO_SLUG" ]]; then
+      if _tb_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+          --jq "[.[] | select(.title | startswith(\"${_TIMEOUT_BREAKER_TITLE_PREFIX}\"))] | length" \
+          2>/dev/null); then
+        _tb_existing="${_tb_existing:-0}"
+        if [[ "$_tb_existing" == "0" ]]; then
+          gh issue create \
+            --repo "$_REPO_SLUG" \
+            --title "${_TIMEOUT_BREAKER_TITLE_PREFIX} — worker halted" \
+            --label "needs-human,needs-ai" \
+            --body "$(printf '`%s` timed out %s consecutive cycles at a %ss cap (exit 124). Each fire spent a full session, was killed at the cap, and discarded its work with no output — the project has been suspended via `hos-suspend` to stop the burn.\n\nA human should investigate the cause, then either:\n\n- raise the cap (`--max-seconds <N>` flag, or `%s_max_seconds` in projects.conf) if the work genuinely needs more time, or\n- split the work item so it fits inside the existing cap, or\n- fix the underlying hang.\n\nResume with:\n\n    hos-suspend --project %s --clear\n' "$ROLE" "$_tb_attempts" "$HOS_CRON_MAX_SECONDS" "$PROJECT" "$PROJECT")" \
+            2>/dev/null && echo "$LOG_PREFIX filed timeout-breaker needs-human issue" \
+            || echo "$LOG_PREFIX WARN: timeout-breaker issue filing failed"
+        else
+          echo "$LOG_PREFIX timeout-breaker issue already open — not filing a duplicate"
+        fi
+      else
+        echo "$LOG_PREFIX WARN: timeout-breaker dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+      fi
+    fi
+  else
+    echo "$LOG_PREFIX timeout breaker: attempt ${_tb_attempts}/${_tb_max} at ${HOS_CRON_MAX_SECONDS}s cap"
+  fi
 elif [[ $_claude_exit -ne 0 ]]; then
   echo "$LOG_PREFIX claude exited $_claude_exit — if auth-related, refresh the token: 'claude setup-token' → $_CLAUDE_AUTH_ENV"
   _audit cycle-claude-fail "exit=$_claude_exit"
 fi
 
+# #1446: usage-limit breaker — a genuine Claude usage-limit refusal, detected
+# in the session's own captured output. Independent of $_claude_exit (checked
+# regardless of exit code, unlike the two branches above): a refusal can
+# surface in the transcript whether or not the overall session happens to
+# exit 0. Trips immediately on the FIRST detection — unlike the timeout
+# breaker's consecutive-attempt counter, a genuine usage-limit refusal is a
+# hard signal from Anthropic's side, not something that benefits from a
+# second confirmation. The regex is deliberately broad and case-insensitive:
+# exact headless (`--print`) wording is undocumented, and research turned up
+# multiple known interactive phrasings — a missed match (false negative) is
+# the safe failure direction, it just means the breaker doesn't trip.
+if [[ -f "$_CLAUDE_OUTPUT_CAPTURE" ]] \
+    && grep -qiE 'usage limit reached|hit your (session|weekly|opus) limit' "$_CLAUDE_OUTPUT_CAPTURE"; then
+  echo "$LOG_PREFIX USAGE LIMIT BREAKER TRIPPED — claude session hit a usage-limit refusal — suspending project '$PROJECT'"
+  _audit cycle-usage-limit-breaker-tripped "role=$ROLE"
+
+  _ul_reason="${ROLE} hit a Claude usage-limit refusal mid-cycle — pausing to leave headroom for interactive use"
+  if bash "$_HOS_CRON_DIR/hos-suspend" --project "$PROJECT" --reason "$_ul_reason" >/dev/null 2>&1; then
+    echo "$LOG_PREFIX suspended project '$PROJECT' via hos-suspend (no --until — requires explicit --clear)"
+  else
+    echo "$LOG_PREFIX WARN: hos-suspend call failed — project NOT suspended, manual action required"
+  fi
+
+  # Surface the trip as a needs-human issue too — same fail-closed dedup
+  # reasoning as the timeout breaker above (#1435/#849): only file when the
+  # query SUCCEEDS and confirms zero already-open breaker issues.
+  if [[ -n "$_REPO_SLUG" ]]; then
+    if _ul_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+        --jq "[.[] | select(.title | startswith(\"${_USAGE_LIMIT_BREAKER_TITLE_PREFIX}\"))] | length" \
+        2>/dev/null); then
+      _ul_existing="${_ul_existing:-0}"
+      if [[ "$_ul_existing" == "0" ]]; then
+        gh issue create \
+          --repo "$_REPO_SLUG" \
+          --title "${_USAGE_LIMIT_BREAKER_TITLE_PREFIX} — worker halted" \
+          --label "needs-human,needs-ai" \
+          --body "$(printf '`%s` hit a Claude usage-limit refusal mid-cycle — the session'"'"'s own output matched a known usage-limit phrasing (captured at `%s`). The project has been suspended via `hos-suspend` so a human always has headroom left, rather than continuing to fail forward against the same limit.\n\nOnce the limit has reset, resume with:\n\n    hos-suspend --project %s --clear\n' "$ROLE" "$_CLAUDE_OUTPUT_CAPTURE" "$PROJECT")" \
+            2>/dev/null && echo "$LOG_PREFIX filed usage-limit-breaker needs-human issue" \
+            || echo "$LOG_PREFIX WARN: usage-limit-breaker issue filing failed"
+      else
+        echo "$LOG_PREFIX usage-limit-breaker issue already open — not filing a duplicate"
+      fi
+    else
+      echo "$LOG_PREFIX WARN: usage-limit-breaker dedup query failed — skipping issue creation (fail-closed) to avoid duplicate filings"
+    fi
+  fi
+fi
+
 # ── Post-cycle bookkeeping ────────────────────────────────────────────────────
 if [[ $_claude_exit -eq 0 ]]; then
+  # #1435: a normally-completing cycle clears the timeout-breaker counter and
+  # auto-closes any standing breaker issue — the steady state must not stay
+  # "permanently suspended + stale human issue" once the cause is fixed.
+  # Mirrors the #959 baseline-green auto-close pattern above.
+  _tb_state="$_HOS_DIR/timeout-breaker/${ROLE}-${PROJECT}"
+  if [[ -f "$_tb_state" ]]; then
+    rm -f "$_tb_state"
+    if [[ -n "${_REPO_SLUG:-}" ]]; then
+      if _tb_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+          --jq "[.[] | select(.title | startswith(\"${_TIMEOUT_BREAKER_TITLE_PREFIX}\"))] | .[].number" \
+          2>/dev/null); then
+        while IFS= read -r _tb_num; do
+          [[ -z "$_tb_num" ]] && continue
+          gh issue close "$_tb_num" --repo "$_REPO_SLUG" \
+            --comment "Cycle completed normally — auto-closing the timeout-breaker issue." \
+            2>/dev/null && echo "$LOG_PREFIX auto-closed timeout-breaker issue #${_tb_num}" \
+            || echo "$LOG_PREFIX WARN: failed to auto-close timeout-breaker issue #${_tb_num}"
+        done <<< "$_tb_open_nums"
+      fi
+    fi
+  fi
+
+  # #1446: symmetry with the timeout-breaker auto-close above — a normally
+  # completing cycle auto-closes any standing usage-limit-breaker issue.
+  # There is no counter file to clear here (v1 trips on first detection, no
+  # attempt counter), so this is a plain unconditional query, not gated on a
+  # state file's presence. In practice this rarely fires: hos-suspend blocks
+  # the *next* cycle from ever reaching claude again until a human clears the
+  # suspend marker, so the ordinary path is a human closing the issue by hand
+  # when they clear it. This covers the case where the marker was cleared
+  # directly without also closing the issue.
+  if [[ -n "${_REPO_SLUG:-}" ]]; then
+    if _ul_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+        --jq "[.[] | select(.title | startswith(\"${_USAGE_LIMIT_BREAKER_TITLE_PREFIX}\"))] | .[].number" \
+        2>/dev/null); then
+      while IFS= read -r _ul_num; do
+        [[ -z "$_ul_num" ]] && continue
+        gh issue close "$_ul_num" --repo "$_REPO_SLUG" \
+          --comment "Cycle completed normally — auto-closing the usage-limit-breaker issue." \
+          2>/dev/null && echo "$LOG_PREFIX auto-closed usage-limit-breaker issue #${_ul_num}" \
+          || echo "$LOG_PREFIX WARN: failed to auto-close usage-limit-breaker issue #${_ul_num}"
+      done <<< "$_ul_open_nums"
+    fi
+  fi
   date +%s > "$_LAST_RUN_FILE"
-  # If work was done this cycle, drop a self-wakeup so the next cron fire bypasses
-  # the idle backoff and picks up any remaining items without waiting IDLE_INTERVAL.
-  # Reuses the existing wakeup mechanism — no new file type needed.
+  # If work was done this cycle, drop a self-wakeup for traceability (#1196 kept
+  # the wakeup mechanism after removing the idle backoff it used to bypass).
   _did_work=0
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
     _run_start_iso=$(python3 -c "

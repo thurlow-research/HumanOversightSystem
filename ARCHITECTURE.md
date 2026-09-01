@@ -449,7 +449,7 @@ flowchart LR
 
 ## Agent File Composition: CORE / PACK / PROJECT Layers
 
-Every agent file installed into a consumer project is assembled from up to three marker-delimited regions, written in canonical order — CORE first, then PACK (alphabetical when multiple packs are selected), then PROJECT last. This order is intentional: recency precedence means each subsequent layer can override the one before it, so PROJECT instructions beat PACK beat CORE. `compose()` in `regions.py` is the only writer; it always produces this order regardless of injection order.
+Every agent file installed into a consumer project is assembled from up to three marker-delimited regions, written in canonical order — CORE first, then PACK (in dependency-closure order when multiple packs are selected: base packs before their dependents), then PROJECT last. This order is intentional: recency precedence means each subsequent layer can override the one before it, so PROJECT instructions beat PACK beat CORE, and a dependent pack's instructions beat its base pack's. `compose()` in `regions.py` is the only writer; it preserves CORE/PACK/PROJECT bucketing but keeps PACK regions in the order they were injected, so the installer's injection order (dependency-closure order, deps-first — R2c) is what determines PACK-to-PACK precedence.
 
 **CORE** is the HOS-authored generic role instruction — the baseline that ships with every install and is identical across all consumer projects. **PACK** is the HOS-authored stack-depth layer: `packs/<name>/<agent>.md` contains the raw region body that `inject-pack` appends to the staged CORE template before the three-way merge runs. A pack only deepens the agents it has body files for — an agent with no file in `packs/<name>/` stays CORE-only. **PROJECT** is the consumer-owned customization region — it is never written by the installer (the PROJECT-never-written invariant), only read and preserved. This is what lets the consumer extend or override agent behavior without those edits being clobbered on upgrade.
 
@@ -465,7 +465,7 @@ flowchart TB
     subgraph STAGE["A1 staging (per agent, per install)"]
         direction LR
         SUB["perl substitutes\nplaceholders into CORE\n(CORE only — D6)"] --> WRAP["flat-wrap if needed\n(migrate to CORE region)"]
-        WRAP --> INJ["regions.py inject-pack\n(appends PACK:&lt;name&gt; region;\ncompose re-sorts alphabetically)"]
+        WRAP --> INJ["regions.py inject-pack\n(appends PACK:&lt;name&gt; region;\ncompose keeps injection order)"]
     end
 
     subgraph INSTALLED["Installed agent file (.claude/agents/&lt;agent&gt;.md)"]

@@ -251,6 +251,50 @@ def test_install_multipack_warns(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# PACK conflict advisory (#1081 Option 3, #1117)
+# --------------------------------------------------------------------------- #
+
+
+
+@pytest.mark.slow
+def test_install_pack_conflict_advisory_warns_but_does_not_abort(tmp_path):
+    """Two co-installed PACK bodies with an explicit negation vs. recommendation
+    for the same term → advisory WARNING printed, but the install still succeeds
+    (exit 0) and both PACK regions land — the check is heuristic-advisory only,
+    never blocking."""
+    target = _git_init_target(tmp_path)
+
+    pack_a_dir = ROOT / "packs" / "testpack-conflict-a"
+    pack_b_dir = ROOT / "packs" / "testpack-conflict-b"
+    pack_a_dir.mkdir(exist_ok=True)
+    pack_b_dir.mkdir(exist_ok=True)
+    (pack_a_dir / "pack.toml").write_text(
+        'name = "testpack-conflict-a"\ndescription = "conflict-detection fixture"\nversion = "0.1.0"\nrequires = []\n'
+    )
+    (pack_b_dir / "pack.toml").write_text(
+        'name = "testpack-conflict-b"\ndescription = "conflict-detection fixture"\nversion = "0.1.0"\nrequires = []\n'
+    )
+    (pack_a_dir / f"{PACK_AGENT}.md").write_text("Do not use fixturelib for auth checks.\n")
+    (pack_b_dir / f"{PACK_AGENT}.md").write_text("Use fixturelib for auth checks.\n")
+    try:
+        r = _run_installer(
+            target, ["--pack", "testpack-conflict-a", "--pack", "testpack-conflict-b"]
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        combined = r.stdout + r.stderr
+        assert "conflict" in combined.lower()
+        assert "fixturelib" in combined
+
+        agent_file = target / ".claude" / "agents" / f"{PACK_AGENT}.md"
+        parsed = parse(agent_file.read_bytes())
+        ids = [reg.id for reg in parsed.regions]
+        assert "PACK:testpack-conflict-a" in ids and "PACK:testpack-conflict-b" in ids
+    finally:
+        shutil.rmtree(str(pack_a_dir), ignore_errors=True)
+        shutil.rmtree(str(pack_b_dir), ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
 # upgrade paths
 # --------------------------------------------------------------------------- #
 

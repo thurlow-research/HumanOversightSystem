@@ -28,6 +28,9 @@ OUT_DIR=".claudetmp/oversight/validators"
 OUT_FILE="$OUT_DIR/gate-results.json"
 SUSPENSION_MANAGER="$SCRIPT_DIR/suspension_manager.py"
 
+# shellcheck source=scripts/oversight/lib/detect_stack.sh
+source "$SCRIPT_DIR/lib/detect_stack.sh"
+
 # Resolve python — prefer the oversight venv if present.
 PYTHON=""
 if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
@@ -63,6 +66,15 @@ _escape_json_string() {
 
 # ── Setup output directory ────────────────────────────────────────────────────
 mkdir -p "$OUT_DIR"
+
+# Tool preflight (D1, ADR-032): a depended-on-but-missing consumer tool hard-fails
+# before any gate runs, rather than each gate silently SKIPping it individually.
+# No-op outside a JS/Astro project (AC-4); structured stderr already emitted on
+# failure by tool_preflight_or_fail.
+if ! tool_preflight_or_fail; then
+    echo "run_gates: tool preflight failed — see stderr above" >&2
+    exit 1
+fi
 
 # Collect gate scripts — sorted for determinism.
 # Note: sort -z (null-terminated) is not available on macOS BSD sort.

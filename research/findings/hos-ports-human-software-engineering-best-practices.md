@@ -26,6 +26,14 @@ The pattern, with the human practice each mechanism translates:
 | SQC random spot-check of LOW-tier PRs | Statistical quality control / acceptance sampling |
 | `upgrade-hos` tag + cross-ref on a consumer's issue | Upstream-fixed → "update your dependency" issue hygiene |
 
+> **Terminology note — added 2026-07-31, ADR-033 §1a. The table above is unchanged and is read in its original sense.**
+>
+> This table names each practice as **human engineering** names it. Since ADR-033 §1a, HOS reserves two of those words for narrower internal meanings: *peer review* = review by the **same model family** as the author; *independent review* = a **different vendor family, or the human**.
+>
+> The two senses collide on the Layer-2 row. Academic blind refereeing is conventionally called "blind **peer** review," but the HOS mechanism porting it is **independent** review — which, under §1a, is peer review's opposite. Both readings are correct in their own vocabulary; only HOS's internal one is now narrower.
+>
+> **Do not "correct" that row to remove "peer review."** The inversion it appears to contain is an artifact of the vocabulary change, not an error in the finding. This note records the collision so a later consistency sweep does not resolve it in the wrong direction.
+
 ## Why This Matters
 
 1. **It reframes the research contribution honestly.** The novelty is **not** a new theory of oversight — it is the **translation**: taking a practice with decades of validation in human engineering and rendering it in a form that preserves its property when the actors are AI and the volume defeats exhaustive human review. Each mechanism therefore inherits its prior validation; the narrow claim to defend is "this translation preserves the property at AI scale," not "this practice works."

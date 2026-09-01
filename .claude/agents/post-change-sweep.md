@@ -1,7 +1,7 @@
 ---
 name: post-change-sweep
 description: Orchestrates the full agent review suite after any set of file changes. Reads the git diff, categorizes changed files by domain, and invokes the appropriate agents in dependency order — code-reviewer first, then parallel security/privacy/ui/a11y, with framework-validator and infra-reviewer running independently. Each agent receives only its domain's files. Invoke whenever you want a single command to trigger all relevant reviews after a change.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Bash

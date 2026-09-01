@@ -18,13 +18,16 @@ Matrix (R9.1 — authoritative):
 
 from __future__ import annotations
 
+import fnmatch
+import importlib.util
+import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from scripts.automation.lib.github import (
     GitHubError,
@@ -307,28 +310,87 @@ class MergeAuthorityResult:
 # No-release guard (NG3b)
 # ---------------------------------------------------------------------------
 
-_RELEASE_PATTERNS = [
-    "tag", "release", "v0.", "v1.", "publish", "ship", "cut-release",
-    "semver", "CHANGELOG", "release/v",
+# Release detection is split into TITLE patterns and PATH globs (#1032).  The
+# original implementation concatenated the title with every changed path into a
+# single string and substring-matched a flat keyword list, so any path holding
+# "v0." (every file under docs/v0.6.0/**) or "tag" ("staging", "metadata",
+# "packs/") read as a release.  Titles are now matched with word boundaries and
+# paths are matched as globs against release artifacts only.
+#
+# The guard still fails safe: it may only ever route a PR to HUMAN_REQUIRED, so
+# narrowing it removes false positives without opening any autonomous-release
+# path.  Genuine release PRs are additionally backstopped by the server-side
+# protected-surface gate (docs/releases/**, .hos-release — #761).
+_RELEASE_TITLE_RE = re.compile(
+    r"""
+      \b releases? \b
+    | \b releasing \b
+    | \b publish (?: es | ed | ing )? \b
+    | \b ship (?: s | ped | ping )? \b
+    | \b semver \b
+    | \b tags? \b
+    | \b tagging \b
+    | \b v \d+ \. \d+ (?: \. \d+ )? \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Release artifacts only — deliberately NOT the whole of
+# scripts/framework/protected_surfaces.txt.  That list covers every control
+# surface (bin/**, .claude/agents/**, …); reusing it here would label unrelated
+# control-surface PRs as releases and widen NG3b with a misleading reason.  Those
+# surfaces are already gated by touches_protected_surface().  Keep the entries
+# below in sync with the "Release artifacts (#761)" block of that file.
+_RELEASE_PATH_GLOBS = [
+    "docs/releases/**",
+    ".hos-release",
+    "CHANGELOG*",
+    "release/v*",
 ]
 
 
+def _matches_release_path(path: str) -> bool:
+    """True when a changed path is a release artifact (glob, not substring)."""
+    normalized = path.strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lower()
+    for pattern in _RELEASE_PATH_GLOBS:
+        pattern = pattern.lower()
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(normalized, f"**/{pattern}"):
+            return True
+    return False
+
+
 def _is_release_related(pr_title: str, changed_files: list[str]) -> bool:
-    text = pr_title.lower() + " " + " ".join(changed_files).lower()
-    return any(kw.lower() in text for kw in _RELEASE_PATTERNS)
+    """
+    True when the PR performs a release action — NG3b: never autonomous.
+
+    Title and paths are evaluated independently (#1032): a release verb/version
+    in the title, or a changed file that is a release artifact.
+    """
+    if _RELEASE_TITLE_RE.search(pr_title or ""):
+        return True
+    return any(_matches_release_path(f) for f in (changed_files or []))
 
 
 # ---------------------------------------------------------------------------
 # Protected-surface check (re-uses require_human_approval.py)
 # ---------------------------------------------------------------------------
 
-def _touches_protected_surface(changed_files: list[str], repo_root: str = ".") -> bool:
-    """Check if any changed file is on the protected surface."""
+def touches_protected_surface(changed_files: list[str], repo_root: str = ".") -> bool:
+    """Check if any changed file is on the protected surface.
+
+    Public (#1325): overseer.md's pre-matrix protected-surface gate calls this
+    directly, before any other computation, so the check runs deterministically
+    every cycle rather than being reachable only via decide_merge_authority()'s
+    internal call — a prior cycle's narrative conclusion ("Auto-merging") is
+    never a substitute for calling this fresh.
+    """
     surfaces_path = Path(repo_root) / "scripts" / "framework" / "protected_surfaces.txt"
     if not surfaces_path.is_file():
         return False
     try:
-        import fnmatch
         globs = []
         for line in surfaces_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -341,6 +403,45 @@ def _touches_protected_surface(changed_files: list[str], repo_root: str = ".") -
         return False
     except Exception:
         return True  # Fail-closed: if we can't read, assume protected
+
+
+# ---------------------------------------------------------------------------
+# Security-relevant surface check (#1253 — deterministic source, mirrors the
+# protected-surface check above)
+# ---------------------------------------------------------------------------
+
+def _touches_security_surface(changed_files: list[str], repo_root: str = ".") -> bool:
+    """
+    Check if any changed file is on the security-relevant surface (#1253).
+
+    Before this existed, `security_relevant` was a caller-supplied bool with no
+    real caller — the matrix row forcing HUMAN_REQUIRED and the "never approve a
+    security-relevant change without human sign-off" hard limit were both
+    silently unenforced. This derives the signal from
+    scripts/framework/security_surfaces.txt so it no longer depends on a caller
+    remembering to pass it. Same fail-closed contract as
+    touches_protected_surface: an unreadable surfaces file assumes relevant; a
+    surfaces file that simply does not exist is not itself treated as relevant,
+    because security_surfaces.txt lives under scripts/framework/**, which
+    protected_surfaces.txt already protects — deleting or tampering with it is
+    independently caught by the protected-surface check.
+    """
+    surfaces_path = Path(repo_root) / "scripts" / "framework" / "security_surfaces.txt"
+    if not surfaces_path.is_file():
+        return False
+    try:
+        globs = []
+        for line in surfaces_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                globs.append(line)
+        for f in changed_files:
+            for pattern in globs:
+                if fnmatch.fnmatch(f, pattern) or fnmatch.fnmatch(f, f"**/{pattern}"):
+                    return True
+        return False
+    except Exception:
+        return True  # Fail-closed: if we can't read, assume security-relevant
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +477,8 @@ def decide_merge_authority(
     changed_files: list[str],
     pr_title: str = "",
     pr_author: str = "",
-    security_relevant: bool = False,
+    security_relevant: bool = False,  # explicit override; OR'd with the derived
+                                       # scripts/framework/security_surfaces.txt check (#1253)
     agent_class: str = "worker",     # "worker" | "overseer"
     overseer_handle: str = DEFAULT_OVERSEER_HANDLE,
     worker_handle: str = "hos-worker-hos[bot]",  # GitHub App; updated from PAT account (#547)
@@ -512,6 +614,12 @@ def decide_merge_authority(
     # Security-relevant: requires human approval.  If a verified human has
     # already approved the current head SHA, authorization is satisfied and
     # the overseer may execute the merge (#741).
+    #
+    # #1253: security_relevant is no longer trusted from the caller alone — it
+    # is OR'd with the deterministic surface-file derivation, so the gate fires
+    # even when a caller forgets to compute and pass it (which is how it went
+    # unenforced: no real caller ever did).
+    security_relevant = security_relevant or _touches_security_surface(changed_files, repo_root)
     if security_relevant:
         approval = _find_human_approval(reviews, human_reviewer, head_sha)
         if approval:
@@ -532,7 +640,7 @@ def decide_merge_authority(
     # Protected surface: requires human approval.  Same treatment as
     # security-relevant — a verified maintainer approval on the current head
     # satisfies the authorization condition (#589, #741).
-    if _touches_protected_surface(changed_files, repo_root):
+    if touches_protected_surface(changed_files, repo_root):
         approval = _find_human_approval(reviews, human_reviewer, head_sha)
         if approval:
             approver = approval.get("user", {}).get("login", human_reviewer)
@@ -663,3 +771,364 @@ def route_embargo(
         ])
     except GitHubError as exc:
         logger.error("Failed to route embargo: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Register-completeness bounce gate (overseer.md step 4a, SPEC-378 R1.2, #1125)
+# ---------------------------------------------------------------------------
+#
+# Re-checks contract §7 compliance conditions 1-3 (register presence, required
+# §3 fields, unresolved ESCALATED entries) against the worker's PR before the
+# merge-authority matrix runs. This mirrors the register grammar and required-
+# signoffs parsing pr_readiness.py's REQ-W-05/W-06 checks already use (the
+# worker's own pre-PR gate) — duplicated here rather than imported to avoid a
+# circular import (pr_readiness already imports RiskTier from this module) and
+# to keep this module's only cross-package dependency limited to github.py.
+# Condition 7b (risk-assessment scope + blocking findings) is out of scope for
+# this issue; #1125 names only the register-completeness gate.
+
+_BOUNCE_REGISTER_REQUIRED_FIELDS = ("Status", "Agent", "Artifact", "Iterations")
+_BOUNCE_ENTRY_HEADER_RE = re.compile(r"^##\s+(?P<role>[^|#]+?)\s*(?:\|.*)?$")
+_BOUNCE_REASON_CATEGORIES = frozenset(
+    {"REGISTER_GAP", "COMPLIANCE_FAILURE", "SPEC_AMBIGUITY", "OTHER"}
+)
+
+
+def _bounce_register_path(step: Union[str, int]) -> str:
+    return f".claudetmp/signoffs/step{step}-register.md"
+
+
+def _parse_bounce_register(text: str) -> list[dict]:
+    """Parse `.claudetmp/signoffs/step{N}-register.md` into ordered entries.
+
+    Grammar mirrors pr_readiness._parse_register: `## <role>` headers followed
+    by `key: value` lines. A role may appear more than once (one entry per
+    iteration); callers wanting current state take the last match.
+    """
+    entries: list[dict] = []
+    current: Optional[dict] = None
+    for line in text.splitlines():
+        m = _BOUNCE_ENTRY_HEADER_RE.match(line)
+        if m:
+            if current is not None:
+                entries.append(current)
+            current = {"role": m.group("role").strip(), "fields": {}}
+            continue
+        if current is None:
+            continue
+        stripped = line.strip()
+        if not stripped or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        current["fields"][key.strip()] = value.strip()
+    if current is not None:
+        entries.append(current)
+    return entries
+
+
+def _latest_bounce_register_entries(entries: list[dict]) -> dict[str, dict]:
+    """Reduce `entries` to the latest occurrence per role (lowercased key)."""
+    latest: dict[str, dict] = {}
+    for entry in entries:
+        latest[entry["role"].lower()] = entry
+    return latest
+
+
+def _required_signoffs_for_step(manifest_path: Path, step: Union[str, int]) -> list[str]:
+    """Extract `required_signoffs: [a, b, c]` for `step` from step-manifest.yaml.
+
+    Hand-rolled line scan (stdlib only), mirroring pr_readiness's approach for
+    the same file so a missing/malformed manifest degrades to "no required
+    roles" rather than raising.
+    """
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    step_str = str(step)
+    in_steps = False
+    in_target_step = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("steps:"):
+            in_steps = True
+            continue
+        if not in_steps:
+            continue
+        if line and not line[0].isspace() and ":" in line and not stripped.startswith("-"):
+            in_steps = False
+            in_target_step = False
+            continue
+        if stripped.startswith("- id:"):
+            id_val = stripped[len("- id:"):].strip().strip("\"'")
+            in_target_step = id_val == step_str
+            continue
+        if in_target_step and stripped.startswith("id:"):
+            id_val = stripped[len("id:"):].strip().strip("\"'")
+            in_target_step = id_val == step_str
+            continue
+        if in_target_step and stripped.startswith("required_signoffs:"):
+            raw = stripped[len("required_signoffs:"):].strip()
+            raw = raw.strip("[]")
+            if not raw:
+                return []
+            return [r.strip() for r in raw.split(",") if r.strip()]
+    return []
+
+
+@dataclass
+class RegisterCompletenessResult:
+    bounce_required: bool
+    failures: list[str] = field(default_factory=list)
+    reason_category: Optional[str] = None
+    summary: Optional[str] = None
+
+
+def check_register_completeness(
+    step: Union[str, int],
+    *,
+    repo_root: str = ".",
+    manifest_path: Optional[str] = None,
+) -> RegisterCompletenessResult:
+    """Re-check contract §7 conditions 1-3 against the PR's sign-off register.
+
+    Reads `.claudetmp/signoffs/step{N}-register.md` and the required-signoffs
+    list for `step` from step-manifest.yaml, both from the PR branch's working
+    tree (repo_root — the overseer's checkout already has the PR branch
+    present when step 4a runs, the same precondition step 3b relies on for
+    `signoffs/validators/step{N}/summary.json`).
+    """
+    root = Path(repo_root)
+    manifest = Path(manifest_path) if manifest_path else root / "contract" / "step-manifest.yaml"
+    required_roles = _required_signoffs_for_step(manifest, step)
+
+    if not required_roles:
+        # Nothing is required for this step, so there is nothing to be
+        # incomplete about — even a wholly absent register is not a gap.
+        return RegisterCompletenessResult(bounce_required=False)
+
+    register_file = root / _bounce_register_path(step)
+    try:
+        text = register_file.read_text(encoding="utf-8")
+    except OSError:
+        text = None
+
+    if text is None:
+        return RegisterCompletenessResult(
+            bounce_required=True,
+            failures=["register-missing"],
+            reason_category="REGISTER_GAP",
+            summary=f"Sign-off register {_bounce_register_path(step)} is missing.",
+        )
+
+    latest = _latest_bounce_register_entries(_parse_bounce_register(text))
+
+    failures: list[str] = []
+    for role in required_roles:
+        entry = latest.get(role.lower())
+        if entry is None:
+            failures.append(f"register-missing-role:{role}")
+            continue
+        missing_fields = [
+            f for f in _BOUNCE_REGISTER_REQUIRED_FIELDS if not entry["fields"].get(f)
+        ]
+        if missing_fields:
+            failures.append(f"register-missing-fields:{role}:{','.join(missing_fields)}")
+            continue
+        status = entry["fields"].get("Status", "").strip().upper()
+        if status == "ESCALATED" and not entry["fields"].get("Human_resolution", "").strip():
+            failures.append(f"register-unresolved-escalation:{role}")
+
+    if not failures:
+        return RegisterCompletenessResult(bounce_required=False)
+
+    summary = f"{len(failures)} sign-off register gap(s) on step {step}: " + "; ".join(failures)
+    return RegisterCompletenessResult(
+        bounce_required=True,
+        failures=failures,
+        reason_category="REGISTER_GAP",
+        summary=summary,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audit trail — bounce counter + pr-bounced event (contract §6a)
+# ---------------------------------------------------------------------------
+
+
+def _load_audit_log():
+    """Load scripts/oversight/lib/audit_log.py by path (mirrors cycle_log.py).
+
+    Loaded by file path rather than `from scripts.oversight...` so this
+    module's cross-package dependency stays limited to the CLI it already
+    calls via gh, not a live import of the oversight package (same trust-
+    direction rationale as codeowners.py's KNOWN DIVERGENCE note).
+    """
+    path = Path(__file__).resolve().parents[2] / "oversight" / "lib" / "audit_log.py"
+    spec = importlib.util.spec_from_file_location("hos_audit_log", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_AUDIT_LOG = _load_audit_log()
+
+
+def bounce_count(cid: str, *, repo_root: str = ".") -> int:
+    """Count prior `pr-bounced` audit events for this correlation id.
+
+    The audit trail (audit/log/) is append-only and already the source of
+    truth for every other per-cid counter in this codebase (contract §6a);
+    this derives the count from it rather than maintaining separate state.
+    Shared by step 4a (register-completeness) and step 4b (out-of-scope
+    commits) — "the existing bounce_count(cid) counter" both cite.
+    """
+    count = 0
+    for raw in _AUDIT_LOG.read_stream(repo_root):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") == "pr-bounced" and event.get("cid") == cid:
+            count += 1
+    return count
+
+
+def _bounce_comment_body(
+    failures: list[str], reason_category: str, summary: str, bounce_number: int
+) -> str:
+    lines = [
+        "## PR bounced back for procedural completeness",
+        "",
+        "This PR was returned to the worker before the merge-authority matrix "
+        "was applied — it does not satisfy the sign-off register's completeness "
+        "requirements (overseer.md step 4a).",
+        "",
+        "**Failing check(s):**",
+    ]
+    lines += [f"- {f}" for f in failures]
+    lines += [
+        "",
+        f"**Reason category:** {reason_category}",
+        f"**Summary:** {summary}",
+        "",
+        f"_Bounce #{bounce_number} for this correlation id "
+        "(cap: 2 before human escalation)._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _convert_pr_to_draft(owner: str, repo: str, pr_number: int) -> None:
+    """Convert an open PR to draft.
+
+    No REST endpoint supports this (draft can only be set at PR creation via
+    REST); the GraphQL `convertPullRequestToDraft` mutation is the only path,
+    same as bootstrap/post_review_thread.sh's use of `gh api graphql` for the
+    review-thread mutation it needs.
+    """
+    pr = _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
+    node_id = pr.get("node_id") if pr else None
+    if not node_id:
+        raise GitHubError(f"could not resolve node_id for PR #{pr_number}")
+    mutation = (
+        "mutation($id:ID!){convertPullRequestToDraft(input:{pullRequestId:$id})"
+        "{pullRequest{isDraft}}}"
+    )
+    result = _run_gh(["graphql", "-f", f"query={mutation}", "-f", f"id={node_id}"])
+    is_draft = (
+        (result or {})
+        .get("data", {})
+        .get("convertPullRequestToDraft", {})
+        .get("pullRequest", {})
+        .get("isDraft")
+    )
+    if is_draft is not True:
+        raise GitHubError(
+            f"convertPullRequestToDraft did not report isDraft=true for PR #{pr_number}"
+        )
+
+
+@dataclass
+class BounceResult:
+    comment_url: Optional[str]
+    audit_relpath: str
+    bounce_number: int
+    finalize_errors: list[str] = field(default_factory=list)
+
+
+def record_pr_bounce(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    *,
+    cid: str,
+    reason_category: str,
+    summary: str,
+    failures: list[str],
+    label: str = "needs-ai",
+    repo_root: str = ".",
+) -> BounceResult:
+    """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
+
+    (1) post the bounce comment, (2) confirmed via post_comment's read-back,
+    (3) append the `pr-bounced` audit event, (4) finalize — label, convert to
+    draft. Steps 1-3 raise on failure (GitHubError / audit-write
+    error) and halt before any finalize action runs, per overseer.md's
+    "Halt-on-failure ordering for non-merge dispositions" — a bounce must
+    never be finalized without a confirmed comment and a committed audit
+    entry. Finalize sub-steps (4) are independent and best-effort: a failure
+    there is recorded in `finalize_errors` rather than rolled back, since the
+    audit event (the durable record) has already been written.
+    """
+    if reason_category not in _BOUNCE_REASON_CATEGORIES:
+        raise ValueError(
+            f"reason_category must be one of {sorted(_BOUNCE_REASON_CATEGORIES)}, "
+            f"got {reason_category!r}"
+        )
+
+    bounce_number = bounce_count(cid, repo_root=repo_root) + 1
+    body = _bounce_comment_body(list(failures), reason_category, summary, bounce_number)
+
+    comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
+
+    event = {
+        "event": "pr-bounced",
+        "pr": pr_number,
+        "cid": cid,
+        "bounce_number": bounce_number,
+        "failures": list(failures),
+        "assigned_to": None,
+        "repo": f"{owner}/{repo}",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason_category": reason_category,
+        "summary": summary,
+        "comment_posted": True,
+    }
+    audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)  # raises on hash collision
+
+    finalize_errors: list[str] = []
+    try:
+        _run_gh(
+            [f"/repos/{owner}/{repo}/issues/{pr_number}/labels", "--method", "POST"],
+            stdin_json={"labels": [label]},
+        )
+    except GitHubError as exc:
+        finalize_errors.append(f"label failed: {exc}")
+
+    try:
+        _convert_pr_to_draft(owner, repo, pr_number)
+    except GitHubError as exc:
+        finalize_errors.append(f"convert-to-draft failed: {exc}")
+
+    if finalize_errors:
+        logger.error(
+            "record_pr_bounce: finalize step(s) failed for PR #%s: %s",
+            pr_number, "; ".join(finalize_errors),
+        )
+
+    return BounceResult(
+        comment_url=comment.get("html_url"),
+        audit_relpath=audit_relpath,
+        bounce_number=bounce_number,
+        finalize_errors=finalize_errors,
+    )

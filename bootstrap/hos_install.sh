@@ -32,6 +32,10 @@
 #   ./hos_install.sh --scaffold-pack <slug> [DIR]
 #                                         # extract PROJECT customizations into a consumer
 #                                         #   pack (requires --brownfield; slug = pack name)
+#   ./hos_install.sh --worker [DIR]       # generate worker cron-prompt + show worker cron next-steps
+#   ./hos_install.sh --overseer [DIR]     # generate overseer cron-prompt + show overseer cron next-steps
+#   ./hos_install.sh --human [DIR]        # show interactive Human GitHub App session next-steps
+#                                         # Default (no role flag): --worker --overseer
 #   ./hos_install.sh --help
 #
 # Release vs. local source:
@@ -62,6 +66,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # case release mode fetches the tarball and the repo root is never needed.
 HOS_REPO_ROOT="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "$SCRIPT_DIR")"
 
+# Sandbox-policy path helpers (#1221, human role only). Guarded, not required —
+# an installer running from a source tree that lacks this file (e.g. a release
+# predating #1221) must not hard-fail; the sandbox-policy block below checks
+# `declare -f` before use and warns instead.
+# shellcheck source=lib/sandbox_paths.sh
+[[ -f "$SCRIPT_DIR/lib/sandbox_paths.sh" ]] && source "$SCRIPT_DIR/lib/sandbox_paths.sh"
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 TARGET_REPO="$(pwd)"
 DRY_RUN=false
@@ -78,6 +89,9 @@ FULL=false            # --full: bypass version-adjacency hard-stop; install targ
 BROWNFIELD=false      # --brownfield: classify flat agent files, synth a baseline, then merge (#275)
 SCAFFOLD_PACK=""      # --scaffold-pack <slug>: extract project_custom into a consumer pack (#275)
 _packs=()             # --pack <name> (repeatable). Empty ⇒ resolve from config.sh PACK=.
+ROLE_WORKER=false     # --worker:  generate worker cron-prompt + show worker next-steps
+ROLE_OVERSEER=false   # --overseer: generate overseer cron-prompt + show overseer next-steps
+ROLE_HUMAN=false      # --human:  show interactive Human GitHub App session next-steps
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -99,7 +113,10 @@ while [[ $# -gt 0 ]]; do
     --pack)          _packs+=("${2:?--pack needs a name, e.g. --pack django}"); shift 2 ;;
     --pack=*)        _packs+=("${1#*=}"); shift ;;
     --no-pack)       NO_PACK=true; shift ;;
-    --help|-h)       sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --worker)        ROLE_WORKER=true; shift ;;
+    --overseer)      ROLE_OVERSEER=true; shift ;;
+    --human)         ROLE_HUMAN=true; shift ;;
+    --help|-h)       sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)              echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)               TARGET_REPO="$1"; shift ;;
   esac
@@ -111,6 +128,23 @@ TARGET_REPO="$(cd "$TARGET_REPO" 2>/dev/null && pwd)" || {
 # Mutual-exclusion: --no-pack and --pack are contradictory.
 if $NO_PACK && [[ ${#_packs[@]} -gt 0 ]]; then
   echo "ERROR: --no-pack and --pack are mutually exclusive (try --help)"; exit 1
+fi
+
+# Role defaults: if no role flag was passed, activate worker+overseer (current behaviour).
+# --human alone is valid; it means interactive session only, no cron setup.
+if ! $ROLE_WORKER && ! $ROLE_OVERSEER && ! $ROLE_HUMAN; then
+  ROLE_WORKER=true; ROLE_OVERSEER=true
+fi
+
+# Mutual-exclusion: --human installs a different CLAUDE.md block than --worker/--overseer.
+# Combining them would produce a contradictory context file (two role blocks) with no
+# clear identity, so it is a hard error.
+if $ROLE_HUMAN && { $ROLE_WORKER || $ROLE_OVERSEER; }; then
+  echo "ERROR: --human is mutually exclusive with --worker/--overseer."
+  echo "  --human installs the Human-proxy CLAUDE.md block;"
+  echo "  --worker/--overseer install the orchestrator block."
+  echo "  Use --human alone for a Human-proxy install."
+  exit 2
 fi
 
 # REQ-B-01: --brownfield and --squash are mutually exclusive (#275).
@@ -701,6 +735,19 @@ ensure_line     "$GITIGNORE" ".claudetmp/"      ".claudetmp/ (agent ephemeral st
 ensure_line     "$GITIGNORE" ".ai-local/"     ".ai-local/ (SQC salt + panel cache)"
 ensure_line     "$GITIGNORE" "*.salt"         "*.salt (sampling keys)"
 ensure_line     "$GITIGNORE" ".hos-brownfield/" ".hos-brownfield/ (brownfield migration scratch — not committed, #275)"
+# CLAUDE.human.generated.md is a conflict-avoidance file written when CLAUDE.md
+# already exists without the HOS:HUMAN-PROXY marker.  The operator reviews it,
+# merges the block into CLAUDE.md, and removes it — so it must not be committed.
+$ROLE_HUMAN && ensure_line "$GITIGNORE" "CLAUDE.human.generated.md" \
+  "CLAUDE.human.generated.md (human-proxy block staging file — merge into CLAUDE.md then remove)"
+# Sandbox policy (#1221): machine-local, generated/values files, and the
+# operator's own move-aside backups — none of these are tracked.
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/settings.local.json" \
+  ".claude/settings.local.json (generated sandbox policy — #1221)"
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/hos-sandbox.values" \
+  ".claude/hos-sandbox.values (sandbox policy values sidecar — #1221)"
+$ROLE_HUMAN && ensure_line "$GITIGNORE" ".claude/settings.local.json.bak-*" \
+  ".claude/settings.local.json.bak-* (move-aside backups — #1221)"
 ensure_not_ignored "$GITIGNORE" "audit/"     "audit/ (committed audit trail)"
 ensure_not_ignored "$GITIGNORE" "AGENTS.md"  "AGENTS.md (governance protocol)"
 ensure_not_ignored "$GITIGNORE" "prompts/"   "prompts/ (prompt artifacts)"
@@ -1063,6 +1110,25 @@ _resolve_pack_dir() {
   return 1
 }
 
+# Parse a pack's `requires = ["a","b"]` single-line array from pack.toml
+# (ADR-032 D3, #1036). Missing key → no output (leaf pack, no deps). Single-
+# line array form only (bash 3.2 safe — no TOML lib); a pack authoring rule,
+# not enforced here. Prints one dep name per line to stdout.
+_pack_requires() {
+  local _dir="$1" _line _tok
+  _line="$(grep -E '^[[:space:]]*requires[[:space:]]*=' "$_dir/pack.toml" 2>/dev/null | head -1)"
+  [[ -z "$_line" ]] && return 0
+  _line="${_line#*\[}"
+  _line="${_line%%\]*}"
+  [[ -z "$_line" ]] && return 0
+  local _toks
+  IFS=',' read -ra _toks <<< "$_line"
+  for _tok in "${_toks[@]}"; do
+    _tok="$(printf '%s' "$_tok" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')"
+    [[ -n "$_tok" ]] && printf '%s\n' "$_tok"
+  done
+}
+
 # ── Brownfield-state detection and pre-flight handling (#275) ─────────────────
 # Called once after all brownfield helper functions are defined, after TARGET_REPO
 # is resolved, and before the agent-install phase (§1.2 contract). With
@@ -1146,6 +1212,63 @@ if [[ ${#_resolved_packs[@]} -eq 0 ]]; then
     fi
 fi
 
+# (R2c) Pack dependency closure (ADR-032 D3, #1036). Expands _resolved_packs
+#       to its transitive `requires` closure: DFS post-order (deps before the
+#       pack that needs them), deduped, cycle → hard error (nothing written).
+#       Runs on the leaf(s) resolved above (from --pack or the flagless
+#       config.sh PACK= upgrade path) and REPLACES _resolved_packs with the
+#       closure, so R2b/R3 below slug-validate and existence-check every pack
+#       the walk touches — seed or dependency. `--pack astro` → (node astro);
+#       `--pack node` → (node). Unknown pack hit during the walk → hard error
+#       (same surface as R3). R5 still records the operator-selected LEAF only
+#       (via `_packs`, untouched here) — the closure is re-derived every run,
+#       never persisted to config.sh.
+_pack_leaf_count=${#_resolved_packs[@]}   # R4 must warn on LEAF count, not closure size
+if [[ $_pack_leaf_count -gt 0 ]]; then
+    _pack_closure_order=()
+    _pack_closure_seen=()
+    _pack_closure_stack=()
+
+    _pack_closure_contains() {
+        local _needle="$1"; shift
+        local _x
+        for _x in "$@"; do [[ "$_x" == "$_needle" ]] && return 0; done
+        return 1
+    }
+
+    _pack_closure_visit() {
+        local _p="$1"
+        _pack_closure_contains "$_p" "${_pack_closure_seen[@]+"${_pack_closure_seen[@]}"}" && return 0
+        if _pack_closure_contains "$_p" "${_pack_closure_stack[@]+"${_pack_closure_stack[@]}"}"; then
+            err "pack dependency cycle detected: ${_pack_closure_stack[*]} -> $_p"
+            exit 1
+        fi
+        local _dir
+        _dir="$(_resolve_pack_dir "$_p")" || {
+            err "unknown pack '$_p' — no packs/$_p/ in the consumer repo or HOS source ($HOS_REF)"
+            err "available (HOS): $(cd "$HOS_SOURCE/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+                  | tr -d / | tr '\n' ' ' || echo '(none)')"
+            err "available (consumer): $(cd "$TARGET_REPO/packs" 2>/dev/null && ls -d */ 2>/dev/null \
+                  | tr -d / | tr '\n' ' ' || echo '(none)')"
+            exit 1
+        }
+        _pack_closure_stack+=("$_p")
+        local _dep
+        while IFS= read -r _dep; do
+            [[ -n "$_dep" ]] && _pack_closure_visit "$_dep"
+        done < <(_pack_requires "$_dir")
+        local _stack_n=${#_pack_closure_stack[@]}
+        _pack_closure_stack=("${_pack_closure_stack[@]:0:_stack_n-1}")   # pop (bash 3.2 safe; no negative index)
+        _pack_closure_seen+=("$_p")
+        _pack_closure_order+=("$_p")
+    }
+
+    for _p in "${_resolved_packs[@]}"; do
+        _pack_closure_visit "$_p"
+    done
+    _resolved_packs=("${_pack_closure_order[@]}")
+fi
+
 # (R2b) Slug-validate every resolved pack name before R3/R5 use it.
 #       A name that does not match [a-z0-9][a-z0-9-]* must never reach the
 #       directory-existence check or the `perl -i -pe "s|^PACK=...|PACK=\"$_pk\"|"`
@@ -1183,9 +1306,12 @@ for _p in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
 done
 
 # (R4) Multi-pack → permit, but WARN once (Decision 4 — untested composition).
-if [[ ${#_resolved_packs[@]} -gt 1 ]]; then
+# Gated on the operator-selected LEAF count (#1036), not the closure size — a
+# single leaf whose `requires` expanded to >1 pack is intended layering, not
+# untested multi-pack composition.
+if [[ $_pack_leaf_count -gt 1 ]]; then
     warn "multiple packs selected (${_resolved_packs[*]}) — multi-pack composition"
-    warn "is UNTESTED in v0.3.0 (alphabetical order, no conflict resolution);"
+    warn "is UNTESTED in v0.3.0 (dependency-closure order, no conflict resolution);"
     warn "single-pack is the supported path"
 fi
 
@@ -1361,11 +1487,15 @@ else
 
     # (A1b) Pack injection (ADR-031 §3.1 step 4). For each selected pack that
     # deepens THIS agent (packs/<pack>/<agent>.md exists), inject its PACK:<pack>
-    # region into the staged CORE template. compose() (inside inject-pack) re-sorts
-    # alphabetically, so injection order is irrelevant. An agent with no pack file
+    # region into the staged CORE template. compose() (inside inject-pack) keeps
+    # PACK regions in the order they were injected (#1080), so injection order
+    # IS significant: _resolved_packs is already in dependency-closure order
+    # (deps-first, R2c above), so iterating it in order here composes the most-
+    # specific pack last, matching recency precedence. An agent with no pack file
     # stays CORE-only (the absence is the signal — D2.2). Placeholder-free bodies
     # are NEVER substituted (D6) — they are injected raw, post-substitution.
     # _resolve_pack_dir is called once per pack (B-4: never call it twice; it logs).
+    _agent_had_pack=false
     for _pk in ${_resolved_packs[@]+"${_resolved_packs[@]}"}; do
       _pk_dir="$(_resolve_pack_dir "$_pk")" || _pk_dir="$HOS_SOURCE/packs/$_pk"
       _body="$_pk_dir/${agent}.md"
@@ -1384,7 +1514,30 @@ else
         _any_inject_fail=true   # B2: route through the pre-Phase-B abort gate (§2.4.1)
         continue 2              # skip this agent; an unwritable pack region must not ship half-composed
       fi
+      _agent_had_pack=true
     done
+
+    # (A1c, #1117) Advisory-only PACK conflict check (#1081 Option 3). Runs once
+    # per agent, after all its PACK regions are injected, so a conflict between
+    # any two PACK bodies is visible in a single pass. detect_pack_conflicts() is
+    # a narrow-precision heuristic, not a fail-closed structural check (see its
+    # docstring in regions.py) — exit 5 (findings) is printed as a WARNING only;
+    # the install is NEVER aborted on it, matching the issue's "advisory" intent.
+    if $_agent_had_pack; then
+      _conflict_out="$_AGENT_STAGE/${agent}.conflicts.out"
+      _conflict_rc=0
+      python3 "$_REGIONS_PY" check-pack-conflicts "$_stage" >"$_conflict_out" 2>&1 || _conflict_rc=$?
+      if [[ $_conflict_rc -eq 5 ]]; then
+        warn "PACK conflict advisory for ${agent}.md (heuristic — review recommended):"
+        sed 's/^/      /' "$_conflict_out"
+      elif [[ $_conflict_rc -ne 0 ]]; then
+        # Neither OK (0) nor findings (5) — check-pack-conflicts itself broke.
+        # Surface it (don't swallow a regions.py failure silently, #276) but
+        # still don't abort: this check is advisory-only by design (#1117).
+        warn "check-pack-conflicts on ${agent}.md exited $_conflict_rc (not a findings result) — advisory check skipped, install continues:"
+        sed 's/^/      /' "$_conflict_out"
+      fi
+    fi
 
     # (A2) prepare the disk file. If a flat (marker-less) file is present, migrate
     # it first (provenance = is the slug HOS-shipped, i.e. in consumer_agents.txt;
@@ -1618,6 +1771,65 @@ else
   cp_file "$SETTINGS_SRC" "$SETTINGS_DST" ".claude/settings.json"
 fi
 
+# ── .claude/settings.local.json — sandbox policy (#1221, human role only) ────
+if $ROLE_HUMAN; then
+  echo ""
+  info ".claude/settings.local.json — sandbox policy (#1221)"
+  _sandbox_live="$TARGET_REPO/.claude/settings.local.json"
+  if $DRY_RUN; then
+    dry_run "Would generate $_sandbox_live via scripts/framework/gen_sandbox_config.py --role human"
+  elif [[ -e "$_sandbox_live" ]]; then
+    info "settings.local.json already present — left untouched (never-overwrite, #1221)"
+  elif ! declare -f _hos_claude_project_state >/dev/null 2>&1; then
+    warn "bootstrap/lib/sandbox_paths.sh not available — skipping sandbox policy generation."
+  else
+    _sb_gen=""
+    for _d in "$TARGET_REPO" "$HOS_SOURCE"; do
+      if [[ -f "$_d/scripts/framework/gen_sandbox_config.py" && -f "$_d/contract/sandbox-policy.template.json" ]]; then
+        _sb_gen="$_d/scripts/framework/gen_sandbox_config.py"; break
+      fi
+    done
+    _sb_state=""
+    _sb_state="$(_hos_claude_project_state "${HOME:-}" "$TARGET_REPO")" || _sb_state=""
+    [[ -n "$_sb_state" ]] || warn "Could not derive --claude-project-state for $TARGET_REPO (unset HOME, or path has characters outside [A-Za-z0-9/-])."
+    _sb_hos_root="$(dirname "$TARGET_REPO")"
+    _sb_handoff=""
+    if [[ -n "${HOS_HANDOFF_DIR:-}" ]]; then
+      _sb_handoff="$HOS_HANDOFF_DIR"
+    elif [[ -t 0 && "${HOS_NO_CONFIG:-}" != "1" ]]; then
+      printf "  Handoff directory for this Human clone (absolute path, no default): "
+      read -r _sb_handoff </dev/tty || _sb_handoff=""
+    fi
+    if [[ -n "$_sb_handoff" ]]; then
+      if [[ "$_sb_handoff" != /* || "$_sb_handoff" == "/" ]]; then
+        warn "Handoff dir must be an absolute path (got '$_sb_handoff') — ignoring."
+        _sb_handoff=""
+      elif _hos_path_is_ancestor_or_equal "$_sb_handoff" "${HOME:-/nonexistent}" \
+        || _hos_path_is_ancestor_or_equal "$_sb_handoff" "$_sb_hos_root"; then
+        warn "Refusing handoff dir '$_sb_handoff': it contains \$HOME or the clone root, and the policy grants Write on it."
+        _sb_handoff=""
+      else
+        info "Using handoff dir: $_sb_handoff"
+      fi
+    fi
+    if [[ -n "$_sb_gen" && -n "$_sb_state" && -n "$_sb_handoff" ]]; then
+      _sb_rc=0
+      python3 "$_sb_gen" --role human --clone-dir "$TARGET_REPO" \
+        --handoff-dir "$_sb_handoff" --claude-project-state "$_sb_state" || _sb_rc=$?
+      if [[ "$_sb_rc" -eq 0 ]]; then
+        ok "Sandbox policy generated — restart the session for it to take effect"
+      else
+        warn "Sandbox policy generation failed (exit $_sb_rc) — install continues; see the generator output above."
+      fi
+    elif [[ -z "$_sb_gen" ]]; then
+      warn "gen_sandbox_config.py / sandbox-policy.template.json not found — skipping sandbox policy generation."
+    else
+      warn "Sandbox policy NOT generated (unresolved values). Run later:"
+      warn "  python3 scripts/framework/gen_sandbox_config.py --role human --clone-dir $TARGET_REPO --handoff-dir ${_sb_handoff:-<absolute-path>} --claude-project-state ${_sb_state:-<absolute-path>}"
+    fi
+  fi
+fi
+
 # ── scripts/ — HOS runner scripts ─────────────────────────────────────────────
 echo ""
 info "scripts/ — HOS runner scripts"
@@ -1672,10 +1884,14 @@ echo ""
 info "bootstrap/ — auth and setup scripts"
 run mkdir -p "$TARGET_REPO/bootstrap"
 cp_framework_file "$HOS_SOURCE/bootstrap/get_app_token.sh"   "$TARGET_REPO/bootstrap/get_app_token.sh"   "bootstrap/get_app_token.sh (GitHub App auth)"
+cp_framework_file "$HOS_SOURCE/bootstrap/hos_repo_sync.sh"   "$TARGET_REPO/bootstrap/hos_repo_sync.sh"   "bootstrap/hos_repo_sync.sh (interactive-session repo sync)"
 # validate_setup.sh: install if present (added v0.4.0)
 [[ -f "$HOS_SOURCE/bootstrap/validate_setup.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/validate_setup.sh"     "$TARGET_REPO/bootstrap/validate_setup.sh"     "bootstrap/validate_setup.sh (setup health check)" || true
-# apps.env.template: install if present so consumers have a discoverable starting point
-[[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
+# apps.env.template: always refresh so it stays the canonical key list sync_apps_env.sh reads (#1179)
+[[ -f "$HOS_SOURCE/bootstrap/apps.env.template" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/apps.env.template"     "$TARGET_REPO/bootstrap/apps.env.template"     "bootstrap/apps.env.template (credential template — customize to .config/hos/apps.env)" || true
+# sync_apps_env.sh: install if present (added v0.6.0, #957) — lets a consumer
+# fill apps.env gaps a `--pr` upgrade introduces without a new setup_partner run.
+[[ -f "$HOS_SOURCE/bootstrap/sync_apps_env.sh" ]] &&   cp_framework_file "$HOS_SOURCE/bootstrap/sync_apps_env.sh"     "$TARGET_REPO/bootstrap/sync_apps_env.sh"     "bootstrap/sync_apps_env.sh (apps.env gap-fill)" || true
 
 # ── framework consumer files — bin/, .github/workflows/, scripts/framework/ (#769) ──
 # Ship-set declared in scripts/framework/framework_consumer_files.txt — the single
@@ -1708,7 +1924,12 @@ _cron_worker_dir="$TARGET_REPO"
 _cron_overseer_dir="$TARGET_REPO"
 
 _subst_prompt() {
-  local src="$1" dst="$2" role="$3" dir="$4" bot_placeholder="$5"
+  # source_login: the HOS-repo-specific login string already present in the
+  # template (e.g. "hos-worker-hos[bot]", "scottthurlow-claude[bot]").
+  # _subst_prompt replaces it with bot_placeholder so consumers can fill in
+  # their own value. Pass "" for dir to skip the working-directory substitution
+  # (used for CLAUDE.md templates that have no WORKING DIRECTORY: header).
+  local src="$1" dst="$2" source_login="$3" dir="$4" bot_placeholder="$5"
   [[ -f "$src" ]] || return 0
   # Derive the source working-directory path from the prompt template itself
   # rather than hardcoding a developer-specific home path (#731). The
@@ -1723,7 +1944,7 @@ _subst_prompt() {
   python3 - "$src" "$dst" \
     "thurlow-research/HumanOversightSystem" "$_cron_repo_url" \
     "$from_dir" "$dir" \
-    "hos-${role}-hos[bot]" "$bot_placeholder" <<'PYEOF'
+    "$source_login" "$bot_placeholder" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 pairs = list(zip(sys.argv[3::2], sys.argv[4::2]))
@@ -1736,19 +1957,23 @@ PYEOF
 }
 
 if ! $DRY_RUN; then
-  _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
-    "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
-    "worker" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
-    && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
-    || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
-  _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
-    "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
-    "overseer" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
-    && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
-    || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+  if $ROLE_WORKER; then
+    _subst_prompt "$HOS_SOURCE/bootstrap/worker-cron-prompt.md" \
+      "$TARGET_REPO/bootstrap/worker-cron-prompt.md" \
+      "hos-worker-hos[bot]" "$_cron_worker_dir" "__WORKER_BOT_LOGIN__" \
+      && ok "bootstrap/worker-cron-prompt.md (generated — update __WORKER_BOT_LOGIN__)" \
+      || warn "bootstrap/worker-cron-prompt.md — generation failed (python3 unavailable?)"
+  fi
+  if $ROLE_OVERSEER; then
+    _subst_prompt "$HOS_SOURCE/bootstrap/overseer-cron-prompt.md" \
+      "$TARGET_REPO/bootstrap/overseer-cron-prompt.md" \
+      "hos-overseer-hos[bot]" "$_cron_overseer_dir" "__OVERSEER_BOT_LOGIN__" \
+      && ok "bootstrap/overseer-cron-prompt.md (generated — update __OVERSEER_BOT_LOGIN__)" \
+      || warn "bootstrap/overseer-cron-prompt.md — generation failed (python3 unavailable?)"
+  fi
 else
-  dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
-  dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
+  $ROLE_WORKER   && dry_run "Would generate bootstrap/worker-cron-prompt.md (repo=$_cron_repo_url)"
+  $ROLE_OVERSEER && dry_run "Would generate bootstrap/overseer-cron-prompt.md (repo=$_cron_repo_url)"
 fi
 
 # ── AGENTS.md — Layer 1 protocol ──────────────────────────────────────────────
@@ -1760,6 +1985,7 @@ cp_framework_file "$HOS_SOURCE/AGENTS.md"     "$TARGET_REPO/AGENTS.md"
 [[ -f "$HOS_SOURCE/METHODOLOGY.md" ]] && \
   cp_framework_file "$HOS_SOURCE/METHODOLOGY.md" "$TARGET_REPO/METHODOLOGY.md" || true
 
+if ! $ROLE_HUMAN; then
 # ── CLAUDE.md — wire the orchestrator role into the auto-loaded context ────────
 # AGENTS.md holds the protocol, but the main interactive agent only auto-loads
 # CLAUDE.md. Without a pointer there, the orchestrator never reads the protocol
@@ -1800,6 +2026,81 @@ else
   rm -f "$_bf"
   skip "CLAUDE.md — HOS orchestrator block refreshed in place"
 fi
+
+else
+# ── CLAUDE.md — install the human-proxy context block ─────────────────────────
+# The human-proxy CLAUDE.md block names the bot identity and gives the session-
+# start checklist.  It is marker-delimited so re-runs refresh the block without
+# touching consumer content outside the markers (same awk pattern as orchestrator).
+# Three outcomes:
+#   (a) HOS:HUMAN-PROXY marker already present → refresh the block in place.
+#   (b) CLAUDE.md exists but no marker → write CLAUDE.human.generated.md and ask
+#       the operator to merge it in (avoids clobbering existing consumer content).
+#   (c) No CLAUDE.md → create it directly from the generated block.
+_CLAUDE_MD="$TARGET_REPO/CLAUDE.md"
+_HOS_HP_BS="<!-- HOS:HUMAN-PROXY start -->"
+_HOS_HP_BE="<!-- HOS:HUMAN-PROXY end -->"
+_human_tpl="$HOS_SOURCE/templates/CLAUDE.human.md"
+
+if $DRY_RUN; then
+  dry_run "ensure HOS human-proxy block in CLAUDE.md"
+elif [[ ! -f "$_human_tpl" ]]; then
+  warn "templates/CLAUDE.human.md not found in release — skipping CLAUDE.md human-proxy block"
+else
+  _human_generated="$(mktemp)"
+  if _subst_prompt "$_human_tpl" "$_human_generated" \
+      "scottthurlow-claude[bot]" "" "__HUMAN_BOT_LOGIN__"; then
+    if [[ ! -f "$_CLAUDE_MD" ]]; then
+      # (c) No CLAUDE.md — create directly from the generated block
+      cp "$_human_generated" "$_CLAUDE_MD"
+      info "CLAUDE.md created with HOS human-proxy block"
+    elif ! grep -qF "$_HOS_HP_BS" "$_CLAUDE_MD"; then
+      # (b) CLAUDE.md exists, no HOS:HUMAN-PROXY marker — write separate file
+      # to avoid clobbering existing consumer content; operator merges manually
+      _gen_dst="$TARGET_REPO/CLAUDE.human.generated.md"
+      cp "$_human_generated" "$_gen_dst"
+      info "CLAUDE.human.generated.md written (CLAUDE.md exists without HOS:HUMAN-PROXY marker — merge the block into CLAUDE.md manually, then re-run)"
+    else
+      # (a) HOS:HUMAN-PROXY marker present — refresh the block in place
+      _tmp="$(mktemp)"
+      awk -v s="$_HOS_HP_BS" -v e="$_HOS_HP_BE" -v bf="$_human_generated" '
+        BEGIN { while ((getline line < bf) > 0) block = block line "\n" }
+        $0==s { printf "%s", block; skip=1; next }
+        $0==e { skip=0; next }
+        !skip { print }
+      ' "$_CLAUDE_MD" > "$_tmp" && mv "$_tmp" "$_CLAUDE_MD"
+      skip "CLAUDE.md — HOS human-proxy block refreshed in place"
+    fi
+  else
+    warn "CLAUDE.human.md substitution failed (python3 unavailable?)"
+  fi
+  rm -f "$_human_generated"
+fi
+
+# ── bin/hos-human — session-start launcher (#1143) ─────────────────────────────
+# The installer must place this, not just tell the human to `cp` it — a
+# hand-copied launcher has no upgrade path (fixes to auth/identity-guard/sync
+# behavior never reach an existing clone). bin/ can be a read-only mount in
+# sandboxed agent environments (the reason HUMAN-SETUP.md's manual step
+# exists at all) — degrade to a warning + the manual fallback rather than
+# aborting the whole install.
+_human_launcher="$HOS_SOURCE/bin/hos-human"
+if [[ ! -f "$_human_launcher" ]]; then
+  warn "bin/hos-human not found in release — skipping (create manually, see docs/HUMAN-SETUP.md Step 6)"
+elif $DRY_RUN; then
+  dry_run "Would install bin/hos-human"
+else
+  if mkdir -p "$TARGET_REPO/bin" 2>/dev/null \
+      && cp "$_human_launcher" "$TARGET_REPO/bin/hos-human" 2>/dev/null \
+      && chmod +x "$TARGET_REPO/bin/hos-human" 2>/dev/null; then
+    ok "bin/hos-human (framework — updated)"
+  else
+    warn "bin/hos-human — could not write to $TARGET_REPO/bin (read-only mount?). Install manually:"
+    warn "  cp $_human_launcher $TARGET_REPO/bin/hos-human && chmod +x $TARGET_REPO/bin/hos-human"
+  fi
+fi
+
+fi  # end if ! $ROLE_HUMAN
 
 # ── contract/ — oversight contract + step manifest template ───────────────────
 run mkdir -p "$TARGET_REPO/contract"
@@ -2209,22 +2510,42 @@ echo ""
   echo "  5. Review the audit trail:"
   echo "       cat audit/oversight-log.jsonl | jq 'select(.event==\"sign-off\")'"
   echo ""
-  echo "  6. Set up autonomous cron agents (#715, #717):"
-  echo "       a. Edit the generated prompt files and replace __*_BOT_LOGIN__ placeholders:"
-  echo "            $TARGET_REPO/bootstrap/worker-cron-prompt.md"
-  echo "            $TARGET_REPO/bootstrap/overseer-cron-prompt.md"
-  echo "       b. Add your project to ~/.config/hos/projects.conf:"
-  echo "            __PROJECT___config_dir=<path-to-your-project>/.config/hos"
-  echo "            __PROJECT___worker_root=$TARGET_REPO"
-  echo "            __PROJECT___overseer_root=$TARGET_REPO"
-  echo "       c. Add to crontab (crontab -e) — adjust schedule and PATH as needed:"
-  echo "            # Worker (every 5 min):"
-  echo "            1,6,11,16,21,26,31,36,41,46,51,56 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role worker  --project __PROJECT__ >> /tmp/hos-worker-__PROJECT__.log 2>&1"
-  echo "            # Overseer (every 5 min, 3 min offset):"
-  echo "            4,9,14,19,24,29,34,39,44,49,54,59 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role overseer --project __PROJECT__ >> /tmp/hos-overseer-__PROJECT__.log 2>&1"
-  echo "            # Weekly log trim:"
-  echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
-  echo ""
+  _next_step=6
+  if $ROLE_WORKER || $ROLE_OVERSEER; then
+    echo "  $_next_step. Set up autonomous cron agents (#715, #717):"
+    echo "       a. Edit the generated prompt files and replace __*_BOT_LOGIN__ placeholders:"
+    $ROLE_WORKER   && echo "            $TARGET_REPO/bootstrap/worker-cron-prompt.md"
+    $ROLE_OVERSEER && echo "            $TARGET_REPO/bootstrap/overseer-cron-prompt.md"
+    echo "       b. Add your project to ~/.config/hos/projects.conf:"
+    echo "            __PROJECT___config_dir=<path-to-your-project>/.config/hos"
+    $ROLE_WORKER   && echo "            __PROJECT___worker_root=$TARGET_REPO"
+    $ROLE_OVERSEER && echo "            __PROJECT___overseer_root=$TARGET_REPO"
+    echo "       c. Add to crontab (crontab -e) — adjust schedule and PATH as needed:"
+    if $ROLE_WORKER; then
+      echo "            # Worker (every 5 min):"
+      echo "            1,6,11,16,21,26,31,36,41,46,51,56 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role worker  --project __PROJECT__ >> /tmp/hos-worker-__PROJECT__.log 2>&1"
+    fi
+    if $ROLE_OVERSEER; then
+      echo "            # Overseer (every 5 min, 3 min offset):"
+      echo "            4,9,14,19,24,29,34,39,44,49,54,59 * * * *  PATH=~/.local/bin:/usr/local/bin:/usr/bin:/bin $TARGET_REPO/bin/hos-cron --role overseer --project __PROJECT__ >> /tmp/hos-overseer-__PROJECT__.log 2>&1"
+    fi
+    echo "            # Weekly log trim:"
+    echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
+    echo ""
+    _next_step=$(( _next_step + 1 ))
+  fi
+  if $ROLE_HUMAN; then
+    echo "  $_next_step. Start an interactive human-proxy session:"
+    echo "       a. Ensure the Human GitHub App is registered and apps.env is populated"
+    echo "            (see docs/HUMAN-SETUP.md for the full walk-through)"
+    echo "       b. Fill in both CLAUDE.md placeholders:"
+    echo "            sed -i 's/__HUMAN_BOT_LOGIN__/<your-appname>[bot]/g' $TARGET_REPO/CLAUDE.md"
+    echo "            sed -i 's|__CLONE_ROOT__|$TARGET_REPO|g' $TARGET_REPO/CLAUDE.md"
+    echo "       c. Launch the session:"
+    echo "            $TARGET_REPO/bin/hos-human"
+    echo "            (preflight → auth → repo sync → exec claude)"
+    echo ""
+  fi
 
 echo "  Docs: CLAUDE.md · ARCHITECTURE.md · contract/OVERSIGHT-CONTRACT.md"
 echo ""

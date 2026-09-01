@@ -8,7 +8,7 @@ description: >
   change. Produces a structured blast-radius report. Invoke only from
   risk-assessor at HIGH+. Projects override this agent with a stack-specific
   version — this is the generic base.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Grep

@@ -1,7 +1,7 @@
 ---
 name: spec-compliance-validator
 description: Validates that the agent pipeline implementation satisfies its own governance requirements — the rules defined in METHODOLOGY.md, the mandatory behaviors in AGENTS.md, and the design decisions recorded in decisions.md. This is the system-test equivalent for the pipeline itself: not "are the files consistent?" but "does the pipeline actually do what its governance spec says it must?" Invoke periodically as a health check, after significant agent changes, or when decisions.md is updated.
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write
@@ -40,9 +40,9 @@ Output: `.claudetmp/framework/spec-compliance-YYYYMMDDTHHMMSS.md`
 ### From METHODOLOGY.md
 
 **REQ-001: Cross-vendor independence constraint**
-No Claude model may be the independent reviewer. agy (Gemini) and codex (OpenAI) are the independent reviewers. Claude Sonnet is the arbiter — it synthesizes others' reviews but is not an independent voter.
-- Check: Do validate_agents.sh, validate_docs.sh, validate_spec_compliance.sh send review prompts to agy/codex? Does any agent file assign a Claude model to an independent-review role?
-- Fail condition: any framework script calls `claude` CLI for its review step, or any agent file assigns Claude as an independent reviewer.
+No Claude model may be recorded, counted, or reported as satisfying the *independent*-review requirement — independent review requires a different vendor family, or the human. agy (Gemini) and codex (OpenAI) are the independent reviewers; Claude Sonnet is the arbiter, not an independent voter. A same-family model at a strictly higher class than the artifact's authors may serve as a **peer** (class-differential) reviewer (e.g. `spec-completeness-review`, ADR-033 AD-1/AD-10) — this is legitimate but never substitutes for the independent vote.
+- Check: Do validate_agents.sh, validate_docs.sh, validate_spec_compliance.sh send review prompts to agy/codex for the independent-review role? Does any agent file assign a Claude model to the independent-review role, or record a same-family finding as satisfying it?
+- Fail condition: a same-family model's finding is recorded as the sole or independent check at a hold point. (A framework script calling the `claude` CLI for a peer-review lens, on its own, is not a violation.)
 
 **REQ-002: Risk-tiered firing thresholds**
 agy fires at composite score ≥ 0.30 (MEDIUM+). codex fires at ≥ 0.55 (HIGH+). Pipeline is fail-closed: if a required reviewer is unavailable at its threshold, the pipeline blocks rather than silently proceeding.
@@ -54,7 +54,7 @@ CRITICAL-tier steps require explicit human authorization before oversight-evalua
 
 **REQ-004: Model tier assignments**
 Author = Claude Opus. Arbiter = Claude Sonnet. Independent reviewers = agy/codex. For the agent pipeline: architect and technical-design use Opus (high-judgment design work); all reviewer/test agents use Sonnet; no agent uses Haiku for judgment calls.
-- Check: Do architect.md and technical-design.md declare `model: claude-opus-4-8`? Do all reviewer agents declare `model: claude-sonnet-4-6`?
+- Check: Do architect.md and technical-design.md declare `model: opus`? Do all reviewer agents declare `model: sonnet`? (Class aliases, not pinned generation IDs — #1122: pinning drifts silently as new generations ship; the alias always resolves to the current model in that tier.)
 
 **REQ-005: Loop exit conditions**
 Every iterative agent loop must have a defined exit condition (round limit) and an escalation path when that limit is reached.

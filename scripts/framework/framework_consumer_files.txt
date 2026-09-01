@@ -21,6 +21,20 @@ bin/hos-cron
 bin/hos-trim-logs
 bin/lib/git-credentials.sh
 
+# ── bootstrap/ — branch-ownership mechanism (#967, ADR-037, P1) ──────────────────
+# create_branch.sh is the R1 branch-creation seam bin/hos-cron's worker prose
+# now names; branch_ownership.sh is its record library. Shipped in P1 so the
+# mechanism exists ahead of P2's enforcement change in submit_pr.sh (not yet
+# shipped — tracked with the P2 PR, technical-design §10/§15 TD-N1).
+bootstrap/lib/branch_ownership.sh
+bootstrap/create_branch.sh
+
+# ── bootstrap/lib/ — sandbox-policy path helpers (#1221) ─────────────────────
+# Sourced by hos_install.sh's --human sandbox-policy block. Guarded at the call
+# site (declare -f check) so its absence degrades to a warn, not a hard-fail —
+# but shipping it means fresh installs get it without a follow-up upgrade.
+bootstrap/lib/sandbox_paths.sh
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,
@@ -30,10 +44,32 @@ bin/lib/git-credentials.sh
 .github/workflows/require-tier-ceiling.yml
 .github/workflows/validation-check.yml
 
+# ── .github/workflows/ — gate re-evaluation dispatcher (#1299) ───────────────────
+# NOT itself a required status check (see test_branch_protection_contexts.py) — it
+# only runs on pull_request_review events. The three gates above depend on it for
+# review-triggered re-evaluation: without it, a gate that failed before an approval
+# landed leaves a stale FAILURE check run that nothing re-evaluates.
+.github/workflows/rerun-gate-checks.yml
+
 # ── scripts/framework/ — consumer-facing governance tools (#769) ─────────────────
 scripts/framework/gen_codeowners.sh
+scripts/framework/gen_scripts_index.sh
 scripts/framework/protected_surfaces.txt
 scripts/framework/provision_agent_account.sh
 scripts/framework/run_post_change_sweep.sh
 scripts/framework/run_tests_inner_loop.sh
 scripts/framework/setup_branch_protection.sh
+
+# ── scripts/framework/ — required-check gate scripts (#1278) ─────────────────────
+# require-human-approval.yml, require-overseer-approval.yml, and
+# require-tier-ceiling.yml (already shipped above) invoke these. Without them the
+# workflow runs, fails to find its script, and the required check can never pass.
+scripts/framework/require_human_approval.py
+scripts/framework/require_overseer_approval.py
+scripts/framework/require_tier_ceiling.py
+
+# ── scripts/framework/ — gate re-evaluation dispatcher script (#1299) ────────────
+# Invoked by rerun-gate-checks.yml above. Reruns the three gates' EXISTING
+# workflow runs in place on review submit/dismiss so a stale FAILURE check run
+# doesn't block merge after an approval lands. Not itself a required check.
+scripts/framework/rerun_gate_checks.py

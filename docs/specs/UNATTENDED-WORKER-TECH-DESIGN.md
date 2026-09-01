@@ -370,17 +370,19 @@ R7.1 (UUIDv4 instance-id, claim-then-verify, lowest-wins, no-artifact-before-win
 
 ### Algorithm — idempotency precheck (`already_exists(cid) -> resume_state | None`)
 **Read-your-writes invariant — REST-by-id, NEVER Search:**
-1. `GET /repos/{o}/{r}/git/ref/heads/hos/auto/<cid>` → branch exists?
-2. `GET /repos/{o}/{r}/pulls?head={o}:hos/auto/<cid>&state=all` → PR exists?
-3. Scan the issue's comments (REST-by-id) for an answer envelope with `correlation-id: <cid>`.
+1. `GET /repos/{o}/{r}/pulls?head={o}:hos/auto/<cid>&state=all` → PR exists?
+2. Scan the issue's comments (REST-by-id) for an answer envelope with `correlation-id: <cid>`.
 Return the furthest-progressed state; the worker resumes from there (cold-start table below).
+
+> Superseded in part by #967 / ADR-037 AD-1/AD-2: branch existence is no longer a resume
+> state. PR-opening authority is the per-cycle ownership record checked at
+> `bootstrap/submit_pr.sh`, not the presence of a branch or commit on it.
 
 ### Cold-start recovery state machine (R6.1 M4 table)
 | Interrupted at | Recovery |
 |---|---|
 | After claim, before triage | re-triage (claim envelope present) |
 | After triage, before branch | create branch (idempotent — same cid) |
-| After branch, before PR | open PR (branch exists) |
 | After PR, before gates | re-run gates (PR exists) |
 | After gates, before merge decision | re-read gate results from PR; re-decide |
 | After merge decision, before merge | re-attempt merge (idempotent if already merged) |

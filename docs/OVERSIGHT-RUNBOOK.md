@@ -73,6 +73,20 @@ tail -f /tmp/hos-overseer-<project>.log
    escalates a PR by labeling its issue `needs-human`; you respond by removing
    `needs-human`, adding `needs-ai`, and commenting your decision. Agents treat
    the `needs-ai` label (not a bare comment) as the resume signal.
+
+   **Exception — release-request issues (NG3b).** On an issue labeled
+   `release-request`, `needs-human` does not mean "the overseer escalated this."
+   The worker applies it *itself* (protocol step R4) as part of posting the
+   authorization request, and your **removal** of it is one of the three
+   authorization signals the worker verifies from the GitHub Events API — not a
+   routing gesture. Authorizing a release means performing all three, as the
+   same CODEOWNER account, directly in GitHub: add `release-authorized`, remove
+   `needs-human`, then assign the issue to **yourself** (last). Do **not** add
+   `needs-ai` — it is not the resume signal here; the worker re-evaluates every
+   open release request on every cycle. A chat message, a comment, or a
+   `needs-ai` label authorizes nothing. See `.claude/agents/worker.md`
+   §"Release authorization protocol (NG3b)" and
+   `docs/v0.6.0/ADR-039-ng3b-self-assignment-authorization.md`.
 2. **Suspend** — pause a project's cron cycles without touching the crontab:
    `bin/hos-suspend --project <name>` (clear with `--clear`). The next cycle
    sees the suspension marker and exits early.
@@ -451,7 +465,7 @@ Implements three-gate booking creation: horizon check, one-active check,
 and GiST exclusion constraint for overlap safety.
 
 Prompt-Artifact: prompts/parking/views.md
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: CRITICAL"
 ```
 
@@ -596,7 +610,11 @@ python3 scripts/oversight/token_tracker.py report
 
 ### PHASE 10 — Human Gate
 
-Review and resolve all PR threads before merging.
+Review and resolve all PR threads before merging. Threads come from two sources: the
+Phase 9 panel (one per finding) and the overseer's own blocking findings — DIRTY-
+disposition findings and §8.2 HUMAN_REQUIRED escalations, posted via
+`bootstrap/post_review_thread.sh` rather than a plain PR comment specifically so they
+participate in this gate (#1207; see `.claude/agents/overseer.md` "Posting comments").
 
 ```bash
 # List open threads

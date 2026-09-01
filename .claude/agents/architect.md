@@ -1,7 +1,7 @@
 ---
 name: architect
 description: System architect. Invoke at project start (after pm-agent's initial Q&A) for technical feasibility review and to produce the Architecture Decision Record (ADR). Also invoke as the final escalation for technical disputes between coder, code-reviewer, technical-design, or any reviewer that cannot be resolved between those agents. The architect's decisions are final on all architecture matters.
-model: claude-opus-4-8
+model: opus
 tools:
   - Read
   - Write

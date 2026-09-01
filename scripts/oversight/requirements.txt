@@ -21,6 +21,13 @@ bandit>=1.7
 semgrep>=1.50
 detect-secrets>=1.4
 pip-audit>=2.6
+# JS/TS AST pass (ADR-032 D4/D5/D8) — HOS-internal analysis, venv pip per D2
+# (consumer-owned tools like eslint/tsc are discovered from the consumer
+# instead, via resolve_node_tool.sh). Pinned to the tested-compatible pair:
+# tree-sitter-typescript 0.23.x ships the capsule-based Language() API that
+# tree-sitter >=0.22 expects.
+tree-sitter>=0.23,<0.27
+tree-sitter-typescript>=0.23,<0.24
 # Formatters are version-PINNED to a major series: black's "stable style" changes
 # by calendar-year major (24.x → 25.x → 26.x), so a floating `black>=24.0` let the
 # venv install black 26 and reformat code the repo formatted with an older black —
@@ -35,7 +42,13 @@ mypy>=1.8
 # Testing
 pytest>=8.0
 pytest-cov>=5.0
-mutmut>=2.4
+# mutmut is version-PINNED to a major series, same rationale as black above:
+# 3.x rewrote its config format (paths_to_mutate/tests_dir/runner/dict_synonyms
+# were dropped for source_paths/pytest_add_cli_args_test_selection, and the
+# runner now shells pytest in-process instead of a --runner command). A
+# floating `mutmut>=2.4` silently installed 3.6.0 against the 2.x-era
+# pyproject.toml config, crashing every invocation. (#1083)
+mutmut>=3.6,<4.0
 
 # IP tooling (install separately to keep core deps lean)
 # scancode-toolkit>=32.0

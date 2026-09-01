@@ -1,0 +1,40 @@
+# Security-relevant surface globs (single source of truth for #1253) — consumed by
+# decide_merge_authority()'s internal _touches_security_surface() check
+# (scripts/automation/lib/merge_authority.py). Mirrors protected_surfaces.txt /
+# _touches_protected_surface() in structure and consumption.
+#
+# A changed path matching one of these sets security_relevant=True, which the
+# .claude/agents/overseer.md merge-authority matrix routes to HUMAN_REQUIRED unless
+# a verified human approval already covers the current head SHA (#741) — same
+# treatment as protected-surface. Before this file existed, "Security-relevant" had
+# no deterministic source: decide_merge_authority() took a security_relevant bool
+# that no real caller ever passed, so the matrix row and the "never approve a
+# security-relevant change without human sign-off" hard limit were both silently
+# unenforced (#1253). The caller-supplied parameter still ORs in on top of this file
+# for an explicit override; it is no longer the only source.
+#
+# Scope: code that implements or gates authorization/merge-authority decisions,
+# plus authentication/session/credential/crypto surfaces — the security-reviewer's
+# domain (auth bypass, broken authorization, session/CSRF, secrets-in-code).
+# Consumer-app path taxonomy mirrors scripts/oversight/change_classifier.py's
+# "auth/session path" HIGH tier-floor rule, the existing precedent for this
+# taxonomy. Static-analysis-derived triggers (bandit findings, etc.) are deferred
+# behind #1266/#1170 per the #1253 decision recorded in
+# research/sessions/2026-08-04-controls-that-never-fire.md.
+#
+# Glob syntax matches scripts/framework/protected_surfaces.txt: `dir/**` = that
+# directory and everything under it; every pattern is also checked nested under any
+# directory via a `**/<pattern>` fallback. Blank lines and `#` comments ignored.
+
+# The merge-authority decision logic itself — a change here can silently disable
+# any control this file exists to enforce.
+scripts/automation/lib/**
+
+# Authentication / authorization / session / credential / crypto surfaces.
+**/auth/**
+**/authn/**
+**/authz/**
+**/session/**
+**/credentials/**
+**/secrets/**
+**/crypto/**

@@ -65,7 +65,7 @@ We deliberately use **multiple vendors and model tiers** — the whole point is 
 
 | AI | Driven via | Role |
 |---|---|---|
-| **Claude** (Opus / Sonnet / Haiku) | `claude` CLI | Author (Opus), triage & cheap review (Haiku), arbiter (Sonnet) |
+| **Claude** (Opus / Sonnet) | `claude` CLI | Design authoring — architect, technical-design, pm-agent (Opus); code authoring, triage, arbiter — coder, risk-assessor/risk-historian, all reviewers (Sonnet) |
 | **OpenAI** | `codex` CLI (`codex exec`) | Independent reviewer / adversary (high risk) |
 | **Google** | `agy` (Antigravity CLI) | Independent cross-vendor reviewer; architecture/whole-repo lens |
 | **GitHub Copilot** | GitHub-native PR review | **Baseline reviewer on _every_ PR** (automatic, in CI) |
@@ -91,8 +91,8 @@ Roles are defined first; models are then assigned to roles (§3). Think *separat
 
 | Role | What it does | Typically |
 |---|---|---|
-| **Author** | Generates code from a prompt; self-flags per `AGENTS.md`. | Claude Opus |
-| **Triage** | Scores the change's risk (see §5). Deterministic rules set a floor; the author cannot lower its own risk. | rules + Claude Haiku |
+| **Author** | Generates code from a prompt; self-flags per `AGENTS.md`. | Claude Sonnet (`coder`) — Opus is used for the upstream *design*-authoring chain (`architect`, `technical-design`, `pm-agent`), not for code generation |
+| **Triage** | Scores the change's risk (see §5). Deterministic rules set a floor; the author cannot lower its own risk. | rules + Claude Sonnet (`risk-assessor`, `risk-historian`) |
 | **Reviewer(s)** | Independent critique, each with a *lens*: correctness, security, maintainability, spec-conformance. Count scales with risk. | Antigravity, Codex, Copilot |
 | **Adversary / red-team** | Actively tries to *break* the change rather than bless it. High/critical risk only. | Codex or Antigravity |
 | **IP / provenance** | Checks intellectual-property exposure — copyleft/unknown-license code or deps entering the tree, verbatim regurgitation of copyrighted source, stripped attribution. An axis *orthogonal* to the risk tier; surfaces exposure for human/legal review, does not adjudicate. Runs on every panel pass. | `ipcheck` → `scripts/oversight/validators/ip_check.py`. **Level 1 ✅** (dependency license gate via ScanCode Toolkit, falls back to PyPI/npm API). **Level 2 ✅** (prompt clean-room: reads captured prompt artifacts, flags attribution triggers). **Level 3 🔧** (regurgitation via LSH; planned: ai-gen-code-search/AboutCode service API — see D20). |

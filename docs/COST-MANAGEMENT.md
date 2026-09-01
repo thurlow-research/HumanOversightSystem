@@ -12,9 +12,11 @@ free wins. Where a choice was recorded as a deliberate decision, it is cross-lin
 decision, that gap is surfaced rather than papered over with invented rationale.
 
 > Scope note: this doc describes the **current** implementation, not aspirational targets.
-> Where a planned change is referenced (e.g. model upgrades in
-> [#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895)), it is
-> labelled as direction, not current state.
+> Where a planned change is referenced, it is labelled as direction, not current state.
+> The `pm-agent`/`overseer` Opus move proposed in
+> [#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895) has since
+> **shipped** (verified against `.claude/agents/` frontmatter, 2026-08-06, #1141) — §4 below
+> describes it as current state, not direction.
 
 ---
 
@@ -53,9 +55,14 @@ of it before any agent is invoked:
 - **PR pre-filtering** — for the overseer, the shell checks each PR's `mergeable_state`
   via REST and passes only actionable PRs onward, so the model never reasons about PRs it
   cannot act on.
-- **Idle backoff** — when a cycle finds no work, the launcher backs off (default 1800s)
-  rather than re-invoking the model. This idle-backoff suppression is load-bearing for
-  cron cost control (see `DECISIONS.md`, the 2026-06-21 cron entry, and #628).
+- **Overseer / worker PR pre-filters** — when the open-PR queue has nothing actionable
+  (overseer: none open, or all conflicting/draft; worker: all own PRs awaiting human
+  merge), the launcher skips the model invocation entirely. #1196 removed the
+  time-based idle backoff that previously suppressed cron fires with no recent
+  activity (added under a GitHub-throttling diagnosis later traced to a different
+  cause — see `DECISIONS.md`, the 2026-06-21 cron entry, #628, and the #1196 entry);
+  cost control for genuinely empty queues now rests on these provable-emptiness
+  pre-filters alone.
 
 **Rationale:** an agent is invoked only with the minimal boilerplate it needs; discovery,
 sync, auth, and filtering are completed deterministically so model attention goes to
@@ -113,23 +120,27 @@ independence invariant enforced in code), D15 (panel diff handling).
 
 ## 4. Model tiering by stakes
 
-Most agents run on **Sonnet 4.6**; only the highest-judgment authoring agents run on
+Most agents run on **Sonnet 4.6**; only the highest-judgment authoring/gating agents run on
 **Opus 4.8**.
 
 | Tier | Agents |
 |---|---|
-| **Opus 4.8** | `architect`, `technical-design` (system-level design authority) — and *only* these two |
-| **Sonnet 4.6** | every other agent — all reviewers, the oversight layer (`overseer`, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`), `pm-agent`, `coder`, `worker`, tests |
+| **Opus 4.8** | `architect`, `technical-design` (system-level design authority), `pm-agent` (spec/requirements authority), `overseer` (merge gate) — 4 of 30 shipped agents |
+| **Sonnet 4.6** | every other agent (26 of 30) — all reviewers, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`, `risk-historian`, `coder`, `worker`, tests |
 
 The governing principle (`DECISIONS.md` D4): **the AI that authors does not review its own
-output.** Opus authors design; Sonnet acts as arbiter/synthesizer (and is explicitly *not*
-counted as an independent cross-vendor check); cheaper tiers handle confirmatory triage.
+output.** Opus authors design and gates merges; Sonnet authors code, reviews, and acts as
+arbiter/synthesizer (and is explicitly *not* counted as an independent cross-vendor check);
+cheaper tiers handle confirmatory triage.
 
-**Current vs. direction:** `pm-agent` and `overseer` currently run on Sonnet 4.6.
-[#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895) proposes moving
-the design agent (`pm-agent`) and the overseer merge gate to Opus 4.8 — that is a pending
-proposal, not the current state. This doc describes the current split: only `architect`
-and `technical-design` on Opus, every other agent on Sonnet.
+**Shipped (2026-08-06, #1141):** [#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895)'s
+proposal to move `pm-agent` and the `overseer` merge gate to Opus 4.8 has shipped — both
+agents pin `model: opus` in `.claude/agents/` today. This doc previously described that move
+as a pending proposal; it is now current state. The per-invocation cost of `pm-agent` and
+`overseer` calls carries the Opus/Sonnet price delta accordingly — see
+[`token_tracker.py`](../scripts/oversight/token_tracker.py) for actual measured usage rather
+than a static estimate, since neither agent's call volume is fixed enough to project a
+reliable dollar figure here.
 
 **Dynamic escalation (proposed, #63).** The split above is *static*. A separate proposal —
 [#63](https://github.com/thurlow-research/HumanOversightSystem/issues/63), designed in
@@ -271,9 +282,9 @@ review outcomes are not conflated with LLM spend.
 
 | Decision | What it saves | What it risks | Mitigation |
 |---|---|---|---|
-| Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles; idle backoff |
+| Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles (PR pre-filters) |
 | Diff-centric / scoped context (§3) | Tokens per reviewer; better signal | Misses cross-cutting issues | Multi-agent split; security gets extra context; cross-vendor panel |
-| Sonnet default, Opus only for design (§4) | Per-token cost across 28 agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
+| Sonnet default, Opus for design + merge gate (§4) | Per-token cost across 26 agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
 | Risk-stratified effort (§5) | Exhaustive review on LOW/MEDIUM | Mis-triaged defect slips auto-pass | SQC random red-team sample → escaped-defect rate |
 | Deterministic validators first (§6) | Expensive review on lint-rejectable code | Heuristic false +/− | Graceful degradation; tuning vs. escaped-defect signal |
 | Fail-closed, no retry (§7) | Retry storms of model calls | Occasional false CRITICAL | False-CRITICAL shape detection; human absorbs over-escalation |
@@ -306,8 +317,8 @@ review outcomes are not conflated with LLM spend.
   full pipeline.
 - [`DECISIONS.md`](../DECISIONS.md) — the recorded decisions cited above (D4, D5, D7, D15,
   D16, D17, D18, D22, D33, D39, D40, D52).
-- Model-selection direction:
-  [#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895) (proposed
-  Opus 4.8 for design agents + overseer merge gate).
+- Model-selection history:
+  [#895](https://github.com/thurlow-research/HumanOversightSystem/issues/895) (shipped —
+  Opus 4.8 for `pm-agent`/`architect`/`technical-design` + `overseer` merge gate).
 - Validator suite: [`scripts/oversight/run_validators.sh`](../scripts/oversight/run_validators.sh).
 - Token tracker: [`scripts/oversight/token_tracker.py`](../scripts/oversight/token_tracker.py).

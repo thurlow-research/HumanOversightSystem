@@ -7,7 +7,7 @@ name: Require human approval (protected surfaces)
 #
 # To make it BLOCKING: add "require-human-approval" to the branch-protection
 # "Require status checks to pass" list (see docs/MACHINE-ACCOUNTS-SETUP.md).
-# Re-runs on review submit/dismiss so adding/removing an approval re-evaluates.
+# Re-evaluated on review submit/dismiss by .github/workflows/rerun-gate-checks.yml (#1299).
 
 # SECURITY: uses pull_request_TARGET, not pull_request. Under pull_request_target
 # the workflow definition, the gate script (require_human_approval.py), the
@@ -18,11 +18,24 @@ name: Require human approval (protected surfaces)
 # files and reviews are read as DATA via the `gh` API below, never checked out
 # and run. (Copilot finding on PR #224: plain `pull_request` + checkout ran the
 # PR's own copy of the gate, making it self-bypassable.)
+#
+# SECURITY (#972, #1299): this workflow triggers on pull_request_TARGET ONLY.
+# It used to ALSO trigger on pull_request_review, where GITHUB_REF is the PR's
+# MERGE ref (base+head) rather than the base branch — a bare `actions/checkout@v4`
+# there would check out and execute the PR's OWN copy of the gate script,
+# reintroducing the self-bypass this header warns about. That second trigger also
+# produced a SECOND check run of this job's name for the PR, so a stale FAILURE
+# from the first one kept blocking merge even after an approval landed (#1299).
+# Review-triggered re-evaluation now happens by RERUNNING this workflow run in
+# place — see .github/workflows/rerun-gate-checks.yml, which invokes
+# scripts/framework/rerun_gate_checks.py. A rerun replays this run's ORIGINAL
+# pull_request_target event, so it UPDATES the existing check run instead of
+# creating a duplicate. Do NOT re-add a pull_request_review trigger here;
+# tests/framework/test_gate_checkout_pinned_base.py fails if you do. The
+# `ref: base.sha` pin below STAYS as defence-in-depth.
 on:
   pull_request_target:
     branches: [main, "release/v*"]
-  pull_request_review:
-    types: [submitted, dismissed]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -43,12 +56,15 @@ jobs:
     name: require-human-approval
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (TRUSTED base — never the PR head)
-        # Under pull_request_target the default ref is the base branch, so this
-        # checks out the trusted gate script + surfaces list. Do NOT add
-        # `ref: ${{ github.event.pull_request.head.sha }}` here — that would run
-        # the PR's version of the gate and reintroduce the self-bypass.
+      - name: Checkout (TRUSTED base — never the PR head or merge ref)
+        # Pin the base SHA explicitly. Under pull_request_target the default ref
+        # is already the base, so this is a no-op today — it is kept as
+        # defence-in-depth so that re-adding any non-target trigger (see #972 /
+        # #1299 above) cannot silently start executing PR content. Do NOT change
+        # this to `${{ github.event.pull_request.head.sha }}` or the merge ref.
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Protected-surface human-approval gate
         env:

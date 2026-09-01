@@ -2,14 +2,37 @@
 # bootstrap/get_app_token.sh — generate a GitHub App installation token for HOS bot identities
 #
 # Usage (source into current shell so GH_TOKEN + HOS_BOT_LOGIN are exported):
-#   source <(./bootstrap/get_app_token.sh --app worker)
-#   source <(./bootstrap/get_app_token.sh --app overseer)
+#   ./bootstrap/get_app_token.sh --app worker > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#   ./bootstrap/get_app_token.sh --app overseer > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#   ./bootstrap/get_app_token.sh --app human > /tmp/hos_auth.sh && source /tmp/hos_auth.sh && rm -f /tmp/hos_auth.sh
+#
+# Do not use `source <(./bootstrap/get_app_token.sh --app ...)`. Process
+# substitution is unreliable in minimal cron environments (/dev/fd may be
+# absent) and can force an extra confirmation prompt under some tooling even
+# when the underlying command is allowed.
+# bin/hos-cron already uses the temp-file pattern above; bin/hos-worker and
+# bin/hos-overseer (the interactive launchers) still use `source <()` and
+# should be updated to match — tracked separately since bin/ changes go
+# through the normal build pipeline. (The legacy per-role hos-worker-cron/
+# hos-overseer-cron launchers that predated hos-cron were retired — #990.)
 #
 # After sourcing, `gh api` calls in the same shell use the App installation token.
 # HOS_BOT_LOGIN is set to the App's bot identity (e.g. "hos-worker-hos[bot]") so
 # identity guards don't need a `gh api user` call (which fails for App tokens).
 #
+# Verify a mint succeeded via $? and/or the "✔ <role> token obtained" line this
+# script already prints to stderr on success — never by opening or grepping the
+# sourced token output file (e.g. /tmp/hos_auth.sh). That file holds a live
+# installation token; reading it for any reason, including with `grep -o` for
+# just a variable name, is one pattern mistake away from leaking the value into
+# a transcript or log. (#1086)
+#
 # Token lifetime: 1 hour. Re-source before long sessions.
+#
+# To revoke the token this script exports before it would otherwise expire,
+# use bootstrap/revoke_app_token.sh — it reads GH_TOKEN from the environment,
+# so the call site (`bash bootstrap/revoke_app_token.sh`) takes no token
+# argument and is statically allowlistable (#1191).
 #
 # Reads: ~/.config/hos/apps.env  (App IDs, PEM paths — never committed to git)
 # Requires: openssl, curl, python3 (all present on macOS by default)
@@ -31,11 +54,11 @@ APPS_ENV="${HOS_CONFIG_DIR:-${HOME}/.config/hos}/apps.env"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --app) APP_ROLE="$2"; shift 2 ;;
-        *)     echo "Usage: $0 --app [worker|overseer]" >&2; exit 1 ;;
+        *)     echo "Usage: $0 --app [worker|overseer|human]" >&2; exit 1 ;;
     esac
 done
 
-[[ -n "$APP_ROLE" ]] || err "--app required (worker or overseer)"
+[[ -n "$APP_ROLE" ]] || err "--app required (worker, overseer, or human)"
 [[ -f "$APPS_ENV" ]] || err "apps.env not found at $APPS_ENV — run hos_bootstrap.sh or set HOS_CONFIG_DIR"
 
 # ── #633: verify apps.env permissions before sourcing ─────────────────────────
@@ -63,7 +86,12 @@ case "$APP_ROLE" in
         PEM_PATH="$HOS_OVERSEER_PEM"
         DECLARED_BOT_LOGIN="${HOS_OVERSEER_BOT_LOGIN:-}"
         ;;
-    *)  err "--app must be 'worker' or 'overseer'" ;;
+    human)
+        APP_ID="$HOS_HUMAN_APP_ID"
+        PEM_PATH="$HOS_HUMAN_PEM"
+        DECLARED_BOT_LOGIN="${HOS_HUMAN_BOT_LOGIN:-}"
+        ;;
+    *)  err "--app must be 'worker', 'overseer', or 'human'" ;;
 esac
 
 # ── Input validation (#545, #548) ─────────────────────────────────────────────

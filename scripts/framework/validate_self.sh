@@ -42,6 +42,15 @@
 #       | 3 pass cap hit without converging (escalate to human)
 set -euo pipefail
 
+# Resolve the repo root from the script's own location so the validation_logic.py
+# delegation works regardless of the caller's cwd (SPEC-334, mirrors
+# validate_agents.sh / validate_scripts.sh). The ledger path stays cwd-relative
+# (OUT_DIR), preserving the existing --record/--reset contract and this script's
+# own ephemeral (not persisted) ledger — see DECISIONS.md's "ledger asymmetry".
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATION_LOGIC="$ROOT/scripts/oversight/validation_logic.py"
+
 AGENTS_DIR=".claude/agents"
 DOCS_DIR="docs"
 OUT_DIR=".claudetmp/framework"
@@ -53,8 +62,9 @@ OUT_DIR=".claudetmp/framework"
 LEDGER="$OUT_DIR/self-review-ledger.jsonl"
 # Self-review is ALWAYS Opus — not overridable. The whole point is to apply the
 # strongest available model to flush issues before the external pass; allowing a
-# downgrade would defeat that. (Override only the resolved ID if Opus is renamed.)
-MODEL="claude-opus-4-8"
+# downgrade would defeat that. A class alias (not a pinned generation ID) so this
+# never goes stale the way the previous "claude-opus-4-8" pin did (#1122, #1362).
+MODEL="opus"
 CHANGED_ONLY=false
 # Base ref for --changed-only. Defaults to HEAD~1 (single commit), but a release
 # scopes to the last release tag so a patch/minor reviews ITS diff, not the whole
@@ -79,10 +89,12 @@ EXTRA_REVIEW_FILES=""
 if [[ "${1:-}" == "--record" ]]; then
     mkdir -p "$OUT_DIR"
     _files="${2:?--record needs FILES}"; _cat="${3:?--record needs CATEGORY}"; _disp="${4:?--record needs DISPOSITION}"
-    _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    _json_files=$(printf '%s' "$_files" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"", (i>1?",":""), $i}}')
-    printf '{"files":[%s],"category":"%s","disposition":"%s","ts":"%s"}\n' \
-        "$_json_files" "$_cat" "$_disp" "$_ts" >> "$LEDGER"
+    # Ledger write delegated to validation_logic.py (SPEC-334 binding 4), same as
+    # validate_agents.sh / validate_scripts.sh — one fingerprint/ledger schema
+    # ("class" key) shared across all three, instead of this script's own
+    # divergent "category" key that compute_verdict's ledger reader never read.
+    python3 "$VALIDATION_LOGIC" record \
+        --ledger "$LEDGER" --files "$_files" --class "$_cat" --disposition "$_disp" >/dev/null
     echo "Recorded to ledger: [$_files] $_cat → $_disp"
     exit 0
 fi
@@ -214,14 +226,26 @@ Return JSON only — no prose outside the JSON block:
     #   --no-session-persistence              leave no session state behind.
     # The review package is fully self-contained (all files inline in the prompt),
     # so the reviewer needs no project context at all.
-    local tmpfile result
-    tmpfile=$(mktemp /tmp/validate_self_XXXXXX)
-    printf '%s' "$prompt" > "$tmpfile"
-    result=$(claude -p "$(cat "$tmpfile")" --model "$MODEL" \
+    local result rc=0
+    # Pass the prompt via stdin, not as a CLI argument (#1368): at release scale
+    # (--changed-only spanning a full minor release) the review package can
+    # exceed the OS ARG_MAX ceiling shared by argv and the environment, causing
+    # execve to fail (E2BIG, rc=126) before claude ever runs. Piping removes
+    # that ceiling entirely — matches the pattern already used for the same
+    # invocation in validate_scripts.sh.
+    result=$(printf '%s' "$prompt" | claude -p --model "$MODEL" \
         --exclude-dynamic-system-prompt-sections \
-        --no-session-persistence 2>/dev/null) || \
+        --no-session-persistence 2>/dev/null) || rc=$?
+    # Fail-closed on an invocation that errored or produced empty/whitespace-only
+    # output (same class of bug as #669/#670 in the sibling scripts): a broken
+    # `claude` call must not read as "reviewed, found nothing". The synthesized
+    # block below carries "verdict":"error" so the finalize step (which now
+    # inspects each block's own verdict field, not just its findings count) fails
+    # the gate rather than silently approving it (#1362).
+    if [[ $rc -ne 0 || -z "${result//[[:space:]]/}" ]]; then
+        echo "  ERROR: Opus self-review invocation failed (rc=$rc) or produced empty output — recording as a review FAILURE, not a clean pass (#1362)." >&2
         result='{"reviewer":"opus-self","error":"claude invocation failed","findings":[],"verdict":"error","summary":"claude failed"}'
-    rm -f "$tmpfile"
+    fi
     # Strip any markdown fencing the CLI may add around the JSON.
     echo "$result" | sed -e 's/^```json$//' -e 's/^```$//'
 }
@@ -235,114 +259,29 @@ OPUS_OUT=$(run_opus)
     echo '```'
     echo ""
 } >> "$OUTFILE"
-echo "  done"
+# "done" means the reviewer actually produced a review, not merely that the call
+# returned — a failed invocation was already reported by run_opus above (#1362).
+if printf '%s' "$OPUS_OUT" | grep -q '"error"[[:space:]]*:[[:space:]]*"claude invocation failed"'; then
+    echo "  FAILED — see error above"
+else
+    echo "  done"
+fi
 echo ""
 
 # ── Finalize verdict (ledger-aware: verdict keyed on NEW findings) ───────────
-python3 - "$OUTFILE" "$LEDGER" <<'PYEOF'
-import json, re, sys
-path, ledger_path = sys.argv[1], sys.argv[2]
-content = open(path).read()
-order = ["critical", "blocking", "high", "warning", "medium", "low", "none"]
-
-
-def _brace_objects(text):
-    """String-aware extraction of every balanced {...} that parses as JSON.
-
-    Brace counting must ignore braces inside JSON strings — finding
-    descriptions routinely contain literals like "step{N}-...". Naive
-    counting would mis-balance and drop the whole object.
-    """
-    out, n, i = [], len(text), 0
-    while i < n:
-        if text[i] != "{":
-            i += 1
-            continue
-        depth, in_str, esc = 0, False, False
-        j = i
-        while j < n:
-            c = text[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-            elif c == '"':
-                in_str = True
-            elif c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        out.append(json.loads(text[i:j + 1]))
-                    except Exception:
-                        pass
-                    break
-            j += 1
-        i = j + 1
-    return out
-
-
-def extract_objects(text):
-    """Findings objects, tolerant of prose the model emits inside/around the
-    ```json fence (the strict `​```json{...}​``` regex misses those)."""
-    objs = []
-    for m in re.finditer(r"```json(.*?)```", text, re.DOTALL):
-        objs.extend(o for o in _brace_objects(m.group(1)) if "findings" in o or "verdict" in o)
-    if not objs:  # no fenced object parsed — scan the whole document
-        objs.extend(o for o in _brace_objects(text) if "findings" in o or "verdict" in o)
-    return objs
-
-
-blocks = extract_objects(content)
-
-# Load dedup ledger: fingerprint = (sorted files, category).
-seen = set()
-try:
-    for line in open(ledger_path):
-        line = line.strip()
-        if not line:
-            continue
-        e = json.loads(line)
-        seen.add((tuple(sorted(e.get("files", []))), e.get("category", "")))
-except FileNotFoundError:
-    pass
-
-
-def fingerprint(f):
-    return (tuple(sorted(f.get("files", []))), f.get("category", ""))
-
-
-highest = "none"
-blocking_count = new_blocking = 0
-for d in blocks:
-    for f in d.get("findings", []):
-        sev = str(f.get("severity", "low")).lower()
-        if sev in order and order.index(sev) < order.index(highest):
-            highest = sev
-        if sev in ("critical", "blocking", "high"):
-            blocking_count += 1
-            if fingerprint(f) not in seen:
-                new_blocking += 1
-
-# Verdict is keyed on NEW (un-ledgered) blocking findings: convergence means
-# "zero non-noise", not zero findings. Seen findings are already dispositioned.
-if not blocks:
-    verdict = "error"
-elif new_blocking > 0:
-    verdict = "request_changes"
-else:
-    verdict = "approve"
-content = re.sub(r'^verdict: pending$', f'verdict: {verdict}', content, flags=re.M)
-content = re.sub(r'^highest_severity: none$', f'highest_severity: {highest}', content, flags=re.M)
-content = re.sub(r'^blocking_count: 0$', f'blocking_count: {blocking_count}', content, flags=re.M)
-content = re.sub(r'^new_blocking_count: 0$', f'new_blocking_count: {new_blocking}', content, flags=re.M)
-open(path, 'w').write(content)
-print(f"  verdict={verdict} highest_severity={highest} blocking={blocking_count} new={new_blocking}")
-PYEOF
+# Dedup fingerprinting + verdict aggregation delegated to validation_logic.py
+# (SPEC-334), same module validate_agents.sh / validate_scripts.sh use, instead
+# of this script's own hand-rolled heredoc. That heredoc only ever asked "did I
+# get any findings?" — it never inspected a reviewer block's own `verdict`
+# field, so run_opus's error stub ({"findings":[],"verdict":"error",...}) parsed
+# as zero findings and fell through to "approve" (#1362). validation_logic.py's
+# compute_verdict already treats a block-level verdict=="error" as a NEW
+# blocking signal (the #670 fix) — reusing it here closes the same class of gap
+# validate_self.sh was the one holdout for. --strict-empty: an empty parse (no
+# blocks at all) also yields verdict=error, matching this script's prior
+# behavior for that case.
+python3 "$VALIDATION_LOGIC" process \
+    --file "$OUTFILE" --ledger "$LEDGER" --strict-empty
 
 VERDICT=$(grep '^verdict:' "$OUTFILE" | head -1 | awk '{print $2}')
 BLOCKING=$(grep '^new_blocking_count:' "$OUTFILE" | head -1 | awk '{print $2}')

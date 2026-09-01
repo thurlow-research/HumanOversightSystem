@@ -1,0 +1,4 @@
+name = "testcycle-a"
+description = "Throwaway fixture pack for test_requires_closure.py — mutual cycle with testcycle-b"
+version = "0.1.0"
+requires = ["testcycle-b"]

@@ -1,0 +1,4 @@
+name = "astro"
+description = "Astro-framework depth (islands, SSR/SSG/hybrid rendering, content collections, endpoints, adapters) layered on packs/node — requires the node pack's generic JS/TS depth."
+version = "0.1.0"
+requires = ["node"]

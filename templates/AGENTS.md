@@ -204,7 +204,9 @@ The `prompts/` directory must be committed to git. It is not ephemeral.
 
 ### Git Commit Trailer Convention
 
-For every commit containing AI-generated code, append trailers:
+For every commit containing AI-generated code, append trailers. `AI-Model:` must be the
+model ID actually running this session (your own system context states it) — never copy
+the example below literally; it is a placeholder, not a value to reuse:
 
 ```
 git commit -m "Add auth middleware
@@ -212,14 +214,14 @@ git commit -m "Add auth middleware
 Implements JWT validation with refresh token rotation.
 
 Prompt-Artifact: prompts/auth/middleware.md
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: HIGH"
 ```
 
 For LOW risk changes with no artifact file:
 ```
 Prompt-Artifact: none (LOW risk)
-AI-Model: claude-sonnet-4-6
+AI-Model: <actual-model-id-running-this-session>
 AI-Risk: LOW
 ```
 

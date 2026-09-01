@@ -22,6 +22,7 @@ _ENSURE_VENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$_ENSURE_VENV_DIR/.venv"
 VENV_BIN="$VENV/bin"
 OVERSIGHT_PYTHON="$VENV_BIN/python3"
+REPO_ROOT="$(cd "$_ENSURE_VENV_DIR/../.." && pwd)"
 
 # --quiet suppresses informational stdout; only meaningful when run as a subprocess.
 _ENSURE_VENV_QUIET=false
@@ -54,7 +55,9 @@ _check_venv_stale() {
 # building the venv (radon/bandit/flake8 + their deps). A full disk otherwise
 # surfaces as a generic "venv unavailable" with no hint about the real cause
 # (#954: a full /tmp made pip ENOSPC, which read as a missing-venv FATAL).
-_EVENV_MIN_FREE_KB=512000  # ~500 MB
+# Bumped for semgrep's footprint (ADR-032 D6) — semgrep alone brings the venv
+# to ~480 MB, well past the pre-JS floor.
+_EVENV_MIN_FREE_KB=1024000  # ~1 GB
 
 # Report free space at the venv's filesystem, e.g. "412 MB free". Best-effort:
 # returns nothing if df is unavailable or reports oddly.
@@ -75,6 +78,25 @@ _check_disk_space() {
   fi
 }
 
+# Consumer projects (e.g. a Django app) keep their own app dependencies in
+# requirements*.txt / requirements/*.txt at the project root — the same
+# convention expensive_gates_stub.sh already checks against. run_tests_inner_loop.sh
+# runs pytest from this venv against $REPO_ROOT, so without this step a fresh
+# venv build on such a project fails pytest collection with ModuleNotFoundError
+# even though the oversight tooling itself installed cleanly (#956).
+_install_project_requirements() {
+  local req
+  for req in "$REPO_ROOT"/requirements*.txt "$REPO_ROOT"/requirements/*.txt; do
+    [[ -f "$req" ]] || continue
+    _evenv_info "installing project dependencies from ${req#"$REPO_ROOT"/} ..."
+    if ! "$VENV_BIN/pip" install --quiet -r "$req"; then
+      _evenv_err "pip install of project requirements ($req) failed — disk full or network down? ($(_evenv_free_space))"
+      return 1
+    fi
+  done
+  return 0
+}
+
 _create_venv() {
   _check_disk_space
   _evenv_info "creating oversight venv at $VENV"
@@ -93,6 +115,9 @@ _create_venv() {
     _evenv_err "pip install of oversight requirements failed — disk full or network down? ($(_evenv_free_space))"
     return 1
   fi
+  if ! _install_project_requirements; then
+    return 1
+  fi
   _evenv_ok "oversight venv ready"
 }
 
@@ -100,7 +125,7 @@ _create_venv() {
 # Runs on every invocation so a broken venv (e.g. after a Python upgrade or
 # path change) is caught and repaired without human intervention.
 _smoke_test_venv() {
-  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8" 2>/dev/null
+  "$OVERSIGHT_PYTHON" -c "import radon, bandit, flake8, tree_sitter, tree_sitter_typescript, semgrep" 2>/dev/null
 }
 
 if ! _check_venv_stale; then
@@ -132,7 +157,6 @@ export VENV VENV_BIN OVERSIGHT_PYTHON
 # Drop marker file only after a successful smoke test — the marker is a cache
 # hint, not a trust anchor.  A broken venv leaves the marker absent until the
 # smoke test passes again.
-REPO_ROOT="$(cd "$_ENSURE_VENV_DIR/../.." && pwd)"
 REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
 mkdir -p ~/.hos/setup-validation 2>/dev/null || true
 touch ~/.hos/setup-validation/oversight-venv-${REPO_HASH} 2>/dev/null || true
