@@ -111,11 +111,15 @@ JS_EXTS_RE='\.(ts|tsx|js|jsx|astro|mjs|cjs)$'
 # check (S7, #1063) still fires on a package.json-only bump with no other JS
 # touched, without changing JS_FILES membership or JS_EXTS_RE (AC-2 untouched).
 PKG_JSON_FILES=()
+# Shell-logic lane (#1241): decision constructs in .sh launchers are untested
+# code in front of tested Python — a directional signal, not a security check.
+SH_FILES=()
 for f in ${FILES[@]+"${FILES[@]}"}; do  # bash 3.2: unguarded expansion crashes on empty array
     ALL_FILES+=("$f")
     [[ "$f" == *.py && -f "$f" ]] && PY_FILES+=("$f")
     [[ "$f" =~ $JS_EXTS_RE && -f "$f" ]] && JS_FILES+=("$f")
     [[ "$(basename "$f")" == "package.json" && -f "$f" ]] && PKG_JSON_FILES+=("$f")
+    [[ "$f" == *.sh && -f "$f" ]] && SH_FILES+=("$f")
 done
 
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
@@ -387,6 +391,11 @@ run_validator "ip_check"         "$VALIDATORS_DIR/ip_check.py"                12
 # Portability check
 if [[ ${#PY_FILES[@]} -gt 0 ]]; then
     run_validator "portability"    "$VALIDATORS_DIR/portability_check.py"       60 false "${PY_FILES[@]}"
+fi
+
+# Shell-logic check (#1241) — decision constructs in .sh launchers
+if [[ ${#SH_FILES[@]} -gt 0 ]]; then
+    run_validator "shell_logic"    "$VALIDATORS_DIR/shell_logic_check.py"       60 false "${SH_FILES[@]}"
 fi
 
 # Prompt audit — network-dependent (calls gh for spec-gap count).
