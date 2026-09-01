@@ -98,6 +98,7 @@ excluded.
 - `scripts/framework/gen_scripts_index.sh` — generate SCRIPTS-INDEX.md, a directory-grouped index of every script and library module under bin/ (top-level), bootstrap/ (top-level), and scripts/ (recursive, including scripts/automation/lib/*.py), with a one-line description pulled from each file's header comment (.sh) or module docstring (.py).
 - `scripts/framework/install.sh` — install or update the agent pipeline framework in a project repo.
 - `scripts/framework/provision_agent_account.sh` — Configure a checkout to operate as an HOS machine account.
+- `scripts/framework/regen_all.sh` — single canonical entry point for the self-heal-safe generated artifacts (SCRIPTS-INDEX.md, .github/CODEOWNERS). Both are pure functions of other committed input with no human judgment required to regenerate, unlike scripts/framework/validation-stamps/*.stamp (written only after real review — deliberately NOT wired in here; auto-regenerating it would defeat the gate).
 - `scripts/framework/require_human_approval.py` — server-side §9 protected-surface gate.
 - `scripts/framework/require_overseer_approval.py` — server-side overseer-review gate.
 - `scripts/framework/require_tier_ceiling.py` — server-side overseer ceiling gate.
