@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","pr":1500,"head_sha":"8f5069f5d67a17f491c3e114c4258d2457f4f871","reason":"already reviewed this head SHA at 2026-09-02T02:25:13Z; comment posted 2026-09-02T02:26:48Z; decision HUMAN_REQUIRED (protected-surface CLAUDE.md/regen_all.sh/run_tests_inner_loop.sh); no new commits or comments since prior review","cycle":"2026-09-02T054600Z"}
