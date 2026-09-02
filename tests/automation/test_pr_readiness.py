@@ -29,6 +29,7 @@ from scripts.automation.lib.pr_readiness import (
     _check_doc_currency,
     _check_evaluator_verdict,
     _check_handoff_artifacts,
+    _check_inner_loop_tests,
     _check_na_domains,
     _check_no_unresolved_escalations,
     _check_prompt_artifact_trailers,
@@ -39,6 +40,7 @@ from scripts.automation.lib.pr_readiness import (
     _parse_register,
     _parse_required_signoffs,
     _tier_gte,
+    _uncommitted_self_heal_artifacts,
     assess_pr_readiness,
     write_session_state,
 )
@@ -564,6 +566,58 @@ def test_doc_currency_agent_surface_with_docs_passes(git_repo):
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     check = _check_doc_currency(repo, base, head)
     assert check.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Self-heal artifact commit check (#1500 — the overseer's finding on #1414)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_uncommitted_self_heal_artifacts_none_when_clean(git_repo):
+    repo, _base = git_repo
+    (repo / "SCRIPTS-INDEX.md").write_text("committed\n")
+    _git(repo, "add", "SCRIPTS-INDEX.md")
+    _git(repo, "commit", "-q", "-m", "add index")
+    assert _uncommitted_self_heal_artifacts(repo) is None
+
+
+@pytest.mark.slow
+def test_uncommitted_self_heal_artifacts_flags_working_tree_drift(git_repo):
+    repo, _base = git_repo
+    (repo / "SCRIPTS-INDEX.md").write_text("committed\n")
+    _git(repo, "add", "SCRIPTS-INDEX.md")
+    _git(repo, "commit", "-q", "-m", "add index")
+    # simulate self-heal rewriting the working-tree copy without a commit
+    (repo / "SCRIPTS-INDEX.md").write_text("regenerated, different\n")
+    assert _uncommitted_self_heal_artifacts(repo) == "SCRIPTS-INDEX.md"
+
+
+@pytest.mark.slow
+def test_uncommitted_self_heal_artifacts_none_when_absent(tmp_path):
+    assert _uncommitted_self_heal_artifacts(tmp_path) is None
+
+
+@pytest.mark.slow
+def test_check_inner_loop_tests_fails_when_selfheal_left_uncommitted_diff(git_repo):
+    """REQ-W-01 must not pass purely on pytest's exit code (#1500): a stub
+    script that self-heals a tracked artifact without committing it must fail
+    the check, even though the script itself exits 0."""
+    repo, _base = git_repo
+    (repo / "SCRIPTS-INDEX.md").write_text("committed\n")
+    _git(repo, "add", "SCRIPTS-INDEX.md")
+    _git(repo, "commit", "-q", "-m", "add index")
+
+    scripts_dir = repo / "scripts" / "framework"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "run_tests_inner_loop.sh").write_text(
+        "#!/bin/bash\necho 'regenerated, different' > SCRIPTS-INDEX.md\nexit 0\n"
+    )
+
+    check = _check_inner_loop_tests(repo)
+    assert check.passed is False
+    assert "SCRIPTS-INDEX.md" in check.detail
+    assert "uncommitted" in check.detail
 
 
 # ---------------------------------------------------------------------------

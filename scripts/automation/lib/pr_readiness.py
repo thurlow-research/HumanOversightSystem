@@ -79,6 +79,11 @@ from scripts.automation.lib.merge_authority import RiskTier
 # ---------------------------------------------------------------------------
 
 _INNER_LOOP_TEST_SCRIPT = "scripts/framework/run_tests_inner_loop.sh"
+# run_tests_inner_loop.sh self-heals these in place before pytest runs (#1414).
+# REQ-W-01 must confirm the self-heal result made it into a commit, not just
+# that pytest exited 0 — the freshness tests read the post-self-heal working
+# tree, so they pass even when the fix is uncommitted (#1500).
+_SELF_HEAL_ARTIFACTS = ("SCRIPTS-INDEX.md", ".github/CODEOWNERS")
 _SUMMARY_PATH = ".claudetmp/oversight/validators/summary.json"
 _RISK_ASSESSMENT_PATH = ".claudetmp/oversight/validators/risk-assessment.md"
 _CHANGE_CLASSIFIER_SCRIPT = "scripts/oversight/change_classifier.py"
@@ -329,7 +334,21 @@ def _check_inner_loop_tests(repo_root: Path) -> CheckResult:
     if result.returncode != 0:
         tail = "\n".join((result.stdout + result.stderr).splitlines()[-15:])
         return CheckResult("REQ-W-01", False, f"inner-loop tests exited {result.returncode}\n{tail}")
+    stale = _uncommitted_self_heal_artifacts(repo_root)
+    if stale:
+        return CheckResult("REQ-W-01", False, f"self-heal regenerated {stale} but the change is uncommitted — commit it before opening the PR")
     return CheckResult("REQ-W-01", True, "inner-loop tests exit 0")
+
+
+def _uncommitted_self_heal_artifacts(repo_root: Path) -> Optional[str]:
+    existing = [p for p in _SELF_HEAL_ARTIFACTS if (repo_root / p).exists()]
+    if not existing:
+        return None
+    result = _run(["git", "diff", "--name-only", "--", *existing], cwd=repo_root)
+    if result is None or result.returncode != 0:
+        return None
+    dirty = [line for line in result.stdout.splitlines() if line.strip()]
+    return ", ".join(dirty) if dirty else None
 
 
 def _check_gates(repo_root: Path, manifest_path: Path, step: Union[str, int]) -> CheckResult:
