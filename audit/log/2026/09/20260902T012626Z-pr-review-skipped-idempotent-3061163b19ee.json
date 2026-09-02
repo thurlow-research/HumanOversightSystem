@@ -1,0 +1,8 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1500,
+  "head_sha": "33502230fc878f23454cca4702e8b2aa9ae8c97f",
+  "reason": "already reviewed this head SHA at 2026-09-01T23:59:05Z; human-required escalation already posted (protected-surface CODEOWNERS: CLAUDE.md, scripts/framework/regen_all.sh, scripts/framework/run_tests_inner_loop.sh); human replied requesting worker address feedback; no new commits since prior skips",
+  "cycle": "2026-09-02T012540Z",
+  "timestamp": "2026-09-02T01:26:26Z"
+}
