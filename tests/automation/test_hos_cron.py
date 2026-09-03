@@ -362,6 +362,133 @@ class CronEnv:
         )
         return head.stdout.strip()
 
+    def git_init_main_repo(self) -> str:
+        """Like `git_init_repo` but guarantees the initial branch is literally
+        named `main`, regardless of the host's `init.defaultBranch` (commonly
+        `master`) — required by the #1498 branch-reap tests, which compare
+        `main..<branch>`."""
+        git = ["git", "-C", str(self.repo)]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ident + ["commit", "-q", "-m", "init"], check=True)
+        head = subprocess.run(
+            git + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        )
+        return head.stdout.strip()
+
+    # ── #1498 branch-ownership helpers ───────────────────────────────────────
+    def install_branch_ownership_lib(self) -> None:
+        """Copy the real bootstrap/lib/branch_ownership.sh + create_branch.sh
+        into the fake repo so the branch-reap tests exercise the actual
+        ownership-record format (#967 ADR-037), instead of hand-rolling an
+        approximation of the record grammar."""
+        real_root = Path(__file__).parent.parent.parent
+        lib_dst = self.repo / "bootstrap" / "lib" / "branch_ownership.sh"
+        lib_dst.parent.mkdir(parents=True, exist_ok=True)
+        lib_dst.write_text((real_root / "bootstrap" / "lib" / "branch_ownership.sh").read_text())
+        cb_dst = self.repo / "bootstrap" / "create_branch.sh"
+        cb_dst.write_text((real_root / "bootstrap" / "create_branch.sh").read_text())
+        cb_dst.chmod(0o755)
+
+    def create_owned_branch(self, issue: int, slug: str, commits: int = 0) -> str:
+        """Create a real ownership-recorded local branch via the real
+        bootstrap/create_branch.sh (exactly how a worker cycle would produce
+        one), then return HEAD to whatever branch was checked out beforehand.
+        `commits` controls how many commits land on the new branch — 0
+        reproduces the #1498 stranded zero-commit branch case."""
+        prior = self.current_branch()
+        env = dict(os.environ)
+        token = str(int(time.time() * 1000))
+        env.update(
+            {
+                "HOS_CYCLE_ID": f"worker-hos-{token}-{os.getpid()}",
+                "HOS_CYCLE_TOKEN": token,
+                "HOS_CYCLE_ROLE": "worker",
+            }
+        )
+        result = subprocess.run(
+            [
+                BASH,
+                str(self.repo / "bootstrap" / "create_branch.sh"),
+                "--issue",
+                str(issue),
+                "--slug",
+                slug,
+            ],
+            cwd=self.repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        branch = result.stdout.strip().splitlines()[-1]
+        ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        for i in range(commits):
+            (self.repo / f"work-{i}.txt").write_text("work\n")
+            subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", str(self.repo)] + ident + ["commit", "-q", "-m", f"work {i}"],
+                check=True,
+            )
+        if prior:
+            subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", prior], check=True)
+        return branch
+
+    def ownership_record_path(self, branch: str) -> Path:
+        """Where bootstrap/lib/branch_ownership.sh stores <branch>'s record,
+        computed the same way hos_bo_store_dir/hos_bo_encode do."""
+        common_dir = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        common_path = Path(common_dir)
+        if not common_path.is_absolute():
+            common_path = self.repo / common_path
+        encoded = branch.replace("%", "%25").replace("/", "%2F")
+        return common_path / "hos" / "branch-ownership" / f"{encoded}.rec"
+
+    def branch_exists(self, branch: str) -> bool:
+        return (
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.repo),
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    f"refs/heads/{branch}",
+                ],
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    def write_raw_ownership_record(self, branch: str, age_seconds: float = 0) -> Path:
+        """Write a raw ownership-record file for a branch that need not exist
+        locally — simulating the record-written-before-branch-created window
+        from bootstrap/create_branch.sh's Step 4 (record) / Step 5 (checkout)
+        (#1498 Finding 1). `age_seconds` backdates the file's mtime (0 = just
+        written, "now") so tests can exercise the reap sweep's grace-window
+        check directly, without waiting in real time."""
+        rec = self.ownership_record_path(branch)
+        rec.parent.mkdir(parents=True, exist_ok=True)
+        rec.write_text(
+            "schema=1\n"
+            f"branch={branch}\n"
+            "cycle_id=worker-hos-000000-1\n"
+            "role=worker\n"
+            "created_at=2026-01-01T00:00:00Z\n"
+        )
+        if age_seconds:
+            stamp = time.time() - age_seconds
+            os.utime(rec, (stamp, stamp))
+        return rec
+
     def git_init_diverged_main(self) -> None:
         """Make the fake repo a git repo whose local main is one commit ahead of
         origin/main — the #996 stray-commit-from-a-killed-session state.
@@ -576,6 +703,22 @@ class CronEnv:
     def baseline_repair_state_file(self, project="hos") -> Path:
         """The #959 repair-attempt counter file for worker/<project>."""
         return self.state / "baseline-repair" / f"worker-{project}"
+
+    def baseline_red_state_file(self, project="hos") -> Path:
+        """The #1498 last-observed-red-state file (HEAD sha + worktree
+        fingerprint + exit code) for worker/<project>."""
+        return self.state / "baseline-red" / f"worker-{project}"
+
+    def baseline_run_count(self) -> int:
+        """How many times the cycle-start inner-loop test runner has actually
+        been invoked across all `cron.run()` calls against this fixture so
+        far. Unlike `baseline_ran()` (mere existence), this distinguishes "ran
+        again" from "still exists from an earlier call" — needed by the #1498
+        backoff tests, which invoke the launcher multiple times against the
+        same marker file."""
+        if not self.baseline_marker.exists():
+            return 0
+        return len([ln for ln in self.baseline_marker.read_text().splitlines() if ln])
 
     def timeout_breaker_state_file(self, project="hos", role="worker") -> Path:
         """The #1435 consecutive-exit=124 counter file for <role>/<project>."""
@@ -1849,6 +1992,316 @@ class TestWorktreeHygiene:
         cron.make_dirty()
         r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
         assert (cron.repo / "uncommitted.tmp").exists(), "hygiene must never run for role=overseer"
+
+
+# ───────────────── Baseline retry backoff, always-on (#1498) ─────────────────
+class TestBaselineRetryBackoff:
+    """A cycle-start baseline that fails identically on consecutive cycles
+    (same HEAD, same `git status --porcelain` fingerprint) skips the redundant
+    ~2-3 min suite re-run and reuses the recorded exit code — but any change to
+    HEAD or the worktree invalidates the cache, and the fail-closed halt/repair
+    classification downstream is completely unaffected by whether the suite
+    actually ran or the exit code came from the cache."""
+
+    def test_first_failure_runs_suite_and_records_state(self, cron):
+        cron.git_init_repo()
+        r = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert cron.baseline_run_count() == 1
+        state = cron.baseline_red_state_file()
+        assert state.exists()
+        content = state.read_text()
+        assert "exit=1" in content
+        assert "sha=" in content
+        assert "fp=" in content
+
+    def test_repeat_state_skips_suite_but_dedups_correctly(self, cron):
+        """Second cycle at the identical HEAD+worktree state must not re-run
+        the suite, yet must still halt and go through the existing dedup path
+        (an issue already open from cycle 1 → no duplicate filed)."""
+        cron.git_init_repo()
+        r1 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r1.returncode == 1, r1.stdout + r1.stderr
+        assert cron.baseline_run_count() == 1
+        assert cron.aa_issue_created()
+
+        r2 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1"}
+        )
+        assert r2.returncode == 1, r2.stdout + r2.stderr
+        assert cron.baseline_run_count() == 1, "identical state must skip the redundant suite re-run"
+        assert "skipping redundant re-run" in r2.stdout
+        assert "already open" in r2.stdout
+
+    def test_head_moved_runs_suite_fresh(self, cron):
+        """A new commit since the recorded failure must never hit the cache."""
+        cron.git_init_repo()
+        r1 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r1.returncode == 1, r1.stdout + r1.stderr
+        assert cron.baseline_run_count() == 1
+
+        (cron.repo / "new.txt").write_text("change\n")
+        subprocess.run(["git", "-C", str(cron.repo), "add", "-A"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(cron.repo),
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "new work",
+            ],
+            check=True,
+        )
+        r2 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r2.returncode == 1, r2.stdout + r2.stderr
+        assert cron.baseline_run_count() == 2, "HEAD moved → must re-run, not reuse the cached failure"
+
+    def test_dirty_tree_change_runs_suite_fresh(self, cron):
+        """Same HEAD but the worktree fingerprint changed (more/different
+        debris) must never hit the cache either — SHA alone is not enough."""
+        cron.git_init_repo()
+        cron.make_dirty()
+        r1 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r1.returncode == 1, r1.stdout + r1.stderr
+        assert cron.baseline_run_count() == 1
+
+        (cron.repo / "another.tmp").write_text("more debris\n")
+        r2 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r2.returncode == 1, r2.stdout + r2.stderr
+        assert (
+            cron.baseline_run_count() == 2
+        ), "worktree fingerprint changed → must re-run, not reuse the cached failure"
+
+    def test_green_baseline_clears_red_state(self, cron):
+        cron.git_init_repo()
+        r1 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r1.returncode == 1, r1.stdout + r1.stderr
+        assert cron.baseline_red_state_file().exists()
+
+        (cron.repo / "fix.txt").write_text("fixed\n")
+        subprocess.run(["git", "-C", str(cron.repo), "add", "-A"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(cron.repo),
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "fix",
+            ],
+            check=True,
+        )
+        r2 = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "0"})
+        assert r2.returncode == 0, r2.stdout + r2.stderr
+        assert (
+            not cron.baseline_red_state_file().exists()
+        ), "green baseline must clear the stale red-state record"
+
+    def test_repair_mode_attempt_counter_advances_even_when_backoff_skips_suite(self, cron):
+        """Repair mode's bounded attempt counter and its escalation behavior
+        must be completely unaffected by whether the backoff cache was hit —
+        four consecutive identical-state cycles here only ever run the suite
+        once, yet still advance the counter to exhaustion and escalate."""
+        cron.git_init_repo()
+        cron.set_baseline_on_red("repair")
+
+        r1 = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r1.returncode == 0, r1.stdout + r1.stderr
+        assert cron.baseline_run_count() == 1
+        assert cron.baseline_repair_state_file().read_text().strip() == "1"
+
+        r2 = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r2.returncode == 0, r2.stdout + r2.stderr
+        assert cron.baseline_run_count() == 1, "identical state → suite must not re-run"
+        assert cron.baseline_repair_state_file().read_text().strip() == "2"
+        assert "attempt 2/3" in r2.stdout
+
+        r3 = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r3.returncode == 0, r3.stdout + r3.stderr
+        assert cron.baseline_run_count() == 1
+        assert cron.baseline_repair_state_file().read_text().strip() == "3"
+
+        r4 = cron.run(
+            env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
+        )
+        assert r4.returncode == 1, r4.stdout + r4.stderr
+        assert "repair exhausted" in r4.stdout
+        assert cron.aa_issue_created()
+        assert cron.baseline_run_count() == 1, "the suite was never re-run across all four cycles"
+
+
+# ───────────────── Stranded zero-commit branch reap, always-on (#1498) ───────
+class TestBranchReap:
+    """Every worker cycle, after the #1044 return-to-main check, walks the
+    branch-ownership record store and deletes any LOCAL branch that is exactly
+    zero commits ahead of main — a dead cycle that crashed before its first
+    commit. A branch with commits, the currently checked-out branch, and a
+    stale record pointing at an already-deleted branch are each handled
+    without ever crashing the cycle."""
+
+    def test_zero_commit_branch_reaped(self, cron):
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "dead-cycle", commits=0)
+        assert cron.branch_exists(branch)
+        rec = cron.ownership_record_path(branch)
+        assert rec.exists()
+        # Push the record's mtime past the reap sweep's #1265 grace window
+        # (_BO_REAP_GRACE_SECS=300) so it reads as genuinely stranded rather
+        # than a branch that might still be mid-first-commit by a concurrent
+        # cycle (#1498 Finding 1).
+        past = time.time() - 301
+        os.utime(rec, (past, past))
+
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.branch_exists(branch), "zero-commit branch must be reaped"
+        assert not rec.exists(), "its ownership record must be removed with it"
+        assert f"reaped stranded zero-commit branch '{branch}'" in r.stdout
+        assert cron.claude_ran()
+
+    def test_zero_commit_branch_within_grace_left_alone(self, cron):
+        """A zero-commit branch whose ownership record is YOUNGER than
+        _BO_REAP_GRACE_SECS must be left alone even though it otherwise
+        qualifies for reap (zero commits ahead, not checked out) — it may
+        belong to a concurrently-running cycle (#1265) that hasn't made its
+        first commit yet. The #1044 return-to-main check earlier in the same
+        cycle already parks HEAD back on `main` for any branch lacking an
+        upstream, which every brand-new unpushed branch does, so this branch
+        is routinely NOT the reaping process's own checked-out branch either
+        — the grace window is the only thing standing between it and
+        force-deletion (#1498 Finding 1)."""
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "dead-cycle", commits=0)
+        assert cron.branch_exists(branch)
+        # Overwrite the real record create_branch.sh wrote with one whose
+        # mtime is explicitly and deliberately well inside the grace window.
+        rec = cron.write_raw_ownership_record(branch, age_seconds=10)
+
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.branch_exists(branch), (
+            "a zero-commit branch with a record younger than the grace "
+            "window must not be reaped"
+        )
+        assert rec.exists(), "its ownership record must be left in place too"
+        assert f"reaped stranded zero-commit branch '{branch}'" not in r.stdout
+
+    def test_branch_with_commits_left_alone(self, cron):
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "in-progress", commits=1)
+        rec = cron.ownership_record_path(branch)
+        # Backdate past the grace window so this exercises the "has commits"
+        # protection specifically, not the grace window (which would also
+        # leave it alone, but for an unrelated reason).
+        past = time.time() - 301
+        os.utime(rec, (past, past))
+
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.branch_exists(branch), "a branch with commits must never be reaped"
+        assert rec.exists()
+
+    def test_currently_checked_out_branch_never_deleted(self, cron):
+        """Even a zero-commit branch must survive if it is the branch HEAD is
+        currently on. A fake upstream is registered so the unrelated #1044
+        return-to-main check leaves HEAD parked here (that check fires for ANY
+        branch with no upstream at all, not just merged ones) — this test is
+        specifically about the reap sweep's own "never delete what's under
+        you" guard, not #1044's behavior."""
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "in-progress", commits=0)
+        subprocess.run(
+            ["git", "-C", str(cron.repo), "remote", "add", "origin", "/nonexistent/fake-origin"],
+            check=True,
+        )
+        tip = subprocess.run(
+            ["git", "-C", str(cron.repo), "rev-parse", branch],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(cron.repo), "update-ref", f"refs/remotes/origin/{branch}", tip],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(cron.repo), "checkout", "-q", branch], check=True)
+        subprocess.run(
+            ["git", "-C", str(cron.repo), "branch", "--set-upstream-to", f"origin/{branch}", branch],
+            check=True,
+        )
+
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.current_branch() == branch
+        assert cron.branch_exists(branch), "must never delete the currently checked-out branch"
+        assert cron.ownership_record_path(branch).exists()
+
+    def test_stale_record_missing_branch_cleaned_up(self, cron):
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "ghost", commits=0)
+        rec = cron.ownership_record_path(branch)
+        assert rec.exists()
+        subprocess.run(["git", "-C", str(cron.repo), "branch", "-D", branch], check=True)
+        assert not cron.branch_exists(branch)
+        # Push the record's mtime past the reap sweep's #1265 grace window
+        # (_BO_REAP_GRACE_SECS=300) so it reads as genuinely stale rather than
+        # a record that might still be mid-write by a concurrent cycle.
+        past = time.time() - 301
+        os.utime(rec, (past, past))
+
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not rec.exists(), "a stale record for an already-deleted branch must be cleaned up"
+
+    def test_missing_ownership_lib_is_silent_noop(self, cron):
+        """An older/foreign target project without
+        bootstrap/lib/branch_ownership.sh must not crash the cycle — the sweep
+        degrades to a silent no-op."""
+        cron.git_init_main_repo()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.claude_ran()
+
+    def test_overseer_role_never_reaps(self, cron):
+        cron.git_init_main_repo()
+        cron.install_branch_ownership_lib()
+        branch = cron.create_owned_branch(1498, "dead-cycle", commits=0)
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert cron.branch_exists(branch), "reap sweep must never run for role=overseer"
 
 
 # ──────────────────────── Timeout breaker, exit=124 (#1435) ──────────────────
