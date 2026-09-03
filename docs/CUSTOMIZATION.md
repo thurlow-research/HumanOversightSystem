@@ -253,7 +253,7 @@ When your project needs a domain not covered by the existing agents (e.g., a dat
    ---
    name: your-agent
    description: One sentence: when to invoke, what it reviews. Include "Invoked by X; escalates to Y."
-   model: claude-sonnet-4-6
+   model: sonnet
    tools:
      - Read
      - Bash
@@ -277,6 +277,12 @@ When your project needs a domain not covered by the existing agents (e.g., a dat
    ## Escalation
    - [Situation] → [target]
    ```
+
+   Model references use class aliases (`opus` / `sonnet` / `haiku`), never dated
+   generation IDs (`claude-<class>-<n>-<n>`) — a dated pin goes stale the moment
+   the model generation moves on and nothing notices. The `model:` frontmatter
+   in `.claude/agents/*.md` is the single source of truth for current per-agent
+   assignment; do not restate it elsewhere.
 
 2. **Wire it into the pipeline** — update the relevant existing agent to invoke yours:
    - If it runs after code-reviewer: add it to `coder.md`'s post-review chain

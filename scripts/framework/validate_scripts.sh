@@ -47,7 +47,7 @@ VALIDATION_LOGIC="$ROOT/scripts/oversight/validation_logic.py"
 OUT_DIR=".claudetmp/framework"
 LEDGER="${HOS_SCRIPTS_REVIEW_LEDGER:-$ROOT/scripts/framework/scripts-review-ledger.jsonl}"
 PASS_COUNT_FILE="$OUT_DIR/scripts-review-pass-count"
-# Class alias, not a pinned generation ID — the previous "claude-opus-4-8" pin
+# Class alias, not a pinned generation ID — the previous dated generation pin
 # went stale after the model generation moved on (#1122, #1362).
 MODEL="opus"
 MAX_PASSES="${SCRIPTS_REVIEW_MAX_PASSES:-3}"

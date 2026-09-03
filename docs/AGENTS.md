@@ -211,7 +211,6 @@ before acting, because behavior differs.
 
 | | `worker` | `overseer` |
 |---|---|---|
-| **Model** | `claude-sonnet-4-6` | `claude-opus-4-8` |
 | **Invoked by** | `bin/hos-cron --role worker` (autonomous); a human (interactive) | `bin/hos-cron --role overseer` (autonomous); a human (interactive) |
 | **INTERACTIVE mode** | Single human entry point for building work — routes the human's request to the right specialists | Answers questions about PR status, risk assessments, and pipeline state |
 | **AUTONOMOUS mode** | Picks the highest-priority open `needs-ai` issue (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`; ties broken by lowest issue number), runs the build pipeline through the specialists, and hands off to `oversight-orchestrator` to open a PR | Reviews open bot PRs, applies the merge-authority matrix, and auto-merges or escalates |
@@ -239,9 +238,10 @@ see `docs/OVERSIGHT-RUNBOOK.md`. For configuring this layer (the
 
 ## Agents
 
+Model assignment is not restated per agent below — the `model:` frontmatter in each agent's file under `.claude/agents/` is the single source of truth.
+
 ### 1. `pm-agent` — Product Manager
 
-**Model:** `claude-opus-4-8`
 **Invoked:** At project start (first agent); anytime a product/requirements question arises during build.
 
 **Role:** Owns the spec. Answers "what should the product do?" questions. Never answers implementation or architecture questions.
@@ -280,7 +280,6 @@ Never updates the spec to rationalize code that doesn't meet the original spec �
 
 ### 2. `architect` — System Architect
 
-**Model:** `claude-opus-4-8`
 **Invoked:** At project start (after `pm-agent` completes Q&A); as final escalation for technical disputes.
 
 **Role:** Makes all architecture and technical decisions. Decisions are binding and final. All other agents operate within the bounds the architect sets.
@@ -308,7 +307,6 @@ When `technical-design` or a reviewer escalates a spec-gap that cannot be resolv
 
 ### 3. `technical-design` — Technical Design
 
-**Model:** `claude-opus-4-8`
 **Invoked:** During the design phase after the ADR, and reactively whenever coder, reviewers, or test roles need the design contract clarified or find a gap in it.
 
 **Role:** Translates the product spec and architectural decisions into a detailed technical specification that a coder can implement without ambiguity. Does not write application code — writes the spec for it.
@@ -350,7 +348,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 4. `coder` — Implementation
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `technical-design` is architect-approved; iteratively per feature.
 
 **Role:** Writes production Django code. Follows `TECHNICAL-DESIGN.md` and the ADR. Does not decide what to build.
@@ -378,7 +375,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 5. `code-reviewer` — Code Review
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After each coder pass.
 
 **Role:** Reviews Django code for correctness, design adherence, and quality. Does not cover security or privacy — those are separate agents.
@@ -403,7 +399,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 6. `security-reviewer` — Security Review
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves (in parallel with `privacy-reviewer`).
 
 **Threat model:** A registered resident attacking other residents or escalating privileges; an HOA admin attacking another tenant; an unauthenticated external attacker.
@@ -436,7 +431,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 7. `privacy-reviewer` — Privacy & GDPR
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves (in parallel with `security-reviewer`).
 
 **Applicable framework:** GDPR (target EU hosting; possible EU data subjects in pilot).
@@ -472,7 +466,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 8. `ui-reviewer` — UI & Design Conformance
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves.
 
 **Role:** Verifies Django templates faithfully implement the design pack (`DESIGN.md` + `tokens.css`). Not visual taste — spec compliance.
@@ -496,7 +489,6 @@ Do not bypass this chain — agents below technical-design in the hierarchy do n
 
 ### 9. `ux-designer` — UX Design Authority
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** At project start (after `pm-agent` completes Q&A); reactively throughout the build whenever any agent encounters a design pack gap.
 
 **Role:** Owns and extends the design pack (`DESIGN.md`, `tokens.css`, `style-guide.html`, `feedback-states.html`). Answers design questions directly rather than escalating to the human. The design pack is a living specification — this agent completes it at the outset and fills gaps as new features are built.
@@ -537,7 +529,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 10. `a11y-reviewer` — Accessibility
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves.
 
 **Compliance target:** WCAG 2.1 AA. Treats the design pack's quality floor as a build gate: keyboard focus, color never the only signal, `prefers-reduced-motion`, mobile responsiveness, WCAG AA contrast.
@@ -562,7 +553,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 11. `ops-designer` — Observability Authority *(optional — projects with ops complexity)*
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** At project start, after `architect` completes the ADR. Submits the completed `TELEMETRY-SPEC.md` to `architect` for sign-off before any build step begins. Reactive during the build when `ops-reviewer` escalates a spec gap.
 
 **Role:** Authors and maintains `docs/ops/TELEMETRY-SPEC.md` — the observability contract that `ops-reviewer` enforces. Covers structured logging conventions, metric naming, distributed tracing requirements, health check requirements per dependency type, and dashboard/alerting intent. Does not implement instrumentation — records the contract for the build to follow. During the build, classifies reactive spec-gap requests as **clarifying** (interpretation only), **additive** (new spec entry, no architecture change), or **structural** (new external dependency, trust-boundary change, or architecture change). Structural changes require architect sign-off and human authorization before the spec is updated.
@@ -576,7 +566,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 12. `ops-reviewer` — Observability Review *(optional — projects with ops complexity)*
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves, in parallel with `security-reviewer` and `privacy-reviewer`, when changes introduce new operations, external calls, background jobs, async tasks, or failure paths.
 
 **Role:** Reviews code changes for conformance with `docs/ops/TELEMETRY-SPEC.md`. Asks: "Can you tell what's happening and debug it?" Withholds sign-off on silent failures and spec violations. Escalates spec gaps to `ops-designer` (not coder — coder cannot be held to an unspecified requirement). Loop exit: after 2 failed re-reviews for the same gap, escalate to `architect`.
@@ -592,7 +581,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 13. `reliability-reviewer` — Resilience Review *(optional — projects with external connections)*
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `code-reviewer` approves, in parallel with `security-reviewer` and `ops-reviewer`, when changes introduce or modify outbound connections (DB queries, HTTP calls, queue operations, cache reads/writes).
 
 **Role:** Reviews code for resilience against external dependency failures. Asks: "What happens when an outbound connection fails, times out, or returns an error?" Distinct from `ops-reviewer` (observability) and `security-reviewer` (security). Complementary: a system can be well-observed and secure but still brittle.
@@ -608,7 +596,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 14. `infra-reviewer` — Infrastructure Review
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Independently of `code-reviewer` (it reviews infra config, not application code) when infrastructure files are modified: Compose, Caddyfile, backup scripts, `.env.example`. An infra-only diff runs `infra-reviewer` directly; `code-reviewer` returns N/A.
 
 **Role:** Reviews deployment configuration against the spec's §2 deployment requirements. Does not review application code.
@@ -631,7 +618,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 15. `unit-test` — Unit Tests
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After all reviewers (`code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `infra-reviewer`) have approved.
 
 **Gates (both must be met before advancing):**
@@ -656,7 +642,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 ### 16. `system-test` — System & Functional Tests
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `unit-test` meets both targets.
 
 **Role:** Validates the application meets the spec's functional requirements. Tests are based on the spec, not the code. Uses Django test client (not Selenium) against a real test database.
@@ -688,7 +673,6 @@ For each gap found: fills it directly (additive/clarifying) or surfaces to the h
 
 > **Note:** `deploy-verify` is a **consumer-project agent** — it is not shipped in the HOS framework source. Consumer projects generate this agent during `./bootstrap/hos_install.sh` based on their deployment stack. It is listed in `scripts/framework/config.sh` as `EXTERNAL_AGENTS` so HOS's own static checker correctly skips the agent-file existence check.
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `docker compose up` on `opus.[your-domain]`.
 
 **Role:** Verifies the production instance is correctly configured and functionally operational. Last gate before announcing a deployment successful.
@@ -720,7 +704,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 18. `spec-red-team` — Spec Red-Team
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Before coding begins on a build step (after the technical design is approved).
 
 **Role:** Adversarially reviews spec sections before coding. Finds gaming vectors, contradictions, implicit assumptions, and missing edge cases.
@@ -737,7 +720,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 19. `risk-assessor` — Risk Assessor
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After the coder completes a build step, before the internal review chain starts.
 
 **Role:** Evaluates code changes to establish a validated risk tier and produce a ranked inspection brief for reviewers.
@@ -760,7 +742,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 20. `risk-historian` — Historical Risk Analyst
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
 
 **Role:** Queries GitHub issues and git logs to build a historical risk profile of changed files.
@@ -777,7 +758,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 21. `dep-mapper` — Dependency Mapper
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at HIGH+).
 
 **Role:** Maps the project's dependency graph for changed files (imports, references, and framework wiring) to assess the blast radius.
@@ -795,7 +775,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 22. `prompt-fidelity` — Prompt Fidelity Validator
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Subagent of `risk-assessor` (runs only at MEDIUM+).
 
 **Role:** Performs semantic comparison of prompt artifacts against generated code to verify faithful implementation.
@@ -813,7 +792,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 23. `oversight-evaluator` — Oversight Evaluator
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After all internal reviewers approve a build step and system tests pass.
 
 **Role:** Evaluates compliance and quality of the build step review process.
@@ -830,7 +808,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 24. `oversight-orchestrator` — Oversight Orchestrator
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After `oversight-evaluator` produces its recommendation.
 
 **Role:** Acts on the evaluator's recommendation to open PRs, prepare panel context, or escalate compliance/quality issues to the human.
@@ -847,7 +824,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 25. `framework-validator` — Framework Validation
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing any change to `.claude/agents/`, `docs/AGENTS.md`, `docs/OVERSIGHT-RUNBOOK.md`, or `scripts/framework/`.
 
 **Role:** Runs the full framework validation suite and acts on findings. Does not review code — validates the agent pipeline structure itself.
@@ -867,7 +843,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 26. `framework-setup-validator` — Framework Installation Check
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After running `scripts/framework/install.sh` in a new repo; when troubleshooting a framework installation.
 
 **Role:** Confirms the framework is correctly installed — required directories exist, all agent files are present, scripts are executable, `config.sh` is populated with non-placeholder values, and external CLIs (`agy`, `codex`) are available.
@@ -881,7 +856,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 27. `doc-validator` — Documentation Coverage Validator
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Before committing documentation changes; by the human or orchestrating session when `framework-validator`'s Phase 3 (`run_framework_validation.sh`) **reports** doc issues (`framework-validator` has no Agent/Task tool — it reports, it does not invoke this agent itself).
 
 **Role:** Catches the omission class of documentation bug — where a doc describes an agent correctly as far as it goes, but silently omits a mode, role, or escalation path the agent file defines. The authoritative source for each agent's behavior is its agent file; every doc reference is checked against that source.
@@ -899,7 +873,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 28. `spec-compliance-validator` — Governance Requirements Compliance
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** Periodically as a health check; after significant agent or methodology changes; by the human or orchestrating session when `framework-validator`'s Phase 4 (`run_framework_validation.sh`) **reports** compliance issues (`framework-validator` has no Agent/Task tool — it reports, it does not invoke this agent itself).
 
 **Role:** The system-test equivalent for the agent pipeline — verifies the pipeline implementation satisfies its own governance requirements. Not "are the files consistent?" but "does the pipeline actually do what its governance spec mandates?"
@@ -925,7 +898,6 @@ Requires three environment variables in `.env`: `AGENT_SSH_KEY` (path to `parksh
 
 ### 29. `post-change-sweep` — Post-Change Orchestrator
 
-**Model:** `claude-sonnet-4-6`
 **Invoked:** After any batch of changes, before committing. The single entry point that triggers all relevant reviews.
 
 **Role:** Reads the git diff, categorizes changed files by domain, and drives agents in dependency order across independent parallel tracks.
@@ -1075,7 +1047,7 @@ Each agent file is a self-contained Markdown file with YAML frontmatter:
 ---
 name: agent-name
 description: When to invoke this agent (used for routing)
-model: claude-sonnet-4-6
+model: sonnet
 tools:
   - Read
   - Write
@@ -1085,10 +1057,9 @@ tools:
 System prompt content
 ```
 
-### Available model IDs (as of June 2026)
-- `claude-opus-4-8` — Opus (most capable; use for architect, technical-design, pm-agent, and overseer)
-- `claude-sonnet-4-6` — Sonnet (strong reasoning; use for all other agents — reviewers, tests, coder, worker, framework agents)
-- `claude-haiku-4-5-20251001` — Haiku (fast; suitable only for pure retrieval/lookup with no judgment calls; not currently assigned to any shipped agent)
+### Model selection
+
+Model references use class aliases (`opus` / `sonnet` / `haiku`), never dated generation IDs — see `docs/CUSTOMIZATION.md` § "Adding a new agent" for the full policy. Current per-agent assignment lives in each agent's `model:` frontmatter under `.claude/agents/`, not here.
 
 ### Invoking agents
 

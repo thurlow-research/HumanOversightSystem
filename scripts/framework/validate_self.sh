@@ -63,7 +63,7 @@ LEDGER="$OUT_DIR/self-review-ledger.jsonl"
 # Self-review is ALWAYS Opus — not overridable. The whole point is to apply the
 # strongest available model to flush issues before the external pass; allowing a
 # downgrade would defeat that. A class alias (not a pinned generation ID) so this
-# never goes stale the way the previous "claude-opus-4-8" pin did (#1122, #1362).
+# never goes stale the way the previous dated generation pin did (#1122, #1362).
 MODEL="opus"
 CHANGED_ONLY=false
 # Base ref for --changed-only. Defaults to HEAD~1 (single commit), but a release
