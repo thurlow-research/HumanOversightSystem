@@ -68,9 +68,22 @@
 # not a regression) — never silent either way. Opt-in default reflects a real
 # incident: an earlier, less careful draft of this mechanism reverted tracked
 # files without first saving a patch and destroyed uncommitted work outright
-# (2026-09-01, see docs/v0.7.0/ADR-1415-worktree-hygiene.md). Does not clean up
-# stranded local branches or bound repeated-failure retry cost — both tracked
-# as a separate follow-up issue (#1498), not this mechanism's scope.
+# (2026-09-01, see docs/v0.7.0/ADR-1415-worktree-hygiene.md).
+#
+# #1498 (worker only, always on, no config): two follow-up mechanisms this
+# hygiene sweep deliberately left out of scope. (1) Baseline retry backoff —
+# a red cycle-start baseline records HEAD + a `git status --porcelain`
+# fingerprint + its exit code at $_HOS_DIR/baseline-red/<role>-<project>; the
+# next cycle skips re-running the ~2-3 min suite entirely when both match the
+# recorded failure exactly, reusing the recorded exit code so halt/repair-mode
+# classification and dedup'd issue filing behave identically to a fresh run —
+# any change to HEAD or the worktree invalidates the cache, and a green
+# baseline clears it. (2) Stranded zero-commit branch reap — every worker
+# cycle, after the #1044 return-to-main check, walks the branch-ownership
+# store (bootstrap/lib/branch_ownership.sh) and deletes any LOCAL branch that
+# is exactly zero commits ahead of main (a dead cycle that crashed before its
+# first commit), skipping the currently checked-out branch and anything with
+# commits. Both are best-effort and non-fatal to the cycle.
 #
 # Usage-limit breaker (#1446): a genuine Claude usage-limit refusal detected in
 # the session's own captured output (see $_HOS_DIR/last-claude-output/) trips
@@ -1213,6 +1226,113 @@ if [[ -n "$_cur_branch" && "$_cur_branch" != "main" ]] \
   fi
 fi
 
+# #1498: reap stranded zero-commit local branches (worker only, always on, no
+# config). A cycle that dies before its first commit (crash, kill, OOM) leaves
+# a branch that the #1044 block above never touches — local branch cleanup was
+# explicitly out of #1044's scope. Runs every worker cycle (periodic sweep,
+# not tied to any one issue number — simpler and more robust than trying to
+# catch the next cycle that happens to touch the same issue) and reads the
+# branch-ownership store (bootstrap/lib/branch_ownership.sh, #967 ADR-037) —
+# the ONLY place a branch this worker created is durably recorded. Guarded for
+# the library's existence: an older/foreign target project without it just
+# skips the sweep, no error. A record is read (grep for its `branch=` line),
+# never eval'd/sourced. Only ever deletes a LOCAL branch that is EXACTLY zero
+# commits ahead of main — anything with commits is left alone (could be
+# legitimate in-progress or awaiting-review work, out of #1498's scope) — and
+# never the branch currently checked out. Best-effort throughout: this is
+# hygiene, not correctness-critical, and a find/git/rm failure must never
+# abort the cycle.
+#
+# A missing-branch record is NOT unconditionally stale: bootstrap/create_branch.sh
+# writes the ownership record BEFORE creating the branch (Step 4, then Step 5)
+# by design, so a mid-write crash orphans a record, not a branch. Under #1265
+# (two same-role cron processes can overlap on the same REPO_ROOT), a reap
+# sweep landing in that exact narrow window could otherwise delete another
+# concurrently-running cycle's about-to-be-real record. Only reap a
+# missing-branch record once it is older than a grace window (mtime, not a
+# parsed created_at= — simpler, avoids ISO8601 parsing) — a record younger
+# than that is left alone this cycle; a later cycle catches it once genuinely
+# stale.
+#
+# The same grace window guards the zero-commit *branch*-deletion path, not
+# just the missing-record pruning path above: a branch that exists locally,
+# reads zero-commits-ahead, and isn't the currently-checked-out branch is
+# exactly the state of another concurrently-running cycle's brand-new branch
+# in the window between create_branch.sh's checkout and its first commit —
+# the #1044 return-to-main check above already parks HEAD back on main for
+# any branch lacking an upstream, which every such branch does, so it will
+# not be this cycle's own HEAD either. A zero-commit branch is therefore only
+# ever deleted once its ownership record is at least as old as
+# $_BO_REAP_GRACE_SECS; a younger record leaves both the branch and the
+# record untouched for a later cycle to re-check.
+_BO_REAP_GRACE_SECS=300
+if [[ "$ROLE" == "worker" ]]; then
+  _BO_LIB="$REPO_ROOT/bootstrap/lib/branch_ownership.sh"
+  if [[ -f "$_BO_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$_BO_LIB" 2>/dev/null || true
+    if command -v hos_bo_store_dir >/dev/null 2>&1; then
+      _bo_store="$(hos_bo_store_dir "$REPO_ROOT" 2>/dev/null || true)"
+      if [[ -n "$_bo_store" && -d "$_bo_store" ]]; then
+        _bo_cur_branch=$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+        while IFS= read -r -d '' _bo_rec; do
+          _bo_branch="$(grep -m1 '^branch=' "$_bo_rec" 2>/dev/null | cut -d= -f2-)"
+          [[ -z "$_bo_branch" ]] && continue
+          [[ "$_bo_branch" == "$_bo_cur_branch" ]] && continue
+          # Ownership-record age, used as the grace-window signal on BOTH
+          # deletion paths below (missing-branch record pruning, and
+          # zero-commit local-branch deletion) — a freshly-created,
+          # not-yet-committed branch from a concurrently-running cycle (#1265)
+          # is routinely not this reaper's own checked-out HEAD, since the
+          # #1044 return-to-main check above already parked HEAD back on main
+          # for any local branch lacking an upstream, which is true of every
+          # brand-new, unpushed branch. Without this check, a zero-commit
+          # branch could be force-deleted before its owning cycle gets a
+          # chance to commit anything to it.
+          _bo_rec_mtime=""
+          if ! _bo_rec_mtime=$(stat -c %Y "$_bo_rec" 2>/dev/null); then
+            _bo_rec_mtime=$(stat -f %m "$_bo_rec" 2>/dev/null || echo "")
+          fi
+          _bo_now=$(date +%s)
+          _bo_rec_within_grace=0
+          if [[ -z "$_bo_rec_mtime" || $(( _bo_now - _bo_rec_mtime )) -lt $_BO_REAP_GRACE_SECS ]]; then
+            _bo_rec_within_grace=1
+          fi
+          if ! git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$_bo_branch"; then
+            # Branch doesn't exist locally — either already gone (safe to drop
+            # the stale record) or create_branch.sh hasn't reached its
+            # checkout step yet (NOT safe — see grace-window note above).
+            if [[ "$_bo_rec_within_grace" -eq 0 ]]; then
+              rm -f "$_bo_rec" 2>/dev/null || true
+            fi
+            continue
+          fi
+          if [[ "$_bo_rec_within_grace" -eq 1 ]]; then
+            # Record too young to trust a zero-commit reading — a
+            # concurrently-running cycle may not have committed yet. Leave the
+            # branch and its record alone; a later cycle re-checks once stale.
+            continue
+          fi
+          _bo_ahead="$(git -C "$REPO_ROOT" rev-list --count "main..$_bo_branch" 2>/dev/null || echo "")"
+          if [[ "$_bo_ahead" == "0" ]]; then
+            if git -C "$REPO_ROOT" branch -D "$_bo_branch" 2>/dev/null; then
+              rm -f "$_bo_rec" 2>/dev/null || true
+              echo "$LOG_PREFIX reaped stranded zero-commit branch '$_bo_branch' (#1498)"
+              _audit cycle-branch-reap "branch=${_bo_branch}"
+            else
+              # Deletion failed (e.g. ref-lock contention under #1265) — leave
+              # the record in place so a later cycle can retry; never claim a
+              # reap that didn't happen.
+              echo "$LOG_PREFIX WARN: could not delete stranded zero-commit branch '$_bo_branch' — leaving its ownership record in place (#1498)"
+              _audit cycle-branch-reap-failed "branch=${_bo_branch}"
+            fi
+          fi
+        done < <(find "$_bo_store" -maxdepth 1 -name '*.rec' -print0 2>/dev/null)
+      fi
+    fi
+  fi
+fi
+
 # #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
 # between a session's commit and push can strand a stray commit on main; from
 # then on every fast-forward fails and silently discarding it would let the
@@ -1297,11 +1417,69 @@ if [[ "$ROLE" == "worker" ]]; then
     # Unknown or dirty state — no cowpat (first run), HEAD moved since the last
     # green run, a dirty tree from a crashed cycle, or HEAD unresolvable. Run the
     # baseline before Claude starts so it never builds on a broken tree.
-    _bs_exit=0
-    bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null || _bs_exit=$?
+    #
+    # #1498: before paying for the ~2-3 min suite, check whether this is an
+    # EXACT repeat of the last recorded failure — same HEAD, same worktree
+    # fingerprint, so a dirty tree that changes between cycles still counts as
+    # new state. The fingerprint must be byte-content-aware, not just
+    # path+status-letter (`git status --porcelain` alone): two different
+    # crashed cycles that each leave dirty state on the same filename(s) with
+    # the same status letters but different actual content would otherwise
+    # hash identically and produce a false cache hit. A dead cycle's debris
+    # fails the baseline identically on every subsequent cycle with zero new
+    # information per re-run (#1413) — skip the redundant invocation and reuse
+    # the recorded exit code, which then flows through the unchanged
+    # halt/repair-mode classification and dedup'd issue filing below exactly
+    # as if the suite had just been re-run and failed the same way.
+    _bs_fp_stream() {
+      # Tracked changes' byte content, plus every untracked file's path AND
+      # raw content (null-delimited paths so embedded spaces survive). Every
+      # git call is `|| true`-guarded and the function always returns 0 — a
+      # failure here must degrade to "treat as changed" (re-run the suite),
+      # never abort the cycle.
+      git -C "$REPO_ROOT" diff HEAD -- . 2>/dev/null || true
+      git -C "$REPO_ROOT" ls-files --others --exclude-standard -z 2>/dev/null | while IFS= read -r -d '' _bs_u; do
+        printf '%s\0' "$_bs_u"
+        cat -- "$REPO_ROOT/$_bs_u" 2>/dev/null
+      done || true
+      return 0
+    }
+    _BR_STATE="$_HOS_DIR/baseline-red/${ROLE}-${PROJECT}"
+    if command -v md5sum &>/dev/null; then
+      _bs_fp=$(_bs_fp_stream | md5sum | cut -d' ' -f1)
+    elif command -v md5 &>/dev/null; then
+      _bs_fp=$(_bs_fp_stream | md5)
+    else
+      _bs_fp=$(_bs_fp_stream | cksum | awk '{print $1}')
+    fi
+    _bs_prev_sha="" _bs_prev_fp="" _bs_prev_exit=""
+    if [[ -f "$_BR_STATE" ]]; then
+      _bs_prev_sha=$(sed -n 's/^sha=//p' "$_BR_STATE" 2>/dev/null)
+      _bs_prev_fp=$(sed -n 's/^fp=//p' "$_BR_STATE" 2>/dev/null)
+      _bs_prev_exit=$(sed -n 's/^exit=//p' "$_BR_STATE" 2>/dev/null)
+    fi
+    if [[ -n "$_CURRENT_HEAD" && "$_CURRENT_HEAD" == "$_bs_prev_sha" \
+          && -n "$_bs_fp" && "$_bs_fp" == "$_bs_prev_fp" \
+          && "$_bs_prev_exit" =~ ^[0-9]+$ ]]; then
+      echo "$LOG_PREFIX INNER-LOOP BASELINE: identical to last recorded failure (HEAD unchanged, worktree unchanged) — skipping redundant re-run (#1498)"
+      _audit cycle-baseline-repeat-skip "sha=${_CURRENT_HEAD:0:12}" "exit=${_bs_prev_exit}"
+      _bs_exit="$_bs_prev_exit"
+    else
+      _bs_exit=0
+      bash "$REPO_ROOT/scripts/framework/run_tests_inner_loop.sh" -q 2>/dev/null || _bs_exit=$?
+    fi
     _bs_title_prefix="[BLOCKED] inner-loop tests failing on ${PROJECT}"
     _bs_repair_state="$_HOS_DIR/baseline-repair/${ROLE}-${PROJECT}"
     if [[ "$_bs_exit" -ne 0 ]]; then
+      # #1498: record this failure's fingerprint so an identical next cycle can
+      # skip the redundant re-run above. Written whether the suite just ran or
+      # the exit code was reused from the cache — idempotent either way.
+      mkdir -p "$(dirname "$_BR_STATE")" 2>/dev/null || true
+      {
+        printf 'sha=%s\n' "${_CURRENT_HEAD}"
+        printf 'fp=%s\n' "${_bs_fp}"
+        printf 'exit=%s\n' "${_bs_exit}"
+      } > "$_BR_STATE" 2>/dev/null || true
       echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED (exit $_bs_exit)"
       _audit cycle-preflight-fail "reason=inner_loop_tests_failed exit=$_bs_exit"
 
@@ -1376,6 +1554,9 @@ if [[ "$ROLE" == "worker" ]]; then
       # auto-close a standing [BLOCKED] issue (#959): the steady state must not
       # stay "permanently parked + stale human issue" once the tree recovers.
       rm -f "$_bs_repair_state"
+      # #1498: also clear any recorded red state — a fresh failure later must
+      # not be compared against a stale pre-fix record.
+      rm -f "$_BR_STATE"
       if [[ -n "$_REPO_SLUG" ]]; then
         if _bs_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
             --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | .[].number" \
