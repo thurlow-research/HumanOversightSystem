@@ -3,13 +3,13 @@
 record_agent_model.py — record the resolved model ID for a subagent invocation
 into the audit trail (#1122 Option C, revised acceptance criterion 3).
 
-Why: agent frontmatter now pins a class alias (`model: opus` / `model: sonnet`,
-see .claude/agents/*.md) rather than a specific generation ID, so the alias
-never drifts as new generations ship. That means the frontmatter no longer
-records *which* model actually ran — only the intended tier. The audit trail
-is the strictly-better place to capture provenance, because it records what
-executed, not what was merely configured to execute (a stale pin was never
-evidence of the model that ran, only of an intent that could go stale).
+Why: agent frontmatter pins a class alias, not a dated generation ID (policy:
+docs/CUSTOMIZATION.md "Adding a new agent"), so the alias never drifts as new
+generations ship. That means the frontmatter no longer records *which* model
+actually ran — only the intended tier. The audit trail is the strictly-better
+place to capture provenance, because it records what executed, not what was
+merely configured to execute (a stale pin was never evidence of the model
+that ran, only of an intent that could go stale).
 
 This module is invoked as a Claude Code `SubagentStop` hook (wired in
 .claude/settings.json). SubagentStop hooks cannot block anything (exit code 2

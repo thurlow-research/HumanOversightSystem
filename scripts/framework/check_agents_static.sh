@@ -300,6 +300,53 @@ for lane in "${PEER_REVIEW_LANES[@]}"; do
     fi
 done
 
+# ── 9. No dated model generation IDs (#1366) ─────────────────────────────────
+section "9. No dated model generation IDs (#1366)"
+
+# Model references use class aliases (opus / sonnet / haiku), never a dated
+# generation ID (claude-<class>-<n>-<n>) — a dated pin goes stale the moment
+# the model generation moves on and nothing notices
+# (policy: docs/CUSTOMIZATION.md § "Adding a new agent"). Guarded: agent
+# frontmatter, scripts/, bootstrap/, bin/, and markdown documentation
+# repo-wide. Point-in-time records are exempt by design — they capture what
+# was true or configured at a moment in the past and must not be rewritten:
+# versioned docs (docs/v0.*/), release notes (docs/releases/), specs
+# (docs/specs/), research write-ups (research/), the append-only decision
+# logs, the committed audit trail (audit/), captured prompt artifacts
+# (prompts/), and ephemeral working state (.claudetmp/).
+DATED_MODEL_RE='claude-(opus|sonnet|haiku)-[0-9]+-[0-9]'
+DATED_MODEL_FINDINGS=0
+
+_dated_model_candidates() {
+    # Each find is || true'd individually — under set -e, a missing scan root
+    # (e.g. a consumer repo with no bin/) makes find exit non-zero even with
+    # stderr suppressed, which would otherwise abort this function before it
+    # reaches later find calls and silently skip the rest of the scan.
+    { find "$AGENTS_DIR" -type f 2>/dev/null || true
+      find scripts bootstrap bin -type f 2>/dev/null || true
+      find . -name '*.md' -type f 2>/dev/null | sed 's#^\./##' || true
+    } | sort -u
+}
+
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    case "$f" in
+        docs/v0.*/*|docs/releases/*|docs/specs/*|research/*) continue ;;
+        audit/*|.claudetmp/*|prompts/*) continue ;;
+        DECISIONS.md|scripts/framework/decisions.md) continue ;;
+        .git/*|*/.venv/*|*/node_modules/*|*/__pycache__/*) continue ;;
+    esac
+    while IFS=: read -r line_no content; do
+        [[ -z "$line_no" ]] && continue
+        fail "dated model generation ID at $f:$line_no — $content"
+        DATED_MODEL_FINDINGS=$(( DATED_MODEL_FINDINGS + 1 ))
+    done < <(grep -nE "$DATED_MODEL_RE" "$f" 2>/dev/null || true)
+done < <(_dated_model_candidates)
+
+if [[ $DATED_MODEL_FINDINGS -eq 0 ]]; then
+    ok "no dated model generation IDs found"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════════════"
