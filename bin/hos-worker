@@ -9,6 +9,12 @@
 set -euo pipefail
 REPO_ROOT="$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
 
+# Role/clone cross-check (#1409) — catches "hos-worker typed in the
+# registered Overseer clone" before any token is minted.
+# shellcheck source=bootstrap/lib/role_clone_check.sh
+source "$REPO_ROOT/bootstrap/lib/role_clone_check.sh"
+_hos_check_role_clone worker "$REPO_ROOT" || exit 1
+
 # Preflight — fail fast before spending any tokens
 bash "$REPO_ROOT/bootstrap/validate_setup.sh" --repo "$REPO_ROOT" \
   || { echo "Preflight failed — fix setup before starting a session"; exit 1; }
