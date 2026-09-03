@@ -29,10 +29,7 @@ _HOS_OVERSEER = _REPO_ROOT / "bin" / "hos-overseer"
 
 
 def _run_check(home: Path, role: str, repo_root: Path) -> subprocess.CompletedProcess:
-    script = (
-        f'source "{_LIB}"\n'
-        f'_hos_check_role_clone "{role}" "{repo_root}"\n'
-    )
+    script = f'source "{_LIB}"\n' f'_hos_check_role_clone "{role}" "{repo_root}"\n'
     env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
     return subprocess.run(
         [BASH, "-c", script],
@@ -51,8 +48,7 @@ def registry(tmp_path: Path):
     worker_clone.mkdir()
     overseer_clone.mkdir()
     (home / ".config" / "hos" / "projects.conf").write_text(
-        f"demo_worker_root={worker_clone}\n"
-        f"demo_overseer_root={overseer_clone}\n"
+        f"demo_worker_root={worker_clone}\n" f"demo_overseer_root={overseer_clone}\n"
     )
     return {
         "home": home,
@@ -131,7 +127,7 @@ def _src(path: Path) -> str:
 def test_hos_worker_sources_role_clone_check():
     src = _src(_HOS_WORKER)
     assert "role_clone_check.sh" in src
-    assert '_hos_check_role_clone worker' in src
+    assert "_hos_check_role_clone worker" in src
 
 
 @pytest.mark.skipif(not _HOS_WORKER.exists(), reason="bin/hos-worker not present")
@@ -146,7 +142,7 @@ def test_hos_worker_checks_role_before_auth():
 def test_hos_overseer_sources_role_clone_check():
     src = _src(_HOS_OVERSEER)
     assert "role_clone_check.sh" in src
-    assert '_hos_check_role_clone overseer' in src
+    assert "_hos_check_role_clone overseer" in src
 
 
 @pytest.mark.skipif(not _HOS_OVERSEER.exists(), reason="bin/hos-overseer not present")
