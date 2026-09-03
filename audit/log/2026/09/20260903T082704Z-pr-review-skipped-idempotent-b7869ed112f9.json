@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","timestamp":"20260903T082704Z","prs":[1503,1502],"reason":"head SHA unchanged since last overseer review comment; both already flagged HUMAN_REQUIRED for protected-surface touches (docs/AGENTS.md+scripts/framework/** for 1503, bin/hos-cron for 1502); awaiting human approval"}
