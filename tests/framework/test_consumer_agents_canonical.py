@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 LIST = ROOT / "scripts" / "framework" / "consumer_agents.txt"
 INSTALLER = ROOT / "bootstrap" / "hos_install.sh"
+VALIDATE_SETUP = ROOT / "bootstrap" / "validate_setup.sh"
 
 VALIDATORS = {
     "framework-validator",
@@ -60,3 +61,15 @@ def test_installer_reads_list_on_both_sides():
     # The manifest enumerator must NOT fall back to `find .claude/agents` (the bug).
     assert "find .claude/agents" not in text, \
         "manifest enumeration must not `find` all agents — it declares uninstalled ones (#225)"
+
+
+def test_validate_setup_reads_canonical_list():
+    """validate_setup.sh's preflight agent check is a third consumer of the
+    canonical list — it must read consumer_agents.txt rather than re-deriving
+    its own hardcoded subset, which can silently under-check when the
+    canonical list gains an agent that isn't mirrored by hand (#1410)."""
+    text = VALIDATE_SETUP.read_text()
+    assert "consumer_agents.txt" in text, \
+        "validate_setup.sh must read scripts/framework/consumer_agents.txt, not a hardcoded agent list (#1410)"
+    assert "architect pm-agent technical-design" not in text, \
+        "REQUIRED_AGENTS must be populated by reading consumer_agents.txt, not a hardcoded literal subset (#1410)"
