@@ -90,11 +90,21 @@ sandbox_config_check() {
 echo "=== HOS preflight check ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
 
 # ── 1. Required specialist agents ─────────────────────────────────────────────
-REQUIRED_AGENTS=(
-  architect pm-agent technical-design
-  coder code-reviewer security-reviewer
-  oversight-evaluator worker overseer
-)
+# Read from the canonical list (scripts/framework/consumer_agents.txt) rather
+# than hardcoding a hand-picked subset here — a third copy of the list drifts
+# silently when a new agent is added there but not mirrored here (#1410; see
+# HOS#225, which already fixed this drift for the installer's copy-loop and
+# .hos-manifest enumerator).
+AGENTS_LIST="$REPO_ROOT/scripts/framework/consumer_agents.txt"
+[[ -f "$AGENTS_LIST" ]] || fail "scripts/framework/consumer_agents.txt missing — is this a proper HOS clone?"
+
+REQUIRED_AGENTS=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line="${line%%#*}"
+  line="$(echo "$line" | xargs)"
+  [[ -n "$line" ]] && REQUIRED_AGENTS+=("$line")
+done < "$AGENTS_LIST"
+(( ${#REQUIRED_AGENTS[@]} > 0 )) || fail "no agents parsed from $AGENTS_LIST"
 
 AGENTS_DIR="$REPO_ROOT/.claude/agents"
 [[ -d "$AGENTS_DIR" ]] || fail ".claude/agents/ directory missing — run hos_install.sh"

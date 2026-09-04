@@ -95,7 +95,7 @@ def _render_with_fixture_values() -> str:
 
 
 def _preflight_tree(tmp_path: Path, config_dir: Path) -> Path:
-    """A tmp repo satisfying validate_setup.sh's four pre-existing sections."""
+    """A tmp repo satisfying validate_setup.sh's five pre-existing sections."""
     repo = tmp_path / "repo"
     agents_dir = repo / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
@@ -111,6 +111,13 @@ def _preflight_tree(tmp_path: Path, config_dir: Path) -> Path:
         "overseer",
     ):
         (agents_dir / f"{agent}.md").write_text("# stub\n")
+
+    scripts_dir = repo / "scripts" / "framework"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "consumer_agents.txt").write_text(
+        "architect\npm-agent\ntechnical-design\ncoder\ncode-reviewer\n"
+        "security-reviewer\noversight-evaluator\nworker\noverseer\n"
+    )
 
     bootstrap_dir = repo / "bootstrap"
     bootstrap_dir.mkdir()
