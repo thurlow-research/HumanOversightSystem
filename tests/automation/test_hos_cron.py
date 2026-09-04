@@ -70,6 +70,22 @@ class CronEnv:
         self.aa_issue_body_capture = tmp_path / "aa_issue_body.log"
         # Records each `gh issue close` invocation (#959 auto-close on green baseline).
         self.aa_issue_close_marker = tmp_path / "aa_issue_close.log"
+        # Captures the verbatim `--label` value of the most recent `gh issue
+        # create` call (#1496) so tests can assert needs-ai,priority:critical
+        # vs. the legacy needs-human,needs-ai. Overwritten on each call.
+        self.aa_issue_label_capture = tmp_path / "aa_issue_label.log"
+        # Records each `gh api -X PATCH .../issues/<n> -f milestone=<m>` call
+        # (#1496) as "<n> <m>" lines, so tests can assert the milestone was
+        # assigned to the freshly-created [BLOCKED] issue.
+        self.milestone_patch_marker = tmp_path / "milestone_patch.log"
+        # Records each `gh issue edit <n> --add-label needs-human` call (#1496
+        # escalation) as one issue number per line.
+        self.needs_human_relabel_marker = tmp_path / "needs_human_relabel.log"
+        # Records each `gh issue comment <n>` call (#1496 escalation) as one
+        # issue number per line, plus the verbatim body of the most recent
+        # call (overwritten on each call).
+        self.issue_comment_marker = tmp_path / "issue_comment.log"
+        self.issue_comment_body_capture = tmp_path / "issue_comment_body.log"
 
         # ── claude stub: records how it was invoked, never spawns the real CLI ──
         # $0 proves thin-env resolved it by absolute path off the pinned PATH;
@@ -128,8 +144,21 @@ class CronEnv:
             # #959 auto-close: broken-state issue *numbers* (not the dedup count) —
             # matched first since it's the more specific pattern (the jq expression
             # ending in ".[].number" vs the plain "| length" count query below).
+            # Still used by the timeout/usage-limit breakers' own close queries,
+            # which keep the labels=needs-human filter unchanged by #1496.
             '  *"labels=needs-human"*".[].number"*)\n'
             '    printf "%s\\n" ${HOS_TEST_BROKEN_STATE_OPEN_NUMS:-} ;;\n'
+            # #1496: the baseline dedup (repair-path filing) and green auto-close
+            # queries dropped the labels=needs-human filter — title-prefix only,
+            # so a standing [BLOCKED] issue is found regardless of its labels.
+            # Distinguished from the pulls-list ".[].number" query below by the
+            # "issues?" prefix immediately preceding "state=open&per_page=20"
+            # (no "&labels=..." in between, unlike every other issues query).
+            # HOS_TEST_BASELINE_QUERY_FAIL simulates a gh API failure so the
+            # #1496 repair-path fail-closed dedup can be exercised.
+            '  *"issues?state=open&per_page=20"*".[].number"*)\n'
+            '    [[ -n "${HOS_TEST_BASELINE_QUERY_FAIL:-}" ]] && exit 1\n'
+            '    printf "%s\\n" ${HOS_TEST_BASELINE_OPEN_NUMS:-} ;;\n'
             # Agent availability: needs-human blocked issues count.
             # HOS_TEST_AA_QUERY_FAIL simulates a gh API failure (non-zero exit)
             # so the #849 fail-closed dedup path can be exercised.
@@ -166,14 +195,16 @@ class CronEnv:
             '  *"reviews"*"APPROVED"*)\n' '    echo "${HOS_TEST_PR_AP:-1}" ;;\n' "esac\n"
             # issue create — record the invocation, then confirm and exit.
             # Also scan "$@" for the value immediately following a literal
-            # --body token and capture it verbatim (#1415) so tests can
-            # assert on escalation-note body text.
+            # --body/--label token and capture it verbatim (#1415, #1496) so
+            # tests can assert on escalation-note body text and issue labels.
             'if [[ "$1" == "issue" && "$2" == "create" ]]; then\n'
             f'  echo "called" >> "{self.aa_issue_marker}"\n'
             '  _hy_prev=""\n'
             '  for _hy_arg in "$@"; do\n'
             '    if [[ "$_hy_prev" == "--body" ]]; then\n'
             f'      printf "%s" "$_hy_arg" > "{self.aa_issue_body_capture}"\n'
+            '    elif [[ "$_hy_prev" == "--label" ]]; then\n'
+            f'      printf "%s" "$_hy_arg" > "{self.aa_issue_label_capture}"\n'
             "    fi\n"
             '    _hy_prev="$_hy_arg"\n'
             "  done\n"
@@ -182,6 +213,26 @@ class CronEnv:
             # issue close — record which issue number was closed (#959 auto-close)
             'if [[ "$1" == "issue" && "$2" == "close" ]]; then\n'
             f'  echo "$3" >> "{self.aa_issue_close_marker}"\n'
+            "fi\n"
+            # #1496: milestone PATCH on a freshly-created [BLOCKED] issue —
+            # `gh api -X PATCH repos/.../issues/<n> -f milestone=<m>`.
+            'if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then\n'
+            f'  echo "$4 ${{6#milestone=}}" >> "{self.milestone_patch_marker}"\n'
+            "fi\n"
+            # #1496: escalation relabel — `gh issue edit <n> --add-label needs-human`.
+            'if [[ "$1" == "issue" && "$2" == "edit" ]]; then\n'
+            f'  echo "$3" >> "{self.needs_human_relabel_marker}"\n'
+            "fi\n"
+            # #1496: escalation comment — `gh issue comment <n> --body "..."`.
+            'if [[ "$1" == "issue" && "$2" == "comment" ]]; then\n'
+            f'  echo "$3" >> "{self.issue_comment_marker}"\n'
+            '  _ic_prev=""\n'
+            '  for _ic_arg in "$@"; do\n'
+            '    if [[ "$_ic_prev" == "--body" ]]; then\n'
+            f'      printf "%s" "$_ic_arg" > "{self.issue_comment_body_capture}"\n'
+            "    fi\n"
+            '    _ic_prev="$_ic_arg"\n'
+            "  done\n"
             "fi\n"
             "exit 0\n",
         )
@@ -699,6 +750,42 @@ class CronEnv:
         if not self.aa_issue_close_marker.exists():
             return []
         return [ln for ln in self.aa_issue_close_marker.read_text().splitlines() if ln]
+
+    def aa_issue_label(self) -> str:
+        """The verbatim --label value of the most recent `gh issue create` call,
+        or "" if none was captured (#1496)."""
+        return (
+            self.aa_issue_label_capture.read_text()
+            if self.aa_issue_label_capture.exists()
+            else ""
+        )
+
+    def milestone_patch_calls(self) -> list[str]:
+        """Each `gh api -X PATCH .../issues/<n> -f milestone=<m>` call recorded
+        as "<url> <milestone>" lines (#1496)."""
+        if not self.milestone_patch_marker.exists():
+            return []
+        return [ln for ln in self.milestone_patch_marker.read_text().splitlines() if ln]
+
+    def needs_human_relabeled_issue_nums(self) -> list[str]:
+        """Issue numbers the launcher relabeled via `gh issue edit --add-label
+        needs-human` (#1496 escalation)."""
+        if not self.needs_human_relabel_marker.exists():
+            return []
+        return [ln for ln in self.needs_human_relabel_marker.read_text().splitlines() if ln]
+
+    def issue_comment_created(self) -> bool:
+        """True if the launcher posted a `gh issue comment` (#1496 escalation)."""
+        return self.issue_comment_marker.exists()
+
+    def issue_comment_body(self) -> str:
+        """The verbatim --body value of the most recent `gh issue comment` call,
+        or "" if none was captured (#1496)."""
+        return (
+            self.issue_comment_body_capture.read_text()
+            if self.issue_comment_body_capture.exists()
+            else ""
+        )
 
     def baseline_repair_state_file(self, project="hos") -> Path:
         """The #959 repair-attempt counter file for worker/<project>."""
@@ -1635,14 +1722,19 @@ class TestAgentAvailability:
 class TestCycleStartBaselineCowpat:
     """The worker skips the cycle-start inner-loop baseline when the repo is
     provably unchanged since the last green run (HEAD == cowpat, clean tree),
-    runs it otherwise, and on baseline failure files a deduplicated needs-human
-    broken-state issue instead of exiting silently.
+    runs it otherwise, and on baseline failure files a deduplicated [BLOCKED]
+    issue instead of exiting silently.
 
-    These tests reuse the shared `labels=needs-human` gh-stub case
-    (HOS_TEST_NEEDS_HUMAN_BLOCKED / HOS_TEST_AA_QUERY_FAIL) since the
-    broken-state dedup query targets the same label; the agent-availability
-    block is skipped here (no consumer_agents.txt), so the only needs-human
-    query and issue-create come from the #789 broken-state flow.
+    Since #1496, an ordinary assertion failure (pytest exit 1) defaults to the
+    diagnose-and-fix path: the issue is filed needs-ai,priority:critical (never
+    needs-human) and the cycle continues (Claude launches). The legacy
+    immediate-halt behavior (needs-human, exit 1, Claude never launches) is now
+    only reached via the explicit `<project>_baseline_on_red=halt` opt-out —
+    see TestBaselineRepairMode for the escalation-after-N-attempts path.
+
+    The agent-availability block is skipped here (no consumer_agents.txt), so
+    the only issue-create/dedup traffic in these tests comes from the #789/
+    #1496 broken-state flow.
     """
 
     def test_clean_repo_skips_baseline(self, cron):
@@ -1695,9 +1787,10 @@ class TestCycleStartBaselineCowpat:
         assert cron.claude_ran()
 
     def test_baseline_failure_files_broken_state_issue(self, cron):
-        """Baseline fails with no existing broken-state issue → needs-human issue
-        filed, Claude not launched, exit 1."""
+        """Explicit legacy halt opt-out (#1496): baseline fails with no existing
+        broken-state issue → needs-human issue filed, Claude not launched, exit 1."""
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={
                 "HOS_TEST_INNER_LOOP_EXIT": "1",
@@ -1710,8 +1803,10 @@ class TestCycleStartBaselineCowpat:
         assert not cron.claude_ran()
 
     def test_baseline_failure_duplicate_issue_guard(self, cron):
-        """Baseline fails but a broken-state issue is already open → no duplicate."""
+        """Explicit legacy halt opt-out (#1496): baseline fails but a broken-state
+        issue is already open → no duplicate."""
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={
                 "HOS_TEST_INNER_LOOP_EXIT": "1",
@@ -1724,9 +1819,11 @@ class TestCycleStartBaselineCowpat:
         assert not cron.claude_ran()
 
     def test_baseline_failure_dedup_query_failure_fails_closed(self, cron):
-        """A broken-state dedup-query error must NOT default the count to 0 and
-        file a fresh issue every cycle — fail closed, skip filing, warn."""
+        """Explicit legacy halt opt-out (#1496): a broken-state dedup-query error
+        must NOT default the count to 0 and file a fresh issue every cycle — fail
+        closed, skip filing, warn."""
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={
                 "HOS_TEST_INNER_LOOP_EXIT": "1",
@@ -1774,9 +1871,23 @@ class TestBaselineRepairMode:
     environment itself is broken and always halts. Bounded by
     HOS_BASELINE_REPAIR_MAX_ATTEMPTS consecutive cycles before escalating."""
 
-    def test_default_mode_still_halts_on_assertion_failure(self, cron):
-        """No <project>_baseline_on_red set → unchanged legacy halt behavior."""
+    def test_default_mode_now_repairs_on_assertion_failure(self, cron):
+        """No <project>_baseline_on_red set → default flipped to repair (#1496):
+        the diagnose-and-fix issue is filed needs-ai,priority:critical (never
+        needs-human) and the cycle continues."""
         cron.git_init_repo()
+        r = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.claude_ran()
+        assert cron.aa_issue_created(), "#1496: issue must be filed on first repair attempt"
+        assert cron.aa_issue_label() == "needs-ai,priority:critical"
+        assert cron.baseline_repair_state_file().read_text().strip() == "1"
+
+    def test_explicit_halt_mode_preserves_legacy_behavior(self, cron):
+        """<project>_baseline_on_red=halt (explicit opt-out, #1496) → unchanged
+        legacy immediate-halt behavior."""
+        cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={
                 "HOS_TEST_INNER_LOOP_EXIT": "1",
@@ -1789,34 +1900,19 @@ class TestBaselineRepairMode:
 
     def test_repair_mode_absorbs_assertion_failure_and_launches_claude(self, cron):
         """repair mode + pytest exit 1 (assertion failures) → no halt, Claude
-        launches scoped to the failing baseline, attempt counter stamped at 1."""
+        launches, attempt counter stamped at 1, and the diagnose-and-fix issue is
+        filed immediately as needs-ai,priority:critical (#1496) — never deferred
+        to exhaustion, since it must sort first in Step 2 candidate selection
+        right away."""
         cron.git_init_repo()
         cron.set_baseline_on_red("repair")
         r = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
         assert r.returncode == 0, r.stdout + r.stderr
-        assert not cron.aa_issue_created(), "repair mode must not file needs-human yet"
+        assert cron.aa_issue_created(), "#1496: issue must be filed on first repair attempt"
+        assert cron.aa_issue_label() == "needs-ai,priority:critical"
         assert cron.claude_ran(), "repair mode must still launch Claude, scoped to the fix"
         assert "baseline repair mode: attempt 1/3" in r.stdout
         assert cron.baseline_repair_state_file().read_text().strip() == "1"
-
-    def test_repair_mode_context_tells_claude_to_scope_to_baseline(self, cron):
-        """The injected prompt context names #959 repair mode so Claude doesn't
-        pick up backlog work instead of fixing the baseline."""
-        stdin_capture = cron.home / "claude_stdin.log"
-        _write_exec(
-            cron.bindir / "claude",
-            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
-        )
-        prompt_file = cron.repo / "bootstrap" / "worker-cron-prompt.md"
-        prompt_file.parent.mkdir(parents=True, exist_ok=True)
-        prompt_file.write_text("## Worker step instructions\n")
-        cron.git_init_repo()
-        cron.set_baseline_on_red("repair")
-        r = cron.run(env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1"})
-        assert r.returncode == 0, r.stdout + r.stderr
-        context = stdin_capture.read_text()
-        assert "BASELINE REPAIR MODE" in context
-        assert "#959" in context
 
     def test_repair_mode_still_halts_on_environmental_failure(self, cron):
         """repair mode + pytest exit 2 (collection/session error — environmental,
@@ -1871,6 +1967,7 @@ class TestWorktreeHygiene:
         to pre-#1415 (no "Worktree hygiene" note appended)."""
         cron.git_init_repo()
         cron.make_dirty()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={
                 "HOS_TEST_INNER_LOOP_EXIT": "1",
@@ -1938,6 +2035,7 @@ class TestWorktreeHygiene:
         """Hygiene ran and verified the tree clean, but the baseline still
         failed → the escalation note says this is genuine breakage, not debris."""
         cron.set_worktree_hygiene("preserve")
+        cron.set_baseline_on_red("halt")
         cron.git_init_repo()
         r = cron.run(
             env_overrides={
@@ -1955,6 +2053,7 @@ class TestWorktreeHygiene:
         nothing, never crash the cycle, and the escalation note must say the red
         baseline may be a consequence of the leftover debris, not the code."""
         cron.set_worktree_hygiene("preserve")
+        cron.set_baseline_on_red("halt")
         cron.git_init_repo()
         cron.make_dirty()
         r = cron.run(
@@ -2005,6 +2104,7 @@ class TestBaselineRetryBackoff:
 
     def test_first_failure_runs_suite_and_records_state(self, cron):
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r = cron.run(
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
@@ -2022,6 +2122,7 @@ class TestBaselineRetryBackoff:
         the suite, yet must still halt and go through the existing dedup path
         (an issue already open from cycle 1 → no duplicate filed)."""
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r1 = cron.run(
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
@@ -2040,6 +2141,7 @@ class TestBaselineRetryBackoff:
     def test_head_moved_runs_suite_fresh(self, cron):
         """A new commit since the recorded failure must never hit the cache."""
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r1 = cron.run(
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
@@ -2077,6 +2179,7 @@ class TestBaselineRetryBackoff:
         debris) must never hit the cache either — SHA alone is not enough."""
         cron.git_init_repo()
         cron.make_dirty()
+        cron.set_baseline_on_red("halt")
         r1 = cron.run(
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
@@ -2094,6 +2197,7 @@ class TestBaselineRetryBackoff:
 
     def test_green_baseline_clears_red_state(self, cron):
         cron.git_init_repo()
+        cron.set_baseline_on_red("halt")
         r1 = cron.run(
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
