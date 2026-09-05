@@ -2,7 +2,7 @@
 
 **Milestone:** v0.7.2 — Model Provider Abstraction & Local Inference
 **Epic:** [#1476](https://github.com/thurlow-research/HumanOversightSystem/issues/1476)
-**ADR:** [#1477 — ADR-035](https://github.com/thurlow-research/HumanOversightSystem/issues/1477) (supersedes ADR-034 D-E; defines D-E′, D-H, D-I, D-J, D-K)
+**ADR:** [#1477 — ADR-1477](https://github.com/thurlow-research/HumanOversightSystem/issues/1477) (supersedes ADR-034 D-E; defines D-E′, D-H, D-I, D-J, D-K)
 **Inherits:** [#1456 — ADR-034](https://github.com/thurlow-research/HumanOversightSystem/issues/1456) D-A, D-B, D-C, D-D, D-F(→V4), D-G
 **Binding rulings:** #1476 comment "Authoring-chain rulings — pm-agent + architect" (A1–A6, R-P*); **operator reframing 2026-08-31** (slot-is-code / occupant-is-config — §0; host fully config-described — §0.4; ordered candidate lists + code-owned deterministic selection — §3.5; gateway discovery-only boundary — §3.6)
 **Related decisions:** `DECISIONS.md` D4, D7, D33, D41, D49, D52; `docs/COST-MANAGEMENT.md` §2; HOS#985 (`.env` one-directional clamp)
@@ -21,7 +21,7 @@ BLAST RADIUS: The model-invocation surface of the entire repo (every reviewer, r
 ```
 
 **Change class: `additive`.** This document translates the ratified structural rulings of
-ADR-035 (A1–A6) and pm's PROCEED-WITH-CONDITIONS into an implementable contract, re-expressed
+ADR-1477 (A1–A6) and pm's PROCEED-WITH-CONDITIONS into an implementable contract, re-expressed
 under the operator's slot-is-code/occupant-is-config framing (§0). It originates no architecture
 decision. The framing **narrows** the config's authority (config can express *less* than the
 epic draft allowed), which is strictly safer. **The architect re-ratified A1/A2 under this
@@ -31,7 +31,7 @@ the schema is frozen and the design may proceed to a coder.**
 ### Human Review Required
 - The A6 upward-fallback annotation escape is human-gated by design (§11). A human owns each use.
 - The economic decision (power, shared-host maintenance, unattended-cron dependency) is out
-  of scope and remains a human gate per ADR-035 gate 2 / pm.
+  of scope and remains a human gate per ADR-1477 gate 2 / pm.
 - The 8 open questions are **all resolved** by the architect (§15); no design-gate item remains
   open. Remaining human gates are the two above (operational), not design gates.
 
@@ -128,7 +128,7 @@ mechanism:
 ## 1. Scope
 
 Per **architect A5 / pm R-P4.1**, this design covers **only** the behavior-preserving
-identity refactor (ADR-035 D-J, landing #1): the registry, `config/models.yaml`, the
+identity refactor (ADR-1477 D-J, landing #1): the registry, `config/models.yaml`, the
 resolver (build-time + runtime), the runtime seam + V4 provenance, the code-owned
 cross-vendor constraint, the validation gate, and a default config reproducing **today's
 exact invocations** at every site, proven by **characterization tests** written before any
@@ -742,7 +742,7 @@ Validation (§11) rejects an `escalation.model` whose capability is below the ba
 `primary.model`. Unknown/garbled tier → `select_review_model` returns `None` (caller omits
 `--model` → build-time base). Reviewer independence and which vendors vote are untouched.
 `TECHNICAL-DESIGN-63-model-escalation.md` must be updated to say escalation reads the roster
-(ADR-035 doc-currency edit).
+(ADR-1477 doc-currency edit).
 
 ---
 
@@ -914,7 +914,7 @@ pass. A `tasks.*` slot whose sole candidate is an unverified local model is repo
    shared tier floor from `slots.py` (§7.2.1), never a second copy.
 7. **Build-time `agent` generation + drift gate (§9)**; point `model_escalation.py` at
    `agents.*.escalation.model`. `bin/*` callsites unaffected.
-8. **Doc-currency edits (ADR-035):** `COST-MANAGEMENT.md` §4→data + §9/§10 cost axis;
+8. **Doc-currency edits (ADR-1477):** `COST-MANAGEMENT.md` §4→data + §9/§10 cost axis;
    `OVERSIGHT-CONTRACT.md` advisory/local reviewer class; `TECHNICAL-DESIGN-63` reads roster.
 
 At every step the tree builds, the characterization suite passes, and the D-DET tests hold; a
@@ -922,7 +922,7 @@ resolver bug is caught at the first rerouted site, not across all sites at once 
 
 ---
 
-## 13. Startup-artifact-gap analysis (ADR-035)
+## 13. Startup-artifact-gap analysis (ADR-1477)
 
 Annotated `startup-artifact-gap`. **Dispositive:** the LIL design is DRAFT and **no code was
 built against D-E**. This corrects a decision for a path never built — **all prior sign-offs
