@@ -1,4 +1,9 @@
-# ADR-035 — Model-provider abstraction: slot-is-code / occupant-is-config, code-enforced cross-vendor credit
+# ADR-1477 — Model-provider abstraction: slot-is-code / occupant-is-config, code-enforced cross-vendor credit
+
+**Renumbering note (2026-09-05):** originally authored as "ADR-035," which collided with
+the pre-existing `docs/v0.6.0/ADR-035-audit-approval-bot.md` (unrelated design, superseded
+by ADR-036, kept as historical record). Renumbered to the issue number (`#1477`) per the
+precedent already set by `ADR-1221` and `ADR-1415`. No decision content changed.
 
 **Status:** Accepted — ratified by ScottThurlow 2026-08-31
 **Epic:** #1476 · **ADR issue:** #1477 · **Milestone:** v0.7.2 — Model Provider Abstraction & Local Inference
