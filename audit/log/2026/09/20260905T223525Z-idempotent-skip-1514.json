@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","pr":1514,"headSha":"15527de7a4aca4b6e2c19dcf5b42f01ce117ac3d","role":"overseer","reason":"already reviewed this head SHA in prior cycle (content clean, blocked-not-merged pending #1516 CI-stamp process-gap, still open); no new commits or change in blocking condition since; skipping duplicate comment","timestamp":"20260905T223525Z"}
