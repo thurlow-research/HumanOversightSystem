@@ -50,6 +50,9 @@
 #   HOS_WORKTREE_HYGIENE        override <project>_worktree_hygiene (off|preserve)
 #   HOS_WORKTREE_HYGIENE_MAX_BYTES  quarantine size ceiling in bytes before hygiene
 #                               refuses to sweep (default 268435456 = 256 MiB)
+#   HOS_DIVERGED_MAIN_MAX_ATTEMPTS  consecutive cycles a diverged local main
+#                               (#996) may fail-close silently before a
+#                               needs-human issue is filed (default 3; #1510)
 #
 # <project>_worktree_hygiene (projects.conf, worker only; #1415): a dead cycle
 # can leave debris (untracked scratch files, uncommitted edits to tracked files)
@@ -1351,11 +1354,65 @@ fi
 # not `|| echo 0`, or the fallback appends a second "0" line and breaks the
 # numeric comparison below.
 _stray=$(git -C "$REPO_ROOT" cherry origin/main main 2>/dev/null | grep -c '^+' || true)
+_dm_state="$_HOS_DIR/main-diverged/${ROLE}-${PROJECT}"
+_dm_title_prefix="[BLOCKED] local main diverged on ${PROJECT} (${ROLE})"
 if [[ "${_stray:-0}" -gt 0 ]]; then
   echo "$LOG_PREFIX ⚠ local main has DIVERGED from origin/main — ${_stray} local commit(s) on main with no upstream-equivalent (a stray commit from a killed session?). Skipping cycle fail-closed (#996); inspect: git -C \"$REPO_ROOT\" cherry -v origin/main main"
   _audit cycle-preflight-fail reason=local_main_diverged stray="${_stray}"
+
+  # #1510: the #996 detection above is sound, but on its own it repeats this
+  # identical log line every cycle forever with no recovery attempt and no
+  # escalation — a role can go fully inert (no review, no merge, no build)
+  # for days before a human happens to notice (measured: ~42h / 122 cycles).
+  # Track consecutive occurrences per role+project and escalate to a
+  # needs-human issue once they reach HOS_DIVERGED_MAIN_MAX_ATTEMPTS — this
+  # only adds what happens when the condition persists past a single
+  # occurrence; the worker cannot resolve a diverged main itself (that's a
+  # manual git-state fix, not backlog work), so this always escalates to a
+  # human rather than routing through Step 2 like #1496's repair mode.
+  _dm_max="${HOS_DIVERGED_MAIN_MAX_ATTEMPTS:-3}"
+  _dm_attempts=$(( $(cat "$_dm_state" 2>/dev/null || echo 0) + 1 ))
+  mkdir -p "$(dirname "$_dm_state")"
+  printf '%s\n' "$_dm_attempts" > "$_dm_state"
+  _audit cycle-main-diverged-persist "attempt=${_dm_attempts}/${_dm_max}"
+  echo "$LOG_PREFIX diverged main: consecutive occurrence ${_dm_attempts}/${_dm_max}"
+
+  if [[ "$_dm_attempts" -ge "$_dm_max" && -n "$_REPO_SLUG" ]]; then
+    # Fail-CLOSED dedup, same shape as #849: a query error must never be
+    # read as "no existing issue" (that would file on every cycle past the
+    # threshold) — track query success separately from "found nothing" so a
+    # failed lookup skips filing entirely instead of falling through to it.
+    _dm_issue_num="" _dm_query_ok=0
+    if _dm_open=$(gh api "repos/${_REPO_SLUG}/issues?state=open&per_page=30" \
+        --jq "[.[] | select(.title | startswith(\"${_dm_title_prefix}\"))] | .[].number" \
+        2>/dev/null); then
+      _dm_query_ok=1
+      _dm_issue_num="$(printf '%s\n' "$_dm_open" | head -1)"
+    else
+      echo "$LOG_PREFIX WARN: main-diverged dedup query failed — skipping issue lookup this cycle (fail-closed)"
+    fi
+    if [[ "$_dm_query_ok" -eq 1 && -z "$_dm_issue_num" ]]; then
+      _dm_body="$(printf 'Cycle-preflight guard on `%s` (%s role) has detected local `main` diverged from `origin/main` for %s consecutive cycles with no recovery (#1510) — %s stray local commit(s) currently on main with no upstream-equivalent.\n\nThis role has been fully inert (no review, no merge, no build) for the entire duration; nothing else surfaces this automatically.\n\nInspect and resolve manually:\n\n    git -C <clone> cherry -v origin/main main\n\nOnce local main is reset/synced to a clean fast-forward state, this halt clears automatically on the next cycle.\n' "$PROJECT" "$ROLE" "$_dm_attempts" "$_stray")"
+      if gh issue create \
+          --repo "$_REPO_SLUG" \
+          --title "${_dm_title_prefix} — needs manual recovery" \
+          --label "needs-human,priority:critical" \
+          --body "$_dm_body" \
+          >/dev/null 2>&1; then
+        echo "$LOG_PREFIX filed main-diverged escalation issue"
+      else
+        echo "$LOG_PREFIX WARN: main-diverged escalation issue filing failed"
+      fi
+    elif [[ "$_dm_query_ok" -eq 1 ]]; then
+      echo "$LOG_PREFIX main-diverged escalation issue #${_dm_issue_num} already open — not filing a duplicate"
+    fi
+  fi
   exit 0
 fi
+# Guard passed this cycle — reset the consecutive-occurrence counter so a
+# future divergence starts counting from zero rather than inheriting a stale
+# count from an unrelated, already-resolved episode.
+rm -f "$_dm_state" 2>/dev/null || true
 # main carries nothing origin/main doesn't already have (by content) — safe to
 # bring it to origin/main's tip, whether or not HEAD is currently on main.
 if [[ "$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")" == "main" ]]; then
