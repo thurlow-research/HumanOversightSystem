@@ -14,7 +14,7 @@
 #   cps_config_dir=$HOME/Code/CPS/.config/hos
 #   cps_worker_root=$HOME/Code/CPS/Main
 #   cps_overseer_root=$HOME/Code/CPS/Main
-#   cps_baseline_on_red=repair   # optional (#959); default "halt" — see below
+#   cps_baseline_on_red=halt     # optional (#1496); default "repair" — see below
 #   cps_max_seconds=3600         # optional (#1434); default 1800 — see below
 #   cps_worktree_hygiene=preserve  # optional (#1415); default "off" — see below
 #
@@ -42,8 +42,8 @@
 #   HOS_CRON_JITTER_MAX         max startup jitter in seconds (default 60; 0 disables)
 #   HOS_TARGET_RELEASE          override the active release title (e.g. v0.4.2); default from projects.conf
 #   HOS_TARGET_MILESTONE_NUMBER override the milestone number directly (skips REST resolution)
-#   HOS_BASELINE_REPAIR_MAX_ATTEMPTS  consecutive red-baseline cycles allowed in
-#                               repair mode before escalating to needs-human (default 3)
+#   HOS_BASELINE_REPAIR_MAX_ATTEMPTS  consecutive red-baseline cycles allowed
+#                               (default mode, #1496) before escalating to needs-human (default 3)
 #   HOS_TIMEOUT_BREAKER_MAX_ATTEMPTS  consecutive exit=124 cycles at an unchanged
 #                               cap before the project is suspended via hos-suspend
 #                               (default 2; #1435)
@@ -92,12 +92,18 @@
 # sanctioned credential can read `/usage` percentages headlessly (see the
 # issue), so this only watches for the CLI's own refusal text.
 #
-# <project>_baseline_on_red (projects.conf, worker only; #959): on a red cycle-start
-# baseline, "halt" (default) files a needs-human issue and exits — unchanged legacy
-# behavior. "repair" instead scopes the cycle to fixing the failing tests (bounded by
-# HOS_BASELINE_REPAIR_MAX_ATTEMPTS) when the failure is an ordinary assertion failure
-# (pytest exit 1); a collection/session/environmental failure (any other nonzero exit)
-# always halts regardless of mode, since the worker cannot fix broken infrastructure.
+# <project>_baseline_on_red (projects.conf, worker only; #959, default flipped by
+# #1496): on a red cycle-start baseline whose failure is an ordinary assertion
+# failure (pytest exit 1), "repair" (default) files/reuses a [BLOCKED] issue as
+# needs-ai,priority:critical (never needs-human) and lets it flow through the
+# normal Step 2 candidate selection — the worker diagnoses and fixes the root
+# cause (test or code, any surface) through the normal build/PR/review pipeline
+# instead of halting. Bounded by HOS_BASELINE_REPAIR_MAX_ATTEMPTS consecutive
+# cycles without reaching green, after which the issue is relabeled needs-human
+# and the cycle halts. Explicit "halt" restores the exact legacy behavior:
+# files a needs-human issue and exits immediately, no attempt tracking. A
+# collection/session/environmental failure (any other nonzero exit) always
+# halts regardless of mode, since the worker cannot fix broken infrastructure.
 # Either mode auto-closes a standing [BLOCKED] issue once the baseline goes green.
 #
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
@@ -1483,43 +1489,115 @@ if [[ "$ROLE" == "worker" ]]; then
       echo "$LOG_PREFIX INNER-LOOP BASELINE TESTS FAILED (exit $_bs_exit)"
       _audit cycle-preflight-fail "reason=inner_loop_tests_failed exit=$_bs_exit"
 
-      # #959: an unconditional halt deadlocks any project whose baseline isn't
-      # already green — the worker can never fix the very tests that block it.
-      # Classify instead: pytest exit 1 means tests were collected and RAN —
-      # ordinary, fixable assertion failures, no different from any other
-      # backlog bug. Any other nonzero exit (2=collection/session error,
-      # 3=internal error, 4=usage error, 5=no tests collected) means the
-      # environment itself is broken; the worker cannot fix infrastructure, so
-      # those always halt regardless of repair mode. Opt-in via
-      # <project>_baseline_on_red=repair in projects.conf — default stays
-      # "halt" (unchanged behavior) so existing installs are unaffected.
-      _bs_mode="$(_conf_val baseline_on_red)"; _bs_mode="${_bs_mode:-halt}"
-      _bs_halt=1
+      # #1496: a red baseline is fixable work, no different from any other
+      # backlog bug — the worker diagnoses the root cause (test or code, any
+      # surface, no bypass) and fixes it through the completely normal
+      # build/PR/review pipeline instead of halting for a human on every red
+      # baseline. Classify first: pytest exit 1 means tests were collected
+      # and RAN — ordinary, fixable assertion failures. Any other nonzero
+      # exit (2=collection/session error, 3=internal error, 4=usage error,
+      # 5=no tests collected) means the environment itself is broken; the
+      # worker cannot fix infrastructure, so those always halt regardless of
+      # mode. Default flipped halt→repair (#1496, was #959 opt-in); explicit
+      # <project>_baseline_on_red=halt restores the exact legacy behavior
+      # below (needs-human, immediate halt, no attempt tracking) for a
+      # project that wants strict human gating on every red baseline.
+      _bs_mode="$(_conf_val baseline_on_red)"; _bs_mode="${_bs_mode:-repair}"
+
       if [[ "$_bs_mode" == "repair" && "$_bs_exit" -eq 1 ]]; then
+        # #1496: diagnose-and-fix path. The [BLOCKED] issue is filed/reused as
+        # needs-ai,priority:critical — NEVER needs-human on first failure —
+        # so it flows through the completely normal Step 2 "next work
+        # candidate" selection (priority:critical already sorts it first
+        # there, see scripts/automation/lib/next_candidates.jq). Only
+        # HOS_BASELINE_REPAIR_MAX_ATTEMPTS consecutive cycles without
+        # reaching green escalates to needs-human.
         _bs_max="${HOS_BASELINE_REPAIR_MAX_ATTEMPTS:-3}"
         _bs_attempts=$(( $(cat "$_bs_repair_state" 2>/dev/null || echo 0) + 1 ))
+        mkdir -p "$(dirname "$_bs_repair_state")"
+        printf '%s\n' "$_bs_attempts" > "$_bs_repair_state"
+        _audit cycle-baseline-repair "attempt=${_bs_attempts}/${_bs_max}"
+
+        _bs_issue_num=""
+        if [[ -n "$_REPO_SLUG" ]]; then
+          # #1496: dedup on title-prefix only, not labels — a standing
+          # [BLOCKED] issue may carry needs-ai only (mid-attempt-cycle) or
+          # needs-ai,needs-human (already escalated); either way it is the
+          # same issue and must not be duplicated. Fail-CLOSED as before: a
+          # query error must never default to "no existing issue" and file a
+          # duplicate — skip the lookup/filing this cycle instead.
+          if _bs_open=$(gh api "repos/${_REPO_SLUG}/issues?state=open&per_page=20" \
+              --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | .[].number" \
+              2>/dev/null); then
+            _bs_issue_num="$(printf '%s\n' "$_bs_open" | head -1)"
+          else
+            echo "$LOG_PREFIX WARN: broken-state dedup query failed — skipping issue lookup this cycle (fail-closed)"
+          fi
+
+          if [[ -z "$_bs_issue_num" ]]; then
+            # #1415: same construction as the legacy body below — with
+            # hygiene off/disabled, _HYGIENE_NOTE is empty.
+            _bs_body="$(printf 'Cycle-start inner-loop baseline tests are failing on \`%s\` at HEAD \`%s\`. Per #1496, the worker will diagnose whether the test or the code is at fault and fix the root cause through the normal build/PR/review pipeline — no special bypass, any surface (including protected ones) is fair game. Escalates to a human only after %s consecutive cycles without reaching green.\n\nReproduce locally:\n\n    bash scripts/framework/run_tests_inner_loop.sh\n' "$PROJECT" "${_CURRENT_HEAD:-unknown}" "$_bs_max")"
+            [[ -n "$_HYGIENE_NOTE" ]] && _bs_body="${_bs_body}"$'\n\n'"${_HYGIENE_NOTE}"
+            if _bs_created=$(gh issue create \
+                --repo "$_REPO_SLUG" \
+                --title "${_bs_title_prefix} — diagnose and fix" \
+                --label "needs-ai,priority:critical" \
+                --body "$_bs_body" \
+                2>/dev/null); then
+              _bs_issue_num="${_bs_created##*/}"
+              echo "$LOG_PREFIX filed baseline diagnose-and-fix issue #${_bs_issue_num}"
+              # #1496: only PATCH the milestone on first creation — an
+              # already-open issue was PATCHed once already and must not be
+              # re-PATCHed every cycle. Best-effort: a milestone-assignment
+              # failure must never block the cycle, only the milestone-scoped
+              # Step 2 query picking the issue up (it still sorts first once
+              # assigned).
+              if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "$_bs_issue_num" ]]; then
+                gh api -X PATCH "repos/${_REPO_SLUG}/issues/${_bs_issue_num}" \
+                  -f "milestone=${HOS_TARGET_MILESTONE_NUMBER}" \
+                  2>/dev/null || true
+              fi
+            else
+              echo "$LOG_PREFIX WARN: baseline diagnose-and-fix issue filing failed"
+            fi
+          else
+            echo "$LOG_PREFIX baseline diagnose-and-fix issue #${_bs_issue_num} already open — not filing a duplicate"
+          fi
+        fi
+
         if [[ "$_bs_attempts" -le "$_bs_max" ]]; then
-          _bs_halt=0
-          mkdir -p "$(dirname "$_bs_repair_state")"
-          printf '%s\n' "$_bs_attempts" > "$_bs_repair_state"
-          export HOS_BASELINE_REPAIR_ACTIVE=1
-          export HOS_BASELINE_REPAIR_ATTEMPT="${_bs_attempts}/${_bs_max}"
-          echo "$LOG_PREFIX baseline repair mode: attempt ${_bs_attempts}/${_bs_max} — this cycle is scoped to the failing baseline, no new backlog"
-          _audit cycle-baseline-repair "attempt=${_bs_attempts}/${_bs_max}"
+          # #1496: no banner/env-var scoping needed — the needs-ai,
+          # priority:critical, milestone-assigned issue sorts first in the
+          # normal Step 2 candidate selection on its own.
+          echo "$LOG_PREFIX baseline repair mode: attempt ${_bs_attempts}/${_bs_max} — diagnose-and-fix issue is this cycle's top-priority work"
         else
           echo "$LOG_PREFIX baseline repair exhausted after ${_bs_attempts} attempts without a green baseline — escalating to human"
+          if [[ -n "$_REPO_SLUG" && -n "$_bs_issue_num" ]]; then
+            gh issue edit "$_bs_issue_num" --repo "$_REPO_SLUG" --add-label needs-human 2>/dev/null || true
+            gh issue comment "$_bs_issue_num" --repo "$_REPO_SLUG" \
+              --body "Attempt cap (${_bs_max}) reached without a green baseline — escalating to human. See the diagnosis comments posted on this issue each cycle for the round-by-round record." \
+              2>/dev/null || true
+          fi
+          exit 1
         fi
-      fi
-
-      if [[ "$_bs_halt" -eq 1 ]]; then
-        # Broken-state flow (#789): rather than a silent exit, file a needs-human
-        # issue so a human can investigate/authorize a fix — the worker is halted
-        # until the baseline is green again. Fail-CLOSED dedup mirrors the #849
-        # agent-availability guard: only file when the dedup query SUCCEEDS and
-        # confirms zero existing broken-state issues. A query error must never
-        # default the count to 0 — that would file a fresh issue every cycle and
-        # flood the queue. On query failure, skip filing; the next cycle whose
-        # query succeeds files once.
+        # The diagnose-and-fix issue is filed/reused above — do NOT stamp the
+        # cowpat below; the baseline is still red. Fall through so the cycle
+        # continues normally (git sync, Claude launch, etc.) instead of
+        # halting — the issue itself is this cycle's top-priority work.
+      else
+        # Legacy halt path (#789, unchanged by #1496): mode=halt (explicit
+        # opt-out) with exit=1, or any exit=2-5 (environmental/collection
+        # failure — always halts regardless of mode; the worker cannot fix
+        # broken infrastructure). Rather than a silent exit, file a
+        # needs-human issue so a human can investigate/authorize a fix — the
+        # worker is halted until the baseline is green again. Fail-CLOSED
+        # dedup mirrors the #849 agent-availability guard: only file when the
+        # dedup query SUCCEEDS and confirms zero existing broken-state
+        # issues. A query error must never default the count to 0 — that
+        # would file a fresh issue every cycle and flood the queue. On query
+        # failure, skip filing; the next cycle whose query succeeds files
+        # once.
         if [[ -n "$_REPO_SLUG" ]]; then
           if _bs_existing=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
               --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | length" \
@@ -1547,8 +1625,6 @@ if [[ "$ROLE" == "worker" ]]; then
         fi
         exit 1
       fi
-      # Repair mode absorbed the failure above (fell through instead of exiting)
-      # — do NOT stamp the cowpat below; the baseline is still red.
     else
       # Baseline green — reset any standing repair-attempt counter and
       # auto-close a standing [BLOCKED] issue (#959): the steady state must not
@@ -1558,7 +1634,11 @@ if [[ "$ROLE" == "worker" ]]; then
       # not be compared against a stale pre-fix record.
       rm -f "$_BR_STATE"
       if [[ -n "$_REPO_SLUG" ]]; then
-        if _bs_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&labels=needs-human&per_page=20" \
+        # #1496: match on title-prefix only, not labels — a standing
+        # [BLOCKED] issue may now carry needs-ai only (mid-attempt-cycle),
+        # needs-ai,needs-human (escalated), or needs-human,needs-ai (legacy
+        # halt path); auto-close must catch all of them.
+        if _bs_open_nums=$(gh api "repos/${_REPO_SLUG}/issues?state=open&per_page=20" \
             --jq "[.[] | select(.title | startswith(\"${_bs_title_prefix}\"))] | .[].number" \
             2>/dev/null); then
           while IFS= read -r _bs_num; do
@@ -1666,20 +1746,6 @@ _build_prompt() {
 # Fail-open: any section that errors is silently omitted; never abort the launch.
 _build_context() {
   printf '\n## Pre-computed cycle context — %s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-
-  # #959: when the cycle-start baseline was red but repair mode absorbed it
-  # (see the inner-loop baseline block above) instead of halting, this cycle
-  # must not pick up new backlog — it must fix the failing baseline first.
-  if [[ "${HOS_BASELINE_REPAIR_ACTIVE:-0}" == "1" ]]; then
-    printf '### ⚠ BASELINE REPAIR MODE — attempt %s (#959)\n\n' "${HOS_BASELINE_REPAIR_ATTEMPT:-?}"
-    printf 'The cycle-start inner-loop baseline is RED (ordinary assertion failures,\n'
-    printf 'not an environmental error — those always halt instead of reaching this mode).\n'
-    printf 'This cycle is scoped to making `bash scripts/framework/run_tests_inner_loop.sh`\n'
-    printf 'pass again — do not pick up Step 2 backlog work until it is green. Treat the\n'
-    printf 'failing tests as this cycle'"'"'s only work item, fix them, then run Step 4\n'
-    printf '(tests + validators) and open a PR as usual. If repair attempts are exhausted\n'
-    printf 'without reaching green, the launcher escalates to a needs-human issue automatically.\n\n'
-  fi
 
   printf '### Open bot PRs\n'
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then

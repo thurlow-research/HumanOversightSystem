@@ -259,6 +259,58 @@ stuck).
 
 ---
 
+**Step 0.7 — Red-baseline root-cause policy (#1496):**
+
+A cycle-start inner-loop baseline failure (ordinary assertion failure, pytest
+exit 1 — an environmental/collection error, exit 2-5, is unfixable by the
+worker and always halts as before, unmodified by this policy) no longer halts
+the worker for a human. `bin/hos-cron` files (or reuses) a `[BLOCKED]
+inner-loop tests failing on <project> — worker halted` issue labeled
+`needs-ai` + `priority:critical` and lets the cycle continue. Because it is
+`priority:critical`, it sorts first among Step 2's "Next work candidates"
+automatically (`next_candidates.jq` ranks `priority:critical` at rank 0) — no
+separate bypass logic is needed here; if Step 2 is reached this cycle, this
+issue **is** the next candidate. (If Step 1 above blocks new work on an
+existing PR fix, fix that PR first as usual — the baseline issue is not lost,
+it waits for the next cycle, same as any other queued item.)
+
+When you pick up this issue at Step 2, **diagnose before fixing, every time**:
+
+1. Run `bash scripts/framework/run_tests_inner_loop.sh` and read the failing
+   assertion(s) directly — do not infer from a summary line.
+2. For each failure, determine by hand whether the **test's expectation** is
+   wrong or the **code's behavior** is wrong: run the assertion's logic
+   against the actual artifact/behavior it checks, compare actual vs.
+   expected, and write down which side is wrong and why.
+3. **Record that evidence as a comment on the `[BLOCKED]` issue itself**
+   (`bash bootstrap/post_comment.sh --number <n> --body-file <path> --app
+   worker`) before making the fix — this is the auditable diagnosis step
+   acceptance requires, and it is what the round-by-round record at
+   escalation (below) is built from. An implicit judgment folded into the fix
+   commit does not satisfy this.
+4. **If genuine investigation cannot determine which side is wrong, escalate
+   immediately** — relabel the issue to add `needs-human` (`bash
+   bootstrap/edit_issue.sh --number <n> --add-label needs-human --app
+   worker`), post the inconclusive evidence you gathered, and STOP. Do not
+   guess, and do not wait for the attempt cap below.
+5. Fix whichever side is actually wrong — test or code, **any surface,
+   including protected surfaces** — through the completely normal per-task
+   chain (resume at "What you do" step 1 above: risk-assessor, code-reviewer,
+   parallel reviewers, normal PR, normal overseer review). There is no
+   special bypass path and no self-merge; the protected-surface human-approval
+   gate covers this exactly as it covers any other worker PR.
+
+**Escalation cap:** `bin/hos-cron` tracks a consecutive-cycles-without-green
+counter for the standing red-baseline episode and, after
+`HOS_BASELINE_REPAIR_MAX_ATTEMPTS` (default 3) consecutive cycles without
+reaching green, relabels the issue to `needs-human` and halts automatically —
+nothing further is required from you in that case. A fix that surfaces a
+*new*, distinct failure (rather than the same one persisting) is progress, not
+whack-a-mole — keep going rather than treating it as a reason to escalate
+early.
+
+---
+
 **Step 1 — Check open PRs (#550, #551, #1198):**
 
 **Before picking any new work item, check the state of all open PRs you authored.**
@@ -893,6 +945,11 @@ Example: `{"event":"ng3b-violation-attempt","ts":"2026-06-16T22:14:03Z","repo":"
 - Budget overrun or CRITICAL risk → human (both modes: interactive = ask directly; autonomous = create `needs-human` issue with §8.2 escalation body)
 - Security report → embargo path (`merge_authority.py:route_embargo`)
 - Stale after 5 reviewer rounds → escalate, do not attempt a 6th
+- Red-baseline root cause cannot be determined after genuine investigation
+  (Step 0.7, #1496) → escalate immediately, do not wait for the 3-cycle cap
+- Same red-baseline issue surviving 3 consecutive fix-attempt cycles without
+  reaching green (#1496) → `bin/hos-cron` escalates automatically; do not
+  attempt a 4th
 - Release request (cut/tag/publish) → human-authorized only via the **Release
   authorization protocol**; never cut on your own authority.
 
