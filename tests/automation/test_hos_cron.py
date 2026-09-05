@@ -159,6 +159,14 @@ class CronEnv:
             '  *"issues?state=open&per_page=20"*".[].number"*)\n'
             '    [[ -n "${HOS_TEST_BASELINE_QUERY_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_BASELINE_OPEN_NUMS:-} ;;\n'
+            # #1510: diverged-main escalation dedup — title-prefix only, same
+            # shape as the #1496 baseline dedup above but on a distinct
+            # per_page value (30 vs 20) so the two queries don't collide.
+            # HOS_TEST_MAIN_DIVERGED_QUERY_FAIL simulates a gh API failure so
+            # the fail-closed dedup path can be exercised.
+            '  *"issues?state=open&per_page=30"*".[].number"*)\n'
+            '    [[ -n "${HOS_TEST_MAIN_DIVERGED_QUERY_FAIL:-}" ]] && exit 1\n'
+            '    printf "%s\\n" ${HOS_TEST_MAIN_DIVERGED_OPEN_NUMS:-} ;;\n'
             # Agent availability: needs-human blocked issues count.
             # HOS_TEST_AA_QUERY_FAIL simulates a gh API failure (non-zero exit)
             # so the #849 fail-closed dedup path can be exercised.
@@ -791,6 +799,10 @@ class CronEnv:
         """The #959 repair-attempt counter file for worker/<project>."""
         return self.state / "baseline-repair" / f"worker-{project}"
 
+    def main_diverged_state_file(self, role="worker", project="hos") -> Path:
+        """The #1510 consecutive-occurrence counter file for <role>/<project>."""
+        return self.state / "main-diverged" / f"{role}-{project}"
+
     def baseline_red_state_file(self, project="hos") -> Path:
         """The #1498 last-observed-red-state file (HEAD sha + worktree
         fingerprint + exit code) for worker/<project>."""
@@ -1168,6 +1180,92 @@ class TestGitSyncDivergence:
         assert "DIVERGED" not in r.stdout
         assert cron.current_branch() == "feat/in-progress"
         assert cron.claude_ran()
+
+
+# ──────────── Diverged-main escalation, no recovery path (#1510) ────────────
+class TestMainDivergedEscalation:
+    """The #996 guard above correctly detects and fail-closes on a diverged
+    local main, but on its own repeats the same log line every cycle forever
+    with nobody notified. HOS_DIVERGED_MAIN_MAX_ATTEMPTS (default 3) bounds
+    how many consecutive occurrences fail-close silently before a needs-human
+    issue is filed."""
+
+    def test_first_occurrence_does_not_escalate(self, cron):
+        cron.git_init_diverged_main()
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "consecutive occurrence 1/3" in r.stdout
+        assert not cron.aa_issue_created(), "must not escalate on first occurrence"
+        assert cron.main_diverged_state_file().read_text().strip() == "1"
+
+    def test_second_occurrence_still_does_not_escalate(self, cron):
+        cron.git_init_diverged_main()
+        cron.main_diverged_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.main_diverged_state_file().write_text("1\n")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "consecutive occurrence 2/3" in r.stdout
+        assert not cron.aa_issue_created()
+        assert cron.main_diverged_state_file().read_text().strip() == "2"
+
+    def test_third_consecutive_occurrence_escalates(self, cron):
+        cron.git_init_diverged_main()
+        cron.main_diverged_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.main_diverged_state_file().write_text("2\n")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "consecutive occurrence 3/3" in r.stdout
+        assert cron.aa_issue_created(), "3rd consecutive occurrence must escalate (#1510)"
+        assert cron.aa_issue_label() == "needs-human,priority:critical"
+        assert "#1510" in cron.aa_issue_body()
+        assert "3 consecutive cycles" in cron.aa_issue_body()
+
+    def test_custom_threshold_escalates_immediately(self, cron):
+        cron.git_init_diverged_main()
+        r = cron.run(env_overrides={"HOS_DIVERGED_MAIN_MAX_ATTEMPTS": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.aa_issue_created(), "threshold of 1 must escalate on first occurrence"
+
+    def test_dedup_avoids_duplicate_issue(self, cron):
+        cron.git_init_diverged_main()
+        cron.main_diverged_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.main_diverged_state_file().write_text("2\n")
+        r = cron.run(env_overrides={"HOS_TEST_MAIN_DIVERGED_OPEN_NUMS": "555"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.aa_issue_created(), "existing issue #555 → must not file a duplicate"
+        assert "already open" in r.stdout
+
+    def test_dedup_query_failure_fails_closed(self, cron):
+        cron.git_init_diverged_main()
+        cron.main_diverged_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.main_diverged_state_file().write_text("2\n")
+        r = cron.run(env_overrides={"HOS_TEST_MAIN_DIVERGED_QUERY_FAIL": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.aa_issue_created(), "dedup query failed → must fail closed, not file"
+        assert "fail-closed" in r.stdout
+
+    def test_counter_resets_once_recovered(self, cron):
+        cron.git_init_repo()  # not diverged
+        cron.main_diverged_state_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.main_diverged_state_file().write_text("2\n")
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert not cron.main_diverged_state_file().exists(), "recovery must reset the counter"
+        assert cron.claude_ran()
+
+    def test_overseer_role_also_tracked_and_escalates(self, cron):
+        """#1510 was found on the overseer's clone — the guard runs for both
+        roles and must escalate identically."""
+        cron.git_init_diverged_main()
+        state = cron.main_diverged_state_file(role="overseer")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text("2\n")
+        # An open, actionable PR (matches the real incident, #1510) so the
+        # overseer's own actionable-work gate doesn't skip the cycle before
+        # ever reaching the git-sync divergence check below it.
+        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert cron.aa_issue_created()
 
 
 # ───────────────────────────── Auth bootstrap (#728) ───────────────────────
