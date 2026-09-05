@@ -1,0 +1,8 @@
+{
+  "event": "human-authorized-merge",
+  "pr": 1509,
+  "merged_by": "ScottThurlow",
+  "merged_at": "2026-09-05T18:58:29Z",
+  "observed_at": "20260905T195544Z",
+  "role": "overseer"
+}

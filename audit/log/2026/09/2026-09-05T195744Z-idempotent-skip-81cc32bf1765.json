@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","pr":1512,"headSha":"131f77bc54257ea4f17ad18b827a76269aa002f5","role":"overseer","reason":"already reviewed and escalated HUMAN_REQUIRED this head SHA (see 2026-09-05T192900Z-human-required-ae0bd7254a34.json); no new human approval since; skipping duplicate comment/escalation","timestamp":"20260905T195744Z"}
