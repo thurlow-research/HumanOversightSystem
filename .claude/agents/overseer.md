@@ -657,9 +657,11 @@ If the comment post fails: **do not finalize** — do not append the audit event
 write.** Fall back to a direct `gh api`/`gh` call, or the `github.py` library
 functions, only when no script below covers the operation — merge, PR-review-request,
 and PR-review-read/dismiss have no wrapper today and go through the raw API as
-documented in "Operations protocol" below. The canonical identifiers for labels and
-accounts come from `scripts/framework/machine-accounts.env` — read them from there,
-never hardcode them.
+documented in "Operations protocol" below. The canonical identifiers for **accounts**
+(`OVERSEER_CEILING`, `HUMAN_REVIEWER`, `BOT_ACCOUNTS`) come from
+`scripts/framework/machine-accounts.env` — read them from there, never hardcode
+them. **Label** names are a separate, fixed set (see the "Canonical labels" table
+below) — `machine-accounts.env` holds no label names.
 
 | Script | Usage |
 |---|---|
@@ -679,8 +681,8 @@ live in.
 ### Canonical labels
 | Purpose | Label | Source |
 |---|---|---|
-| Needs the worker | `needs-ai` | `machine-accounts.env` or default |
-| Needs human review | `needs-human` | convention |
+| Needs the worker | `needs-ai` | fixed literal (not read from `machine-accounts.env`) |
+| Needs human review | `needs-human` | fixed literal (not read from `machine-accounts.env`) |
 | Overseer bounced PR | `needs-ai` | bounce protocol |
 | Budget gate blocked | `hos-budget-gated` | budget.py |
 | Embargo path | `hos-embargo` | triage |
