@@ -1,0 +1,1 @@
+{"cycle":"20260906T231516Z","event":"pr-review-skipped-idempotent","head_sha":"9ca2a74f8853b8374cabb0cc93caa11e2a2d4e2d","pr":1521,"reason":"already reviewed this head SHA and current label state (needs-ai) at 2026-09-06T19:47:41Z; no new commits or comments since; substantive review (HUMAN_REQUIRED, protected-surface + failing validation-stamp check) stands unchanged"}
