@@ -1,0 +1,1 @@
+{"agent":"overseer","comment_posted":true,"event":"human-required","pr":1521,"reason_category":"GATE_UNSATISFIED","step":"n/a","summary":"PR touches protected surface .claude/agents/overseer.md with no qualifying human approval on the current head SHA."}
