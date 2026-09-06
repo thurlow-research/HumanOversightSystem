@@ -1,0 +1,1 @@
+{"cycle":"20260906T224532Z","event":"pr-review-skipped-idempotent","head_sha":"9ca2a74f8853b8374cabb0cc93caa11e2a2d4e2d","pr":1521,"reason":"already reviewed this head SHA; decision HUMAN_REQUIRED (protected-surface: .claude/agents/overseer.md under protected_surfaces.txt/CODEOWNERS); no new commits or external comments since prior review","timestamp":"2026-09-06T22:45:32Z"}
