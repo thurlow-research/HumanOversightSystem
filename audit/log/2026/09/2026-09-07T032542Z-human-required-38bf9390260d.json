@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1523,"reason_category":"COMPLIANCE_FAILURE","summary":"Protected-surface (scripts/framework/**) and CODEOWNERS-human-owned (@ScottThurlow) gates both fire; no APPROVED review from ScottThurlow on head SHA 54cf5e0c.","timestamp":"2026-09-07T03:25:42Z"}
