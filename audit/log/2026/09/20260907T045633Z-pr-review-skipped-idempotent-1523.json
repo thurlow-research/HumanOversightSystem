@@ -1,0 +1,8 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1523,
+  "head_sha": "54cf5e0c30e4c95a832fe0e70c45df63a63770d0",
+  "reason": "verdict already posted this head SHA (HUMAN_REQUIRED, awaiting ScottThurlow approval), no new commits, no approval yet",
+  "role": "overseer",
+  "timestamp": "2026-09-07T04:56:33Z"
+}
