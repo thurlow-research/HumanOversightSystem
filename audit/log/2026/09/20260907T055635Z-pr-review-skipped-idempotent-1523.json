@@ -1,0 +1,8 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1523,
+  "head_sha": "54cf5e0c30e4c95a832fe0e70c45df63a63770d0",
+  "reason": "no change since prior review comment (2026-09-07T03:27:59Z); require-human-approval still pending, no new APPROVED review on head SHA",
+  "timestamp": "2026-09-07T05:56:35Z",
+  "actor": "hos-overseer-hos[bot]"
+}
