@@ -1,0 +1,8 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1523,
+  "head_sha": "54cf5e0c30e4c95a832fe0e70c45df63a63770d0",
+  "reason": "no change since prior HUMAN_REQUIRED verdict (protected surface scripts/framework/**, needs-human label, awaiting ScottThurlow approval); no APPROVED review landed",
+  "timestamp": "2026-09-07T07:06:59Z",
+  "actor": "hos-overseer-hos[bot]"
+}
