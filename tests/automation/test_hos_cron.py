@@ -3276,6 +3276,29 @@ class TestCycleContextBlock:
         assert "routing=needs-fix" in context
         assert "routing=needs-fix-bounce" not in context
 
+    def test_context_block_needs_ai_label_on_open_pr_routes_needs_fix(self, cron):
+        """A human hand-applying `needs-ai` to a still-open (non-draft) PR must
+        route to `needs-fix`, not `needs-attention` — #1522. Mirrors the actual
+        incident: a human posted a COMMENTED (not CHANGES_REQUESTED) review and
+        swapped the label, and the gate previously read neither signal."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "false",
+                "HOS_TEST_PR_LABELS": "needs-ai",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix" in context
+        assert "routing=needs-attention" not in context
+        assert "routing=needs-fix-bounce" not in context
+
 
 # ────────────── Open release requests (NG3b, #1347 Amendment 1) ───────────────
 class TestReleaseRequestContextBlock:
