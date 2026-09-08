@@ -1,0 +1,1 @@
+{"cycle":"2026-09-08T22:25:26Z","event":"pr-review-skipped-idempotent","head_sha":"f5d902cb9ce001bec25c7dc80a6b199ab4a6a772","pr":1527,"reason":"already reviewed at this head SHA (2026-09-08T21:37:59Z comment, verdict HUMAN_REQUIRED, protected-surface gate); no new commits since prior review","role":"overseer"}
