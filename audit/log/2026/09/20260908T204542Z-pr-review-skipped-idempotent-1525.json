@@ -1,0 +1,9 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1525,
+  "head_sha": "11dd0093d143755a738dfbb33289b279c86d0001",
+  "reason": "no change since prior cycle's skip at 2026-09-08T20:36:03Z (itself no-change since the full review at 20:19:32Z); decision remains PROPOSE_ONLY; still blocked by (1) unresolved review thread bin/hos-cron:1092 (D12), (2) decide_merge_authority() live-executed returns PROPOSE_ONLY per #1357/#1360 dep-ceiling-check stub; labels unchanged (needs-ai only); no new commits, no new reviews, no new comments",
+  "timestamp": "20260908T204542Z",
+  "actor": "hos-overseer-hos[bot]",
+  "cycle": "2026-09-08T20:45:42Z"
+}
