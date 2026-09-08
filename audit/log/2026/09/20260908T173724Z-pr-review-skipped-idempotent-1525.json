@@ -1,0 +1,9 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1525,
+  "head_sha": "11dd0093d143755a738dfbb33289b279c86d0001",
+  "reason": "already reviewed this head SHA at 2026-09-08T00:38:38Z (initial HUMAN_REQUIRED assessment) and re-escalated at 04:47:19Z and 08:37:27Z in response to human comments; decision remains HUMAN_REQUIRED (protected surfaces: bin/hos-cron, bootstrap/worker-cron-prompt.md under protected_surfaces.txt); require-human-approval and require-overseer-approval checks still failing; no APPROVED review or new commits since the 08:37:27Z escalation",
+  "timestamp": "20260908T173724Z",
+  "actor": "hos-overseer-hos[bot]",
+  "cycle": "2026-09-08T17:36:04Z"
+}
