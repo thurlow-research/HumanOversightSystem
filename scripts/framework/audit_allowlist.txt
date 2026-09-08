@@ -1,0 +1,31 @@
+# audit_allowlist.txt — the single source for the ADR-035 audit surface (AD-5).
+#
+# Every entry below is an inert-record path: append-only audit data, never
+# code, config, or anything imported/executed. `audit_predicate.py`
+# (Component A) reads this file as the allowlist for `classify_audit_diff`,
+# and — in later slices of this build — `overseer.md`'s exempt-files list and
+# `pre_pr_stale_check.py`'s audit-only exemption both reconcile to this same
+# file, so there is exactly one definition of the audit surface (AD-2/AD-5;
+# the antidote to the #1135 duplicate-gate class).
+#
+# Adding a path here is a protected-surface, human-gated change
+# (scripts/framework/** — see protected_surfaces.txt) — never widen this list
+# without a structural human sign-off, and never add a path with no
+# registered well-formedness validator (see audit_predicate.py §3.3; an
+# allowlisted-but-unvalidatable path fails closed, so listing one here would
+# be misleading, not merely permissive).
+#
+# Syntax matches protected_surfaces.txt / require_human_approval.load_globs:
+# `dir/**` = the dir and everything under it, `*` = one path segment, a plain
+# path matches that exact file. Blank lines and `#`-comments are ignored.
+#
+# This is the Revision 2 (2026-08-01) corrected default (TECHNICAL-DESIGN-035
+# §4 Revision 2 note) — it supersedes the DRAFT-1 default, which included
+# audit/overnight-loop-log.md and audit/automation/** (both dropped: no
+# derivable well-formedness validator, AD-14/AD-17b) and an unrestricted
+# audit/log/** glob (extension-restricted here per AD-17c so a non-record
+# file under that tree cannot match).
+
+audit/oversight-log.jsonl
+audit/log/**/*.json
+audit/log/**/*.jsonl
