@@ -1,0 +1,9 @@
+{
+  "event": "pr-review-skipped-idempotent",
+  "pr": 1525,
+  "head_sha": "11dd0093d143755a738dfbb33289b279c86d0001",
+  "reason": "no change since prior cycle's skip at 2026-09-08T18:35:57Z; decision remains HUMAN_REQUIRED (protected surfaces: bin/hos-cron, bootstrap/worker-cron-prompt.md under protected_surfaces.txt); require-human-approval and require-overseer-approval checks still failing; human review still COMMENTED not APPROVE; no new commits",
+  "timestamp": "20260908T192521Z",
+  "actor": "hos-overseer-hos[bot]",
+  "cycle": "2026-09-08T19:25:21Z"
+}
