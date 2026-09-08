@@ -1,0 +1,1 @@
+{"event":"human-required","head_sha":"11dd0093d143755a738dfbb33289b279c86d0001","pr":1525,"reason":"PR carries blocking label(s) [needs-human] — human authorization required (#756); protected-surface approval from ScottThurlow satisfied on head SHA 11dd0093 but needs-human label still present","role":"overseer"}
