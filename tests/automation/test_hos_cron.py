@@ -3299,6 +3299,57 @@ class TestCycleContextBlock:
         assert "routing=needs-attention" not in context
         assert "routing=needs-fix-bounce" not in context
 
+    def test_context_block_needs_ai_and_needs_human_labels_falls_through_to_review_state(
+        self, cron
+    ):
+        """A PR carrying BOTH `needs-ai` and `needs-human` must not be forced to
+        `needs-fix` — `merge_authority.py`'s `labels_to_add` write path applies a
+        bot `needs-ai` on any non-PROCEED verdict with no way to distinguish that
+        from a human-applied one, so this combination means a human is the actor,
+        not the worker. Routing must fall through to the ordinary review-state
+        checks (CHANGES_REQUESTED / APPROVED count) instead — #1526."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "false",
+                "HOS_TEST_PR_LABELS": "needs-ai needs-human",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-attention" in context
+        assert "routing=needs-fix" not in context
+
+    def test_context_block_approved_pr_with_stale_needs_ai_label_still_routes_needs_fix(
+        self, cron
+    ):
+        """Documents current-by-design behavior that motivates clearing the label
+        after a fix (#1526): an approved, clean PR that still carries `needs-ai`
+        (nothing ever cleared it) keeps routing to `needs-fix` — the label alone
+        is the signal, independent of review/approval state. This is the
+        livelock #1526 fixes at the source (worker now clears the label after
+        pushing a fix), not by changing this routing check."""
+        stdin_capture = self._setup_stdin_capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "false",
+                "HOS_TEST_PR_LABELS": "needs-ai",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix" in context
+
 
 # ────────────── Open release requests (NG3b, #1347 Amendment 1) ───────────────
 class TestReleaseRequestContextBlock:

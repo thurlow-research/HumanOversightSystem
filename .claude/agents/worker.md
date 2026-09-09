@@ -321,11 +321,17 @@ allowed this cycle (#1198 Q6).** Read the `NEW WORK: ALLOWED` / `NEW WORK: BLOCK
 directive in the "Pre-computed cycle context" block the launcher injects into this
 prompt. Obey it — do not re-derive the routing yourself:
 
-- `NEW WORK: BLOCKED` naming a PR with `CHANGES_REQUESTED` or a merge conflict →
-  address that PR: read its reviews (`gh api "repos/{owner}/{repo}/pulls/{number}/reviews"`
-  — no wrapper covers PR review reads yet) AND comments (`bash bootstrap/query_issues.sh
-  --app worker --comments {number}`), fix the listed gaps, push a new commit, then
-  STOP this iteration.
+- `NEW WORK: BLOCKED` naming a PR with `CHANGES_REQUESTED`, a merge conflict, or a
+  human-applied `needs-ai` label without `needs-human` also present (`bin/hos-cron`
+  excludes the co-occurring case — see below) → address that PR: read its reviews
+  (`gh api "repos/{owner}/{repo}/pulls/{number}/reviews"` — no wrapper covers PR
+  review reads yet) AND comments (`bash bootstrap/query_issues.sh --app worker
+  --comments {number}`), fix the listed gaps, push a new commit, then — if the PR
+  carries the `needs-ai` label — clear it (`bash bootstrap/edit_issue.sh --number
+  <n> --remove-label needs-ai --app worker`), mirroring the `/approve`/`/decline`
+  swap pattern for issues: the label is the "worker, act" signal, and leaving it
+  set after acting re-triggers `needs-fix` routing on an already-fixed PR every
+  later cycle (#1526). Then STOP this iteration.
 - `NEW WORK: BLOCKED` naming a PR that is approved/clean or open-but-unreviewed →
   nothing to fix this cycle. Step 0 triage still runs even while blocked (the
   launcher no longer skips Claude entirely in this state, #1198) — run it, then
