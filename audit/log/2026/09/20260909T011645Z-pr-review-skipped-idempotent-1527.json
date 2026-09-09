@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","pr":1527,"head_sha":"f5d902cb9ce001bec25c7dc80a6b199ab4a6a772","reason":"already reviewed 2026-09-09T00:44:27Z, verdict HUMAN_REQUIRED, needs-human label still present, no new commits","timestamp":"20260909T011645Z","role":"overseer"}
