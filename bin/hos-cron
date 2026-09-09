@@ -1090,8 +1090,13 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       # in this pipeline (docs/OVERSIGHT-RUNBOOK.md "Intervening" #1) — treat it
       # as needs-fix even with zero CHANGES_REQUESTED reviews, since a human may
       # hand back direction via a COMMENTED review + label swap instead of a
-      # formal CHANGES_REQUESTED review (#1522).
-      if [[ " $_pr_labels " == *" needs-ai "* ]]; then
+      # formal CHANGES_REQUESTED review (#1522). Excluded when `needs-human` is
+      # also present: merge_authority.py applies `needs-ai` automatically on any
+      # non-PROCEED oversight verdict with no way to distinguish that from a
+      # human-applied label, so a PR actually waiting on a human decision must
+      # not be misrouted into "worker, fix this" — fall through to the
+      # review-state checks below instead (#1526).
+      if [[ " $_pr_labels " == *" needs-ai "* && " $_pr_labels " != *" needs-human "* ]]; then
         _PR_ROUTING="needs-fix"; break
       fi
       _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
