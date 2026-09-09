@@ -49,7 +49,15 @@ If an open `release-request` issue with neither a `release-authorized` nor a `ne
 
 **Step 1 — Review open PRs:**
 
-The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt. For each PR number in the preamble list: run the full review chain (validators, size check, register completeness, merge-authority matrix). Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
+The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt.
+
+**Idempotency precheck (#1524, no-idempotency class) — literal first command for each PR, before `gh pr view`/diff/anything else.** Four incidents (#1288/#1286/#1280, #1306, #1512, #1523) produced a duplicate PR comment because the ad hoc check each cycle reinvented grepped the retired file `audit/oversight-log.jsonl` (gone since #888 P5) and silently matched nothing. For each PR number in the preamble list, fetch its current head SHA (`gh api repos/{o}/{r}/pulls/<n> --jq .head.sha`) and run:
+```bash
+bash scripts/oversight/check_pr_reviewed.sh <pr#> <head_sha>
+```
+Never suppress this command's stderr — a wrong root or a malformed audit record must fail loud, never silently. If it prints `{"already_reviewed": true, ...}`, treat that as corroborating evidence for the `overseer.md` §1215 duplicate-comment precheck (which makes the authoritative skip/proceed call from the PR's own comments) — it does not by itself skip anything. If it prints `{"already_reviewed": false, ...}`, a full review has never been recorded for this exact head SHA and the §1215 precheck's skip condition cannot apply.
+
+For each PR number in the preamble list: run the full review chain (validators, size check, register completeness, merge-authority matrix), subject to the §1215 duplicate-comment precheck. Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
 
 **Step 2 — STOP.** One review cycle per cron invocation.
 
