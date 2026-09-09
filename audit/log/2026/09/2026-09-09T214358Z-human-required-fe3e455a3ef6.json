@@ -1,0 +1,1 @@
+{"event":"human-required","head_sha":"8b9fad875d6bd02ef7e967d99dcd87197a25ccbf","pr":1531,"reason":"PR touches protected surfaces (.claude/agents/worker.md, bin/hos-cron, bootstrap/worker-cron-prompt.md); no verified human approval on current head","role":"overseer","timestamp":"2026-09-09T21:43:58Z"}
