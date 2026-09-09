@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","head_sha":"3c0ece173b40e79a5c697bd127db647f351e27d8","pr":1530,"reason":"already reviewed at this head SHA (2026-09-09T21:00:10Z review thread, verdict HUMAN_REQUIRED, protected-surface gate); no new commits or approval since","role":"overseer"}
