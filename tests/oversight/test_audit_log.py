@@ -17,6 +17,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "scripts" / "oversight" / "lib" / "audit_log.py"
 BASH_LIB = REPO_ROOT / "scripts" / "oversight" / "lib" / "audit_log.sh"
@@ -130,6 +132,54 @@ def test_write_is_idempotent(tmp_path):
 
 def test_empty_directory_yields_empty_stream(tmp_path):
     assert list(al.read_stream(str(tmp_path))) == []
+
+
+# --------------------------------------------------------------------------- #
+# Reader hardening against out-of-band (non-canonical) records (#1532, #1533)
+# --------------------------------------------------------------------------- #
+
+def test_read_stream_normalizes_pretty_printed_record(tmp_path):
+    # A record written out-of-band (e.g. via a Write-tool call) rather than
+    # through write_event/audit_write_event may be pretty-printed with
+    # embedded newlines. read_stream must still yield it as a single
+    # canonical line, not let those newlines fracture the JSONL stream.
+    record_dir = tmp_path / "audit" / "log" / "2026" / "07"
+    record_dir.mkdir(parents=True)
+    event = {"event": "human-required", "pr": 1, "timestamp": "2026-07-17T000912Z"}
+    (record_dir / "2026-07-17T000912Z-human-required-abc123abc123.json").write_text(
+        json.dumps(event, indent=2) + "\n"
+    )
+    lines = b"".join(al.read_stream(str(tmp_path))).splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == event
+
+
+def test_read_stream_raises_informative_error_on_invalid_json(tmp_path):
+    record_dir = tmp_path / "audit" / "log" / "2026" / "07"
+    record_dir.mkdir(parents=True)
+    bad_path = record_dir / "2026-07-17T000912Z-bad-abc123abc123.json"
+    bad_path.write_text("{not json")
+    import re
+
+    with pytest.raises(ValueError, match=re.escape(str(bad_path))):
+        list(al.read_stream(str(tmp_path)))
+
+
+def test_read_stream_tolerates_nonstandard_filename_and_event_name(tmp_path):
+    # #1533: 313 records observed with a non-canonical filename timestamp
+    # (missing the "-" separators the real grammar requires) and event names
+    # no committed script emits (hand-written out-of-band, not through
+    # write_event/audit_write_event). The reader must not care about either —
+    # it re-parses each file's own JSON content, not its filename.
+    record_dir = tmp_path / "audit" / "log" / "2026" / "09"
+    record_dir.mkdir(parents=True)
+    event = {"event": "pr-review-skipped-idempotent", "pr": 1500, "cycle": "x"}
+    (record_dir / "20260902T063653Z-pr-review-skipped-idempotent-abc123abc123.json").write_text(
+        json.dumps(event, indent=2) + "\n"
+    )
+    lines = b"".join(al.read_stream(str(tmp_path))).splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == event
 
 
 # --------------------------------------------------------------------------- #

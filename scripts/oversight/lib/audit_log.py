@@ -164,13 +164,28 @@ def read_stream(root: str = ".") -> Iterator[bytes]:
     absent or empty audit/log directory yields nothing and is not an error,
     preserving the "missing log -> empty output, exit 0" contract readers rely
     on today (e.g. step_range.sh).
+
+    Every yielded chunk is re-encoded through `canonical_bytes` rather than
+    passed through as raw file bytes (#1532, #1533): a record written
+    out-of-band (pretty-printed, insertion-order keys) is still valid JSON but
+    not the guaranteed single-line-plus-trailing-newline shape every
+    downstream consumer assumes when it does `json.loads(line)` per line —
+    the crash that made `check_pr_reviewed.sh` (#1524) unusable for any PR.
+    Re-encoding tolerates any on-disk formatting (whatever the event name or
+    filename grammar) while a record that isn't valid JSON at all still fails
+    loud, now naming the offending file.
     """
     log_dir = _log_dir(root)
     if not log_dir.is_dir():
         return
     for path in sorted(log_dir.rglob("*.json"), key=lambda p: p.as_posix()):
-        if path.is_file():
-            yield path.read_bytes()
+        if not path.is_file():
+            continue
+        try:
+            record = json.loads(path.read_bytes())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed audit record (invalid JSON): {path}") from exc
+        yield canonical_bytes(record)
 
 
 # --------------------------------------------------------------------------- #
