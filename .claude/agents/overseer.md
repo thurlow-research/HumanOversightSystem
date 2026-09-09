@@ -151,16 +151,16 @@ For each recently-merged PR (merged in the last 2 hours):
 1. Read `pr.merged_by.login`.
 2. **If `pr.merged_by.login` is the human operator** (`HUMAN_REVIEWER` from `machine-accounts.env`, currently `ScottThurlow`):
    - This is a **human-authorized merge**. Human merge authority supersedes the overseer review requirement.
-   - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#, mirrors the bot-merge branch below (#1250).** A merged PR stays in the rolling 2-hour window across multiple cycles; without this precheck the overseer re-appends the same audit line every cycle. Before appending: grep `audit/oversight-log.jsonl` for an existing line matching `"event":"human-authorized-merge"` with `"pr":<n>`. If present → do **NOT** append a duplicate.
-   - Append to audit log (only if the precheck found none): `{"event":"human-authorized-merge","pr":<n>,"merged_by":"ScottThurlow","timestamp":"<ISO>"}`.
+   - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#, mirrors the bot-merge branch below (#1250).** A merged PR stays in the rolling 2-hour window across multiple cycles; without this precheck the overseer re-appends the same audit line every cycle. Before appending: source `scripts/oversight/lib/audit_log.sh` and run `audit_read_stream | grep -F '"event":"human-authorized-merge"' | grep -F "\"pr\":<n>"` (never suppress stderr — a malformed record must fail loud, per #1533). If any line matches → do **NOT** append a duplicate.
+   - Append to audit log (only if the precheck found none): `audit_write_event '{"event":"human-authorized-merge","pr":<n>,"merged_by":"ScottThurlow","timestamp":"<ISO>"}'`.
    - Do **NOT** file a process-gap issue. Do NOT post a comment. Log and continue.
 3. **If `pr.merged_by.login` is a bot** (login is in `BOT_ACCOUNTS` from `machine-accounts.env`):
    - This is a process violation — bots must not merge without overseer approval.
    - **Idempotency precheck (#849, no-idempotency class) — keyed to PR#.** A merged PR stays in the rolling 2-hour window across multiple cycles; without a precheck the overseer re-files the same `process-gap` issue and re-appends the same audit line every cycle. Before filing or appending:
      1. Query open issues (`bash bootstrap/query_issues.sh --app overseer --list --label needs-ai --state open`). If any title contains `PR #<n> merged by bot` → a process-gap issue already exists for this PR; do **NOT** file a duplicate.
-     2. Grep `audit/oversight-log.jsonl` for an existing line matching `"event":"pr-merged-without-review"` with `"pr":<n>`. If present → do **NOT** append a duplicate.
+     2. Source `scripts/oversight/lib/audit_log.sh` and run `audit_read_stream | grep -F '"event":"pr-merged-without-review"' | grep -F "\"pr\":<n>"` (never suppress stderr). If any line matches → do **NOT** append a duplicate.
    - File a `process-gap` issue (only if step 1 found none) via `bash bootstrap/create_issue.sh --title "process-gap: PR #<n> merged by bot without overseer review" --body-file <path> --label "bug,needs-ai" --app overseer`.
-   - Append to audit log (only if step 2 found none): `{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}`.
+   - Append to audit log (only if step 2 found none): `audit_write_event '{"event":"pr-merged-without-review","pr":<n>,"merged_by":"<login>","timestamp":"<ISO>"}'`.
 
 **Context:** This check was added because the overseer incorrectly filed issue #581 when PR #579 was merged directly by ScottThurlow. Human merges are valid and expected in governance-edge cases; only bot merges without oversight are violations.
 
@@ -178,9 +178,9 @@ the main branch (merged artifacts only).
 a CLEARANCE adds no terminal label, so the issue stays selectable while awaiting the human's
 `release-authorized` — re-running validation each cycle is acceptable, but the overseer must
 **never re-post an identical clearance comment or re-append an identical audit event**. Before
-posting CLEARANCE (below), grep `audit/oversight-log.jsonl` for an existing
-`{"event":"release-gate-validation","release":"<this milestone title>","decision":"CLEARANCE"}`
-line; if one is present, the gate already cleared this release — skip the comment and the audit
+posting CLEARANCE (below), source `scripts/oversight/lib/audit_log.sh` and run
+`audit_read_stream | grep -F '"event":"release-gate-validation"' | grep -F '"release":"<this milestone title>"' | grep -F '"decision":"CLEARANCE"'`
+(never suppress stderr); if any line matches, the gate already cleared this release — skip the comment and the audit
 append entirely. An ESCALATE adds `needs-human`, which the trigger now excludes, so an escalated
 release-request does not re-fire until the human resolves it and removes the label.
 
@@ -217,7 +217,7 @@ release-request does not re-fire until the human resolves it and removes the lab
   ```
 - **ESCALATE** (any flag raised): enumerate all flags in the post (step number + condition); add `needs-human` label if not already present (`bash bootstrap/edit_issue.sh --number <n> --add-label needs-human --app overseer`); do NOT post clearance. Follow §8.2 escalation format.
 
-**Audit log:** Append to `audit/oversight-log.jsonl` AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2) — but only when a comment was actually posted this cycle. If the CLEARANCE idempotency grep above suppressed the comment (already cleared), do **not** append a duplicate audit line:
+**Audit log:** Write the event via `audit_write_event` (source `scripts/oversight/lib/audit_log.sh`) AFTER the comment is confirmed posted (same halt-on-failure ordering as §8.2) — but only when a comment was actually posted this cycle. If the CLEARANCE idempotency check above suppressed the comment (already cleared), do **not** write a duplicate audit record:
 ```json
 {"event":"release-gate-validation","release":"<milestone title>","decision":"<CLEARANCE|ESCALATE>","steps_checked":[<N>...],"flags":[<flag strings>],"timestamp":"<ISO8601>"}
 ```
@@ -488,9 +488,9 @@ caching) and returns `(required, matched_paths, reason)`:
 - If `required` is **False** (no CODEOWNERS file, no match, or a bot-only entry) →
   proceed to the matrix below unchanged.
 
-Log to the ledger / `audit/oversight-log.jsonl`: whether a CODEOWNERS file was found,
-the matched CODEOWNERS-human-owned paths (may be empty), and which check produced the
-verdict. This gate only ever ADDS a human gate; it never removes one.
+Log to the audit trail (`audit_write_event`, source `scripts/oversight/lib/audit_log.sh`): whether
+a CODEOWNERS file was found, the matched CODEOWNERS-human-owned paths (may be empty), and which
+check produced the verdict. This gate only ever ADDS a human gate; it never removes one.
 
 ### Pre-matrix protected-surface gate (#1325 — run BEFORE applying the matrix, every cycle)
 
@@ -635,7 +635,7 @@ Enum semantics: `FINDINGS_NOT_RESOLVED` = reviewer/compliance/second-review find
 
 Both non-merge dispositions append an audit event ONLY after the comment is confirmed posted, and finalize ONLY after the audit append succeeds.
 
-- **HUMAN_REQUIRED:** if the #1215 duplicate-comment precheck above suppressed this cycle's comment, skip straight to (4). Otherwise: (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) append a `human-required` audit event to `audit/oversight-log.jsonl` (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
+- **HUMAN_REQUIRED:** if the #1215 duplicate-comment precheck above suppressed this cycle's comment, skip straight to (4). Otherwise: (1) post the §8.2 escalation comment (with the two fields above); (2) confirm the comment posted; (3) write a `human-required` audit event via `audit_write_event` (source `scripts/oversight/lib/audit_log.sh`) (`reason_category` + `summary` matching the comment); (4) finalize — label `needs-human`, leave the PR open.
 - **pr-bounced** (`record_pr_bounce()`): (1) post the bounce comment (with the R1.2 fields); (2) confirm posted; (3) append the `pr-bounced` audit event (`reason_category` + `summary` matching the comment); (4) finalize — `needs-ai`, convert-to-draft.
 
 If the comment post fails: **do not finalize** — do not append the audit event, do not treat the disposition as recorded; halt and print the failure. If the audit append fails: **do not finalize**; halt and print the failure. The audit log is append-only and committed; a missing entry is an audit-trail gap. The overseer must never silently continue past a comment-post or audit-append failure.
