@@ -89,6 +89,7 @@ excluded.
 
 ## scripts/framework/
 
+- `scripts/framework/audit_predicate.py` — the single shared authority for "audit-only-and-well-formed" (ADR-035 AD-2, TECHNICAL-DESIGN-035 §3).
 - `scripts/framework/check_agents_static.sh` — fast static consistency checker for the agent pipeline.
 - `scripts/framework/check_validation_current.sh` — verify that agent content has a valid validation stamp.
 - `scripts/framework/config.sh` — HumanOversightSystem framework source configuration.
