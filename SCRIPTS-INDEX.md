@@ -122,6 +122,7 @@ excluded.
 - `scripts/oversight/agents_static_logic.py` — pure classification logic for check_agents_static.sh.
 - `scripts/oversight/audit_conditional_proceed.sh` — retroactive audit of CONDITIONAL_PROCEED PRs (#370).
 - `scripts/oversight/change_classifier.py` — deterministic, independent classification of a diff.
+- `scripts/oversight/check_pr_reviewed.sh` — PR-review idempotency precheck (#1524).
 - `scripts/oversight/codeowners.py` — CODEOWNERS-derived HUMAN_REQUIRED gate (SPEC-303b).
 - `scripts/oversight/ensure_venv.sh` — Create the oversight pip venv if it does not exist.
 - `scripts/oversight/panel_logic.py` — corroboration counting and tier ranking for the review panel.
