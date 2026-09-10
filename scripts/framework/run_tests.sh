@@ -23,6 +23,12 @@
 # hatch is the existing audited contract/gate-suspension.md mechanism, same
 # as every other gate. No env var toggles this.
 #
+# Retry-rescue observability (#1244 ruling item 4): tests/conftest.py's
+# pytest_terminal_summary hook detects which tests were rescued by the retry
+# above and prints a RETRY-RESCUE line for each, plus a best-effort audit-log
+# write (see retry_rescue_logic.py). Not going silent about a pass-on-retry
+# is the point — see that hook's docstring for what is and isn't covered yet.
+#
 # Exit codes:
 #   0 — all targets met
 #   1 — coverage or mutant score below target
