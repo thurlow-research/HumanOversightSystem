@@ -15,6 +15,14 @@
 #                     raise as gaps close, never lower without a recorded decision)
 #   Mutant score : ≥ 75% killed
 #
+# Retry tolerance (#1244 ruling, 2026-09-10): each test gets one immediate
+# retry on failure (2 total attempts, via pytest-rerunfailures --reruns 1). A
+# test that fails once then passes on retry is flaky by definition and does
+# not block; a test that fails both attempts is a real failure and blocks,
+# full stop. This is not an override an agent can widen — the only escape
+# hatch is the existing audited contract/gate-suspension.md mechanism, same
+# as every other gate. No env var toggles this.
+#
 # Exit codes:
 #   0 — all targets met
 #   1 — coverage or mutant score below target
@@ -49,7 +57,7 @@ if [[ ! -f "$VENV_PYTHON" ]]; then
 fi
 
 # Ensure test dependencies are installed
-"$VENV_PIP" install --quiet pytest pytest-cov mutmut 2>/dev/null || true
+"$VENV_PIP" install --quiet pytest pytest-cov pytest-rerunfailures mutmut 2>/dev/null || true
 
 cd "$REPO_ROOT"
 
@@ -59,6 +67,7 @@ if ! $MUTATION_ONLY; then
     echo ""
 
     "$VENV_PYTHON" -m pytest tests/ \
+        --reruns 1 \
         --cov=scripts/oversight \
         --cov=scripts/automation/lib \
         --cov=scripts/framework \
