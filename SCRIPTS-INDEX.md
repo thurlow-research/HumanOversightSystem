@@ -130,6 +130,7 @@ excluded.
 - `scripts/oversight/record_agent_model.py` — record the resolved model ID for a subagent invocation into the audit trail (#1122 Option C, revised acceptance criterion 3).
 - `scripts/oversight/release_artifact_logic.py` — release-gate deep artifact validation (#695).
 - `scripts/oversight/release_logic.py` — semver bump, authored-notes gate, asset verification.
+- `scripts/oversight/retry_rescue_logic.py` — pure logic for pytest retry-rescue observability.
 - `scripts/oversight/run_gates.sh` — central gate runner (SPEC-375 / REQ-GATE-NN-16).
 - `scripts/oversight/run_validators.sh` — orchestrate all risk assessment validators for a file set.
 - `scripts/oversight/run_with_retry.sh` — shared timeout + retry wrapper for validators and gates.

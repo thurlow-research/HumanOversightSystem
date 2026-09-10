@@ -67,4 +67,14 @@ jobs:
         run: bash scripts/oversight/ensure_venv.sh
 
       - name: Run test suite + coverage gate
+        env:
+          # Read by tests/conftest.py's retry-rescue terminal-summary hook
+          # (#1244 ruling item 4) to tag any audit event with the PR it ran
+          # against. The write itself is best-effort and does not durably
+          # land here — this checkout has `permissions: contents: read` and
+          # nothing commits the audit event back — so the RETRY-RESCUE line
+          # in this job's own log is what keeps a rescue visible for a
+          # contributor PR run. Persisting CI-originated retry-rescue events
+          # needs its own write-back design; tracked separately.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: bash scripts/framework/run_tests.sh
