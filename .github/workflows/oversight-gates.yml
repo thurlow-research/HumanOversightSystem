@@ -1,0 +1,89 @@
+name: Oversight gates
+
+# Runs a subset of the deterministic pre-review gates
+# (scripts/oversight/gates/*.sh) against this PR's changed files on every PR
+# (#1216 — first slice: "run in CI what can run in CI"). Distinct from the
+# *approval* gate workflows (require-human-approval.yml etc.) that
+# scripts/framework/rerun_gate_checks.py calls "gate workflows" — this is the
+# other "gates": scripts/oversight/gates/, the deterministic pre-review
+# checks.
+#
+# ADVISORY (non-required) for now, mirroring #1244's advisory-first rollout of
+# tests.yml: this proves the gate before it can block the autonomous
+# worker/overseer merge loop. Whether to promote it to a required check is the
+# same product-boundary call #1244 needed a human ruling for — not made here.
+#
+# Scoped to changed files, not --all: a whole-repo run surfaces pre-existing
+# findings (e.g. legacy bash_check debt) that were never enforced at that
+# granularity and are out of scope for the PR under review — the same "don't
+# land red on day one" lesson #1244 recorded for the failing test it found
+# before turning that gate on.
+#
+# Only the four gates #1216 names explicitly as CI-portable without caveat —
+# secret_scan, lint_check, type_check, bash_check — invoked directly rather
+# than through run_gates.sh --all, which also runs security_scan
+# (pip-audit against the CI venv's installed dependency versions — an
+# environment scan, not scoped to the PR's changed files, so it would land
+# red regardless of what the PR touches) and the other gates (portability,
+# django, astro, template-refs, collection-integrity) not yet classified
+# here. See DECISIONS.md's 2026-09-10 #1216 entry for the full
+# CI-portable / local-only / deferred classification.
+#
+# Deterministic only — no agy/codex, no subscription CLI auth, no network
+# calls.
+#
+# Regular `pull_request` (not `pull_request_target`): gates run against the
+# PR's own code, so this must use the PR head checkout and the restricted
+# default GITHUB_TOKEN pull_request grants.
+
+on:
+  pull_request:
+    branches: [main, "release/v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oversight-gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  oversight-gates:
+    name: oversight-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run deterministic gates on changed files
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — nothing to gate."
+            exit 0
+          fi
+
+          RC=0
+          for gate in secret_scan lint_check type_check bash_check; do
+            echo "=== $gate ==="
+            bash "scripts/oversight/gates/${gate}.sh" "${FILES[@]}" || RC=1
+            echo ""
+          done
+          exit $RC
