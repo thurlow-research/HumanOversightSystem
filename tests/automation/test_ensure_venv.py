@@ -293,3 +293,28 @@ class TestProjectRequirements:
         r = venv_env.run(env_overrides={"HOS_TEST_PIP_FAIL_ON_SUBSTRING": str(req)})
         assert r.returncode != 0
         assert not venv_env.marker_exists()
+
+
+# ─── HOS_SKIP_PROJECT_REQUIREMENTS opts out of installing untrusted PR content (#1380) ───
+class TestSkipProjectRequirements:
+    def test_skip_env_var_prevents_install_even_when_file_present(self, venv_env):
+        """HOS_SKIP_PROJECT_REQUIREMENTS=1 skips the pip install even if a requirements
+        file exists at the repo root (e.g. added by an untrusted PR head)."""
+        req = venv_env.write_project_requirements()
+        r = venv_env.run(env_overrides={"HOS_SKIP_PROJECT_REQUIREMENTS": "1"})
+        assert r.returncode == 0, r.stderr
+        assert not any(str(req) in c for c in venv_env.pip_calls())
+
+    def test_skip_env_var_still_builds_a_healthy_venv(self, venv_env):
+        """Skipping project requirements does not block the venv from becoming ready."""
+        venv_env.write_project_requirements()
+        r = venv_env.run(env_overrides={"HOS_SKIP_PROJECT_REQUIREMENTS": "1"})
+        assert r.returncode == 0, r.stderr
+        assert venv_env.marker_exists()
+
+    def test_unset_env_var_still_installs(self, venv_env):
+        """Without the opt-out, existing behavior (install project requirements) holds."""
+        req = venv_env.write_project_requirements()
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        assert any(str(req) in c for c in venv_env.pip_calls())

@@ -26,6 +26,15 @@ name: Tests
 # own code (the test suite itself), so it must run with the PR head checked out
 # and the restricted default GITHUB_TOKEN pull_request grants — never the
 # elevated pull_request_target token.
+#
+# HOS_SKIP_PROJECT_REQUIREMENTS=1 (below): ensure_venv.sh's project-requirements
+# step (#956) pip-installs any requirements*.txt found at the repo root — but
+# on this trigger the checked-out root is the PR head, so a requirements.txt
+# added by the PR itself would be pip-installed here, i.e. arbitrary code
+# execution from unreviewed PR content (setup.py, PEP 517 build backends,
+# --index-url redirection). This repo is the framework itself, not a consumer
+# project with its own app deps, so the project-requirements step has nothing
+# legitimate to do here; skip it outright (#1380).
 
 on:
   pull_request:
@@ -53,6 +62,8 @@ jobs:
           python-version: "3.12"
 
       - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
         run: bash scripts/oversight/ensure_venv.sh
 
       - name: Run test suite + coverage gate
