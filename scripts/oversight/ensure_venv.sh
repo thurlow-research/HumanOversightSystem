@@ -84,7 +84,17 @@ _check_disk_space() {
 # runs pytest from this venv against $REPO_ROOT, so without this step a fresh
 # venv build on such a project fails pytest collection with ModuleNotFoundError
 # even though the oversight tooling itself installed cleanly (#956).
+#
+# requirements*.txt is part of the branch under review, so pip-installing it
+# is code execution from that branch's content (setup.py, PEP 517 build
+# backends, --index-url, VCS refs). Callers that build the venv against
+# content they do not control (e.g. CI checking out an externally-authored
+# PR head) must set HOS_SKIP_PROJECT_REQUIREMENTS=1 to opt out (#1380).
 _install_project_requirements() {
+  if [[ "${HOS_SKIP_PROJECT_REQUIREMENTS:-}" == "1" ]]; then
+    _evenv_info "HOS_SKIP_PROJECT_REQUIREMENTS=1 — skipping project requirements install"
+    return 0
+  fi
   local req
   for req in "$REPO_ROOT"/requirements*.txt "$REPO_ROOT"/requirements/*.txt; do
     [[ -f "$req" ]] || continue
