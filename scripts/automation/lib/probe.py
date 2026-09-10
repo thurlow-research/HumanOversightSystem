@@ -16,9 +16,12 @@ Probe strategies (#619):
     hos-coordination, with actor verification (R4.1.4). Use for all customer
     deployments.
   - STRATEGY_MILESTONE: HOS self-development — open issues in a GitHub milestone
-    with needs-ai label. No actor verification; milestone assignment is the
-    authorization. Enables the orchestrator to serve as the coordinator for HOS
-    self-development, unblocking eventual LOOP retirement.
+    with needs-ai label. Actor verification (#1539): the needs-ai label and/or
+    the milestone assignment must have been applied by the designated human
+    CODEOWNER (.github/CODEOWNERS), not a bot — a bot applying the label
+    (including the worker or overseer themselves) does not authorize the issue.
+    Enables the orchestrator to serve as the coordinator for HOS self-development,
+    unblocking eventual LOOP retirement.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from scripts.automation.lib.github import (
     _run_gh,
 )
 from scripts.automation.lib.ledger import sum_window_blast_radius
+from scripts.framework.require_human_approval import is_bot_reviewer
 
 # ---------------------------------------------------------------------------
 # Cadence state (soft state, layer 2b, .ai-local/hos-automation/)
@@ -247,6 +251,80 @@ def _verify_label_actor(
 
 
 # ---------------------------------------------------------------------------
+# CODEOWNERS actor verification for STRATEGY_MILESTONE (#1539)
+# ---------------------------------------------------------------------------
+
+def _codeowners_humans(repo_root: str = ".") -> set[str]:
+    """
+    Return the set of individual human logins (lowercased, no '@') listed as
+    owners anywhere in .github/CODEOWNERS. Team patterns (org/team) are not
+    individual humans and are skipped. Empty if the file is missing.
+    """
+    path = Path(repo_root) / ".github" / "CODEOWNERS"
+    if not path.is_file():
+        return set()
+    humans: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        for owner in parts[1:]:
+            owner = owner.lstrip("@")
+            if "/" in owner:
+                continue  # team pattern, not an individual human
+            humans.add(owner.lower())
+    return humans
+
+
+def _verify_codeowner_actor(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    label_name: str,
+    codeowners_humans: set[str],
+    bot_accounts: set[str],
+) -> Optional[str]:
+    """
+    Verify that the needs-ai label and/or the milestone assignment on this
+    issue was applied by the designated human CODEOWNER, not a bot (#1539).
+
+    Either signal alone authorizes the issue — checks the most recent 'labeled'
+    event for `label_name` and the most recent 'milestoned' event, and returns
+    the first verified-human actor found. Returns None if no event, no actor,
+    the actor is a bot (is_bot_reviewer), or the actor is not a listed
+    CODEOWNERS human.
+    """
+    try:
+        events = _run_gh([
+            f"/repos/{owner}/{repo}/issues/{issue_number}/events?per_page=100"
+        ])
+    except GitHubError:
+        return None
+    if not isinstance(events, list):
+        return None
+
+    relevant_actors = []
+    for event in events:
+        ev = event.get("event")
+        if ev == "labeled" and event.get("label", {}).get("name") == label_name:
+            relevant_actors.append(event.get("actor") or {})
+        elif ev == "milestoned":
+            relevant_actors.append(event.get("actor") or {})
+
+    for actor in reversed(relevant_actors):
+        login = actor.get("login", "")
+        if not login:
+            continue
+        if is_bot_reviewer(login, actor.get("type", ""), bot_accounts):
+            continue
+        if login.lower() in codeowners_humans:
+            return login
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main probe function
 # ---------------------------------------------------------------------------
 
@@ -262,6 +340,7 @@ def probe_repo(
     repo_root: str = ".",
     probe_strategy: str = STRATEGY_HOS_COORDINATION,
     milestone: Optional[int] = None,
+    bot_accounts: Optional[list[str]] = None,
 ) -> list[WorkCandidate]:
     """
     Probe a single repo for work candidates. Returns a list of WorkCandidate items.
@@ -273,6 +352,9 @@ def probe_repo(
     milestone: GitHub milestone number; required when probe_strategy=STRATEGY_MILESTONE.
     requester_allowlist: allowlisted actors for hos-coordination strategy; unused
         for milestone strategy.
+    bot_accounts: bot login denylist for milestone-strategy actor verification
+        (#1539); defaults to the BOT_ACCOUNTS env var. Unused for hos-coordination
+        strategy, which verifies against requester_allowlist instead.
     """
     if probe_strategy == STRATEGY_MILESTONE and milestone is None:
         raise ValueError(
@@ -314,7 +396,13 @@ def probe_repo(
 
     if probe_strategy == STRATEGY_MILESTONE:
         # Milestone strategy: query by milestone number + needs-ai label.
-        # No actor verification — milestone assignment is the authorization signal.
+        # Actor verification (#1539): the needs-ai label and/or milestone
+        # assignment must have been applied by the designated human CODEOWNER.
+        codeowners_humans = _codeowners_humans(repo_root)
+        bots = (
+            set(bot_accounts) if bot_accounts is not None
+            else {b for b in os.environ.get("BOT_ACCOUNTS", "").split() if b}
+        )
         query = (
             f"/repos/{owner}/{repo}/issues"
             f"?state=open&milestone={milestone}&labels=needs-ai&per_page=50"
@@ -334,6 +422,18 @@ def probe_repo(
             issue_number = issue.get("number")
             if not issue_number:
                 continue
+
+            # Verify the needs-ai label / milestone assignment was applied by
+            # the designated human CODEOWNER, not a bot (#1539)
+            actor = _verify_codeowner_actor(
+                owner, repo, issue_number,
+                "needs-ai", codeowners_humans, bots,
+            )
+            _record_api_call(repo_id, count=1, repo_root=repo_root)
+
+            if actor is None:
+                continue  # No verified human-CODEOWNER authorization — skip
+
             labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
             candidates.append(WorkCandidate(
                 owner=owner,
@@ -341,7 +441,7 @@ def probe_repo(
                 issue_number=issue_number,
                 issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
                 labels=labels,
-                actor=None,  # milestone strategy — no individual actor
+                actor=actor,
             ))
 
     else:

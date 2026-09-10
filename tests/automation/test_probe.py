@@ -3,9 +3,10 @@ Unit tests for probe.py — work-discovery probe for consumer repos and HOS self
 
 Covers:
   - STRATEGY_HOS_COORDINATION: hos-coordination label query + actor verification (R4.1.4)
-  - STRATEGY_MILESTONE: milestone + needs-ai query, no actor verification (#619)
+  - STRATEGY_MILESTONE: milestone + needs-ai query, CODEOWNERS actor verification (#1539)
   - Shared gates: blast-radius cap, API quota, cadence/backoff
   - _verify_label_actor: allowlist matching, not-found, GitHubError
+  - _codeowners_humans / _verify_codeowner_actor: CODEOWNERS-scoped verification (#1539)
 """
 
 import json
@@ -27,6 +28,8 @@ from scripts.automation.lib.probe import (
     _compute_next_due,
     _is_due,
     _verify_label_actor,
+    _codeowners_humans,
+    _verify_codeowner_actor,
     probe_repo,
 )
 from scripts.automation.lib.github import GitHubError
@@ -312,47 +315,79 @@ class TestProbeRepoMilestone(_ProbeBase):
         assert "labels=needs-ai" in called_path
         assert "hos-coordination" not in called_path
 
-    def test_returns_candidates_with_no_actor(self):
+    def test_skips_issue_with_no_verified_codeowner_actor(self):
+        """#1539: an issue whose needs-ai/milestone assignment was not applied
+        by a verified human CODEOWNER must not be returned as a candidate —
+        this closes the self-triage / unauthorized-labeler gap."""
         issues = [_make_issue(100, ["needs-ai", "enhancement"])]
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
-                results = probe_repo(
-                    "owner", "repo", "rid",
-                    probe_strategy=STRATEGY_MILESTONE,
-                    milestone=8,
-                    repo_root=self.repo_root,
-                )
-        assert len(results) == 1
-        c = results[0]
-        assert c.issue_number == 100
-        assert c.actor is None
-        assert "needs-ai" in c.labels
-
-    def test_does_not_call_verify_label_actor(self):
-        issues = [_make_issue(5, ["needs-ai"])]
-        with self._patch_blast():
-            with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
                 with patch(
-                    "scripts.automation.lib.probe._verify_label_actor"
-                ) as mock_verify:
-                    probe_repo(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value=None,
+                ):
+                    results = probe_repo(
                         "owner", "repo", "rid",
                         probe_strategy=STRATEGY_MILESTONE,
                         milestone=8,
                         repo_root=self.repo_root,
                     )
-        mock_verify.assert_not_called()
+        assert results == []
+
+    def test_returns_candidate_with_verified_codeowner_actor(self):
+        issues = [_make_issue(100, ["needs-ai", "enhancement"])]
+        with self._patch_blast():
+            with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
+                with patch(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value="ScottThurlow",
+                ):
+                    results = probe_repo(
+                        "owner", "repo", "rid",
+                        probe_strategy=STRATEGY_MILESTONE,
+                        milestone=8,
+                        repo_root=self.repo_root,
+                    )
+        assert len(results) == 1
+        c = results[0]
+        assert c.issue_number == 100
+        assert c.actor == "ScottThurlow"
+        assert "needs-ai" in c.labels
+
+    def test_calls_verify_codeowner_actor_not_verify_label_actor(self):
+        issues = [_make_issue(5, ["needs-ai"])]
+        with self._patch_blast():
+            with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
+                with patch(
+                    "scripts.automation.lib.probe._verify_label_actor"
+                ) as mock_verify_label:
+                    with patch(
+                        "scripts.automation.lib.probe._verify_codeowner_actor",
+                        return_value="ScottThurlow",
+                    ) as mock_verify_codeowner:
+                        probe_repo(
+                            "owner", "repo", "rid",
+                            probe_strategy=STRATEGY_MILESTONE,
+                            milestone=8,
+                            repo_root=self.repo_root,
+                        )
+        mock_verify_label.assert_not_called()
+        mock_verify_codeowner.assert_called_once()
 
     def test_url_format_correct(self):
         issues = [_make_issue(42, ["needs-ai"])]
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
-                results = probe_repo(
-                    "owner", "repo", "rid",
-                    probe_strategy=STRATEGY_MILESTONE,
-                    milestone=3,
-                    repo_root=self.repo_root,
-                )
+                with patch(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value="ScottThurlow",
+                ):
+                    results = probe_repo(
+                        "owner", "repo", "rid",
+                        probe_strategy=STRATEGY_MILESTONE,
+                        milestone=3,
+                        repo_root=self.repo_root,
+                    )
         assert results[0].issue_url == "https://github.com/owner/repo/issues/42"
 
     def test_returns_empty_on_github_error(self):
@@ -384,13 +419,122 @@ class TestProbeRepoMilestone(_ProbeBase):
         issues = [_make_issue(10, ["needs-ai"]), _make_issue(20, ["needs-ai", "bug"])]
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
-                results = probe_repo(
-                    "owner", "repo", "rid",
-                    probe_strategy=STRATEGY_MILESTONE,
-                    milestone=8,
-                    repo_root=self.repo_root,
-                )
+                with patch(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value="ScottThurlow",
+                ):
+                    results = probe_repo(
+                        "owner", "repo", "rid",
+                        probe_strategy=STRATEGY_MILESTONE,
+                        milestone=8,
+                        repo_root=self.repo_root,
+                    )
         assert [c.issue_number for c in results] == [10, 20]
+
+
+# ---------------------------------------------------------------------------
+# _codeowners_humans / _verify_codeowner_actor (#1539)
+# ---------------------------------------------------------------------------
+
+class TestCodeownersActorVerification(_ProbeBase):
+    def _write_codeowners(self, body: str) -> None:
+        gh_dir = Path(self.repo_root) / ".github"
+        gh_dir.mkdir(parents=True, exist_ok=True)
+        (gh_dir / "CODEOWNERS").write_text(body)
+
+    def test_codeowners_humans_parses_individual_owners(self):
+        self._write_codeowners(
+            "# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n"
+        )
+        assert _codeowners_humans(self.repo_root) == {"scottthurlow"}
+
+    def test_codeowners_humans_skips_team_patterns(self):
+        self._write_codeowners("/foo/ @org/team @ScottThurlow\n")
+        assert _codeowners_humans(self.repo_root) == {"scottthurlow"}
+
+    def test_codeowners_humans_empty_when_file_missing(self):
+        assert _codeowners_humans(self.repo_root) == set()
+
+    def _labeled_event(self, actor: str, label: str, actor_type: str = "User") -> dict:
+        return {
+            "event": "labeled",
+            "label": {"name": label},
+            "actor": {"login": actor, "type": actor_type},
+        }
+
+    def _milestoned_event(self, actor: str, actor_type: str = "User") -> dict:
+        return {"event": "milestoned", "actor": {"login": actor, "type": actor_type}}
+
+    def test_verified_when_label_applied_by_codeowner_human(self):
+        events = [self._labeled_event("ScottThurlow", "needs-ai")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result == "ScottThurlow"
+
+    def test_verified_when_milestone_applied_by_codeowner_human(self):
+        events = [self._milestoned_event("ScottThurlow")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result == "ScottThurlow"
+
+    def test_bot_labeling_is_never_authorized_even_if_in_codeowners(self):
+        """The worker/overseer applying needs-ai to its own issue must not
+        self-authorize, even in the pathological case where a bot login were
+        (mis)listed in CODEOWNERS — is_bot_reviewer wins over CODEOWNERS."""
+        events = [self._labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="Bot")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"hos-worker-hos[bot]"}, set(),
+            )
+        assert result is None
+
+    def test_bot_login_denylist_rejects_even_when_type_missing(self):
+        events = [self._labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, {"hos-worker-hos[bot]"},
+            )
+        assert result is None
+
+    def test_non_codeowner_human_not_authorized(self):
+        events = [self._labeled_event("random-contributor", "needs-ai")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result is None
+
+    def test_no_relevant_event_not_authorized(self):
+        events = [{"event": "assigned", "actor": {"login": "ScottThurlow", "type": "User"}}]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result is None
+
+    def test_returns_none_on_github_error(self):
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=GitHubError("timeout"),
+        ):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result is None
+
+    def test_empty_codeowners_set_fails_closed(self):
+        """A missing/unreadable CODEOWNERS file yields an empty human set —
+        every actor must be rejected, not treated as universally authorized."""
+        events = [self._labeled_event("ScottThurlow", "needs-ai")]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", set(), set(),
+            )
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
