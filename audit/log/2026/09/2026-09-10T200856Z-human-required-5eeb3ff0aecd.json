@@ -1,0 +1,1 @@
+{"event":"human-required","head_sha":"abef062ecb3fe108edcee6c2a89e48020dfad632","pr":1545,"reason_category":"GATE_UNSATISFIED","role":"overseer","summary":"Protected-surface (.claude/agents/pm-agent.md) and security-relevant (probe.py actor verification) change with no human approval on current head SHA","timestamp":"2026-09-10T20:08:56Z"}
