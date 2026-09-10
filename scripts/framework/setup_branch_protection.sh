@@ -23,7 +23,7 @@
 # What this sets (§9):
 #   Required PR reviews: ≥1 approving review, CODEOWNERS enforcement,
 #   dismiss stale on push, NO bypass actors for bots.
-#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling.
+#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling, tests.
 #   Enforce admins: OFF — you (admin) retain bypass ability when needed.
 #   Restrictions: only bots + humans who are collaborators may push.
 
@@ -116,13 +116,17 @@ fi
 #   require-overseer-approval ← .github/workflows/require-overseer-approval.yml
 #   require-human-approval    ← .github/workflows/require-human-approval.yml
 #   require-tier-ceiling      ← .github/workflows/require-tier-ceiling.yml
+#   tests                     ← .github/workflows/tests.yml (job name: tests; #1244 ruling
+#                                2026-09-10 — retry-then-fail via pytest-rerunfailures,
+#                                no agent-settable escape hatch, override only via the
+#                                audited contract/gate-suspension.md mechanism)
 # tests/framework/test_branch_protection_contexts.py enforces this invariant.
 
 PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling"]
+    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -158,7 +162,7 @@ echo "    require_code_owner_reviews      : true   (protected paths → human CO
 echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
-echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling"
+echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling, tests"
 echo "  enforce_admins                    : false  (admin/human retains emergency bypass)"
 echo "  allow_force_pushes                : false"
 echo "  allow_deletions                   : false"
@@ -232,6 +236,6 @@ echo ""
 ok "Branch protection setup complete."
 echo ""
 info "Next: verify with  gh api $API_BASE | jq ."
-info "Then: enable 'Require status checks to pass' for 'require-human-approval'"
-info "       and 'require-tier-ceiling' in the GitHub UI if not yet showing"
+info "Then: enable 'Require status checks to pass' for 'require-human-approval',"
+info "       'require-tier-ceiling', and 'tests' in the GitHub UI if not yet showing"
 info "       (each CI check must run at least once before GitHub will enforce it)."

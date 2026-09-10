@@ -2,12 +2,20 @@ name: Tests
 
 # Runs the HOS Python test suite + coverage gate on every PR (#1244).
 #
-# ADVISORY ONLY (non-required) by design — see #1244's "product-boundary
-# decision" section. This workflow is deliberately NOT added to branch
-# protection's required-status-check list (tests/framework/test_branch_protection_contexts.py
-# would need updating, and that update is a policy call for @ScottThurlow, not
-# an implementation detail). A red run here is visible on the PR but does not
-# block merge until that decision is made.
+# REQUIRED status check, per the human ruling on #1244 (2026-09-10). The job
+# is named `tests`; scripts/framework/setup_branch_protection.sh declares
+# `tests` in its required_status_checks.contexts, guarded against drift by
+# tests/framework/test_branch_protection_contexts.py — but the live GitHub
+# branch-protection setting only takes effect once a human (not a bot; the
+# script refuses bot callers) re-runs that script. Until then this job is
+# visible on every PR but does not itself block merge.
+#
+# Retry tolerance, not an override: scripts/framework/run_tests.sh passes
+# --reruns 1 to pytest, so a test gets one immediate retry on the same
+# commit/environment (2 total attempts) before it's treated as a real
+# failure. There is no agent-settable escape hatch (no env var) — the only
+# override path is the existing audited contract/gate-suspension.md
+# mechanism, same as every other gate.
 #
 # Runs the same entry point a human runs locally — scripts/framework/run_tests.sh
 # — so local and CI cannot diverge (AC in #1244). That script runs pytest +

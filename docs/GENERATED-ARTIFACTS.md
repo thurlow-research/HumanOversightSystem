@@ -48,9 +48,9 @@ independent audit could not confirm from in-repo source alone that
 `check_validation_current.sh` / "Validation Stamp Check" is actually wired
 into `scripts/framework/setup_branch_protection.sh`'s required-status-check
 list — `required_status_checks.contexts` there is
-`["require-overseer-approval", "require-human-approval", "require-tier-ceiling"]`,
+`["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests"]`,
 and `tests/framework/test_branch_protection_contexts.py` only asserts those
-three. A live `gh api repos/.../branches/main/protection` call to confirm the
+four. A live `gh api repos/.../branches/main/protection` call to confirm the
 actual GitHub-side setting returned 403 (insufficient permissions for this
 token) rather than a definitive answer. This document does not claim the
 validation-stamp check either is or isn't a required branch-protection check

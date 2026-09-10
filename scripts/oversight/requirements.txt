@@ -42,6 +42,12 @@ mypy>=1.8
 # Testing
 pytest>=8.0
 pytest-cov>=5.0
+# Retry tolerance for the required "tests" CI gate (#1244 ruling, 2026-09-10):
+# a test that fails once then passes on an immediate retry is flaky by
+# definition and must not block; a test that fails twice under identical
+# conditions is a real failure and blocks, full stop. --reruns 1 in
+# run_tests.sh implements the "2 total attempts" policy.
+pytest-rerunfailures>=14.0
 # mutmut is version-PINNED to a major series, same rationale as black above:
 # 3.x rewrote its config format (paths_to_mutate/tests_dir/runner/dict_synonyms
 # were dropped for source_paths/pytest_add_cli_args_test_selection, and the

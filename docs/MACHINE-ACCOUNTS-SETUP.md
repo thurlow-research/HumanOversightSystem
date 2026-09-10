@@ -166,7 +166,7 @@ Use a **Ruleset** rather than classic branch protection — Rulesets support ins
   - ☑ Dismiss stale reviews on new commits
   - ☑ Require review from Code Owners
   - ☑ Require conversation resolution before merging
-- ☑ **Require status checks to pass** → add `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`
+- ☑ **Require status checks to pass** → add `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`
 - ☑ **Block force pushes**
 
 Click **Create**, then delete the classic branch protection rule at **Settings → Branches**.
@@ -191,6 +191,7 @@ so the two never drift. Commit it.
 | **every PR → overseer must review** | `require-overseer-approval` status check (#621) | **server-side** |
 | **protected surface → human** | `require-human-approval` status check **+** CODEOWNERS | **server-side (the §5.1 determination-honesty gate)** |
 | above overseer ceiling → human | `require-tier-ceiling` status check | server-side |
+| unenforced test suite → real failures block merge | `tests` status check (#1244) | server-side (retry-then-fail; override only via `contract/gate-suspension.md`) |
 | no bot `--admin` bypass | "Do not allow bypassing" + bots lack Admin | server-side |
 
 The protected-surface gate is the load-bearing one: it's the place the controls

@@ -70,10 +70,15 @@ def test_every_required_context_has_a_producing_job():
 
 
 def test_known_gate_contexts_present():
-    """The three server-side gates must be required + produced."""
+    """The four server-side gates must be required + produced."""
     contexts = set(_required_contexts())
     produced = _workflow_job_names()
-    for gate in ("require-overseer-approval", "require-human-approval", "require-tier-ceiling"):
+    for gate in (
+        "require-overseer-approval",
+        "require-human-approval",
+        "require-tier-ceiling",
+        "tests",
+    ):
         assert gate in contexts, f"{gate} is no longer a required status check"
         assert gate in produced, f"{gate} has no producing workflow job named {gate!r}"
 
