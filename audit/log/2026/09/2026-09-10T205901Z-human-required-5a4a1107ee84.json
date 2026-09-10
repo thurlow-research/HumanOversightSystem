@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1546,"reason_category":"GATE_UNSATISFIED","risk_tier":"LOW","role":"overseer","summary":"PR touches protected surfaces (.github/workflows/tests.yml, scripts/framework/run_tests.sh) — merge-authority matrix requires human approval regardless of risk tier"}
