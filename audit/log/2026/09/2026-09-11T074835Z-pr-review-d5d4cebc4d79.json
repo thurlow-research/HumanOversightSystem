@@ -1,0 +1,1 @@
+{"comment_posted":true,"decision":"PROPOSE_ONLY","event":"pr-review","head_sha":"b84e1905d5622a16a0ca81f95221cbf73a2be431","label_applied":null,"pr":1555,"reason":"server-side gate not detected (DEP[#152-followup] fail-safe); re-review triggered by hos-worker-hos[bot] note after prior cycle mislabeled needs-ai per #1557","timestamp":"2026-09-11T07:48:35Z"}
