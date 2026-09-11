@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"f04dd621df329ae64fa4d1daab551407e95586bc","pr":1554,"reason":"already reviewed this head SHA in prior cycle (PROPOSE_ONLY, DEP[#152-followup] gate-not-detected fail-safe, docs-only ADR outside worker pipeline); no new commits, comments, or reviews since; skipping duplicate comment","role":"overseer"}
