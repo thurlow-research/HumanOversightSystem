@@ -25,7 +25,7 @@ for the debt baseline and promotion rationale.
 
 | Gate | Status | Workflow | Reason |
 |---|---|---|---|
-| `secret_scan.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-secret-scan`) | Deterministic, file-scoped, no network. Low debt: 15 findings, all audit-log/test-fixture false positives (#1571) — not yet promoted. |
+| `secret_scan.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-secret-scan`) | Deterministic, file-scoped, no network. Low debt: 15 findings — audit-log JSON idempotency-dedup false positives plus one `Secret Keyword` flag in `scripts/oversight/suspension_manager.py:66` (#1571) — not yet promoted. |
 | `lint_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-lint`) | Deterministic, file-scoped, no network. Severe debt: isort/black fails on nearly every .py file — reformat is its own PR per #1571 item 4; promote only after that lands and `--all` is clean. |
 | `type_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-type-check`) | Deterministic, file-scoped, no network. Severe debt: dozens of pre-existing mypy errors repo-wide, found via `--all` baseline 2026-09-11 — not previously tracked by #1571's own table. Needs its own cleanup pass before promotion, same treatment as lint_check. |
 | `bash_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-bash-check`) | Deterministic, file-scoped, no network. Low debt: 2 files use Bash-4+ constructs (#1571) — not yet promoted. |
@@ -68,7 +68,7 @@ for the debt baseline and promotion rationale.
 
 | Check | Status | Workflow | Reason |
 |---|---|---|---|
-| `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s `required_status_checks.contexts` (only `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
+| `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s `required_status_checks.contexts` (`require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`, `oversight-gate-repo-scoped`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
 
 ## Subscription-CLI-dependent — local-only by design (D5), not attempted in CI
 
