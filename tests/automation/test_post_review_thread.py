@@ -89,6 +89,13 @@ class Harness:
         self.script.chmod(0o755)
         _write_exec(self.bootstrap_dir / "get_app_token.sh", GET_APP_TOKEN_STUB)
 
+        self.lib_dir = self.bootstrap_dir / "lib"
+        self.lib_dir.mkdir()
+        shutil.copy(
+            REPO_ROOT / "bootstrap" / "lib" / "comment_format_check.sh",
+            self.lib_dir / "comment_format_check.sh",
+        )
+
         self.stub_bin = tmp_path / "stub_bin"
         self.stub_bin.mkdir()
         _write_exec(self.stub_bin / "git", GIT_STUB)
@@ -209,6 +216,48 @@ def test_happy_path_posts_thread_and_revokes_token(h):
     assert "GH_CALLED_WITH:pr view 1207 --repo test-owner/test-repo --json files" in cap
     assert "GH_CALLED_WITH:api graphql" in cap
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+# --------------------------------------------------------------------------- #
+# #1270: overseer executive-summary format contract, enforced at write time
+# --------------------------------------------------------------------------- #
+
+VALID_OVERSEER_BODY = (
+    "**Executive summary:** Recommend holding this PR. "
+    "Expected action: **DO NOT MERGE**. Not verified this run: nothing.\n"
+)
+
+
+def test_malformed_overseer_thread_posts_anyway_in_default_advisory_mode(h):
+    h.body_file.write_text("no executive summary here\n")
+    result = h.run(["--pr", "1270", "--body-file", str(h.body_file), "--app", "overseer"])
+    assert result.returncode == 0, result.stderr
+    assert "comment format violation" in result.stderr
+    cap = h.capture()
+    assert "GH_CALLED_WITH:api graphql" in cap
+
+
+def test_malformed_overseer_thread_blocked_in_enforce_mode(h):
+    h.body_file.write_text("no executive summary here\n")
+    result = h.run(
+        ["--pr", "1270", "--body-file", str(h.body_file), "--app", "overseer"],
+        env_overrides={"HOS_COMMENT_FORMAT_MODE": "enforce"},
+    )
+    assert result.returncode != 0
+    assert "#1270" in result.stderr
+    cap = h.capture()
+    assert "GH_CALLED_WITH" not in cap
+
+
+def test_wellformed_overseer_thread_posts_in_enforce_mode(h):
+    h.body_file.write_text(VALID_OVERSEER_BODY)
+    result = h.run(
+        ["--pr", "1270", "--body-file", str(h.body_file), "--app", "overseer"],
+        env_overrides={"HOS_COMMENT_FORMAT_MODE": "enforce"},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "GH_CALLED_WITH:api graphql" in cap
 
 
 # --------------------------------------------------------------------------- #

@@ -64,6 +64,9 @@ RED="\033[31m"; YELLOW="\033[33m"; RESET="\033[0m"
 err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 
+# shellcheck source=lib/comment_format_check.sh
+source "$SCRIPT_DIR/lib/comment_format_check.sh"
+
 PR_NUMBER=""
 BODY_FILE=""
 APP_ROLE=""
@@ -93,9 +96,16 @@ esac
 # Guard the exact #1155 failure mode: a body file that is itself an @path
 # literal (e.g. produced upstream by a mis-composed `gh api --field
 # body=@path` call) rather than real comment content.
-if [[ "$(head -c 2 -- "$BODY_FILE" 2>/dev/null)" == "@/" ]]; then
-    err "--body-file content starts with '@/' — looks like an @path literal was written instead of comment content (#1155)"
-fi
+hos_cfc_check_at_path_literal "$BODY_FILE" || err "$HOS_CFC_REASON"
+
+# overseer.md's "Executive summary" / §8.2 comment-format contract (#1270).
+# N/A for --app worker/human; mode-gated (advisory by default) for --app
+# overseer — see bootstrap/lib/comment_format_check.sh. Review threads are
+# exactly where #1099's format was never checked (#1155 only touched
+# post_comment.sh), and §8.2 escalations are the highest-stakes comments this
+# framework posts — this is that gap closed.
+hos_cfc_enforce_overseer_format "$BODY_FILE" "$APP_ROLE" warn \
+    || err "comment format violation (#1270): $HOS_CFC_REASON"
 
 # ── Resolve owner/repo from the origin remote (no auth required) ──────────────
 REPO_URL="$(git -C "$SCRIPT_DIR/.." remote get-url origin 2>/dev/null)" \
