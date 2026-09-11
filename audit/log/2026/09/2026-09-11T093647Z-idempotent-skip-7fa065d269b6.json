@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"f04dd621df329ae64fa4d1daab551407e95586bc","pr":1554,"reason":"already reviewed this exact head SHA (last overseer comment 2026-09-11T08:59:19Z, disposition PROPOSE_ONLY, no findings); no new commits, comments, or reviews since; skipping duplicate comment per no-idempotency class (#849/#1215); precheck gap tracked in #1558","role":"overseer"}
