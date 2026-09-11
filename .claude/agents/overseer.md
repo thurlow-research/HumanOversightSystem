@@ -698,6 +698,20 @@ live in.
 
 ### Posting comments (#752, #1155, #1207 — mandatory)
 
+Both wrappers below call the shared write-path validator
+(`bootstrap/lib/comment_format_check.sh`, #1270), which checks that an `--app
+overseer` comment opens with `**Executive summary:**`, bolds exactly one
+expected-action enum value, and includes a "not verified" clause — the
+"Executive summary" format above, stated in prose since #1099 but not
+mechanically checked until #1270 (a 35-PR sample found it present only 37%
+of the time). It ships in **advisory** mode: a violation is logged to stderr
+and the comment posts anyway. `HOS_COMMENT_FORMAT_MODE=enforce` blocks
+instead of logging; conversely, once that becomes the default (a separate,
+later change), `HOS_COMMENT_FORMAT_MODE=advisory` is the audited escape
+hatch back to logging-only — same idiom as `HOS_REQUIRE_TOOLS` in
+`scripts/oversight/lib/detect_stack.sh`. The check is a no-op for
+`--app worker`/`--app human`, which carry no such format contract.
+
 Two wrappers, chosen by whether the content is merge-blocking:
 
 - **Blocking findings** (DIRTY-disposition findings, §8.2 HUMAN_REQUIRED escalations —
