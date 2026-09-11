@@ -1,0 +1,1 @@
+{"comment_posted":true,"decision":"PROPOSE_ONLY","event":"pr-review","head_sha":"b84e1905d5622a16a0ca81f95221cbf73a2be431","label_applied":null,"pr":1555,"reason":"server-side gate not detected (DEP[#152-followup] fail-safe)","timestamp":"2026-09-11T08:49:27Z"}
