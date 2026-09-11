@@ -54,6 +54,23 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
         -not -path "./.git/*")
 fi
 
+# Validation stamps carry a 64-hex-char content-fingerprint `hash:` line by
+# design (verified by check_validation_current.sh) — detect-secrets flags it
+# as a Hex High Entropy String. This is a known non-secret shape, not a scan
+# gap: skip stamp files regardless of how they arrived (explicit CI args,
+# --staged, or the full-project default), since CI passes changed files
+# explicitly and bypasses the extension filters above. (#1572)
+FILTERED_FILES=()
+if [[ ${#FILES[@]} -gt 0 ]]; then
+    for f in "${FILES[@]}"; do
+        if [[ "$f" == scripts/framework/validation-stamps/*.stamp ]]; then
+            continue
+        fi
+        FILTERED_FILES+=("$f")
+    done
+fi
+FILES=("${FILTERED_FILES[@]+"${FILTERED_FILES[@]}"}")
+
 ERRORS=0
 GATE_TIMEOUT="${GATE_TIMEOUT:-60}"
 GATE_RETRIES="${GATE_RETRIES:-2}"
