@@ -325,3 +325,60 @@ class TestCycleIdPidGuards:
         )
         assert r.returncode != 0
         assert "is not purely numeric" in r.stderr, r.stdout + r.stderr
+
+
+# ────────────── #1265 — missing cycle identity is refused AND audited ──────
+class TestMissingCycleIdentity:
+    """create_branch.sh's own Step 1 refusal (no HOS_CYCLE_ID/TOKEN/ROLE=worker
+    in the environment) predates any audit trail of it firing — #1265 observed
+    a cycle reaching a fail-closed refusal here with nothing surfacing it
+    beyond an ephemeral cron log. The fix reuses the same hos_bo_audit_refusal
+    helper submit_pr.sh's own P2 no_cycle_id refusal already goes through
+    (bootstrap/lib/branch_ownership.sh), so both refusal sites emit the same
+    audited event."""
+
+    def test_missing_cycle_id_refuses(self, repo):
+        env = dict(os.environ)
+        for key in ("HOS_CYCLE_ID", "HOS_CYCLE_TOKEN"):
+            env.pop(key, None)
+        env["HOS_CYCLE_ROLE"] = "worker"
+        r = subprocess.run(
+            [BASH, str(repo.root / "bootstrap" / "create_branch.sh"),
+             "--issue", "1265", "--slug", "thing"],
+            capture_output=True, text=True, timeout=15, env=env, check=False,
+        )
+        assert r.returncode != 0
+        assert "are not set in this environment" in r.stderr, r.stdout + r.stderr
+
+    def test_missing_cycle_id_emits_audited_refusal(self, tmp_path):
+        repo = Repo(tmp_path)
+        # Install a minimal audit_log.sh stub at the path hos_bo_audit_refusal
+        # sources (<repo_dir>/scripts/oversight/lib/audit_log.sh), mirroring
+        # tests/automation/test_submit_pr.py's Harness — real audit_log.py's
+        # package-import machinery is not the thing under test here.
+        audit_lib_dir = repo.root / "scripts" / "oversight" / "lib"
+        audit_lib_dir.mkdir(parents=True)
+        capture_file = tmp_path / "capture.log"
+        capture_file.write_text("")
+        (audit_lib_dir / "audit_log.sh").write_text(
+            '#!/usr/bin/env bash\n'
+            'audit_write_event() {\n'
+            f'    echo "AUDIT_EVENT:$1" >> "{capture_file}"\n'
+            '}\n'
+        )
+        (audit_lib_dir / "audit_log.sh").chmod(0o755)
+
+        env = dict(os.environ)
+        for key in ("HOS_CYCLE_ID", "HOS_CYCLE_TOKEN"):
+            env.pop(key, None)
+        env["HOS_CYCLE_ROLE"] = "worker"
+        r = subprocess.run(
+            [BASH, str(repo.root / "bootstrap" / "create_branch.sh"),
+             "--issue", "1265", "--slug", "thing"],
+            capture_output=True, text=True, timeout=15, env=env, check=False,
+        )
+        assert r.returncode != 0
+
+        cap = capture_file.read_text()
+        assert '"event":"branch-ownership-refused"' in cap, cap
+        assert '"reason":"no_cycle_id"' in cap, cap

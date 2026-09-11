@@ -89,7 +89,12 @@ SLUG_SANITIZED="${SLUG_SANITIZED:0:40}"
 
 # ── Step 1 — refuse without cycle identity ───────────────────────────────────
 # This script is for autonomous worker cycles launched by bin/hos-cron only.
+# A cycle that reaches here without identity (#1265) is audited the same way
+# submit_pr.sh's own P2 no_cycle_id refusal already is — best-effort, via the
+# shared hos_bo_audit_refusal helper — so the gap is visible in the audit
+# trail instead of only in an ephemeral cron log nobody is watching.
 if [[ -z "${HOS_CYCLE_ID:-}" || -z "${HOS_CYCLE_TOKEN:-}" || "${HOS_CYCLE_ROLE:-}" != "worker" ]]; then
+    hos_bo_audit_refusal "$REPO_DIR" "" "no_cycle_id"
     err "HOS_CYCLE_ID / HOS_CYCLE_TOKEN / HOS_CYCLE_ROLE=worker are not set in this environment. bootstrap/create_branch.sh is for autonomous worker cycles launched by bin/hos-cron only (#967) — an interactive session creates a branch directly with git and never writes an ownership record."
 fi
 
