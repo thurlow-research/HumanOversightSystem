@@ -1,0 +1,239 @@
+name: Oversight validators
+
+# Runs the CI-portable subset of scripts/oversight/validators/*.py — the
+# 12-dimension risk-assessment suite the risk-assessor agent uses locally —
+# directly against each PR's changed files (#1216 — third slice; the first
+# two slices wired scripts/oversight/gates/*.sh into oversight-gates.yml and
+# left this suite untouched, "a separate, larger piece of #1216's ask").
+#
+# ADVISORY (non-required), same rationale as oversight-gates.yml: proves the
+# job runs clean before any decision to gate on it. Not a decision on
+# validator-score thresholds — that stays the risk-assessor's job locally.
+#
+# This job calls the validator scripts directly, the same way
+# oversight-gates.yml calls gate scripts directly rather than going through
+# run_gates.sh's orchestrator. It deliberately does NOT call
+# scripts/oversight/run_validators.sh — that script's committed-artifact
+# writes (signoffs/validators/step{N}/summary.json) and composite-score/tier
+# derivation remain the local risk-assessor's pipeline, unchanged by this
+# slice (see run_validators.sh's own header + #1266 comment block for why
+# PYTHONPATH/PATH must be set the way they are below).
+#
+# Failure semantics differ from oversight-gates.yml's gates, which are
+# genuinely pass/fail (exit 0/1). These validators each emit a JSON
+# {"dimension": ..., "score": 0.0-1.0, ...} signal, not a verdict —
+# run_validators.sh itself only ever treats a validator as "failed" when the
+# script errors, crashes, or times out, never based on the score value
+# (score-threshold judgment is the risk-assessor's job). This job mirrors
+# that: every validator's dimension + score is printed for visibility, and
+# the job fails ONLY when a validator script itself errors/crashes/times out.
+# Per-validator timeouts match run_validators.sh's VALIDATOR_TIMEOUT (60s,
+# 120s for the two static_analysis variants).
+#
+# Four scopes, matching run_validators.sh's own file-type dispatch:
+#
+# - Python-scoped (rn_calculator, complexity_metrics, function_metrics,
+#   n1_detector, static_analysis, hallucination_surface, portability_check):
+#   run only when the diff contains .py files.
+# - JS/TS-scoped (rn_calculator_js, complexity_metrics_js,
+#   function_metrics_js, n1_detector_js, static_analysis_js): run only when
+#   the diff contains .ts/.tsx/.js/.jsx/.astro/.mjs/.cjs files.
+#   hallucination_surface_js additionally fires on a package.json-only
+#   change (S7, #1063) — same JS_FILES ∪ PKG_JSON_FILES dispatch as
+#   run_validators.sh.
+# - All-files-scoped (migration_scorer): runs whenever the diff is
+#   non-empty, regardless of file type.
+# - Shell-scoped (shell_logic_check): runs only when the diff contains .sh
+#   files.
+#
+# diff_size is git-only and deterministic; DS_CHANGED_LINES/DS_CHANGED_FILES/
+# DS_FILE_LIST are computed here (not in the validator) exactly as
+# run_validators.sh computes them, except base-ref resolution is simplified
+# to origin/$GITHUB_BASE_REF directly — CI already fetches it, so the local
+# fallback chain (merge-base → git describe → HEAD~1) doesn't apply.
+#
+# Deliberately NOT wired in here (stay local-only — see DECISIONS.md's
+# 2026-09-11 #1216 third-slice entry for the full reasoning):
+#   - ip_check.py       — calls ScanCode + PyPI; #1216's own body flags this
+#                          as needing an explicit decision, not a default-yes.
+#   - issue_query.py    — calls gh for issue history; network-dependent.
+#   - prompt_audit_risk.py — calls gh for spec-gap count; network-dependent.
+#
+# Regular `pull_request` (not `pull_request_target`): validators run against
+# the PR's own code, so this must use the PR head checkout and the
+# restricted default GITHUB_TOKEN pull_request grants — same as
+# oversight-gates.yml.
+
+on:
+  pull_request:
+    branches: [main, "release/v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oversight-validators-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  oversight-validators:
+    name: oversight-validators
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run risk-assessment validators
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # shellcheck source=scripts/oversight/ensure_venv.sh
+          source scripts/oversight/ensure_venv.sh
+          PYTHON="$OVERSIGHT_PYTHON"
+          VALIDATORS_DIR="scripts/oversight/validators"
+          # `from schema import` — same as run_validators.sh.
+          export PYTHONPATH="$VALIDATORS_DIR${PYTHONPATH:+:$PYTHONPATH}"
+          # #1266: static_analysis/complexity_metrics shell out to bandit/radon
+          # via a PATH lookup, not a Python import — without VENV_BIN on PATH
+          # they silently drop signal instead of erroring.
+          export PATH="$VENV_BIN:$PATH"
+
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          BASE_RANGE="origin/$GITHUB_BASE_REF...HEAD"
+          mapfile -t ALL_FILES < <(git diff --name-only "$BASE_RANGE")
+
+          if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping validators."
+            exit 0
+          fi
+
+          PY_FILES=(); JS_FILES=(); PKG_JSON_FILES=(); SH_FILES=()
+          JS_EXTS_RE='\.(ts|tsx|js|jsx|astro|mjs|cjs)$'
+          for f in "${ALL_FILES[@]}"; do
+            [[ "$f" == *.py && -f "$f" ]] && PY_FILES+=("$f")
+            [[ "$f" =~ $JS_EXTS_RE && -f "$f" ]] && JS_FILES+=("$f")
+            [[ "$(basename "$f")" == "package.json" && -f "$f" ]] && PKG_JSON_FILES+=("$f")
+            [[ "$f" == *.sh && -f "$f" ]] && SH_FILES+=("$f")
+          done
+
+          RC=0
+
+          # run_val NAME SCRIPT TIMEOUT_SEC [args...]
+          # Prints "<dimension> score=<N.NN>" on success (score is informational,
+          # not pass/fail). Sets RC=1 only when the script itself errors, crashes,
+          # or times out (`timeout` returns 124 on timeout).
+          run_val() {
+            local name="$1" script="$2" timeout_s="$3"
+            shift 3
+            local args=("$@")
+
+            if [[ ! -f "$script" ]]; then
+              printf "  SKIP    %-24s (script not found)\n" "$name"
+              return 0
+            fi
+
+            local out err rc
+            out="$(mktemp)"
+            err="$(mktemp)"
+            if timeout "$timeout_s" "$PYTHON" "$script" "${args[@]}" >"$out" 2>"$err"; then
+              rc=0
+            else
+              rc=$?
+            fi
+
+            if [[ $rc -eq 0 ]]; then
+              local score dim
+              score=$(PYTHONSAFEPATH=1 "$PYTHON" -c \
+                "import json,sys; d=json.load(sys.stdin); print(f\"{d.get('score',0):.2f}\")" \
+                <"$out" 2>/dev/null || echo "?")
+              dim=$(PYTHONSAFEPATH=1 "$PYTHON" -c \
+                "import json,sys; d=json.load(sys.stdin); print(d.get('dimension','?'))" \
+                <"$out" 2>/dev/null || echo "$name")
+              printf "  %-24s score=%s\n" "$dim" "$score"
+            else
+              echo "  FAILED  $name (exit=$rc, timeout=${timeout_s}s)"
+              echo "  ---- stderr ----"
+              sed 's/^/    /' "$err" || true
+              echo "  -----------------"
+              RC=1
+            fi
+            rm -f "$out" "$err"
+          }
+
+          if [[ ${#PY_FILES[@]} -gt 0 ]]; then
+            echo "=== Python-scoped validators (${#PY_FILES[@]} file(s)) ==="
+            run_val risk_number      "$VALIDATORS_DIR/rn_calculator.py"          60  "${PY_FILES[@]}"
+            run_val complexity       "$VALIDATORS_DIR/complexity_metrics.py"     60  "${PY_FILES[@]}"
+            run_val function_metrics "$VALIDATORS_DIR/function_metrics.py"       60  "${PY_FILES[@]}"
+            run_val n1_queries       "$VALIDATORS_DIR/n1_detector.py"            60  "${PY_FILES[@]}"
+            run_val static_analysis  "$VALIDATORS_DIR/static_analysis.py"       120  "${PY_FILES[@]}"
+            run_val hallucination    "$VALIDATORS_DIR/hallucination_surface.py"  60  "${PY_FILES[@]}"
+            run_val portability      "$VALIDATORS_DIR/portability_check.py"      60  "${PY_FILES[@]}"
+            echo ""
+          fi
+
+          if [[ ${#JS_FILES[@]} -gt 0 ]]; then
+            echo "=== JS/TS-scoped validators (${#JS_FILES[@]} file(s)) ==="
+            run_val risk_number_js      "$VALIDATORS_DIR/rn_calculator_js.py"       60  "${JS_FILES[@]}"
+            run_val complexity_js       "$VALIDATORS_DIR/complexity_metrics_js.py"  60  "${JS_FILES[@]}"
+            run_val function_metrics_js "$VALIDATORS_DIR/function_metrics_js.py"    60  "${JS_FILES[@]}"
+            run_val n1_queries_js       "$VALIDATORS_DIR/n1_detector_js.py"         60  "${JS_FILES[@]}"
+            run_val static_analysis_js  "$VALIDATORS_DIR/static_analysis_js.py"    120  "${JS_FILES[@]}"
+            echo ""
+          fi
+
+          if [[ ${#JS_FILES[@]} -gt 0 || ${#PKG_JSON_FILES[@]} -gt 0 ]]; then
+            echo "=== hallucination_surface_js (JS/TS + package.json) ==="
+            run_val hallucination_js "$VALIDATORS_DIR/hallucination_surface_js.py" 60 \
+              "${JS_FILES[@]}" "${PKG_JSON_FILES[@]}"
+            echo ""
+          fi
+
+          echo "=== migration_risk (all changed files) ==="
+          run_val migration_risk "$VALIDATORS_DIR/migration_scorer.py" 60 "${ALL_FILES[@]}"
+          echo ""
+
+          if [[ ${#SH_FILES[@]} -gt 0 ]]; then
+            echo "=== shell_logic_check (${#SH_FILES[@]} file(s)) ==="
+            run_val shell_logic "$VALIDATORS_DIR/shell_logic_check.py" 60 "${SH_FILES[@]}"
+            echo ""
+          fi
+
+          # diff_size — git-only, deterministic. Computed here, not in the
+          # validator (same division of labour as run_validators.sh's
+          # DS_BASE_REF/DS_CHANGED_LINES/DS_CHANGED_FILES/DS_FILE_LIST block),
+          # with base-ref resolution simplified to origin/$GITHUB_BASE_REF
+          # since CI already fetched it above.
+          echo "=== diff_size ==="
+          DS_CHANGED_LINES=$(git diff --numstat "$BASE_RANGE" \
+            | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { s += $1 + $2 } END { print s + 0 }')
+          [[ "$DS_CHANGED_LINES" =~ ^[0-9]+$ ]] || DS_CHANGED_LINES=0
+          DS_CHANGED_FILES=${#ALL_FILES[@]}
+          run_val diff_size "$VALIDATORS_DIR/diff_size.py" 30 \
+            --changed-lines "$DS_CHANGED_LINES" --changed-files "$DS_CHANGED_FILES" \
+            --changed-file-list "${ALL_FILES[@]}"
+          echo ""
+
+          if [[ $RC -ne 0 ]]; then
+            echo "One or more validators errored/crashed/timed out — see FAILED lines above."
+          else
+            echo "All validators completed. Scores above are informational signals for" \
+                 "visibility, not a pass/fail verdict — threshold judgment is the" \
+                 "risk-assessor's job, unchanged by this workflow."
+          fi
+          exit $RC
