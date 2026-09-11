@@ -1037,6 +1037,80 @@ class TestOverlapLock:
         assert "ceiling" in r.stdout
         assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
 
+    def test_real_concurrent_invocations_only_one_proceeds(self, cron, tmp_path):
+        # #1265: a cycle was observed with two real hos-cron processes for the
+        # same (role, project) alive at once — one nested as a child of the
+        # other, well inside the age ceiling, with the older process's pid
+        # apparently not caught by the `kill -0` branch. Every test above
+        # simulates a single process encountering an already-existing lock
+        # directory pre-seeded on disk; none races two genuinely independent
+        # hos-cron processes against the SAME lock via real, concurrent mkdir
+        # calls — which is what #1265 actually was. This one does.
+        #
+        # The default claude stub exits immediately, too fast to reliably
+        # overlap a second real invocation. Replace it with a gated version:
+        # it signals "reached claude" via a marker file, then blocks until
+        # released — holding the lock open for the whole window a genuinely
+        # contended second process needs to observe it live.
+        started = tmp_path / "a_started"
+        release = tmp_path / "a_release"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
+            f'touch "{started}"\n'
+            f'while [[ ! -f "{release}" ]]; do sleep 0.05; done\n'
+            f'echo "ran" > "{cron.claude_log}"\n'
+            "exit 0\n",
+        )
+
+        env = {
+            "HOME": str(cron.home),
+            "PATH": "/usr/bin:/bin",
+            "HOS_STATE_DIR": str(cron.state),
+            "HOS_CRON_JITTER_MAX": "0",
+            "HOS_CRON_MAX_SECONDS": "0",
+            "HOS_TEST_CLAUDE_LOG": str(cron.claude_log),
+            "HOS_REPO_SLUG": "test-org/test-repo",
+            "HOS_TEST_MILESTONELESS_ISSUES": "9001",
+        }
+        proc_a = subprocess.Popen(
+            [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"],
+            cwd=str(cron.repo),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10
+            while not started.exists():
+                assert proc_a.poll() is None, (
+                    f"process A exited before reaching claude: rc={proc_a.returncode}"
+                )
+                assert time.time() < deadline, "process A never reached claude"
+                time.sleep(0.05)
+
+            # Process A now holds the real overlap lock and is blocked inside
+            # claude. A second, independently-launched hos-cron process for
+            # the SAME (role, project) must back off cleanly, not proceed.
+            r_b = cron.run()
+            assert r_b.returncode == 0, r_b.stdout + r_b.stderr
+            assert "holds the lock" in r_b.stdout, r_b.stdout
+            assert not cron.claude_ran(), "B must not reach claude while A genuinely holds the lock"
+            assert cron.lock_dir.exists(), "A's lock must still be held after B backs off"
+
+            release.touch()
+            out_a, err_a = proc_a.communicate(timeout=10)
+        finally:
+            if proc_a.poll() is None:
+                proc_a.kill()
+                proc_a.communicate()
+
+        assert proc_a.returncode == 0, out_a + err_a
+        assert cron.claude_ran(), "A must complete its cycle once released"
+        assert not cron.lock_dir.exists(), "the lock must be released once A exits (EXIT trap)"
+
 
 # ─────────────────────────────────── Wakeup ────────────────────────────────
 class TestWakeupBackoff:
