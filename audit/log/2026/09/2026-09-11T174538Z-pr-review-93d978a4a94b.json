@@ -1,0 +1,1 @@
+{"comment_posted":true,"decision":"PROPOSE_ONLY","event":"pr-review","head_sha":"dc0b02b86544677e642fd7a94f201f929dd3cc93","label_applied":"needs-ai","pr":1566,"reason":"Server-side gate not detected (DEP[#152-followup] fail-safe); docs-only DECISIONS.md entry outside worker pipeline","risk_tier":"LOW","timestamp":"2026-09-11T17:45:38Z"}
