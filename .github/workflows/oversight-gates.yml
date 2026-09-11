@@ -1,43 +1,55 @@
 name: Oversight gates
 
-# Runs a subset of the deterministic pre-review gates
-# (scripts/oversight/gates/*.sh) on every PR (#1216 — second slice; first
-# slice was the four file-scoped gates below). Distinct from the *approval*
-# gate workflows (require-human-approval.yml etc.) that
-# scripts/framework/rerun_gate_checks.py calls "gate workflows" — this is the
-# other "gates": scripts/oversight/gates/, the deterministic pre-review
-# checks.
+# Split into one job per gate (or a small documented group) so each can be
+# independently promoted to a required status check without also requiring
+# every other gate bundled into the same job (#1571). Was previously a single
+# `oversight-gates` job wrapping all nine gates — see DECISIONS.md's
+# 2026-09-10/11 #1216 entries for how each gate was progressively wired in
+# before this split, and the 2026-09-11 #1571 entry for the debt baseline and
+# promotion rationale below.
 #
-# ADVISORY (non-required) for now, mirroring #1244's advisory-first rollout of
-# tests.yml: this proves the gate before it can block the autonomous
-# worker/overseer merge loop. Whether to promote it to a required check is the
-# same product-boundary call #1244 needed a human ruling for — not made here.
+# Per-gate debt baseline (`run_gates.sh` no-args full-project-scan default per
+# gate, 2026-09-11 — see DECISIONS.md for the full table):
+#   oversight-gate-repo-scoped   — zero debt (django_check/astro_check SKIP,
+#                                  expensive_gates_stub PASSes on this repo).
+#                                  PROMOTED to required in
+#                                  scripts/framework/setup_branch_protection.sh
+#                                  (a human must still run that script for the
+#                                  live GitHub setting to take effect).
+#   oversight-gate-bash-check    — low debt (2 files use Bash-4+ constructs).
+#   oversight-gate-portability   — low debt (4 test-fixture false positives).
+#   oversight-gate-secret-scan   — low debt (15 findings, all in audit-log
+#                                  JSON / test fixtures, no real secrets).
+#   oversight-gate-template-refs — zero debt on this (non-Django) repo, but
+#                                  file-scoped rather than repo-scoped, so
+#                                  kept as its own job and not folded into
+#                                  oversight-gate-repo-scoped.
+#   oversight-gate-type-check    — SEVERE debt (dozens of pre-existing mypy
+#                                  errors repo-wide). Not previously tracked
+#                                  by #1571's own baseline table. Stays
+#                                  advisory, same treatment as lint.
+#   oversight-gate-lint          — SEVERE debt (isort/black fails on nearly
+#                                  every .py file). Unchanged from #1571's own
+#                                  finding — its reformat is a separate PR per
+#                                  #1571 item 4, promoted only after that
+#                                  lands and `--all` is clean.
 #
-# Two gate groups, run differently:
+# Two gate groups, run differently (unchanged from before the split):
 #
-# - File-scoped (secret_scan, lint_check, type_check, bash_check,
-#   portability_check, template_refs_check): take the PR's changed files as
-#   args, scoped to `git diff` against the base branch rather than --all — a
-#   whole-repo run surfaces pre-existing findings (e.g. legacy bash_check
-#   debt) that were never enforced at that granularity and are out of scope
-#   for the PR under review — the same "don't land red on day one" lesson
-#   #1244 recorded for the failing test it found before turning that gate on.
-#   Skipped entirely when the diff is empty.
+# - File-scoped (secret-scan, lint, type-check, bash-check, portability,
+#   template-refs): take the PR's changed files as args, scoped to `git diff`
+#   against the base branch rather than --all — a whole-repo run surfaces
+#   pre-existing findings never enforced at that granularity, out of scope
+#   for the PR under review. Skipped entirely when the diff is empty.
 #
-# - Repo-scoped (django_check, astro_check, expensive_gates_stub): take no
-#   file args — each gate resolves its own applicability (django_check/
-#   astro_check SKIP without manage.py/an Astro marker; expensive_gates_stub
-#   runs a static, non-Docker-daemon container-start check). Always run,
-#   independent of the diff.
+# - Repo-scoped (django_check, astro_check, expensive_gates_stub, grouped
+#   into oversight-gate-repo-scoped): take no file args — each gate resolves
+#   its own applicability. Always run, independent of the diff.
 #
 # security_scan (pip-audit against the CI venv's installed dependency
-# versions, not the PR's changed files — would land red regardless of PR
-# content) and collection_integrity (pytest --collect-only over the same
-# tests/ scope tests.yml's full `pytest tests/` run already collects and
-# executes on every PR — wiring it in here adds no coverage tests.yml doesn't
-# already provide) are deliberately not wired in here. See DECISIONS.md's
-# 2026-09-10 and 2026-09-11 #1216 entries for the full CI-portable /
-# local-only / deferred classification.
+# versions, not the PR's changed files) and collection_integrity (duplicates
+# tests.yml's own pytest collection) are deliberately not wired in here —
+# see DECISIONS.md's 2026-09-10/11 #1216 entries for the full classification.
 #
 # Deterministic only — no agy/codex, no subscription CLI auth, no network
 # calls.
@@ -58,10 +70,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  oversight-gates:
-    name: oversight-gates
+  oversight-gate-secret-scan:
+    name: oversight-gate-secret-scan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -78,30 +90,211 @@ jobs:
           HOS_SKIP_PROJECT_REQUIREMENTS: "1"
         run: bash scripts/oversight/ensure_venv.sh
 
-      - name: Run deterministic gates
+      - name: Run secret_scan
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           git fetch origin "$GITHUB_BASE_REF" --depth=1
           mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
-
-          RC=0
-
           if [[ ${#FILES[@]} -eq 0 ]]; then
-            echo "No changed files against origin/$GITHUB_BASE_REF — skipping file-scoped gates."
-          else
-            for gate in secret_scan lint_check type_check bash_check portability_check template_refs_check; do
-              echo "=== $gate ==="
-              bash "scripts/oversight/gates/${gate}.sh" "${FILES[@]}" || RC=1
-              echo ""
-            done
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
           fi
+          bash scripts/oversight/gates/secret_scan.sh "${FILES[@]}"
 
+  oversight-gate-lint:
+    name: oversight-gate-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run lint_check
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          bash scripts/oversight/gates/lint_check.sh "${FILES[@]}"
+
+  oversight-gate-type-check:
+    name: oversight-gate-type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run type_check
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          bash scripts/oversight/gates/type_check.sh "${FILES[@]}"
+
+  oversight-gate-bash-check:
+    name: oversight-gate-bash-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run bash_check
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          bash scripts/oversight/gates/bash_check.sh "${FILES[@]}"
+
+  oversight-gate-portability:
+    name: oversight-gate-portability
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run portability_check
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          bash scripts/oversight/gates/portability_check.sh "${FILES[@]}"
+
+  oversight-gate-template-refs:
+    name: oversight-gate-template-refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run template_refs_check
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          bash scripts/oversight/gates/template_refs_check.sh "${FILES[@]}"
+
+  oversight-gate-repo-scoped:
+    name: oversight-gate-repo-scoped
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      - name: Run repo-scoped gates
+        run: |
+          set -euo pipefail
+          RC=0
           for gate in django_check astro_check expensive_gates_stub; do
             echo "=== $gate ==="
             bash "scripts/oversight/gates/${gate}.sh" || RC=1
             echo ""
           done
-
           exit $RC
