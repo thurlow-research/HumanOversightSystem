@@ -1,9 +1,9 @@
 name: Oversight gates
 
 # Runs a subset of the deterministic pre-review gates
-# (scripts/oversight/gates/*.sh) against this PR's changed files on every PR
-# (#1216 — first slice: "run in CI what can run in CI"). Distinct from the
-# *approval* gate workflows (require-human-approval.yml etc.) that
+# (scripts/oversight/gates/*.sh) on every PR (#1216 — second slice; first
+# slice was the four file-scoped gates below). Distinct from the *approval*
+# gate workflows (require-human-approval.yml etc.) that
 # scripts/framework/rerun_gate_checks.py calls "gate workflows" — this is the
 # other "gates": scripts/oversight/gates/, the deterministic pre-review
 # checks.
@@ -13,21 +13,31 @@ name: Oversight gates
 # worker/overseer merge loop. Whether to promote it to a required check is the
 # same product-boundary call #1244 needed a human ruling for — not made here.
 #
-# Scoped to changed files, not --all: a whole-repo run surfaces pre-existing
-# findings (e.g. legacy bash_check debt) that were never enforced at that
-# granularity and are out of scope for the PR under review — the same "don't
-# land red on day one" lesson #1244 recorded for the failing test it found
-# before turning that gate on.
+# Two gate groups, run differently:
 #
-# Only the four gates #1216 names explicitly as CI-portable without caveat —
-# secret_scan, lint_check, type_check, bash_check — invoked directly rather
-# than through run_gates.sh --all, which also runs security_scan
-# (pip-audit against the CI venv's installed dependency versions — an
-# environment scan, not scoped to the PR's changed files, so it would land
-# red regardless of what the PR touches) and the other gates (portability,
-# django, astro, template-refs, collection-integrity) not yet classified
-# here. See DECISIONS.md's 2026-09-10 #1216 entry for the full
-# CI-portable / local-only / deferred classification.
+# - File-scoped (secret_scan, lint_check, type_check, bash_check,
+#   portability_check, template_refs_check): take the PR's changed files as
+#   args, scoped to `git diff` against the base branch rather than --all — a
+#   whole-repo run surfaces pre-existing findings (e.g. legacy bash_check
+#   debt) that were never enforced at that granularity and are out of scope
+#   for the PR under review — the same "don't land red on day one" lesson
+#   #1244 recorded for the failing test it found before turning that gate on.
+#   Skipped entirely when the diff is empty.
+#
+# - Repo-scoped (django_check, astro_check, expensive_gates_stub): take no
+#   file args — each gate resolves its own applicability (django_check/
+#   astro_check SKIP without manage.py/an Astro marker; expensive_gates_stub
+#   runs a static, non-Docker-daemon container-start check). Always run,
+#   independent of the diff.
+#
+# security_scan (pip-audit against the CI venv's installed dependency
+# versions, not the PR's changed files — would land red regardless of PR
+# content) and collection_integrity (pytest --collect-only over the same
+# tests/ scope tests.yml's full `pytest tests/` run already collects and
+# executes on every PR — wiring it in here adds no coverage tests.yml doesn't
+# already provide) are deliberately not wired in here. See DECISIONS.md's
+# 2026-09-10 and 2026-09-11 #1216 entries for the full CI-portable /
+# local-only / deferred classification.
 #
 # Deterministic only — no agy/codex, no subscription CLI auth, no network
 # calls.
@@ -68,22 +78,30 @@ jobs:
           HOS_SKIP_PROJECT_REQUIREMENTS: "1"
         run: bash scripts/oversight/ensure_venv.sh
 
-      - name: Run deterministic gates on changed files
+      - name: Run deterministic gates
         env:
           GITHUB_BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           git fetch origin "$GITHUB_BASE_REF" --depth=1
           mapfile -t FILES < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
-          if [[ ${#FILES[@]} -eq 0 ]]; then
-            echo "No changed files against origin/$GITHUB_BASE_REF — nothing to gate."
-            exit 0
-          fi
 
           RC=0
-          for gate in secret_scan lint_check type_check bash_check; do
+
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping file-scoped gates."
+          else
+            for gate in secret_scan lint_check type_check bash_check portability_check template_refs_check; do
+              echo "=== $gate ==="
+              bash "scripts/oversight/gates/${gate}.sh" "${FILES[@]}" || RC=1
+              echo ""
+            done
+          fi
+
+          for gate in django_check astro_check expensive_gates_stub; do
             echo "=== $gate ==="
-            bash "scripts/oversight/gates/${gate}.sh" "${FILES[@]}" || RC=1
+            bash "scripts/oversight/gates/${gate}.sh" || RC=1
             echo ""
           done
+
           exit $RC
