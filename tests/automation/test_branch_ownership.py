@@ -45,7 +45,9 @@ GIT_IDENT = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=
 def _git(repo: Path, *args, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", str(repo)] + list(args),
-        capture_output=True, text=True, check=check,
+        capture_output=True,
+        text=True,
+        check=check,
     )
 
 
@@ -80,7 +82,8 @@ class Repo:
         _git(self.root, *GIT_IDENT, "commit", "-q", "-m", "init")
 
     def create_branch(
-        self, *args,
+        self,
+        *args,
         cycle_id: str = "worker-hos-260101000000-999",
         cycle_token: str = "260101000000",
         cycle_role: str = "worker",
@@ -88,16 +91,23 @@ class Repo:
         timeout: int = 15,
     ) -> subprocess.CompletedProcess:
         env = dict(os.environ)
-        env.update({
-            "HOS_CYCLE_ID": cycle_id,
-            "HOS_CYCLE_TOKEN": cycle_token,
-            "HOS_CYCLE_ROLE": cycle_role,
-        })
+        env.update(
+            {
+                "HOS_CYCLE_ID": cycle_id,
+                "HOS_CYCLE_TOKEN": cycle_token,
+                "HOS_CYCLE_ROLE": cycle_role,
+            }
+        )
         if env_overrides:
             env.update(env_overrides)
         argv = [BASH, str(self.root / "bootstrap" / "create_branch.sh")] + list(args)
         return subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False, env=env,
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
         )
 
 
@@ -120,12 +130,17 @@ def _verify(repo: Path, branch: str, cycle_id: str | None) -> subprocess.Complet
     script = (
         f'source "{installed_lib}"\n'
         f'hos_bo_verify "{repo}" "{branch}"\n'
-        'rc=$?\n'
+        "rc=$?\n"
         'printf "rc=%s reason=%s\\n" "$rc" "${HOS_BO_REASON:-}"\n'
         'exit "$rc"\n'
     )
     return subprocess.run(
-        [BASH, "-c", script], capture_output=True, text=True, timeout=10, env=env, check=False,
+        [BASH, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+        check=False,
     )
 
 
@@ -177,8 +192,12 @@ class TestCrossCloneIsolation:
         cycle_id = "worker-hos-260802000000-4242"
 
         r = repo_a.create_branch(
-            "--issue", "967", "--slug", "cross-clone",
-            cycle_id=cycle_id, cycle_token="260802000000",
+            "--issue",
+            "967",
+            "--slug",
+            "cross-clone",
+            cycle_id=cycle_id,
+            cycle_token="260802000000",
         )
         assert r.returncode == 0, r.stdout + r.stderr
         branch = r.stdout.strip()
@@ -203,14 +222,26 @@ class TestCrossCloneIsolation:
         cycle_id = "worker-hos-260802000001-1"
 
         ra = repo_a.create_branch(
-            "--issue", "12", "--slug", "fix-x", cycle_id=cycle_id, cycle_token="260802000001",
+            "--issue",
+            "12",
+            "--slug",
+            "fix-x",
+            cycle_id=cycle_id,
+            cycle_token="260802000001",
         )
         rb = repo_b.create_branch(
-            "--issue", "12", "--slug", "fix-x", cycle_id=cycle_id, cycle_token="260802000001",
+            "--issue",
+            "12",
+            "--slug",
+            "fix-x",
+            cycle_id=cycle_id,
+            cycle_token="260802000001",
         )
         assert ra.returncode == 0, ra.stdout + ra.stderr
         assert rb.returncode == 0, rb.stdout + rb.stderr
-        assert ra.stdout.strip() == rb.stdout.strip(), "branch names should collide by construction here"
+        assert (
+            ra.stdout.strip() == rb.stdout.strip()
+        ), "branch names should collide by construction here"
 
         # Each clone's own record is valid only in that clone.
         assert _verify(repo_a.root, ra.stdout.strip(), cycle_id).returncode == 0
@@ -221,12 +252,20 @@ class TestCrossCloneIsolation:
 class TestCycleUniqueBranchNames:
     def test_different_cycle_tokens_produce_different_branch_names(self, repo):
         r1 = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
-            cycle_token="260802000001", cycle_id="worker-hos-260802000001-1",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
+            cycle_token="260802000001",
+            cycle_id="worker-hos-260802000001-1",
         )
         r2 = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
-            cycle_token="260802000002", cycle_id="worker-hos-260802000002-2",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
+            cycle_token="260802000002",
+            cycle_id="worker-hos-260802000002-2",
         )
         assert r1.returncode == 0, r1.stdout + r1.stderr
         assert r2.returncode == 0, r2.stdout + r2.stderr
@@ -249,12 +288,20 @@ class TestCycleUniqueBranchNames:
         # (worse) silently re-enter the first cycle's branch.
         same_tok = "260802000005"
         r1 = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
-            cycle_token=same_tok, cycle_id="worker-hos-260802000005-100",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
+            cycle_token=same_tok,
+            cycle_id="worker-hos-260802000005-100",
         )
         r2 = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
-            cycle_token=same_tok, cycle_id="worker-hos-260802000005-200",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
+            cycle_token=same_tok,
+            cycle_id="worker-hos-260802000005-200",
         )
         assert r1.returncode == 0, r1.stdout + r1.stderr
         assert r2.returncode == 0, r2.stdout + r2.stderr
@@ -312,7 +359,10 @@ class TestCycleIdPidGuards:
 
     def test_cycle_id_with_no_dash_is_refused(self, repo):
         r = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
             cycle_id="nodashesatall",
         )
         assert r.returncode != 0
@@ -320,7 +370,10 @@ class TestCycleIdPidGuards:
 
     def test_cycle_id_with_nonnumeric_trailing_field_is_refused(self, repo):
         r = repo.create_branch(
-            "--issue", "967", "--slug", "thing",
+            "--issue",
+            "967",
+            "--slug",
+            "thing",
             cycle_id="worker-hos-abc",
         )
         assert r.returncode != 0
@@ -343,9 +396,19 @@ class TestMissingCycleIdentity:
             env.pop(key, None)
         env["HOS_CYCLE_ROLE"] = "worker"
         r = subprocess.run(
-            [BASH, str(repo.root / "bootstrap" / "create_branch.sh"),
-             "--issue", "1265", "--slug", "thing"],
-            capture_output=True, text=True, timeout=15, env=env, check=False,
+            [
+                BASH,
+                str(repo.root / "bootstrap" / "create_branch.sh"),
+                "--issue",
+                "1265",
+                "--slug",
+                "thing",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+            check=False,
         )
         assert r.returncode != 0
         assert "are not set in this environment" in r.stderr, r.stdout + r.stderr
@@ -361,10 +424,10 @@ class TestMissingCycleIdentity:
         capture_file = tmp_path / "capture.log"
         capture_file.write_text("")
         (audit_lib_dir / "audit_log.sh").write_text(
-            '#!/usr/bin/env bash\n'
-            'audit_write_event() {\n'
+            "#!/usr/bin/env bash\n"
+            "audit_write_event() {\n"
             f'    echo "AUDIT_EVENT:$1" >> "{capture_file}"\n'
-            '}\n'
+            "}\n"
         )
         (audit_lib_dir / "audit_log.sh").chmod(0o755)
 
@@ -373,9 +436,19 @@ class TestMissingCycleIdentity:
             env.pop(key, None)
         env["HOS_CYCLE_ROLE"] = "worker"
         r = subprocess.run(
-            [BASH, str(repo.root / "bootstrap" / "create_branch.sh"),
-             "--issue", "1265", "--slug", "thing"],
-            capture_output=True, text=True, timeout=15, env=env, check=False,
+            [
+                BASH,
+                str(repo.root / "bootstrap" / "create_branch.sh"),
+                "--issue",
+                "1265",
+                "--slug",
+                "thing",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=env,
+            check=False,
         )
         assert r.returncode != 0
 
