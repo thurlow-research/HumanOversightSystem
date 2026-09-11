@@ -28,15 +28,12 @@ _SECURITY = _GATES / "security_scan.sh"
 _SECRET = _GATES / "secret_scan.sh"
 _VENV_BIN = _REPO / "scripts" / "oversight" / ".venv" / "bin"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="bash unavailable"
-)
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 
 _BANDIT = (_VENV_BIN / "bandit").exists() or shutil.which("bandit") is not None
-_DETECT_SECRETS = (
-    (_VENV_BIN / "detect-secrets").exists()
-    or shutil.which("detect-secrets") is not None
-)
+_DETECT_SECRETS = (_VENV_BIN / "detect-secrets").exists() or shutil.which(
+    "detect-secrets"
+) is not None
 
 # A subprocess.Popen(..., shell=True) call is bandit B602 (HIGH severity).
 _HIGH_FINDING_PY = (
@@ -45,15 +42,15 @@ _HIGH_FINDING_PY = (
     "    subprocess.Popen(cmd, shell=True)  # bandit B602 HIGH\n"
 )
 # A recognizable AWS-style access key for detect-secrets.
-_SECRET_PY = 'API_TOKEN = "AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"\n'
+_SECRET_PY = 'API_TOKEN = "AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"\n'  # pragma: allowlist secret
 
 
-def _run(script: Path, cwd: Path) -> subprocess.CompletedProcess:
+def _run(script: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess:
     # Bound the (network-dependent, non-blocking) pip-audit step so the suite
     # cannot hang if advisory fetch is slow/offline; it warns and continues.
     env = {**os.environ, "GATE_TIMEOUT": "20", "GATE_RETRIES": "1"}
     return subprocess.run(
-        ["bash", str(script)],
+        ["bash", str(script), *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -99,3 +96,36 @@ def test_secret_scan_no_args_detects_planted_secret(tmp_path):
     res = _run(_SECRET, tmp_path)
     assert res.returncode == 1
     assert "potential secret" in res.stdout.lower()
+
+
+# Validation stamps carry a 64-hex-char content-fingerprint `hash:` line by
+# design; detect-secrets flags it as a Hex High Entropy String. CI invokes
+# secret_scan.sh with an explicit changed-file list (bypassing the extension
+# filters used by --staged/full-scan), so the gate must skip stamp paths
+# itself rather than relying on those filters. (#1572)
+_STAMP_RELPATH = "scripts/framework/validation-stamps/phase1-deadbeef.stamp"
+_STAMP_BODY = (
+    "step: phase1\n" "hash: d1a2fa7687ede91e80a8441414f99db7216da56f51154e1d0f80f9fbc5d502ce\n"
+)
+
+
+@pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
+def test_secret_scan_skips_validation_stamp_hash_line(tmp_path):
+    stamp = tmp_path / _STAMP_RELPATH
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text(_STAMP_BODY)
+    res = _run(_SECRET, tmp_path, _STAMP_RELPATH)
+    assert res.returncode == 0
+    assert "GATE PASS" in res.stdout
+
+
+@pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
+def test_secret_scan_still_flags_real_secret_alongside_stamp(tmp_path):
+    stamp = tmp_path / _STAMP_RELPATH
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text(_STAMP_BODY)
+    (tmp_path / "creds.py").write_text(_SECRET_PY)
+    res = _run(_SECRET, tmp_path, _STAMP_RELPATH, "creds.py")
+    assert res.returncode == 1
+    assert "potential secret" in res.stdout.lower()
+    assert "creds.py" in res.stdout
