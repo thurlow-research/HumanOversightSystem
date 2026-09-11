@@ -190,11 +190,11 @@ class CronEnv:
             '    _labels_json="[]"\n'
             '    if [[ -n "${HOS_TEST_PR_LABELS:-}" ]]; then\n'
             '      _labels_json="["\n'
-            '      for _l in ${HOS_TEST_PR_LABELS}; do\n'
+            "      for _l in ${HOS_TEST_PR_LABELS}; do\n"
             '        _labels_json="${_labels_json}\\"${_l}\\","\n'
-            '      done\n'
+            "      done\n"
             '      _labels_json="${_labels_json%,}]"\n'
-            '    fi\n'
+            "    fi\n"
             '    printf "{\\"ms\\":\\"%s\\",\\"d\\":%s,\\"labels\\":%s}\\n" '
             '"${HOS_TEST_PR_MS:-clean}" "${HOS_TEST_PR_DRAFT:-false}" "$_labels_json" ;;\n'
             # PR reviews — CHANGES_REQUESTED count
@@ -747,11 +747,7 @@ class CronEnv:
     def aa_issue_body(self) -> str:
         """The verbatim --body value of the most recent `gh issue create` call,
         or "" if none was captured (#1415)."""
-        return (
-            self.aa_issue_body_capture.read_text()
-            if self.aa_issue_body_capture.exists()
-            else ""
-        )
+        return self.aa_issue_body_capture.read_text() if self.aa_issue_body_capture.exists() else ""
 
     def closed_issue_nums(self) -> list[str]:
         """Issue numbers the launcher closed via `gh issue close` (#959 auto-close)."""
@@ -763,9 +759,7 @@ class CronEnv:
         """The verbatim --label value of the most recent `gh issue create` call,
         or "" if none was captured (#1496)."""
         return (
-            self.aa_issue_label_capture.read_text()
-            if self.aa_issue_label_capture.exists()
-            else ""
+            self.aa_issue_label_capture.read_text() if self.aa_issue_label_capture.exists() else ""
         )
 
     def milestone_patch_calls(self) -> list[str]:
@@ -919,7 +913,12 @@ class TestMaxSecondsResolution:
     def test_flag_wins_over_env_and_conf(self, cron):
         cron.set_max_seconds_conf("300")
         r = cron.run(
-            "--role", "worker", "--project", "hos", "--max-seconds", "5400",
+            "--role",
+            "worker",
+            "--project",
+            "hos",
+            "--max-seconds",
+            "5400",
             env_overrides={"HOS_CRON_MAX_SECONDS": "900"},
         )
         assert r.returncode == 0, r.stdout + r.stderr
@@ -1036,6 +1035,80 @@ class TestOverlapLock:
         assert "reclaiming stale lock" in r.stdout
         assert "ceiling" in r.stdout
         assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
+
+    def test_real_concurrent_invocations_only_one_proceeds(self, cron, tmp_path):
+        # #1265: a cycle was observed with two real hos-cron processes for the
+        # same (role, project) alive at once — one nested as a child of the
+        # other, well inside the age ceiling, with the older process's pid
+        # apparently not caught by the `kill -0` branch. Every test above
+        # simulates a single process encountering an already-existing lock
+        # directory pre-seeded on disk; none races two genuinely independent
+        # hos-cron processes against the SAME lock via real, concurrent mkdir
+        # calls — which is what #1265 actually was. This one does.
+        #
+        # The default claude stub exits immediately, too fast to reliably
+        # overlap a second real invocation. Replace it with a gated version:
+        # it signals "reached claude" via a marker file, then blocks until
+        # released — holding the lock open for the whole window a genuinely
+        # contended second process needs to observe it live.
+        started = tmp_path / "a_started"
+        release = tmp_path / "a_release"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
+            f'touch "{started}"\n'
+            f'while [[ ! -f "{release}" ]]; do sleep 0.05; done\n'
+            f'echo "ran" > "{cron.claude_log}"\n'
+            "exit 0\n",
+        )
+
+        env = {
+            "HOME": str(cron.home),
+            "PATH": "/usr/bin:/bin",
+            "HOS_STATE_DIR": str(cron.state),
+            "HOS_CRON_JITTER_MAX": "0",
+            "HOS_CRON_MAX_SECONDS": "0",
+            "HOS_TEST_CLAUDE_LOG": str(cron.claude_log),
+            "HOS_REPO_SLUG": "test-org/test-repo",
+            "HOS_TEST_MILESTONELESS_ISSUES": "9001",
+        }
+        proc_a = subprocess.Popen(
+            [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"],
+            cwd=str(cron.repo),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10
+            while not started.exists():
+                assert (
+                    proc_a.poll() is None
+                ), f"process A exited before reaching claude: rc={proc_a.returncode}"
+                assert time.time() < deadline, "process A never reached claude"
+                time.sleep(0.05)
+
+            # Process A now holds the real overlap lock and is blocked inside
+            # claude. A second, independently-launched hos-cron process for
+            # the SAME (role, project) must back off cleanly, not proceed.
+            r_b = cron.run()
+            assert r_b.returncode == 0, r_b.stdout + r_b.stderr
+            assert "holds the lock" in r_b.stdout, r_b.stdout
+            assert not cron.claude_ran(), "B must not reach claude while A genuinely holds the lock"
+            assert cron.lock_dir.exists(), "A's lock must still be held after B backs off"
+
+            release.touch()
+            out_a, err_a = proc_a.communicate(timeout=10)
+        finally:
+            if proc_a.poll() is None:
+                proc_a.kill()
+                proc_a.communicate()
+
+        assert proc_a.returncode == 0, out_a + err_a
+        assert cron.claude_ran(), "A must complete its cycle once released"
+        assert not cron.lock_dir.exists(), "the lock must be released once A exits (EXIT trap)"
 
 
 # ─────────────────────────────────── Wakeup ────────────────────────────────
@@ -1393,7 +1466,7 @@ class TestThinEnv:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         argv0 = next(
-            (l for l in cron.claude_record().splitlines() if l.startswith("argv0=")),
+            (line for line in cron.claude_record().splitlines() if line.startswith("argv0=")),
             "",
         )
         assert (
@@ -1404,7 +1477,7 @@ class TestThinEnv:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         path_line = next(
-            (l for l in cron.claude_record().splitlines() if l.startswith("path=")),
+            (line for line in cron.claude_record().splitlines() if line.startswith("path=")),
             "",
         )
         # The launcher prepends the pinned dirs regardless of the sparse inbound PATH.
@@ -2177,7 +2250,9 @@ class TestWorktreeHygiene:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "worktree_hygiene" in r.stdout
         assert "bogus" in r.stdout
-        assert (cron.repo / "uncommitted.tmp").exists(), "invalid config must fall back to off, not sweep"
+        assert (
+            cron.repo / "uncommitted.tmp"
+        ).exists(), "invalid config must fall back to off, not sweep"
         assert cron.claude_ran()
 
     def test_overseer_role_never_triggers_hygiene(self, cron):
@@ -2187,7 +2262,7 @@ class TestWorktreeHygiene:
         cron.set_worktree_hygiene("preserve")
         cron.git_init_repo()
         cron.make_dirty()
-        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
         assert (cron.repo / "uncommitted.tmp").exists(), "hygiene must never run for role=overseer"
 
 
@@ -2232,7 +2307,9 @@ class TestBaselineRetryBackoff:
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "1"}
         )
         assert r2.returncode == 1, r2.stdout + r2.stderr
-        assert cron.baseline_run_count() == 1, "identical state must skip the redundant suite re-run"
+        assert (
+            cron.baseline_run_count() == 1
+        ), "identical state must skip the redundant suite re-run"
         assert "skipping redundant re-run" in r2.stdout
         assert "already open" in r2.stdout
 
@@ -2270,7 +2347,9 @@ class TestBaselineRetryBackoff:
             env_overrides={"HOS_TEST_INNER_LOOP_EXIT": "1", "HOS_TEST_NEEDS_HUMAN_BLOCKED": "0"}
         )
         assert r2.returncode == 1, r2.stdout + r2.stderr
-        assert cron.baseline_run_count() == 2, "HEAD moved → must re-run, not reuse the cached failure"
+        assert (
+            cron.baseline_run_count() == 2
+        ), "HEAD moved → must re-run, not reuse the cached failure"
 
     def test_dirty_tree_change_runs_suite_fresh(self, cron):
         """Same HEAD but the worktree fingerprint changed (more/different
@@ -2413,8 +2492,7 @@ class TestBranchReap:
         r = cron.run()
         assert r.returncode == 0, r.stdout + r.stderr
         assert cron.branch_exists(branch), (
-            "a zero-commit branch with a record younger than the grace "
-            "window must not be reaped"
+            "a zero-commit branch with a record younger than the grace " "window must not be reaped"
         )
         assert rec.exists(), "its ownership record must be left in place too"
         assert f"reaped stranded zero-commit branch '{branch}'" not in r.stdout
@@ -2461,7 +2539,15 @@ class TestBranchReap:
         )
         subprocess.run(["git", "-C", str(cron.repo), "checkout", "-q", branch], check=True)
         subprocess.run(
-            ["git", "-C", str(cron.repo), "branch", "--set-upstream-to", f"origin/{branch}", branch],
+            [
+                "git",
+                "-C",
+                str(cron.repo),
+                "branch",
+                "--set-upstream-to",
+                f"origin/{branch}",
+                branch,
+            ],
             check=True,
         )
 
@@ -2502,7 +2588,7 @@ class TestBranchReap:
         cron.git_init_main_repo()
         cron.install_branch_ownership_lib()
         branch = cron.create_owned_branch(1498, "dead-cycle", commits=0)
-        r = cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
+        cron.run(role="overseer", env_overrides={"HOS_TEST_OPEN_PR_NUMS": "123"})
         assert cron.branch_exists(branch), "reap sweep must never run for role=overseer"
 
 
@@ -2556,9 +2642,7 @@ class TestTimeoutBreaker:
         sf = cron.timeout_breaker_state_file()
         sf.parent.mkdir(parents=True, exist_ok=True)
         sf.write_text("1\n0\n")
-        r = cron.run(
-            env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_CRON_MAX_SECONDS": "60"}
-        )
+        r = cron.run(env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_CRON_MAX_SECONDS": "60"})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "TIMEOUT BREAKER TRIPPED" not in r.stdout
         assert "timeout breaker: attempt 1/2" in r.stdout
@@ -2573,9 +2657,7 @@ class TestTimeoutBreaker:
         sf = cron.timeout_breaker_state_file()
         sf.parent.mkdir(parents=True, exist_ok=True)
         sf.write_text("1\n0\n")
-        r = cron.run(
-            env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_TEST_AA_QUERY_FAIL": "1"}
-        )
+        r = cron.run(env_overrides={"HOS_TEST_CLAUDE_EXIT": "124", "HOS_TEST_AA_QUERY_FAIL": "1"})
         assert r.returncode == 0, r.stdout + r.stderr
         assert "TIMEOUT BREAKER TRIPPED" in r.stdout
         assert cron.suspend_file().exists(), "dedup query failure must not block the suspend"
@@ -2607,9 +2689,9 @@ class TestTimeoutBreaker:
 # ──────────────────────────── Usage-limit breaker (#1446) ────────────────────
 @pytest.mark.skip(
     reason="#1446 usage-limit breaker is commented out in bin/hos-cron "
-           "(operator request 2026-09-01) — false-positive trips on any session "
-           "whose transcript merely contains the phrase. Un-skip when the block "
-           "is re-enabled with a narrower match."
+    "(operator request 2026-09-01) — false-positive trips on any session "
+    "whose transcript merely contains the phrase. Un-skip when the block "
+    "is re-enabled with a narrower match."
 )
 class TestUsageLimitBreaker:
     """A genuine Claude usage-limit refusal detected in the session's own
@@ -3325,9 +3407,7 @@ class TestCycleContextBlock:
         assert "routing=needs-attention" in context
         assert "routing=needs-fix" not in context
 
-    def test_context_block_approved_pr_with_stale_needs_ai_label_still_routes_needs_fix(
-        self, cron
-    ):
+    def test_context_block_approved_pr_with_stale_needs_ai_label_still_routes_needs_fix(self, cron):
         """Documents current-by-design behavior that motivates clearing the label
         after a fix (#1526): an approved, clean PR that still carries `needs-ai`
         (nothing ever cleared it) keeps routing to `needs-fix` — the label alone
