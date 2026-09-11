@@ -9,6 +9,7 @@
 #
 # Usage: ./secret_scan.sh file.py [file2.py ...]
 #        ./secret_scan.sh --staged    (check staged files via git diff)
+#        ./secret_scan.sh --all       (check entire project)
 
 set -euo pipefail
 
@@ -25,10 +26,13 @@ source "$_GATES_DIR/../ensure_venv.sh"
 
 FILES=()
 CHECK_STAGED=false
+CHECK_ALL=false
 
 for arg in "$@"; do
     if [[ "$arg" == "--staged" ]]; then
         CHECK_STAGED=true
+    elif [[ "$arg" == "--all" ]]; then
+        CHECK_ALL=true
     else
         FILES+=("$arg")
     fi
@@ -39,13 +43,17 @@ if $CHECK_STAGED; then
         grep -E '\.(py|txt|yaml|yml|json|env|cfg|ini|sh)$' || true)
 fi
 
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    # No files specified and --staged not set: default to scanning the whole
-    # project rather than printing "No files to scan" and recording GATE PASS —
-    # a no-op pass is indistinguishable from a real pass, so hardcoded secrets
-    # would go undetected yet the gate would exit 0. Mirrors lint_check.sh. The
-    # extension set matches the --staged filter above. (#976)
+if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
+    # No files specified (or --all) and --staged not set: default to scanning
+    # the whole project rather than printing "No files to scan" and recording
+    # GATE PASS — a no-op pass is indistinguishable from a real pass, so
+    # hardcoded secrets would go undetected yet the gate would exit 0. Mirrors
+    # lint_check.sh. The extension set matches the --staged filter above.
+    # (#976, #1571 — --all previously unrecognized, silently mis-scanning the
+    # whole working tree including scripts/oversight/.venv/ instead of using
+    # this exclusion list)
     echo "secret_scan: no files specified — defaulting to full project scan"
+    FILES=()
     while IFS= read -r line; do FILES+=("$line"); done < <(find . -type f \
         \( -name "*.py" -o -name "*.txt" -o -name "*.yaml" -o -name "*.yml" \
            -o -name "*.json" -o -name "*.env" -o -name "*.cfg" -o -name "*.ini" \
