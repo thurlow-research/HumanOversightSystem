@@ -184,6 +184,19 @@ class TestStaticAnalysisMocked:
         assert len(findings) == 1
         assert findings[0]["issue_severity"] == "HIGH"
 
+    def test_run_bandit_invokes_with_quiet_flag(self):
+        # #1571 item 2: bandit 1.9.4 prints a "Working... N%" progress-bar
+        # line to stdout ahead of the JSON report once the scanned file count
+        # crosses its internal threshold, breaking json.loads() on every
+        # full-project scan (reproduced on this repo's 195-file Python set).
+        # -q suppresses that preamble without affecting severity/confidence
+        # filtering (-ll/-ii) — regression guard against dropping it.
+        mock = MagicMock(stdout=self.BANDIT_OUTPUT, returncode=0)
+        with patch("static_analysis.subprocess.run", return_value=mock) as run:
+            _run_bandit(["test.py"])
+        args = run.call_args[0][0]
+        assert "-q" in args
+
     def test_run_bandit_invalid_json_signals_error(self):
         mock = MagicMock(stdout="not-json", returncode=0)
         with patch("static_analysis.subprocess.run", return_value=mock):

@@ -40,18 +40,37 @@ for the debt baseline and promotion rationale.
 
 ## Validators (`scripts/oversight/validators/*.py`) — the 12-dimension risk-assessment suite
 
+As of #1571 item 2 (2026-09-12), `oversight-validators.yml` runs one job per
+dimension group (mirroring the gates split, #1571 item 1) rather than a
+single bundled job — see DECISIONS.md for the debt baseline and promotion
+rationale. Debt baseline method: each validator script run directly against
+every tracked file in its scope (Python-scoped against all 195 tracked `.py`
+files, shell-scoped against all 81 tracked `.sh` files, migration_scorer
+against all ~8,650 tracked files, diff_size against a representative
+multi-commit diff — `HEAD~20...HEAD`, 3701 changed lines across 47 files —
+and the empty-diff case) — the full-project-scan counterpart of the gates
+`--all` baseline. "Debt" here means the script itself crashes/errors/times
+out, not its score value (validators are signals, not pass/fail — see the
+workflow's own header comment).
+
 | Validator | Status | Workflow | Reason |
 |---|---|---|---|
-| `rn_calculator.py` / `rn_calculator_js.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped (Python / JS-TS dispatch matches `run_validators.sh`). |
-| `complexity_metrics.py` / `complexity_metrics_js.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped. |
-| `function_metrics.py` / `function_metrics_js.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped. |
-| `n1_detector.py` / `n1_detector_js.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped. |
-| `static_analysis.py` / `static_analysis_js.py` | Wired | `oversight-validators.yml` | Deterministic (bandit/equivalent), file-scoped; 120s budget matches `run_validators.sh`. |
-| `hallucination_surface.py` / `hallucination_surface_js.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped; JS variant also dispatches on `package.json`-only changes (S7, #1063). |
-| `portability_check.py` | Wired | `oversight-validators.yml` | Deterministic, file-scoped. |
-| `migration_scorer.py` | Wired | `oversight-validators.yml` | Deterministic, all-files-scoped (runs whenever the diff is non-empty). |
-| `shell_logic_check.py` | Wired | `oversight-validators.yml` | Deterministic, shell-file-scoped. |
-| `diff_size.py` | Wired | `oversight-validators.yml` | Git-only and deterministic; changed-lines/files computed in the workflow. |
+| `rn_calculator.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt against this repo's 195 tracked `.py` files (#1571). |
+| `complexity_metrics.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt (#1571). |
+| `function_metrics.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt (#1571). |
+| `n1_detector.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt (#1571). |
+| `static_analysis.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic (bandit), file-scoped; 120s budget matches `run_validators.sh`. Real crash-debt found and fixed by #1571's baseline: bandit 1.9.4 prints a "Working... N%" progress-bar line to stdout ahead of its JSON report once the scanned file count crosses an internal threshold, breaking `json.loads(result.stdout)` on every full-project scan. Fixed by passing `-q` to bandit; now zero debt. |
+| `hallucination_surface.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt (#1571). |
+| `portability_check.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-python`) | Deterministic, file-scoped. Zero debt (#1571). |
+| `rn_calculator_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Deterministic, file-scoped. This repo has zero tracked `.ts/.tsx/.js/.jsx/.astro/.mjs/.cjs` files, so there is no real corpus to full-project-scan against (#1571's baseline method doesn't apply); its own pytest suite passes. Not promoted — see DECISIONS.md's 2026-09-12 entry. |
+| `complexity_metrics_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Same reason as `rn_calculator_js.py`. |
+| `function_metrics_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Same reason as `rn_calculator_js.py`. |
+| `n1_detector_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Same reason as `rn_calculator_js.py`. |
+| `static_analysis_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Same reason as `rn_calculator_js.py`; 120s budget matches `run_validators.sh`. |
+| `hallucination_surface_js.py` | Wired, advisory | `oversight-validators.yml` (job: `oversight-validator-js`) | Same reason as `rn_calculator_js.py`; also dispatches on `package.json`-only changes (S7, #1063) — this repo has no `package.json` either. |
+| `migration_scorer.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-migration`) | Deterministic, all-files-scoped (runs whenever the diff is non-empty). Zero debt against all ~8,650 tracked files (#1571). |
+| `shell_logic_check.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-shell`) | Deterministic, shell-file-scoped. Zero debt against all 81 tracked `.sh` files (#1571). |
+| `diff_size.py` | Wired, **required** | `oversight-validators.yml` (job: `oversight-validator-diff-size`) | Git-only and deterministic; changed-lines/files computed in the workflow. No external tool to crash on; verified against a representative diff and the empty-diff case (#1571). |
 | `ip_check.py` | Local-only | — | Calls ScanCode (license gate) + PyPI (regurgitation stub). Runnable in CI in principle but slow — #1216's own body flags this as needing an explicit decision, not a default-yes. Still runs locally and in the outer-loop panel (Level 1+2). |
 | `issue_query.py` | Local-only | — | Calls `gh` for historical issue/bug density; network-dependent, not deterministic gate material. |
 | `prompt_audit_risk.py` | Local-only | — | Calls `gh` for spec-gap count; same reason as `issue_query.py`. |
@@ -112,6 +131,12 @@ these were never attestation for execution in the first place.
   document.
 - `type_check.sh`'s severe mypy debt (found via #1571's re-baseline, not
   previously tracked) needs its own cleanup pass before promotion.
-- `oversight-validators.yml`'s 10 dimensions still need the same `--all`
-  debt baseline #1571 did for the gates (#1571 item 2, not attempted in
-  this slice).
+- `oversight-validators.yml`'s dimensions now have the same kind of `--all`
+  debt baseline #1571 item 1 did for the gates — done in #1571 item 2
+  (2026-09-12): split into five per-scope jobs, four promoted to required
+  (`oversight-validator-python`, `oversight-validator-migration`,
+  `oversight-validator-shell`, `oversight-validator-diff-size`), one stays
+  advisory (`oversight-validator-js`, no real JS/TS corpus in this repo to
+  baseline against). See DECISIONS.md's 2026-09-12 entry for the full
+  writeup, including the bandit `-q` fix static_analysis.py's baseline
+  required.

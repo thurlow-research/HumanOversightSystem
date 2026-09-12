@@ -43,10 +43,21 @@ def _run_bandit(files: list[str]) -> tuple[list[dict], str | None]:
     is missing or its output was unparseable. Callers must propagate this as a
     validator-level ``error=`` so the aggregator EXCLUDES the highest-weight
     security dimension rather than scoring a clean 0.0 (fail-open). (#917)
+
+    ``-q`` is required, not cosmetic: bandit 1.9.4 prints a "Working... N%"
+    rich progress-bar line to *stdout* (ahead of the JSON report) once the
+    scanned file count crosses its internal threshold — reproduced during
+    #1571 item 2 baselining on this repo's full 195-file Python set. That
+    preamble breaks ``json.loads(result.stdout)`` on every full-project scan,
+    silently degrading into the "unparseable" error path above and excluding
+    the security dimension exactly the way a missing bandit install would —
+    invisible unless something inspects the ``error`` field. ``-q`` suppresses
+    the progress bar (verified byte-identical JSON output otherwise) and does
+    not affect ``-ll``/``-ii`` severity/confidence filtering.
     """
     try:
         result = subprocess.run(
-            ["bandit", "-f", "json", "-ll", "-ii"] + files,
+            ["bandit", "-q", "-f", "json", "-ll", "-ii"] + files,
             capture_output=True,
             text=True,
         )

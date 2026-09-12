@@ -23,7 +23,7 @@
 # What this sets (§9):
 #   Required PR reviews: ≥1 approving review, CODEOWNERS enforcement,
 #   dismiss stale on push, NO bypass actors for bots.
-#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped.
+#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped, oversight-validator-python, oversight-validator-migration, oversight-validator-shell, oversight-validator-diff-size.
 #   Enforce admins: OFF — you (admin) retain bypass ability when needed.
 #   Restrictions: only bots + humans who are collaborators may push.
 
@@ -121,17 +121,43 @@ fi
 #                                no agent-settable escape hatch, override only via the
 #                                audited contract/gate-suspension.md mechanism)
 #   oversight-gate-repo-scoped ← .github/workflows/oversight-gates.yml (job:
-#                                oversight-gate-repo-scoped; #1571 — the one
-#                                gate group with zero debt baseline as of
+#                                oversight-gate-repo-scoped; #1571 item 1 — the
+#                                one gate group with zero debt baseline as of
 #                                2026-09-11; promoted alongside the four
 #                                existing required checks)
+#   oversight-validator-python    ← .github/workflows/oversight-validators.yml
+#                                (job: oversight-validator-python; #1571 item 2
+#                                — all seven Python-scoped dimensions run clean
+#                                against this repo's full 195-file Python set
+#                                as of 2026-09-12, AFTER a bandit progress-bar
+#                                parsing bug found during that baseline was
+#                                fixed in the same change — see DECISIONS.md)
+#   oversight-validator-migration ← .github/workflows/oversight-validators.yml
+#                                (job: oversight-validator-migration; #1571
+#                                item 2 — zero debt against all ~8,650 tracked
+#                                files as of 2026-09-12)
+#   oversight-validator-shell     ← .github/workflows/oversight-validators.yml
+#                                (job: oversight-validator-shell; #1571 item 2
+#                                — zero debt against all 81 tracked .sh files
+#                                as of 2026-09-12)
+#   oversight-validator-diff-size ← .github/workflows/oversight-validators.yml
+#                                (job: oversight-validator-diff-size; #1571
+#                                item 2 — git-only/deterministic, no external
+#                                tool to crash on, verified 2026-09-12)
 # tests/framework/test_branch_protection_contexts.py enforces this invariant.
+#
+# oversight-validator-js is NOT promoted: this repo has zero tracked JS/TS
+# files and no package.json, so #1571 item 2's baseline method (run the real
+# script against every tracked file in scope) does not apply — its own unit
+# tests pass, but that is not equivalent to a real-code crash baseline. Stays
+# advisory until real JS/TS content (or a deliberate synthetic corpus)
+# exists to baseline against. See DECISIONS.md's 2026-09-12 #1571 entry.
 
 PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped"]
+    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped", "oversight-validator-python", "oversight-validator-migration", "oversight-validator-shell", "oversight-validator-diff-size"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -167,7 +193,7 @@ echo "    require_code_owner_reviews      : true   (protected paths → human CO
 echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
-echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped"
+echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped, oversight-validator-python, oversight-validator-migration, oversight-validator-shell, oversight-validator-diff-size"
 echo "  enforce_admins                    : false  (admin/human retains emergency bypass)"
 echo "  allow_force_pushes                : false"
 echo "  allow_deletions                   : false"
@@ -242,6 +268,8 @@ ok "Branch protection setup complete."
 echo ""
 info "Next: verify with  gh api $API_BASE | jq ."
 info "Then: enable 'Require status checks to pass' for 'require-human-approval',"
-info "       'require-tier-ceiling', 'tests', and 'oversight-gate-repo-scoped' in"
-info "       the GitHub UI if not yet showing (each CI check must run at least"
-info "       once before GitHub will enforce it)."
+info "       'require-tier-ceiling', 'tests', 'oversight-gate-repo-scoped',"
+info "       'oversight-validator-python', 'oversight-validator-migration',"
+info "       'oversight-validator-shell', and 'oversight-validator-diff-size'"
+info "       in the GitHub UI if not yet showing (each CI check must run at"
+info "       least once before GitHub will enforce it)."
