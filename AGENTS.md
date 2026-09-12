@@ -67,6 +67,20 @@ When acting in a repo you **do not own** (a consumer project, an upstream, anyon
 
 ---
 
+## Core Principle: Use the Code, Don't Roll It Yourself
+
+**If the system already implements it, call it. If you are told to call it, actually call it.** Both halves matter, and both are violated the same way — by an agent deciding it can get the same result another way.
+
+**Do not reimplement.** Before writing any multi-step command, search `scripts/`, `bootstrap/`, `bin/`, and `scripts/automation/lib/` for something that already does it, and say what the search found. A hand-rolled equivalent is unreviewed at the moment it runs, accumulates no capability, and silently diverges from the implementation everything else depends on. It is also usually subtly wrong in ways the original already handles — retries, rate limits, token lifetime, argument escaping.
+
+**Do not narrate.** Reading a function's source, evaluating it against the situation, and reporting the answer it would produce is **not** calling it. It looks identical in a transcript and is not the same act: no deterministic evaluation happens, no side effect is recorded, no audit event is written, and no test that covers that function covers what actually occurred. **A control that is narrated is not a control.** If you cannot invoke it — because no entry point exists, or the only available construction is disallowed — that is a defect to report and stop on, never a licence to approximate it.
+
+**Corollary — the instruction and the mechanism must agree.** "Call `some_function(...)`" is not an executable instruction for an agent whose only capability is issuing shell commands. Any control an agent is required to run must have a real, invocable, statically-allowlistable entry point. If a document tells you to do something you have no mechanism to do, the document is wrong; say so rather than substituting your own judgment for the mechanism.
+
+**Why this is enforced, not merely encouraged:** the value of a deterministic control is that it produces the same answer regardless of who invokes it or what they believe. An LLM's approximation of that control is a different thing wearing the same name — it cannot be tested, replayed, or audited, and its failures are indistinguishable from success. This system's own history is the argument: every gate implemented as executing code has functioned; every gate specified only in prose has either never fired or fired inconsistently, in each case while its documentation, its tests, and its agent instructions all asserted it was working.
+
+---
+
 ## Mandatory Behaviors
 
 ### 1. Risk-Tiered Output

@@ -237,6 +237,12 @@ command.
 
 #### What to do instead
 
+This section's rules are the sandbox-allowlisting instance of the general
+governance rule in `AGENTS.md`'s **"Core Principle: Use the Code, Don't Roll
+It Yourself"** — see that section for the rationale (reimplementation and
+narration are both violations of it); the items below are the specific
+application to shell commands.
+
 1. **Search first, and state what you found — this is required, not optional.**
    Before writing any multi-step shell command *or* filing an issue that
    proposes new tooling, search `scripts/` (recursively), `bootstrap/`, `bin/`,
