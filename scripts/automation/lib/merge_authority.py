@@ -32,6 +32,7 @@ from typing import Optional, Union
 from scripts.automation.lib.github import (
     GitHubError,
     get_branch_protection,
+    list_check_runs_for_ref,
     post_comment,
     _run_gh,
 )
@@ -947,6 +948,102 @@ def check_register_completeness(
         bounce_required=True,
         failures=failures,
         reason_category="REGISTER_GAP",
+        summary=summary,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Required-content-checks bounce gate (#1580, overseer.md step 4c)
+# ---------------------------------------------------------------------------
+
+# These three checks encode WHO must approve (human / overseer / tier
+# ceiling), not the PR's content — see their own workflow headers
+# (.github/workflows/require-*.yml). A worker push cannot turn one green by
+# itself (e.g. require-human-approval only passes once a human approves), so
+# treating them as a worker-fixable bounce condition would create a bounce
+# loop indistinguishable from progress. Every other required context
+# (oversight-gate-*, oversight-validator-*, tests, ...) is ordinary CI that a
+# worker fix genuinely can turn green, so a failure there is a real bounce
+# condition.
+_META_GATE_CHECKS = frozenset({
+    "require-human-approval",
+    "require-overseer-approval",
+    "require-tier-ceiling",
+})
+
+_FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
+
+
+@dataclass
+class RequiredChecksResult:
+    bounce_required: bool
+    failures: list[str] = field(default_factory=list)
+    reason_category: Optional[str] = None
+    summary: Optional[str] = None
+
+
+def check_required_content_checks(
+    owner: str,
+    repo: str,
+    head_sha: str,
+    *,
+    default_branch: str = "main",
+) -> RequiredChecksResult:
+    """
+    Detect required, worker-fixable status checks currently failing on
+    ``head_sha`` (#1580).
+
+    This is a content signal, not an approval signal: it exists so that
+    ordinary "changes needed" findings (a required CI gate is red) bounce
+    back to the worker like any other procedural gap (mirrors
+    check_register_completeness / overseer.md step 4a), instead of falling
+    through to the protected-surface/CODEOWNERS pre-matrix gate and
+    escalating straight to human. That gate still fires once these checks are
+    green (or once the bounce budget is exhausted) — this function only ever
+    adds a bounce opportunity, it never removes the human-approval
+    requirement for the final merge.
+
+    Reads the live branch-protection required_status_checks.contexts (not a
+    hardcoded list) so it stays in sync with whatever is actually promoted
+    to required at call time.
+    """
+    protection = get_branch_protection(owner, repo, default_branch)
+    if not protection:
+        return RequiredChecksResult(bounce_required=False)
+
+    required_contexts = (protection.get("required_status_checks") or {}).get("contexts") or []
+    content_contexts = [c for c in required_contexts if c not in _META_GATE_CHECKS]
+    if not content_contexts:
+        return RequiredChecksResult(bounce_required=False)
+
+    runs = list_check_runs_for_ref(owner, repo, head_sha)
+    latest_by_name: dict[str, dict] = {}
+    for run in runs:
+        name = run.get("name")
+        # GitHub returns check runs most-recently-created first; keep the
+        # first (i.e. latest) occurrence of each name.
+        if name and name not in latest_by_name:
+            latest_by_name[name] = run
+
+    failing = []
+    for name in content_contexts:
+        run = latest_by_name.get(name)
+        if run is None:
+            continue  # not yet reported (queued / not started) — not a bounce condition
+        if run.get("conclusion") in _FAILING_CONCLUSIONS:
+            failing.append(name)
+
+    if not failing:
+        return RequiredChecksResult(bounce_required=False)
+
+    summary = (
+        f"{len(failing)} required check(s) failing on head {head_sha[:8]}: "
+        + ", ".join(failing)
+    )
+    return RequiredChecksResult(
+        bounce_required=True,
+        failures=[f"check-failing:{name}" for name in failing],
+        reason_category="COMPLIANCE_FAILURE",
         summary=summary,
     )
 

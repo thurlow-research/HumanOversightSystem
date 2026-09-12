@@ -206,6 +206,35 @@ def list_issue_comments(
     return comments
 
 
+def list_check_runs_for_ref(
+    owner: str,
+    repo: str,
+    ref: str,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/commits/{ref}/check-runs (all pages).
+
+    Returns check-run objects in GitHub's own order (most recently created
+    first). Used by merge_authority.py's required-content-checks bounce gate
+    (#1580) to read each required check's current conclusion for a head SHA.
+    """
+    runs: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = _run_gh([
+            f"/repos/{owner}/{repo}/commits/{ref}/check-runs"
+            f"?per_page=100&page={page}"
+        ])
+        check_runs = (batch or {}).get("check_runs") or []
+        if not check_runs:
+            break
+        runs.extend(check_runs)
+        if len(check_runs) < 100:
+            break
+        page += 1
+    return runs
+
+
 def get_branch_protection(
     owner: str,
     repo: str,

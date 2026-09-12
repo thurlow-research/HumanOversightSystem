@@ -333,6 +333,14 @@ For each PR found:
 
    Enum semantics: `REGISTER_GAP` = required sign-off register entries absent or missing required fields; `COMPLIANCE_FAILURE` = a concrete compliance/register check failure (the specific `check_id`(s) appear in the audit event's `failures` field); `SPEC_AMBIGUITY` = a procedural requirement could not be evaluated because the spec is ambiguous; `OTHER` = anything else — the `Summary` must make it unambiguous. Apply the rationale only when acting on a PR the overseer opened (`[AI: overseer]` title prefix); never post it to a human-opened PR (R1.5). The `pr-bounced` audit event payload gains `reason_category` and `summary` carrying the same values written into the comment; all existing payload fields are unchanged. See the halt-on-failure ordering in §8.2.
 
+4c. **Required-content-checks bounce gate** (`merge_authority.py:check_required_content_checks` — #1580) — before the protected-surface/CODEOWNERS pre-matrix gates below, check whether this PR's own required CI checks are currently green. Touching a protected surface is a reason to require human **final** approval before merge — it is not, by itself, a reason to skip the worker's chance to fix an ordinary failing check. Call `check_required_content_checks(owner, repo, head_sha, default_branch=<default_branch>)` on **every cycle** (same "never trust a prior cycle's conclusion" discipline as 4a/4b/#1325):
+
+   - If `bounce_required` is **True** AND `bounce_count(cid) < 2` → call `record_pr_bounce(reason_category="COMPLIANCE_FAILURE", summary=<result.summary>, failures=<result.failures>)`; stop processing; do NOT proceed to the protected-surface gate or the matrix. This applies **regardless of whether the PR touches a protected surface** — a red required check is worker-fixable content, not a final-approval decision.
+   - If `bounce_required` is **True** AND `bounce_count(cid) >= 2` → escalate to `HUMAN_REQUIRED` with `reason_category: COMPLIANCE_FAILURE` and the same summary (the worker has had two chances; a third automatic bounce is not progress). Post the §8.2 escalation comment naming the still-failing checks. Do NOT apply the matrix.
+   - If `bounce_required` is **False** (no required checks are failing, or none are configured) → proceed to step 5 unchanged.
+
+   `check_required_content_checks` deliberately excludes `require-human-approval`, `require-overseer-approval`, and `require-tier-ceiling` from consideration — those three checks encode *who* must approve, not the PR's content, and a worker push cannot turn one green by itself (see the function's own docstring). Only ordinary content checks (`oversight-gate-*`, `oversight-validator-*`, `tests`, …) can trigger this bounce.
+
 5. **Apply the merge-authority matrix** (`merge_authority.py:decide_merge_authority`):
 
    **Head-SHA freshness (#1251) — pass on every call.** `decide_merge_authority()`
@@ -469,6 +477,8 @@ Git and gh operations run under `hos-overseer-hos[bot]` (GitHub App). Authentica
 
 ### Pre-matrix CODEOWNERS gate (SPEC-303b — run BEFORE applying the matrix)
 
+**Run only after step 4c above has cleared this cycle** (no failing required content check, or the bounce budget on this cid was already exhausted) — same rationale as the protected-surface gate below: a CODEOWNERS-owned path requires a human's **final** approval, but that is not a reason to deny the worker a chance to fix an ordinary red check first (#1580).
+
 Before applying the matrix, check whether any changed file in the PR is a
 **CODEOWNERS-human-owned** path. Call `check_pr_files()` from `scripts/oversight/codeowners.py`
 over the PR's changed-file list, passing `BOT_ACCOUNTS` from
@@ -493,6 +503,8 @@ a CODEOWNERS file was found, the matched CODEOWNERS-human-owned paths (may be em
 check produced the verdict. This gate only ever ADDS a human gate; it never removes one.
 
 ### Pre-matrix protected-surface gate (#1325 — run BEFORE applying the matrix, every cycle)
+
+**Run only after step 4c above has cleared this cycle** (i.e. `check_required_content_checks` found no failing required check, or the bounce budget was exhausted and this PR already escalated via 4c). This gate is the **final-approval** gate (#1580): it exists to require a human sign-off before a protected-surface PR merges, not to short-circuit the worker's chance to fix an ordinary failing check — that chance is 4c's job, and 4c runs first regardless of protected-surface status.
 
 Call `touches_protected_surface(changed_files, repo_root)` from
 `scripts/automation/lib/merge_authority.py` directly, on **every cycle this PR is

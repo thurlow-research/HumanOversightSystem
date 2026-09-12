@@ -18,6 +18,7 @@ from scripts.automation.lib.github import (
     get_branch,
     get_branch_protection,
     get_repo,
+    list_check_runs_for_ref,
     list_issue_comments,
     list_pulls,
     post_comment,
@@ -129,6 +130,30 @@ class TestListIssueComments:
         with _patch_run([_make_result(404)]):
             result = list_issue_comments("o", "r", 1)
         assert result == []
+
+
+class TestListCheckRunsForRef:
+    def test_returns_all_check_runs(self):
+        runs = [{"name": "tests", "conclusion": "success"}]
+        with _patch_run([_make_result(200, {"check_runs": runs})]):
+            result = list_check_runs_for_ref("o", "r", "abc123")
+        assert result == runs
+
+    def test_returns_empty_on_404(self):
+        with _patch_run([_make_result(404)]):
+            result = list_check_runs_for_ref("o", "r", "abc123")
+        assert result == []
+
+    def test_paginates(self):
+        page1 = [{"name": f"check-{i}"} for i in range(100)]
+        page2 = [{"name": "check-100"}]
+        with _patch_run([
+            _make_result(200, {"check_runs": page1}),
+            _make_result(200, {"check_runs": page2}),
+        ]):
+            result = list_check_runs_for_ref("o", "r", "abc123")
+        assert len(result) == 101
+        assert result[-1]["name"] == "check-100"
 
 
 class TestNoSearchApi:
