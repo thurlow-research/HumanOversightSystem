@@ -1,0 +1,1 @@
+{"cid":"1265","event":"human-required","pr":1587,"reason_category":"GATE_UNSATISFIED","summary":"Protected-surface (bin/**) + CODEOWNERS-human-owned path (bin/hos-cron, @ScottThurlow) with no human approval on head f8fe4ed5; all required content checks pass, no bounce condition."}
