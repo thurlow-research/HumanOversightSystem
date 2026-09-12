@@ -1037,14 +1037,27 @@ class TestOverlapLock:
         assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
 
     def test_real_concurrent_invocations_only_one_proceeds(self, cron, tmp_path):
-        # #1265: a cycle was observed with two real hos-cron processes for the
-        # same (role, project) alive at once — one nested as a child of the
-        # other, well inside the age ceiling, with the older process's pid
-        # apparently not caught by the `kill -0` branch. Every test above
-        # simulates a single process encountering an already-existing lock
-        # directory pre-seeded on disk; none races two genuinely independent
-        # hos-cron processes against the SAME lock via real, concurrent mkdir
-        # calls — which is what #1265 actually was. This one does.
+        # This test verifies genuine independent-process contention against the
+        # SAME lock is handled correctly: two separately-launched hos-cron
+        # processes for the same (role, project), racing real, concurrent
+        # `mkdir` calls, with the second correctly backing off while the first
+        # holds the lock (defense in depth — real #1002-style race coverage).
+        # Every test above simulates a single process encountering an
+        # already-existing lock directory pre-seeded on disk; this one uses
+        # two actual OS processes instead.
+        #
+        # NOTE: this was originally written to reproduce #1265's own report of
+        # "two real hos-cron processes for the same (role, project) alive at
+        # once, one nested as a child of the other". It does NOT reproduce
+        # that: #1265's observed shape (~2m37s gap between the two processes'
+        # `ps` start times, direct parent→child ancestry, no second cron entry
+        # point anywhere in cron/systemd) is now understood to be a single
+        # process's own `_build_prompt | _run_claude` pipeline subshell
+        # appearing in `ps` under the SAME cmdline as its parent — see the
+        # comment above that pipeline in bin/hos-cron, and
+        # test_pipeline_subshell_shows_nested_argv_child_benign_1265 below,
+        # which pins that benign shape directly. No second process, and no
+        # lock-race, was ever actually involved in #1265.
         #
         # The default claude stub exits immediately, too fast to reliably
         # overlap a second real invocation. Replace it with a gated version:
@@ -1109,6 +1122,112 @@ class TestOverlapLock:
         assert proc_a.returncode == 0, out_a + err_a
         assert cron.claude_ran(), "A must complete its cycle once released"
         assert not cron.lock_dir.exists(), "the lock must be released once A exits (EXIT trap)"
+
+    def test_pipeline_subshell_shows_nested_argv_child_benign_1265(self, cron, tmp_path):
+        # Pins the actual #1265 shape as expected and benign: bin/hos-cron's
+        # `_build_prompt | _run_claude` pipeline puts `_run_claude` (a shell
+        # function, not an external binary) on the right of `|`, so bash forks
+        # it without an execve() — the forked subshell keeps the SAME argv as
+        # this script's own top-level invocation. Once this process is
+        # blocked inside the claude stub, /proc must show a process whose
+        # PPID is this top-level process's own PID and whose cmdline is
+        # IDENTICAL to the `argv` list this test launches hos-cron with below
+        # (the real invocation uses absolute paths, not the shorthand
+        # `bash bin/hos-cron --role worker --project hos` used elsewhere in
+        # this file for readability) — that nested, same-argv child is
+        # exactly what #1265 observed and mistook for a
+        # second concurrent cycle. It is not: the overlap lock is acquired
+        # once, earlier in the script (see TestOverlapLock's other tests),
+        # and this subshell never re-acquires it. Pinning this here means a
+        # future host observation of the same shape does not get
+        # re-investigated as a lock bug.
+        #
+        # Linux-only (/proc), which is fine for this repo's CI.
+        started = tmp_path / "c_started"
+        release = tmp_path / "c_release"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            "cat > /dev/null 2>&1 || true   # drain stdin (prompt pipe)\n"
+            f'touch "{started}"\n'
+            f'while [[ ! -f "{release}" ]]; do sleep 0.05; done\n'
+            f'echo "ran" > "{cron.claude_log}"\n'
+            "exit 0\n",
+        )
+
+        argv = [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"]
+        env = {
+            "HOME": str(cron.home),
+            "PATH": "/usr/bin:/bin",
+            "HOS_STATE_DIR": str(cron.state),
+            "HOS_CRON_JITTER_MAX": "0",
+            "HOS_CRON_MAX_SECONDS": "0",
+            "HOS_TEST_CLAUDE_LOG": str(cron.claude_log),
+            "HOS_REPO_SLUG": "test-org/test-repo",
+            "HOS_TEST_MILESTONELESS_ISSUES": "9001",
+        }
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(cron.repo),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10
+            while not started.exists():
+                assert (
+                    proc.poll() is None
+                ), f"hos-cron exited before reaching claude: rc={proc.returncode}"
+                assert time.time() < deadline, "hos-cron never reached claude"
+                time.sleep(0.05)
+
+            # Poll /proc briefly: the pipeline-subshell fork happens
+            # essentially as soon as claude is reached, but leave a short
+            # window for scheduling jitter.
+            match_deadline = time.time() + 5
+            nested_pid = None
+            while nested_pid is None and time.time() < match_deadline:
+                for entry in os.listdir("/proc"):
+                    if not entry.isdigit():
+                        continue
+                    try:
+                        with open(f"/proc/{entry}/status") as f:
+                            status_text = f.read()
+                        ppid_line = next(
+                            line for line in status_text.splitlines() if line.startswith("PPid:")
+                        )
+                        ppid = int(ppid_line.split()[1])
+                        if ppid != proc.pid:
+                            continue
+                        with open(f"/proc/{entry}/cmdline", "rb") as f:
+                            raw_cmdline = f.read()
+                    except (FileNotFoundError, ProcessLookupError, StopIteration):
+                        continue  # process exited mid-scan — not a match
+                    parts = [p for p in raw_cmdline.split(b"\0") if p]
+                    cmdline = [p.decode() for p in parts]
+                    if cmdline == argv:
+                        nested_pid = int(entry)
+                        break
+                if nested_pid is None:
+                    time.sleep(0.05)
+
+            assert nested_pid is not None, (
+                "expected a /proc child of the top-level hos-cron process "
+                "with IDENTICAL argv (the benign _run_claude pipeline-"
+                "subshell shape from #1265) — none found"
+            )
+
+            release.touch()
+            out, err = proc.communicate(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+        assert proc.returncode == 0, out + err
+        assert cron.claude_ran(), "the cycle must complete normally once released"
 
 
 # ─────────────────────────────────── Wakeup ────────────────────────────────
