@@ -1268,8 +1268,10 @@ fi
 #
 # A missing-branch record is NOT unconditionally stale: bootstrap/create_branch.sh
 # writes the ownership record BEFORE creating the branch (Step 4, then Step 5)
-# by design, so a mid-write crash orphans a record, not a branch. Under #1265
-# (two same-role cron processes can overlap on the same REPO_ROOT), a reap
+# by design, so a mid-write crash orphans a record, not a branch. Under #1002
+# (a stale-lock reclaim can leave two same-role cron processes genuinely alive
+# on the same REPO_ROOT at once — unlike #1265, which turned out to be a
+# single process's own pipeline subshell, not a real second process), a reap
 # sweep landing in that exact narrow window could otherwise delete another
 # concurrently-running cycle's about-to-be-real record. Only reap a
 # missing-branch record once it is older than a grace window (mtime, not a
@@ -1305,10 +1307,12 @@ if [[ "$ROLE" == "worker" ]]; then
           # Ownership-record age, used as the grace-window signal on BOTH
           # deletion paths below (missing-branch record pruning, and
           # zero-commit local-branch deletion) — a freshly-created,
-          # not-yet-committed branch from a concurrently-running cycle (#1265)
-          # is routinely not this reaper's own checked-out HEAD, since the
-          # #1044 return-to-main check above already parked HEAD back on main
-          # for any local branch lacking an upstream, which is true of every
+          # not-yet-committed branch from a concurrently-running cycle
+          # (#1002-style stale-lock-reclaim overlap, not #1265 — see the
+          # comment above) is routinely not this reaper's own checked-out
+          # HEAD, since the #1044 return-to-main check above already parked
+          # HEAD back on main for any local branch lacking an upstream, which
+          # is true of every
           # brand-new, unpushed branch. Without this check, a zero-commit
           # branch could be force-deleted before its owning cycle gets a
           # chance to commit anything to it.
@@ -1343,9 +1347,9 @@ if [[ "$ROLE" == "worker" ]]; then
               echo "$LOG_PREFIX reaped stranded zero-commit branch '$_bo_branch' (#1498)"
               _audit cycle-branch-reap "branch=${_bo_branch}"
             else
-              # Deletion failed (e.g. ref-lock contention under #1265) — leave
-              # the record in place so a later cycle can retry; never claim a
-              # reap that didn't happen.
+              # Deletion failed (e.g. ref-lock contention under #1002-style
+              # overlap) — leave the record in place so a later cycle can
+              # retry; never claim a reap that didn't happen.
               echo "$LOG_PREFIX WARN: could not delete stranded zero-commit branch '$_bo_branch' — leaving its ownership record in place (#1498)"
               _audit cycle-branch-reap-failed "branch=${_bo_branch}"
             fi
@@ -1908,6 +1912,18 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
   exit 78  # EX_CONFIG
 fi
 
+# #1265: in both branches below, `_run_claude` on the right of `|` is a shell
+# FUNCTION, not an external binary — bash forks it without an execve(), so the
+# forked subshell keeps this script's own argv verbatim. `ps`/`pstree` then
+# show what looks like a SECOND `bin/hos-cron --role ... --project ...`
+# process, parented directly under the first, with `timeout`/`claude`
+# underneath that. This is expected and benign, not a second concurrent
+# cycle: the overlap lock above is acquired exactly once, before either
+# branch runs, and this pipeline subshell never re-acquires it — it is the
+# same locked invocation continuing. #1265 originally mistook this shape
+# (plus the real wall-clock gap spent in Step 0–2 before reaching this line)
+# for a lock failure; it wasn't one. See `tests/automation/test_hos_cron.py`
+# `TestOverlapLock` for a test pinning this exact shape as benign.
 if [[ "$ROLE" == "overseer" && -n "$_HOS_ACTIONABLE_PRS" ]]; then
   { printf '[hos-cron pre-filter] HOS_ACTIONABLE_PRS: %s | skipped (conflicting/draft): %s\n---\n' \
         "$_HOS_ACTIONABLE_PRS" "${_HOS_SKIPPED_PRS:-none}"; \
