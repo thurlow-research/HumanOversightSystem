@@ -1,0 +1,1 @@
+{"comment_posted":true,"event":"human-required","head_sha":"00ffc86c9d9bdf811e254d4bbc91e8c82b4ede26","pr":1586,"reason_category":"GATE_UNSATISFIED","summary":"PR touches .claude/agents/overseer.md (CODEOWNERS-owned + protected-surface); no verified human approval on current head SHA"}
