@@ -166,7 +166,7 @@ Use a **Ruleset** rather than classic branch protection — Rulesets support ins
   - ☑ Dismiss stale reviews on new commits
   - ☑ Require review from Code Owners
   - ☑ Require conversation resolution before merging
-- ☑ **Require status checks to pass** → add `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`
+- ☑ **Require status checks to pass** → add `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`, `oversight-gate-repo-scoped`
 - ☑ **Block force pushes**
 
 Click **Create**, then delete the classic branch protection rule at **Settings → Branches**.

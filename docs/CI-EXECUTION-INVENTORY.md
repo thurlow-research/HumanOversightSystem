@@ -19,17 +19,21 @@ GitHub Actions today, and why the rest don't.*
 
 ## Gates (`scripts/oversight/gates/*.sh`)
 
+As of #1571 (2026-09-11), `oversight-gates.yml` runs one job per gate (or a
+small documented group) rather than a single bundled job — see DECISIONS.md
+for the debt baseline and promotion rationale.
+
 | Gate | Status | Workflow | Reason |
 |---|---|---|---|
-| `secret_scan.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `lint_check.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `type_check.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `bash_check.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `portability_check.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `template_refs_check.sh` | Wired | `oversight-gates.yml` | Deterministic, file-scoped, no network. |
-| `django_check.sh` | Wired | `oversight-gates.yml` | Repo-scoped; SKIPs cleanly on a non-Django repo (verified locally against this repo). |
-| `astro_check.sh` | Wired | `oversight-gates.yml` | Repo-scoped; SKIPs cleanly on a non-Astro repo (verified locally). |
-| `expensive_gates_stub.sh` | Wired | `oversight-gates.yml` | Repo-scoped, static (no Docker daemon needed); SKIPs cleanly with no Dockerfile present (verified locally). |
+| `secret_scan.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-secret-scan`) | Deterministic, file-scoped, no network. Low debt: 15 findings — audit-log JSON idempotency-dedup false positives plus one `Secret Keyword` flag in `scripts/oversight/suspension_manager.py:66` (#1571) — not yet promoted. |
+| `lint_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-lint`) | Deterministic, file-scoped, no network. Severe debt: isort/black fails on nearly every .py file — reformat is its own PR per #1571 item 4; promote only after that lands and `--all` is clean. |
+| `type_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-type-check`) | Deterministic, file-scoped, no network. Severe debt: dozens of pre-existing mypy errors repo-wide, found via `--all` baseline 2026-09-11 — not previously tracked by #1571's own table. Needs its own cleanup pass before promotion, same treatment as lint_check. |
+| `bash_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-bash-check`) | Deterministic, file-scoped, no network. Low debt: 2 files use Bash-4+ constructs (#1571) — not yet promoted. |
+| `portability_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-portability`) | Deterministic, file-scoped, no network. Low debt: 4 test-fixture false positives (hardcoded `/home/hosuser/...` paths) (#1571) — not yet promoted. |
+| `template_refs_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-template-refs`) | Deterministic, file-scoped, no network. SKIPs cleanly on this (non-Django) repo — zero debt, but file-scoped rather than repo-scoped, so kept as its own advisory job rather than folded into `oversight-gate-repo-scoped` (#1571). |
+| `django_check.sh` | Wired, **required** | `oversight-gates.yml` (job: `oversight-gate-repo-scoped`) | Repo-scoped; SKIPs cleanly on a non-Django repo (verified locally against this repo). Zero debt — promoted 2026-09-11 per #1571 (a human must still run `setup_branch_protection.sh` for the live GitHub setting to take effect). |
+| `astro_check.sh` | Wired, **required** | `oversight-gates.yml` (job: `oversight-gate-repo-scoped`) | Repo-scoped; SKIPs cleanly on a non-Astro repo (verified locally). Zero debt — promoted 2026-09-11 per #1571 (a human must still run `setup_branch_protection.sh` for the live GitHub setting to take effect). |
+| `expensive_gates_stub.sh` | Wired, **required** | `oversight-gates.yml` (job: `oversight-gate-repo-scoped`) | Repo-scoped, static (no Docker daemon needed); SKIPs cleanly with no Dockerfile present (verified locally). Zero debt — promoted 2026-09-11 per #1571 (a human must still run `setup_branch_protection.sh` for the live GitHub setting to take effect). |
 | `security_scan.sh` | CI-portable, deferred | — | Its pip-audit sub-check scans the CI venv's *installed dependency versions* against a live vulnerability database, not the PR's diff. Verified locally: `run_gates.sh --all` on unmodified `main` fails with 13 pre-existing findings unrelated to any given PR. Wiring it in today lands the check red regardless of PR content — needs either a dependency upgrade pass or a diff-of-audit-output design before it can gate per-PR. |
 | `collection_integrity.sh` | CI-portable, deferred (no added coverage) | — | Runs `pytest --collect-only` to catch orphaned imports left by a change that only ran tests scoped to itself — a real gap in the *local* inner loop. In CI, `tests.yml` already runs unscoped `pytest tests/` on every PR, which performs the same collection as a side effect. Wiring this in duplicates that pass for zero additional coverage. Revisit if `tests.yml`'s scope ever narrows to changed-file-relevant tests only. |
 | `check_suspension.sh` | Not applicable | — | Sourced helper (suspension-check logic shared by other gate scripts), not a standalone gate. |
@@ -64,7 +68,7 @@ GitHub Actions today, and why the rest don't.*
 
 | Check | Status | Workflow | Reason |
 |---|---|---|---|
-| `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s `required_status_checks.contexts` (only `require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
+| `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s `required_status_checks.contexts` (`require-overseer-approval`, `require-human-approval`, `require-tier-ceiling`, `tests`, `oversight-gate-repo-scoped`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
 
 ## Subscription-CLI-dependent — local-only by design (D5), not attempted in CI
 
@@ -106,3 +110,8 @@ these were never attestation for execution in the first place.
 - Everything else in #1216's acceptance criteria (inventory, CI-portable
   items wired, `pytest` required, stamp scope) is complete as of this
   document.
+- `type_check.sh`'s severe mypy debt (found via #1571's re-baseline, not
+  previously tracked) needs its own cleanup pass before promotion.
+- `oversight-validators.yml`'s 10 dimensions still need the same `--all`
+  debt baseline #1571 did for the gates (#1571 item 2, not attempted in
+  this slice).
