@@ -1,0 +1,1 @@
+{"cid":"1357","event":"human-required","pr":1641,"reason_category":"GATE_UNSATISFIED","summary":"Protected-surface (bootstrap/**, scripts/framework/**) with no human approval on head 524f1aee; oversight-gate-lint and oversight-gate-type-check also failing on merge_authority.py, unresolved discrepancy with PR's scoped-clean claim."}
