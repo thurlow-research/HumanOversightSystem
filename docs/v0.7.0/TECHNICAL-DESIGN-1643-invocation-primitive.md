@@ -177,14 +177,14 @@ human decision).
 
 ### 0.2 The AD-7 probe — run live, reported verbatim
 
-**Environment.** `claude` = `/home/scott/.local/bin/claude`, **version `2.1.270 (Claude Code)`**. Probes
+**Environment.** `claude` = `$HOME/.local/bin/claude`, **version `2.1.270 (Claude Code)`**. Probes
 ran from a throwaway nested workspace `/tmp/claude/probe1643/nested/` containing its own
 `.claude/settings.json` (5 `permissions.allow` entries) and `.claude/agents/probe-agent.md`
 (`tools: [Read, Grep]`, `model: sonnet`, body: *"Reply with exactly: PROBE-OK"*). Nothing produced by the
 probes is committed. `env | grep -c CLAUDE_CODE_OAUTH_TOKEN` → `0`: **no OAuth env token was present, and
 the probes still authenticated** (keychain). That single fact is TD-F3 (§12 ESC-C).
 
-Each probe's full command is given; outputs are the real bytes, trimmed only where marked `…`.
+Each probe's full command is given; outputs are the real bytes, trimmed only where marked `…`, with the operator's home directory rendered portably (`$HOME` / `~`) so the design reads the same on any machine.
 
 ---
 
@@ -198,7 +198,7 @@ stderr:
 ```
 Ignoring 5 permissions.allow entries from .claude/settings.json: this workspace has not been trusted.
 Run Claude Code interactively here once and accept the trust dialog, or set
-projects["/tmp/claude/probe1643/nested"].hasTrustDialogAccepted: true in /home/scott/.claude.json.
+projects["/tmp/claude/probe1643/nested"].hasTrustDialogAccepted: true in ~/.claude.json.
 ```
 stdout (one line, `RC=0`), field-complete:
 ```json
@@ -903,8 +903,8 @@ stable so diffs of two documents are readable.
   "posture": "review-read-only",
 
   "input": {
-    "head_sha": "627773b27a0e4f1d9c3b5e8a1f2d4c6b8e0a2c44",
-    "base_sha": "4f973c43a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "head_sha": "627773b…",
+    "base_sha": "4f973c4…",
     "predicate_matched_files": [
       "scripts/automation/agent_invoke_cli.py",
       "bootstrap/invoke_agent.sh",
