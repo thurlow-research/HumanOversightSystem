@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 from scripts.automation.lib.github import (
     GitHubError,
@@ -53,8 +53,10 @@ def _find_human_approval(
     the push-after-approval race; see issue #741 safety condition 2).
     """
     for review in reviews:
-        if (review.get("state") == "APPROVED" and
-                review.get("user", {}).get("login", "").lower() == human_reviewer.lower()):
+        if (
+            review.get("state") == "APPROVED"
+            and review.get("user", {}).get("login", "").lower() == human_reviewer.lower()
+        ):
             if head_sha is not None and review.get("commit_id") != head_sha:
                 continue  # Stale approval — not for the current head
             return review
@@ -165,6 +167,7 @@ def detect_human_hold_directive(
 # Re-export from B4 detection half
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class GateDetectionResult:
     autonomous_capable: bool
@@ -209,7 +212,10 @@ def _verify_overseer_cannot_bypass(
             if isinstance(team, dict):
                 return GateDetectionResult(
                     autonomous_capable=False,
-                    reason=f"bypass_pull_request_allowances includes team '{team.get('slug')}' — overseer membership unverifiable",
+                    reason=(
+                        f"bypass_pull_request_allowances includes team "
+                        f"'{team.get('slug')}' — overseer membership unverifiable"
+                    ),
                 )
     return GateDetectionResult(autonomous_capable=True, reason="No bypass actors found")
 
@@ -241,18 +247,28 @@ def detect_server_side_gate(
     try:
         protection = get_branch_protection(owner, repo, default_branch)
     except GitHubError as exc:
-        return GateDetectionResult(autonomous_capable=False, reason=f"Protection API read failed: {exc}")
+        return GateDetectionResult(
+            autonomous_capable=False, reason=f"Protection API read failed: {exc}"
+        )
 
     if protection is None:
-        return GateDetectionResult(autonomous_capable=False, reason=f"Branch protection not enabled on {default_branch}")
+        return GateDetectionResult(
+            autonomous_capable=False, reason=f"Branch protection not enabled on {default_branch}"
+        )
 
     rpr = protection.get("required_pull_request_reviews")
     if not rpr:
-        return GateDetectionResult(autonomous_capable=False, reason="required_pull_request_reviews not configured")
+        return GateDetectionResult(
+            autonomous_capable=False, reason="required_pull_request_reviews not configured"
+        )
     if rpr.get("required_approving_review_count", 0) < 1:
-        return GateDetectionResult(autonomous_capable=False, reason="required_approving_review_count < 1")
+        return GateDetectionResult(
+            autonomous_capable=False, reason="required_approving_review_count < 1"
+        )
     if not rpr.get("dismiss_stale_reviews"):
-        return GateDetectionResult(autonomous_capable=False, reason="dismiss_stale_reviews not enabled")
+        return GateDetectionResult(
+            autonomous_capable=False, reason="dismiss_stale_reviews not enabled"
+        )
 
     bypass_result = _verify_overseer_cannot_bypass(protection, overseer_handle)
     if not bypass_result.autonomous_capable:
@@ -272,6 +288,7 @@ def detect_server_side_gate(
 # Risk tier enum
 # ---------------------------------------------------------------------------
 
+
 class RiskTier(Enum):
     SAFE = 0
     LOW = 1
@@ -288,10 +305,11 @@ class RiskTier(Enum):
 # Merge decision
 # ---------------------------------------------------------------------------
 
+
 class MergeDecision(Enum):
-    AUTO_MERGE = auto()         # overseer may approve + merge
-    PROPOSE_ONLY = auto()       # open PR, no auto-merge (server gate absent)
-    HUMAN_REQUIRED = auto()     # escalate to human
+    AUTO_MERGE = auto()  # overseer may approve + merge
+    PROPOSE_ONLY = auto()  # open PR, no auto-merge (server gate absent)
+    HUMAN_REQUIRED = auto()  # escalate to human
 
 
 @dataclass
@@ -299,7 +317,7 @@ class MergeAuthorityResult:
     decision: MergeDecision
     reason: str
     pr_title: Optional[str] = None
-    labels_to_add: list[str] = None
+    labels_to_add: Optional[list[str]] = None
     is_release: bool = False
 
     def __post_init__(self):
@@ -379,6 +397,7 @@ def _is_release_related(pr_title: str, changed_files: list[str]) -> bool:
 # Protected-surface check (re-uses require_human_approval.py)
 # ---------------------------------------------------------------------------
 
+
 def touches_protected_surface(changed_files: list[str], repo_root: str = ".") -> bool:
     """Check if any changed file is on the protected surface.
 
@@ -410,6 +429,7 @@ def touches_protected_surface(changed_files: list[str], repo_root: str = ".") ->
 # Security-relevant surface check (#1253 — deterministic source, mirrors the
 # protected-surface check above)
 # ---------------------------------------------------------------------------
+
 
 def touches_security_surface(changed_files: list[str], repo_root: str = ".") -> bool:
     """
@@ -453,6 +473,7 @@ def touches_security_surface(changed_files: list[str], repo_root: str = ".") -> 
 # Authorship backstop (R9.1.4)
 # ---------------------------------------------------------------------------
 
+
 def _verify_authorship_separation(
     pr_author: str,
     overseer_handle: str,
@@ -478,24 +499,32 @@ def decide_merge_authority(
     repo: str,
     pr_number: int,
     risk_tier: RiskTier,
-    oversight_verdict: str,          # "PROCEED" | "CONDITIONAL_PROCEED" | "ESCALATE"
+    oversight_verdict: str,  # "PROCEED" | "CONDITIONAL_PROCEED" | "ESCALATE"
     changed_files: list[str],
     pr_title: str = "",
     pr_author: str = "",
     security_relevant: bool = False,  # explicit override; OR'd with the derived
-                                       # scripts/framework/security_surfaces.txt check (#1253)
-    agent_class: str = "worker",     # "worker" | "overseer"
+    # scripts/framework/security_surfaces.txt check (#1253)
+    agent_class: str = "worker",  # "worker" | "overseer"
     overseer_handle: str = DEFAULT_OVERSEER_HANDLE,
     worker_handle: str = "hos-worker-hos[bot]",  # GitHub App; updated from PAT account (#547)
     overseer_ceiling: RiskTier = RiskTier.LOW,
     default_branch: str = "main",
     repo_root: str = ".",
-    reviews: list[dict] = None,      # PR reviews from GitHub API; enables human-approval override
+    reviews: Optional[
+        list[dict]
+    ] = None,  # PR reviews from GitHub API; enables human-approval override
     human_reviewer: str = "ScottThurlow",  # Human who can approve protected-surface PRs
     head_sha: Optional[str] = None,  # Current PR head SHA; stale approvals (wrong SHA) are rejected
-    pr_labels: list[str] = None,     # Labels on the PR; needs-human/hos-halt block AUTO_MERGE (#756)
-    prior_overseer_decision: Optional[str] = None,  # "HUMAN_REQUIRED" if a prior cycle decided so (#761)
-    requested_reviewers: Optional[list[str]] = None,  # Pending human review requests on the PR (#761)
+    pr_labels: Optional[
+        list[str]
+    ] = None,  # Labels on the PR; needs-human/hos-halt block AUTO_MERGE (#756)
+    prior_overseer_decision: Optional[
+        str
+    ] = None,  # "HUMAN_REQUIRED" if a prior cycle decided so (#761)
+    requested_reviewers: Optional[
+        list[str]
+    ] = None,  # Pending human review requests on the PR (#761)
     human_hold_directive: bool = False,  # Unaddressed human bounce-back/hold on current head (#902)
 ) -> MergeAuthorityResult:
     """
@@ -633,7 +662,8 @@ def decide_merge_authority(
             human_auth_reason = f"human authorization (approval by {approver} on {approved_sha})"
             logger.info(
                 "Security-relevant PR has human approval from %s on %s; overseer may execute merge",
-                approver, approved_sha,
+                approver,
+                approved_sha,
             )
         else:
             return MergeAuthorityResult(
@@ -653,7 +683,8 @@ def decide_merge_authority(
             human_auth_reason = f"human authorization (approval by {approver} on {approved_sha})"
             logger.info(
                 "Protected-surface PR has human approval from %s on %s; overseer may execute merge",
-                approver, approved_sha,
+                approver,
+                approved_sha,
             )
         else:
             return MergeAuthorityResult(
@@ -715,32 +746,45 @@ def decide_merge_authority(
 # PR queue management (draft-PR / needs-human / needs-ai)
 # ---------------------------------------------------------------------------
 
+
 def open_draft_pr(
     owner: str,
     repo: str,
     branch: str,
     title: str,
     body: str,
-    labels: list[str] = (),
+    labels: Sequence[str] = (),
 ) -> Optional[int]:
     """Open a draft PR and apply labels. Returns PR number or None on failure."""
     try:
-        result = _run_gh([
-            f"/repos/{owner}/{repo}/pulls",
-            "--method", "POST",
-            "--field", f"title={title}",
-            "--field", f"body={body}",
-            "--field", f"head={branch}",
-            "--field", "base=main",
-            "--field", "draft=true",
-        ])
+        result = _run_gh(
+            [
+                f"/repos/{owner}/{repo}/pulls",
+                "--method",
+                "POST",
+                "--field",
+                f"title={title}",
+                "--field",
+                f"body={body}",
+                "--field",
+                f"head={branch}",
+                "--field",
+                "base=main",
+                "--field",
+                "draft=true",
+            ]
+        )
         pr_number = result.get("number") if result else None
         if pr_number and labels:
-            _run_gh([
-                f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
-                "--method", "POST",
-                "--field", f"labels={list(labels)}",
-            ])
+            _run_gh(
+                [
+                    f"/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    "--method",
+                    "POST",
+                    "--field",
+                    f"labels={list(labels)}",
+                ]
+            )
         return pr_number
     except GitHubError as exc:
         logger.error("Failed to open draft PR: %s", exc)
@@ -761,7 +805,7 @@ def route_embargo(
     ack_body = (
         "---hos-envelope\n"
         "type: ack\n"
-        "protocol-version: \"1.0\"\n"
+        'protocol-version: "1.0"\n'
         "---\n\n"
         "🔒 This report has been classified as a potential security issue and routed "
         "to the responsible human for private review. No public fix will be posted "
@@ -769,11 +813,15 @@ def route_embargo(
     )
     try:
         post_comment(owner, repo, issue_number, ack_body)
-        _run_gh([
-            f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
-            "--method", "POST",
-            "--field", "labels=[\"hos-embargo\", \"needs-human\"]",
-        ])
+        _run_gh(
+            [
+                f"/repos/{owner}/{repo}/issues/{issue_number}/labels",
+                "--method",
+                "POST",
+                "--field",
+                'labels=["hos-embargo", "needs-human"]',
+            ]
+        )
     except GitHubError as exc:
         logger.error("Failed to route embargo: %s", exc)
 
@@ -872,15 +920,15 @@ def _required_signoffs_for_step(manifest_path: Path, step: Union[str, int]) -> l
             in_target_step = False
             continue
         if stripped.startswith("- id:"):
-            id_val = stripped[len("- id:"):].strip().strip("\"'")
+            id_val = stripped[len("- id:") :].strip().strip("\"'")
             in_target_step = id_val == step_str
             continue
         if in_target_step and stripped.startswith("id:"):
-            id_val = stripped[len("id:"):].strip().strip("\"'")
+            id_val = stripped[len("id:") :].strip().strip("\"'")
             in_target_step = id_val == step_str
             continue
         if in_target_step and stripped.startswith("required_signoffs:"):
-            raw = stripped[len("required_signoffs:"):].strip()
+            raw = stripped[len("required_signoffs:") :].strip()
             raw = raw.strip("[]")
             if not raw:
                 return []
@@ -941,9 +989,7 @@ def check_register_completeness(
         if entry is None:
             failures.append(f"register-missing-role:{role}")
             continue
-        missing_fields = [
-            f for f in _BOUNCE_REGISTER_REQUIRED_FIELDS if not entry["fields"].get(f)
-        ]
+        missing_fields = [f for f in _BOUNCE_REGISTER_REQUIRED_FIELDS if not entry["fields"].get(f)]
         if missing_fields:
             failures.append(f"register-missing-fields:{role}:{','.join(missing_fields)}")
             continue
@@ -976,11 +1022,13 @@ def check_register_completeness(
 # (oversight-gate-*, oversight-validator-*, tests, ...) is ordinary CI that a
 # worker fix genuinely can turn green, so a failure there is a real bounce
 # condition.
-_META_GATE_CHECKS = frozenset({
-    "require-human-approval",
-    "require-overseer-approval",
-    "require-tier-ceiling",
-})
+_META_GATE_CHECKS = frozenset(
+    {
+        "require-human-approval",
+        "require-overseer-approval",
+        "require-tier-ceiling",
+    }
+)
 
 _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
 
@@ -1038,18 +1086,17 @@ def check_required_content_checks(
 
     failing = []
     for name in content_contexts:
-        run = latest_by_name.get(name)
-        if run is None:
+        matched_run = latest_by_name.get(name)
+        if matched_run is None:
             continue  # not yet reported (queued / not started) — not a bounce condition
-        if run.get("conclusion") in _FAILING_CONCLUSIONS:
+        if matched_run.get("conclusion") in _FAILING_CONCLUSIONS:
             failing.append(name)
 
     if not failing:
         return RequiredChecksResult(bounce_required=False)
 
-    summary = (
-        f"{len(failing)} required check(s) failing on head {head_sha[:8]}: "
-        + ", ".join(failing)
+    summary = f"{len(failing)} required check(s) failing on head {head_sha[:8]}: " + ", ".join(
+        failing
     )
     return RequiredChecksResult(
         bounce_required=True,
@@ -1231,7 +1278,8 @@ def record_pr_bounce(
     if finalize_errors:
         logger.error(
             "record_pr_bounce: finalize step(s) failed for PR #%s: %s",
-            pr_number, "; ".join(finalize_errors),
+            pr_number,
+            "; ".join(finalize_errors),
         )
 
     return BounceResult(
