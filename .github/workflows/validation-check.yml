@@ -10,16 +10,21 @@ name: Validation Stamp Check
 # file. Identical agent content always hashes the same, so the stamp survives
 # rebase/merge — no commit-timestamp comparison is involved.
 #
-# Excluded from the check (changes to these do not require re-validation):
-#   - audit/          — append-only oversight log
-#   - research/       — research notes and session logs
-#   - .claudetmp/     — ephemeral working files (not tracked)
-#   - scripts/framework/validation-stamps/  — the stamps themselves
+# Scoped to PRs that touch .claude/agents/** (2026-09-14) — this check has
+# nothing to say about a PR that doesn't change agent content, and running it
+# unconditionally meant any PR could be blocked by a stamp made stale by an
+# unrelated, already-merged agent-file change. Not a GitHub-required status
+# check (see setup_branch_protection.sh's required_status_checks.contexts) and
+# not read by merge_authority.py's check_required_content_checks (#1580,
+# which only considers checks in that same required list) — scoping the
+# trigger cannot create a "required check never reports" stall.
 
 on:
   pull_request:
     branches:
       - main
+    paths:
+      - '.claude/agents/**'
 
 jobs:
   validation-stamp-check:
