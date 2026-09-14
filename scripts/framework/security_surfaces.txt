@@ -1,5 +1,5 @@
 # Security-relevant surface globs (single source of truth for #1253) — consumed by
-# decide_merge_authority()'s internal _touches_security_surface() check
+# decide_merge_authority()'s internal touches_security_surface() check
 # (scripts/automation/lib/merge_authority.py). Mirrors protected_surfaces.txt /
 # _touches_protected_surface() in structure and consumption.
 #
