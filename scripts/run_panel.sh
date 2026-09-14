@@ -83,6 +83,7 @@ DIFF_ONLY_REQUEST_PATTERNS='full repo|all files|entire codebase|repository conte
 
 # ── Args ─────────────────────────────────────────────────────────────────────--
 PR=""; DRY_RUN=0; RISK_OVERRIDE=""; DO_SAMPLE=1
+RELEASE_RANGE=""; PANEL_MODE="pr"   # ADR-1340 AD-1: --release-range is the only new flag
 DIFF_ONLY=1   # SPEC-379: diff-centric review is DEFAULT ON (Kumar 2026 / SWE-PRBench)
 # SPEC-78: ledger subcommand state. PR is resolved in preflight; PANEL_LEDGER after.
 _PANEL_SUBCMD=""
@@ -105,10 +106,24 @@ while [[ $# -gt 0 ]]; do
         shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift; [[ $# -ge 1 ]] && shift ;;
     --reset)
         _PANEL_SUBCMD="reset"; shift ;;
+    # ADR-1340 AD-1: release mode — <base_sha>..<head_sha>, mutually exclusive with a PR#.
+    --release-range)
+        [[ $# -ge 2 ]] || die "--release-range needs <base_sha>..<head_sha>"
+        RELEASE_RANGE="$2"; shift 2 ;;
     -*)             die "Unknown option: $1  (try --help)" ;;
     *)              PR="$1"; shift ;;
   esac
 done
+
+# ADR-1340 AD-1 / TD §3.0 — mode resolution + validation. A usage error, not a
+# precedence rule: --release-range and a PR# never combine.
+[[ -n "$RELEASE_RANGE" && -n "$PR" ]] && die "--release-range and a PR number are mutually exclusive"
+[[ -n "$RELEASE_RANGE" && -n "$_PANEL_SUBCMD" ]] && die "--record/--reset are PR-mode only (release mode has no ledger — ADR-1340 AD-10)"
+if [[ -n "$RELEASE_RANGE" ]]; then
+  PANEL_MODE="release"
+  [[ "$RELEASE_RANGE" =~ ^[0-9a-f]{40}\.\.[0-9a-f]{40}$ ]] \
+    || die "--release-range must be <40-hex>..<40-hex> (derive it with run_release_panel.sh, never by hand)"
+fi
 
 # SPEC-379 R3 — opting out of diff-centric mode emits a startup warning.
 if [[ "$DIFF_ONLY" -eq 0 ]]; then
@@ -210,17 +225,32 @@ for bin in claude agy codex; do
   command -v "$bin" >/dev/null 2>&1 || warn "$bin not on PATH — reviews assigned to it will be skipped"
 done
 
-# Resolve PR (arg or current branch) and its head SHA / changed files.
-if [[ -z "$PR" ]]; then
-  PR="$(gh pr view --json number -q .number 2>/dev/null || true)"
-  [[ -n "$PR" ]] || die "no PR number given and no open PR for the current branch"
-fi
-HEAD_SHA="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || true)"
-[[ -n "$HEAD_SHA" ]] || die "could not resolve PR #$PR (is it open, and is gh pointed at the right repo?)"
-PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || echo "(unknown)")"
-
-# SPEC-78: panel ledger — per-PR, in .ai-local (persistent across runs, gitignored).
-PANEL_LEDGER=".ai-local/panel/pr${PR}-ledger.jsonl"
+# ADR-1340 AD-1 / TD §3.1 — Edge 1: identity resolution.
+# Callers: PR mode (run_panel.sh <PR#>) and RELEASE mode (run_release_panel.sh -> --release-range).
+# Changing either branch changes a gate. Do not collapse them.
+panel_resolve_identity() {
+  if [[ "$PANEL_MODE" == "release" ]]; then
+    BASE_SHA="${RELEASE_RANGE%%..*}"
+    HEAD_SHA="${RELEASE_RANGE##*..}"
+    PR=""
+    PR_TITLE="release range ${BASE_SHA:0:8}..${HEAD_SHA:0:8}"
+    PANEL_LEDGER=""          # ADR-1340 AD-10: release mode has no ledger at all.
+    RUN_LABEL="release/${HEAD_SHA}"
+  else
+    if [[ -z "$PR" ]]; then
+      PR="$(gh pr view --json number -q .number 2>/dev/null || true)"
+      [[ -n "$PR" ]] || die "no PR number given and no open PR for the current branch"
+    fi
+    HEAD_SHA="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+    [[ -n "$HEAD_SHA" ]] || die "could not resolve PR #$PR (is it open, and is gh pointed at the right repo?)"
+    PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || echo "(unknown)")"
+    BASE_SHA=""
+    # SPEC-78: panel ledger — per-PR, in .ai-local (persistent across runs, gitignored).
+    PANEL_LEDGER=".ai-local/panel/pr${PR}-ledger.jsonl"
+    RUN_LABEL="pr${PR}"
+  fi
+}
+panel_resolve_identity
 
 # SPEC-78: post-parse dispatch for --record and --reset (C4/C5/C6).
 # Resolved here because PR is now known. These short-circuit before any review runs.
@@ -246,11 +276,60 @@ if [[ "$_PANEL_SUBCMD" == "reset" ]]; then
     exit 0
 fi
 
-RUN_DIR=".ai-local/panel/pr${PR}-$(date +%Y%m%d-%H%M%S)"
+# ADR-1340 AD-1 / TD §3.1 — shared tail: RUN_DIR. The PANEL_RUN_DIR env-var
+# override (set by run_release_panel.sh) is honoured in RELEASE mode ONLY
+# (architect ruling C6) — PR mode is byte-identical to pre-refactor behavior,
+# with no override path, so RUN_DIR/advisory-filename identity (carve-out a)
+# is never disturbed on the PR path.
+if [[ "$PANEL_MODE" == "release" && -n "${PANEL_RUN_DIR:-}" ]]; then
+  RUN_DIR="$PANEL_RUN_DIR"
+else
+  RUN_DIR=".ai-local/panel/${RUN_LABEL}-$(date +%Y%m%d-%H%M%S)"
+fi
 mkdir -p "$RUN_DIR"
-DIFF_FILE="$RUN_DIR/pr.diff"
-gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null || die "could not fetch diff for PR #$PR"
-CHANGED_FILES="$(gh pr diff "$PR" --name-only 2>/dev/null || true)"
+
+# ADR-1340 AD-1 / TD §3.2 — Edge 2: diff + changed-file list.
+# Callers: PR mode (run_panel.sh <PR#>) and RELEASE mode (run_release_panel.sh -> --release-range).
+# Changing either branch changes a gate. Do not collapse them.
+panel_fetch_diff() {
+  DIFF_FILE="$RUN_DIR/pr.diff"
+  if [[ "$PANEL_MODE" == "release" ]]; then
+    local release_logic excl range_json
+    release_logic="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/release_panel_logic.py"
+    [[ -f "$release_logic" ]] || release_logic="scripts/oversight/release_panel_logic.py"
+    excl="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/release_panel_exclusions.txt"
+    [[ -f "$excl" ]] || excl="scripts/oversight/release_panel_exclusions.txt"
+
+    # Defensive only: run_release_panel.sh already refused a bad range upstream
+    # (AD-2). Release mode must never be reachable with a bad range even if
+    # run_panel.sh is invoked directly.
+    range_json="$(python3 "$release_logic" derive-range --exclusions "$excl")" \
+      || die "release mode: range derivation refused — run via run_release_panel.sh"
+
+    REVIEWED=()
+    while IFS= read -r f; do
+      [[ -n "$f" ]] && REVIEWED+=("$f")
+    done < <(printf '%s' "$range_json" | jq -r '.reviewed[]')
+    [[ ${#REVIEWED[@]} -gt 0 ]] || die "release mode: zero reviewable files after exclusions"
+
+    # #1340 C5 (architect ruling): the release diff must fail as loudly as the
+    # PR-mode `gh pr diff ... || die` it replaces — a silently-failed or
+    # truncated diff would review nothing while the verdict attests full
+    # coverage, and AD-7's recomputation checks the FILE LIST, never the diff
+    # bytes, so this is the one failure the verifier cannot catch downstream.
+    git diff "$BASE_SHA" "$HEAD_SHA" -- "${REVIEWED[@]}" > "$DIFF_FILE" \
+      || die "release mode: git diff failed for ${BASE_SHA}..${HEAD_SHA} (#1340 C5)"
+    [[ -s "$DIFF_FILE" ]] \
+      || die "release mode: git diff produced an empty file for a non-empty reviewed file set (#1340 C5) — refusing to review nothing while attesting full coverage"
+
+    CHANGED_FILES="$(printf '%s\n' "${REVIEWED[@]}")"
+    printf '%s\n' "${REVIEWED[@]}" > "$RUN_DIR/reviewed-files.txt"
+  else
+    gh pr diff "$PR" > "$DIFF_FILE" 2>/dev/null || die "could not fetch diff for PR #$PR"
+    CHANGED_FILES="$(gh pr diff "$PR" --name-only 2>/dev/null || true)"
+  fi
+}
+panel_fetch_diff
 
 # Load PANEL context written by oversight-orchestrator.
 # Independence principle: ONLY use step{N}-panel-context.md (structural risk signals,
@@ -277,7 +356,11 @@ elif [[ $DRY_RUN -eq 0 ]]; then
 fi
 ADDED=$(grep -cE '^\+([^+]|$)' "$DIFF_FILE" 2>/dev/null || true); ADDED=${ADDED:-0}  # counts blank added lines; excludes +++ header
 
-info "PR #$PR — $PR_TITLE"
+if [[ "$PANEL_MODE" == "release" ]]; then
+  info "release ${BASE_SHA:0:8}..${HEAD_SHA:0:8} — $PR_TITLE"
+else
+  info "PR #$PR — $PR_TITLE"
+fi
 info "head $HEAD_SHA · $(echo "$CHANGED_FILES" | grep -c . ) file(s) · +${ADDED} lines · run dir $RUN_DIR"
 
 # ── TRIAGE — deterministic floor ∪ author trailer, confirmed/raised by Haiku ────
@@ -287,14 +370,47 @@ info "head $HEAD_SHA · $(echo "$CHANGED_FILES" | grep -c . ) file(s) · +${ADDE
 PANEL_LOGIC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/panel_logic.py"
 [[ -f "$PANEL_LOGIC" ]] || PANEL_LOGIC="scripts/oversight/panel_logic.py"
 
-# Deterministic floor: file list on stdin, added-line count + size floor as flags.
-FLOOR="$(printf '%s' "$CHANGED_FILES" \
-  | python3 "$PANEL_LOGIC" triage-floor --added-lines "$ADDED" --size-floor "$SIZE_FLOOR")"
-AUTHOR_RISK="$(gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/dev/null \
-  | grep -oiE 'AI-Risk:[[:space:]]*(LOW|MEDIUM|HIGH|CRITICAL)' \
-  | grep -oiE '(LOW|MEDIUM|HIGH|CRITICAL)' | tr '[:lower:]' '[:upper:]' \
-  | sort -u | while read -r r; do echo "$(rank "$r") $r"; done | sort -rn | head -1 | awk '{print $2}' || true)"
-[[ -n "$AUTHOR_RISK" ]] && FLOOR="$(max_risk "$FLOOR" "$AUTHOR_RISK")"
+# ADR-1340 AD-1 / AD-6 / TD §3.3 — Edge 3: risk floor (adds the AD-6 clamp).
+# Callers: PR mode (run_panel.sh <PR#>) and RELEASE mode (run_release_panel.sh -> --release-range).
+# Changing either branch changes a gate. Do not collapse them.
+panel_risk_floor() {
+  # Deterministic floor: file list on stdin, added-line count + size floor as flags.
+  FLOOR="$(printf '%s' "$CHANGED_FILES" \
+    | python3 "$PANEL_LOGIC" triage-floor --added-lines "$ADDED" --size-floor "$SIZE_FLOOR")"
+
+  if [[ "$PANEL_MODE" == "release" ]]; then
+    # No author-trailer scan — `gh pr view --json commits` has no meaning over
+    # a range (there is no PR).
+    VALIDATOR_TIER="unavailable"
+    local run_validators_sh summary_file before_ts mtime
+    run_validators_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/run_validators.sh"
+    [[ -f "$run_validators_sh" ]] || run_validators_sh="scripts/oversight/run_validators.sh"
+    summary_file=".claudetmp/oversight/validators/summary.json"
+    before_ts="$(date +%s)"
+    if bash "$run_validators_sh" "${REVIEWED[@]}" >/dev/null 2>&1 && [[ -f "$summary_file" ]]; then
+      mtime="$(stat -c %Y "$summary_file" 2>/dev/null || stat -f %m "$summary_file" 2>/dev/null || echo 0)"
+      if [[ "${mtime:-0}" -ge "$before_ts" ]]; then
+        VALIDATOR_TIER="$(jq -r '.tier // "unavailable"' "$summary_file" 2>/dev/null || echo unavailable)"
+      fi
+    fi
+    if [[ "$VALIDATOR_TIER" == "unavailable" ]]; then
+      warn "release mode: validator composite unavailable or stale — recorded as 'unavailable' in the verdict; the deterministic floor and the MEDIUM clamp still apply"
+    else
+      FLOOR="$(max_risk "$FLOOR" "$VALIDATOR_TIER")"
+    fi
+    # AD-6 (BINDING): unconditional MEDIUM clamp, applied HERE at floor-computation
+    # time — never as a second guard inside the `rank < 1` skip branch below,
+    # which is one refactor away from being lifted out along with the guard.
+    FLOOR="$(max_risk "$FLOOR" MEDIUM)"
+  else
+    AUTHOR_RISK="$(gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/dev/null \
+      | grep -oiE 'AI-Risk:[[:space:]]*(LOW|MEDIUM|HIGH|CRITICAL)' \
+      | grep -oiE '(LOW|MEDIUM|HIGH|CRITICAL)' | tr '[:lower:]' '[:upper:]' \
+      | sort -u | while read -r r; do echo "$(rank "$r") $r"; done | sort -rn | head -1 | awk '{print $2}' || true)"
+    [[ -n "$AUTHOR_RISK" ]] && FLOOR="$(max_risk "$FLOOR" "$AUTHOR_RISK")"
+  fi
+}
+panel_risk_floor
 
 if [[ -n "$RISK_OVERRIDE" ]]; then
   # An override may only RAISE the deterministic floor, never lower it — clamp to
@@ -353,8 +469,11 @@ if (( DO_SAMPLE )); then
   SAMPLED=$(printf '%s' "$SQC_JSON" | jq -r 'if .sampled then 1 else 0 end')
   if (( RATE > 0 )); then
     mkdir -p "$(dirname "$SALT_FILE")"
-    printf '{"ts":"%s","pr":%s,"head":"%s","tier":"%s","rate":%s,"roll":%s,"selected":%s}\n' \
-      "$(date -u +%FT%TZ)" "$PR" "$HEAD_SHA" "$RISK" "$RATE" "$ROLL" \
+    # "pr" is quoted as a JSON string (not a bare numeric %s): release mode's
+    # $PR is empty, and an unquoted empty value here would write invalid JSON
+    # ("pr":,) to this log. A release run logs its RUN_LABEL instead of a PR#.
+    printf '{"ts":"%s","pr":"%s","head":"%s","tier":"%s","rate":%s,"roll":%s,"selected":%s}\n' \
+      "$(date -u +%FT%TZ)" "${PR:-$RUN_LABEL}" "$HEAD_SHA" "$RISK" "$RATE" "$ROLL" \
       "$([[ $SAMPLED -eq 1 ]] && echo true || echo false)" >> ".ai-local/panel/sample-log.jsonl"
     if (( SAMPLED )); then info "🎲 red-team audit: $RISK roll=$ROLL < $RATE% → ${BOLD}SELECTED${RESET} (adds adversary pass)"
     else                   info "🎲 red-team audit: $RISK roll=$ROLL ≥ $RATE% → not selected"; fi
@@ -372,7 +491,16 @@ if [[ "$(rank "$RISK")" -lt 1 ]]; then
 fi
 
 # ── Reviewer roster for this risk level (+ red-team if sampled) ──────────────────
-if [[ "$RISK" == "LOW" ]]; then
+# ADR-1340 AD-6 / TD §3.4 — release mode: codex:adversary is UNCONDITIONAL
+# (never gated on SAMPLED, contrast the PR-mode MEDIUM row below), and the LOW
+# branch is unreachable here (panel_risk_floor's MEDIUM clamp makes RISK >=
+# MEDIUM by construction in release mode) — sampling can only ever be a no-op
+# on this roster, the literal reading of "must not REDUCE roster" (REQ-A3).
+if [[ "$PANEL_MODE" == "release" ]]; then
+  ROSTER=("agy:correctness" "codex:adversary")
+  [[ "$(rank "$RISK")" -ge 2 ]] && ROSTER+=("codex:security")                     # HIGH+
+  ROSTER+=("ipcheck:ip")
+elif [[ "$RISK" == "LOW" ]]; then
   ROSTER=("agy:correctness" "codex:adversary" "ipcheck:ip")   # only reached when SAMPLED
 else
   ROSTER=("agy:correctness")
@@ -445,7 +573,12 @@ EOF
 # Non-blocking. Appends an ADVISORY entry to .claudetmp/panel/ (the dir the
 # oversight-evaluator reads). Does NOT change exit code, the arbiter verdict,
 # posted threads, or the summary.
-PANEL_ADVISORY_FILE=".claudetmp/panel/advisory-pr${PR}-$(date +%Y%m%dT%H%M%S).md"
+# ADR-1340 TD-VF-3 / architect ruling C3 — engine carve-out 1 of 2 (the ONLY
+# permitted edits inside the chunking/fan-out/arbiter/rank span are this one
+# and the chunk-counter increments below): PR-bound filename generalized to
+# RUN_LABEL, which is mode-invariant (PR mode: "pr${PR}", byte-identical to
+# before; release mode: "release/<head_sha>", flattened for the filename).
+PANEL_ADVISORY_FILE=".claudetmp/panel/advisory-${RUN_LABEL//\//-}-$(date +%Y%m%dT%H%M%S).md"
 log_context_advisory() {  # $1=reviewer  $2=response-text
   [[ "$DIFF_ONLY" -eq 1 ]] || return 0
   local match
@@ -470,6 +603,17 @@ log_context_advisory() {  # $1=reviewer  $2=response-text
 # uses the `extract-json` subcommand; the per-reviewer chunk union stays a trivial
 # `.findings // []` jq concat (binding 4 permits trivial single-field plucks).
 RESPONSES_JSON="[]"
+# ADR-1340 AD-11 / TD-VF-3 / architect ruling C3 — engine carve-out 2 of 2 (the
+# ONLY other permitted edit inside the chunking/fan-out/arbiter/rank span):
+# two chunk counters, incremented in BOTH modes, read only by release mode
+# (AD-7 check 7: "a skipped chunk is a FAIL"). No control-flow change — every
+# non-ipcheck reviewer already `die`s on a failed chunk (#682), so lockstep
+# counters would make the check trivially true; CHUNKS_COMPLETED increments
+# only on a genuine reviewer response, so the one reviewer that degrades
+# SILENTLY (ipcheck, below) is the one check 7 actually catches.
+CHUNKS_ATTEMPTED=0
+CHUNKS_COMPLETED=0
+DEGRADED_TOOLS=()
 for spec in "${ROSTER[@]}"; do
   tool="${spec%%:*}"; lens="${spec##*:}"
   if [[ "$tool" != "ipcheck" ]] && ! command -v "$tool" >/dev/null 2>&1; then
@@ -480,12 +624,17 @@ for spec in "${ROSTER[@]}"; do
   ci=0
   for chunk in "${CHUNKS[@]}"; do
     ci=$((ci+1))
+    CHUNKS_ATTEMPTED=$((CHUNKS_ATTEMPTED+1))
+    _chunk_failed=0
     raw="$(call_model "$tool" "$(build_review_prompt "$lens" "$chunk")")" || {
       if [[ "$tool" != "ipcheck" ]]; then
         die "$tool invocation failed for lens=$lens chunk $ci of ${#CHUNKS[@]} — required reviewer for risk $RISK; see $RUN_DIR/errors.log (#682)"
       fi
       raw='{"findings":[]}'
+      _chunk_failed=1
+      DEGRADED_TOOLS+=("$tool")
     }
+    [[ "$_chunk_failed" -eq 0 ]] && CHUNKS_COMPLETED=$((CHUNKS_COMPLETED+1))
     printf '%s' "$raw" > "$RUN_DIR/${tool}-${lens}-chunk${ci}.raw.txt"
     log_context_advisory "$tool" "$raw"
     f="$(printf '%s' "$raw" | python3 "$PANEL_LOGIC" extract-json | jq -c '.findings // []' 2>/dev/null || echo '[]')"
@@ -584,8 +733,15 @@ ok "arbiter: $FCOUNT finding(s) after dedup (from $RAW_COUNT raw) · tier1=$TIER
 # new_blocking_count: tier1 findings not already in the per-PR ledger.
 # Gates the exit code only — does NOT suppress thread posting (OQ-2/C3 pending #400).
 # Fingerprint = (sorted files, lens) per validation_logic.fingerprint + C7.
+# ADR-1340 AD-10 / TD-VF-4 — release mode has NO ledger at all (a sixth
+# PR-bound edge the ADR's original table did not enumerate): with $PR empty,
+# PANEL_LEDGER would collapse to a single SHARED .ai-local/panel/pr-ledger.jsonl
+# across every release run, and a tier-1 finding recorded once would be
+# suppressed on every subsequent release forever. Skip both SPEC-78 Python
+# blocks entirely in release mode; NEW_BLOCKING_COUNT keeps its TIER1_COUNT
+# initialisation (never zeroed) and SUPPRESSED_COUNT stays 0 below.
 NEW_BLOCKING_COUNT="${TIER1_COUNT}"
-if [[ -f "$_VL_PY" ]]; then
+if [[ "$PANEL_MODE" != "release" && -f "$_VL_PY" ]]; then
     _LEDGER_PATH="$PANEL_LEDGER"
     _ARBITER_JSON="$RUN_DIR/arbiter.json"
     NEW_BLOCKING_COUNT=$(python3 - <<PYEOF
@@ -616,7 +772,7 @@ print(new_blocking)
 PYEOF
     ) || NEW_BLOCKING_COUNT="${TIER1_COUNT}"
 fi
-info "convergence (SPEC-78): tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} ledger=${PANEL_LEDGER}"
+info "convergence (SPEC-78): tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} ledger=${PANEL_LEDGER:-none (release mode, AD-10)}"
 
 # ── SPEC-78 OQ-2 (#400, human-cleared): per-finding ledger flags for thread suppression ─
 # Pre-pass: for each arbiter finding (in arbiter.json .findings order — the SAME order the
@@ -626,7 +782,7 @@ info "convergence (SPEC-78): tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_CO
 # Fail-open: any error → all "0" (nothing suppressed; every finding posts). A ledger/
 # fingerprint failure must never silently drop a finding from the PR.
 LEDGERED_FLAGS=()
-if [[ -f "$_VL_PY" ]]; then
+if [[ "$PANEL_MODE" != "release" && -f "$_VL_PY" ]]; then
     _flags_raw="$(python3 - <<PYEOF 2>>"$RUN_DIR/errors.log" || true
 import json, sys, os
 sys.path.insert(0, os.path.dirname("$_VL_PY"))
@@ -662,7 +818,13 @@ UNANCHORED=""   # findings we couldn't pin to a diff line → folded into the su
 POSTED=0
 SUPPRESSED_COUNT=0   # SPEC-78 OQ-2: findings skipped because already in the per-PR ledger
 FI=0                 # finding index into LEDGERED_FLAGS (FINDINGS iteration order)
-if (( FCOUNT > 0 )); then
+# ADR-1340 AD-5 / TD §3.6 — release mode never posts a line-level thread: there
+# is no PR diff to anchor to (E2), so the whole loop is skipped rather than
+# allowed to fail once per finding into UNANCHORED. POSTED/SUPPRESSED_COUNT
+# stay at their initial 0, UNANCHORED stays "".
+# Callers: PR mode posts a line-level thread per finding; RELEASE mode never
+# does. Changing either branch changes a gate. Do not collapse them.
+if [[ "$PANEL_MODE" != "release" ]] && (( FCOUNT > 0 )); then
   while IFS= read -r row; do
     # SPEC-78 OQ-2 (#400): suppress posting a thread for a finding already in the ledger.
     # The flag array is in arbiter.json .findings order == FINDINGS order (technical-design §3.1).
@@ -714,7 +876,20 @@ TIER1_FINDINGS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" render-tier -
 TIER2_FINDINGS="$(printf '%s' "$FINDINGS" | python3 "$PANEL_LOGIC" render-tier --tier 2)"
 
 # Assemble the summary comment.
-SUMMARY_BODY=$(cat <<EOF
+# Callers: PR mode's header names threads/suppression; RELEASE mode's names the
+# candidate SHA + reviewed range instead (AD-5 — there are no threads to count).
+if [[ "$PANEL_MODE" == "release" ]]; then
+  SUMMARY_BODY=$(cat <<EOF
+## 🔭 Oversight panel — verdict
+
+**Release candidate SHA:** \`$HEAD_SHA\`  ·  **Reviewed range:** \`${BASE_SHA:0:12}\`..\`${HEAD_SHA:0:12}\`
+**Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT · tier1=$TIER1_COUNT tier2=$TIER2_COUNT
+
+$SUMMARY
+EOF
+)
+else
+  SUMMARY_BODY=$(cat <<EOF
 ## 🔭 Oversight panel — verdict
 
 **Risk:** \`$RISK\`  ·  **Reviewers:** ${ROSTER[*]}  ·  **Findings:** $FCOUNT ($POSTED posted as threads · $SUPPRESSED_COUNT suppressed (ledgered)) · tier1=$TIER1_COUNT tier2=$TIER2_COUNT
@@ -722,6 +897,7 @@ SUMMARY_BODY=$(cat <<EOF
 $SUMMARY
 EOF
 )
+fi
 # SPEC-376 R3 / binding 5: Tier 1 section BEFORE Tier 2; each empty section omitted.
 if [[ -n "$TIER1_FINDINGS" ]]; then
   SUMMARY_BODY+=$'\n\n## Critical Findings (Corroborated by ≥2 Reviewers)\n> Confirmed by ≥ 2 independent reviewers. Address before merge.\n\n'"$TIER1_FINDINGS"
@@ -729,23 +905,48 @@ fi
 if [[ -n "$TIER2_FINDINGS" ]]; then
   SUMMARY_BODY+=$'\n\n## Additional Findings (Single Reviewer)\n> Raised by one reviewer. Review and address where warranted.\n\n'"$TIER2_FINDINGS"
 fi
-if (( SAMPLED )); then
-  SUMMARY_BODY+=$'\n\n> 🎲 **Selected for random red-team audit** — this `'"$RISK"$'` PR was sampled for an adversarial pass (SQC; rate '"$RATE"$'%, roll '"$ROLL"$'). Lower-tier PRs are spot-checked at random to estimate the escaped-defect rate and to deter risk under-declaration. Selection is reproducible from the head SHA + the secret audit salt.'
+# ADR-1340 / TD §3.6 — SQC prose: advisory-only note in release mode (AD-6 —
+# the SQC result must never touch the release roster), the existing
+# SAMPLED-gated red-team note in PR mode. Same RATE > 0 trigger as before.
+if (( RATE > 0 )); then
+  if [[ "$PANEL_MODE" == "release" ]]; then
+    SUMMARY_BODY+=$'\n\n> SQC sample: advisory only in release mode (roster unaffected).'
+  elif (( SAMPLED )); then
+    SUMMARY_BODY+=$'\n\n> 🎲 **Selected for random red-team audit** — this `'"$RISK"$'` PR was sampled for an adversarial pass (SQC; rate '"$RATE"$'%, roll '"$ROLL"$'). Lower-tier PRs are spot-checked at random to estimate the escaped-defect rate and to deter risk under-declaration. Selection is reproducible from the head SHA + the secret audit salt.'
+  fi
 fi
 if [[ -n "$UNANCHORED" ]]; then
   SUMMARY_BODY+=$'\n\n### Findings that could not be anchored to a diff line\n'"$UNANCHORED"
 fi
 if [[ "$RISK" == "CRITICAL" ]]; then
-  if ! gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/dev/null | grep -qi 'blast.radius'; then
+  if [[ "$PANEL_MODE" == "release" ]]; then
+    SUMMARY_BODY+=$'\n\n> ⚠️ **CRITICAL** release range — a blast-radius assessment is required (AGENTS.md §5) before this release is cut.'
+  elif ! gh pr view "$PR" --json commits -q '.commits[].messageBody' 2>/dev/null | grep -qi 'blast.radius'; then
     SUMMARY_BODY+=$'\n\n> ⚠️ **CRITICAL** change with no blast-radius note found in commit trailers — a blast-radius assessment is required (AGENTS.md §5) before merge.'
   fi
 fi
 if (( IP_IN_ROSTER )) && (( IP_STUB )); then
   SUMMARY_BODY+=$'\n\n> ⚖️ **IP/provenance was checked by a placeholder agent** — `ipcheck` ran but performs no real analysis yet (D19), so a clean result here is **not** an IP clearance.'
 fi
-SUMMARY_BODY+=$'\n\n<sub>Posted by `run_panel.sh` — independent cross-vendor review. Threads must be resolved before merge (branch policy D12). Author: respond on each thread.</sub>'
+if [[ "$PANEL_MODE" == "release" ]]; then
+  SUMMARY_BODY+=$'\n\n<sub>Posted by `run_panel.sh` (release mode) — independent cross-vendor review over the release range.</sub>'
+else
+  SUMMARY_BODY+=$'\n\n<sub>Posted by `run_panel.sh` — independent cross-vendor review. Threads must be resolved before merge (branch policy D12). Author: respond on each thread.</sub>'
+fi
 
-if (( DRY_RUN )); then
+# ADR-1340 / TD §3.6 — posting: release mode is GitHub-silent (no issue number
+# to post to; AD-4 requires post_comment.sh --app worker, which lives entirely
+# in run_release_panel.sh) and writes the summary to disk instead.
+printf '%s' "$SUMMARY_BODY" > "$RUN_DIR/summary-body.md"
+if [[ "$PANEL_MODE" == "release" ]]; then
+  if (( DRY_RUN )); then
+    echo ""
+    echo -e "${BOLD}[dry-run] release summary that WOULD be written:${RESET}"
+    echo "$SUMMARY_BODY"
+    echo ""
+  fi
+  info "release mode: posting nothing to GitHub — summary written to $RUN_DIR/summary-body.md (run_release_panel.sh composes + posts the verdict comment)"
+elif (( DRY_RUN )); then
   echo ""
   echo -e "${BOLD}[dry-run] summary comment that WOULD be posted:${RESET}"
   echo "$SUMMARY_BODY"
@@ -759,8 +960,64 @@ else
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} · suppressed=${SUPPRESSED_COUNT} · raw archive: $RUN_DIR"
+if [[ "$PANEL_MODE" == "release" ]]; then
+  echo -e "${GREEN}${BOLD}Panel complete.${RESET}  release ${BASE_SHA:0:8}..${HEAD_SHA:0:8} · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} · raw archive: $RUN_DIR"
+else
+  echo -e "${GREEN}${BOLD}Panel complete.${RESET}  PR #$PR · risk $RISK · $FCOUNT finding(s) · tier1=${TIER1_COUNT} new_blocking=${NEW_BLOCKING_COUNT} · suppressed=${SUPPRESSED_COUNT} · raw archive: $RUN_DIR"
+fi
 echo ""
+
+# ADR-1340 AD-10/C4 (architect ruling, TD §3.7) — Edge 5: verdict write.
+# Callers: PR mode (run_panel.sh <PR#>) and RELEASE mode (run_release_panel.sh -> --release-range).
+# Release mode NEVER reaches the SPEC-78 escalation branch below: it writes
+# panel-release.json and exits 0 whenever the engine itself completed.
+# compose_verdict (release_panel_logic.py) is the SOLE authority on PASS/FAIL —
+# one judgement site, the same reason there is one range derivation (AD-2). A
+# non-zero exit from THIS script in release mode therefore denotes an engine
+# ABORT, never a findings verdict — run_release_panel.sh's `panel-exit-nonzero`
+# slug documents that distinction.
+if [[ "$PANEL_MODE" == "release" ]]; then
+  sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    else shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; fi
+  }
+
+  ROSTER_JSON="[]"
+  for spec in "${ROSTER[@]}"; do
+    rtool="${spec%%:*}"; rlens="${spec##*:}"
+    rstatus="ok"
+    printf '%s\n' "${DEGRADED_TOOLS[@]:-}" | grep -qx "$rtool" && rstatus="degraded"
+    ROSTER_JSON="$(jq -cn --argjson a "$ROSTER_JSON" --arg r "$rtool" --arg l "$rlens" --arg s "$rstatus" \
+      '$a + [{reviewer:$r, lens:$l, status:$s}]')"
+  done
+  FILES_REVIEWED_JSON="$(printf '%s\n' "${REVIEWED[@]}" | jq -R . | jq -cs '.')"
+
+  jq -n \
+    --arg mode "release" \
+    --arg base_sha "$BASE_SHA" --arg head_sha "$HEAD_SHA" \
+    --arg effective_tier "$RISK" --arg deterministic_floor "$FLOOR" --arg validator_tier "${VALIDATOR_TIER:-unavailable}" \
+    --argjson roster "$ROSTER_JSON" \
+    --argjson total "$FCOUNT" --argjson tier1 "$TIER1_COUNT" --argjson tier2 "$TIER2_COUNT" \
+    --argjson arbiter_salvaged "$([[ "${ARBITER_SALVAGED:-0}" -eq 1 ]] && echo true || echo false)" \
+    --argjson chunks_attempted "${CHUNKS_ATTEMPTED:-0}" --argjson chunks_completed "${CHUNKS_COMPLETED:-0}" \
+    --argjson files_reviewed "$FILES_REVIEWED_JSON" \
+    --arg run_dir "$RUN_DIR" --arg summary_body_path "$RUN_DIR/summary-body.md" \
+    --arg arbiter_sha256 "$(sha256_file "$RUN_DIR/arbiter.json")" \
+    --arg findings_raw_sha256 "$(sha256_file "$RUN_DIR/findings.raw.json")" \
+    --argjson sampled "$([[ $SAMPLED -eq 1 ]] && echo true || echo false)" --argjson rate "$RATE" \
+    '{mode: $mode, base_sha: $base_sha, head_sha: $head_sha,
+      effective_tier: $effective_tier, deterministic_floor: $deterministic_floor, validator_tier: $validator_tier,
+      roster: $roster,
+      findings: {total: $total, tier1: $tier1, tier2: $tier2, tier1_undispositioned: $tier1},
+      arbiter_salvaged: $arbiter_salvaged,
+      chunks_attempted: $chunks_attempted, chunks_completed: $chunks_completed,
+      files_reviewed: $files_reviewed,
+      run_dir: $run_dir, summary_body_path: $summary_body_path,
+      arbiter_sha256: $arbiter_sha256, findings_raw_sha256: $findings_raw_sha256,
+      sqc: {sampled: $sampled, rate: $rate, advisory: true}}' \
+    > "$RUN_DIR/panel-release.json"
+  exit 0
+fi
 
 # SPEC-78: write panel-verdict.json for oversight-evaluator (new_blocking_count field).
 # SPEC-78 OQ-2 (#400): suppressed_count records ledgered findings not re-posted as threads.
