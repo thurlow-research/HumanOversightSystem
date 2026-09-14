@@ -5,6 +5,7 @@ Discover-only consumer JS tool resolver: ./node_modules/.bin -> `npx --no-instal
 fetch. These tests drive the sourced function directly (matching the
 `test_step_range.py` pattern) rather than the full run_validators.sh pipeline.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,9 +18,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPO_ROOT / "scripts" / "oversight" / "lib" / "resolve_node_tool.sh"
-BASH = shutil.which("bash")
+BASH = shutil.which("bash") or "/bin/bash"
 
-pytestmark = pytest.mark.skipif(BASH is None, reason="bash required")
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
 
 
 def _make_executable(path: Path, content: str = "#!/usr/bin/env bash\ntrue\n") -> None:

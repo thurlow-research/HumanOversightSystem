@@ -24,24 +24,18 @@ Coverage:
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import load_module_from_path
+
 _MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "release_artifact_logic.py"
+    Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "release_artifact_logic.py"
 )
-_spec = importlib.util.spec_from_file_location("release_artifact_logic", _MOD_PATH)
-ral = importlib.util.module_from_spec(_spec)
 # @dataclass introspects sys.modules[cls.__module__] — register before exec_module.
-sys.modules["release_artifact_logic"] = ral
-_spec.loader.exec_module(ral)
+ral = load_module_from_path("release_artifact_logic", _MOD_PATH, register=True)
 
 check_artifact_integrity = ral.check_artifact_integrity
 extract_blocking_findings = ral.extract_blocking_findings
@@ -211,9 +205,7 @@ def test_ac2_blocking_severity_included():
 
 
 def test_ac2_severity_case_insensitive():
-    results = [
-        {"dimension": "x", "findings": [{"severity": "CRITICAL", "message": "bad"}]}
-    ]
+    results = [{"dimension": "x", "findings": [{"severity": "CRITICAL", "message": "bad"}]}]
     assert len(extract_blocking_findings(results)) == 1
 
 
@@ -311,7 +303,10 @@ def test_ac6_high_tier_with_blocking_findings_escalates(tmp_path):
             "HIGH",
             composite_score=0.9,
             results=[
-                {"dimension": "static", "findings": [{"severity": "critical", "message": "SQL injection"}]}
+                {
+                    "dimension": "static",
+                    "findings": [{"severity": "critical", "message": "SQL injection"}],
+                }
             ],
         ),
     )
@@ -334,9 +329,7 @@ def test_ac7_critical_tier_with_blocking_findings_escalates(tmp_path):
             4,
             "CRITICAL",
             composite_score=1.0,
-            results=[
-                {"dimension": "rn", "findings": [{"severity": "high", "message": "complex"}]}
-            ],
+            results=[{"dimension": "rn", "findings": [{"severity": "high", "message": "complex"}]}],
         ),
     )
     result = validate_release_artifacts(tmp_path)

@@ -65,13 +65,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
 
-from scripts.automation.lib.gate_compliance import (
-    load_composite_score,
-    load_gate_results,
-)
-from scripts.automation.lib.gate_compliance import (
-    gates_required as _gates_required_flag,
-)
+from scripts.automation.lib.gate_compliance import gates_required as _gates_required_flag
+from scripts.automation.lib.gate_compliance import load_composite_score, load_gate_results
 from scripts.automation.lib.merge_authority import RiskTier
 
 # ---------------------------------------------------------------------------
@@ -210,7 +205,9 @@ def _read_json(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def _run(cmd: list[str], cwd: Path, timeout: Optional[int] = None) -> Optional[subprocess.CompletedProcess]:
+def _run(
+    cmd: list[str], cwd: Path, timeout: Optional[int] = None
+) -> Optional[subprocess.CompletedProcess]:
     try:
         return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
@@ -303,15 +300,15 @@ def _parse_required_signoffs(manifest_path: Path, step: Union[str, int]) -> list
             in_target_step = False
             continue
         if stripped.startswith("- id:"):
-            id_val = stripped[len("- id:"):].strip().strip("\"'")
+            id_val = stripped[len("- id:") :].strip().strip("\"'")
             in_target_step = id_val == step_str
             continue
         if in_target_step and stripped.startswith("id:"):
-            id_val = stripped[len("id:"):].strip().strip("\"'")
+            id_val = stripped[len("id:") :].strip().strip("\"'")
             in_target_step = id_val == step_str
             continue
         if in_target_step and stripped.startswith("required_signoffs:"):
-            raw = stripped[len("required_signoffs:"):].strip()
+            raw = stripped[len("required_signoffs:") :].strip()
             raw = raw.strip("[]")
             if not raw:
                 return []
@@ -330,13 +327,21 @@ def _check_inner_loop_tests(repo_root: Path) -> CheckResult:
         return CheckResult("REQ-W-01", False, f"missing {_INNER_LOOP_TEST_SCRIPT}")
     result = _run(["bash", str(script)], cwd=repo_root, timeout=900)
     if result is None:
-        return CheckResult("REQ-W-01", False, "inner-loop test run failed to execute (timeout/OS error)")
+        return CheckResult(
+            "REQ-W-01", False, "inner-loop test run failed to execute (timeout/OS error)"
+        )
     if result.returncode != 0:
         tail = "\n".join((result.stdout + result.stderr).splitlines()[-15:])
-        return CheckResult("REQ-W-01", False, f"inner-loop tests exited {result.returncode}\n{tail}")
+        return CheckResult(
+            "REQ-W-01", False, f"inner-loop tests exited {result.returncode}\n{tail}"
+        )
     stale = _uncommitted_self_heal_artifacts(repo_root)
     if stale:
-        return CheckResult("REQ-W-01", False, f"self-heal regenerated {stale} but the change is uncommitted — commit it before opening the PR")
+        return CheckResult(
+            "REQ-W-01",
+            False,
+            f"self-heal regenerated {stale} but the change is uncommitted — commit it before opening the PR",
+        )
     return CheckResult("REQ-W-01", True, "inner-loop tests exit 0")
 
 
@@ -360,7 +365,9 @@ def _check_gates(repo_root: Path, manifest_path: Path, step: Union[str, int]) ->
     if failed:
         names = ", ".join(str(r.get("gate", "<unknown>")) for r in failed)
         return CheckResult("REQ-W-02", False, f"gate(s) failed: {names}")
-    return CheckResult("REQ-W-02", True, "gates pass" if results else "no gates required for this step")
+    return CheckResult(
+        "REQ-W-02", True, "gates pass" if results else "no gates required for this step"
+    )
 
 
 def _check_validators_current(repo_root: Path, step: Union[str, int], head_sha: str) -> CheckResult:
@@ -369,19 +376,29 @@ def _check_validators_current(repo_root: Path, step: Union[str, int], head_sha: 
         composite = committed.get("composite_score")
         stamped_head = committed.get("head_sha")
         if composite is None:
-            return CheckResult("REQ-W-03", False, f"{_committed_summary_path(step)} missing composite_score")
+            return CheckResult(
+                "REQ-W-03", False, f"{_committed_summary_path(step)} missing composite_score"
+            )
         if stamped_head != head_sha:
             return CheckResult(
-                "REQ-W-03", False,
+                "REQ-W-03",
+                False,
                 f"{_committed_summary_path(step)} head_sha={stamped_head!r} != current head {head_sha!r} — stale",
             )
-        return CheckResult("REQ-W-03", True, f"validators current (head_sha matches, score={composite})")
+        return CheckResult(
+            "REQ-W-03", True, f"validators current (head_sha matches, score={composite})"
+        )
 
     composite = load_composite_score(repo_root)
     if composite is None:
-        return CheckResult("REQ-W-03", False, f"neither {_committed_summary_path(step)} nor {_SUMMARY_PATH} has a composite_score")
+        return CheckResult(
+            "REQ-W-03",
+            False,
+            f"neither {_committed_summary_path(step)} nor {_SUMMARY_PATH} has a composite_score",
+        )
     return CheckResult(
-        "REQ-W-03", True,
+        "REQ-W-03",
+        True,
         f"validators ran (score={composite}); no committed summary yet to stamp-check head_sha",
     )
 
@@ -399,8 +416,10 @@ def _check_risk_assessment_scope(repo_root: Path, base_sha: str, head_sha: str) 
     doc_base, doc_head = fields.get("base_sha"), fields.get("head_sha")
     if doc_base != base_sha or doc_head != head_sha:
         return CheckResult(
-            "REQ-W-04", False,
-            f"risk-assessment.md scoped to base_sha={doc_base!r} head_sha={doc_head!r}, expected {base_sha!r}/{head_sha!r}",
+            "REQ-W-04",
+            False,
+            f"risk-assessment.md scoped to base_sha={doc_base!r} head_sha={doc_head!r}, "
+            f"expected {base_sha!r}/{head_sha!r}",
         )
     return CheckResult("REQ-W-04", True, "risk-assessment.md scoped to current commit range")
 
@@ -440,7 +459,9 @@ def _check_signoffs_present(
             missing.append(f"{role}: Status={status!r} is not an approving value")
     if missing:
         return CheckResult("REQ-W-05", False, "; ".join(missing))
-    return CheckResult("REQ-W-05", True, f"all {len(required_roles)} required role(s) present with required fields")
+    return CheckResult(
+        "REQ-W-05", True, f"all {len(required_roles)} required role(s) present with required fields"
+    )
 
 
 def _check_no_unresolved_escalations(entries: list[dict], register_present: bool) -> CheckResult:
@@ -452,11 +473,17 @@ def _check_no_unresolved_escalations(entries: list[dict], register_present: bool
         if status == _ESCALATED_STATUS and not entry["fields"].get("Human_resolution", "").strip():
             unresolved.append(entry["role"])
     if unresolved:
-        return CheckResult("REQ-W-06", False, f"ESCALATED without Human_resolution: {', '.join(sorted(unresolved))}")
+        return CheckResult(
+            "REQ-W-06",
+            False,
+            f"ESCALATED without Human_resolution: {', '.join(sorted(unresolved))}",
+        )
     return CheckResult("REQ-W-06", True, "no unresolved ESCALATED entries")
 
 
-def _check_critical_human_authorization(repo_root: Path, step: Union[str, int], risk_tier: str) -> CheckResult:
+def _check_critical_human_authorization(
+    repo_root: Path, step: Union[str, int], risk_tier: str
+) -> CheckResult:
     if not _tier_gte(risk_tier, "CRITICAL"):
         return CheckResult("REQ-W-07", True, f"tier {risk_tier} below CRITICAL — not required")
     text = _read_text(repo_root / _human_authorization_path(step))
@@ -471,10 +498,15 @@ _SECOND_REVIEW_PASSING = frozenset({"approve"})
 def _check_second_review(repo_root: Path, step: Union[str, int], risk_tier: str) -> CheckResult:
     if not _tier_gte(risk_tier, "MEDIUM"):
         return CheckResult("REQ-W-08", True, f"tier {risk_tier} below MEDIUM — not required")
-    matches = sorted((repo_root / ".claudetmp" / "second-review").glob(f"step{step}-*.md")) \
-        if (repo_root / ".claudetmp" / "second-review").is_dir() else []
+    matches = (
+        sorted((repo_root / ".claudetmp" / "second-review").glob(f"step{step}-*.md"))
+        if (repo_root / ".claudetmp" / "second-review").is_dir()
+        else []
+    )
     if not matches:
-        return CheckResult("REQ-W-08", False, f"no second-review file matching {_second_review_glob(step)}")
+        return CheckResult(
+            "REQ-W-08", False, f"no second-review file matching {_second_review_glob(step)}"
+        )
     latest = matches[-1]
     text = _read_text(latest) or ""
     verdict = None
@@ -490,13 +522,18 @@ def _check_second_review(repo_root: Path, step: Union[str, int], risk_tier: str)
     # fail/changes_requested/blocked — must FAIL here rather than silently pass
     # through a blacklist that doesn't name it.
     if verdict not in _SECOND_REVIEW_PASSING:
-        return CheckResult("REQ-W-08", False, f"{latest.name} verdict={verdict!r} — not an approving verdict")
+        return CheckResult(
+            "REQ-W-08", False, f"{latest.name} verdict={verdict!r} — not an approving verdict"
+        )
     return CheckResult("REQ-W-08", True, f"{latest.name} verdict={verdict}")
 
 
-def _check_na_domains(repo_root: Path, entries: list[dict], base_sha: str, head_sha: str) -> CheckResult:
+def _check_na_domains(
+    repo_root: Path, entries: list[dict], base_sha: str, head_sha: str
+) -> CheckResult:
     na_roles = sorted(
-        entry["role"] for role, entry in _latest_entries_by_role(entries).items()
+        entry["role"]
+        for role, entry in _latest_entries_by_role(entries).items()
         if role in _DOMAIN_CHECKABLE_ROLES
         and entry["fields"].get("Status", "").strip().upper() in _NA_STATUSES
     )
@@ -504,13 +541,28 @@ def _check_na_domains(repo_root: Path, entries: list[dict], base_sha: str, head_
         return CheckResult("REQ-W-09", True, "no independently-checkable N/A entries")
     script = repo_root / _CHANGE_CLASSIFIER_SCRIPT
     if not script.exists():
-        return CheckResult("REQ-W-09", False, f"missing {_CHANGE_CLASSIFIER_SCRIPT} — cannot verify N/A waiver(s)")
+        return CheckResult(
+            "REQ-W-09", False, f"missing {_CHANGE_CLASSIFIER_SCRIPT} — cannot verify N/A waiver(s)"
+        )
     result = _run(
-        [sys.executable, str(script), "--base", base_sha, "--head", head_sha, "--domains-only", "--roles", ",".join(na_roles)],
-        cwd=repo_root, timeout=120,
+        [
+            sys.executable,
+            str(script),
+            "--base",
+            base_sha,
+            "--head",
+            head_sha,
+            "--domains-only",
+            "--roles",
+            ",".join(na_roles),
+        ],
+        cwd=repo_root,
+        timeout=120,
     )
     if result is None or result.returncode != 0:
-        return CheckResult("REQ-W-09", False, "change_classifier.py failed to run — cannot verify N/A waiver(s)")
+        return CheckResult(
+            "REQ-W-09", False, "change_classifier.py failed to run — cannot verify N/A waiver(s)"
+        )
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -518,11 +570,17 @@ def _check_na_domains(repo_root: Path, entries: list[dict], base_sha: str, head_
     touched = set(payload.get("domains_touched", {}) or {})
     invalidated = sorted(r for r in na_roles if r.lower() in touched)
     if invalidated:
-        return CheckResult("REQ-W-09", False, f"N/A not credible — domain(s) actually touched: {', '.join(invalidated)}")
+        return CheckResult(
+            "REQ-W-09",
+            False,
+            f"N/A not credible — domain(s) actually touched: {', '.join(invalidated)}",
+        )
     return CheckResult("REQ-W-09", True, f"{len(na_roles)} N/A waiver(s) independently verified")
 
 
-def _check_prompt_artifact_trailers(repo_root: Path, base_sha: str, head_sha: str, risk_tier: str) -> CheckResult:
+def _check_prompt_artifact_trailers(
+    repo_root: Path, base_sha: str, head_sha: str, risk_tier: str
+) -> CheckResult:
     if not _tier_gte(risk_tier, "MEDIUM"):
         return CheckResult("REQ-W-10", True, f"tier {risk_tier} below MEDIUM — not required")
     result = _run(["git", "log", "--format=%H", f"{base_sha}..{head_sha}"], cwd=repo_root)
@@ -538,8 +596,12 @@ def _check_prompt_artifact_trailers(repo_root: Path, base_sha: str, head_sha: st
         if "Prompt-Artifact:" not in body:
             missing.append(sha[:8])
     if missing:
-        return CheckResult("REQ-W-10", False, f"commit(s) missing Prompt-Artifact trailer: {', '.join(missing)}")
-    return CheckResult("REQ-W-10", True, f"all {len(shas)} commit(s) carry a Prompt-Artifact trailer")
+        return CheckResult(
+            "REQ-W-10", False, f"commit(s) missing Prompt-Artifact trailer: {', '.join(missing)}"
+        )
+    return CheckResult(
+        "REQ-W-10", True, f"all {len(shas)} commit(s) carry a Prompt-Artifact trailer"
+    )
 
 
 def _check_doc_currency(repo_root: Path, base_sha: str, head_sha: str) -> CheckResult:
@@ -551,24 +613,35 @@ def _check_doc_currency(repo_root: Path, base_sha: str, head_sha: str) -> CheckR
     if not triggers:
         return CheckResult("REQ-W-11", True, "no doc-requiring surface changed")
     if any(_DOC_SATISFYING_GLOB.match(f) for f in changed):
-        return CheckResult("REQ-W-11", True, "doc-requiring surface changed and docs/ updated alongside it")
+        return CheckResult(
+            "REQ-W-11", True, "doc-requiring surface changed and docs/ updated alongside it"
+        )
     return CheckResult(
-        "REQ-W-11", False,
+        "REQ-W-11",
+        False,
         f"contract/agent surface changed ({', '.join(triggers[:5])}) with no docs/ update in the same range",
     )
 
 
-def _check_system_tests(entries: list[dict], register_present: bool, system_test_applicable: bool) -> CheckResult:
+def _check_system_tests(
+    entries: list[dict], register_present: bool, system_test_applicable: bool
+) -> CheckResult:
     if not system_test_applicable:
         return CheckResult("REQ-W-12", True, "system tests not applicable to this step")
     if not register_present:
         return CheckResult("REQ-W-12", False, "sign-off register is missing")
     entry = _latest_entry_by_role(entries, "test-system")
     if entry is None:
-        return CheckResult("REQ-W-12", False, "system tests applicable but no test-system register entry")
+        return CheckResult(
+            "REQ-W-12", False, "system tests applicable but no test-system register entry"
+        )
     status = entry["fields"].get("Status", "").strip().upper()
     if status not in {"APPROVED", "CONDITIONAL"}:
-        return CheckResult("REQ-W-12", False, f"test-system entry status is {status!r}, expected APPROVED/CONDITIONAL")
+        return CheckResult(
+            "REQ-W-12",
+            False,
+            f"test-system entry status is {status!r}, expected APPROVED/CONDITIONAL",
+        )
     return CheckResult("REQ-W-12", True, "system tests approved")
 
 
@@ -579,7 +652,9 @@ def _check_evaluator_verdict(repo_root: Path, step: Union[str, int]) -> CheckRes
     directory = repo_root / ".claudetmp" / "oversight"
     matches = sorted(directory.glob(f"step{step}-evaluation-*.md")) if directory.is_dir() else []
     if not matches:
-        return CheckResult("REQ-W-13", False, f"no evaluation file matching {_evaluation_glob(step)}")
+        return CheckResult(
+            "REQ-W-13", False, f"no evaluation file matching {_evaluation_glob(step)}"
+        )
     latest = matches[-1]
     text = _read_text(latest) or ""
     verdict = None
@@ -587,14 +662,17 @@ def _check_evaluator_verdict(repo_root: Path, step: Union[str, int]) -> CheckRes
     if m:
         verdict = m.group(1)
     if verdict not in _EVALUATOR_ACCEPTABLE:
-        return CheckResult("REQ-W-13", False, f"{latest.name} recommendation={verdict!r} — not PROCEED/CONDITIONAL_PROCEED")
+        return CheckResult(
+            "REQ-W-13",
+            False,
+            f"{latest.name} recommendation={verdict!r} — not PROCEED/CONDITIONAL_PROCEED",
+        )
     return CheckResult("REQ-W-13", True, f"{latest.name} recommendation={verdict}")
 
 
 def _check_handoff_artifacts(repo_root: Path, step: Union[str, int]) -> CheckResult:
     missing = [
-        p for p in (_panel_context_path(step), _handoff_path(step))
-        if not (repo_root / p).exists()
+        p for p in (_panel_context_path(step), _handoff_path(step)) if not (repo_root / p).exists()
     ]
     if missing:
         return CheckResult("REQ-W-14", False, f"missing: {', '.join(missing)}")
@@ -647,7 +725,9 @@ def assess_pr_readiness(
     a full picture of every gap, not just the first one hit.
     """
     root = Path(repo_root)
-    manifest_path = Path(step_manifest_path) if step_manifest_path else root / _STEP_MANIFEST_DEFAULT
+    manifest_path = (
+        Path(step_manifest_path) if step_manifest_path else root / _STEP_MANIFEST_DEFAULT
+    )
     register_text, entries = _load_register(root, step)
     register_present = register_text is not None
     required_roles = _parse_required_signoffs(manifest_path, step)
@@ -681,14 +761,18 @@ def assess_pr_readiness(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Worker pre-PR deterministic self-assessment gate (#317).")
+    parser = argparse.ArgumentParser(
+        description="Worker pre-PR deterministic self-assessment gate (#317)."
+    )
     parser.add_argument("--cid", required=True)
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--step", required=True)
     parser.add_argument("--risk-tier", required=True, choices=[t.name for t in RiskTier])
     parser.add_argument("--system-test-applicable", action="store_true")
-    parser.add_argument("--manifest", default=None, help=f"default: <repo-root>/{_STEP_MANIFEST_DEFAULT}")
+    parser.add_argument(
+        "--manifest", default=None, help=f"default: <repo-root>/{_STEP_MANIFEST_DEFAULT}"
+    )
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--no-write-state", action="store_true")
     args = parser.parse_args()
@@ -699,7 +783,11 @@ def main() -> int:
         return 2
 
     result = assess_pr_readiness(
-        args.cid, args.base_sha, args.head_sha, args.step, args.risk_tier,
+        args.cid,
+        args.base_sha,
+        args.head_sha,
+        args.step,
+        args.risk_tier,
         repo_root=root,
         system_test_applicable=args.system_test_applicable,
         write_state=not args.no_write_state,

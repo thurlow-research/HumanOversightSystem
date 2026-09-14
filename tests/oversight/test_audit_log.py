@@ -12,20 +12,20 @@ Covers the load-bearing properties of the per-entry audit-log helper:
         (same path, same content) for the same event.
 plus idempotency, the empty-directory contract, and timestamp normalization.
 """
-import importlib.util
+
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import load_module_from_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "scripts" / "oversight" / "lib" / "audit_log.py"
 BASH_LIB = REPO_ROOT / "scripts" / "oversight" / "lib" / "audit_log.sh"
 
-_spec = importlib.util.spec_from_file_location("audit_log_under_test", MODULE_PATH)
-al = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(al)
+al = load_module_from_path("audit_log_under_test", MODULE_PATH)
 
 
 def _records(root: Path) -> list[Path]:
@@ -35,6 +35,7 @@ def _records(root: Path) -> list[Path]:
 # --------------------------------------------------------------------------- #
 # Canonical serialization
 # --------------------------------------------------------------------------- #
+
 
 def test_canonical_bytes_is_sorted_compact_and_newline_terminated():
     out = al.canonical_bytes({"event": "x", "b": 2, "a": 1})
@@ -48,9 +49,7 @@ def test_canonical_bytes_is_reader_compatible_compact_json():
     # portable — assert against that contract, not a literal trailing comma.
     import re
 
-    out = al.canonical_bytes(
-        {"event": "step-head-final", "step": 2, "head_sha": "abc"}
-    ).decode()
+    out = al.canonical_bytes({"event": "step-head-final", "step": 2, "head_sha": "abc"}).decode()
     assert '"event":"step-head-final"' in out
     assert re.search(r'"step":2[,}]', out)
     assert '"head_sha":"abc"' in out
@@ -59,6 +58,7 @@ def test_canonical_bytes_is_reader_compatible_compact_json():
 # --------------------------------------------------------------------------- #
 # Timestamp grammar (SPEC §6)
 # --------------------------------------------------------------------------- #
+
 
 def test_normalize_ts_accepts_grammar_and_colon_forms():
     assert al.normalize_ts("2026-06-26T143000Z") == "2026-06-26T143000Z"
@@ -87,11 +87,17 @@ def test_filename_ts_defaults_to_event_timestamp():
 # T1 — read-shim equivalence
 # --------------------------------------------------------------------------- #
 
+
 def test_read_stream_roundtrips_in_chronological_order(tmp_path):
     events = [
         {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T20:05:55Z"},
         {"event": "step-head", "step": 1, "head_sha": "a", "timestamp": "2026-06-23T20:06:00Z"},
-        {"event": "step-head-final", "step": 1, "head_sha": "b", "timestamp": "2026-06-23T20:07:00Z"},
+        {
+            "event": "step-head-final",
+            "step": 1,
+            "head_sha": "b",
+            "timestamp": "2026-06-23T20:07:00Z",
+        },
     ]
     # write out of order to prove ordering comes from the path, not write order
     for e in (events[2], events[0], events[1]):
@@ -105,22 +111,32 @@ def test_legacy_shaped_events_survive_canonicalization(tmp_path):
     # Legacy lines have spaces and insertion-order keys; the read-shim must
     # preserve JSON semantics (every field, same values) for readers.
     legacy = [
-        {"event": "human-authorized-merge", "pr": 866, "merged_by": "ScottThurlow",
-         "timestamp": "2026-06-23T20:14:25Z"},
-        {"event": "cycle-start", "role": "worker", "timestamp": "2026-06-23T20:05:55Z",
-         "bot": "hos-overseer-hos[bot] project=hos"},
+        {
+            "event": "human-authorized-merge",
+            "pr": 866,
+            "merged_by": "ScottThurlow",
+            "timestamp": "2026-06-23T20:14:25Z",
+        },
+        {
+            "event": "cycle-start",
+            "role": "worker",
+            "timestamp": "2026-06-23T20:05:55Z",
+            "bot": "hos-overseer-hos[bot] project=hos",
+        },
     ]
     for e in legacy:
         al.write_event(e, root=str(tmp_path))
     recovered = [json.loads(b) for b in al.read_stream(str(tmp_path))]
     # same set of events, semantics intact (order is chronological)
-    assert sorted(recovered, key=lambda d: d["timestamp"]) == \
-        sorted(legacy, key=lambda d: d["timestamp"])
+    assert sorted(recovered, key=lambda d: d["timestamp"]) == sorted(
+        legacy, key=lambda d: d["timestamp"]
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Write-once / idempotency
 # --------------------------------------------------------------------------- #
+
 
 def test_write_is_idempotent(tmp_path):
     event = {"event": "e", "n": 1, "timestamp": "2026-06-26T14:30:00Z"}
@@ -137,6 +153,7 @@ def test_empty_directory_yields_empty_stream(tmp_path):
 # --------------------------------------------------------------------------- #
 # Reader hardening against out-of-band (non-canonical) records (#1532, #1533)
 # --------------------------------------------------------------------------- #
+
 
 def test_read_stream_normalizes_pretty_printed_record(tmp_path):
     # A record written out-of-band (e.g. via a Write-tool call) rather than
@@ -186,6 +203,7 @@ def test_read_stream_tolerates_nonstandard_filename_and_event_name(tmp_path):
 # T4 — cross-month-shard ordering
 # --------------------------------------------------------------------------- #
 
+
 def test_cross_month_shard_ordering(tmp_path):
     june = {"event": "e", "n": 2, "timestamp": "2026-06-01T00:00:00Z"}
     may = {"event": "e", "n": 1, "timestamp": "2026-05-31T23:59:59Z"}
@@ -202,6 +220,7 @@ def test_cross_month_shard_ordering(tmp_path):
 # T5 — Bash/Python writer parity
 # --------------------------------------------------------------------------- #
 
+
 def test_bash_python_writer_parity(tmp_path):
     event = {"event": "gate suspended!", "reason": "x", "timestamp": "2026-05-30T23:59:59Z"}
     py_root = tmp_path / "py"
@@ -212,9 +231,7 @@ def test_bash_python_writer_parity(tmp_path):
     py_rel = al.write_event(event, root=str(py_root))
 
     script = f'. "{BASH_LIB}"; audit_write_event \'{json.dumps(event)}\' "{sh_root}"'
-    res = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, cwd=str(REPO_ROOT)
-    )
+    res = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=str(REPO_ROOT))
     assert res.returncode == 0, res.stderr
     sh_rel = res.stdout.strip()
 
@@ -228,12 +245,17 @@ def test_cli_write_then_read(tmp_path):
     event = {"event": "e", "step": 3, "timestamp": "2026-06-26T14:30:00Z"}
     w = subprocess.run(
         ["python3", "-m", "scripts.oversight.lib.audit_log", "write", str(tmp_path)],
-        input=json.dumps(event), capture_output=True, text=True, cwd=str(REPO_ROOT),
+        input=json.dumps(event),
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
     )
     assert w.returncode == 0, w.stderr
     r = subprocess.run(
         ["python3", "-m", "scripts.oversight.lib.audit_log", "read", str(tmp_path)],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
     )
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout) == event
@@ -243,11 +265,13 @@ def test_cli_write_then_read(tmp_path):
 # T3 — conflict-free merge property
 # --------------------------------------------------------------------------- #
 
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
-         "-c", "commit.gpgsign=false", *args],
-        cwd=str(repo), capture_output=True, text=True,
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
     )
 
 
@@ -262,15 +286,13 @@ def test_two_branches_merge_without_conflict(tmp_path):
 
     # Branch A writes one record.
     _git(repo, "checkout", "-q", "-b", "branch-a", "base")
-    al.write_event({"event": "e", "who": "a", "timestamp": "2026-06-26T14:30:00Z"},
-                   root=str(repo))
+    al.write_event({"event": "e", "who": "a", "timestamp": "2026-06-26T14:30:00Z"}, root=str(repo))
     _git(repo, "add", "-A")
     assert _git(repo, "commit", "-q", "-m", "a").returncode == 0
 
     # Branch B (from base) writes a different record.
     _git(repo, "checkout", "-q", "-b", "branch-b", "base")
-    al.write_event({"event": "e", "who": "b", "timestamp": "2026-06-26T14:30:01Z"},
-                   root=str(repo))
+    al.write_event({"event": "e", "who": "b", "timestamp": "2026-06-26T14:30:01Z"}, root=str(repo))
     _git(repo, "add", "-A")
     assert _git(repo, "commit", "-q", "-m", "b").returncode == 0
 

@@ -15,17 +15,14 @@ Coverage:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "release_logic.py"
-)
-_spec = importlib.util.spec_from_file_location("release_logic", _MOD_PATH)
-release_logic = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(release_logic)
+from tests.conftest import load_module_from_path
+
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "release_logic.py"
+release_logic = load_module_from_path("release_logic", _MOD_PATH)
 
 bump_version = release_logic.bump_version
 check_authored_notes = release_logic.check_authored_notes
@@ -149,9 +146,7 @@ def test_missing_order_follows_expected():
 
 def test_exact_equality_not_substring():
     # A substring match would wrongly treat "hos_install" as present.
-    assert verify_assets_present(["hos_install"], ["hos_install.sh"]) == [
-        "hos_install.sh"
-    ]
+    assert verify_assets_present(["hos_install"], ["hos_install.sh"]) == ["hos_install.sh"]
 
 
 # --------------------------------------------------------------------------- #
@@ -192,18 +187,14 @@ def test_target_allow_branch_no_local_raises():
 
 def test_target_strips_whitespace():
     # git rev-parse output can arrive with a trailing newline in the shell capture.
-    assert (
-        resolve_release_target("  x\n", " y \n", allow_branch=False) == "y"
-    )
+    assert resolve_release_target("  x\n", " y \n", allow_branch=False) == "y"
     assert resolve_release_target(" z \n", "", allow_branch=True) == "z"
 
 
 # --- CLI contract the shell depends on (stdout SHA + exit code) -------------- #
 def test_cli_resolve_target_prints_remote_tip(capsys):
     sha = "f" * 40
-    rc = release_logic.main(
-        ["resolve-target", "--local", "0" * 40, "--remote", sha]
-    )
+    rc = release_logic.main(["resolve-target", "--local", "0" * 40, "--remote", sha])
     assert rc == 0
     assert capsys.readouterr().out.strip() == sha
 
@@ -217,8 +208,6 @@ def test_cli_resolve_target_no_remote_exits_2(capsys):
 
 def test_cli_resolve_target_allow_branch_prints_local(capsys):
     sha = "9" * 40
-    rc = release_logic.main(
-        ["resolve-target", "--local", sha, "--remote", "", "--allow-branch"]
-    )
+    rc = release_logic.main(["resolve-target", "--local", sha, "--remote", "", "--allow-branch"])
     assert rc == 0
     assert capsys.readouterr().out.strip() == sha
