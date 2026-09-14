@@ -78,11 +78,12 @@ the two files.**
 
 **TD-VF-3 — AF-7's two-reader claim: CONFIRMED, and sharper. The two readers disagree about the
 per-finding file key, and a conforming document must satisfy both.**
-- `validation_logic.py` reads only: block-level `verdict` (`:268`), `findings[]` and `attacks[]`
-  (`:273`), per-finding `severity` (`:274`), `files` **or** singular `file` (`_files_of:148-154`), and
-  `category` **or** `type` (`_class_of_finding:156-160`). `compute_verdict` takes
+- `validation_logic.py` reads only: block-level `verdict` (read in `compute_verdict`), `findings[]` and `attacks[]`
+  (iterated together in `compute_verdict`), per-finding `severity`, `files` **or** singular `file`
+  (`_files_of`), and `category` **or** `type` (`_class_of_finding`). `compute_verdict` takes
   `(findings: list[dict], ledger_path: str, *, strict_empty: bool)`. A block whose `verdict` is `"error"`
-  adds **+1 `blocking_count` and +1 `new_blocking_count`, never dedup-silenced** (`:266-272`) — this is
+  adds **+1 `blocking_count` and +1 `new_blocking_count`, never dedup-silenced** (the `ERROR_VERDICT`
+  branch of `compute_verdict`) — this is
   the #670 path AD-4's `invocation_failed ⟹ verdict:"error"` rule rides on, verified at source.
 - `panel_logic.py` reads `reviewer` and `lens` (`count_corroboration:194-220`), and in its fallback path
   reads singular **`file`** and **`line`** (`reconcile_membership:222-258`). It counts **distinct
@@ -93,9 +94,9 @@ per-finding file key, and a conforming document must satisfy both.**
   read to `panel_logic` as twelve corroborating vendors. §4.2 binds both.
 
 **TD-VF-4 — `load_ledger` cannot be avoided by not calling it: `compute_verdict` calls it
-unconditionally.** `compute_verdict:259` is `seen = load_ledger(ledger_path)` with no branch. AD-6's
+unconditionally.** `compute_verdict` opens with `seen = load_ledger(ledger_path)`, with no branch. AD-6's
 "`fingerprint()` is reused; `load_ledger()` is not" therefore cannot be honoured by the callee; it must be
-honoured by **what the caller passes**. `load_ledger` tolerates a missing file (`:218-220`,
+honoured by **what the caller passes**. `load_ledger` tolerates a missing file (its
 `except FileNotFoundError`) and a zero-line file. §4.4 binds `os.devnull` as the mandatory argument and
 §9 adds a source-level test that the primitive never imports `load_ledger`.
 
@@ -813,7 +814,7 @@ Plus the three pre-flight details that never reach `classify` because no process
 > the agent said.
 
 That single rule makes every existing `validation_logic.compute_verdict` consumer fail closed on a broken
-invocation for free, via the #670 error-block path (`:266-272` — an `error` verdict counts as one NEW
+invocation for free, via the #670 error-block path (the `ERROR_VERDICT` branch of `compute_verdict` — an `error` verdict counts as one NEW
 blocking finding and is never dedup-silenced). It is verified by test **T2.6** (§9.2), not asserted.
 
 **Unknown envelope fields.** AD-4 says *"any envelope field the classifier does not recognise"* produces
@@ -956,7 +957,7 @@ stable so diffs of two documents are readable.
 | `lens` | The dimension entry id (`--lens`, defaulting to `--dimension`). This is `panel_logic`'s second read. |
 | `verdict` | `∈ {approve, request_changes, error}` — the existing three-value domain, **not** extended. |
 | `summary` | Free text. **No caller may determine pass/fail from it** (REQ-A8). |
-| `findings[]` | Per-finding: `severity` from the canonical 7-rank ordering (`validation_logic.SEVERITIES`, `:52`), `category`, `type` (**same value as `category`**, so codex-shaped readers and agy-shaped readers agree), `files[]` **and** `file` (the first element) **and** `line`, `description`, `fix`. Both file keys are mandatory: `validation_logic._files_of` prefers `files`, `panel_logic.reconcile_membership` reads `file` + `line`. |
+| `findings[]` | Per-finding: `severity` from the canonical 7-rank ordering (`validation_logic.SEVERITIES`), `category`, `type` (**same value as `category`**, so codex-shaped readers and agy-shaped readers agree), `files[]` **and** `file` (the first element) **and** `line`, `description`, `fix`. Both file keys are mandatory: `validation_logic._files_of` prefers `files`, `panel_logic.reconcile_membership` reads `file` + `line`. |
 | `attacks[]` | Always present, normally `[]`. `compute_verdict` iterates `findings + attacks`; omitting the key is harmless but present-and-empty keeps one shape. |
 
 **New, additive, and where the real information lives.**
@@ -980,9 +981,9 @@ the derivation is auditable and the helper-model cost is not lost.
 
 ### 4.3 Strict payload extraction (AD-6, REQ-A9)
 
-`validation_logic.extract_json_objects` is deliberately prose-tolerant (`:105-152` — it scans braces and
-tolerates commentary because agy and codex both prepend it). **L2 must not use it and must not import
-it.** Our own agent is instructed by our own prompt template and can be held to a contract.
+`validation_logic.extract_json_objects` is deliberately prose-tolerant — it delegates to
+`validation_logic._brace_objects`, which scans braces and tolerates commentary because agy and codex
+both prepend it. **L2 must not use it and must not import it.** Our own agent is instructed by our own prompt template and can be held to a contract.
 
 The rule, exactly:
 1. Take `envelope["result"]`. It must be a `str`. Otherwise ⟹ `schema_violation`.
@@ -1044,9 +1045,10 @@ the import:
 # convergence context needs, where recurrence means the fix failed. ADR-1643
 # AD-6 + Q5 + REQ-C4 forbid applying them to any result produced through this
 # primitive. When a caller feeds this document to compute_verdict(), it MUST
-# pass os.devnull as ledger_path -- compute_verdict calls load_ledger()
-# unconditionally (validation_logic.py:259), so the only way to honour the
-# prohibition is at the call site. See §4.4 of the technical design.
+# pass os.devnull as ledger_path -- compute_verdict (in
+# scripts/oversight/validation_logic.py) calls load_ledger() unconditionally,
+# so the only way to honour the prohibition is at the call site.
+# See §4.4 of the technical design.
 ```
 
 Test **T2.8** greps the module source for `load_ledger` and fails if it appears outside that comment.
