@@ -12,21 +12,15 @@ deleting the bash logic.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 from pathlib import Path
 
 import pytest
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "prompt_audit_logic.py"
-)
-_spec = importlib.util.spec_from_file_location("prompt_audit_logic", _MOD_PATH)
-pal = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(pal)
+from tests.conftest import load_module_from_path
+
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "prompt_audit_logic.py"
+pal = load_module_from_path("prompt_audit_logic", _MOD_PATH)
 
 RS = pal.RECORD_SEP
 US = pal.FIELD_SEP
@@ -63,9 +57,8 @@ def test_single_full_record_extracts_all_keys():
 
 
 def test_multiple_records():
-    s = (
-        _rec("h1", "2026-01-01", "first", "AI-Risk: LOW")
-        + _rec("h2", "2026-01-02", "second", "AI-Risk: MEDIUM")
+    s = _rec("h1", "2026-01-01", "first", "AI-Risk: LOW") + _rec(
+        "h2", "2026-01-02", "second", "AI-Risk: MEDIUM"
     )
     out = pal.parse_commit_trailers(s)
     assert [c["hash"] for c in out] == ["h1", "h2"]
@@ -183,10 +176,7 @@ def test_format_list_with_and_without_risk():
 
 
 def test_format_list_limit():
-    commits = [
-        {"hash": f"h{i}", "date": "d", "subject": "s", "ai_risk": ""}
-        for i in range(5)
-    ]
+    commits = [{"hash": f"h{i}", "date": "d", "subject": "s", "ai_risk": ""} for i in range(5)]
     out = pal.format_list(commits, limit=2)
     assert out.count("\n") == 1  # two lines, one newline
 
@@ -265,7 +255,10 @@ def test_stats_parity_with_legacy_counting(tmp_path):
     script = Path(__file__).resolve().parents[2] / "scripts" / "prompt_audit.sh"
     result = subprocess.run(
         ["bash", str(script), "--stats"],
-        cwd=repo, check=True, capture_output=True, text=True,
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     out = result.stdout
 
@@ -273,7 +266,10 @@ def test_stats_parity_with_legacy_counting(tmp_path):
     def grep_count(*grep_args):
         r = subprocess.run(
             ["git", "log", *grep_args, "--oneline"],
-            cwd=repo, check=True, capture_output=True, text=True,
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         return len([ln for ln in r.stdout.splitlines() if ln.strip()])
 

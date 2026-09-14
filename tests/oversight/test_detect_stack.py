@@ -24,6 +24,7 @@ sandbox does not, and resolve_node_tool's PATH/npx fallback (D2) is ambient
 by design — without isolation these tests assert something that is only
 sometimes true of the host, not of the code. See `_hermetic_path`.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,10 +37,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPO_ROOT / "scripts" / "oversight" / "lib" / "detect_stack.sh"
-BASH = shutil.which("bash")
+BASH = shutil.which("bash") or "/bin/bash"
 
 pytestmark = pytest.mark.skipif(
-    BASH is None or shutil.which("node") is None, reason="bash and node required"
+    shutil.which("bash") is None or shutil.which("node") is None,
+    reason="bash and node required",
 )
 
 
@@ -254,9 +256,7 @@ def test_python_files_present_and_tool_missing_blocks(tmp_path):
 
 
 def test_no_python_files_python_tool_missing_is_no_op(tmp_path):
-    res = _preflight(
-        tmp_path, env={"VENV_BIN": str(tmp_path / "no-such-venv-bin")}
-    )
+    res = _preflight(tmp_path, env={"VENV_BIN": str(tmp_path / "no-such-venv-bin")})
     assert res.returncode == 0, res.stderr
     assert res.stderr == ""
 
@@ -265,7 +265,5 @@ def test_python_files_present_and_tool_resolvable_via_venv_bin_passes(tmp_path):
     venv_bin = tmp_path / "venv-bin"
     _stub_python_tool(venv_bin, "bandit")
     _stub_python_tool(venv_bin, "radon")
-    res = _preflight(
-        tmp_path, env={"VENV_BIN": str(venv_bin)}, py_files_present="1"
-    )
+    res = _preflight(tmp_path, env={"VENV_BIN": str(venv_bin)}, py_files_present="1")
     assert res.returncode == 0, res.stderr

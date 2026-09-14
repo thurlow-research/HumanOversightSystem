@@ -3,18 +3,16 @@
 Focus: parsing, consecutive-pass counting, auto-removal eligibility, and the
 RATCHET invariant (the manager never writes a SUSPENDED line — it only removes).
 """
-import importlib.util
+
 import json
 from pathlib import Path
 
-import pytest
+from tests.conftest import load_module_from_path
 
-_SPEC = importlib.util.spec_from_file_location(
+sm = load_module_from_path(
     "suspension_manager",
     Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "suspension_manager.py",
 )
-sm = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(sm)
 
 
 def _read_audit_events(root) -> list[dict]:
@@ -146,8 +144,13 @@ def test_emit_audit_writes_gate_suspended_event(tmp_path, monkeypatch):
     # Full field set per OVERSIGHT-CONTRACT §6a (parity + #397 additions). The
     # on-disk record is canonically key-sorted (SPEC-888), so compare as a set.
     assert set(event.keys()) == {
-        "event", "gate", "authorized_by", "step",
-        "suspension_file", "reason_category", "timestamp",
+        "event",
+        "gate",
+        "authorized_by",
+        "step",
+        "suspension_file",
+        "reason_category",
+        "timestamp",
     }
 
 

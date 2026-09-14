@@ -30,12 +30,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 class CodeownersEntry:
     __slots__ = ("pattern", "owners")
@@ -51,7 +50,7 @@ def _parse_codeowners(path: Path) -> list[CodeownersEntry]:
 
     GitHub semantics: last matching rule wins.
     """
-    entries = []
+    entries: list[CodeownersEntry] = []
     if not path.is_file():
         return entries
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -114,6 +113,7 @@ def find_owners(filepath: str, codeowners_path: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 # Label-actor authorization (O19)
 # ---------------------------------------------------------------------------
+
 
 def actor_is_codeowner(
     github_login: str,

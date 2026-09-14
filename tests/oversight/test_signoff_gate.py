@@ -13,7 +13,6 @@ the test interpreter (which has PyYAML). They are skipped if git is unavailable.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -22,13 +21,10 @@ from pathlib import Path
 
 import pytest
 
-_GATE_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "signoff_gate.py"
-)
-_spec = importlib.util.spec_from_file_location("signoff_gate", _GATE_PATH)
-sg = importlib.util.module_from_spec(_spec)
-sys.modules["signoff_gate"] = sg
-_spec.loader.exec_module(sg)
+from tests.conftest import load_module_from_path
+
+_GATE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "signoff_gate.py"
+sg = load_module_from_path("signoff_gate", _GATE_PATH, register=True)
 
 
 # ── pure helpers: namespace derivation ────────────────────────────────────────
@@ -97,6 +93,7 @@ pytestmark_git = pytest.mark.skipif(_GIT is None, reason="git not available")
 
 
 def _git(repo: Path, *args: str, when: int | None = None) -> str:
+    assert _GIT is not None  # narrowed by pytestmark_git skipif on every caller
     env = dict(os.environ)
     if when is not None:
         stamp = f"@{when} +0000"  # git epoch-seconds date form

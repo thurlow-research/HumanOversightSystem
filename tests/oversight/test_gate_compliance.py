@@ -10,27 +10,22 @@ Five required cases:
 Additional: integration of all three checks, edge cases.
 """
 
-import importlib.util
 import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import load_module_from_path
+
 # --------------------------------------------------------------------------- #
 # Module loading (mirrors test_suspension_manager.py pattern)                 #
 # --------------------------------------------------------------------------- #
 
-_SPEC = importlib.util.spec_from_file_location(
+gc = load_module_from_path(
     "gate_compliance",
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "automation"
-    / "lib"
-    / "gate_compliance.py",
+    Path(__file__).resolve().parents[2] / "scripts" / "automation" / "lib" / "gate_compliance.py",
 )
-gc = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(gc)
 
 
 # --------------------------------------------------------------------------- #
@@ -74,7 +69,7 @@ def _write_manifest(tmp: Path, step_id: int, gates_required: bool) -> Path:
         f"    risk_tier: HIGH\n"
         f"    required_signoffs: [code-review]\n"
         f"    system_test_applicable: false\n"
-        + (f"    gates_required: true\n" if gates_required else "")
+        + ("    gates_required: true\n" if gates_required else "")
     )
     return manifest_path
 
