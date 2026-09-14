@@ -21,7 +21,7 @@
 
 ### My own findings — these change the design
 
-**AF-1 (CRITICAL — the mandated range derivation collapses to `HEAD~1..HEAD` in the worker's clone, and a live R2 suite is already degraded by it).** Measured this session in `/home/scott/Code/HumanOversightSystem/Worker`:
+**AF-1 (CRITICAL — the mandated range derivation collapses to `HEAD~1..HEAD` in the worker's clone, and a live R2 suite is already degraded by it).** Measured this session in the worker's local clone:
 
 ```
 git describe --tags --abbrev=0   → fatal: No tags can describe '0b86aa52...'
