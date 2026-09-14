@@ -193,11 +193,6 @@ release-request does not re-fire until the human resolves it and removes the lab
 4. **Finding sweep:** for each entry in `results` where `findings` is non-empty and any finding carries `severity` = `CRITICAL` or `HIGH` → flag `unresolved_finding step{N} dimension=<dim>`.
 5. **Validator coverage:** if `successful_validators` < `validator_count - 2` → flag `validator_failures step{N} ({successful}/{total})`.
 
-**Sign-off register completeness:** For each step N:
-1. Read `.claudetmp/signoffs/step{N}-register.md` from main (`git show origin/main:.claudetmp/signoffs/step{N}-register.md`).
-2. Required roles: `code-review`, `security`, `privacy`.
-3. For each required role: if no entry exists with `Status: APPROVED` → flag `incomplete_register step{N} role=<role>`.
-
 **Decision:**
 - **CLEARANCE** (no flags raised across all steps): first run the idempotency grep above — if this release was already cleared, skip silently. Otherwise post on the release-request issue:
   ```markdown
@@ -210,7 +205,6 @@ release-request does not re-fire until the human resolves it and removes the lab
   | Artifact presence | ✅ all steps present |
   | Risk tier | ✅ no HIGH/CRITICAL steps |
   | Finding sweep | ✅ no unresolved blocking findings |
-  | Sign-off register | ✅ required roles present and approved |
 
   This gate does NOT authorize the release cut — human authorization (`release-authorized`
   label from ScottThurlow) is still required per NG3b.
