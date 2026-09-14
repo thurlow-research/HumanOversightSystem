@@ -971,3 +971,105 @@ name the retirement and the re-homing target). Not addressed here: #1626 itself 
 `needs-human`, pending architect scoping of the check's exact mechanism);
 `prompt-fidelity`'s separate `NYI` status (worker-side, complementary, not a
 substitute — see #1626's body for the distinction).
+
+## 2026-09-14 — The release panel: an edge-parameterised mode on the panel engine, verified by recomputation rather than trusted (#1340, PR 1 of ADR-1340)
+
+**Problem.** The panel core (`run_panel.sh`) had never executed in this repository
+(E3/E4 — `run_review_chain.sh` skips it entirely without `--pr`, and `worker.md`'s R2
+invokes it the same way), while the release gate's currently-required "diff since last
+tag" suite (`run_validators.sh`) was checking for step artifacts this repo never
+produces at release time. The one genuinely independent, cross-vendor review mechanism
+this system has was sitting idle exactly where a release gate needed it most.
+
+**Decision.** Retire-and-rehome (siblings #1622–#1625, #1621): this PR delivers the
+REQ-A execution capability — a release-scoped mode on the existing panel engine — with
+the REQ-B guarantees split to the sibling issues and `overseer.md`'s own release-gate
+section (REQ-B7/B8) deferred until those land. Mechanically, the panel engine
+(chunking → fan-out → arbiter → salvage → corroboration ranking → tier render) is
+**not forked, copied, or branched** — `run_panel.sh` gains one flag,
+`--release-range <base_sha>..<head_sha>`, and its five PR-bound edges (diff/file-list,
+identity/run-dir, risk floor, emission, verdict) are lifted into mode-dispatched shell
+functions, each carrying a comment naming both callers. A new thin entry point,
+`scripts/run_release_panel.sh`, owns exactly four things and no review logic: range
+derivation, the verdict contract, `--verify`, and delegation to
+`run_panel.sh --release-range`.
+
+**Rejected alternative: a per-PR panel backfill.** The panel has never run per-PR
+either, so a backfill would land findings on already-merged, already-closed PRs that
+nothing gates — the review would be theatre, not oversight. The release-scoped mode
+reviews a live, not-yet-cut release, which is the one place a fresh panel finding can
+still change the outcome.
+
+**What it does.** The release panel reviews `<last-tag>..HEAD` minus a committed
+exclusion list (`scripts/oversight/release_panel_exclusions.txt`, hashed into the
+verdict — widening the list invalidates every prior verdict), with the full
+cross-vendor roster (`agy:correctness`, `codex:adversary` unconditionally,
+`codex:security` at HIGH+, `ipcheck:ip`) floored at MEDIUM regardless of the
+deterministic/validator signal, and fails closed on any missing or failed required
+reviewer. It posts exactly one issue comment to the release-request issue — a
+markdown summary plus a machine-readable, schema-versioned JSON verdict in a marked
+fenced block — never PR review threads (there is no PR diff to anchor to). A range
+that cannot be derived safely (a shallow clone, no tag reachable from HEAD) is a
+**refusal**, not a degraded pass; a range that resolves to zero reviewable files is
+`NO-CONTENT`, never `PASS`. At R2 the gate is enforced by `--verify`, which **never
+runs the panel and never calls a vendor CLI** — it recomputes the head SHA, re-derives
+the base SHA, re-hashes the exclusion file, and recomputes the post-exclusion file
+digest, comparing each against the posted claim rather than trusting it. Reading the
+posted verdict goes through a new `bootstrap/query_issues.sh --comments-json` mode
+(one jq-escaped JSON object per comment) rather than the existing `--comments` text
+stream, because that stream interpolates comment bodies verbatim into an
+author-attributed delimiter format any commenter can forge — on the text stream a
+passing verdict was forgeable by an unprivileged outsider, a full bypass of the gate,
+not a residual risk. This PR (AD-9 PR 1) is deliberately inert: nothing in the
+repository invokes the new suite yet, so a latent defect in the never-executed engine
+cannot block a release. A second PR arms `worker.md`'s R2 after a real, out-of-band
+execution has produced a verdict `--verify` accepts.
+
+**Scope and residual gaps.** `.claude/agents/overseer.md`'s release-gate section is
+untouched (blocked on #1622–#1625). #1621 (consumer-side impact) is open. Cost
+visibility is a recorded gap, not an invented tracker: `token_tracker.py` has zero
+panel coverage, and REQ-A12's conditional resolves to "no" rather than being closed by
+building one. `--verify`'s recomputation closes the identity-forgery bypass above.
+It also closes a second, narrower forgery vector a HIGH-severity security review
+found in the same PR before merge: `select_verdict`'s newest-wins tie-break
+originally read the self-reported `completed_at` field out of the untrusted verdict
+JSON itself, rather than the comment's own GitHub-authenticated `created_at` (already
+threaded through by `extract_verdicts` but unused for this purpose) — and nothing
+rejected a comment carrying more than one `VERDICT_MARKER`. Together, attacker-
+controlled text landing in the same bot-authored comment as the genuine verdict (e.g.
+reviewer-findings prose that echoes attacker-planted diff/code-comment content — this
+suite's own stated prompt-injection threat model) could plant a second, forged
+marker+fenced-JSON block with a future `completed_at` that won selection over the real
+one, passing all ten `verify_verdict` checks since six of the ten validate only
+internal self-consistency, not real re-execution. The fix: the tie-break now compares
+`created_at`, never a field read out of the payload; and any comment containing more
+than one marker is refused outright — the whole comment yields zero candidates, never
+a best-effort pick among them. One irreducible residue remains, stated in corrected
+terms rather than the first draft's overstated one: an actor holding the worker bot
+token could hand-craft a verdict block
+consistent with the current repository state, because the reviewer outputs themselves
+(`arbiter.json`, `findings.raw.json`) are machine-local and never cross the clone
+boundary — `--verify` can confirm an artifact was posted under the worker App identity
+and is internally consistent with the repository, not that the underlying reviews
+actually ran. That residue is bounded by token custody and by the cost of reproducing
+the digests, not by "identity" alone. Separately, and independent of whether this PR
+ever landed: the worker's clone is shallow, so the **currently-required** R2 row
+labelled "diff since last tag" (`run_validators.sh`) does not measure a one-commit
+range as first suspected, but an **empty** one — `git merge-base HEAD origin/main`
+succeeds and wins ahead of the tag-based fallback, so the diff-size dimension scores
+zero changed lines on a merged HEAD. That defect predates and is independent of #1340;
+the release panel refuses outright in the same clone rather than inheriting either
+degeneracy (AD-2's shallow-clone refusal, exit 2 — the path that fires in this clone
+today, by design).
+
+**Scope.** `scripts/oversight/release_panel_logic.py` (new — range derivation,
+exclusions, verdict compose/verify; pure logic + one injectable `git` seam),
+`scripts/run_release_panel.sh` (new — thin entry point), `scripts/run_panel.sh`
+(modified — five edges + two additive engine carve-outs, mode-dispatched;
+engine control flow unforked), `scripts/oversight/release_panel_exclusions.txt`
+(new), `bootstrap/query_issues.sh` (additive `--comments-json` mode; the existing
+`--comments` text mode and its callers are unchanged), `SCRIPTS-INDEX.md`
+(regenerated), `METHODOLOGY.md` (pipeline-diagram line), this entry. Does not touch
+`.claude/agents/worker.md`, `.claude/agents/overseer.md`, `token_tracker.py`, or the
+shallow-clone remediation (tracked separately) — and nothing in the repository calls
+the new suite yet.

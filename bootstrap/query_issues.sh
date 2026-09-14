@@ -13,6 +13,7 @@
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --search <term> [--milestone <title-prefix>|--milestone-less] [--label <l>] [--state <s>]
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments <N>
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments-json <N>
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --assignable-users
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list-milestones
 #
@@ -32,6 +33,18 @@
 # a caller can grep it for a `Decision:` block (#1277) without a hand-rolled
 # `gh api` read. Omitted by default so existing callers and their output
 # parsing are unaffected.
+#
+# --comments-json <N> emits one COMPACT JSON object per line
+# ({"user":<login>,"created_at":<ts>,"body":<body>}), jq-escaped. Use this
+# instead of --comments whenever a reader needs to trust WHO authored a
+# comment: --comments renders "--- <login> @ <ts> ---\n<body>\n" with the body
+# interpolated VERBATIM, so any commenter can embed a forged delimiter line
+# inside their own body and impersonate another login to a text parser
+# (TD-VF-5 / ADR-1340 AD-7). jq escapes newlines inside `body`, so no comment
+# content can forge a record boundary or an author. Additive only: the
+# existing --comments text mode and all its current callers are unchanged; no
+# existing caller may be migrated to this mode here (ADR-1340 AD-9 row 12 /
+# architect ruling C1) — that is a separate, later change (#1340 FU-5).
 #
 # REST only (GITHUB API — REST only rule in bootstrap/worker-cron-prompt.md):
 # no `gh issue list`, no `gh pr view --json`. The REST issues endpoints return
@@ -64,6 +77,7 @@ MILESTONE_LESS=0
 LABEL_FILTER=""
 STATE_FILTER=""
 COMMENTS_NUMBER=""
+COMMENTS_JSON_NUMBER=""
 ASSIGNABLE_USERS=0
 LIST_MILESTONES=0
 
@@ -79,9 +93,10 @@ while [[ $# -gt 0 ]]; do
         --label)            LABEL_FILTER="$2"; shift 2 ;;
         --state)            STATE_FILTER="$2"; shift 2 ;;
         --comments)         COMMENTS_NUMBER="$2"; shift 2 ;;
+        --comments-json)    COMMENTS_JSON_NUMBER="$2"; shift 2 ;;
         --assignable-users) ASSIGNABLE_USERS=1; shift ;;
         --list-milestones)  LIST_MILESTONES=1; shift ;;
-        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --search <term> [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --assignable-users | --list-milestones)" ;;
+        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --search <term> [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --comments-json <N> | --assignable-users | --list-milestones)" ;;
     esac
 done
 
@@ -96,9 +111,10 @@ MODE_COUNT=0
 [[ "$LIST_MODE" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ -n "$SEARCH_TERM" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ -n "$COMMENTS_NUMBER" ]] && MODE_COUNT=$((MODE_COUNT + 1))
+[[ -n "$COMMENTS_JSON_NUMBER" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$ASSIGNABLE_USERS" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$LIST_MILESTONES" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
-[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --search, --comments, --assignable-users, --list-milestones is required"
+[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --search, --comments, --comments-json, --assignable-users, --list-milestones is required"
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
     err "--milestone and --milestone-less are mutually exclusive"
@@ -205,6 +221,14 @@ elif [[ -n "$COMMENTS_NUMBER" ]]; then
     gh api "repos/${REPO_SLUG}/issues/${COMMENTS_NUMBER}/comments?per_page=100" --jq \
         '.[] | "--- \(.user.login) @ \(.created_at) ---\n\(.body)\n"' \
         || fail "failed to read comments for issue #${COMMENTS_NUMBER}"
+
+elif [[ -n "$COMMENTS_JSON_NUMBER" ]]; then
+    case "$COMMENTS_JSON_NUMBER" in
+        ''|*[!0-9]*) fail "--comments-json must be a positive integer, got: $COMMENTS_JSON_NUMBER" ;;
+    esac
+    gh api "repos/${REPO_SLUG}/issues/${COMMENTS_JSON_NUMBER}/comments?per_page=100" --jq \
+        '.[] | {user: .user.login, created_at: .created_at, body: .body} | tojson' \
+        || fail "failed to read comments for issue #${COMMENTS_JSON_NUMBER}"
 
 elif [[ "$ASSIGNABLE_USERS" -eq 1 ]]; then
     gh api "repos/${REPO_SLUG}/assignees?per_page=100" --jq '.[].login' \
