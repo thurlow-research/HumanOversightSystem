@@ -1,0 +1,31 @@
+# Release-panel exclusion list (single source of truth) — ADR-1340 AD-3.
+#
+# Applied identically on every release-panel run, by `run_release_panel.sh`
+# (execute mode) and by `--verify` (verification mode) — both call
+# `scripts/oversight/release_panel_logic.py`'s `apply_exclusions`, the only
+# place this file is read. Excludes only what is machine-generated,
+# machine-appended, or archival; never excludes prose that carries
+# governance meaning — an ADR, an agent definition, or a spec change is
+# reviewable content, not noise.
+#
+# Glob syntax: `dir/**` = that directory and everything under it; `*` = one
+# path segment; a plain path = that exact file. Blank lines and `#` comments
+# ignored (scripts/framework/require_human_approval.py `load_globs`).
+#
+# This file's sha256 is recorded in every release-panel verdict; editing it
+# invalidates every prior verdict.
+
+# Generated artifacts — deterministically regenerated, each guarded by its own
+# test (docs/GENERATED-ARTIFACTS.md). Reviewing them reviews the generator's
+# output, not a decision.
+SCRIPTS-INDEX.md
+.github/CODEOWNERS
+.hos-manifest
+scripts/framework/validation-stamps/**
+
+# Machine-appended audit records — append-only, high-volume, no reviewable decision.
+audit/log/**
+audit/oversight-log.jsonl
+
+# Archival release notes for already-cut releases.
+docs/releases/**
