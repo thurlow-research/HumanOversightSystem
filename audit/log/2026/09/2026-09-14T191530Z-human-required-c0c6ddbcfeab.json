@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1650,"reason_category":"GATE_UNSATISFIED","summary":"Security-relevant surface (scripts/automation/lib/codeowners.py, pr_readiness.py) requires human approval per #1253","timestamp":"2026-09-14T19:15:30Z"}
