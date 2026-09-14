@@ -937,3 +937,37 @@ The remaining live-only entries — one-off `Bash(bash /tmp/claude/verify_*.sh)`
 **Branch-reaper comments corrected too.** Three pre-existing comments in `bin/hos-cron`'s branch-reaper section (the stranded zero-commit branch/record cleanup, #1498) cited `#1265` itself as proof that "two same-role cron processes can overlap on the same REPO_ROOT" — directly contradicting this entry's own finding. That protection is still needed (a stale-lock reclaim under `#1002` genuinely can leave two same-role processes alive at once), so the code and grace-window logic are unchanged; only the citation was wrong. Re-pointed all three to `#1002`, with an explicit note distinguishing it from `#1265`'s benign pipeline-subshell artifact.
 
 **Scope.** `bin/hos-cron` (comment only, above the `_build_prompt | _run_claude` pipeline, plus the three corrected `#1265`→`#1002` citations in the branch-reaper section — no logic changed anywhere in this file), `tests/automation/test_hos_cron.py` (corrected comment on the existing real-concurrency test; new test pinning the benign nested-argv shape), this entry. Does not touch `.claude/agents/**` or the overlap lock's acquisition code.
+
+
+## 2026-09-14 — Retire SPEC-328's out-of-scope-commit register check; guarantee re-homed, not silently dropped (#1594, #1615, #1619, #1626)
+
+**Decision.** `overseer.md`'s step 4b (SPEC-328, "out-of-scope commit flag check") read
+`.claudetmp/signoffs/step{N}-register.md` to detect a reviewer-flagged scope-creep
+commit before merge. That path is gitignored and has never been committed in this
+repo — the same structural defect independently found in #1594's release-gate register
+check (#1619) and generalized here: **this repo is retiring stamp/attestation-based
+gating** (#1216, #1340, #1536) in favor of checks overseer executes itself against
+durably committed state, not artifacts a worker session self-reports.
+
+Unlike #1594's release-gate check (a dormant no-op that had never fired and lost
+nothing on removal), SPEC-328 encoded a real, distinct guarantee — a reviewer flagging
+scope creep *before* approving, which is not covered by the existing head-SHA-freshness
+/ `dismiss_stale_reviews` mechanisms (those catch a commit added *after* approval, not
+one bundled in and approved-with-caveat). Per the standing rule that a guarantee lost to
+a broken mechanism must be re-homed or explicitly accepted as a reduction, never
+silently dropped: step 4b is removed now, and its guarantee is re-homed to **#1626**
+(a new overseer-executed check comparing a PR's diff against its originating issue and
+spec chain — reading durably committed artifacts, sidestepping the register problem
+entirely rather than relocating it). Between this removal and #1626 landing, this
+guarantee is a **known, accepted gap** — not a silent one.
+
+**Why removal now rather than waiting for #1626.** The mechanism has, on the evidence
+available, never actually fired in production (same unreachable-path defect as #1594),
+so removal changes no real behavior — it removes a false sense of coverage, which is a
+net improvement on its own, independent of when the replacement lands.
+
+**Scope.** `.claude/agents/overseer.md` (step 4b removed; step 4a's pointer updated to
+name the retirement and the re-homing target). Not addressed here: #1626 itself (open,
+`needs-human`, pending architect scoping of the check's exact mechanism);
+`prompt-fidelity`'s separate `NYI` status (worker-side, complementary, not a
+substitute — see #1626's body for the distinction).
