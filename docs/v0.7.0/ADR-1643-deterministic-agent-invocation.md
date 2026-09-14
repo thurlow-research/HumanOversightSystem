@@ -1,0 +1,948 @@
+# ADR-1643 — One invocation primitive, one registry schema, two runners: a dimension is real only when a script named it, a script ran it, and a script read its envelope
+
+**Status:** ACCEPTED FOR DESIGN — binds `technical-design`. **Four items are held for the human** (§6):
+ESC-1 (Q2's unconditional rerun does not fit one cron cycle — cost + latency), ESC-2 (the sweep becomes a
+new top-level cron execution stage — deployment topology + operational burden), ESC-3 (does input-identity
+reuse fall inside Q2's "unconditionally"? — ESC-1's arithmetic depends on the answer), ESC-4 (turning on
+twelve review dimensions that have never executed is a step change in what blocks a merge — observation
+window first, or straight to enforcing?). Everything else below is **BINDING**.
+**Date:** 2026-09-14
+**Author:** architect
+**Inputs:** `docs/v0.7.0/REQUIREMENTS-1643-1644-deterministic-agent-invocation.md` (pm-agent, merged in
+PR #1651) in full, including VF-1…VF-12; the human's **Q1–Q8 rulings** (#1643 comment 2026-09-14T20:09:14Z);
+the human's **ESC-5 ruling** (#1643 comment 2026-09-14T19:37:22Z — from a prior architect pass whose ADR
+was never committed; the artifact is lost, the ruling stands and is carried forward here in my own
+numbering); the human's **registry-driven-orchestration** direction (#1643 comment 2026-09-14T18:46:07Z);
+the three 2026-09-14 mechanism/refinement comments on #1643; my own re-verification against
+`4f973c43` = `origin/main` (§0).
+**Consumers:** `technical-design` (next), then the decomposed issues in §5.
+**Source issues:** #1643 (this), #1644 (sibling — **out of scope**, §4 states the seam only), #1641/#1357
+(the landed two-tier CLI pattern this copies), #1536, #1567 Gap 5, #1621, #1626, #1629 (children),
+#1594/#1615 (the register-self-report defect class), #1580/#1626 (disposition paths this must not
+duplicate), #1216 (AI review stays out of CI), #1349/#1354 (the stage-per-cycle pattern and the pending
+label rename), #1446 (usage-limit breaker), #1542 (sandbox rollout).
+**Explicitly does NOT re-litigate:** Q1–Q8 (ruled); ESC-5's entry-vs-binding model (ruled); #1641's
+merge-authority invocability work (depended on, not re-specified); what any reviewer agent looks for
+(non-goal 1); any human gate (non-goal 2); moving AI review into CI (non-goal 7, #1216 stands).
+**Explicitly OUT OF SCOPE:** #1644 and REQ-C / Track 3 (W13–W18). The Q4+Q6 ruling changed #1644's
+build-side mechanism; it is going back to `pm-agent`. §4 states what seam I leave and what property of
+REQ-A makes it work. Nothing here binds #1644.
+
+---
+
+## 0. Verification findings — re-derived against `origin/main` = `4f973c43`
+
+pm-agent's §0 is strong and I inherit VF-1…VF-12 rather than re-deriving them. I re-checked every
+file:line I build on, because pm-agent's citations were made from a different worktree. Everything I
+cite below is this checkout of `4f973c43`.
+
+### Confirming pm-agent, where I depend on it
+
+- **VF-2 CONFIRMED, re-run.** Searched `scripts/` (recursive), `bootstrap/`, `bin/`, and
+  `scripts/automation/lib/*.py` for any agent-invocation helper: `invoke_agent`, `run_agent`,
+  `dispatch_agent` → **the only hit in the entire repository is the string `invoke_agent` inside
+  pm-agent's own requirements document.** Four `claude -p` sites exist and no more:
+  `scripts/run_panel.sh:146-147`, `scripts/framework/validate_self.sh:236`,
+  `scripts/framework/validate_scripts.sh:182`, `bootstrap/setup_clis.sh:148`. **None uses `--agent`.**
+- **VF-3 CONFIRMED.** `scripts/oversight/run_with_retry.sh:56-63` exports `with_timeout`;
+  `validate_agents.sh:151-160` and `validate_scripts.sh:96-99` each define a private
+  `_TIMEOUT_BIN`+`run_capped` pair. Three copies, one shared helper ignored. See **AF-3** — the shared
+  helper is also *insufficient* for this job, which changes REQ-A5's answer.
+- **VF-4 CONFIRMED and now sharper after #1641.** `decide_merge_authority` (`merge_authority.py:497-529`)
+  still has **no reviewer, sign-off, register, or dimension parameter**. `oversight_verdict: str` is a
+  caller-supplied string checked exactly once, at `:632`. `check_register_completeness` (`:947`) is still
+  a separate function it never calls. See **AF-4** for what #1641 did and did not change.
+- **VF-5 CONFIRMED and worse than stated.** See **AF-5**.
+- **VF-6 CONFIRMED.** `.claude/agents/overseer.md:14-16` — `dispatches:` lists exactly
+  `oversight-evaluator` and `risk-assessor`. None of the eight review lenses appears.
+- **VF-7 PARTIALLY CONFIRMED, and the "already built" half is weaker than it reads.** See **AF-6**.
+- **VF-10 CONFIRMED.** `validation_logic.py:170` `fingerprint()`; `load_ledger():210` silences a recurring
+  fingerprint with a resolving disposition. But see **AF-7** — the schema pm-agent asks me to extend is
+  not quite the schema `validation_logic.py` parses.
+
+### My own findings — these change the design
+
+**AF-1 (HIGH — the two-tier CLI pattern this needs is already landed and reviewed; do not invent a
+third shape).** #1641 merged as `a73090b3` and shipped exactly the tiering the primitive needs:
+`scripts/automation/merge_authority_cli.py` (795 lines — **L2**: argparse, owns the record schema, owns
+the exit codes, `sys.path` bootstrap making it cwd-immune) plus `bootstrap/merge_authority.sh` (140
+lines — **L3**: fixed argv over a closed subcommand enum, mints the token, passes stdout and exit code
+through byte-for-byte, and its header states *"This script must never grow a JSON literal, a printf/echo
+to stdout, or any re-derivation of a field"*). Its exit vocabulary is `0` answered / `1` operational
+failure / `2` usage error / `3` reserved. **The bash-vs-Python question posed to me is therefore already
+answered by a landed precedent, not open.** AD-1 copies it.
+
+**AF-2 (HIGH — the CLI has no `--max-turns`, so a runaway session is bounded by wall-clock alone).**
+`claude --help` on the installed CLI lists `--agent`, `--output-format {text,json,stream-json}`,
+`--permission-mode {acceptEdits,auto,bypassPermissions,manual,dontAsk,plan}`, `--allowed-tools`,
+`--disallowed-tools`, `--settings <file-or-json>`, `--setting-sources`, `--system-prompt-file`,
+`--agents <json>`, `--model`, `--session-id`. It does **not** list `--max-turns`. REQ-A6 names "exhausts
+its turn budget" as a failure class; there is no flag to set a budget. `num_turns` is present in the
+result envelope, so the condition is *observable after the fact* but not *bounded in advance*. Two
+consequences: (a) wall-clock is the only real bound, which raises the stakes on AD-5; (b) the envelope's
+`num_turns` becomes a post-hoc signal to record, not a guard.
+
+**AF-3 (HIGH — `with_timeout` cannot do the job REQ-A5 assigns it, and reusing it here would be a
+regression dressed as consolidation).** `with_timeout` is literally
+`"$_TIMEOUT_BIN" "$timeout_sec" "$@"` (`run_with_retry.sh:56-63`) — no `--kill-after`, no
+`--foreground`, no process-group kill. `timeout` signals only the direct child. A `claude --print`
+session spawns tool subprocesses; killing the CLI without reaping its group leaves orphans holding the
+worktree and, under `bin/hos-cron`'s own lock semantics, is exactly the class of residue #1616 chased.
+Separately, `run_with_retry.sh` sources `lib/audit_log.sh` at `:52`, so `with_timeout` cannot be taken
+without also taking an audit dependency. REQ-A5's *intent* (one implementation, no fourth copy) is
+correct; its *prescription* (reuse `with_timeout`) is not achievable for this caller. AD-5 resolves it
+in the direction that reduces the copy count anyway.
+
+**AF-4 (HIGH — #1641 made the merge-authority primitives invocable but left the *composition* narrated,
+and it exposed `check_register_completeness` as a peer subcommand, which makes the narration easier to
+mistake for a fix).** `merge_authority_cli.py` ships eight subcommands: `gate`, `register`,
+`bounce-count`, `human-approval`, `hold-directive`, `protected-surface`, `security-surface`,
+`codeowners`. There is **no `decide` subcommand** — `decide_merge_authority` has no CLI anywhere
+(`grep` for it across `scripts/`, `bootstrap/`, `bin/` returns only its own definition and a docstring
+mention in `merge_config.py`). So the state after #1641 is: *the inputs* are invocable, *the decision*
+is not, and the order in which they compose is still prose in `overseer.md`. Running
+`merge_authority.sh register` and then `merge_authority.sh gate` in the right order remains something an
+agent is asked to do. This is the shape REQ-B6 must close, and it is one step subtler than before #1641
+because two real commands now exist to point at.
+
+**AF-5 (HIGH — the register path cannot be REQ-B6's closure in this repo, because the manifest the
+register gate reads does not exist here).** `check_register_completeness` resolves required roles from
+`contract/step-manifest.yaml` (`merge_authority.py:962`) and returns `bounce_required=False` outright
+when that list is empty (`:965-968` — *"Nothing is required for this step, so there is nothing to be
+incomplete about"*). **HOS itself has no `contract/step-manifest.yaml`** — only
+`contract/step-manifest.template.yaml`. So on this repository the register gate is structurally
+incapable of bouncing anything, for every step. #1641's `_cmd_register` deserves credit for surfacing
+this (`gate_evaluable: false` plus a `not_verified[]` entry naming the missing manifest,
+`merge_authority_cli.py:318-352`) — but the *library* still returns "not required", so any consumer
+reading `bounce_required` alone reads a pass. Combined with VF-5's finding that the register file itself
+is gitignored and worker-authored, the conclusion is firm: **REQ-B6 must close on the dimension results,
+not on the register.** AD-15.
+
+**AF-6 (MEDIUM — VF-7's "the routing half already exists" is true about the *knowledge* and false about
+the *interface*, and three of its routing rules are wrong or discretionary today).** Read in full at
+`scripts/framework/run_post_change_sweep.sh`:
+1. **Its output is prose on stdout**, not a machine-readable structure — `Domain routing:` /
+   `Agents to invoke:` / `Track 2 — Code review (sequential then parallel):`. No caller can consume it.
+   The routing *mapping* (8 regexes, `:63-114`) is the reusable asset; the script is not an API.
+2. **It routes to `framework-validator`** (`:172`), which per CLAUDE.md and
+   `scripts/framework/consumer_agents.txt` is **not shipped to consumers** — it belongs to the planned
+   `hos-dev-pack`. Every consumer install's sweep names an agent that is not installed.
+3. **Its privacy branch is discretionary by construction.** `:181-184` is
+   `[[ -n "$HAS_CODE" ]] && grep -qE 'accounts|booking|erasure|pii' … && echo "privacy-reviewer (PII-relevant files detected)" || echo "privacy-reviewer (check if PII-relevant)"`.
+   The `||` fires both when the grep misses *and* when `HAS_CODE` is empty, so the common outcome is a
+   printed instruction telling a human or an agent to *decide*. That is rule 3's failure mode living
+   inside the file VF-7 nominates as the deterministic half.
+4. Its consumer/Django shape is not limited to the PII word list: `^Specs/.*design.pack/`,
+   `^Specs/.*\.md$`, `^docker-compose\.yml$`, `^Caddyfile$`, `^scripts/backup\.sh$` are **one project's
+   repo layout**, not a stack's idiom — so they are PROJECT-layer facts sitting in CORE. AD-11 splits
+   them three ways, and the `Specs/`/`Caddyfile` group goes to PROJECT, not to a pack.
+5. Its last line (`:200-201`) hands execution to an agent, as VF-7 says.
+
+**AF-7 (MEDIUM — the schema I am told to extend is narrower than pm-agent describes, and the
+difference is load-bearing).** REQ-A8 says to extend "the one three validators already emit and
+`validation_logic.py` already parses (`reviewer`, `lens`, `findings[{severity, category, files,
+description, fix}]`, `verdict`, `summary`)". Read at source: `validation_logic.py` reads **only**
+`verdict`, `findings[]`, `attacks[]`, and per-finding `severity`, `category`-or-`type`, and
+`files`-or-`file` (`compute_verdict:240-305`, `fingerprint:170`, `_files_of:148`, `_class_of_finding:158`).
+It never reads `reviewer`, `lens`, `description`, `fix`, or `summary`. Those fields are *emitted* by
+`validate_agents.sh`/`run_second_review.sh` and read by a **different** module — `panel_logic.py:197-258,
+377-388` consumes `reviewer` and `lens`. So "the schema" is really two overlapping readers, and
+superset-compatibility has to hold for both. It also means `extract_json_objects` is a *prose-tolerant
+brace scanner* (`:105-143` — it deliberately tolerates commentary around a ```json fence because agy and
+codex both prepend it), which is the right posture for a foreign vendor's stdout and the **wrong**
+posture for our own primitive, which can and must be strict. AD-6 keeps the wire format compatible with
+both readers while making the primitive's own parse strict.
+
+**AF-8 (MEDIUM — the existing "self-determine not applicable, SKIP" pattern the registry is invited to
+generalize is a fail-open, and generalizing it unchanged would build REQ-B3's failure mode into the
+registry).** The human's registry comment cites `django_check`/`astro_check`/`expensive_gates_stub` as
+already self-determining *"not applicable, SKIP"* rather than failing. They do — `django_check.sh:30-33`
+prints `SKIP: manage.py not found` and `exit 0`. But `run_gates.sh:113-134` records
+`{"gate":…,"exit_code":0,"suspended":false,…}` for that gate, **byte-identical to the record a gate that
+ran and passed produces.** Downstream, "not applicable" and "reviewed and clean" are indistinguishable —
+precisely the distinction REQ-B3 exists to force and VF-5 found missing. The pattern worth generalizing
+is the *directory-discovery runner* (`run_gates.sh:80-142` finds `gates/*.sh`, runs each, emits one
+record per item, aggregates one exit code — a registry runner in all but name). The pattern that must
+**not** be generalized is SKIP-as-exit-0. AD-6 and AD-9 separate them.
+
+**AF-9 (MEDIUM — packs have no mechanism to contribute anything except agent prose, so the
+entry/binding registry is genuinely new structure, not a re-layering of something extant).**
+`packs/<name>/` contains only `<agent>.md` region bodies plus `pack.toml` (`name`, `description`,
+`version`, `requires`); `scripts/framework/install.sh` handles `PACK=` purely as an agent-region merge
+key. There is no pack→gate, pack→validator, or pack→config contribution path today, which is exactly
+why `django_check.sh` and `astro_check.sh` both live in CORE `scripts/oversight/gates/` and self-skip.
+ESC-5's model is therefore the *first* data-layered pack mechanism in HOS. That raises its risk and is
+why AD-9 binds a fail-closed loader with an explicit ownership check rather than a permissive merge.
+
+**AF-10 (MEDIUM — the existing per-agent provenance hook cannot see a primitive invocation, so
+observability does not come for free).** `.claude/settings.json` wires
+`scripts/oversight/record_agent_model.py` as a `SubagentStop` hook; it emits
+`{"agent_id":…,"agent_type":"code-reviewer","event":"subagent-model-resolved","model":"claude-sonnet-5"}`
+(sample record verified in `audit/log/2026/09/`). A `claude --print --agent X` process launched by a
+script is **not** a subagent of any session, so `SubagentStop` never fires and this provenance is lost
+exactly where the invocation becomes deterministic. The replacement is in the envelope (`modelUsage`,
+`num_turns`, `usage`), which only the primitive can see. AD-8. Note also that these records carry no
+`timestamp` field, unlike the `cycle-*` records — a pre-existing inconsistency, not mine to fix.
+
+**AF-11 (LOW, but it decides Q3's mechanism — the scoped-permission surface Q3 asks for already exists
+as a shipped template).** `contract/sandbox-policy.template.json` is a settings document with
+`permissions.defaultMode: "auto"`, `permissions.disableBypassPermissionsMode: "disable"`,
+`additionalDirectories`, and a long literal `allow` list of `Bash(cmd *)` rules. `claude --settings
+<file>` takes exactly this shape. So Q3's *"new invocation surfaces land as dedicated scripts with
+scoped, explicit permissions"* needs no new mechanism: it needs named posture files in the same format,
+in the same protected directory. AD-7.
+
+### Measurements taken this session (for §3)
+
+From the committed audit trail, `audit/log/2026/09/` (223 records, all roles):
+- Worker `cycle-start` → next `cycle-start`: **n=85, min 547s, median 601s, max 4811s.** The cron
+  interval is ~10 minutes.
+- `cycle-claude-timeout`: **1 occurrence in 86 `cycle-start` records** (~1.2%) at the 1800s cap
+  (`bin/hos-cron:39`, `:215`, `:1788`). Today's cycles fit their budget comfortably.
+- **Zero overseer records in the September trail.** Every `cycle-*` record carries `role=worker`. I
+  cannot tell from the audit trail whether the overseer has been running at all this month. Recorded as
+  a gap, not a claim; it means I have **no** empirical overseer cycle-duration baseline.
+
+### Verification gaps I could not close
+
+- **How long one `claude --print --agent <reviewer>` takes over a real diff.** No such invocation has
+  ever run in this repository (VF-2). Every wall-clock number in §3 is derived from the repo's own
+  self-calibration (`AI_REVIEW_TIMEOUT=300`, `validate_agents.sh:141`, `validate_scripts.sh:54`), not
+  from observation. **This is the single largest unknown in the ADR** and is why AD-13's first build
+  slice is a measurement, not an enforcement.
+- **Whether `--settings <file>` survives the untrusted-workspace discard VF-1.2 found for
+  `.claude/settings.json`'s `permissions.allow`,** and whether `--agent <name>` enforces the agent
+  file's frontmatter `tools:` list in a nested, untrusted workspace. Both are load-bearing for AD-7 and
+  neither is documented. `technical-design` MUST probe both before binding AD-7's posture files; if
+  `--settings` is also discarded, AD-7 needs a different mechanism and Q3's interim rule is harder to
+  satisfy than it reads.
+- **Live branch protection / required-check list.** Not queried (same wrapper gap ADR-1357 recorded).
+- **Whether `subagent_stats.refused` is present on the envelope in this CLI version.** VF-1's probe
+  output did not include it. AD-4's classifier is written so that its absence is harmless.
+
+---
+
+## 1. Context — what is actually being decided
+
+pm-agent framed this as "build one wrapper." After §0 it is better framed as **deciding where the
+system's knowledge of its own review obligations lives.**
+
+Today that knowledge is in four places, none of them consultable: the eight lenses exist as agent files
+nobody on the gating side invokes (VF-6); which lens applies to which file exists as prose printed by a
+script whose last line delegates (AF-6); whether a lens ran exists as a worker-written, gitignored
+register (VF-5); and whether that matters to a merge exists as a caller-supplied string
+(VF-4, AF-4). Each hop is individually defensible and the chain end-to-end asserts nothing.
+
+The question the human put to me — one registry and one runner for both roles, or not — resolves once
+you ask what each role's sequence actually *is*. The overseer's is a **fan-out over a changeset**: which
+checks apply to this diff, run them all, aggregate. That is the shape `run_gates.sh` and
+`run_validators.sh` already implement twice (AF-8). The worker's, **under the Q4+Q6 ruling**, is a
+**single-step advance over a durable work queue**: exactly one stage executes per cron cycle, its state
+lives in GitHub labels and issue bodies, and order is everything. Those are not the same runner and
+pretending otherwise would produce a runner that is a fan-out with a degenerate width of one, or a state
+machine with eleven simultaneous current states.
+
+What they *do* share is everything below the runner: how you invoke an agent, how you read what came
+back, how you decide it failed, how ownership layers, and how a step declares itself inapplicable. That
+is the unification that holds, and AD-12 states its boundary precisely rather than gesturing at it.
+
+The governing constraint on the whole design is the one the human set in Q1: **an invocation failure
+hard-blocks the merge.** Every fail-open in §0 — SKIP-as-exit-0 (AF-8), empty-manifest-as-satisfied
+(AF-5), prose-as-routing (AF-6) — becomes a merge stopper the moment this lands. That is correct and it
+is also why §3's arithmetic and ESC-4's rollout question are not optional paperwork.
+
+---
+
+## 2. Decisions (BINDING on `technical-design`)
+
+### AD-1 — The primitive is L2 Python + L3 bash, copying #1641's landed tiering verbatim. (BINDING — REQ-A1, REQ-A3; AF-1, Q3.)
+
+- **L2 — `scripts/automation/agent_invoke_cli.py`.** Owns: argument validation, environment
+  preconditions, subprocess launch, timeout and reaping, envelope classification, result-schema
+  emission, exit codes, observability. Python because (a) #314's standing policy, quoted verbatim in
+  `validation_logic.py`'s own docstring — *"prefer Python for logic, shell for launch"*; (b) v0.7.4's
+  stated migration direction; (c) AD-4's classifier is a branchy allowlist that must be unit-tested
+  against synthetic envelopes, which heredoc-free bash cannot do; (d) AF-1's landed precedent.
+- **L3 — `bootstrap/invoke_agent.sh`.** Fixed argv over a closed flag set, no JSON literal, no
+  re-derivation of any field, stdout and exit code passed through byte-for-byte. Mints **no** token
+  (this surface performs no GitHub I/O). Earns the CLAUDE.md canonical-entry-point row REQ-A1 requires.
+- **Exit vocabulary is #1641's, unchanged:** `0` the invocation was attempted and a result document was
+  produced (whatever it says) / `1` operational failure of the CLI itself / `2` usage error. **The
+  pass/fail of the review is never an exit code** — it is the `verdict` field, read by the caller. This
+  is `validation_logic.py`'s binding 3 (*"the shell owns the cap… the CLI emits process exit codes ONLY
+  for operational failure"*) applied unchanged, so the whole repo keeps one convention.
+- The prompt/context is written to a file by the caller and passed as `--input-file`; L2 delivers it on
+  **stdin** (#1368 `ARG_MAX`, and CLAUDE.md's `--body-file`-only convention). Never argv, never `$(…)`.
+
+*Why this could still go wrong:* L3 exists so an agent session can call the primitive with a
+statically-allowlistable command. Under Q3/Q4 the primary caller is a script, so L3 risks being a wrapper
+nobody uses. It is cheap (~140 lines by #1641's measure) and it is what makes a human's or an agent's
+one-off single-dimension invocation possible without a second path. Keep it; do not grow it.
+
+### AD-2 — The primitive is a top-level, stateless, one-shot process with no notion of round, loop, cycle, or parent session. (BINDING — REQ-A; Q4+Q6. **This is the property §4's seam rests on.**)
+
+All state in is a file path; all state out is a file path plus an exit code. The primitive does not read
+a counter, does not know whether it is round 1 or round 3, does not know whether a parent session exists,
+and holds nothing between invocations. It is correct to invoke it from a script, from `bin/hos-cron`
+directly, from a `claude` session, or from a human's terminal, and it behaves identically in all four.
+
+This is bound as a *decision*, not observed as a property: it would be natural to give the primitive a
+`--round` flag or a resume token, and doing so would make it unusable as a cron-driven one-shot step,
+which is precisely the shape Q4+Q6 ruled #1644 into.
+
+### AD-3 — A shipped, named agent is the only unit of invocation. Bare-model and inline-agent invocation are forbidden through this surface. (BINDING — REQ-A2.)
+
+- The caller names an agent; L2 resolves `.claude/agents/<name>.md` from the repo root and **verifies it
+  exists and is non-empty before launching anything.** Absent ⟹ `outcome: invocation_failed`,
+  `outcome_detail: agent_unavailable`, `verdict: error`. Never a fallback to a general-purpose agent,
+  never a bare model (#1126/#608 — cwd-based agent discovery makes silent fallback to built-ins easy to
+  trigger and it is a governance violation, not a degradation).
+- **`--agents <json>` (inline agent definitions) is forbidden** and L2 must refuse a request carrying
+  it. It would let a caller define an unreviewed reviewer at runtime, defeating the entire point of
+  naming a shipped, region-layered, CODEOWNERS-protected agent file.
+- L2 `cd`s to the repo root before launch (`bin/hos-cron:1772-1781`, #1126) and passes `--model` only
+  when the caller explicitly overrides; otherwise the agent file's own `model:` frontmatter governs
+  (`code-reviewer.md:4` is `sonnet`, `overseer.md:8` is `opus` — that tiering is deliberate and is also
+  §3's cost lever).
+
+### AD-4 — Fail-closed is an allowlist over the envelope, not a denylist. `subtype` is never read. (BINDING — REQ-A6, REQ-A7, REQ-A9; Q1; VF-1.3.)
+
+`outcome: "completed"` is produced **only** when every one of the following holds. Any miss, and any
+envelope field the classifier does not recognise, produces `outcome: "invocation_failed"`.
+
+| Condition for `completed` | Failure ⟹ `outcome_detail` |
+|---|---|
+| process rc == 0 | `124` → `timeout`; anything else → `crash` |
+| stdout is a single valid JSON object | `unparseable` |
+| `is_error` absent or falsy | mapped from `terminal_reason`, else `crash` |
+| `terminal_reason` absent or in a **closed allowlist** of known-good values | that value verbatim (e.g. `api_error`, `usage_limit`, `refusal`, `max_turns`) |
+| `permission_denials` absent or empty | `permission_denied` |
+| `subagent_stats.refused` absent or `0` | `refused` |
+| the result payload parses **strictly** as a conforming AD-6 document | `schema_violation` |
+
+Binding notes:
+- **`subtype` is not an input.** VF-1.3's `subtype:"success"` alongside `is_error:true` is harmless here
+  because the field is never consulted. Do not add it "for completeness."
+- The `terminal_reason` check is an **allowlist of good values**, not a denylist of bad ones. A future
+  CLI version that introduces a new terminal reason fails closed by default. This is the one design move
+  that makes #669 and #1362 unrepeatable rather than re-fixed.
+- **`outcome: invocation_failed` always forces `verdict: "error"` in the emitted document** (AD-6). That
+  single rule makes every existing `validation_logic.compute_verdict` consumer fail closed on a broken
+  invocation for free, via the #670 error-block path it already implements (`:266-272`: an `error`
+  verdict counts as one NEW blocking finding and is never dedup-silenced). Compatibility earning its
+  keep, not decoration.
+- **The two failure classes route differently, per Q1 (REQ-A7).** `invocation_failed` means *the check
+  did not happen* → **hard block on the merge, escalate to human/operator via the existing
+  `HUMAN_REQUIRED` path**; it is explicitly **not** a worker bounce, because a worker cannot fix an auth
+  gap, a quota stop, or a missing agent file. `completed` + `verdict: request_changes` means *the check
+  happened and failed* → the existing `record_pr_bounce()` path with the existing `bounce_count() < 2`
+  budget (REQ-B5; #1580's bounce-before-escalate ordering preserved exactly; #1626's "no third
+  disposition path" honoured — there are two, and both already exist).
+- `--output-format json` is mandatory and L2 sets it; a caller may not override it.
+
+### AD-5 — The primitive owns its own timeout, in Python, with process-group reaping. The two private `run_capped` copies are deleted. (BINDING — REQ-A5; AF-3, AF-2.)
+
+REQ-A5 says reuse `with_timeout` rather than add a fourth copy. AF-3 shows `with_timeout` cannot reap a
+process group and cannot be imported into Python anyway. The resolution honours REQ-A5's intent and
+**reduces** the copy count:
+
+1. L2 launches via `subprocess.Popen(..., start_new_session=True)`, enforces the cap itself, and on
+   expiry sends `SIGTERM` to the **process group**, then `SIGKILL` after a fixed grace period. Timeout is
+   a **distinguishable outcome** (`outcome_detail: timeout`), never folded into "failed".
+2. The default cap is `300s` — not invented, taken from the repo's own `AI_REVIEW_TIMEOUT` calibration
+   (`validate_agents.sh:141`, `validate_scripts.sh:54`). Caller-settable per dimension via the registry
+   (AD-9). **Zero/unbounded is not an accepted value**; the floor is enforced in L2, not in the registry.
+3. When `validate_agents.sh` and `validate_scripts.sh` migrate (AD-16), their private `_TIMEOUT_BIN` +
+   `run_capped` pairs are **deleted** and their remaining `agy`/`codex` calls source
+   `run_with_retry.sh`'s `with_timeout`. Net: three bash copies → one bash helper + one Python
+   implementation that has a capability the bash one structurally lacks.
+4. Given AF-2 (no `--max-turns`), wall-clock is the *only* bound on a runaway session. `technical-design`
+   must not treat the cap as a formality.
+
+### AD-6 — One result document: a strict superset of what `validation_logic.py` and `panel_logic.py` each already read, with outcome, applicability, and input identity as first-class separate fields. (BINDING — REQ-A8, REQ-A9, REQ-B3; AF-7, AF-8, VF-10.)
+
+L2 emits exactly one JSON object per invocation. Field names are `technical-design`'s to finalise; the
+**shape and its rules** are bound here.
+
+- **Legacy-compatible core, semantics unchanged:** `verdict` ∈ `{approve, request_changes, error}` —
+  the existing three-value domain, *not* extended; `findings[]` with per-finding `severity` (the
+  canonical 7-rank ordering, `validation_logic.py:52`), `category`, `files[]`, `description`, `fix`;
+  plus `reviewer`, `lens`, `summary` for `panel_logic.py`'s readers (AF-7). A legacy consumer reading
+  this document gets a correct, conservative answer with no code change.
+- **New, additive, and where the real information lives:**
+  - `outcome` ∈ `{completed, invocation_failed}` and `outcome_detail` — AD-4's classification. **Rule:
+    `invocation_failed` ⟹ `verdict: "error"`, always.** This is the compatibility bridge and it is
+    non-negotiable.
+  - `applicability` ∈ `{applicable, not_applicable}` with a mandatory machine-readable reason.
+    **Rule: applicability is decided by the registry's file predicate (AD-9), never by the agent.** If
+    the predicate matched files, the dimension runs; the agent has no authority to declare itself
+    inapplicable. This closes the self-exemption hole `worker.md:373-378` records as having been
+    exploited repeatedly (*"v0.4.0 #556: workers repeatedly self-exempted on this basis"*) and it is the
+    correct form of REQ-B3's *"'Not applicable' is a verdict an agent must state, not an inference a
+    caller may draw."* Here it is stated — by code, with a reason, at zero model cost.
+    **Rule: `not_applicable` records are written and stored like any other.** Absence of a record is
+    never `not_applicable`; it is a missing dimension, which is blocking (REQ-B3). This is AF-8's
+    SKIP-as-exit-0 fail-open closed by construction.
+  - `dimension` (registry entry id), `binding` (which binding produced it), `agent` (shipped agent name).
+  - `input`: `head_sha`, `base_sha`, `predicate_matched_files[]`, and **`input_digest`** — a content hash
+    over (the matched files' bytes, the prompt template version, the agent file's bytes, the registry
+    entry's and binding's resolved bytes). Computing it forces AD-3's agent-existence check as a side
+    effect, and it is AD-13's reuse key.
+  - `invocation`: timestamps, duration, `model`, `num_turns`, `usage`, the **verbatim CLI envelope**,
+    and the process exit code. AF-10's lost provenance, recovered.
+  - `schema` + `schema_version`.
+- **Parsing is strict on our side.** `validation_logic.extract_json_objects` is deliberately
+  prose-tolerant because agy and codex prepend commentary (AF-7). Our own primitive must not inherit
+  that: the agent's payload is extracted from the envelope's result field and parsed with a strict
+  schema check. Non-conformance is `schema_violation` → `invocation_failed` → `verdict: error`
+  (REQ-A9; do not regress `--strict-empty`'s #669 fix).
+- **`fingerprint()` is reused; `load_ledger()` is not.** Per-finding `files` + `category` are present
+  precisely so `validation_logic.fingerprint()` (`:170`) applies unchanged. Per Q5 and REQ-C4,
+  **`load_ledger()`'s silencing semantics MUST NOT be applied to any result produced through this
+  primitive.** Its dedup rule exists for the one-shot cross-vendor validators it was written for; a
+  recurring fingerprint in a convergence context means the fix failed. This ADR imports the fingerprint
+  function and nothing else from that module, and `technical-design` must make the split textually
+  obvious so a future reader cannot reuse the wrong half by import convenience.
+
+### AD-7 — Permission posture is a named settings profile under `contract/`, reusing the shipped sandbox-policy shape. `bypassPermissions` is never passed by this surface. (BINDING — Q3, REQ-A4; AF-11, VF-1.2, VF-12.)
+
+- Postures are files in the format of `contract/sandbox-policy.template.json`, with
+  `permissions.disableBypassPermissionsMode: "disable"` set in every one of them. A registry binding
+  names its posture (AD-9); L2 passes it as `--settings <path>` together with an explicit
+  `--permission-mode` from `{manual, dontAsk}` and an explicit `--allowed-tools`/`--disallowed-tools`
+  pair. **L2 must refuse `--permission-mode bypassPermissions` outright** — not default away from it,
+  refuse it — so the stopgap Q3 permits for legacy surfaces cannot leak into this one.
+- Two postures suffice for everything in scope: **`review-read-only`** (filesystem read + local
+  read-only shell, no network, no write tools, no `gh`) for the eight lenses and semantic-duplication;
+  **`review-read-only+gh-read`** (adds the `query_issues.sh` read path) for scope-conformance (#1626),
+  which must read the issue body and linked spec. `coder` gets **no** posture here: nothing in #1643's
+  scope invokes a code-writing agent, and inventing its posture in advance of #1644's re-derivation
+  would be exactly the premature binding Q7 warns against.
+- The agent file's frontmatter `tools:` list is the second, independent layer (`code-reviewer.md:5-9` is
+  already `Read, Grep, Glob, Bash` with no `Write`/`Edit`). Defence in depth, not a substitute.
+- **`technical-design` MUST probe, before binding this,** whether `--settings <file>` survives the
+  untrusted-workspace discard VF-1.2 observed for `.claude/settings.json`, and whether `--agent`
+  enforces frontmatter `tools:` in that state. If either fails, AD-7 needs a different mechanism and
+  that is a finding for the human, not something to work around locally.
+
+### AD-8 — Observability goes through `token_tracker.py` and one per-entry audit record per invocation. No decision reads either. (BINDING — REQ-A10; AF-10; ADR-1604 AD-4 carried forward.)
+
+- L2 calls `token_tracker.py record --vendor claude --stage dimension:<entry-id> --step <pr-or-step>`
+  with `--actual-prompt-tokens`/`--actual-output-tokens` from the envelope's `usage` when present,
+  falling back to the existing char estimate. `claude` is already an accepted `--vendor` value
+  (`token_tracker.py:249`). **No new mechanism** (REQ-A10, CLAUDE.md search-first).
+- L2 writes one per-entry audit record per invocation carrying agent, entry, binding, outcome,
+  `outcome_detail`, model, duration, and `input_digest`. This restores AF-10's lost `SubagentStop`
+  provenance for invocations the hook cannot see.
+- **No decision in this design may read an audit event.** ADR-1604's AD-4 is carried forward verbatim,
+  on the same grounds (AF-1/AF-2 there: a counter whose write is an instruction reads zero forever, and
+  a deterministic write has already been observed lost). If an audit write is silently lost, this
+  mechanism degrades to *less observable*, never to *not gating*.
+- A nested session that hits the subscription limit is invisible to #1446's breaker, which greps the
+  **parent's** captured stdout (VF-11). L2 surfaces `terminal_reason: usage_limit` as an
+  `invocation_failed` outcome, which under Q1 stops the merge — the correct conservative behaviour.
+  Wiring it into #1446's breaker proper is a separate item (§5, W3), not a silent assumption here.
+
+### AD-9 — ONE registry: entries are CORE-owned and indestructible; bindings are layered and suppressible. ESC-5's ruling is incorporated. (BINDING — REQ-B1; ESC-5; AF-8, AF-9.)
+
+**Re-derivation of the rules ESC-5 refers to, in this ADR's numbering.** HOS's standing layering ratchet
+— stated in the boundary block of every shipped agent file — is that PROJECT may extend CORE and PACK
+but *"may only ever make these STRICTER … never looser."* Call that the **narrow-only rule**. The trap it
+exists to close is this: if a project could delete a required check outright, a compliant configuration
+could require nothing, and the resulting clean run would be indistinguishable from a run in which
+everything was checked and found sound. That is AF-8's SKIP-as-exit-0 fail-open promoted to a
+configuration feature, and it is the same defect VF-5 found in the register. Call it the
+**required-to-do-nothing trap**. The convention that closes it is that **CORE owns both the existence of
+a check and its baseline** — every entry ships with at least one CORE binding.
+
+**The human's ESC-5 ruling (2026-09-14T19:37:22Z) is a deliberate, narrow loosening of the narrow-only
+rule, scoped to bindings only, and is incorporated here as binding design:**
+
+- An **entry** is a review dimension (`lint`, `security`, `code-review`, `scope-conformance`, …). It has
+  an id, a `kind` ∈ `{deterministic, judgment}`, and a CORE-owned baseline. **Only CORE declares
+  entries.** A PACK or PROJECT file containing an `entries:` key is a **load error**, not a merge.
+- A **binding** is `(entry, tool, applicability predicate, posture, timeout, owner)`. `tool` is either a
+  gate/validator script (`kind: deterministic`) or a shipped agent (`kind: judgment`). CORE, PACK, and
+  PROJECT may all contribute bindings. **Every binding whose predicate matches the diff fires.** A
+  project with both the `django` and `astro` packs gets both bindings on a shared entry like `lint`,
+  each firing on its own file predicate; a project with only `astro` gets that one pack binding.
+- A PROJECT may **suppress a binding** — never an entry. Suppression requires the binding's id and a
+  non-empty `reason`. Suppressing a `core:` binding is a **load error**. The entry keeps running and
+  keeps blocking through its remaining bindings, so the required-to-do-nothing trap stays closed.
+- **File layout — `contract/dimensions/`:** `core.yaml` (CORE, installer-owned, overwritten on upgrade),
+  `pack-<name>.yaml` (PACK, injected by `--pack`, installer-owned), `project.yaml` (PROJECT,
+  consumer-owned, **never** overwritten). Loader:
+  `scripts/automation/lib/dimension_registry.py`. Merge order core → pack-\* → project, mirroring the
+  agent-file region order, but as **data**, not text.
+- `contract/**` is already the first-class protected surface (`scripts/framework/protected_surfaces.txt`
+  line 2 → CODEOWNERS). So ESC-5's *"that suppression is a protected-surface edit under `contract/**`
+  with a recorded reason"* is enforced by an existing human gate, with **no new mechanism**. The
+  `reason` field is the recorded reason.
+- **The loader fails closed, always.** A malformed file, an unknown owner, an entry with no binding
+  definition, a binding naming an absent agent or script, a suppression of a `core:` binding, a
+  suppression with no reason, or an `entries:` key outside `core.yaml` ⟹ the loader exits non-zero and
+  the sweep does not run. Compare AF-5: a permissive loader would reproduce
+  `check_register_completeness`'s "nothing required, therefore nothing incomplete" exactly.
+- The loader emits the **resolved** registry as JSON, so resolution is one artifact, diffable in CI and
+  attachable to a PR. `technical-design` should add a check that the resolved registry is stable and
+  that every entry resolves at least one binding.
+
+*Why this could still go wrong:* AF-9 — packs have never contributed data before, only prose. The
+install-time merge, upgrade behaviour, and `--squash` interaction are unproven for data files.
+`technical-design` must verify the three-way merge story for `contract/dimensions/` against
+`hos_install.sh`'s actual region-merge implementation, not by analogy to it.
+
+### AD-10 — Deterministic entries keep their existing gate; only judgment entries invoke an agent. (BINDING — REQ-B2; Q2.)
+
+`lint`, `type-check`, `secret-scan`, `security-scan`, `bash-check`, `portability`, `template-refs`,
+`collection-integrity` and the rest keep running as `scripts/oversight/gates/*.sh` and CI jobs, bound to
+their entry with `kind: deterministic`. Per **Q2**, CI/CD-covered deterministic dimensions are **trusted
+as already run once, correctly** — the overseer does not rerun them. Only `kind: judgment` entries go
+through the primitive, and per Q2 the overseer reruns **every one of them, unconditionally**, in its own
+context. REQ-B4's "subset by risk tier" recommendation is **overruled and must not be designed for.**
+
+The existing cross-vendor second review is itself an entry: `cross-vendor-review`, `kind: deterministic`,
+bound to `scripts/run_second_review.sh`. That is how Q5's *"route convergence confirmation through the
+existing cross-vendor mechanism, never the same-vendor loop's self-report"* composes into this model
+without a special case.
+
+### AD-11 — `run_post_change_sweep.sh` is **absorbed**: its mapping becomes registry predicates, split three ways; the script survives only as `--explain` over the resolved registry. (BINDING — REQ-B1; AF-6.)
+
+Not replaced (its human-facing value is real), not generated from (AF-6.1-3: it is prose output with two
+wrong routes and one discretionary branch — it is not a source of truth). Its 8 regexes (`:63-114`) and
+its dependency ordering (`:170-196`) migrate into `contract/dimensions/` as binding predicates, and the
+script is rewritten to print a human-readable rendering of the **resolved registry's** plan for a diff.
+One invocation site, one source of truth (D41).
+
+**The CORE/PACK/PROJECT split of its patterns — my call, since VF-7 left it to me:**
+
+| Today (all in CORE) | Layer | Why |
+|---|---|---|
+| `^\.claude/agents/`, `^scripts/framework/` (+ add `^bin/`, `^bootstrap/`, `^contract/`, `AGENTS.md`, `CLAUDE.md`) | **CORE** | These are HOS's own governance surfaces; they are identical in every install. |
+| `^tests/`, `conftest\.py$` | **CORE** (generic) / **PACK** (language-specific globs) | "A test changed" is universal; `/test_.*\.py$` is a Python idiom and belongs to a pack. |
+| `\.py$` application-code, `/migrations/.*\.py$`, `/templates/.*\.html$`, `manage.py` | **PACK: django** | Stack idioms, reusable across every Django project. Same slot the `astro`/`node` packs fill with `*.astro`, `src/pages/`, `astro.config.*`. |
+| `erasure\|pii` (privacy-surface words) | **PACK: django** | Generic enough to be stack-level privacy vocabulary. |
+| `accounts\|booking` | **PROJECT** | These are one application's module names. They are not a stack idiom and must not ship to every Django consumer. |
+| `^Specs/.*design.pack/`, `^Specs/.*\.md$`, `^docker-compose\.yml$`, `^Caddyfile$`, `^scripts/backup\.sh$` | **PROJECT** | One project's repo layout (AF-6.4). Today every consumer inherits another project's directory names as CORE routing. |
+| `framework-validator` as a routed agent | **removed from the consumer registry entirely** | It is not shipped to consumers (AF-6.2). It belongs to `core.yaml` only if and when the `hos-dev-pack` exists; until then it is a HOS-repo-only binding. |
+
+The privacy branch's discretionary `|| echo "privacy-reviewer (check if PII-relevant)"` (AF-6.3) does not
+survive the migration: under AD-6 the predicate either matches, in which case the dimension runs, or it
+does not, in which case a `not_applicable` record with a stated reason is written. There is no third
+output and nothing is left for a reader to decide.
+
+### AD-12 — ONE registry schema and ONE loader; TWO runners. The unification the human asked about does not hold at the runner level, and here is exactly where it stops. (BINDING; answers the 2026-09-14T18:46:07Z comment directly.)
+
+The human explicitly invited "say so and why" over a forced unification. Taking that option, with the
+boundary drawn precisely rather than as a refusal:
+
+**Shared, and genuinely so — built once, used by both roles:**
+the invocation primitive (AD-1…AD-5); the result document (AD-6); the fail-closed classification (AD-4);
+the registry *file format*, *ownership rules*, *predicate language*, and *loader* (AD-9); the posture
+profiles (AD-7); the observability path (AD-8); `fingerprint()` and the prohibition on `load_ledger()`
+(AD-6); the exit-code vocabulary (AD-1).
+
+**Not shared — and forcing them together would produce a worse mechanism than either:**
+
+| | Overseer (REQ-B) | Worker (#1644, under Q4+Q6) |
+|---|---|---|
+| Unit | a **set** of checks over one changeset | a **node** in a stage graph over a work queue |
+| Execution per cycle | many entries, ideally all | **exactly one** stage |
+| Ordering | mostly irrelevant (one soft dependency: code-review gates the parallel lenses) | **total** — the whole mechanism *is* the ordering |
+| State | none between entries; the diff is the input | the durable state *is* the mechanism — GitHub labels, issue bodies, dependency edges |
+| Termination | all entries have a record for the current input | the graph reaches a terminal stage |
+| Failure of one item | record it, keep going, aggregate | stop the stage; the next cycle decides |
+| Loop declaration | **none** — a fan-out has no rounds | the central concern |
+
+The human asked specifically whether loop structure (`loopable`, `cap`, `stuck-criteria`) becomes a
+declared registry property. **On the overseer side: no, and it must not be** — there is no loop to
+declare, and adding the keys would invite someone to build one in the place Q4+Q6 just ruled loops out
+of. On the worker side it is the right idea, but the properties it needs (`next_stage_on`,
+`blocked_by`, `stage_label`, `cap`, `stuck_criteria`) describe a graph, not a set. Those keys belong to
+#1644's registry file, sharing this one's *format, ownership model, and loader*, and nothing else.
+
+So: **two runner implementations, one schema family.** The overseer's runner is AD-13. The worker's is
+#1644's and is not designed here (§4).
+
+### AD-13 — The sweep runner: a fan-out, executed as a script (not inside a model session), resumable across cron cycles, keyed by `input_digest`, with a per-cycle budget. (BINDING — REQ-B3, REQ-B4, REQ-B5; Q2, Q4; §3.)
+
+- **`scripts/automation/dimension_sweep_cli.py`** (L2) + **`bootstrap/run_dimensions.sh`** (L3), same
+  tiering as AD-1. It does **not** replace `run_gates.sh`/`run_validators.sh`; it *calls* them as
+  deterministic bindings (AD-10), keeping those two proven runners intact.
+- **It runs as a script, not from inside the overseer's `claude` session.** Under Q4+Q6's "no nested
+  sessions" ruling and VF-11's nesting-budget finding, the sweep is a peer of the model session, not a
+  child of it. This is a deployment-topology change to `bin/hos-cron` → **ESC-2**.
+- **Resumable and idempotent, keyed by `input_digest` (AD-6).** Each cycle runs the entries that have no
+  current record, up to a per-cycle wall-clock and count budget, writes each record durably as it
+  completes (never batched at the end — a killed cycle must lose at most one invocation), and terminates
+  cleanly. This is #1354's stage-per-cycle pattern generalised to a fan-out, and it is what makes §3's
+  arithmetic fit **by construction** rather than by hope.
+- **A record is current iff its `input_digest` matches.** A push that changes only files no binding's
+  predicate selects does not invalidate that binding's record. This is an identity check on the
+  overseer's **own** results — not trust in a worker artifact and not risk-tier subsetting — but it *is*
+  a reading of Q2's "unconditionally", so it goes to the human as **ESC-3**.
+- **Missing record = blocking.** Absence is never inferred as not-applicable (REQ-B3, AF-8). Only an
+  explicit `applicability: not_applicable` record, written by the runner from the predicate, counts.
+- **Disposition uses the two existing paths and adds none:** `verdict: request_changes` → the existing
+  `record_pr_bounce()` with the existing `bounce_count() < 2` budget and SPEC-378 R1.2 rationale fields;
+  `outcome: invocation_failed` → the existing `HUMAN_REQUIRED` escalation (Q1). No new outcome class
+  (#1626), #1580's ordering preserved.
+- Default per-entry concurrency is **1**. The runner may support a concurrency knob, but parallel fan-out
+  is not designed here: it concentrates subscription-quota burn in a window the #1446 breaker cannot see
+  (AD-8), and its wall-clock benefit is exactly what AD-13's resumability already buys without that risk.
+
+### AD-14 — Dimension results live in a PR comment carrying a machine-readable envelope, written under the overseer's App identity. Never `.claudetmp/`. (BINDING — REQ-B3, REQ-B4; VF-5, Q4.)
+
+VF-5 is decisive: `.claudetmp/` is gitignored, worker-authored, and unreachable cross-clone; the Q4
+ruling says the same thing in general terms (*"records the decomposition durably (issue body/comments/
+labels — not `.claudetmp`, per VF-5's lesson")*. And `overseer.md:7` forbids the overseer from opening
+branches or PRs, so it cannot commit results to the PR branch alongside `signoffs/<ns>/<role>.stamp`.
+
+- Results are posted as a PR comment using **`scripts/automation/lib/envelope.py`**'s existing
+  machine-readable frontmatter block (`---hos-envelope`, `type`, `correlation-id`, idempotency via
+  `correlation.py`), written through **`bootstrap/post_comment.sh --app overseer --body-file`**. All
+  existing canonical entry points; **no new mechanism.**
+- **Trust is the GitHub-API-verified comment author**, exactly as `envelope.py`'s header already
+  specifies (*"Auth is done via the GitHub-API-verified comment/issue author (NOT the `from:` field)"*).
+  A record not authored by the overseer App identity is not a record. This closes the forgery surface
+  that a committed-artifact approach would open.
+- Reads go through **`bootstrap/query_issues.sh --comments <n>`**. Never a hand-rolled `gh api` read.
+- Records are append-only; the newest record for a given `(entry, input_digest)` wins. A comment is never
+  edited to change a verdict.
+- `technical-design` should size this: 12 entries × several pushes is a lot of comment traffic. A single
+  rolling summary comment updated per cycle, with the per-entry documents attached to it, is acceptable
+  **provided** the append-only audit property is preserved somewhere; choose and state one.
+
+### AD-15 — REQ-B6 closes on the dimension results via a required, non-defaultable, verifying-constructor parameter on `decide_merge_authority()` — not on the register, and not by prose composition. (BINDING — REQ-B6; AF-4, AF-5, VF-4. Sequenced behind #1641, composed at ADR-1357 slice 2.)
+
+Of the three candidate closures pm-agent named, the register-based one is eliminated outright by **AF-5**
+(HOS has no `contract/step-manifest.yaml`, so that gate cannot bounce on anything here), and "gate at a
+different layer" is eliminated by **AF-4** (a different layer is precisely where the narration currently
+lives). The binding closure is the second, made structural:
+
+1. `decide_merge_authority()` gains a **required positional parameter** — no default, no `Optional`, no
+   `None` — carrying the resolved dimension results. "No results" becomes **unrepresentable at the call
+   site**: the function cannot be called without one, in Python, at the signature level.
+2. That parameter's type has exactly one constructor, and it **validates structure, not content**: every
+   entry the resolved registry marks required for this diff has a record; every record's `input_digest`
+   matches the current diff; every record is authored by the overseer identity (AD-14). Constructor
+   failure ⟹ no object ⟹ no call ⟹ no merge.
+3. **Content is branched on inside `decide_merge_authority()`,** not smuggled into the constructor, so
+   the decision stays in the decision function and stays auditable there: any record with
+   `outcome: invocation_failed` ⟹ `HUMAN_REQUIRED` (Q1); any record with `verdict ∈ {request_changes,
+   error}` ⟹ the bounce path (REQ-B5). `oversight_verdict: str` survives but is demoted from "the only
+   review-shaped input" to one input among two.
+4. **Composition happens in ADR-1357's slice-2 `overseer_decide.py`**, which is already designated as
+   the single place that fetches inputs fresh and calls the decision (R9.1.1's "never a cached result").
+   It fetches the dimension results the same way and for the same reason. **This ADR does not add a
+   second composition point.**
+5. **Accepted, stated cost:** the signature change touches the 157 existing merge-authority tests
+   (ADR-1357 VF-4). Their logic sign-offs stand; their call sites and expectations change. §8.
+
+### AD-16 — Migration of the four `claude -p` sites: three migrate, one is exempted on the record. (BINDING — REQ-A1; VF-3.)
+
+| Site | Disposition | Grounds |
+|---|---|---|
+| `scripts/framework/validate_self.sh:236` | **Migrate — first and highest value** | Unbounded timeout on the framework-validation critical path (VF-3: *"a hang here hangs all of framework validation"*). Also #1536's first target. |
+| `scripts/framework/validate_scripts.sh:182` | **Migrate** | Already the most correct of the three postures; migration is a net simplification and deletes a `run_capped` copy (AD-5.3). |
+| `scripts/run_panel.sh:146-147` | **Migrate**, with the panel's Claude seat promoted to a shipped named agent (AD-3 admits no bare-model path) | No timeout at all today, stderr to a log, output used as-is. Non-goal 3 is untouched: this changes *how* the same-vendor seat is invoked, not the cross-vendor property of the panel. If `technical-design` finds promoting the lens to an agent too large for W4, it must say so and split it — **not** add a bare-model escape hatch to the primitive. |
+| `bootstrap/setup_clis.sh:148` | **EXEMPT, recorded** | It is a machine-bootstrap smoke test (`claude -p "Reply with exactly: OK"`) that runs *before* the primitive's preconditions can hold — possibly with no HOS project checked out at all, certainly before any agent file is installed. Routing it through the primitive would make the smoke test depend on the thing it exists to prove works. A one-line comment citing this ADR goes in the file so the exemption is visible where someone would otherwise "fix" it. |
+
+After migration, CLAUDE.md gains one canonical-entry-point row for `bootstrap/invoke_agent.sh`, and the
+standing rule is: **nothing else in the repository invokes `claude --agent` directly.**
+
+---
+
+## 3. Cost — Q2's unconditional rerun does not fit one cron cycle, and the design must absorb that rather than assume it away
+
+This is the ADR's load-bearing feasibility question and I am not going to soften it.
+
+**The count.** Judgment entries the overseer must rerun per PR under Q2: the eight review lenses VF-6
+found unexecuted (`code-review`, `security`, `privacy`, `reliability`, `ops`, `ui`, `a11y`, `infra`),
+plus `scope-conformance` (#1626) and `semantic-duplication` (#1629), plus the two the overseer already
+dispatches and whose results gate (`oversight-evaluator`, `risk-assessor`) — which under AD-2 become
+primitive invocations too. **Twelve.** A docs-only PR will see several resolve to `not_applicable` by
+predicate at zero model cost; a PR touching code, templates and infra will see all twelve.
+
+**The arithmetic, against measured constraints.**
+
+| Quantity | Value | Source |
+|---|---|---|
+| `HOS_CRON_MAX_SECONDS` | **1800s** | `bin/hos-cron:39`, `:215`, `:1788` |
+| Worker cron interval | **median 601s** (n=85, min 547) | §0 measurement, `audit/log/2026/09/` |
+| Cycles hitting the cap today | **1 in 86** (~1.2%) | §0 measurement |
+| Repo's own per-AI-review cap | **300s** | `validate_agents.sh:141`, `validate_scripts.sh:54` |
+| Observed duration of one `claude --agent` review | **unknown — never run** | VF-2; §0 verification gap |
+
+- Serial, at the repo's own 300s cap: **12 × 300 = 3600s = 2.0 × the cycle budget.**
+- Serial, at a hypothetical 150s median: **1800s = exactly the budget, with zero left** for the
+  overseer's PR fetch, gate checks, merge decision, comment posting, and its own model session.
+- For the sweep to fit inside one 1800s cycle *alongside* existing overseer work, the per-dimension
+  median would have to be ≤ ~60–75s across all twelve. **Nothing in the repository supports that
+  assumption,** and the honest position is that I have no measurement at all (§0 gap).
+
+**Conclusion: it does not fit, and the fix is structural, not a smaller timeout.** AD-13's resumable,
+budgeted, multi-cycle sweep makes it fit by construction: at a 900s per-cycle budget and a 150s median,
+~6 entries per cycle → 2 cycles; at the 300s worst case, ~3 per cycle → 4 cycles. At the measured 601s
+interval that is **roughly 20–40 minutes of added merge latency per PR head SHA**. That is the same class
+of latency tradeoff the human explicitly accepted in the Q4 ruling for the design chain (*"a 3-round
+convergence now costs at least 3 cron intervals"*), so accepting it here is consistent rather than new —
+but it is a real, user-visible timing change and it goes to the human as **ESC-1**.
+
+**The multiplier nobody has costed.** Without AD-13's `input_digest` reuse, *every push* to a PR
+re-runs all twelve. A PR with five pushes costs **60 model sessions**. With reuse, a push touching only
+`docs/` re-runs only the entries whose predicates select changed files — typically one or two. The
+difference between those two numbers is the difference between feasible and not, which is why **ESC-3**
+(is reuse inside Q2's "unconditionally"?) is not a pedantic question.
+
+**What I am binding rather than assuming:** AD-13's **first build slice is a measurement, not an
+enforcement** — one entry, observation-only, recording durations and outcomes without gating anything.
+That is ADR-1357's slice-3 shape reused deliberately (*"divergence … is measured, not assumed"*), and it
+converts the largest unknown in this ADR into data before anything depends on it. **`technical-design`
+must not calibrate the per-cycle budget from my estimates; it must calibrate from that slice's output.**
+
+---
+
+## 4. The seam left for #1644 — stated explicitly, per the scope brief
+
+**What I am leaving:** #1644's build side gets the whole of §2's shared layer — the primitive (AD-1…AD-5),
+the result document (AD-6), the fail-closed classification (AD-4), the posture profiles (AD-7), the
+observability path (AD-8), the registry's format/ownership/loader (AD-9), `fingerprint()` plus the
+standing prohibition on `load_ledger()`'s silencing (AD-6, Q5) — and it builds **its own runner** and
+**its own registry file** on top. Nothing in §2 presumes a fan-out.
+
+**The property of REQ-A that makes the seam work is AD-2:** the primitive is a top-level, stateless,
+one-shot process. It has no round counter, no resume token, no parent-session dependency, and no
+knowledge of what called it. A cron-driven stage advancer that executes exactly one stage per cycle can
+therefore invoke it **identically** to the way AD-13's sweep does — which is the whole point, because
+under Q4+Q6 that advancer is what #1644 becomes. Had the primitive carried loop state (the natural
+design if it had been built for #1644 first), it would be unusable in the very shape the human's ruling
+mandates.
+
+**What I explicitly do not design, and flag as #1644's to close:** the human's own noted gap — nothing
+guarantees the next cron cycle picks up the *expected* next stage rather than something else off the
+queue, and nothing stops a coder invocation landing on a spec-only issue. That needs a stage-type label
+mechanism, checked deterministically and cheaply before any model turn, plus explicit blocking/dependency
+edges on decomposed issues — designed **together with** the pending `needs-ai` → `needs-worker`/
+`needs-overseer` rename (#1349, DECISIONS.md 2026-09-06), not as a second parallel labelling scheme.
+AD-9's loader and ownership model are available to it; its graph keys (`stage_label`, `blocked_by`,
+`next_stage_on`, `cap`, `stuck_criteria`) are not declared here and must not be pre-empted (AD-12).
+
+---
+
+## 5. Build order
+
+Wrappers before consumers; measurement before enforcement; the one item that changes what merges isolated
+into its own PR. Each row is an intended issue boundary — filing "implement ADR-1643" as one issue would
+reproduce #1354.
+
+| # | Slice | Contents | Gate to proceed |
+|---|---|---|---|
+| **W1** | The primitive | AD-1, AD-2, AD-3, AD-4, AD-5. L2 + L3, with unit tests driving a **synthetic envelope per failure class in AD-4's table**, including VF-1's exact `subtype:"success"` + `is_error:true` shape. | Every AD-4 row has a failing-closed test. **Blocked on AD-7's probe** (§0 gap) only for the posture half. |
+| **W2** | Result document | AD-6. Round-trips through `validation_logic.compute_verdict` and `panel_logic`'s readers unchanged; an `invocation_failed` document is proven to raise `new_blocking_count`. | Designed in parallel with W1; lands with or before it. |
+| **W3** | Observability | AD-8: `token_tracker` wiring, per-entry audit record, nested usage-limit surfacing toward #1446. | Depends on W1. |
+| **W4** | Migrate the three sites | AD-16; delete both `run_capped` copies; add the CLAUDE.md row. | Depends on W1. **Low risk, high value** — fixes two unbounded timeouts as a side effect and is the primitive's first real proof. |
+| **W5** | Registry | AD-9 + AD-11: schema, fail-closed loader, three-layer merge, `core.yaml` + `pack-django.yaml` + `pack-astro.yaml`, `run_post_change_sweep.sh` reduced to `--explain`. **Verify the data-file merge against `hos_install.sh` (AF-9), do not assume it.** | Depends on nothing but W2's schema; **can run in parallel with W1**. |
+| **W6** | **Measurement slice** | AD-13 runner, **one** judgment entry, **observation only** — records durations and outcomes, gates nothing. | **Do not skip for speed.** This is the only source of the number §3 lacks and the input to ESC-1's real answer. |
+| **W7** | The sweep | AD-13 full + AD-14 result storage. Still non-gating. | Depends on W5, W6. **Blocked on ESC-2** (new cron stage) and informed by **ESC-3**. |
+| **W8** | REQ-B6 | AD-15. **Its own PR, never bundled** — this is the slice that changes what merges. | Depends on W7 **and on ADR-1357 slice 2**. **Blocked on ESC-4.** |
+| **W9** | REQ-B7 | Enumerate the entries with no deterministic checker; file one issue per genuine gap. Audit + issue-filing, no code. | Any time after W5. |
+| **W10** | #1536 re-scoped | Overseer runs framework-validation itself via the primitive; retire the stamp. | Depends on W4. |
+| **W11/W12** | #1626 / #1629 re-scoped | Dimension definition only — inputs, prompt, disposition, predicate. **No private invocation, parsing, or fail-closed logic** (REQ-D0). #1629 additionally blocked on Q8's operationalisation. | Depends on W7. |
+| **W13** | #1621 annotated | Confirmed **not** a REQ-A consumer — it is a deterministic approval-state check and belongs with #1641's primitives. Annotate so nobody builds an agent invocation into it. | Any time. |
+
+**Track 0 is unaffected and must not wait:** #1642 (landed as `922a97a0`) and #1567 Gap 5 (the
+required-check promotion, `33211f25`) are REQ-B2's deterministic lane and are independent of everything
+above.
+
+**If v0.7.0 runs short:** W1–W6 alone is a coherent, independently valuable release — it produces the
+primitive, the registry, the migrations, and the measurement, and it closes VF-3's two unbounded
+timeouts, without yet changing what merges.
+
+---
+
+## 6. Escalations — held for the human (I do not bind these)
+
+### ESC-1 — Q2's unconditional rerun does not fit one cron cycle. (Cost model + user-visible latency. Product-boundary checkpoint.)
+
+§3: twelve judgment entries, serial, at the repo's own 300s per-review cap is **3600s against an 1800s
+cycle budget**; even at a 150s median it consumes the entire budget with nothing left for the overseer's
+own work. I have **no measurement** of how long one `claude --agent <reviewer>` invocation actually takes,
+because no such invocation has ever run here (VF-2).
+
+**My binding technical answer is AD-13** — a resumable, budgeted, multi-cycle sweep, which makes it fit
+by construction. **What is yours** is its consequence: **roughly 20–40 minutes of additional merge
+latency per PR head SHA** at the measured 601s cron interval, and a per-PR spend of up to twelve model
+sessions per head SHA. That is a user-visible timing change and a cost-model change, which is exactly
+what the product-boundary checkpoint covers.
+
+**Recommendation:** accept AD-13, and require W6's observation-only measurement slice before W7 depends
+on any budget number. The tradeoff is the same one already accepted in Q4 for the design chain, so
+accepting it is consistent — but it should be accepted knowingly rather than inherited from an ADR's
+arithmetic.
+
+### ESC-2 — The sweep becomes a new top-level execution stage in `bin/hos-cron`. (Deployment topology + operational obligation. Product-boundary checkpoint.)
+
+AD-13 runs the sweep as a **script**, a peer of the overseer's model session rather than nested inside it
+— which is the direct consequence of Q4+Q6's "no nested sessions" and VF-11's nesting-budget finding.
+That means `bin/hos-cron --role overseer` grows a new execution stage, with its own wall-clock budget,
+its own lock interaction, and its own failure surface. There is no measured overseer cycle baseline to
+sit it beside (§0: **zero overseer records in the September audit trail**).
+
+**Decisions that are yours:** (i) may `hos-cron` gain a script-execution stage outside the model session
+at all; (ii) does it get its own wall-clock budget or share `HOS_CRON_MAX_SECONDS`; (iii) is the
+overseer currently running, and if not, is its silence itself something to look at before adding load to
+it. **Recommendation: yes to (i), a separate budget for (ii)** — sharing one cap means the sweep and the
+model session starve each other unpredictably — and **(iii) should be checked before W7 ships**, since
+a mechanism that only runs in a role that is not running is ADR-1604's AF-1 in a new costume.
+
+### ESC-3 — Does `input_digest` reuse fall inside Q2's "unconditionally"? (Interpretation of your own ruling. **ESC-1's arithmetic depends on the answer.**)
+
+Q2 ruled: *"every non-CI/CD-covered judgment dimension is rerun by the overseer in its own context,
+unconditionally"*, dropping REQ-B4's risk-tier subsetting. AD-13 does not subset by tier and does not
+trust any worker artifact — but it does skip re-running a dimension when **the overseer's own prior
+record for that dimension has an identical `input_digest`**: same selected file bytes, same agent file,
+same prompt template, same registry entry.
+
+**My reading is that this is inside your ruling**, because it is neither of the two things you excluded
+(it is not a tier subset, and the result being reused is the overseer's own, produced in its own
+context). It is an input-identity check, the same principle as the existing head-SHA staleness rule on
+human approvals. **But it is a conditional, and you said unconditionally**, so I am not binding the
+interpretation myself.
+
+**Why it matters concretely:** without reuse, a PR with five pushes costs **60 model sessions** instead
+of roughly 12 plus a handful. If you rule against reuse, ESC-1's latency and cost figures multiply by the
+push count and AD-13's per-cycle budget must be recalibrated.
+
+### ESC-4 — Twelve review dimensions that have never executed become merge-blocking at once. (Operational + throughput. Product-boundary checkpoint.)
+
+VF-6 is not "the overseer reruns some dimensions inconsistently" — it is that **none of the eight AI
+review lenses has ever been independently executed on the gating side**, and #1626/#1629 add two more
+that have never run at all. W8 turns all of them into hard merge blockers simultaneously, with Q1's
+fail-closed rule on top. The predictable first effect is a large backlog of genuine, newly-surfaced
+findings and a merge rate near zero for some period — findings that are *real*, which is the point, but
+which arrive all at once.
+
+**Options:** (a) land W8 enforcing; (b) run the full sweep in **observation-only** mode for a defined
+window first — results recorded and posted, merge unaffected — then flip enforcement.
+
+**Recommendation: (b)**, copying ADR-1357's slice-3 shape verbatim, for the same reason it was right
+there: it converts an assertion into a measurement before anything depends on it, and it lets the
+backlog be triaged deliberately rather than discovered by a stalled queue. W6 is already the one-entry
+version of this; (b) is the twelve-entry version. The cost of (b) is one extra release cycle before the
+gap actually closes, and the gap is `priority:critical`, so this is a genuine judgment call about risk
+appetite and not one I should make.
+
+---
+
+## 7. Non-goals — named, with owners
+
+- **#1644 and REQ-C / Track 3 (W13–W18)** — going back to `pm-agent` under the Q4+Q6 ruling. §4 states the
+  seam; nothing here binds it. W16's nested-invocation budget in particular no longer describes a real
+  unit of work.
+- **What any reviewer agent looks for** — unchanged (non-goal 1). No lens is widened, narrowed, or
+  rewritten. This changes who invokes them and who reads the answer.
+- **Any human gate** — untouched (REQ-A11, non-goal 2). An `approve` verdict from any agent invoked this
+  way is evidence for a *bot-side* decision only. Protected-surface, security-surface, CRITICAL-tier and
+  release gates are unchanged, and AD-15 only ever *adds* reasons to escalate.
+- **Cross-vendor review** — `run_second_review.sh` / `run_panel.sh` keep their decorrelation role
+  (non-goal 3); AD-10 makes the second review a registry entry rather than replacing it, which is also
+  how Q5's convergence-confirmation ruling composes.
+- **#1641's merge-authority invocability work** — depended on, not re-specified (non-goal 4). ADR-1357's
+  slice 2 remains the composition point; AD-15 supplies it one more required input.
+- **A general agent-orchestration framework** — non-goal 5. Two runners, both named, both scoped.
+- **AI review in CI** — #1216 stands (non-goal 7). This runs in the overseer's own environment.
+- **The `hos-dev-pack`** — AD-11 removes `framework-validator` from the consumer registry; it does not
+  create the pack that would eventually hold it.
+- **`.claude/agents/**`, scripts, and config** — this session wrote exactly one file, this ADR. Every
+  change described above is a protected-surface edit to be authored and human-gated later.
+
+---
+
+## 8. Startup-gap analysis and affected sign-offs
+
+**"Should this have been settled in an initial architecture review, before design and code were built
+against it?"** — asked of each item, per the CORE startup-gap rule.
+
+- **The missing invocation primitive (VF-2).** Yes — this is the same original-design gap ADR-1357 §6
+  recorded for `merge_authority.py`: capability built as a library or as prose with no executable surface.
+  Four `claude -p` sites with three reliability postures accumulated because no primitive existed to use.
+  **No superseded ADR of mine exists here, so no sign-off is orphaned**; the lesson attaches to the design
+  phase and belongs in #1243's core-principles register alongside #1359's *"a control must be executed,
+  not narrated."*
+- **`run_post_change_sweep.sh`'s consumer-shaped routing in CORE (AF-6.2, AF-6.4).** Yes — a layering
+  decision that should have been made when the script was written. Every consumer install has been
+  routing against one project's directory names and naming an agent (`framework-validator`) that install
+  never received. **No consumer sign-off exists to invalidate**; HOS's own sign-offs on the script stand
+  (the code does what it was signed off to do), but AD-11 changes its scope and it must be re-reviewed
+  as part of W5, not carried over. **A `startup-artifact-gap` issue should be opened** for the CORE/PACK/
+  PROJECT layering of routing data, since AF-9 shows the pack mechanism to support it never existed.
+- **`decide_merge_authority()`'s absent dimension parameter (VF-4, AD-15).** Yes — and it is the same
+  finding ADR-1357 made about the same function from a different angle. **Sign-offs that stand:** the 157
+  merge-authority unit tests' logic sign-offs; AD-15 changes the signature and their call sites, not the
+  decision logic being tested. **Sign-offs flagged for re-review:** any test whose *expectation* encodes
+  "a merge-eligible decision is reachable without reviewer input" — that expectation becomes wrong, in the
+  same way `test_merge_authority_detection.py`'s docstring encoded the stub state ADR-1357 VF-4 found.
+  `technical-design` must enumerate those specifically rather than re-running the suite and calling it
+  green.
+- **The lost prior architect pass (the ESC-5 ADR).** The artifact is gone; the human's ruling on it
+  stands and is carried forward in AD-9 with the AD-3/AF-9/AF-15 reasoning re-derived in this ADR's own
+  numbering (the narrow-only rule and the required-to-do-nothing trap). **No design or code was built
+  against the lost ADR** — #1643 is unstarted — so **no sign-off is orphaned by its loss.** Recording it
+  here is the only durable trace that the ruling has a home; if a future reader finds ESC-5 referenced
+  from #1643's comments with no ADR behind it, AD-9 is where it landed.
+- **Nothing else.** W1–W13 are all new build.
+
+---
+
+## Human Review Required
+
+Four items, all from §6, none of which I may bind: **ESC-1** (Q2's rerun does not fit a cycle — accept
+AD-13's multi-cycle latency and cost?), **ESC-2** (a new top-level cron execution stage), **ESC-3** (is
+`input_digest` reuse inside "unconditionally"? — ESC-1's numbers depend on it), **ESC-4** (twelve
+never-executed dimensions become blocking at once — observation window first, or straight to enforcing?).
+Slices **W1–W6 are cleared to proceed** without any of these answers, and W6 produces the measurement
+ESC-1 actually needs.
+
+**RISK: HIGH.** This design makes twelve review dimensions that have never executed into hard merge
+blockers, adds a new class of script-launched model process, adds a new protected-surface configuration
+file family, and changes the signature of the single highest-stakes decision function in HOS. The failure
+mode of getting it wrong is not "reviews are noisy" — it is either a stalled merge queue (Q1's hard block
+firing on a misconfiguration) or, far worse, a mechanism that looks like it is reviewing and is not,
+which is the exact condition §0 found in four separate places already (SKIP-as-exit-0, AF-8;
+empty-manifest-as-satisfied, AF-5; prose-as-routing, AF-6; caller-supplied-verdict, VF-4/AF-4). Four
+specific routes to the latter are closed positively rather than cautioned about: fail-closed is an
+allowlist over the envelope with `subtype` never read (AD-4); applicability is decided by code and
+recorded explicitly, so absence is never silence (AD-6, AD-13); entries cannot be configured out of
+existence (AD-9); and "no results" is unrepresentable at the merge-decision call site, in Python, at the
+signature level (AD-15).
+
+**CONFIDENCE: HIGH** on §0 — every finding was re-derived against `4f973c43` this session, including the
+four that correct or sharpen pm-agent (**AF-1** finds the bash/Python question already answered by
+#1641's landed tiering; **AF-3** finds REQ-A5's prescribed helper unable to do the job it is prescribed
+for; **AF-5** finds the register gate structurally unable to bounce in this repo at all; **AF-7** finds
+the schema I was told to extend is two readers, not one). **HIGH** on AD-1 through AD-11 and AD-16, which
+follow from those findings and from rulings already made. **HIGH** on AD-12's answer to the
+one-runner question — the divergence table is derived from the Q4+Q6 ruling's own shape, not from taste.
+**MEDIUM-HIGH** on AD-13 and AD-14: the resumable-sweep and PR-comment-envelope shapes are sound and
+reuse proven mechanisms, but neither has been built here and AD-14's comment-volume question is
+genuinely open. **MEDIUM** on AD-9's install-time mechanics — AF-9 shows packs have never contributed
+data, only prose, so the three-way merge for `contract/dimensions/` is unproven and must be verified, not
+assumed. **LOW — and I want this read as a warning, not a hedge — on every wall-clock number in §3.**
+No `claude --agent` invocation has ever run in this repository. W6 exists to replace those numbers with
+measurements before anything depends on them, and `technical-design` must not calibrate a budget from
+them.
+
+**BLAST RADIUS:** every PR's merge path (AD-15); `bin/hos-cron`'s overseer role (AD-13, ESC-2);
+`.claude/agents/overseer.md`'s entire review chain; `contract/**` gains a new protected-surface file
+family; `scripts/framework/run_post_change_sweep.sh`, `validate_self.sh`, `validate_scripts.sh`,
+`scripts/run_panel.sh`, `scripts/oversight/run_with_retry.sh`; `scripts/automation/lib/merge_authority.py`
+and its 157 tests; the installer's pack path; and the subscription quota, which this design will consume
+materially more of.
+
+**Change classification: STRUCTURAL.** New gating decision points, a new class of script-launched model
+process, a new configuration surface with its own ownership rules, and a change to what "this PR was
+reviewed" means. Per the product-boundary checkpoint, ESC-1 (cost model + user-visible latency), ESC-2
+(deployment topology + operational obligation), ESC-3 (interpretation of a human ruling that ESC-1's
+numbers depend on) and ESC-4 (throughput) must be cleared by the human before the corresponding slices
+bind. W1–W6 are unaffected by all four, which is why they are ordered first.
