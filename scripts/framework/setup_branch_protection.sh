@@ -144,6 +144,24 @@ fi
 #                                (job: oversight-validator-diff-size; #1571
 #                                item 2 — git-only/deterministic, no external
 #                                tool to crash on, verified 2026-09-12)
+#   oversight-gate-lint        ← .github/workflows/oversight-gates.yml (job:
+#                                oversight-gate-lint; SEVERE debt as of
+#                                #1571's 2026-09-11 baseline — file-scoped, not
+#                                repo-scoped, so a PR is only gated on files it
+#                                itself touches. Human ruling 2026-09-14
+#                                (ratchet principle, #1567/#1642/#1641):
+#                                promote now rather than waiting for the
+#                                whole-repo cleanup (#1642) to land first —
+#                                activating the gate stops new lint debt from
+#                                entering touched files immediately, and forces
+#                                cleanup of existing debt organically as those
+#                                files are next touched, rather than risking
+#                                fresh debt accruing again between "clean" and
+#                                "required".)
+#   oversight-gate-type-check  ← .github/workflows/oversight-gates.yml (job:
+#                                oversight-gate-type-check; same SEVERE-debt /
+#                                file-scoped / ratchet-override rationale as
+#                                oversight-gate-lint above, same ruling date)
 # tests/framework/test_branch_protection_contexts.py enforces this invariant.
 #
 # oversight-validator-js is NOT promoted: this repo has zero tracked JS/TS
@@ -157,7 +175,7 @@ PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped", "oversight-validator-python", "oversight-validator-migration", "oversight-validator-shell", "oversight-validator-diff-size"]
+    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped", "oversight-validator-python", "oversight-validator-migration", "oversight-validator-shell", "oversight-validator-diff-size", "oversight-gate-lint", "oversight-gate-type-check"]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {

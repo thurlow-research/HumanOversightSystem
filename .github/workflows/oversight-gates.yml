@@ -24,15 +24,30 @@ name: Oversight gates
 #                                  file-scoped rather than repo-scoped, so
 #                                  kept as its own job and not folded into
 #                                  oversight-gate-repo-scoped.
-#   oversight-gate-type-check    — SEVERE debt (dozens of pre-existing mypy
-#                                  errors repo-wide). Not previously tracked
-#                                  by #1571's own baseline table. Stays
-#                                  advisory, same treatment as lint.
-#   oversight-gate-lint          — SEVERE debt (isort/black fails on nearly
-#                                  every .py file). Unchanged from #1571's own
-#                                  finding — its reformat is a separate PR per
-#                                  #1571 item 4, promoted only after that
-#                                  lands and `--all` is clean.
+#   oversight-gate-type-check    — re-verified 2026-09-14 against a fresh
+#                                  origin/main worktree (not the whole-repo
+#                                  --all severity #1571 originally recorded,
+#                                  which had improved since without this
+#                                  comment being updated): ~20 mypy errors,
+#                                  one repeated importlib.util pattern across
+#                                  9 test files (tracked in #1642). PROMOTED
+#                                  to required 2026-09-14 (ratchet-principle
+#                                  human override, #1567/#1642/#1641) — this
+#                                  gate is file-scoped, so a PR is only gated
+#                                  on files it itself touches; activating now
+#                                  stops new debt and forces organic cleanup
+#                                  of #1642's remaining files as they're next
+#                                  touched, rather than waiting for #1642 to
+#                                  land first and risking fresh debt
+#                                  accruing again in the gap.
+#   oversight-gate-lint          — re-verified 2026-09-14 against a fresh
+#                                  origin/main worktree: 3 findings in 2 files
+#                                  (codeowners.py, pr_readiness.py) — far
+#                                  smaller than #1571's original "nearly every
+#                                  .py file" baseline note, improved since
+#                                  without that note being updated. Same
+#                                  PROMOTED / ratchet-override rationale and
+#                                  date as oversight-gate-type-check above.
 #
 # Two gate groups, run differently (unchanged from before the split):
 #
