@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1639,"reason_category":"GATE_UNSATISFIED","summary":"PR touches CODEOWNERS-owned/protected-surface paths (METHODOLOGY.md, bootstrap/query_issues.sh) requiring human approval on current head; committed validator artifact (step1/summary.json) is stale relative to this PR diff.","timestamp":"2026-09-14T09:19:56Z"}
