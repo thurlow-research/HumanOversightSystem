@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1634,"reason_category":"OTHER","summary":"NG3b no-autonomous-release guard matched the word release in the PR title (release panel feature name); content review clean, no override path exists for this guard","timestamp":"2026-09-14T06:55:07Z"}
