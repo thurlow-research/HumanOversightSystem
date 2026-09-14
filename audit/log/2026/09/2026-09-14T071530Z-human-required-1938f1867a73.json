@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1636,"reason_category":"GATE_UNSATISFIED","summary":"PR touches protected surface .github/workflows/** and carries an outstanding review request from ScottThurlow; human approval on current head required before merge.","timestamp":"2026-09-14T07:15:30Z"}
