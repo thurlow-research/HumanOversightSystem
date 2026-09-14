@@ -32,6 +32,7 @@ excluded.
 - `bootstrap/hos_install.sh` — Human Oversight System — PROJECT installer.
 - `bootstrap/hos_repo_sync.sh` — fetch + fast-forward the current repo's default branch, but only if enough time has passed since the last sync.
 - `bootstrap/hos_setup_partner.sh` — guided per-project HOS credential setup
+- `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority read-only primitive surface (#1357 slice 1).
 - `bootstrap/post_comment.sh` — canonical wrapper for posting a GitHub issue/PR comment under a HOS bot identity (#1155)
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
 - `bootstrap/query_issues.sh` — canonical read-side wrapper for GitHub issue and PR queries under a HOS bot identity (#1192, consolidated by #1204)
@@ -59,6 +60,7 @@ excluded.
 
 ## scripts/automation/
 
+- `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
 
 ## scripts/automation/lib/
@@ -75,6 +77,7 @@ excluded.
 - `scripts/automation/lib/github.py` — Shared GitHub REST-by-id wrapper for the HOS automation loop.
 - `scripts/automation/lib/ledger.py` — Append-only per-run cost/action ledger for the HOS automation loop.
 - `scripts/automation/lib/merge_authority.py` — Merge-authority detection, matrix, queue, and guard rails (T10, §9, O3).
+- `scripts/automation/lib/merge_config.py` — AD-9 configuration resolution and repo identity (#1357).
 - `scripts/automation/lib/multi_customer.py` — Multi-customer fairness wiring (B14, R12.1–R12.3, O15).
 - `scripts/automation/lib/observability.py` — Observability — JSONL-first run ledger consumers and derived Markdown log (T14, R11.8).
 - `scripts/automation/lib/overseer_state.py` — Deterministic state helpers for the HOS oversight loop.

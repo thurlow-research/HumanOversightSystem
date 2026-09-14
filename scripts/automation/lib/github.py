@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 class GitHubError(Exception):
     """Raised when a GitHub API call fails after retries."""
+
     def __init__(self, message: str, status_code: Optional[int] = None):
         super().__init__(message)
         self.status_code = status_code
@@ -52,9 +53,7 @@ def _run_gh(
     for attempt in range(retries + 1):
         try:
             result = subprocess.run(
-                base_cmd + args,
-                input=stdin_input,
-                capture_output=True, text=True, check=False
+                base_cmd + args, input=stdin_input, capture_output=True, text=True, check=False
             )
         except FileNotFoundError:
             raise GitHubError("gh CLI not found — ensure it is installed and on PATH")
@@ -78,7 +77,7 @@ def _run_gh(
         if status_code is None and result.returncode != 0:
             # gh uses non-zero exit for API errors; no parseable header.
             if attempt < retries:
-                time.sleep(backoff_base ** attempt)
+                time.sleep(backoff_base**attempt)
                 continue
             raise GitHubError(
                 f"gh command failed (rc={result.returncode}): {result.stderr.strip()}"
@@ -87,7 +86,7 @@ def _run_gh(
         if status_code in (429, 403):
             retry_after = _parse_retry_after(headers)
             if attempt < retries:
-                time.sleep(retry_after or (backoff_base ** attempt))
+                time.sleep(retry_after or (backoff_base**attempt))
                 continue
             raise RateLimitError(
                 f"GitHub rate limit hit (HTTP {status_code})", status_code=status_code
@@ -95,11 +94,9 @@ def _run_gh(
 
         if status_code is not None and status_code >= 500:
             if attempt < retries:
-                time.sleep(backoff_base ** attempt)
+                time.sleep(backoff_base**attempt)
                 continue
-            raise GitHubError(
-                f"GitHub server error (HTTP {status_code})", status_code=status_code
-            )
+            raise GitHubError(f"GitHub server error (HTTP {status_code})", status_code=status_code)
 
         if status_code == 404:
             return None  # Caller checks for None = resource does not exist.
@@ -137,6 +134,7 @@ def _parse_retry_after(headers: str) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # REST-by-id reads (the only public surface — no Search)
 # ---------------------------------------------------------------------------
+
 
 def get_ref(owner: str, repo: str, ref: str) -> Optional[dict[str, Any]]:
     """
@@ -193,10 +191,9 @@ def list_issue_comments(
     comments: list[dict[str, Any]] = []
     page = 1
     while True:
-        batch = _run_gh([
-            f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
-            f"?per_page=100&page={page}"
-        ])
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/issues/{issue_number}/comments" f"?per_page=100&page={page}"]
+        )
         if not batch:
             break
         comments.extend(batch)
@@ -221,10 +218,9 @@ def list_check_runs_for_ref(
     runs: list[dict[str, Any]] = []
     page = 1
     while True:
-        batch = _run_gh([
-            f"/repos/{owner}/{repo}/commits/{ref}/check-runs"
-            f"?per_page=100&page={page}"
-        ])
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/commits/{ref}/check-runs" f"?per_page=100&page={page}"]
+        )
         check_runs = (batch or {}).get("check_runs") or []
         if not check_runs:
             break
@@ -252,6 +248,88 @@ def get_branch_protection(
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
     """GET /repos/{owner}/{repo} — basic repo metadata."""
     return _run_gh([f"/repos/{owner}/{repo}"])
+
+
+def get_pull(owner: str, repo: str, pr_number: int) -> Optional[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/pulls/{pr_number}
+
+    Returns the PR object or None if it does not exist. Used by
+    merge_authority_cli.human-approval / hold-directive / protected-surface /
+    security-surface / codeowners (#1357) to resolve head.sha and other
+    PR-level fields it needs before calling an L1 primitive.
+    """
+    return _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
+
+
+def list_pull_reviews(
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews (all pages).
+
+    Returns a list of review objects (may be empty). Used by
+    merge_authority_cli.human-approval (#1357) to fetch the reviews
+    has_human_approval / _find_human_approval evaluate.
+    """
+    reviews: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews" f"?per_page=100&page={page}"]
+        )
+        if not batch:
+            break
+        reviews.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return reviews
+
+
+def list_pull_files(
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/pulls/{pr_number}/files (all pages).
+
+    Returns a list of file objects (may be empty), each with at least
+    'filename'. Used by merge_authority_cli.protected-surface /
+    security-surface / codeowners (#1357) to build the changed-files list
+    those L1 functions match against. Must paginate: a PR near the 15-file
+    budget fits in one page, but a silently-truncated file list would
+    under-report a protected-surface match — the fail-open direction.
+    """
+    files: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/pulls/{pr_number}/files" f"?per_page=100&page={page}"]
+        )
+        if not batch:
+            break
+        files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return files
+
+
+def get_commit(owner: str, repo: str, ref: str) -> Optional[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/commits/{ref}
+
+    Returns the commit object or None if it does not exist. Used by
+    merge_authority_cli.hold-directive (#1357) to read
+    commit.committer.date as head_committed_at (a rebase updates
+    committer.date but not author.date, matching the library's
+    "pushed/committed" semantics).
+    """
+    return _run_gh([f"/repos/{owner}/{repo}/commits/{ref}"])
 
 
 def post_comment(
@@ -289,9 +367,7 @@ def post_comment(
             raise GitHubError("post_comment: response missing 'id' — cannot verify")
         readback = _run_gh([f"/repos/{owner}/{repo}/issues/comments/{comment_id}"])
         if readback is None:
-            raise GitHubError(
-                f"post_comment: read-back of comment {comment_id} returned None"
-            )
+            raise GitHubError(f"post_comment: read-back of comment {comment_id} returned None")
         stored_body: str = readback.get("body", "")
         if stored_body.startswith("@/"):
             raise GitHubError(

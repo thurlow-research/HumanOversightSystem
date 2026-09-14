@@ -31,10 +31,10 @@ from typing import Optional, Union
 
 from scripts.automation.lib.github import (
     GitHubError,
+    _run_gh,
     get_branch_protection,
     list_check_runs_for_ref,
     post_comment,
-    _run_gh,
 )
 
 logger = logging.getLogger(__name__)
@@ -411,7 +411,7 @@ def touches_protected_surface(changed_files: list[str], repo_root: str = ".") ->
 # protected-surface check above)
 # ---------------------------------------------------------------------------
 
-def _touches_security_surface(changed_files: list[str], repo_root: str = ".") -> bool:
+def touches_security_surface(changed_files: list[str], repo_root: str = ".") -> bool:
     """
     Check if any changed file is on the security-relevant surface (#1253).
 
@@ -426,6 +426,10 @@ def _touches_security_surface(changed_files: list[str], repo_root: str = ".") ->
     because security_surfaces.txt lives under scripts/framework/**, which
     protected_surfaces.txt already protects — deleting or tampering with it is
     independently caught by the protected-surface check.
+
+    Public (#1357): documented as a matrix input in overseer.md:538-542, and
+    `bootstrap/merge_authority.sh security-surface` reports it as evidence.
+    Behaviour is unchanged by the promotion.
     """
     surfaces_path = Path(repo_root) / "scripts" / "framework" / "security_surfaces.txt"
     if not surfaces_path.is_file():
@@ -620,7 +624,7 @@ def decide_merge_authority(
     # is OR'd with the deterministic surface-file derivation, so the gate fires
     # even when a caller forgets to compute and pass it (which is how it went
     # unenforced: no real caller ever did).
-    security_relevant = security_relevant or _touches_security_surface(changed_files, repo_root)
+    security_relevant = security_relevant or touches_security_surface(changed_files, repo_root)
     if security_relevant:
         approval = _find_human_approval(reviews, human_reviewer, head_sha)
         if approval:
@@ -793,6 +797,13 @@ _BOUNCE_ENTRY_HEADER_RE = re.compile(r"^##\s+(?P<role>[^|#]+?)\s*(?:\|.*)?$")
 _BOUNCE_REASON_CATEGORIES = frozenset(
     {"REGISTER_GAP", "COMPLIANCE_FAILURE", "SPEC_AMBIGUITY", "OTHER"}
 )
+
+# The bounce cap before human escalation (overseer.md step 4a). Named here so
+# `bootstrap/merge_authority.sh bounce-count` (#1357) can report it without
+# coining a second, unnamed "2" (the #1135 duplicate-authority class) — the
+# only other place this value appeared was as prose inside
+# _bounce_comment_body's f-string.
+BOUNCE_CAP = 2
 
 
 def _bounce_register_path(step: Union[str, int]) -> str:
@@ -1110,7 +1121,7 @@ def _bounce_comment_body(
         f"**Summary:** {summary}",
         "",
         f"_Bounce #{bounce_number} for this correlation id "
-        "(cap: 2 before human escalation)._",
+        f"(cap: {BOUNCE_CAP} before human escalation)._",
     ]
     return "\n".join(lines) + "\n"
 
