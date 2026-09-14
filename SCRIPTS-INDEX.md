@@ -53,6 +53,7 @@ excluded.
 - `scripts/run_panel.sh` — the local cross-vendor multi-agent review panel (Layer 2).
 - `scripts/run_red_team.sh` — system-level adversarial red-team at build milestones.
 - `scripts/run_redteam_sample.sh` — statistical sampling red-team for LOW-tier escaped-defect rate.
+- `scripts/run_release_panel.sh` — thin entry point for the release panel (ADR-1340 AD-1 / TECHNICAL-DESIGN-1340-release-panel.md §2).
 - `scripts/run_review_chain.sh` — orchestrate the full HOS oversight pipeline in tier-gated order.
 - `scripts/run_second_review.sh` — pre-PR cross-vendor second code review.
 
@@ -130,6 +131,7 @@ excluded.
 - `scripts/oversight/record_agent_model.py` — record the resolved model ID for a subagent invocation into the audit trail (#1122 Option C, revised acceptance criterion 3).
 - `scripts/oversight/release_artifact_logic.py` — release-gate deep artifact validation (#695).
 - `scripts/oversight/release_logic.py` — semver bump, authored-notes gate, asset verification.
+- `scripts/oversight/release_panel_logic.py` — range derivation, exclusions, and the AD-4 verdict contract for the release panel (ADR-1340; TECHNICAL-DESIGN-1340-release-panel.md).
 - `scripts/oversight/retry_rescue_logic.py` — pure logic for pytest retry-rescue observability.
 - `scripts/oversight/run_gates.sh` — central gate runner (SPEC-375 / REQ-GATE-NN-16).
 - `scripts/oversight/run_validators.sh` — orchestrate all risk assessment validators for a file set.

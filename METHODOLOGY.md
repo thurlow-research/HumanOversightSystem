@@ -397,6 +397,14 @@ An adversarial self-review on a rich governance corpus **never says "nothing lef
                      same-actor three-signal). Chat never authorizes the cut.
                      Violations → ng3b-violation-attempt audit event.  [#345]
 
+    release panel    At this release-cut checkpoint (not the inner loop, not
+                      the per-PR outer loop): full cross-vendor roster over
+                      `<last-tag>..HEAD` minus a committed exclusion list,
+                      posted as one issue comment + a machine-readable verdict.
+                      R2 verifies by RECOMPUTATION, never trust. PR 1 (#1340)
+                      lands it inert — armed by nothing yet.
+                      [🔧 run_release_panel.sh; ADR-1340]
+
 **Three-tier review model (confirmed, #356 decision 2026-06-16):**
 
 | Tier | When | Script | Vendor cost |
