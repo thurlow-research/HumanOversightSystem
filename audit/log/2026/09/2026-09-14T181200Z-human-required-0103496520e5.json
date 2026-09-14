@@ -1,0 +1,1 @@
+{"event":"human-required","pr":1648,"reason_category":"GATE_UNSATISFIED","summary":"scripts/framework/setup_branch_protection.sh is a CODEOWNERS-owned protected surface (@ScottThurlow); mode-only fix (100644->100755, zero content diff) requires human final approval before merge.","timestamp":"2026-09-14T18:12:00Z"}
