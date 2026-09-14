@@ -469,6 +469,22 @@ matters most, not least. File the issue first.
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do
 not wire this session into cron.
 
+**Never invoke `bin/hos-cron` yourself, for any role — worker, overseer, or
+otherwise.** This session's Bash tool runs inside an OS-level sandbox (Linux
+bubblewrap) that isolates each command into its own PID namespace, so a process
+started this way records a PID that is meaningless outside that namespace. A
+normally-scheduled `bin/hos-cron` cycle runs unsandboxed, as an ordinary host
+process; if a manually-invoked, sandboxed cycle's lock-held PID collides with one
+of those, the other process's `kill -0` liveness check on it reports "not alive"
+even while it is genuinely running, silently reclaiming the lock and letting two
+cycles share one working directory — confirmed root cause of #1616 (2026-09-14),
+where this happened for real and one cycle's `git checkout -b` silently switched
+another live cycle's checked-out branch out from under it. If a manual worker or
+overseer run is ever genuinely needed (e.g. an extended-timeout debugging run),
+tell the human the exact command to run directly in their own terminal — never
+run it yourself — and confirm the project is `hos-suspend`d first, so no
+scheduled cycle can start and overlap it.
+
 **Human-approval gate:** `scottthurlow-claude[bot]` is listed in `BOT_ACCOUNTS`
 and is excluded from the human-approval gate. Approvals from this bot identity do
 NOT count as human approval. Do not remove it from `BOT_ACCOUNTS`.
