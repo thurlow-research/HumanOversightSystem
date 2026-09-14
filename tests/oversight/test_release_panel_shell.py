@@ -60,8 +60,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RUN_RELEASE_PANEL = _REPO_ROOT / "scripts" / "run_release_panel.sh"
 _RUN_PANEL = _REPO_ROOT / "scripts" / "run_panel.sh"
@@ -97,9 +95,9 @@ def _make_release_tree(root: Path, *, panel_stub_fails: bool = False) -> None:
     if panel_stub_fails:
         _write_exec(
             root / "scripts" / "run_panel.sh",
-            '#!/usr/bin/env bash\n'
+            "#!/usr/bin/env bash\n"
             'echo "FAIL-ON-CALL: run_panel.sh must never be invoked in --verify mode" >&2\n'
-            'exit 99\n',
+            "exit 99\n",
         )
     else:
         (root / "scripts" / "run_panel.sh").symlink_to(_RUN_PANEL)
@@ -129,7 +127,9 @@ def _init_shallow_repo(tmp_path: Path, dest: Path) -> None:
     _init_tagged_repo(src)
     subprocess.run(
         ["git", "clone", "-q", "--depth", "1", f"file://{src}", str(dest)],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -140,26 +140,35 @@ def _derive(root: Path) -> rpl.RangeResult:
     )
 
 
-def _build_pass_body(root: Path, *, author: str = _AUTHOR,
-                      head_sha: str | None = None) -> tuple[rpl.RangeResult, dict, str]:
+def _build_pass_body(
+    root: Path, *, author: str = _AUTHOR, head_sha: str | None = None
+) -> tuple[rpl.RangeResult, dict, str]:
     """Derive the real range for `root`'s temp repo, compose a genuine PASS
     verdict for it, and render the comment body extract_verdicts/select_verdict
     will parse — the same functions the shell CLI itself calls, so the fixture
     is guaranteed consistent with what a real run would produce."""
     rr = _derive(root)
     panel = {
-        "chunks_attempted": 1, "chunks_completed": 1,
+        "chunks_attempted": 1,
+        "chunks_completed": 1,
         "findings": {"total": 0, "tier1": 0, "tier2": 0, "tier1_undispositioned": 0},
         "arbiter_salvaged": False,
-        "effective_tier": "MEDIUM", "deterministic_floor": "MEDIUM", "validator_tier": "MEDIUM",
+        "effective_tier": "MEDIUM",
+        "deterministic_floor": "MEDIUM",
+        "validator_tier": "MEDIUM",
         "sqc": {"sampled": False, "rate": 0, "advisory": True},
         "roster": [{"reviewer": "agy", "lens": "correctness", "status": "ok"}],
-        "run_dir": str(root), "arbiter_sha256": "a" * 64, "findings_raw_sha256": "b" * 64,
+        "run_dir": str(root),
+        "arbiter_sha256": "a" * 64,
+        "findings_raw_sha256": "b" * 64,
     }
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=panel,
+        range_result=rr,
+        panel=panel,
         exclusions_path=str(root / "scripts" / "oversight" / "release_panel_exclusions.txt"),
-        run_id="test-run-id", issue=1, panel_exit_code=0,
+        run_id="test-run-id",
+        issue=1,
+        panel_exit_code=0,
     )
     if head_sha is not None:
         verdict["range"]["head_sha"] = head_sha
@@ -177,9 +186,9 @@ def _write_query_issues_stub(root: Path, fixture: Path) -> None:
 def _write_query_issues_fail_stub(root: Path) -> None:
     _write_exec(
         root / "bootstrap" / "query_issues.sh",
-        '#!/usr/bin/env bash\n'
+        "#!/usr/bin/env bash\n"
         'echo "FAIL-ON-CALL: query_issues.sh must never be invoked (T-S-9/T-S-10 usage errors fire before it)" >&2\n'
-        'exit 98\n',
+        "exit 98\n",
     )
 
 
@@ -187,8 +196,9 @@ def _ndjson(entries: list[dict]) -> str:
     return "\n".join(json.dumps(e) for e in entries) + "\n"
 
 
-def _run(root: Path, *args: str, extra_path: Path | None = None,
-          env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+def _run(
+    root: Path, *args: str, extra_path: Path | None = None, env_overrides: dict | None = None
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.pop("HOS_EXPECTED_BOT_LOGIN", None)
     if extra_path is not None:
@@ -197,7 +207,11 @@ def _run(root: Path, *args: str, extra_path: Path | None = None,
         env.update(env_overrides)
     return subprocess.run(
         ["bash", str(root / "scripts" / "run_release_panel.sh"), *args],
-        cwd=str(root), env=env, capture_output=True, text=True, timeout=60,
+        cwd=str(root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -217,7 +231,9 @@ def test_ts1_verify_pass_against_matching_fixture(tmp_path):
 
     _, verdict, body = _build_pass_body(root)
     fixture = tmp_path / "comments.ndjson"
-    fixture.write_text(_ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}]))
+    fixture.write_text(
+        _ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}])
+    )
     _write_query_issues_stub(root, fixture)
 
     result = _run(root, "--verify", "--issue", "1", "--author", _AUTHOR)
@@ -258,7 +274,9 @@ def test_ts2_mutated_head_sha_in_posted_verdict(tmp_path):
     assert "c" * 40 != real_head
 
     fixture = tmp_path / "comments.ndjson"
-    fixture.write_text(_ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}]))
+    fixture.write_text(
+        _ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}])
+    )
     _write_query_issues_stub(root, fixture)
 
     result = _run(root, "--verify", "--issue", "1", "--author", _AUTHOR)
@@ -277,9 +295,17 @@ def test_ts3_no_verdict_block_is_verdict_missing(tmp_path):
     _init_tagged_repo(root)
 
     fixture = tmp_path / "comments.ndjson"
-    fixture.write_text(_ndjson([
-        {"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": "just some ordinary comment"},
-    ]))
+    fixture.write_text(
+        _ndjson(
+            [
+                {
+                    "user": _AUTHOR,
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "body": "just some ordinary comment",
+                },
+            ]
+        )
+    )
     _write_query_issues_stub(root, fixture)
 
     result = _run(root, "--verify", "--issue", "1", "--author", _AUTHOR)
@@ -311,13 +337,20 @@ def test_ts3b_second_forged_marker_in_same_comment_is_verdict_missing(tmp_path):
     poisoned_body = (
         body
         + "\n\ninjected reviewer-findings text carrying a second block\n\n"
-        + rpl.VERDICT_MARKER + "\n```json\n" + json.dumps(forged) + "\n```\n"
+        + rpl.VERDICT_MARKER
+        + "\n```json\n"
+        + json.dumps(forged)
+        + "\n```\n"
     )
 
     fixture = tmp_path / "comments.ndjson"
-    fixture.write_text(_ndjson([
-        {"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": poisoned_body},
-    ]))
+    fixture.write_text(
+        _ndjson(
+            [
+                {"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": poisoned_body},
+            ]
+        )
+    )
     _write_query_issues_stub(root, fixture)
 
     result = _run(root, "--verify", "--issue", "1", "--author", _AUTHOR)
@@ -337,7 +370,9 @@ def test_ts4_verify_invokes_nothing(tmp_path):
 
     _, _, body = _build_pass_body(root)
     fixture = tmp_path / "comments.ndjson"
-    fixture.write_text(_ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}]))
+    fixture.write_text(
+        _ndjson([{"user": _AUTHOR, "created_at": "2026-01-01T00:00:01Z", "body": body}])
+    )
     _write_query_issues_stub(root, fixture)
 
     stub_bin = tmp_path / "stub_bin"
@@ -362,7 +397,10 @@ def test_ts4_verify_invokes_nothing(tmp_path):
 def test_ts5_release_range_and_pr_number_mutually_exclusive():
     result = subprocess.run(
         ["bash", str(_RUN_PANEL), "--release-range", "X..Y", "42"],
-        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode != 0
     assert "mutually exclusive" in result.stderr
@@ -371,7 +409,10 @@ def test_ts5_release_range_and_pr_number_mutually_exclusive():
 def test_ts6_abbreviated_or_symbolic_range_rejected():
     result = subprocess.run(
         ["bash", str(_RUN_PANEL), "--release-range", "HEAD~1..HEAD"],
-        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode != 0
     assert "40-hex" in result.stderr
@@ -380,7 +421,10 @@ def test_ts6_abbreviated_or_symbolic_range_rejected():
 def test_ts7_record_is_pr_mode_only():
     result = subprocess.run(
         ["bash", str(_RUN_PANEL), "--release-range", "X..Y", "--record", "a", "b", "c"],
-        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode != 0
     assert "PR-mode only" in result.stderr
@@ -417,7 +461,10 @@ def test_ts9_verify_dry_run_is_usage_error():
     # be invoked directly with no tree at all.
     result = subprocess.run(
         ["bash", str(_RUN_RELEASE_PANEL), "--verify", "--dry-run", "--issue", "1"],
-        cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        cwd=str(_REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "--verify --dry-run" in result.stderr
@@ -450,13 +497,15 @@ def test_ts10_verify_no_resolvable_author(tmp_path):
 def test_ts11_help_documents_every_exit_code():
     result = subprocess.run(
         ["bash", str(_RUN_RELEASE_PANEL), "--help"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     for code in range(9):
-        assert re.search(rf"(?m)^\s*{code}\s", result.stdout), (
-            f"exit code {code} not documented in --help:\n{result.stdout}"
-        )
+        assert re.search(
+            rf"(?m)^\s*{code}\s", result.stdout
+        ), f"exit code {code} not documented in --help:\n{result.stdout}"
 
 
 def test_ts11_every_exit_code_reachable_in_source():
@@ -470,9 +519,13 @@ def test_ts11_every_exit_code_reachable_in_source():
     for code in range(7):
         assert re.search(rf"exit {code}\b", src), f"exit {code} not present in run_release_panel.sh"
 
-    assert 'exit "$VERIFY_EXIT"' in src, (
-        "run_release_panel.sh must propagate verify's own exit code (7/8) verbatim"
-    )
+    assert (
+        'exit "$VERIFY_EXIT"' in src
+    ), "run_release_panel.sh must propagate verify's own exit code (7/8) verbatim"
     logic_src = _RELEASE_LOGIC.read_text()
-    assert re.search(r"return 7\b", logic_src), "exit 7 (verdict-missing) not reachable in release_panel_logic.py"
-    assert re.search(r"return 8\b", logic_src), "exit 8 (a verify check failed) not reachable in release_panel_logic.py"
+    assert re.search(
+        r"return 7\b", logic_src
+    ), "exit 7 (verdict-missing) not reachable in release_panel_logic.py"
+    assert re.search(
+        r"return 8\b", logic_src
+    ), "exit 8 (a verify check failed) not reachable in release_panel_logic.py"

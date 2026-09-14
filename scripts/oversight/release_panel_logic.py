@@ -88,9 +88,7 @@ def run_git(args: list[str], *, cwd: str = ".") -> tuple[int, str, str]:
     Every git call in this module goes through this one function; tests
     monkeypatch it. No other function here may call subprocess directly.
     """
-    proc = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True
-    )
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
@@ -182,9 +180,7 @@ def _refused(
 # --------------------------------------------------------------------------- #
 
 
-def derive_range(
-    *, cwd: str = ".", exclusions_path: str = EXCLUSIONS_PATH_DEFAULT
-) -> RangeResult:
+def derive_range(*, cwd: str = ".", exclusions_path: str = EXCLUSIONS_PATH_DEFAULT) -> RangeResult:
     if is_shallow(cwd=cwd):
         return _refused(
             "SHALLOW",
@@ -343,7 +339,7 @@ def compose_verdict(
         result = "NO-CONTENT"
     elif panel_exit_code != 0:
         result, verdict_reason = "FAIL", "panel-exit-nonzero"
-    elif coverage["files_reviewed"] != coverage["files_in_range"] - coverage["files_excluded"]:
+    elif len(reviewed) != range_result.files_in_range - range_result.files_excluded:
         result, verdict_reason = "FAIL", "coverage-mismatch"
     elif coverage["chunks_attempted"] != coverage["chunks_completed"]:
         result, verdict_reason = "FAIL", "chunk-shortfall"
@@ -583,27 +579,42 @@ def verify_verdict(
     def add(name: str, ok: bool, expected: object, actual: object) -> None:
         checks.append(CheckResult(name=name, ok=ok, expected=str(expected), actual=str(actual)))
 
-    range_claim = verdict.get("range") if isinstance(verdict.get("range"), dict) else {}
-    exclusions_claim = (
-        verdict.get("exclusions") if isinstance(verdict.get("exclusions"), dict) else {}
-    )
-    coverage_claim = verdict.get("coverage") if isinstance(verdict.get("coverage"), dict) else {}
-    findings_claim = verdict.get("findings") if isinstance(verdict.get("findings"), dict) else {}
+    _range = verdict.get("range")
+    range_claim: dict = _range if isinstance(_range, dict) else {}
+    _exclusions = verdict.get("exclusions")
+    exclusions_claim: dict = _exclusions if isinstance(_exclusions, dict) else {}
+    _coverage = verdict.get("coverage")
+    coverage_claim: dict = _coverage if isinstance(_coverage, dict) else {}
+    _findings = verdict.get("findings")
+    findings_claim: dict = _findings if isinstance(_findings, dict) else {}
 
     # 1. schema_version — literal.
     schema_version = verdict.get("schema_version")
-    add("schema_version", schema_version == VERDICT_SCHEMA_VERSION, VERDICT_SCHEMA_VERSION, schema_version)
+    add(
+        "schema_version",
+        schema_version == VERDICT_SCHEMA_VERSION,
+        VERDICT_SCHEMA_VERSION,
+        schema_version,
+    )
 
     # 2. head_sha — RECOMPUTE.
     recomputed_head = rev_parse("HEAD", cwd=cwd)
     claimed_head = range_claim.get("head_sha")
-    add("head_sha", recomputed_head is not None and recomputed_head == claimed_head,
-        recomputed_head, claimed_head)
+    add(
+        "head_sha",
+        recomputed_head is not None and recomputed_head == claimed_head,
+        recomputed_head,
+        claimed_head,
+    )
 
     # 3. base_sha — RE-DERIVE (range_result was produced by §1.4 at verify time).
     claimed_base = range_claim.get("base_sha")
-    add("base_sha", range_result.base_sha is not None and range_result.base_sha == claimed_base,
-        range_result.base_sha, claimed_base)
+    add(
+        "base_sha",
+        range_result.base_sha is not None and range_result.base_sha == claimed_base,
+        range_result.base_sha,
+        claimed_base,
+    )
 
     # 4. exclusions_sha256 — RE-HASH the committed file.
     recomputed_hash = exclusions_sha256(exclusions_path)
@@ -640,7 +651,12 @@ def verify_verdict(
         and isinstance(chunks_completed, int)
         and chunks_attempted == chunks_completed
     )
-    add("chunks", ok7, "chunks_attempted == chunks_completed", f"{chunks_attempted} vs {chunks_completed}")
+    add(
+        "chunks",
+        ok7,
+        "chunks_attempted == chunks_completed",
+        f"{chunks_attempted} vs {chunks_completed}",
+    )
 
     # 8. result.
     result_claim = verdict.get("result")
@@ -797,9 +813,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("new-run-id", help="print a fresh UUID4 run id")
 
-    sub.add_parser(
-        "files-digest", help="sha256 digest of a file list (stdin, one path per line)"
-    )
+    sub.add_parser("files-digest", help="sha256 digest of a file list (stdin, one path per line)")
 
     p_esha = sub.add_parser("exclusions-sha256", help="sha256 of the exclusions file")
     p_esha.add_argument("--exclusions", required=True)

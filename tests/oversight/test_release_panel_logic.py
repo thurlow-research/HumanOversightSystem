@@ -45,6 +45,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MOD_PATH = _REPO_ROOT / "scripts" / "oversight" / "release_panel_logic.py"
 _spec = importlib.util.spec_from_file_location("release_panel_logic", _MOD_PATH)
+assert _spec is not None and _spec.loader is not None
 rpl = importlib.util.module_from_spec(_spec)
 # @dataclass introspects sys.modules[cls.__module__] — register before exec_module.
 sys.modules["release_panel_logic"] = rpl
@@ -60,8 +61,9 @@ _B40 = "b" * 40
 # --------------------------------------------------------------------------- #
 # Shared git-faking harness (TD §1.2 — every test monkeypatches run_git)      #
 # --------------------------------------------------------------------------- #
-def _fake_run_git(*, shallow=False, describe=(1, "", "not a git repository"),
-                   rev_parse=None, diff=None):
+def _fake_run_git(
+    *, shallow=False, describe=(1, "", "not a git repository"), rev_parse=None, diff=None
+):
     """Build a fake `run_git` dispatching on the exact argv shape each thin
     wrapper (`is_shallow`/`latest_tag`/`rev_parse`/`changed_files`) emits, and
     recording every call for the no-HEAD~1 / two-dot assertions."""
@@ -116,9 +118,9 @@ def test_tr1_shallow_refuses_before_tag_lookup(monkeypatch):
     assert rr.state == "SHALLOW"
     assert "shallow clone" in rr.reason
     assert rr.remediation == "git fetch --unshallow --tags"
-    assert not any(c[:1] == ["describe"] for c in fake.calls), (
-        "latest_tag must never be called once SHALLOW is determined"
-    )
+    assert not any(
+        c[:1] == ["describe"] for c in fake.calls
+    ), "latest_tag must never be called once SHALLOW is determined"
 
 
 def test_tr2_describe_nonzero_is_no_tag(monkeypatch):
@@ -203,16 +205,19 @@ def test_tr8_no_head_tilde_fallback_anywhere(tmp_path, monkeypatch):
         _fake_run_git(shallow=False, describe=(1, "", "")),
         _fake_run_git(shallow=False, describe=(0, "", "")),
         _fake_run_git(
-            shallow=False, describe=(0, "v1.0.0", ""),
+            shallow=False,
+            describe=(0, "v1.0.0", ""),
             rev_parse={"v1.0.0^{commit}": (1, "", "")},
         ),
         _fake_run_git(
-            shallow=False, describe=(0, "v1.0.0", ""),
+            shallow=False,
+            describe=(0, "v1.0.0", ""),
             rev_parse={"v1.0.0^{commit}": (0, _A40, ""), "HEAD": (0, _B40, "")},
             diff={(_A40, _B40): (0, "docs/x.md", "")},
         ),
         _fake_run_git(
-            shallow=False, describe=(0, "v1.0.0", ""),
+            shallow=False,
+            describe=(0, "v1.0.0", ""),
             rev_parse={"v1.0.0^{commit}": (0, _A40, ""), "HEAD": (0, _B40, "")},
             diff={(_A40, _B40): (0, "src/a.py", "")},
         ),
@@ -341,9 +346,18 @@ def test_te11_cli_derive_range_exits_1_on_missing_exclusions(tmp_path):
     repo.mkdir()
     _make_tagged_repo(repo)
     result = subprocess.run(
-        [sys.executable, str(_MOD_PATH), "derive-range", "--cwd", str(repo),
-         "--exclusions", str(tmp_path / "missing-exclusions.txt")],
-        capture_output=True, text=True, timeout=30,
+        [
+            sys.executable,
+            str(_MOD_PATH),
+            "derive-range",
+            "--cwd",
+            str(repo),
+            "--exclusions",
+            str(tmp_path / "missing-exclusions.txt"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 1, result.stderr
     assert "FileNotFoundError" in result.stderr
@@ -376,39 +390,67 @@ def _range_ok(reviewed, excluded=(), base_ref="v1.0.0", base_sha=None, head_sha=
     base_sha = base_sha or _A40
     head_sha = head_sha or _B40
     return rpl.RangeResult(
-        state="OK", base_ref=base_ref, base_sha=base_sha, head_sha=head_sha,
-        derivation=rpl.DERIVATION, files_in_range=len(reviewed) + len(excluded),
-        files_excluded=len(excluded), reviewed=tuple(reviewed), excluded=tuple(excluded),
-        reason="", remediation="",
+        state="OK",
+        base_ref=base_ref,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        derivation=rpl.DERIVATION,
+        files_in_range=len(reviewed) + len(excluded),
+        files_excluded=len(excluded),
+        reviewed=tuple(reviewed),
+        excluded=tuple(excluded),
+        reason="",
+        remediation="",
     )
 
 
 def _panel(**overrides):
     base = {
-        "chunks_attempted": 2, "chunks_completed": 2,
+        "chunks_attempted": 2,
+        "chunks_completed": 2,
         "findings": {"total": 0, "tier1": 0, "tier2": 0, "tier1_undispositioned": 0},
         "arbiter_salvaged": False,
-        "effective_tier": "MEDIUM", "deterministic_floor": "MEDIUM", "validator_tier": "MEDIUM",
+        "effective_tier": "MEDIUM",
+        "deterministic_floor": "MEDIUM",
+        "validator_tier": "MEDIUM",
         "sqc": {"sampled": False, "rate": 0, "advisory": True},
         "roster": [{"reviewer": "agy", "lens": "correctness", "status": "ok"}],
-        "run_dir": "/tmp/run", "arbiter_sha256": "a" * 64, "findings_raw_sha256": "b" * 64,
+        "run_dir": "/tmp/run",
+        "arbiter_sha256": "a" * 64,
+        "findings_raw_sha256": "b" * 64,
     }
     base.update(overrides)
     return base
 
 
 _AD4_FIELDS = (
-    "artifact", "schema_version", "result", "issue", "panel_exit_code",
-    "verdict_reason", "range", "exclusions", "coverage", "risk", "roster",
-    "findings", "arbiter_salvaged", "run", "completed_at",
+    "artifact",
+    "schema_version",
+    "result",
+    "issue",
+    "panel_exit_code",
+    "verdict_reason",
+    "range",
+    "exclusions",
+    "coverage",
+    "risk",
+    "roster",
+    "findings",
+    "arbiter_salvaged",
+    "run",
+    "completed_at",
 )
 
 
 def test_tc1_happy_panel_every_ad4_field_present_with_exact_names(excl_file):
     rr = _range_ok(["a.py", "b.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="run-1", issue=42, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="run-1",
+        issue=42,
+        panel_exit_code=0,
     )
     for key in _AD4_FIELDS:
         assert key in verdict, f"missing AD-4 field: {key}"
@@ -425,7 +467,10 @@ def test_tc2_tier1_undispositioned_fails(excl_file):
     verdict = rpl.compose_verdict(
         range_result=rr,
         panel=_panel(findings={"total": 2, "tier1": 2, "tier2": 0, "tier1_undispositioned": 2}),
-        exclusions_path=excl_file, run_id="r", issue=1, panel_exit_code=0,
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     assert verdict["result"] == "FAIL"
     assert verdict["verdict_reason"] == "tier1-undispositioned"
@@ -434,8 +479,12 @@ def test_tc2_tier1_undispositioned_fails(excl_file):
 def test_tc3_arbiter_salvaged_fails(excl_file):
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(arbiter_salvaged=True),
-        exclusions_path=excl_file, run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(arbiter_salvaged=True),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     assert verdict["result"] == "FAIL"
     assert verdict["verdict_reason"] == "arbiter-salvaged"
@@ -444,8 +493,12 @@ def test_tc3_arbiter_salvaged_fails(excl_file):
 def test_tc4_chunk_shortfall_fails(excl_file):
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(chunks_attempted=3, chunks_completed=2),
-        exclusions_path=excl_file, run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(chunks_attempted=3, chunks_completed=2),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     assert verdict["result"] == "FAIL"
     assert verdict["verdict_reason"] == "chunk-shortfall"
@@ -455,13 +508,25 @@ def test_tc5_coverage_mismatch_fails(excl_file):
     # Craft an internally inconsistent RangeResult (files_in_range disagrees
     # with len(reviewed)+len(excluded)) to force the coverage-arithmetic branch.
     rr = rpl.RangeResult(
-        state="OK", base_ref="v1.0.0", base_sha=_A40, head_sha=_B40,
-        derivation=rpl.DERIVATION, files_in_range=5, files_excluded=0,
-        reviewed=("a.py", "b.py"), excluded=(), reason="", remediation="",
+        state="OK",
+        base_ref="v1.0.0",
+        base_sha=_A40,
+        head_sha=_B40,
+        derivation=rpl.DERIVATION,
+        files_in_range=5,
+        files_excluded=0,
+        reviewed=("a.py", "b.py"),
+        excluded=(),
+        reason="",
+        remediation="",
     )
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     assert verdict["result"] == "FAIL"
     assert verdict["verdict_reason"] == "coverage-mismatch"
@@ -470,8 +535,12 @@ def test_tc5_coverage_mismatch_fails(excl_file):
 def test_tc6_panel_exit_nonzero_fails(excl_file):
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=3,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=3,
     )
     assert verdict["result"] == "FAIL"
     assert verdict["verdict_reason"] == "panel-exit-nonzero"
@@ -479,16 +548,27 @@ def test_tc6_panel_exit_nonzero_fails(excl_file):
 
 def test_tc7_no_content_range_never_pass(excl_file):
     rr = rpl.RangeResult(
-        state="NO_CONTENT", base_ref="v1.0.0", base_sha=_A40, head_sha=_B40,
-        derivation=rpl.DERIVATION, files_in_range=3, files_excluded=3,
-        reviewed=(), excluded=("docs/a.md", "docs/b.md", "docs/c.md"),
-        reason="NO-CONTENT: zero files after exclusions", remediation="",
+        state="NO_CONTENT",
+        base_ref="v1.0.0",
+        base_sha=_A40,
+        head_sha=_B40,
+        derivation=rpl.DERIVATION,
+        files_in_range=3,
+        files_excluded=3,
+        reviewed=(),
+        excluded=("docs/a.md", "docs/b.md", "docs/c.md"),
+        reason="NO-CONTENT: zero files after exclusions",
+        remediation="",
     )
     # Even with a clean, zero-exit panel, NO_CONTENT is composed for the
     # record and must never read PASS.
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     assert verdict["result"] == "NO-CONTENT"
     assert verdict["result"] != "PASS"
@@ -497,18 +577,27 @@ def test_tc7_no_content_range_never_pass(excl_file):
 def test_tc8_completed_at_format():
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=_REAL_EXCLUSIONS,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=_REAL_EXCLUSIONS,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     import re as _re
+
     assert _re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", verdict["completed_at"])
 
 
 def test_tc9_render_comment_body_has_prose_coverage_paragraph(excl_file):
     rr = _range_ok(["a.py", "b.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     body = rpl.render_comment_body(verdict=verdict, panel_summary_md="PANEL SUMMARY TEXT")
     assert "Release candidate SHA:" in body
@@ -523,23 +612,31 @@ def test_tc9_render_comment_body_has_prose_coverage_paragraph(excl_file):
 def test_tc10_marker_own_line_before_fence_and_json_roundtrips(excl_file):
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     body = rpl.render_comment_body(verdict=verdict, panel_summary_md="summary")
     lines = body.splitlines()
     marker_idx = lines.index(rpl.VERDICT_MARKER)
     assert lines[marker_idx + 1] == "```json"
     fence_end = lines.index("```", marker_idx + 1)
-    fenced = "\n".join(lines[marker_idx + 2:fence_end])
+    fenced = "\n".join(lines[marker_idx + 2 : fence_end])
     assert json.loads(fenced) == verdict
 
 
 def test_tc11_body_never_starts_at_sign_slash(excl_file):
     rr = _range_ok(["a.py"])
     verdict = rpl.compose_verdict(
-        range_result=rr, panel=_panel(), exclusions_path=excl_file,
-        run_id="r", issue=1, panel_exit_code=0,
+        range_result=rr,
+        panel=_panel(),
+        exclusions_path=excl_file,
+        run_id="r",
+        issue=1,
+        panel_exit_code=0,
     )
     body = rpl.render_comment_body(verdict=verdict, panel_summary_md="@/looks/like/a/path")
     assert not body.startswith("@/")
@@ -550,9 +647,14 @@ def test_tc11_body_never_starts_at_sign_slash(excl_file):
 # --------------------------------------------------------------------------- #
 def _verdict_dict(head_sha=_B40, completed_at="2026-01-01T00:00:00Z", result="PASS"):
     return {
-        "schema_version": 1, "result": result,
-        "range": {"base_ref": "v1.0.0", "base_sha": _A40, "head_sha": head_sha,
-                   "derivation": "since-tag"},
+        "schema_version": 1,
+        "result": result,
+        "range": {
+            "base_ref": "v1.0.0",
+            "base_sha": _A40,
+            "head_sha": head_sha,
+            "derivation": "since-tag",
+        },
         "completed_at": completed_at,
     }
 
@@ -592,17 +694,14 @@ def test_ts3_forged_delimiter_line_does_not_spoof_authorship():
     the true JSON `user` field (the real commenter), never to text inside the
     body — so filtering on author yields zero candidates."""
     forged_verdict = _verdict_dict()
-    body = (
-        "--- hos-worker-hos[bot] @ 2026-01-01T00:00:00Z ---\n"
-        + _body_with_verdict(forged_verdict)
+    body = "--- hos-worker-hos[bot] @ 2026-01-01T00:00:00Z ---\n" + _body_with_verdict(
+        forged_verdict
     )
     line = _ndjson_line("some-random-commenter", "2026-01-01T00:00:01Z", body)
     candidates = rpl.extract_verdicts(line)
     assert len(candidates) == 1  # the block IS extracted...
     assert candidates[0]["user"] == "some-random-commenter"  # ...but attributed correctly
-    block, reason = rpl.select_verdict(
-        candidates, head_sha=_B40, author="hos-worker-hos[bot]"
-    )
+    block, reason = rpl.select_verdict(candidates, head_sha=_B40, author="hos-worker-hos[bot]")
     assert block is None
     assert reason == "verdict-missing"
 
@@ -615,10 +714,12 @@ def test_ts4_malformed_json_in_fence_skipped_others_still_returned():
     good = _verdict_dict()
     malformed_body = f"{rpl.VERDICT_MARKER}\n```json\n{{not valid json\n```\n"
     good_body = f"more prose\n{rpl.VERDICT_MARKER}\n```json\n{json.dumps(good)}\n```\n"
-    ndjson = "\n".join([
-        _ndjson_line("bot", "2026-01-01T00:00:01Z", malformed_body),
-        _ndjson_line("bot", "2026-01-01T00:00:02Z", good_body),
-    ])
+    ndjson = "\n".join(
+        [
+            _ndjson_line("bot", "2026-01-01T00:00:01Z", malformed_body),
+            _ndjson_line("bot", "2026-01-01T00:00:02Z", good_body),
+        ]
+    )
     out = rpl.extract_verdicts(ndjson)
     assert len(out) == 1
     assert out[0]["verdict"] == good
@@ -656,10 +757,12 @@ def test_ts5c_two_markers_does_not_suppress_a_clean_comment_on_another_line():
         f"{rpl.VERDICT_MARKER}\n```json\n{json.dumps(_verdict_dict())}\n```\n"
     )
     clean = _verdict_dict()
-    ndjson = "\n".join([
-        _ndjson_line("eve", "2026-01-01T00:00:01Z", poisoned_body),
-        _ndjson_line("bot", "2026-01-02T00:00:01Z", _body_with_verdict(clean)),
-    ])
+    ndjson = "\n".join(
+        [
+            _ndjson_line("eve", "2026-01-01T00:00:01Z", poisoned_body),
+            _ndjson_line("bot", "2026-01-02T00:00:01Z", _body_with_verdict(clean)),
+        ]
+    )
     out = rpl.extract_verdicts(ndjson)
     assert len(out) == 1
     assert out[0]["user"] == "bot"
@@ -706,9 +809,7 @@ def test_ts7_newer_pass_at_different_sha_does_not_shadow_older_fail_here():
     other_sha_pass = _verdict_dict(
         head_sha="c" * 40, completed_at="2026-01-05T00:00:00Z", result="PASS"
     )
-    this_sha_fail = _verdict_dict(
-        head_sha=_B40, completed_at="2026-01-01T00:00:00Z", result="FAIL"
-    )
+    this_sha_fail = _verdict_dict(head_sha=_B40, completed_at="2026-01-01T00:00:00Z", result="FAIL")
     candidates = [
         {"user": "bot", "created_at": "2026-01-05T00:00:00Z", "verdict": other_sha_pass},
         {"user": "bot", "created_at": "2026-01-01T00:00:00Z", "verdict": this_sha_fail},
@@ -747,21 +848,37 @@ def verify_fixture(tmp_path, monkeypatch):
     excl_path.write_text("generated/**\n")
     reviewed = ["f1.py", "f2.py"]
     range_result = rpl.RangeResult(
-        state="OK", base_ref="v1.0.0", base_sha=_A40, head_sha=_B40,
-        derivation=rpl.DERIVATION, files_in_range=2, files_excluded=0,
-        reviewed=tuple(reviewed), excluded=(), reason="", remediation="",
+        state="OK",
+        base_ref="v1.0.0",
+        base_sha=_A40,
+        head_sha=_B40,
+        derivation=rpl.DERIVATION,
+        files_in_range=2,
+        files_excluded=0,
+        reviewed=tuple(reviewed),
+        excluded=(),
+        reason="",
+        remediation="",
     )
     digest = rpl.files_digest(reviewed)
     excl_hash = rpl.exclusions_sha256(str(excl_path))
     verdict = {
         "schema_version": 1,
         "result": "PASS",
-        "range": {"base_ref": "v1.0.0", "base_sha": _A40, "head_sha": _B40,
-                   "derivation": "since-tag"},
+        "range": {
+            "base_ref": "v1.0.0",
+            "base_sha": _A40,
+            "head_sha": _B40,
+            "derivation": "since-tag",
+        },
         "exclusions": {"path": str(excl_path), "sha256": excl_hash},
         "coverage": {
-            "files_in_range": 2, "files_excluded": 0, "files_reviewed": 2,
-            "files_digest": digest, "chunks_attempted": 3, "chunks_completed": 3,
+            "files_in_range": 2,
+            "files_excluded": 0,
+            "files_reviewed": 2,
+            "files_digest": digest,
+            "chunks_attempted": 3,
+            "chunks_completed": 3,
         },
         "findings": {"total": 0, "tier1": 0, "tier2": 0, "tier1_undispositioned": 0},
         "arbiter_salvaged": False,
@@ -916,9 +1033,15 @@ def test_tv15_missing_coverage_key_fails_its_own_checks_no_exception(verify_fixt
 
 def test_tv16_refusal_at_verify_time_is_gate_fail_never_pass(verify_fixture):
     shallow_rr = rpl.RangeResult(
-        state="SHALLOW", base_ref=None, base_sha=None, head_sha=None,
-        derivation=rpl.DERIVATION, files_in_range=0, files_excluded=0,
-        reviewed=(), excluded=(),
+        state="SHALLOW",
+        base_ref=None,
+        base_sha=None,
+        head_sha=None,
+        derivation=rpl.DERIVATION,
+        files_in_range=0,
+        files_excluded=0,
+        reviewed=(),
+        excluded=(),
         reason="range-derivation-failed: shallow clone",
         remediation="git fetch --unshallow --tags",
     )
