@@ -32,6 +32,7 @@ excluded.
 - `bootstrap/hos_install.sh` — Human Oversight System — PROJECT installer.
 - `bootstrap/hos_repo_sync.sh` — fetch + fast-forward the current repo's default branch, but only if enough time has passed since the last sync.
 - `bootstrap/hos_setup_partner.sh` — guided per-project HOS credential setup
+- `bootstrap/invoke_agent.sh` — L3 wrapper for the deterministic agent-invocation primitive (#1643 slice W1).
 - `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority read-only primitive surface (#1357 slice 1).
 - `bootstrap/post_comment.sh` — canonical wrapper for posting a GitHub issue/PR comment under a HOS bot identity (#1155)
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
@@ -60,6 +61,7 @@ excluded.
 
 ## scripts/automation/
 
+- `scripts/automation/agent_invoke_cli.py` — L2 deterministic agent-invocation primitive (#1643 W1).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
 
