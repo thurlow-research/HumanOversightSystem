@@ -1,7 +1,16 @@
 # ADR-1542 — Script coverage for sandboxed Worker & Overseer: inherit one CLI contract, close the read namespace, and refuse to ship a capability list the system cannot check
 
 **Status:** ACCEPTED FOR DESIGN — binds `technical-design`. **Three items are held for the human** (§3): ESC-1 (activating the worker lifecycle libraries, which have never executed — product boundary), ESC-2 (the autonomous roles' actual enforcement posture, which determines whether the FR-8 artifact is a control or documentation), ESC-3 (whether parallel v0.7.0 work may keep adding agent-instructed library calls before the detector lands). Everything else below is **BINDING**.
-**Date:** 2026-09-12
+
+> **AMENDED 2026-09-15 — §4.9 (G11) is SUPERSEDED, cross-ADR, by `docs/v0.7.0/ADR-1540-AMENDMENT-1-escalation-rulings.md` AM-11.**
+> G11 is not merely overlapped by ADR-1540's S2 selection entry point: building it separately would
+> produce two wrappers over the same selection decision, one of them trust-gated — the duplicate-gate
+> defect (#1135) in its purest form. G11's §4 slice-3 line item is **satisfied by S2's merge**, and its
+> sign-offs **for that item only** are orphaned. Every other slice-3 item (G10 identity assertion, G7
+> merged sweep, G4 release tier, the `check_pr_reviewed.sh` / `pr_readiness.py` retrofits) is untouched.
+> Both affected rows below carry inline markers.
+
+**Date:** 2026-09-12 (original), amended 2026-09-15 (cross-ADR, ADR-1540 Amendment 1)
 **Author:** `architect`
 **Verified against:** `origin/main` @ `511e2a2f` (2026-09-12). The requirements document was verified against `dfa9bf8e`; twelve commits have landed since, and four of them change this issue's inventory (§0).
 **Source issue:** #1542 (open, `needs-human`, v0.7.0 — Quality).
@@ -117,7 +126,7 @@ The test applied to each: *does the agent make a real decision between these ste
 | 4.6 (G6) | R3/R4 release results comment body | **One call producing a file**, consumed by `post_comment.sh --body-file`. Composition in code; the agent supplies inputs, never prose assembled from redirected substitution output. |
 | 4.7 (G7) | Merged-PR sweep with `merged_by` resolved | **One call** (`query_prs.sh --merged-since <hours>`), replacing `overseer-cron-prompt.md:30`'s loop. Library half is AD-2's FR-1.5. |
 | 4.8 (G10) | Identity assertion | **One call**, `bootstrap/assert_identity.sh --app <role>`, exit non-zero on mismatch. Replaces all four `$VAR`-expanding guard lines (AV-10). **Binding:** this does not replace the in-wrapper identity guard every mutation script already performs (ADR-1357 AD-2 / FR-6.3); it is the cron prompts' own opening assertion. Guards inside wrappers are never removed in favour of it. |
-| 4.9 (G11) | Next-candidate selection | **One call** wrapping the canonical `next_candidates.jq`, since `hos-cron` already precomputes the list and this is the *fallback* path. |
+| 4.9 (G11) | Next-candidate selection | ~~**One call** wrapping the canonical `next_candidates.jq`, since `hos-cron` already precomputes the list and this is the *fallback* path.~~ **[SUPERSEDED BY `ADR-1540-AMENDMENT-1` AM-11 — 2026-09-15: satisfied by ADR-1540 S2's `select_work_candidates.py` entry point, which deletes this exact call site. Do not build G11 separately. Binding acceptance condition carried onto S2: its cron-prompt fallback must contain no command substitution, no variable expansion, no inline `jq` and no backslash continuation — the design's §6.3 conformance test is the mechanism, and it is required.]** |
 | 4.10 (G12) | Dirty-PR branch rebuild | **One call, and it is not merely an allowlisting fix** — it closes the force-push path that bypasses `submit_pr.sh`'s merge-from-base guard (#1162's residual). Design it as `submit_pr.sh`'s sibling, sharing its authorship precheck; it must never force-push without the same server-side ownership verification. Own slice, own review. |
 | 4.11 (G13) | Out-of-scope-commit handling (SPEC-328 Option A) | **One call.** Revert-on-branch → follow-up branch from target → cherry-pick is fully specified. |
 | 4.12 (VF-8) | Release-gate validation against **committed** state | **New adapter, outside the pure module.** `release_artifact_logic.py`'s stated PURITY contract (no subprocess/network/git) must not be broken; the `git show origin/main:…` reads live in a thin L2 adapter that feeds it, with a self-derived version. |
@@ -227,7 +236,7 @@ Detector first (AV-5), then reads, then retrofits, then the compound builds, wit
 |---|---|---|---|
 | **1** | **Detector + inventory baseline** | AD-11's document scanner (incl. the call-a-function rule) + AD-10's three-way coverage check, both in CI with an enumerated, closed debt baseline; FR-9.1's re-audit of the "already covered" table against *"invocable with literal arguments?"* | Detector red on today's four documents with every failing site enumerated; check green; no new baseline entries permitted after merge |
 | **2** | **PR-read library + read CLI** | AD-2's residual `github.py` functions (events, labels, merged-with-`merged_by`, branch protection); `bootstrap/query_prs.sh` named operations; `query_issues.sh --comments --contains/--author` | Every FR-1 answer obtainable from one literal-argument call; baseline shrinks by the `gh api` sites in `worker.md`/`overseer.md`/`overseer-cron-prompt.md` |
-| **3** | **Self-derivation retrofits + cheap single-calls** | AD-4 on `check_pr_reviewed.sh` (`--pr`), `pr_readiness.py` (derive `--cid`/SHAs); G10 identity assertion; G11 next-candidate; G7 merged sweep; G4 release tier | `overseer-cron-prompt.md:30` loop and `worker-cron-prompt.md:101` `$(cat …jq)` both deleted; all four `$VAR` identity-guard/`cd` sites replaced |
+| **3** | **Self-derivation retrofits + cheap single-calls** | AD-4 on `check_pr_reviewed.sh` (`--pr`), `pr_readiness.py` (derive `--cid`/SHAs); G10 identity assertion; ~~G11 next-candidate~~ (**superseded — satisfied by ADR-1540 S2's merge, `ADR-1540-AMENDMENT-1` AM-11**); G7 merged sweep; G4 release tier | `overseer-cron-prompt.md:30` loop and `worker-cron-prompt.md:101` `$(cat …jq)` both deleted; all four `$VAR` identity-guard/`cd` sites replaced |
 | **4** | **Commit path** | G1 `commit_work.sh` with the shared trailer validator; `commit_onto_base.sh` delegates to it; **#1552 resolved**; `git add`/stash handling (AV-10) | A worker commit is one literal call; #1552 either no longer prompts or is documented as a deliberate authorization gate with that stated in its header |
 | **5** | **Validator/release verdicts** | G2 §3b ancestry verdict; VF-8 committed-state adapter over `release_artifact_logic.py` (purity preserved); G6 release-results composer | Each emits one record; no chained git reads remain in either cron prompt |
 | **6** | **NG3b authorization verifier** | G5 R1 + R5 + composed `status`, with per-condition evidence | Hand-evaluation of one real release request compared field-by-field against the verdict — the last time a human evaluates NG3b by reading it |

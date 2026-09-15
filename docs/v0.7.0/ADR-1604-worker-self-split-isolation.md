@@ -1,7 +1,17 @@
 # ADR-1604 — A stuck issue stops itself, not the project: deterministic isolation in `hos-cron`, attribution as a forced side effect of an already-mandatory wrapper, and judgment confined to the split assessment
 
 **Status:** ACCEPTED FOR DESIGN — binds `technical-design`. **Three items are held for the human** (§4): ESC-1 (the project brake's new threshold is a cost-model change), ESC-2 (may worker-filed sub-issues be autonomously selected before ADR-1540's enumeration lands?), ESC-3 (a lost audit write found in §0 that needs its own issue). Everything else below is **BINDING**.
-**Date:** 2026-09-12
+
+> **AMENDED 2026-09-15 — two decisions below are amended, cross-ADR, by `docs/v0.7.0/ADR-1540-AMENDMENT-1-escalation-rulings.md`:**
+> **AM-9** amends **AD-5**'s mechanism clause (its semantics stand); **AM-10** amends **AD-9** point 2.
+> Both carry inline markers. **Whoever picks up #1604 must carry that amendment into
+> `TECHNICAL-DESIGN-1604` as the first step of the work, not as a cleanup afterwards** — §4.6/§4.7
+> (Component H) and the `tests/automation/test_next_candidates.py` row are **orphaned sign-offs** and
+> must be re-reviewed against the amended contract before #1604 is built. Building against AD-5 as
+> originally written reproduces the two-selection-implementation defect (#1135) this design exists to
+> prevent. Sequencing: **ADR-1540's S2 ships first.**
+
+**Date:** 2026-09-12 (original), amended 2026-09-15 (cross-ADR, ADR-1540 Amendment 1)
 **Author:** architect
 **Inputs:** issue #1604's body and **all five** of its comments — the 2026-09-12 refinements (graceful non-split; per-issue isolation), the process ruling, the auto-close-the-tracking-parent requirement, the VF-3/Q1/Q3 resolutions, and the bound-parameters comment with its *"if you find yourself in a hole, stop digging"* principle; `docs/v0.7.0/REQUIREMENTS-1604-worker-self-split-isolation.md` (pm-agent, PR #1610, **not yet merged** — read from `origin/docs/1604-worker-self-split-requirements`); #1601 as amended 2026-09-12; my own re-verification against `origin/main` (§0).
 **Consumers:** `technical-design` (next), then **three or more** `needs-ai` issues to the autonomous `worker` (§3 — one issue for this whole mechanism would reproduce #1354).
@@ -121,7 +131,7 @@ This closes AF-2's failure class by construction: if the audit write is silently
 ### AD-5 — The stuck state is one narrow marker that is authoritative for **both** the count and the queue exclusion. (BINDING — FR17, FR18, FR24, FR26; VF-4, VF-5, AF-4.)
 
 - A single new narrow marker (spelling is `technical-design`'s; semantics are "this mechanism has concluded no further autonomous attempt should be made on this issue") is the **sole** basis for the FR19 live count and the **sole** basis for this mechanism's queue exclusion.
-- That exclusion is expressed in `scripts/automation/lib/next_candidates.jq` **and** its inlined twin in `bootstrap/worker-cron-prompt.md`, in lock-step, covered by the existing `tests/automation/test_next_candidates.py` divergence test.
+- ~~That exclusion is expressed in `scripts/automation/lib/next_candidates.jq` **and** its inlined twin in `bootstrap/worker-cron-prompt.md`, in lock-step, covered by the existing `tests/automation/test_next_candidates.py` divergence test.~~ **[SUPERSEDED BY `ADR-1540-AMENDMENT-1` AM-9 — 2026-09-15: the exclusion is expressed *once*, as an entry in `select_work_candidates.py`'s `EXCLUDED_LABELS` constant. There is no inlined twin and no lock-step divergence test, because after ADR-1540 S2 there is no second implementation. The rest of AD-5 — its semantics — is unchanged and still binding.]**
 - The generic human-attention label is applied **alongside** for continuity with existing human triage, and is **advisory**: removing it does not re-queue a stuck issue, and it is never counted. (AF-4.2 — with 56 of them open and many hands touching them, deriving anything load-bearing from that label is how this mechanism would silently re-queue work it had just parked.)
 - **Clearing is removing the narrow marker**, and nothing else. Per Q3, the deterministic reconcile resets that issue's attributed-timeout counter to zero when it observes the marker absent on an issue that carries a non-zero count. The human edits no state file and posts no magic string.
 - Neither the marker nor any other label spelling appears in policy logic (FR25): one constants module, one place #1520's rename touches.
@@ -167,7 +177,7 @@ The worker files sub-issues under its own App identity via the existing `create_
 
 Binding containment:
 1. Every sub-issue carries a machine-readable derivation link to its parent, and is authorized **because the parent was**, not because the worker wrote it.
-2. Sub-issue filing is an **enumerated machine-filing path** under ADR-1540's AD-2, not an instance of a general trusted-author exemption. ADR-1540's implementer must enumerate it deliberately.
+2. ~~Sub-issue filing is an **enumerated machine-filing path** under ADR-1540's AD-2, not an instance of a general trusted-author exemption. ADR-1540's implementer must enumerate it deliberately.~~ **[SUPERSEDED BY `ADR-1540-AMENDMENT-1` AM-10 — 2026-09-15: point 1 above governs, and it contradicted this point. Sub-issue filing MUST NOT appear in `MACHINE_FILING_MARKERS` — a sub-issue's title and body are LLM-composed from the content of the very issue whose trust is in question, so a marker on it is vacuous. Authorization is instead an AD-4-class live derivation: the gate resolves the parent from the machine-readable link and requires it to be authorized *now*. Never cached. ADR-1540's S1/S2 enumeration does not need to anticipate it.]**
 3. A sub-issue whose parent cannot be resolved, or whose parent was not itself authorized, is not autonomously selectable.
 
 This mechanism may not ship ahead of that enumeration (or an equivalent enforced inheritance check) — **ESC-2** puts the sequencing choice with the human, because it is a policy call about machine self-authorization, not a technical one.
