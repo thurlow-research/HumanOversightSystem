@@ -402,8 +402,12 @@ milestone strategy and the gate reach the same negative verdict on the same fixt
 
 **(f) The reversal-event residual (adversarial A-6), narrowed.** S2 ignores `unlabeled`/`demilestoned`
 events, so a stale human `labeled` event still authorizes if the dispatch label is later re-added.
-The lens asserted this is reachable today via `merge_authority.py:1068`; **that is false** —
-`merge_authority.py` contains no occurrence of `needs-ai` at all (verified). Both the panel's and the
+The lens asserted this is reachable today via `merge_authority.py:1068`; **that citation is false** —
+there is no `needs-ai` at `:1068`, and `merge_authority.py` has no *issue-side* writer of the label
+(verified). It does contain four occurrences, two of them live code — `:633`
+(`label = "needs-human" if oversight_verdict == "ESCALATE" else "needs-ai"`) and `:1223`
+(`record_pr_bounce`'s `label: str = "needs-ai"` default) — but both are **PR-side**, consistent with
+§3's AM-15 row, so neither reaches an existing issue. Both the panel's and the
 completeness lens's independent enumerations found the only site adding the dispatch label to an
 *existing* issue is `label-swap.yml:74` (`/approve`, human-triggered, non-authorizing post-S2); every
 other writer is creation-time or PR-side. A human revoking also normally applies `needs-human`, which
