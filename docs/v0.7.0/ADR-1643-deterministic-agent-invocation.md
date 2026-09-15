@@ -7,14 +7,14 @@ reuse fall inside Q2's "unconditionally"? — ESC-1's arithmetic depends on the 
 twelve review dimensions that have never executed is a step change in what blocks a merge — observation
 window first, or straight to enforcing?). Everything else below is **BINDING**.
 
-> **AMENDED 2026-09-14 — read §9 (Amendment 1) before implementing anything.** `technical-design`
+> **AMENDED 2026-09-15 — read §9 (Amendment 1) before implementing anything.** `technical-design`
 > returned five escalations against this ADR (TECHNICAL-DESIGN-1643 §12: ESC-A, ESC-B, ESC-C, ESC-D,
 > ESC-J), two of them blocking slice W1. All five are ruled in **§9**. **Where §9 and §2 differ, §9
 > governs; where §9 and the technical design differ, §9 governs.** Every affected decision row in §2
 > carries an inline pointer, and §9.7 lists exactly which technical-design clauses are superseded. A
 > coder implementing AD-4 who has not read §9 will build the wrong classifier.
 
-**Date:** 2026-09-14 (original), amended 2026-09-14 (Amendment 1, §9)
+**Date:** 2026-09-14 (original), amended 2026-09-15 (Amendment 1, §9)
 **Author:** architect
 **Inputs:** `docs/v0.7.0/REQUIREMENTS-1643-1644-deterministic-agent-invocation.md` (pm-agent, merged in
 PR #1651) in full, including VF-1…VF-12; the human's **Q1–Q8 rulings** (#1643 comment 2026-09-14T20:09:14Z);
@@ -315,7 +315,7 @@ which is precisely the shape Q4+Q6 ruled #1644 into.
 
 ### AD-4 — Fail-closed is an allowlist over the envelope, not a denylist. `subtype` is never read. (BINDING — REQ-A6, REQ-A7, REQ-A9; Q1; VF-1.3.)
 
-> **THREE ROWS OF THE TABLE BELOW ARE SUPERSEDED BY §9.1 (Amendment 1, 2026-09-14).** The
+> **THREE ROWS OF THE TABLE BELOW ARE SUPERSEDED BY §9.1 (Amendment 1, 2026-09-15).** The
 > `terminal_reason` row, the `subagent_stats.refused` row, and the *"any envelope field the classifier
 > does not recognise"* clause in the sentence immediately below were all written against an envelope
 > nobody had probed. `technical-design` probed it (CLI 2.1.270) and returned ESC-A and ESC-B; I
@@ -778,7 +778,7 @@ reproduce #1354.
 | **W11/W12** | #1626 / #1629 re-scoped | Dimension definition only — inputs, prompt, disposition, predicate. **No private invocation, parsing, or fail-closed logic** (REQ-D0). #1629 additionally blocked on Q8's operationalisation. | Depends on W7. |
 | **W13** | #1621 annotated | Confirmed **not** a REQ-A consumer — it is a deterministic approval-state check and belongs with #1641's primitives. Annotate so nobody builds an agent invocation into it. | Any time. |
 
-**Amended 2026-09-14 (§9) — three rows above changed scope:**
+**Amended 2026-09-15 (§9) — three rows above changed scope:**
 - **W1** — the classifier is specified by **§9.1 and §9.2**, not by AD-4's original table. W1 is otherwise
   unchanged and is **cleared to start**.
 - **W4** — loses `validate_agents.sh`'s `run_capped` deletion (**§9.4**), and its `validate_self.sh`
@@ -932,7 +932,7 @@ against it?"** — asked of each item, per the CORE startup-gap rule.
 
 ---
 
-## 9. Amendment 1 — rulings on the technical-design escalations (2026-09-14)
+## 9. Amendment 1 — rulings on the technical-design escalations (2026-09-15)
 
 `technical-design` produced `docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md` (merged, PR #1658)
 and routed five escalations back to me in its §12, two of them blocking the coder on slice W1. This
