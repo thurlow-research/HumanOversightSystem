@@ -169,6 +169,7 @@ excluded.
 - `scripts/oversight/lib/detect_stack.sh` — repo-marker tool detection + fail-hard preflight (D1, ADR-032).
 - `scripts/oversight/lib/resolve_node_tool.sh` — discover-only consumer JS toolchain resolver (D2, ADR-032).
 - `scripts/oversight/lib/step_range.sh` — shared step commit-range helper (SPEC-220 BC-220-5).
+- `scripts/oversight/lib/vendor_invoke.sh` — one bash launch primitive for agy/codex (ADR-1683 D-1/D-2).
 
 ## scripts/oversight/validators/
 

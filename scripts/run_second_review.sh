@@ -59,10 +59,21 @@
 
 set -euo pipefail
 
+# ADR-1683 D-1/D-2: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile(); sources run_with_retry.sh itself for
+# with_timeout (ADR-1643 AD-5.3 — do not add a third timeout implementation).
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
 # Thresholds — trusted baseline first. A trusted caller (config.sh / orchestrator)
 # may set these via the real environment; absent that, the built-in defaults apply.
 AGY_THRESHOLD="${OVERSIGHT_AGY_THRESHOLD:-0.30}"
 CODEX_THRESHOLD="${OVERSIGHT_CODEX_THRESHOLD:-0.55}"
+
+# ADR-1683 D-2: shared vendor-invocation timeout. 900s is deliberately well
+# above agy's own --print-timeout default of 5m, so this catches only a genuine
+# hang and does not newly truncate legitimate long reviews.
+SECOND_REVIEW_VENDOR_TIMEOUT="${SECOND_REVIEW_VENDOR_TIMEOUT:-900}"
 
 # Read threshold overrides from the repo-local .env WITHOUT executing it as shell.
 # Only the two specific keys are extracted via grep/cut (strict numeric regex).
@@ -374,9 +385,22 @@ if [[ -n "${SPEC_FILE:-}" && -f "$SPEC_FILE" ]]; then
     SPEC_CONTEXT=$(cat "$SPEC_FILE")
 fi
 
-VALIDATOR_SUMMARY=""
-[[ -f ".claudetmp/oversight/validators/summary.json" ]] && \
-    VALIDATOR_SUMMARY=$(cat ".claudetmp/oversight/validators/summary.json")
+# ADR-1683 D-3: the prompt embeds a derived DIGEST of the validator summary, not
+# the raw document. The full document's `evidence`/`findings`/`checklist_items`
+# arrays are exactly the internal-reviewer "anchoring" content this script's own
+# header says must NOT be passed to these reviewers — the digest keeps only the
+# risk-context scalars (composite score, per-dimension scores/weights) that bear
+# on a correctness+spec-adherence lens. Degradation is never silent on ANY path:
+# second_review_logic.py prints a stderr line naming the tier and byte count
+# when it drops to tier 2/3, and one naming the cause when it omits the digest
+# entirely (summary.json unreadable, or parsed but not a JSON object). The
+# latter exits 0 by design — a degraded digest must not kill the review — so
+# that stderr line is the only operator signal that context was lost.
+VALIDATOR_DIGEST=""
+if [[ -f ".claudetmp/oversight/validators/summary.json" ]]; then
+    VALIDATOR_DIGEST=$(python3 "$(dirname "$0")/oversight/second_review_logic.py" \
+        digest-validators --file ".claudetmp/oversight/validators/summary.json")
+fi
 
 echo "=== Second review: step=${STEP} score=${SCORE} ==="
 echo "  agy threshold:   $AGY_THRESHOLD  → $(  $RUN_AGY   && echo "FIRE"   || echo "skip")"
@@ -525,6 +549,53 @@ log_context_advisory() {
     echo "  [ADVISORY] ${reviewer} requested full-repo context (pattern: '${match}') — logged, non-blocking"
 }
 
+# ── ADR-1683 D-4: harness vs vendor invocation-failure record ───────────────
+# Emits the required shape once vendor_invoke() has classified a failed call
+# (VENDOR_INVOKE_CLASS/DETAIL/RC/BYTES/STDERR, set by the last vendor_invoke
+# call). `failure_class` is the one-word operational answer ADR-1643 AD-6's
+# outcome/outcome_detail vocabulary does not carry: who fixes this — the
+# harness (this repo's invocation code) or the vendor (auth/quota/outage).
+# Delegates JSON construction to python3 so stderr_tail (arbitrary vendor
+# text) is correctly escaped — hand-composing this string in bash is exactly
+# the class of defect this ADR exists to remove (#1683).
+second_review_failure_json() {
+    local reviewer="$1" record_lens="$2"
+    local rc="${VENDOR_INVOKE_RC:-}"
+    [[ -z "$rc" ]] && rc=0
+    VI_REVIEWER="$reviewer" VI_LENS="$record_lens" VI_CLASS="$VENDOR_INVOKE_CLASS" \
+    VI_DETAIL="$VENDOR_INVOKE_DETAIL" VI_RC="$rc" VI_BYTES="${VENDOR_INVOKE_BYTES:-0}" \
+    VI_STDERR="$VENDOR_INVOKE_STDERR" python3 -c '
+import json, os
+
+reviewer = os.environ["VI_REVIEWER"]
+failure_class = os.environ["VI_CLASS"]
+detail = os.environ["VI_DETAIL"]
+rc = int(os.environ["VI_RC"])
+
+if failure_class == "harness":
+    error = f"{reviewer} could not be invoked ({detail}) — no independent judgment was produced"
+    summary = "Harness defect: fix the invocation, do not simply re-run."
+else:
+    error = f"{reviewer} ran and failed ({detail}, rc={rc}) — no independent judgment was produced"
+    summary = "Vendor-side failure: resolve the vendor condition and re-run."
+
+print(json.dumps({
+    "reviewer": reviewer,
+    "lens": os.environ["VI_LENS"],
+    "verdict": "error",
+    "findings": [],
+    "outcome": "invocation_failed",
+    "outcome_detail": detail,
+    "failure_class": failure_class,
+    "exit_code": rc,
+    "prompt_bytes": int(os.environ["VI_BYTES"]),
+    "stderr_tail": os.environ["VI_STDERR"],
+    "error": error,
+    "summary": summary,
+}))
+'
+}
+
 # ── agy: correctness + spec adherence ───────────────────────────────────────
 run_agy_review() {
     local lens="$1"
@@ -550,7 +621,7 @@ Do NOT comment on style, formatting, or repeat obvious design decisions.
 
 ## Risk context (static analysis scores — NOT internal reviewer findings)
 \`\`\`json
-${VALIDATOR_SUMMARY}
+${VALIDATOR_DIGEST}
 \`\`\`
 
 ## Product spec
@@ -591,21 +662,54 @@ Return JSON only:
     # shape under real failure conditions (timeout, partial output, agy still
     # narrating despite the flag) hasn't been exercised yet, so this is
     # belt-and-braces, not a replacement for defensive parsing.
-    local raw clean
-    raw=$(agy --sandbox --output-format json -p "$prompt" 2>/dev/null) || raw=""
+    #
+    # STDIN, NOT ARGV (ADR-1683 / #1683): the prompt is written to a tmpfile and
+    # read on stdin through vendor_invoke — never passed as a single argv
+    # element. Linux's per-argument MAX_ARG_STRLEN (131,072 B) silently E2BIGs
+    # execve on a large prompt otherwise, and `-p` is dropped: on the installed
+    # build (agy 1.2.3) `-p` requires a value it is never given, which is itself
+    # an arg-parse failure — see scripts/oversight/lib/vendor_invoke.sh's header
+    # for the empirical verification and the harness/vendor failure taxonomy
+    # (D-4) used below.
+    local prompt_file stdout_file raw clean
+    prompt_file=$(vendor_invoke_tmpfile)
+    stdout_file=$(vendor_invoke_tmpfile)
+    printf '%s' "$prompt" > "$prompt_file"
+
+    if vendor_invoke agy "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" \
+        --sandbox --output-format json; then
+        raw=$(cat "$stdout_file")
+    else
+        raw=""
+    fi
     clean=$(salvage_review_json "$raw") || clean=""
-    if [[ -z "$clean" ]]; then
+
+    # Retry ONLY when agy was actually invoked and responded with something
+    # that didn't parse as JSON (prose) — a genuine invocation failure
+    # (raw empty; classified via VENDOR_INVOKE_CLASS/DETAIL below) will not be
+    # fixed by asking more firmly a second time.
+    if [[ -z "$clean" && -n "$raw" ]]; then
         local reinforce="$prompt
 
 CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object and nothing else — no prose, no explanation, no markdown code fences. Start with { and end with }. Do not narrate tool use or your reasoning."
-        raw=$(agy --sandbox --output-format json -p "$reinforce" 2>/dev/null) || raw=""
+        printf '%s' "$reinforce" > "$prompt_file"
+        if vendor_invoke agy "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" \
+            --sandbox --output-format json; then
+            raw=$(cat "$stdout_file")
+        else
+            raw=""
+        fi
         clean=$(salvage_review_json "$raw") || clean=""
     fi
+
     if [[ -n "$clean" ]]; then
         echo "$clean"
     elif [[ -z "$raw" ]]; then
-        # Empty output = a genuine invocation failure (crash/auth) → error → FAIL.
-        echo '{"reviewer":"agy","error":"agy invocation failed","findings":[],"verdict":"error"}'
+        # Invocation failed outright (harness or vendor — ADR-1683 D-4). Emits
+        # the taxonomy record built from vendor_invoke's classification of the
+        # LAST attempt, so an operator can tell "fix the harness" from
+        # "re-run" instead of a generic "agy invocation failed".
+        second_review_failure_json "agy" "$lens"
     else
         # agy responded but salvage + retry could not extract JSON: it returned a
         # PROSE review. Do NOT manufacture an `error` here — that would discard a
@@ -675,14 +779,24 @@ Return JSON only:
     # The old `codex --quiet` was an invalid invocation that ALWAYS failed; the
     # `2>/dev/null` then masked it as an empty `verdict:error`, so this path looked
     # like it ran a review and found nothing when codex was never actually invoked.
-    # Match the working pattern in framework/validate_agents.sh: tmpfile + stdin.
-    local tmpfile result clean rc=0
-    tmpfile=$(mktemp "${TMPDIR:-/tmp}/second_review_codex_XXXXXX")
-    printf '%s' "$prompt" > "$tmpfile"
-    result=$(codex exec < "$tmpfile" 2>/dev/null) || rc=$?
-    rm -f "$tmpfile"
-    if [[ $rc -ne 0 || -z "$result" ]]; then
-        echo '{"reviewer":"codex","error":"codex invocation failed","findings":[],"verdict":"error"}'
+    #
+    # This path was already stdin-safe before ADR-1683 — migrated onto the
+    # shared vendor_invoke helper anyway (D-2/D-3 of that ADR): leaving two
+    # invocation idioms in one file is how the agy path above drifted into
+    # passing its prompt via argv in the first place, and the old local
+    # `mktemp`/`rm -f` here leaked its tmpfile on the failure path (#1683 scope
+    # item 1) — the helper's own per-process tmp dir + EXIT/INT/TERM trap (D-6)
+    # covers every exit path, not just the success one.
+    local prompt_file stdout_file result clean
+    prompt_file=$(vendor_invoke_tmpfile)
+    stdout_file=$(vendor_invoke_tmpfile)
+    printf '%s' "$prompt" > "$prompt_file"
+
+    if vendor_invoke codex "$SECOND_REVIEW_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file"; then
+        result=$(cat "$stdout_file")
+    else
+        # Invocation failed outright (harness or vendor — ADR-1683 D-4).
+        second_review_failure_json "codex" "security-adversarial"
         return
     fi
     # Salvage the JSON in case codex wrapped it in prose/fences (HOS#113).
@@ -775,7 +889,9 @@ TRACKER="$(dirname "$0")/oversight/token_tracker.py"
 if [[ -f "$TRACKER" ]]; then
     # Record agy usage — estimate prompt size from source content (prompt is function-local in run_agy_review)
     if $RUN_AGY && [[ -n "${AGY_OUT:-}" ]]; then
-        PROMPT_CHARS=$(( ${#DIFF_CONTENT} + ${#SPEC_CONTEXT} + ${#VALIDATOR_SUMMARY} + 800 ))
+        # ADR-1683 D-3: the prompt embeds the digest, not the raw summary — use
+        # its length here too, or this estimate silently drifts stale again.
+        PROMPT_CHARS=$(( ${#DIFF_CONTENT} + ${#SPEC_CONTEXT} + ${#VALIDATOR_DIGEST} + 800 ))
         OUT_CHARS=${#AGY_OUT}
         # Try to extract actual token counts from agy JSON output
         ACTUAL_IN=$(echo "${AGY_OUT:-}" | python3 -c \
