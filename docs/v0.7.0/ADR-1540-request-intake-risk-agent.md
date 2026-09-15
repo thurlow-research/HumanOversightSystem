@@ -21,7 +21,20 @@
 > forbidden** as an authorization act on an issue already in the milestone (AM-15). **ESC-6 / H1 must be
 > put to the human from Amendment 2 §3(b), not from this document and not from Amendment 1 §3(b).**
 
-**Date:** 2026-09-12 (original), amended 2026-09-15 (Amendment 1 and Amendment 2, separate files)
+> **AMENDED A THIRD TIME 2026-09-15 — `docs/v0.7.0/ADR-1540-AMENDMENT-3-panel-rulings.md`.** The dual-lens
+> adversarial panel this ADR mandates **ran and returned `DO-NOT-BUILD`** (`docs/v0.7.0/PANEL-1540-S1-S2-dual-lens-adversarial.md`).
+> Its findings are ruled in **Amendment 3** (AM-19 … AM-28) with two findings of my own (**AF-8**, **AF-9**).
+> **Where Amendment 3 differs from Amendment 2, Amendment 1, or this document, Amendment 3 governs.**
+> What it changes for a reader of *this* document: the gate **ranks candidates before spending any
+> authorization check** — as designed it would have starved the tail of the queue and made **#1539 itself
+> permanently unbuildable** (P-1, measured live); the candidate query is **paginated** and residual **R-6 is
+> closed** (AF-8); **AD-3's cost note is wrong and is corrected** (AF-9 — it contradicts AD-4's no-caching
+> rule); **AD-4's header is reconciled with FR4 as narrowed by `docs/v0.7.0/REQUIREMENTS-1540-AMENDMENT-1-fr4-ruling.md`**
+> (pm-agent's ruling on panel P-2, adopted here); and `/approve`'s label write is **made inert** in S2
+> (AM-25 — TD §9/R5 overruled). **ESC-6 / H1 must be put to the human from Amendment 3 §3(b)** — not from
+> Amendment 2, not from Amendment 1, and not from this document.
+
+**Date:** 2026-09-12 (original), amended 2026-09-15 (Amendments 1, 2 and 3, separate files)
 **Author:** architect
 **Inputs:** `docs/v0.7.0/REQUIREMENTS-1540-request-intake-risk-agent.md` (pm-agent, merged in PR #1595); #1540's body and its 2026-09-10 clarifying ruling comment; #1539's 2026-09-10 "we should have both at play" and 2026-09-10 **rescope** ruling comments; my own independent re-verification against `origin/main` @ `511e2a2f` (§0).
 **Consumers:** `technical-design` (next), then the dual-lens adversarial panel #1540 mandates, then `needs-ai` issues in v0.7.0.
@@ -125,7 +138,7 @@ A single module under `scripts/framework/` is the only implementation of the req
 **Binding rules:**
 
 - **Trust is never the absence of a negative.** `is_bot_reviewer()` MUST be used only for what it decides — excluding bot identities from counting as *human* — and MUST NOT be read as an authorization test. `not is_bot_reviewer(...)` returns `True` for every anonymous member of the public. This rule stands even though the one shipped consumer already got it right (AF-2); it is the rule that keeps the next consumer right.
-- **Trust attaches to `issue.user`, never to the last actor who touched a label** (FR4). A trusted actor — human **or** bot — relabelling an untrusted-authored issue does not convert it. This is also what keeps the three live bot-labelling paths (`bin/hos-cron`'s `[BLOCKED]` and escalation issues, `merge_authority.py`'s verdict/bounce writes, `self_review_source.file_finding_as_issue()`) working unchanged.
+- **Trust attaches to `issue.user`, never to the last actor who touched a label** (FR4 **as narrowed by `docs/v0.7.0/REQUIREMENTS-1540-AMENDMENT-1-fr4-ruling.md` AR-3; adopted by `ADR-1540-AMENDMENT-3` AM-23**). **No actor — human or bot — confers *trust* by a metadata act**: a trusted actor relabelling an untrusted-authored issue does not make it, or its author, trusted. **This governs the *trust* determination (exemption from the gate) and does not govern the *authorization* determination (release from the gate), which is AD-4's, FR16's and FR28's** — a verified individual human CODEOWNER may release one gated request, for that request only, conferring no trust on it or its author. The rule's purpose is, and has always been, to stop a **bot**-applied label laundering into eligibility (#1539 item 2, VF-3). This is also what keeps the three live bot-labelling paths (`bin/hos-cron`'s `[BLOCKED]` and escalation issues, `merge_authority.py`'s verdict/bounce writes, `self_review_source.file_finding_as_issue()`) working unchanged.
 - **GitHub-reported identity only** (FR5). `issue.user.login` / `issue.user.type` from the API. Never a self-declared identity in a body, title, or embedded envelope. The precedent is already explicit in `envelope.py` and in `label-swap.yml`'s own comment.
 - **Fail closed** (FR19). Unreadable CODEOWNERS, unreadable roster, empty `BOT_ACCOUNTS`, or any API failure → the actor is **untrusted**. Only an affirmative successful match exempts. `_codeowners_humans()` already has this property; the roster loader must match it.
 - **Placement is not cosmetic** (AF-3). `scripts/framework/**` is already a protected surface and already CODEOWNERS-owned, so FR25 is satisfied for the primitive, the gate and the roster **with no edit to `protected_surfaces.txt`**. Placing any of the three under `scripts/automation/**` silently fails FR25. `technical-design` MUST NOT relocate them for import convenience.
@@ -152,6 +165,22 @@ A naive reading of AD-1(b) is "any issue authored by the worker bot is trusted."
 > gated > 0`) it MUST emit a distinct, unmissable line, distinguishable at a glance from "the milestone
 > is empty"; and DEV-2 — removing `2>/dev/null` from `bin/hos-cron`'s candidates call — is **required**,
 > not optional.
+>
+> **AMENDED FURTHER — Amendment 3 AM-19, AM-20, AM-21, AM-22 (panel P-1, CRITICAL), and AF-9.**
+> **AM-19:** the gate MUST **rank candidates before spending any authorization check** and walk the
+> ranked list, so every early stop is a *prefix* of the complete answer; the technical design's
+> fixed authorization-check cap, spent in API order, would have made **#1539 permanently
+> unbuildable**. **AM-21:** this decision's "any error → exit 2" refinement now has a stated
+> criterion — **unknown** incompleteness exits 2, **known, ordered and reported** incompleteness
+> exits 0. **AM-22:** the gate has exactly three bounds, each with a purpose and a citation; the
+> candidate query is **paginated** and R-6 is closed. **AM-20:** the held-everything line may not
+> claim a completeness the walk did not have.
+>
+> **CORRECTED — Amendment 3 AF-9.** The Cost note below is **wrong** where it says an untrusted
+> candidate costs one events call *"only until it is approved or declined"*. Under **AD-4**'s
+> "eligibility is never cached" (FR7), an approved untrusted-authored candidate costs one events
+> call **every cycle, indefinitely**. Two decisions in this section contradicted each other; AD-4
+> governs, and Amendment 3 §3(b) H1 item 2 states the resulting cost envelope to the human.
 
 Today there are two copies of the eligibility filter — `bin/hos-cron:1137`'s `--jq "$(cat next_candidates.jq)"` and `worker-cron-prompt.md` Step 2's inlined fallback — kept in lock-step by `tests/automation/test_next_candidates.py`. A trust check cannot be added to that arrangement safely: the fallback is a shell command executed by an LLM, so a trust filter parameterized at the call site fails **open** exactly when the context builder is unavailable, which is the bypass VF-9/FR22 name.
 
@@ -159,9 +188,20 @@ Today there are two copies of the eligibility filter — `bin/hos-cron:1137`'s `
 
 **Fail-closed, and deliberately *not* by changing the context builder.** `bin/hos-cron`'s fail-open context design (`:1873-1876`) is correct for its purpose and is not touched. The bypass closes because the fallback is now the *same gated script*: a missing context section leads the worker to the gate, not around it. The gate itself is strictly fail-closed — any error produces **no candidates** and a non-zero exit, and the worker does no new work that cycle. A cycle skipped over a transient API failure is the correct outcome; a cycle that builds an unvetted stranger's request is not.
 
-**Cost note (verified, not assumed).** The trust determination for a *trusted* author costs **zero extra API calls**: `issue.user.login` and `issue.user.type` are already in the list response `bin/hos-cron:1137` fetches. Only an untrusted-authored candidate costs one additional events call, and only until it is approved or declined. This is strictly cheaper than `probe.py`'s per-issue `_verify_codeowner_actor` and is why the gate can afford to run on every cycle.
+**Cost note (verified, not assumed).** The trust determination for a *trusted* author costs **zero extra API calls**: `issue.user.login` and `issue.user.type` are already in the list response `bin/hos-cron:1137` fetches. Only an untrusted-authored candidate costs one additional events call, ~~and only until it is approved or declined~~ **[CORRECTED BY `ADR-1540-AMENDMENT-3` AF-9 — 2026-09-15: the call is paid **every cycle, indefinitely**, because AD-4/FR7 forbid caching eligibility. There is no "until".]** This is strictly cheaper than `probe.py`'s per-issue `_verify_codeowner_actor` and is why the gate can afford to run on every cycle.
 
-### AD-4 — Authorization is derived live from GitHub-reported actors, never from label presence. (BINDING — FR4, FR5, FR7.)
+### AD-4 — Authorization is derived live from GitHub-reported actors, never from label presence. (BINDING — **FR4 *as amended by `docs/v0.7.0/REQUIREMENTS-1540-AMENDMENT-1-fr4-ruling.md` AR-3***, FR5, FR7, FR16, FR28.)
+
+> **RECONCILED, not asserted — `ADR-1540-AMENDMENT-3` AM-23 (panel P-2, HIGH).** The original header read
+> "(BINDING — FR4, FR5, FR7.)", which *claimed* compliance with FR4 while this decision specified the
+> opposite of FR4 as originally written, and the claim survived three revisions unchecked. The
+> reconciliation, in one sentence: **FR4 as amended governs the *trust* determination and is satisfied here
+> because no metadata act by any actor confers trust; the *authorization* determination this decision
+> specifies is FR16's and FR28's, and D5 is the mechanism #1539's 2026-09-10 ruling item 1 names.**
+> `pm-agent` ruled that the authorization model governs and that **D5 does not narrow** (AR-1, AR-4);
+> that ruling is adopted here and is held for the human's ratification as **Q10**. **A bare list of FR
+> numbers under a decision that qualifies one of them is an assertion, not a citation** — AM-23 makes that
+> a standing rule for this chain.
 
 > **AMENDED in three places — Amendment 1 AM-4 (FIND-1, HIGH), AM-5 (FIND-2, LOW), AM-6 (AF-5, HIGH).**
 > **AM-4:** a `milestoned` event authorizes only for the milestone the work would be *selected* under,
@@ -211,6 +251,15 @@ GitHub issue titles and bodies are editable by their author after approval, so a
 > `is_bot_reviewer` excludes unconditionally. Fail-closed, and a silent no-op that *looks* like success.
 > S2 ships without `/approve`; **S3 MUST close it** by reading the approval comment's GitHub-reported
 > author.
+>
+> **AMENDED FURTHER — Amendment 3 AM-25 (panel P-3 and P-5).** Leaving `/approve` *live* in S2 is not
+> merely useless, it is actively harmful: it consumes the human's one additive act, and it strips
+> `needs-human`, leaving the issue invisible to the worker's queue **and** to the human's.
+> TECHNICAL-DESIGN-1540 §9/**R5**, which left it live, is **OVERRULED** — two of its three stated reasons
+> are false (the runbook contains no `/approve` literal; `_HUMAN_GATE_LABELS`' merge block reads **PR**
+> labels, which an issue-only workflow cannot touch). **Binding: in S2 the `/approve` branch performs NO
+> label write** — one explanatory comment, no label change. `/decline` is untouched, and the change is
+> named to the human in Amendment 3 §3(b) H1 item 2.
 
 `label-swap.yml`'s `/approve` already has the three properties this gate needs and which are hard to obtain any other way: it runs from the **trusted default branch** (so the CODEOWNERS and `machine-accounts.env` it reads are owner-controlled and no PR-authored code executes), the commenter identity comes from `github.event.comment.user.login` *"set by GitHub — not by the comment body"*, and it is CODEOWNERS-only. It is extended, not duplicated.
 
@@ -248,6 +297,15 @@ The human-readable body MUST let a CODEOWNER decide **without opening any other 
 
 ### AD-10 — Failure modes: fail closed, distinguish the two failures, bound the retries, cap the cost. (BINDING — FR19, FR20, FR21, FR23; cap value is **ESC-5**.)
 
+> **EXTENDED — Amendment 3 AM-22 (panel P-1's third aggravator).** The per-cycle cap below is the
+> **assessor's** (ESC-5, S5). This decision never said what bounds the **gate**, and the technical design
+> supplied one at MEDIUM confidence which reached the human's clearance text inside an assurance it
+> falsified. AM-22 gives the gate exactly **three** bounds, each with a stated purpose, a citation and a
+> truncation property: the list-page bound (now **paginated**, 5 pages / 500 records — closing residual
+> R-6), the **authorization cost ceiling** (100 checks, may only lower, truncating the ranked tail only),
+> and AM-5's per-issue events-page bound. A bound on this mechanism is an architecture decision with a
+> cost consequence; it is not a design detail.
+
 - **Trust determination fails** → untrusted → gated (AD-1).
 - **Gate itself fails** → no candidates, non-zero exit, no new work (AD-3).
 - **Assessment fails** → the request stays gated. **And note this costs nothing in security terms:** because the assessment authorizes nothing (AD-13), its unavailability is an availability problem, not a safety one. Fail-closed here is free, which is why there is no excuse for any other behaviour.
@@ -260,6 +318,13 @@ The human-readable body MUST let a CODEOWNER decide **without opening any other 
 > **AMENDED — Amendment 1 AM-13.** A minimal held-count is pulled forward from S6 into S2: at cutover,
 > a gate that holds everything and whispers is indistinguishable from an empty backlog. The full
 > listing mode stays in S6.
+>
+> **AMENDED FURTHER — Amendment 3 AM-20.** The held-count must distinguish a **determination** from an
+> **absence of one**: `gated` counts only records the gate actually decided, records it never reached are
+> counted separately as `unevaluated` with their own reasons, and the summary carries
+> `complete=<yes|no>`. AM-13's line still fires, but **may not claim a completeness the walk did not
+> have** — P-1 added a third state ("the gate did not finish looking") that the two-state design had no
+> vocabulary for.
 
 FR23 requires waiting requests to be *visible, not silent*; the obvious move is a new `intake-gated` label. I rule against it. `docs/LABELS.md` records that label names are hardcoded literals in five places with **no conformance test**, and that `needs-ai` is mid-rename — a sixth unregistered literal is exactly the debt FR26 forbids adding to.
 
@@ -310,6 +375,14 @@ That precedent both permits and constrains this design:
 > **AMENDED — Amendment 1 §3 and AM-9.** This ordering stands, with two additions. **AM-9:** S2 ships
 > **before** #1604, which waits. **§3:** `coder` is **not** cleared to build S1 or S2 until A12 (the
 > technical-design revision), H1 (ESC-6), H3 (ESC-2) and the dual-lens adversarial panel are complete.
+>
+> **AMENDED FURTHER — Amendment 3 AM-23 and AM-27.** The slice table below allocates *work*; it has never
+> stated which **requirements** a merged S2 does and does not satisfy. That table is
+> `docs/v0.7.0/REQUIREMENTS-1540-AMENDMENT-1-fr4-ruling.md` **AR-6**, which this document adopts — read it
+> alongside the table below, in particular its **FR16** and **FR17** rows (FR17 is deliberately deferred
+> to S5; AM-24 confirms no mechanism satisfies it in S2). **AM-27:** "the S2 work item" is **#1539**,
+> subject to H6, and R-1/R-3/R-7 are posted there once H6 is answered. The panel has **run** and returned
+> `DO-NOT-BUILD`; it **re-runs** after `technical-design` revision 4.
 
 Ordering is driven by AF-1: **the deterministic gate is a live `priority:critical` fix and must be able to ship alone, before any agent exists.** The assessment layer is the sophistication #1540 asks for on top; it is not on the critical path for closing the exposure.
 
@@ -368,8 +441,13 @@ Ordering is driven by AF-1: **the deterministic gate is a live `priority:critica
 
 ### ESC-6 — Structural / product-boundary clearance. (The master gate.)
 
-> **AMENDED — `ADR-1540-AMENDMENT-2` §3(b) carries the replacement text for this escalation and it is the
-> only version that should be put to the human.** Item 2 below understates the cost (the act is **two
+> **AMENDED AGAIN — `ADR-1540-AMENDMENT-3` §3(b) now carries the replacement text for this escalation and
+> it is the only version that should be put to the human.** H1 has **five** items: Amendment 3 adds
+> `pm-agent`'s item 5 (what the human's act stands in for until S5 — `REQUIREMENTS-1540-AMENDMENT-1` §5,
+> verbatim), a cost bullet for P-1's fix, and the change to `/approve` (AM-25). **Amendment 2 §3(b) is
+> superseded in full**; quoting items from more than one amendment is the failure AM-17 caught.
+>
+> **AMENDED — `ADR-1540-AMENDMENT-2` §3(b) carried the previous replacement text (now superseded).** Item 2 below understates the cost (the act is **two
 > acts** per already-queued issue, on a set measured at **≥93**, and the cutover recommendation is
 > withdrawn — AM-14/AF-6/AM-15) and item 4 below **miscounts the surfaces for S1/S2** (five, not four —
 > AM-17). Amendment 1 §3(b) H1 restates the same two errors and is superseded for the same reason.
@@ -391,7 +469,7 @@ Per the CORE product-boundary checkpoint, the following consequences are routed 
 
 **CONFIDENCE: HIGH** on §0, every finding of which was re-derived from `origin/main` @ `511e2a2f` and live GitHub state this session, including **AF-1**, which contradicts the requirements doc's central assumption, and **AF-2**, which retires VF-1 as stale. **HIGH** on AD-1 through AD-7 and AD-11 through AD-15, which follow from the two human rulings and from verified code. **MEDIUM** on AD-8's dispatch question — I established the identity class and the charter constraint (AF-4) but deliberately left *which cron cycle invokes the assessor* to `technical-design`, and that is exactly the kind of seam ADR-035's panel found unbuilt. **LOWER** on anything downstream of the two declared verification gaps: live GitHub repository settings (ESC-2 turns on them) and #1380's actual shipped scope.
 
-**BLAST RADIUS:** the intake path for every request reaching this repo's autonomous worker; the shared trust primitive, which `probe.py` and therefore every consumer deployment will inherit; `bin/hos-cron`'s work-selection path; `worker-cron-prompt.md` Steps 0 and 2; and `label-swap.yml`'s approval channel. Four protected surfaces.
+**BLAST RADIUS:** the intake path for every request reaching this repo's autonomous worker; the shared trust primitive, which `probe.py` and therefore every consumer deployment will inherit; `bin/hos-cron`'s work-selection path; `worker-cron-prompt.md` Steps 0 and 2; and `label-swap.yml`'s approval channel. ~~Four protected surfaces.~~ **[CORRECTED BY `ADR-1540-AMENDMENT-3` AM-28(b) — 2026-09-15: **five** for S1/S2. AM-17 corrected `:294` and `:382` and Amendment 1's BLAST RADIUS, and missed this line — the block a human reads. `bin/**` is the fifth; the authoritative enumeration is `ADR-1540-AMENDMENT-3` §3(b) H1 item 4. A sixth, `CLAUDE.md`, is deliberately excluded from S1/S2 and named there.]**
 
 **Change classification: STRUCTURAL.** New decision point gating whether autonomous work begins, new agent role, new trust roster, new standing obligation on the human CODEOWNER. Held for the ESC-6 clearance above.
 
