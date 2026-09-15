@@ -6,7 +6,15 @@ new top-level cron execution stage — deployment topology + operational burden)
 reuse fall inside Q2's "unconditionally"? — ESC-1's arithmetic depends on the answer), ESC-4 (turning on
 twelve review dimensions that have never executed is a step change in what blocks a merge — observation
 window first, or straight to enforcing?). Everything else below is **BINDING**.
-**Date:** 2026-09-14
+
+> **AMENDED 2026-09-15 — read §9 (Amendment 1) before implementing anything.** `technical-design`
+> returned five escalations against this ADR (TECHNICAL-DESIGN-1643 §12: ESC-A, ESC-B, ESC-C, ESC-D,
+> ESC-J), two of them blocking slice W1. All five are ruled in **§9**. **Where §9 and §2 differ, §9
+> governs; where §9 and the technical design differ, §9 governs.** Every affected decision row in §2
+> carries an inline pointer, and §9.7 lists exactly which technical-design clauses are superseded. A
+> coder implementing AD-4 who has not read §9 will build the wrong classifier.
+
+**Date:** 2026-09-14 (original), amended 2026-09-15 (Amendment 1, §9)
 **Author:** architect
 **Inputs:** `docs/v0.7.0/REQUIREMENTS-1643-1644-deterministic-agent-invocation.md` (pm-agent, merged in
 PR #1651) in full, including VF-1…VF-12; the human's **Q1–Q8 rulings** (#1643 comment 2026-09-14T20:09:14Z);
@@ -290,7 +298,7 @@ This is bound as a *decision*, not observed as a property: it would be natural t
 `--round` flag or a resume token, and doing so would make it unusable as a cron-driven one-shot step,
 which is precisely the shape Q4+Q6 ruled #1644 into.
 
-### AD-3 — A shipped, named agent is the only unit of invocation. Bare-model and inline-agent invocation are forbidden through this surface. (BINDING — REQ-A2.)
+### AD-3 — A shipped, named agent is the only unit of invocation. Bare-model and inline-agent invocation are forbidden through this surface. (BINDING — REQ-A2. **Consequence ruled in §9.5:** where a migration target has no shipped agent describing its lens, the agent file is authored first — the prohibition is not relaxed and no existing agent is substituted for a different lens.)
 
 - The caller names an agent; L2 resolves `.claude/agents/<name>.md` from the repo root and **verifies it
   exists and is non-empty before launching anything.** Absent ⟹ `outcome: invocation_failed`,
@@ -307,17 +315,26 @@ which is precisely the shape Q4+Q6 ruled #1644 into.
 
 ### AD-4 — Fail-closed is an allowlist over the envelope, not a denylist. `subtype` is never read. (BINDING — REQ-A6, REQ-A7, REQ-A9; Q1; VF-1.3.)
 
+> **THREE ROWS OF THE TABLE BELOW ARE SUPERSEDED BY §9.1 (Amendment 1, 2026-09-15).** The
+> `terminal_reason` row, the `subagent_stats.refused` row, and the *"any envelope field the classifier
+> does not recognise"* clause in the sentence immediately below were all written against an envelope
+> nobody had probed. `technical-design` probed it (CLI 2.1.270) and returned ESC-A and ESC-B; I
+> re-verified against the shipped CLI bundle (2.1.271) in §9.0. **Implement §9.1's table, not this one.**
+> The original rows are kept, marked, so the change is visible rather than silently rewritten.
+
 `outcome: "completed"` is produced **only** when every one of the following holds. Any miss, and any
 envelope field the classifier does not recognise, produces `outcome: "invocation_failed"`.
+*(— the unrecognised-**field** half of that sentence is **SUPERSEDED by §9.2**: unknown top-level fields
+are recorded, not blocking; unknown **values and shapes in decision fields** remain blocking.)*
 
 | Condition for `completed` | Failure ⟹ `outcome_detail` |
 |---|---|
 | process rc == 0 | `124` → `timeout`; anything else → `crash` |
 | stdout is a single valid JSON object | `unparseable` |
 | `is_error` absent or falsy | mapped from `terminal_reason`, else `crash` |
-| `terminal_reason` absent or in a **closed allowlist** of known-good values | that value verbatim (e.g. `api_error`, `usage_limit`, `refusal`, `max_turns`) |
+| ~~`terminal_reason` absent or in a **closed allowlist** of known-good values~~ — **SUPERSEDED by §9.2**: `terminal_reason` must be **present** and equal to a value in the closed good-value allowlist; absent is now blocking | that value verbatim (e.g. `api_error`, `usage_limit`, `refusal`, `max_turns`); absent ⟹ `terminal_reason_missing` |
 | `permission_denials` absent or empty | `permission_denied` |
-| `subagent_stats.refused` absent or `0` | `refused` |
+| ~~`subagent_stats.refused` absent or `0`~~ — **SUPERSEDED by §9.1**: absent, **or** the integer `0`, **or** a flat mapping every one of whose values is the integer `0` | `refused`; a non-integer value (including `null` and `true`/`false`) ⟹ `envelope_shape_violation` |
 | the result payload parses **strictly** as a conforming AD-6 document | `schema_violation` |
 
 Binding notes:
@@ -325,7 +342,12 @@ Binding notes:
   because the field is never consulted. Do not add it "for completeness."
 - The `terminal_reason` check is an **allowlist of good values**, not a denylist of bad ones. A future
   CLI version that introduces a new terminal reason fails closed by default. This is the one design move
-  that makes #669 and #1362 unrepeatable rather than re-fixed.
+  that makes #669 and #1362 unrepeatable rather than re-fixed. **§9.0 confirms this empirically**: the
+  shipped CLI bundle already contains four terminal reasons this ADR never named
+  (`structured_output_retry_exhausted`, `turn_setup_failed`, `tool_deferred_unavailable`,
+  `aborted_tools`), every one of which is a failure and every one of which this allowlist blocks with no
+  code change. **§9.2 extends the rule to absence**: the good-value allowlist now also requires the field
+  to be *there*.
 - **`outcome: invocation_failed` always forces `verdict: "error"` in the emitted document** (AD-6). That
   single rule makes every existing `validation_logic.compute_verdict` consumer fail closed on a broken
   invocation for free, via the #670 error-block path it already implements (`:266-272`: an `error`
@@ -356,6 +378,11 @@ process group and cannot be imported into Python anyway. The resolution honours 
    `run_capped` pairs are **deleted** and their remaining `agy`/`codex` calls source
    `run_with_retry.sh`'s `with_timeout`. Net: three bash copies → one bash helper + one Python
    implementation that has a capability the bash one structurally lacks.
+   **— PARTLY SUPERSEDED by §9.4 (ESC-D).** `validate_agents.sh` has no `claude` call site, so it never
+   "migrates" and this clause had no migration to attach to. **W4 deletes `validate_scripts.sh`'s copy
+   only**; `validate_agents.sh`'s deletion moves to a follow-up issue. The "net" sentence above therefore
+   describes the end state *after that follow-up*, not the end state of v0.7.0's W4. See §9.4 for what W4
+   actually delivers and what remains outstanding.
 4. Given AF-2 (no `--max-turns`), wall-clock is the *only* bound on a runaway session. `technical-design`
    must not treat the cap as a formality.
 
@@ -643,7 +670,7 @@ lives). The binding closure is the second, made structural:
 
 | Site | Disposition | Grounds |
 |---|---|---|
-| `scripts/framework/validate_self.sh:236` | **Migrate — first and highest value** | Unbounded timeout on the framework-validation critical path (VF-3: *"a hang here hangs all of framework validation"*). Also #1536's first target. |
+| `scripts/framework/validate_self.sh:236` | **Migrate — first and highest value.** **Gated by §9.5 (ESC-J):** the `opus-self` seat needs a new shipped `self-reviewer` agent, which lands first as its own human-gated protected-surface change. | Unbounded timeout on the framework-validation critical path (VF-3: *"a hang here hangs all of framework validation"*). Also #1536's first target. |
 | `scripts/framework/validate_scripts.sh:182` | **Migrate** | Already the most correct of the three postures; migration is a net simplification and deletes a `run_capped` copy (AD-5.3). |
 | `scripts/run_panel.sh:146-147` | **Migrate**, with the panel's Claude seat promoted to a shipped named agent (AD-3 admits no bare-model path) | No timeout at all today, stderr to a log, output used as-is. Non-goal 3 is untouched: this changes *how* the same-vendor seat is invoked, not the cross-vendor property of the panel. If `technical-design` finds promoting the lens to an agent too large for W4, it must say so and split it — **not** add a bare-model escape hatch to the primitive. |
 | `bootstrap/setup_clis.sh:148` | **EXEMPT, recorded** | It is a machine-bootstrap smoke test (`claude -p "Reply with exactly: OK"`) that runs *before* the primitive's preconditions can hold — possibly with no HOS project checked out at all, certainly before any agent file is installed. Routing it through the primitive would make the smoke test depend on the thing it exists to prove works. A one-line comment citing this ADR goes in the file so the exemption is visible where someone would otherwise "fix" it. |
@@ -750,6 +777,16 @@ reproduce #1354.
 | **W10** | #1536 re-scoped | Overseer runs framework-validation itself via the primitive; retire the stamp. | Depends on W4. |
 | **W11/W12** | #1626 / #1629 re-scoped | Dimension definition only — inputs, prompt, disposition, predicate. **No private invocation, parsing, or fail-closed logic** (REQ-D0). #1629 additionally blocked on Q8's operationalisation. | Depends on W7. |
 | **W13** | #1621 annotated | Confirmed **not** a REQ-A consumer — it is a deterministic approval-state check and belongs with #1641's primitives. Annotate so nobody builds an agent invocation into it. | Any time. |
+
+**Amended 2026-09-15 (§9) — three rows above changed scope:**
+- **W1** — the classifier is specified by **§9.1 and §9.2**, not by AD-4's original table. W1 is otherwise
+  unchanged and is **cleared to start**.
+- **W4** — loses `validate_agents.sh`'s `run_capped` deletion (**§9.4**), and its `validate_self.sh`
+  migration is gated on the new `self-reviewer` agent file (**§9.5**). W4's remaining contents
+  (`validate_scripts.sh`, that file's `run_capped` deletion, the `setup_clis.sh` exemption comment, the
+  CLAUDE.md row) are unblocked.
+- **W4a (new)** — the `self-reviewer` agent file plus its ship-set registration (§9.5). Protected surface,
+  human-gated, its own PR. Blocks W4's `validate_self.sh` half and nothing else.
 
 **Track 0 is unaffected and must not wait:** #1642 (landed as `922a97a0`) and #1567 Gap 5 (the
 required-check promotion, `33211f25`) are REQ-B2's deterministic lane and are independent of everything
@@ -895,7 +932,428 @@ against it?"** — asked of each item, per the CORE startup-gap rule.
 
 ---
 
+## 9. Amendment 1 — rulings on the technical-design escalations (2026-09-15)
+
+`technical-design` produced `docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md` (merged, PR #1658)
+and routed five escalations back to me in its §12, two of them blocking the coder on slice W1. This
+section rules all five, disposes of the three non-blocking ones, and states exactly which
+technical-design clauses it supersedes. **Where this section and §2 differ, this section governs. Where
+this section and the technical design differ, this section governs.**
+
+Read this section before implementing AD-4. It is written for a coder with no session context.
+
+### 9.0 What I verified myself this pass — not taken from the technical design
+
+Symbols and literals, never line numbers (PR #1658's review found the technical design's line citations
+had drifted by one to two lines; the lesson is applied here).
+
+- **The installed CLI is `2.1.271`** — one patch release ahead of the `2.1.270` the technical design
+  probed, **on the same day**, with the resolved binary under `~/.local/share/claude/versions/`.
+  ESC-B's premise demonstrated itself inside a single design chain. Nothing about this design may pin a
+  CLI version.
+- **`subagent_stats.refused` is an object and its key set is open.** The 2.1.271 bundle contains the
+  initialiser literal `refused:{depth_limit:0,concurrency_limit:0,budget:0}`; the accumulator's method is
+  `recordRefused(e){this.#e.refused[e]+=1}` — a **dynamic key** — and its `snapshot()` emits
+  `refused:{...e.refused}`, a spread. Only three call sites exist today
+  (`recordRefused("budget")`, `recordRefused("concurrency_limit")`, `recordRefused("depth_limit")`), so
+  the three keys are exhaustive **for this version only**. TD-F1 is confirmed independently of the probe,
+  and §9.1 derives from this a consequence the probe could not show.
+- **`terminal_reason` carries at least four failure values this ADR never named** —
+  `structured_output_retry_exhausted`, `turn_setup_failed`, `tool_deferred_unavailable`, `aborted_tools`
+  — all present as string literals in the bundle. AD-4's allowlist-of-good-values blocks all four with no
+  code change. A denylist would have missed all four. The design move is vindicated, not merely defended.
+- **`terminal_reason` is conditionally emitted by at least one composer**
+  (`...s.terminal_reason!==void 0&&{terminal_reason:s.terminal_reason}`), adjacent to a comment about
+  *"Remote Control bridge's per-turn synthetic results, and from older producers"*. This is the one piece
+  of evidence **against** §9.2's presence requirement. §9.2 states how it is handled rather than omitting
+  it.
+- **`validate_agents.sh` has no `claude` call site.** Its only `claude` occurrences are the
+  `.claude/agents` path in its usage text and in `AGENTS_DIR`; its `run_capped` is called exactly twice,
+  once for `agy` and once for `codex`. TD-F5 confirmed. A third private `_TIMEOUT_BIN` exists in
+  `bin/hos-cron`.
+- **`validate_self.sh` is installed into consumer projects** (`scripts/framework/install.sh` copies it),
+  while **`framework-validator` is not** in `scripts/framework/consumer_agents.txt`. That pair of facts
+  decides §9.5.
+- **`code-reviewer`'s diff-centric input contract is a CORE clause carrying "PROJECT may NEVER override,
+  weaken, or remove"**, and its `description` states it does not cover the other lenses. That decides
+  §9.5's rejection of the reuse option.
+
+### 9.1 ESC-A / TD-F1 — `subagent_stats.refused`: the reading is CONFIRMED, with the value rules made explicit. (Supersedes AD-4's `refused` row. Blocking W1 — now unblocked.)
+
+**Ruling.** TD §3.7 C6 is correct and is adopted. `subagent_stats.refused` satisfies the condition for
+`completed` when it is **absent**, **or** is the integer `0`, **or** is a flat mapping every one of whose
+values is the integer `0`.
+
+`technical-design` was right to escalate rather than implement: under Q1 a literal `refused == 0` would
+have failed every healthy invocation closed and stopped every merge in the repository. That is the
+correct instinct and the correct route.
+
+**The value rules, which the escalation did not fully state and which are binding:**
+
+1. **The rule quantifies over values, never over a known key set.** Do not write an allowlist of
+   `{depth_limit, concurrency_limit, budget}`. §9.0 shows the CLI increments `refused[<reason>]` by
+   dynamic key and emits the object by spread, so a refusal reason we have never seen will appear as a
+   key we have never seen. Quantifying over values blocks it with no code change; quantifying over keys
+   would ignore it. This is the same allowlist-not-denylist move as AD-4's `terminal_reason` row, applied
+   one level down.
+2. **"The integer `0`" excludes booleans.** In Python `isinstance(True, int)` is `True` and `False == 0`
+   is `True`. A naive implementation reads `refused: {"budget": false}` as healthy. A boolean value is
+   `envelope_shape_violation`.
+3. **`null` is not zero — and it is the most likely wire shape of a brand-new refusal reason.** Derived
+   from §9.0: a fourth reason increments an uninitialised key, `undefined + 1` is `NaN`, and
+   `JSON.stringify` emits `NaN` as `null`. Any non-integer value ⟹ `envelope_shape_violation` ⟹
+   `invocation_failed`. This rule is the reason the loosening is safe.
+4. **Only a flat mapping of scalars is accepted.** A nested mapping, a list, or a string ⟹
+   `envelope_shape_violation` (TD §3.7's detail rule 3, unchanged).
+5. **Absence remains harmless** (AD-4's original position). TD test T1.16 stands. §9.2 explains the
+   asymmetry between this negative marker and the one positive marker.
+
+**The safety property that survives the loosening, stated precisely.** The row exists to detect that the
+CLI **refused to spawn a subagent the reviewer asked for** — i.e. work the reviewer intended was not
+done, so the review is partial while presenting itself as complete. "Scalar zero" and "every value zero"
+are the same statement: *no refusal of any kind was recorded*. Nothing capable of carrying a refusal
+count is skipped, because rule 1 quantifies over every value present. What is **not** loosened is the
+unknown case: an unrecognised type is never read as healthy — it is a shape violation, which is blocking.
+
+**The amended AD-4 classifier table — implement this one.** `outcome: "completed"` is produced only when
+every row holds; any miss ⟹ `outcome: "invocation_failed"` ⟹ `verdict: "error"` (AD-6's non-negotiable
+rule, unchanged).
+
+| # | Condition for `completed` | Miss ⟹ `outcome_detail` |
+|---|---|---|
+| A1 | our own wall-clock cap did not fire | `timeout` |
+| A2 | stdout parses as **exactly one** JSON object (surrounding whitespace tolerated, nothing else) | `unparseable` |
+| A3 | `is_error` is absent or falsy; if present it must be a JSON boolean | true ⟹ `crash`; present and not a boolean ⟹ `envelope_shape_violation` |
+| A4 | `terminal_reason` is **present**, is a string, and is in `GOOD_TERMINAL_REASONS = {"completed"}` (**§9.2**) | absent ⟹ `terminal_reason_missing`; not a string ⟹ `envelope_shape_violation`; any other string ⟹ blocking, labelled per TD §3.7's detail rule 4 |
+| A5 | `permission_denials` is absent or an empty list | non-empty ⟹ `permission_denied`; present and not a list ⟹ `envelope_shape_violation` |
+| A6 | `subagent_stats.refused` is absent, **or** the integer `0`, **or** a flat mapping all of whose values are the integer `0` (rules 1–5 above) | any value non-zero ⟹ `refused`; any disallowed type ⟹ `envelope_shape_violation` |
+| A7 | process exit code == 0 | `crash` |
+| A8 | the agent payload extracted from `result` parses **strictly** as a conforming AD-6 body | `schema_violation` |
+| A9 | — | unknown **top-level** fields do not affect the outcome (**§9.2**) |
+
+`subtype` is still never an input (AD-4's binding note and TD test T1.23 stand). TD §3.7's
+`outcome_detail` precedence list is otherwise unchanged; it gains `terminal_reason_missing` (§9.2).
+
+**Tests that pin this ruling.** TD §9.1's T1.12–T1.16 stand as written, plus three new ones, all of which
+are part of W1's slice gate:
+
+| New test | Fixture | Asserts | Pins |
+|---|---|---|---|
+| **T1.13b** | `refused = {"depth_limit":0,"some_future_limit":7}` | `invocation_failed`, detail `refused` | rule 1 — key-universality; a key-allowlisted implementation passes this envelope and fails this test |
+| **T1.15b** | `refused = {"depth_limit":0,"budget":null}` | `invocation_failed`, detail `envelope_shape_violation` | rule 3 — the `NaN`→`null` wire shape is never zero |
+| **T1.15c** | `refused = {"budget":false}` | `invocation_failed`, detail `envelope_shape_violation` | rule 2 — the Python boolean-is-an-int trap |
+
+### 9.2 ESC-B / TD-F2 — unknown envelope fields: the interim contract is RATIFIED, with one tightening that pays for it. (Supersedes AD-4's unrecognised-field clause and its `terminal_reason` row. Blocking W1 — now unblocked.)
+
+**Ruling, in three parts.**
+
+**(a) Unknown top-level envelope fields are recorded and do not block.** TD §3.7's interim contract is
+adopted as binding: an unrecognised top-level field is recorded in
+`invocation.envelope_unknown_fields[]` (and in the verbatim envelope AD-6 already stores) and has no
+effect on the outcome. An unrecognised **value or shape in a decision field** (A3–A8) still blocks. **TD
+test T1.24 stands as written**; it is no longer conditional on this ruling.
+
+**(b) The tightening: `terminal_reason` must be PRESENT.** AD-4's row said *"absent or in a closed
+allowlist"*. It now reads: present, a string, and in `GOOD_TERMINAL_REASONS = {"completed"}`. Absent ⟹
+`outcome_detail: terminal_reason_missing` ⟹ `invocation_failed`. Insert it into TD §3.7's precedence
+list at rule 4's position — it replaces rule 4's absent case and sits ahead of the `is_error`,
+`permission_denials` and `refused` details, because a missing success marker is a more fundamental
+statement about the envelope than any individual negative signal.
+
+**(c) Recording obligations, so drift is discoverable instead of silent.** Both of these go in the AD-6
+result document **and** in AD-8's per-invocation audit record:
+- `invocation.envelope_unknown_fields[]` — the sorted list of top-level keys not in the known set.
+- `invocation.cli_version` — from `claude --version`, captured per invocation. **Diagnostic only, never a
+  decision input.** Do not gate on it, do not pin a supported version, do not refuse an unknown version:
+  that would manufacture exactly the merge-stopping failure mode this ruling exists to avoid.
+- **Standing maintenance obligation:** when a new top-level field appears in the trail, HOS classifies it
+  as telemetry or as decision-relevant, and if decision-relevant it joins A3–A8 with a test. That is a
+  maintenance task with a visible trigger, which is what the literal clause was trying and failing to buy.
+
+**Why the field/value asymmetry preserves the safety property — the part that has to be right.**
+
+- **#669 and #1362 were both *value*-level fail-opens**: a field we *did* read carried a value we did not
+  handle, and the handler's default was "pass". Every path of that kind is closed by A3–A8's allowlists,
+  which this ruling leaves fully intact and in one case (A4) strengthens. The class of defect behind those
+  two issues is not reintroduced here in any form.
+- **A field-level block guards a different risk**: a future CLI signalling failure through a field we do
+  not read. That risk is real, but the literal clause's cost is certain, immediate and systemic — under
+  Q1 it turns *any* telemetry addition into a total merge stop. This is not hypothetical twice over:
+  2.1.270 already shipped eight fields no ADR-era reader knew, and §9.0 found the installed CLI had moved
+  to 2.1.271 within the same day. A rule that halts the merge queue on a patch bump nobody chose is not
+  fail-closed behaviour; it is a denial of service on ourselves, and the predictable response is that
+  someone routes around the classifier — which is strictly worse than either alternative.
+- **The residual risk the loosening leaves is the rename/relocation case**: a decision signal moves to a
+  field we do not read, our field goes absent, and "absent is harmless" reads it as healthy. **(b) closes
+  it for the field that matters.** `terminal_reason` is the envelope's *positive* statement that the turn
+  ended normally. Require it present and good, and a renamed or removed success signal surfaces as
+  `terminal_reason_missing` — blocking, loud, and diagnosable from the very same record, because
+  `envelope_unknown_fields[]` in that record names the field that replaced it. The fail-open becomes a
+  fail-closed with its own diagnosis attached.
+
+**Why only `terminal_reason`, and not all four decision fields.** `terminal_reason` is a **positive**
+marker: its good value asserts that something went right. `is_error`, `permission_denials` and
+`subagent_stats.refused` are **negative** markers: their absence means "nothing bad was reported".
+Requiring one positive marker converts absence-of-evidence into failure, which is the whole point.
+Requiring the negative markers as well buys much less — a renamed `permission_denials` is invisible to us
+either way — while multiplying the ways a healthy invocation can be rejected under a hard-block rule.
+**One positive marker is required; negative markers may be absent.** Cost check: `terminal_reason` is
+present on every probed healthy run of exactly our invocation shape (TD §0.2 probes A, C, K, L), so the
+requirement costs nothing today.
+
+**The honest residual, and how it is bounded.** §9.0 found a composer that omits `terminal_reason` when
+undefined, beside a comment about synthetic results and older producers. That is not our path — we run
+local `claude --print --output-format json` — but if the assumption is wrong the symptom is a **uniform**
+`terminal_reason_missing` on every invocation. **AD-13's W6 observation-only measurement slice is exactly
+where that surfaces, and W6 precedes everything that gates.** `technical-design` must add *"count of
+`terminal_reason_missing` observed"* to W6's reported outputs. If W6 sees any, A4 reverts to tolerating
+absence and the rename risk goes back on the record, unmitigated and stated. That is a cheap, reversible
+bet taken in observation mode rather than on a live merge queue — which is the only reason I am willing to
+tighten a presence requirement against a vendor artifact at all.
+
+**Tests.** T1.24 stands. Two new, both in W1's slice gate:
+
+| New test | Fixture | Asserts |
+|---|---|---|
+| **T1.9b** | envelope with **no** `terminal_reason` key, everything else clean, rc 0 | `invocation_failed`, detail `terminal_reason_missing`, `verdict: error` |
+| **T1.24b** | an unknown top-level field **together with** a failing decision field (e.g. `permission_denials` non-empty) | still blocks on the decision field; the unknown field is recorded and masks nothing |
+
+Plus a W3 test asserting `envelope_unknown_fields` and `cli_version` reach the audit record.
+
+### 9.3 ESC-C / TD-F3 — the auth pre-flight: the design is ADOPTED, the caller obligation is made mandatory, and REQ-A4 needs a pm-agent amendment. (MEDIUM.)
+
+**Ruling on the architecture.** TD §3.4's resolution is correct and is adopted: the pre-flight environment
+check is **opt-in** via `--require-env-auth`, and post-hoc detection of `not_authenticated` is
+**unconditional**.
+
+There is no fourth option, and the three alternatives are rejected on the record so nobody re-opens this:
+(i) a trial `claude --print` probe before each invocation *is itself an invocation* — circular, and at
+twelve judgment entries it doubles the session count against a cron budget §3 already shows does not fit;
+(ii) reading the keychain is platform-specific and undocumented; (iii) inspecting `~/.claude.json` or a
+credentials file binds HOS to a vendor's internal file layout — precisely the coupling §9.2 was just
+written to avoid.
+
+**REQ-A4's intent is preserved in full.** The requirement exists so that an auth failure is a
+*distinguishable, fail-closed outcome* and never a silent pass. The post-hoc path delivers exactly that.
+What is not satisfiable is the requirement's *timing* word — "before".
+
+**Added obligation (binding, and stronger than the technical design's wording).** TD §3.4 says cron
+callers "should" pass `--require-env-auth`. **"Should" is not a mechanism.** Passing
+`--require-env-auth` is **mandatory for every non-interactive caller**: `bin/hos-cron` in either role,
+AD-13's sweep runner, and any script a cron cycle executes. It is optional only for a human at a terminal
+and for an agent session invoking L3 by hand. The flag's default stays off. When AD-13's runner is built,
+a test must assert the flag is in the argv it constructs; until then the obligation lands on W4's two
+migration sites, which run under cron, so both pass it. Rationale: under Q1 an auth gap hard-blocks the
+merge either way — the difference is that the pre-flight costs nothing and the post-hoc path costs one
+launched session *per dimension*, i.e. up to twelve wasted sessions per cycle for one expired token.
+
+**Requirements amendment: YES — and it is a correction, not a weakening.** `pm-agent` must amend REQ-A4
+so its verification-timing clause reads: authentication is verified pre-flight when the caller asserts an
+environment-token contract (`--require-env-auth`, mandatory for non-interactive callers), and is always
+detected post-hoc as a distinguishable `not_authenticated` outcome. **I have not edited the requirements
+document** — that is `pm-agent`'s, and the worker routes it. **W1 is not blocked on the amendment:** the
+architecture is ruled here and REQ-A4's intent is met. The amendment exists so a later compliance check
+does not read a true implementation as a requirements deviation.
+
+### 9.4 ESC-D / TD-F5 — `validate_agents.sh`'s `run_capped` deletion MOVES OUT of W4. (Amends AD-5.3. LOW.)
+
+**Ruling.** W4 does not touch `validate_agents.sh`. AD-5.3 is amended: **W4 deletes
+`validate_scripts.sh`'s `_TIMEOUT_BIN` + `run_capped` only** — that copy *is* attached to a real
+migration — and the `validate_agents.sh` copy moves to a follow-up issue.
+
+Grounds:
+1. **AD-5.3's justification does not transfer.** The deletion was justified *as a consequence of
+   migration*: the copy count falls because the `claude` consumer is gone. §9.0 confirms
+   `validate_agents.sh` has no `claude` consumer to remove. What remains is an unrelated refactor of the
+   cross-vendor validation path, and it is not free — `run_capped` redirects stdout to a file and
+   discards stderr while `with_timeout` does neither, so each of the two call sites grows hand-written
+   redirection on the path that produces HOS's cross-vendor evidence. Risk without benefit.
+2. **It buys no capability.** `with_timeout` has no `--kill-after`, no `--foreground` and no
+   process-group kill either (AF-3). This is consolidation, not repair. The repair is AD-5.1, it is in
+   Python, and it ships in W1.
+3. **It would pollute the primitive's first proof.** W4's value is that its diff reads as *"the migration
+   worked"*. An unrelated bash refactor in the same PR costs that legibility for nothing.
+
+**The copy ledger after W4, so nobody misreads the state.** One Python implementation (AD-5.1, new); one
+shared bash helper (`with_timeout`); and **two** remaining private bash copies — `validate_agents.sh`'s
+(the follow-up) and `bin/hos-cron`'s. **`bin/hos-cron`'s copy is deliberately out of scope of both W4 and
+the follow-up**: it bounds a whole cron cycle rather than an AI review, and replacing it changes the cron
+harness's own failure semantics (#1146's territory). The follow-up issue must say so in its body, so
+nobody "finishes the job" while looking at a ledger that appears one short.
+
+### 9.5 ESC-J — the `opus-self` seat is filled by a NEW shipped agent, `self-reviewer`. Reuse of `code-reviewer` is rejected. (MEDIUM; blocks TD §6.1 only.)
+
+The escalation asks what the self-review lens *is*, so that is answered first.
+
+**What the lens is.** `validate_self.sh` asks its reviewer for findings in exactly seven categories —
+`contradiction`, `governance-hole`, `unenforceable`, `loop`, `gaming`, `stale-status`, `ownership` — over
+a package of **framework text** (agent definitions, contract, governance docs, scripts), with a
+known-issues list to suppress re-reports and an instruction to be *"honest, not reassuring"*. Every one of
+those categories is a property of a **rule**, not of a **program**: whether a rule contradicts another
+rule, whether it can be enforced, whether it can be gamed, who owns it. **The lens is adversarial review
+of governance text.** It is distinct from every lens HOS ships, and it is the lens HOS's own governance
+depends on.
+
+**Ruling: a new shipped agent, `.claude/agents/self-reviewer.md`.** Option (b), reusing `code-reviewer`,
+is rejected, and the grounds matter more than the choice:
+
+- `code-reviewer`'s CORE region binds it to a **diff-centric** input contract in a clause explicitly
+  marked *"PROJECT may NEVER override, weaken, or remove this constraint"* (*"Your primary input is the
+  git diff provided. Do not request full-repository context."*), and to reviewing application code
+  **against the technical design and the ADR**. `validate_self.sh` supplies no diff, no technical design
+  and no ADR — it supplies a whole-corpus package of governance prose. The agent would be operating
+  outside its own binding input contract on every single invocation.
+- Its `description` states a closed non-scope; governance text is not in scope either.
+- **Substituting an agent whose lens differs from the seat's is the exact failure this epic exists to
+  close.** The check would run, produce a document, satisfy the classifier, and answer a *different
+  question* — "a mechanism that looks like it is reviewing and is not", which §0 found in four separate
+  places and which this ADR's RISK block names as the worse of its two failure modes. Under AD-3 the
+  agent **name** is the unit of governance. Naming the wrong one is not a shortcut around AD-3; it is the
+  governance violation AD-3 exists to prevent, performed through AD-3's own front door.
+- A third candidate, `framework-validator`, *does* describe this lens and is **rejected on ship-set
+  grounds**: §9.0 confirms it is not in `scripts/framework/consumer_agents.txt` while `validate_self.sh`
+  **is** installed into consumer projects. Binding the seat to it reproduces **AF-6.2 exactly** — an
+  installed script naming an agent the install never shipped. **Whichever agent fills this seat must be
+  in the consumer ship set.** That constraint is binding on any future revisit of this ruling.
+
+**What the new agent must be:**
+- `.claude/agents/self-reviewer.md`, CORE region, `model: opus` — the seat is `opus-self` and
+  `validate_self.sh` passes `--model "$MODEL"` explicitly, which AD-3 permits as an override on a *named*
+  agent.
+- Lens: adversarial review of governance text for the seven categories above. It reviews rules, not code.
+- Tools: read-only (`Read, Grep, Glob`), consistent with the `review-read-only` posture AD-7 assigns it.
+  It writes nothing, files nothing and fixes nothing.
+- Added to `scripts/framework/consumer_agents.txt`, which is the single source of truth for both the
+  install copy-loop and `.hos-manifest` (#225) — so the installer and the manifest cannot disagree.
+- **The prompt does not move into the agent file.** `validate_self.sh` keeps composing the review package,
+  the known-issues list and the output schema, and passes them via `--input-file`. The agent file supplies
+  the lens and the posture; the script supplies the corpus. The other split would put a review package
+  the agent cannot see into the agent file.
+
+**Sequencing.** This is a protected-surface change (`.claude/agents/**` is the first entry in
+`scripts/framework/protected_surfaces.txt` → CODEOWNERS) plus a ship-set change, so it lands as **W4a**:
+its own PR, human-gated at merge through the existing gate, and authored by the top-level session per
+CLAUDE.md's rule that agent-definition edits are never delegated to `coder`. **W4a does not block W1**,
+and it blocks only the `validate_self.sh` half of W4 — TD §6.2, §6.3, §6.5 and §6.6 proceed without it,
+as `technical-design` correctly observed. TD-O1 is closed by this ruling.
+
+**Flagged to the human, not a gate.** W4a adds a 27th agent to every consumer install, and TD §6.4's W4b
+adds two more for the panel seats. That is a deliberate consequence of AD-3 — a seat with no named agent
+must acquire one — and the existing protected-surface gate is the control. It is flagged so that growth of
+the shipped roster is a noticed decision rather than a side effect of three separate migrations.
+
+### 9.6 Non-blocking escalations — disposition
+
+- **ESC-E (`scripts/automation/**` is not in the consumer ship-set): ACCEPTED as recorded, no design
+  change.** HOS is the only consumer of the primitive in v0.7.0, and both L2 modules live where decision
+  logic belongs. Routed to W7's ship-set decision, exactly as `technical-design` routed it. **Binding
+  constraint carried forward: the coder must not relocate `agent_invoke_cli.py` or
+  `dimension_sweep_cli.py` to make them ship.** Moving decision logic out of `scripts/automation/` to
+  reach the ship-set would break AD-1's tiering and, given ESC-G's finding that `contract/**` is a
+  protected surface while `scripts/automation/**` is not, would move it across a protection boundary in
+  the wrong direction. If the ship-set is the problem, the ship-set changes; the layering does not.
+- **ESC-H (`--max-budget-usd` exists on 2.1.270): NOTED, deliberately not adopted in W1–W5.** A cost cap
+  converts a cost overrun into an invocation failure, which under Q1 is a hard merge block — a new
+  merge-stopping failure mode whose `terminal_reason` on trip is unprobed and would therefore hit A4's
+  catch-all and block with an unhelpful label. AF-2's `--max-turns` finding stands and is not disturbed.
+  Cost **observability** is already delivered without any new failure mode: the envelope carries
+  `total_cost_usd` and `modelUsage`, and AD-8 records them. **Revisit after W6**, when a measured cost
+  distribution exists to set a bound *from* — setting one from §3's estimates is precisely what §3
+  forbids.
+- **ESC-I (`--json-schema <schema>` exists, unprobed): NOTED, not adopted.** AD-6's strict parse is a
+  tested safety property of ours (`schema_violation` ⟹ `invocation_failed` ⟹ `verdict: error`).
+  Delegating shape enforcement to the vendor CLI would move a fail-closed decision into a tool whose
+  behaviour on violation nobody has observed. It may later be added as an **additional** belt in front of
+  our parse — never as a replacement — and only after a probe establishes what the envelope looks like
+  when the schema is violated. Not in W1–W5.
+- **TD-F4 / W4b (`run_panel.sh` split out): ACKNOWLEDGED and correct.** AD-16's escape clause was written
+  for exactly this case and `technical-design` exercised it as instructed: it split the work and added no
+  bare-model escape hatch. W4b's two new agent files carry the same protected-surface, human-gated,
+  ship-set obligations as §9.5's, and **W4b must not land before W4a**, so the pattern is established once.
+  Non-goal 3 is untouched — the panel's cross-vendor decorrelation property is unchanged.
+- **ESC-F, ESC-G, ESC-K:** addressed to the orchestrating session, not to me; the worker is filing issues.
+  I add nothing beyond noting that ESC-G's protection asymmetry is the reason ESC-E's constraint above is
+  binding rather than advisory.
+
+### 9.7 What the technical design must correct — and what a reviewer reviews against in the meantime
+
+The technical design is **not** rewritten by this amendment; it needs a targeted correction pass on the
+clauses below. **This does not block W1.**
+
+| Technical-design clause | What changes | Needed before |
+|---|---|---|
+| §3.7 C4 | `terminal_reason` required present; new detail `terminal_reason_missing` (§9.2) | W1 |
+| §3.7 C6 | ratified; add the explicit value rules — key-universal, int-not-bool, `null` blocks, flat mapping only (§9.1) | W1 |
+| §3.7 `outcome_detail` precedence list | insert `terminal_reason_missing` at rule 4's position, replacing rule 4's absent case | W1 |
+| §3.7 "Unknown envelope fields" paragraph | *"Interim implementable contract, pending the architect's ruling"* → **ruled and binding** (§9.2); add the `cli_version` and `envelope_unknown_fields[]` obligations | W1 |
+| §3.4 P7 | ratified; *"which cron callers should pass"* → **MUST**, for every non-interactive caller (§9.3) | W1 |
+| §4.2 field contract | add `invocation.cli_version`; confirm `invocation.envelope_unknown_fields[]` | W2 |
+| §5.2 audit record | add `envelope_unknown_fields` and `cli_version` | W3 |
+| §6.1 | the agent is `self-reviewer`; TD-O1 closed by §9.5; add the W4a dependency | W4 |
+| §6.3, §9.4, §11 | drop `validate_agents.sh`'s `run_capped` deletion from W4 (§9.4) | W4 |
+| §9.1 test table | T1.24 stands; **add T1.9b, T1.13b, T1.15b, T1.15c, T1.24b** | W1 |
+| W6's reported outputs (AD-13) | add *"count of `terminal_reason_missing` observed"* (§9.2's residual) | W6 |
+
+**Review standard while the correction pass is outstanding.** For the clauses named above, **this
+amendment is the standard**. `code-reviewer` reviews W1's classifier against §9.1 and §9.2, **not**
+against the superseded rows in TD §3.7, and must not record a deviation finding against an
+implementation that follows this amendment. `technical-design`'s correction pass may run in parallel with
+W1; it **must** complete before W4 begins, because §9.4 and §9.5 change W4's *scope*, not merely its
+wording.
+
+### 9.8 Startup-gap analysis and affected sign-offs
+
+*"Should this have been settled in the initial architecture review, before design was built against it?"*
+— asked of each ruling, per the CORE startup-gap rule.
+
+- **ESC-A and ESC-B — yes, and the gap is mine.** §0's own "Verification gaps I could not close" names
+  *"Whether `subagent_stats.refused` is present on the envelope in this CLI version"* — and AD-4 then
+  bound a comparison against that field anyway, with a note claiming *"AD-4's classifier is written so
+  that its absence is harmless"*, which covered **absence** and said nothing about **shape**. I bound a
+  fail-closed classifier against an unprobed external tool's output contract. A 90-second probe, or the
+  bundle grep in §9.0, was available the entire time.
+- **ESC-C — yes, at the requirements stage.** REQ-A4 asserted a pre-invocation auth check without
+  establishing that authentication state is observable pre-invocation.
+- **ESC-D and ESC-J — yes, at this ADR's own AD-5.3 and AD-16.** One asserted a consequence of a
+  migration that does not exist; the other assumed a named agent that does not exist.
+
+**A `startup-artifact-gap` issue should be opened** (the worker files it) carrying all four, and the
+generalisable rule they share: **no fail-closed classifier may be bound against an external tool's output
+contract that has not been probed, or read out of the shipped artifact, in the same pass.** That rule
+extends past this ADR and belongs with #1359's *"a control must be executed, not narrated"* in #1243's
+core-principles register.
+
+**Affected sign-offs:**
+- **Stand, unaffected:** every sign-off on PR #1651 (requirements) except REQ-A4's, and every sign-off on
+  PR #1658 (technical design) except the sections in §9.7. Nothing in AD-1, AD-2, AD-6 through AD-15 is
+  touched by this amendment.
+- **Flagged for re-review — orphaned approvals until the §9.7 pass lands:** the #1658 sign-offs covering
+  TD §3.4, §3.7, §6.1, §6.3, §9.1, §9.4 and §11. Those sections were approved against ADR rows this
+  amendment supersedes. They must not be cited as current for those sections, and the correction pass's
+  own review is what re-establishes them.
+- **Flagged for amendment, not re-review:** REQ-A4 in PR #1651 (§9.3).
+- **No code sign-off is orphaned, because no code exists.** W1 is unstarted. This is the last moment at
+  which every one of these corrections is free, which is the only good news in this section.
+
+### 9.9 What happens next
+
+1. **`coder` starts W1** against §9.1, §9.2 and TD §3.1–§3.9 as corrected by §9.7. **W1 is blocked by
+   nothing in this amendment.**
+2. `technical-design` runs the §9.7 correction pass. It must complete before W4 starts.
+3. The worker files: the `startup-artifact-gap` issue (§9.8); the `validate_agents.sh` `run_capped`
+   follow-up (§9.4); the REQ-A4 amendment routed to `pm-agent` (§9.3); and **W4a**, the `self-reviewer`
+   agent file plus its ship-set registration (§9.5). ESC-F, ESC-G and ESC-K are already the worker's.
+4. **Nothing in this amendment touches ESC-1 through ESC-4.** They remain held for the human, and W1–W6
+   remain cleared to proceed without them.
+
+---
+
 ## Human Review Required
+
+**Amendment 1 (§9) adds no new item held for the human.** Its five rulings are technical calls inside my
+authority; the one item with a product consequence — a larger shipped agent roster (§9.5, plus W4b's two)
+— is flagged in §9.5 and is controlled by the existing protected-surface gate rather than by a new one.
+The four items below are unchanged.
 
 Four items, all from §6, none of which I may bind: **ESC-1** (Q2's rerun does not fit a cycle — accept
 AD-13's multi-cycle latency and cost?), **ESC-2** (a new top-level cron execution stage), **ESC-3** (is
