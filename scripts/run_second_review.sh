@@ -390,9 +390,12 @@ fi
 # arrays are exactly the internal-reviewer "anchoring" content this script's own
 # header says must NOT be passed to these reviewers — the digest keeps only the
 # risk-context scalars (composite score, per-dimension scores/weights) that bear
-# on a correctness+spec-adherence lens. Degradation (tier 2/3, only if the
-# digest itself is still too large) is never silent — second_review_logic.py
-# prints a stderr line naming the tier and byte count whenever it degrades.
+# on a correctness+spec-adherence lens. Degradation is never silent on ANY path:
+# second_review_logic.py prints a stderr line naming the tier and byte count
+# when it drops to tier 2/3, and one naming the cause when it omits the digest
+# entirely (summary.json unreadable, or parsed but not a JSON object). The
+# latter exits 0 by design — a degraded digest must not kill the review — so
+# that stderr line is the only operator signal that context was lost.
 VALIDATOR_DIGEST=""
 if [[ -f ".claudetmp/oversight/validators/summary.json" ]]; then
     VALIDATOR_DIGEST=$(python3 "$(dirname "$0")/oversight/second_review_logic.py" \

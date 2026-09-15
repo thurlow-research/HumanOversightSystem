@@ -452,13 +452,29 @@ def _cmd_digest_validators(args: argparse.Namespace) -> int:
     # `set -euo pipefail`, a non-zero exit here takes run_second_review.sh down
     # with it — turning a degraded digest into a dead second review, which is
     # the exact failure class #1683 exists to remove.
+    # Exiting 0 is not the same as degrading silently. Both bail-outs below emit
+    # one stderr line naming what was lost, so the "every degradation names
+    # itself on stderr" guarantee D-3 states holds on every path out of this
+    # function, not only on the tier 2/3 drops inside digest_validators().
     try:
         with open(args.file, encoding="utf-8") as fh:
             summary = json.load(fh)
         if not isinstance(summary, dict):
+            print(
+                f"run_second_review: validator digest omitted — {args.file} parsed as "
+                f"{type(summary).__name__}, expected a JSON object; "
+                "reviewer prompt carries an empty validator summary",
+                file=sys.stderr,
+            )
             return 0
         digest, stderr_lines = digest_validators(summary)
-    except Exception:
+    except Exception as exc:
+        print(
+            f"run_second_review: validator digest omitted — could not read or digest "
+            f"{args.file}: {type(exc).__name__}: {exc}; "
+            "reviewer prompt carries an empty validator summary",
+            file=sys.stderr,
+        )
         return 0
 
     for line in stderr_lines:

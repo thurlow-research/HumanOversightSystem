@@ -58,8 +58,15 @@
 # scripts/run_second_review.sh). shellcheck cannot follow a `source` back into
 # the consumer, so it reports every one of them as unused. Scoped to the whole
 # file deliberately: they are assigned on ~15 lines and a per-line directive on
-# each would read as noise rather than as one contract. A genuinely unused
-# local in this file still reports normally.
+# each would read as noise rather than as one contract.
+#
+# Known cost, verified rather than assumed (shellcheck 0.11.0): a file-level
+# directive placed before the first command applies to the whole file, so
+# SC2034 is suppressed on function-locals here too — an unused `local` in this
+# file will NOT be reported. That is the price of the one-contract comment
+# above, accepted knowingly. If this file grows logic where an unused local is
+# a plausible bug, narrow this to per-line directives on the assignments
+# instead of leaving the blind spot in place.
 
 # ── One shared timeout implementation (ADR-1643 AD-5.3) — do not add a second ─
 # shellcheck source=scripts/oversight/run_with_retry.sh

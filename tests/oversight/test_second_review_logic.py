@@ -340,11 +340,12 @@ def test_digest_carries_tier_and_note_and_is_valid_json_at_every_tier():
 
 def _run_digest_cli(tmp_path, raw_text, capsys):
     """Invoke the `digest-validators` subcommand against a file holding
-    `raw_text`, returning (exit_code, stdout)."""
+    `raw_text`, returning (exit_code, stdout, stderr)."""
     f = tmp_path / "summary.json"
     f.write_text(raw_text, encoding="utf-8")
     rc = second_review_logic.main(["digest-validators", "--file", str(f)])
-    return rc, capsys.readouterr().out
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
 
 
 def test_digest_cli_exits_zero_on_json_that_parses_but_is_not_an_object(tmp_path, capsys):
@@ -355,14 +356,14 @@ def test_digest_cli_exits_zero_on_json_that_parses_but_is_not_an_object(tmp_path
     #1683 exists to remove. Degrade to an empty digest instead, as a missing
     file already did."""
     for payload in ("[]", '["a", "b"]', "null", '"a string"', "42"):
-        rc, out = _run_digest_cli(tmp_path, payload, capsys)
+        rc, out, _ = _run_digest_cli(tmp_path, payload, capsys)
         assert rc == 0, f"payload={payload!r} exited {rc}"
         assert out == "", f"payload={payload!r} printed {out!r}"
 
 
 def test_digest_cli_exits_zero_on_unparseable_and_missing_input(tmp_path, capsys):
     """The pre-existing read/parse guard still holds."""
-    rc, out = _run_digest_cli(tmp_path, "{not json", capsys)
+    rc, out, _ = _run_digest_cli(tmp_path, "{not json", capsys)
     assert rc == 0 and out == ""
 
     rc = second_review_logic.main(["digest-validators", "--file", str(tmp_path / "absent.json")])
@@ -371,9 +372,39 @@ def test_digest_cli_exits_zero_on_unparseable_and_missing_input(tmp_path, capsys
 
 def test_digest_cli_prints_a_digest_for_a_well_formed_object(tmp_path, capsys):
     """The guard must not swallow the happy path."""
-    rc, out = _run_digest_cli(tmp_path, json.dumps(_make_summary(3, raw_value_len=50)), capsys)
+    rc, out, err = _run_digest_cli(tmp_path, json.dumps(_make_summary(3, raw_value_len=50)), capsys)
     assert rc == 0
     assert json.loads(out)["_digest_tier"] == 1
+    assert err == "", "the happy path must not emit a degradation line"
+
+
+def test_digest_cli_names_the_cause_on_stderr_when_input_is_not_an_object(tmp_path, capsys):
+    """Exiting 0 must not mean degrading silently. The non-dict branch drops the
+    entire validator digest from the reviewer prompt; without a stderr line that
+    loss is invisible, which is the same silent-loss-of-review-context class
+    #1683 exists to remove, arriving by a third route. Also keeps true the claim
+    run_second_review.sh makes in its own comment above the call."""
+    for payload, typename in (("[]", "list"), ("null", "NoneType"), ("42", "int")):
+        rc, out, err = _run_digest_cli(tmp_path, payload, capsys)
+        assert rc == 0 and out == ""
+        assert err.strip(), f"payload={payload!r} degraded silently"
+        assert typename in err, f"payload={payload!r} stderr did not name the type: {err!r}"
+        assert "empty validator summary" in err, err
+
+
+def test_digest_cli_names_the_cause_on_stderr_when_input_cannot_be_read(tmp_path, capsys):
+    """Same guarantee for the read/parse branch — and for any future bug inside
+    digest_validators(), which now sits inside this try and would otherwise
+    degrade to silent-empty."""
+    rc, out, err = _run_digest_cli(tmp_path, "{not json", capsys)
+    assert rc == 0 and out == ""
+    assert "JSONDecodeError" in err or "ValueError" in err, err
+    assert "empty validator summary" in err, err
+
+    rc = second_review_logic.main(["digest-validators", "--file", str(tmp_path / "absent.json")])
+    captured = capsys.readouterr()
+    assert rc == 0 and captured.out == ""
+    assert "FileNotFoundError" in captured.err, captured.err
 
 
 def test_degradation_lines_name_the_artifact_they_actually_measured():
