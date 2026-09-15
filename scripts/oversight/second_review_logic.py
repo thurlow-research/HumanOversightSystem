@@ -196,7 +196,7 @@ def _aggregate_full(content: str) -> tuple[dict, bool]:
         if "skipped" in hl:
             continue  # a skipped reviewer is handled by the pre-check
 
-        body = _fenced_body(sec[len(head):])
+        body = _fenced_body(sec[len(head) :])
         if not body:
             reviewers.append((name, "error", "none", 0, "empty"))  # crash / no output
             continue
@@ -206,11 +206,7 @@ def _aggregate_full(content: str) -> tuple[dict, bool]:
             data = json.loads(body)
         except Exception:
             v, sev = _classify_prose_full(body)
-            fc = (
-                len(re.findall(r"(?m)^\s*#{1,4}\s", body))
-                if v == "request_changes"
-                else 0
-            )
+            fc = len(re.findall(r"(?m)^\s*#{1,4}\s", body)) if v == "request_changes" else 0
             reviewers.append((name, v, sev, fc, "prose"))
             continue
 
@@ -294,17 +290,19 @@ def _digest_tier1(summary: dict) -> dict:
     for r in summary.get("results") or []:
         if not isinstance(r, dict):
             continue
-        results.append({
-            "dimension": r.get("dimension"),
-            "score": r.get("score"),
-            "weight": r.get("weight"),
-            "tier_floor": r.get("tier_floor"),
-            "error": r.get("error"),
-            "raw_value": r.get("raw_value"),
-            "evidence_count": len(r.get("evidence") or []),
-            "finding_count": len(r.get("findings") or []),
-            "checklist_count": len(r.get("checklist_items") or []),
-        })
+        results.append(
+            {
+                "dimension": r.get("dimension"),
+                "score": r.get("score"),
+                "weight": r.get("weight"),
+                "tier_floor": r.get("tier_floor"),
+                "error": r.get("error"),
+                "raw_value": r.get("raw_value"),
+                "evidence_count": len(r.get("evidence") or []),
+                "finding_count": len(r.get("findings") or []),
+                "checklist_count": len(r.get("checklist_items") or []),
+            }
+        )
     return {
         "composite_score": summary.get("composite_score"),
         "tier": summary.get("tier"),
@@ -367,7 +365,7 @@ def digest_validators(summary: dict) -> tuple[dict, list[str]]:
 
     stderr_lines.append(
         "run_second_review: validator digest degraded to tier 2 "
-        f"(full summary {tier1_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
+        f"(tier 1 digest {tier1_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
     )
     tier2 = _digest_tier2(tier1)
     tier2_bytes = _digest_bytes(tier2)
@@ -378,7 +376,7 @@ def digest_validators(summary: dict) -> tuple[dict, list[str]]:
 
     stderr_lines.append(
         "run_second_review: validator digest degraded to tier 3 "
-        f"(full summary {tier2_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
+        f"(tier 2 digest {tier2_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
     )
     tier3 = _digest_tier3(summary)
     tier3["_digest_tier"] = 3
@@ -416,9 +414,7 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
 
     # Rewrite the three machine-readable header lines in place, exactly as the
     # heredoc did (lines 701-703).
-    new_content = re.sub(
-        r"^verdict: pending$", f"verdict: {verdict}", content, flags=re.M
-    )
+    new_content = re.sub(r"^verdict: pending$", f"verdict: {verdict}", content, flags=re.M)
     new_content = re.sub(
         r"^highest_severity: none$",
         f"highest_severity: {highest}",
@@ -448,13 +444,23 @@ def _cmd_digest_validators(args: argparse.Namespace) -> int:
     # hard error (the shell only calls this when the summary file already
     # exists); print nothing and exit 0 so the caller falls back to an empty
     # VALIDATOR_SUMMARY, same as a missing file did before this digest existed.
+    #
+    # The guard spans the digest call too, not just the read: a summary.json
+    # that parses but is not an object (a JSON list, or `null`) would otherwise
+    # reach _digest_tier1's .get() and raise AttributeError, and because the
+    # shell assigns this via VALIDATOR_DIGEST=$(python3 …) under
+    # `set -euo pipefail`, a non-zero exit here takes run_second_review.sh down
+    # with it — turning a degraded digest into a dead second review, which is
+    # the exact failure class #1683 exists to remove.
     try:
         with open(args.file, encoding="utf-8") as fh:
             summary = json.load(fh)
+        if not isinstance(summary, dict):
+            return 0
+        digest, stderr_lines = digest_validators(summary)
     except Exception:
         return 0
 
-    digest, stderr_lines = digest_validators(summary)
     for line in stderr_lines:
         print(line, file=sys.stderr)
     print(json.dumps(digest))

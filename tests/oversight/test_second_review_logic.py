@@ -17,13 +17,13 @@ import importlib.util
 import json
 from pathlib import Path
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "second_review_logic.py"
-)
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "second_review_logic.py"
 _spec = importlib.util.spec_from_file_location("second_review_logic", _MOD_PATH)
+# spec_from_file_location returns ModuleSpec | None, and .loader is Loader | None;
+# both are None only if the module is missing or unloadable, which is a broken
+# checkout rather than a test failure — assert so mypy sees the narrowing and the
+# failure mode names itself instead of surfacing as an AttributeError.
+assert _spec is not None and _spec.loader is not None, f"cannot load {_MOD_PATH}"
 second_review_logic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(second_review_logic)
 
@@ -212,11 +212,7 @@ def test_prose_report_with_internal_headings_not_truncated():
     degradation path). Previously the naïve '^## ' split truncated the reviewer
     section at '## Critical Issues', leaving only the 'Looks good' preamble →
     approve."""
-    prose = (
-        "Looks good overall.\n"
-        "## Critical Issues\n"
-        "- must-fix: SQL injection in views.py\n"
-    )
+    prose = "Looks good overall.\n" "## Critical Issues\n" "- must-fix: SQL injection in views.py\n"
     content = _HEADER + _section("agy — Correctness", prose)
     result = aggregate_verdicts(content)
     assert result["verdict"] == "request_changes"
@@ -248,17 +244,19 @@ def _make_summary(n_results: int, raw_value_len: int = 0, error_len: int = 0) ->
     tier to exceed the 16,384-byte cap."""
     results = []
     for i in range(n_results):
-        results.append({
-            "dimension": f"dim{i}",
-            "score": 0.5,
-            "weight": 0.1,
-            "tier_floor": None,
-            "error": ("e" * error_len) if error_len else None,
-            "raw_value": {"blob": "x" * raw_value_len} if raw_value_len else {"ok": True},
-            "evidence": [{"file": "a.py", "line": 1, "message": "m", "severity": "low"}] * 2,
-            "findings": [{"severity": "low", "file": "a.py", "line": 1, "message": "m"}],
-            "checklist_items": ["c1", "c2"],
-        })
+        results.append(
+            {
+                "dimension": f"dim{i}",
+                "score": 0.5,
+                "weight": 0.1,
+                "tier_floor": None,
+                "error": ("e" * error_len) if error_len else None,
+                "raw_value": {"blob": "x" * raw_value_len} if raw_value_len else {"ok": True},
+                "evidence": [{"file": "a.py", "line": 1, "message": "m", "severity": "low"}] * 2,
+                "findings": [{"severity": "low", "file": "a.py", "line": 1, "message": "m"}],
+                "checklist_items": ["c1", "c2"],
+            }
+        )
     return {
         "composite_score": 0.42,
         "tier": "MEDIUM",
@@ -335,3 +333,55 @@ def test_digest_carries_tier_and_note_and_is_valid_json_at_every_tier():
         assert digest["_digest_tier"] in (1, 2, 3)
         assert digest["_digest_note"]
         json.loads(json.dumps(digest))
+
+
+# ── digest-validators CLI shim: never take run_second_review.sh down with it ──
+
+
+def _run_digest_cli(tmp_path, raw_text, capsys):
+    """Invoke the `digest-validators` subcommand against a file holding
+    `raw_text`, returning (exit_code, stdout)."""
+    f = tmp_path / "summary.json"
+    f.write_text(raw_text, encoding="utf-8")
+    rc = second_review_logic.main(["digest-validators", "--file", str(f)])
+    return rc, capsys.readouterr().out
+
+
+def test_digest_cli_exits_zero_on_json_that_parses_but_is_not_an_object(tmp_path, capsys):
+    """A summary.json that is valid JSON but not an object (a list, or `null`)
+    must not reach _digest_tier1's .get() and raise. The shell assigns this via
+    VALIDATOR_DIGEST=$(python3 ...) under `set -euo pipefail`, so a non-zero
+    exit here kills the whole second review — the exact silent-disable class
+    #1683 exists to remove. Degrade to an empty digest instead, as a missing
+    file already did."""
+    for payload in ("[]", '["a", "b"]', "null", '"a string"', "42"):
+        rc, out = _run_digest_cli(tmp_path, payload, capsys)
+        assert rc == 0, f"payload={payload!r} exited {rc}"
+        assert out == "", f"payload={payload!r} printed {out!r}"
+
+
+def test_digest_cli_exits_zero_on_unparseable_and_missing_input(tmp_path, capsys):
+    """The pre-existing read/parse guard still holds."""
+    rc, out = _run_digest_cli(tmp_path, "{not json", capsys)
+    assert rc == 0 and out == ""
+
+    rc = second_review_logic.main(["digest-validators", "--file", str(tmp_path / "absent.json")])
+    assert rc == 0 and capsys.readouterr().out == ""
+
+
+def test_digest_cli_prints_a_digest_for_a_well_formed_object(tmp_path, capsys):
+    """The guard must not swallow the happy path."""
+    rc, out = _run_digest_cli(tmp_path, json.dumps(_make_summary(3, raw_value_len=50)), capsys)
+    assert rc == 0
+    assert json.loads(out)["_digest_tier"] == 1
+
+
+def test_degradation_lines_name_the_artifact_they_actually_measured():
+    """The tier-2/tier-3 stderr lines report the size of the tier-1/tier-2
+    DIGEST, not of the full summary. Calling either 'full summary' makes an
+    operator under-read the real overage on a path the ADR added specifically
+    to be trustworthy."""
+    _, lines = digest_validators(_make_summary(120, error_len=250))
+    assert "tier 1 digest" in lines[0], lines[0]
+    assert "tier 2 digest" in lines[1], lines[1]
+    assert "full summary" not in " ".join(lines)

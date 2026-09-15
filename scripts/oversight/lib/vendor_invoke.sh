@@ -52,6 +52,15 @@
 # Lens flags (e.g. `--sandbox --output-format json`) are the CALLER's — this
 # helper owns only the base command and the stdin contract, never prompt content.
 
+# shellcheck disable=SC2034
+# The five VENDOR_INVOKE_* globals are this library's public output contract,
+# read by the sourcing caller (see `second_review_failure_json` in
+# scripts/run_second_review.sh). shellcheck cannot follow a `source` back into
+# the consumer, so it reports every one of them as unused. Scoped to the whole
+# file deliberately: they are assigned on ~15 lines and a per-line directive on
+# each would read as noise rather than as one contract. A genuinely unused
+# local in this file still reports normally.
+
 # ── One shared timeout implementation (ADR-1643 AD-5.3) — do not add a second ─
 # shellcheck source=scripts/oversight/run_with_retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/run_with_retry.sh"
@@ -101,6 +110,14 @@ _vendor_invoke_init_tmpdir() {
 # the fixed `trap -- ` prefix and ` SIG` suffix — both literal, never part of
 # the quoted payload — and let the shell itself unquote the remainder via
 # `eval printf '%s'`, which is quote-syntax-safe by construction.
+#
+# KNOWN RESIDUAL CASE (considered, not missed): chaining cannot save a
+# pre-existing handler that itself ends in `exit` — the shell leaves before
+# reaching `${cleanup}`, and the temp dir survives until the OS reaps /tmp.
+# Prepending cleanup instead would merely move the loss to the other handler,
+# which is the one the caller wrote and therefore the one that must win. The
+# leak is bounded (one dir of prompt/stdout files, mode 0700) and this helper
+# is the only writer, so the trade is deliberate.
 _vendor_invoke_install_trap() {
     [[ -n "$_VENDOR_INVOKE_TRAP_INSTALLED" ]] && return 0
     _VENDOR_INVOKE_TRAP_INSTALLED=1
@@ -111,8 +128,14 @@ _vendor_invoke_install_trap() {
             existing="${existing_raw#trap -- }"
             existing="${existing%" $sig"}"
             existing="$(eval "printf '%s' $existing")"
+            # shellcheck disable=SC2064  # expansion at install time is required,
+            # not accidental: $_VENDOR_INVOKE_TMPDIR is per-process and is baked
+            # into the handler here so the trap still names the right directory
+            # if the variable is later unset or reassigned. Deferring expansion
+            # (single quotes) would be the bug.
             trap "${existing}; ${cleanup}" "$sig"
         else
+            # shellcheck disable=SC2064  # same rationale as above.
             trap "${cleanup}" "$sig"
         fi
     done
@@ -234,6 +257,12 @@ vendor_invoke() {
     elif [[ "$rc" -eq 127 ]]; then
         VENDOR_INVOKE_CLASS="harness"; VENDOR_INVOKE_DETAIL="exec_failed"
     elif [[ "$rc" -eq 124 ]]; then
+        # Deliberately `vendor`, though the cause is genuinely ambiguous: a real
+        # vendor stall and a SECOND_REVIEW_VENDOR_TIMEOUT set too low are
+        # indistinguishable from here. `vendor` is the useful default because the
+        # timeout value is this repo's own constant and visible to whoever reads
+        # the record, whereas a hung vendor is not. The `timeout` detail is what
+        # actually routes the operator; the class is the coarser hint.
         VENDOR_INVOKE_CLASS="vendor"; VENDOR_INVOKE_DETAIL="timeout"
     elif [[ "$rc" -eq 2 && "$stdout_bytes" -eq 0 ]] && _vendor_invoke_is_arg_parse_error "$raw_stderr"; then
         # ADR-1683 gap fix: an argument-parse failure (wrong flags shipped in
