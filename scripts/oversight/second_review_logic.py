@@ -274,6 +274,119 @@ def aggregate_verdicts(content: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# R5 (ADR-1683 D-3) — validator-summary digest                                #
+# --------------------------------------------------------------------------- #
+# `run_second_review.sh` no longer interpolates the raw validators/summary.json
+# into the agy prompt verbatim — that document's `evidence`/`findings`/
+# `checklist_items` arrays are exactly the internal-reviewer "anchoring" content
+# the script's own header says must NOT be passed to these reviewers. Build a
+# derived digest instead, in three deterministic tiers, degrading only as far as
+# needed to fit a fixed byte cap. Pure: takes/returns plain dict + list of str;
+# no file I/O (the CLI shim below does the reading and stderr printing).
+_DIGEST_CAP_BYTES = 16384
+
+
+def _digest_tier1(summary: dict) -> dict:
+    """Top-level scalars + per-result scores/weights/floors + evidence COUNTS
+    (not the evidence/findings/checklist_items arrays themselves — those are
+    the anchoring content D-3 excludes)."""
+    results = []
+    for r in summary.get("results") or []:
+        if not isinstance(r, dict):
+            continue
+        results.append({
+            "dimension": r.get("dimension"),
+            "score": r.get("score"),
+            "weight": r.get("weight"),
+            "tier_floor": r.get("tier_floor"),
+            "error": r.get("error"),
+            "raw_value": r.get("raw_value"),
+            "evidence_count": len(r.get("evidence") or []),
+            "finding_count": len(r.get("findings") or []),
+            "checklist_count": len(r.get("checklist_items") or []),
+        })
+    return {
+        "composite_score": summary.get("composite_score"),
+        "tier": summary.get("tier"),
+        "validator_count": summary.get("validator_count"),
+        "successful_validators": summary.get("successful_validators"),
+        "results": results,
+    }
+
+
+def _digest_tier2(tier1: dict) -> dict:
+    """Tier 1 minus each result's `raw_value`."""
+    out = json.loads(json.dumps(tier1))
+    for r in out["results"]:
+        r.pop("raw_value", None)
+    return out
+
+
+def _digest_tier3(summary: dict) -> dict:
+    """Top-level scalars plus a bare `dimension: score` map — no per-validator
+    detail at all."""
+    scores = {}
+    for r in summary.get("results") or []:
+        if isinstance(r, dict):
+            scores[str(r.get("dimension"))] = r.get("score")
+    return {
+        "composite_score": summary.get("composite_score"),
+        "tier": summary.get("tier"),
+        "validator_count": summary.get("validator_count"),
+        "successful_validators": summary.get("successful_validators"),
+        "scores": scores,
+    }
+
+
+def _digest_bytes(obj: dict) -> int:
+    return len(json.dumps(obj).encode("utf-8"))
+
+
+def digest_validators(summary: dict) -> tuple[dict, list[str]]:
+    """Build the D-3 three-tier validator digest.
+
+    Tries tier 1; if its serialized size exceeds `_DIGEST_CAP_BYTES`, drops to
+    tier 2, then tier 3 (tier 3 has no further fallback and is always used once
+    reached). The chosen digest always carries `_digest_tier` (1|2|3) and
+    `_digest_note` naming what was dropped, so the reviewer model and any human
+    reading the artifact see the degradation — never a silent truncation.
+
+    Returns (digest, stderr_lines). stderr_lines is empty at tier 1; every
+    degradation below tier 1 appends one line naming the tier and the byte
+    count that missed the cap (D-3: "silence is not acceptable and is not
+    permitted here").
+    """
+    stderr_lines: list[str] = []
+
+    tier1 = _digest_tier1(summary)
+    tier1_bytes = _digest_bytes(tier1)
+    if tier1_bytes <= _DIGEST_CAP_BYTES:
+        tier1["_digest_tier"] = 1
+        tier1["_digest_note"] = "full detail: no fields dropped"
+        return tier1, stderr_lines
+
+    stderr_lines.append(
+        "run_second_review: validator digest degraded to tier 2 "
+        f"(full summary {tier1_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
+    )
+    tier2 = _digest_tier2(tier1)
+    tier2_bytes = _digest_bytes(tier2)
+    if tier2_bytes <= _DIGEST_CAP_BYTES:
+        tier2["_digest_tier"] = 2
+        tier2["_digest_note"] = "raw_value dropped per validator to fit the size cap"
+        return tier2, stderr_lines
+
+    stderr_lines.append(
+        "run_second_review: validator digest degraded to tier 3 "
+        f"(full summary {tier2_bytes} B > {_DIGEST_CAP_BYTES} B cap)"
+    )
+    tier3 = _digest_tier3(summary)
+    tier3["_digest_tier"] = 3
+    tier3["_digest_note"] = "per-validator detail dropped; only dimension:score retained"
+    return tier3, stderr_lines
+
+
+# --------------------------------------------------------------------------- #
 # CLI shim — the ONLY place in this module that performs I/O (binding 2).     #
 # --------------------------------------------------------------------------- #
 def _cmd_select_reviewers(args: argparse.Namespace) -> int:
@@ -330,6 +443,24 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_digest_validators(args: argparse.Namespace) -> int:
+    # Mirrors _cmd_aggregate's convention: a read/parse failure here is not a
+    # hard error (the shell only calls this when the summary file already
+    # exists); print nothing and exit 0 so the caller falls back to an empty
+    # VALIDATOR_SUMMARY, same as a missing file did before this digest existed.
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            summary = json.load(fh)
+    except Exception:
+        return 0
+
+    digest, stderr_lines = digest_validators(summary)
+    for line in stderr_lines:
+        print(line, file=sys.stderr)
+    print(json.dumps(digest))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Second-review reviewer selection + verdict aggregation (SPEC-331)."
@@ -352,6 +483,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_agg.add_argument("--file", required=True, help="second-review output file path")
     p_agg.set_defaults(func=_cmd_aggregate)
+
+    p_dig = sub.add_parser(
+        "digest-validators",
+        help="Print the ADR-1683 D-3 three-tier digest of a validator summary.json.",
+    )
+    p_dig.add_argument("--file", required=True, help="validators summary.json path")
+    p_dig.set_defaults(func=_cmd_digest_validators)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -14,6 +14,7 @@ Coverage:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 _MOD_PATH = (
@@ -29,6 +30,7 @@ _spec.loader.exec_module(second_review_logic)
 select_reviewers = second_review_logic.select_reviewers
 classify_prose = second_review_logic.classify_prose
 aggregate_verdicts = second_review_logic.aggregate_verdicts
+digest_validators = second_review_logic.digest_validators
 
 
 # Convenience: a valid second-review output-file header (the "## " sections are
@@ -234,3 +236,102 @@ def test_advisory_block_after_reviewer_does_not_corrupt_json():
         + "```\n[ADVISORY] Reviewer requested full-repository context.\n```\n\n"
     )
     assert aggregate_verdicts(content)["verdict"] == "approve"
+
+
+# --------------------------------------------------------------------------- #
+# ADR-1683 D-3 — validator-summary digest (three-tier degradation)            #
+# --------------------------------------------------------------------------- #
+def _make_summary(n_results: int, raw_value_len: int = 0, error_len: int = 0) -> dict:
+    """A synthetic validators/summary.json shaped like the real thing (13
+    dimensions in production; arbitrary count here to control serialized
+    size). `raw_value_len` / `error_len` pad specific fields to force a
+    tier to exceed the 16,384-byte cap."""
+    results = []
+    for i in range(n_results):
+        results.append({
+            "dimension": f"dim{i}",
+            "score": 0.5,
+            "weight": 0.1,
+            "tier_floor": None,
+            "error": ("e" * error_len) if error_len else None,
+            "raw_value": {"blob": "x" * raw_value_len} if raw_value_len else {"ok": True},
+            "evidence": [{"file": "a.py", "line": 1, "message": "m", "severity": "low"}] * 2,
+            "findings": [{"severity": "low", "file": "a.py", "line": 1, "message": "m"}],
+            "checklist_items": ["c1", "c2"],
+        })
+    return {
+        "composite_score": 0.42,
+        "tier": "MEDIUM",
+        "validator_count": n_results,
+        "successful_validators": n_results,
+        "results": results,
+    }
+
+
+def test_digest_tier1_used_when_within_cap():
+    """A small summary fits tier 1 (full per-validator scores/weights/floors +
+    evidence/finding/checklist COUNTS) with no degradation and no stderr line."""
+    digest, stderr_lines = digest_validators(_make_summary(3, raw_value_len=50))
+    assert digest["_digest_tier"] == 1
+    assert stderr_lines == []
+    assert digest["results"][0]["raw_value"] == {"blob": "x" * 50}
+    assert digest["results"][0]["evidence_count"] == 2
+    assert digest["results"][0]["finding_count"] == 1
+    assert digest["results"][0]["checklist_count"] == 2
+    json.loads(json.dumps(digest))
+
+
+def test_digest_degrades_to_tier2_at_the_16384_byte_boundary():
+    """Tier 1 exceeds the cap (large `raw_value`s) -> tier 2 drops `raw_value`
+    per validator and fits; exactly one degradation line is printed."""
+    digest, stderr_lines = digest_validators(_make_summary(10, raw_value_len=3000))
+    assert digest["_digest_tier"] == 2
+    assert len(stderr_lines) == 1
+    assert "tier 2" in stderr_lines[0]
+    assert "16384" in stderr_lines[0]
+    assert "raw_value" not in digest["results"][0]
+    assert digest["results"][0]["dimension"] == "dim0"
+    json.loads(json.dumps(digest))
+
+
+def test_digest_degrades_to_tier3_when_tier2_also_exceeds_cap():
+    """Even with `raw_value` dropped, enough validators (large `error` text)
+    still exceed the cap -> tier 3 drops all per-validator detail down to a
+    bare `dimension: score` map. Two degradation lines are printed (2, then 3)."""
+    digest, stderr_lines = digest_validators(_make_summary(120, error_len=250))
+    assert digest["_digest_tier"] == 3
+    assert len(stderr_lines) == 2
+    assert "tier 2" in stderr_lines[0]
+    assert "tier 3" in stderr_lines[1]
+    assert "results" not in digest
+    assert digest["scores"] == {f"dim{i}": 0.5 for i in range(120)}
+    json.loads(json.dumps(digest))
+
+
+def test_digest_never_carries_evidence_findings_or_checklist_arrays():
+    """D-3's whole point: the anchoring content (evidence/findings/checklist
+    arrays — file:line:message pointers) must never survive into the prompt,
+    at ANY tier — only aggregate counts (tier 1/2) or nothing (tier 3)."""
+    for summary, expect_tier in (
+        (_make_summary(3, raw_value_len=10), 1),
+        (_make_summary(10, raw_value_len=3000), 2),
+        (_make_summary(120, error_len=250), 3),
+    ):
+        digest, _ = digest_validators(summary)
+        assert digest["_digest_tier"] == expect_tier
+        blob = json.dumps(digest)
+        assert '"evidence"' not in blob, blob
+        assert '"findings"' not in blob, blob
+        assert '"checklist_items"' not in blob, blob
+
+
+def test_digest_carries_tier_and_note_and_is_valid_json_at_every_tier():
+    for summary in (
+        _make_summary(3, raw_value_len=10),
+        _make_summary(10, raw_value_len=3000),
+        _make_summary(120, error_len=250),
+    ):
+        digest, _ = digest_validators(summary)
+        assert digest["_digest_tier"] in (1, 2, 3)
+        assert digest["_digest_note"]
+        json.loads(json.dumps(digest))

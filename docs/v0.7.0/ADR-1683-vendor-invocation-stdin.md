@@ -82,7 +82,8 @@ vendor_invoke <vendor> <timeout_sec> <prompt_file> <stdout_file> [extra argv...]
 
 - `<vendor>` ∈ `{agy, codex}`. The helper owns the **base command and the stdin contract**;
   the caller owns lens flags. The base forms — the single place in the repo where they live:
-  - `agy`   → `agy -p` with `< "$prompt_file"`
+  - `agy`   → `agy` with `< "$prompt_file"` (no `-p` — see the verification note below;
+    corrected post-implementation from this ADR's original `agy -p` draft)
   - `codex` → `codex exec` with `< "$prompt_file"`
 - **No prompt content ever reaches argv through this function.** Enforced, not merely
   intended: the helper **rejects any `extra argv` element longer than 4,096 bytes**, failing
@@ -101,26 +102,36 @@ vendor_invoke <vendor> <timeout_sec> <prompt_file> <stdout_file> [extra argv...]
   |---|---|
   | `VENDOR_INVOKE_RC` | raw child exit status |
   | `VENDOR_INVOKE_CLASS` | `ok` \| `harness` \| `vendor` |
-  | `VENDOR_INVOKE_DETAIL` | `ok` \| `binary_not_found` \| `not_executable` \| `exec_failed` \| `argv_content_detected` \| `vendor_nonzero_exit` \| `timeout` \| `empty_output` |
+  | `VENDOR_INVOKE_DETAIL` | `ok` \| `binary_not_found` \| `not_executable` \| `exec_failed` \| `argv_content_detected` \| `vendor_nonzero_exit` \| `timeout` \| `empty_output` \| `arg_parse_failed` |
   | `VENDOR_INVOKE_STDERR` | redacted, single-line, ≤500-byte tail (D-5) |
   | `VENDOR_INVOKE_BYTES` | byte size of `<prompt_file>` |
 
 - Classification rule (exact): `command -v <vendor>` fails → `harness`/`binary_not_found`
   (before any launch). rc 126 → `harness`/`not_executable`. rc 127 → `harness`/`exec_failed`.
-  rc 124 → `vendor`/`timeout`. rc ≠ 0 otherwise → `vendor`/`vendor_nonzero_exit`.
-  rc 0 with empty stdout → `vendor`/`empty_output`.
+  rc 124 → `vendor`/`timeout`. **rc 2 with EMPTY stdout AND stderr matching a narrow
+  usage/flag-error signature** (`flag needs an argument`, `flag provided but not defined`,
+  `^Usage of `) → `harness`/`arg_parse_failed` (post-implementation addition — see the
+  correction note immediately below; this rule is checked before the next one). rc ≠ 0
+  otherwise → `vendor`/`vendor_nonzero_exit`. rc 0 with empty stdout → `vendor`/`empty_output`.
 
-**The agy flag form must be verified empirically before the PR is opened.** `agy --help`
-documents `-p` as a short alias for `--print` with no stated value, and #1683 verified only
-`echo … | agy`. The coder runs a trivial check —
-`printf 'Reply with exactly: OK' > /tmp/claude/p.txt`, then
-`agy --sandbox --output-format json -p < /tmp/claude/p.txt` — and records the observed output
-and `agy --version` in a comment above the vendor table in the helper, exactly as
-`run_second_review.sh:585-591` documents `--output-format json`. If `-p` turns out to require
-a value on the installed build, the verified fallback is to **drop `-p`** (a non-TTY stdin
-already triggers print mode, per #1683's verified `echo … | agy`). Getting this wrong would
-replace a silent `E2BIG` with a silent arg-parse failure, which is the same class of defect
-this ADR exists to remove — so it is verified, not assumed.
+**Post-implementation correction (2026-09-15) — the agy flag form, verified empirically as
+this D-2 instructed.** Probed against the installed build before the PR opened:
+`agy --version` → **1.2.3** (this ADR's original text assumed #1683's recorded 1.1.28; the
+installed build had moved on). `agy --sandbox --output-format json -p < prompt_file` →
+**rc=2, empty stdout**, stderr `flag needs an argument: -p` — on 1.2.3, `-p` unconditionally
+requires a value and there is no bare form. `agy --sandbox --output-format json < prompt_file`
+(no `-p` at all) → **rc=0**, well-formed JSON envelope, same shape as the pre-#1683
+`-p "$prompt"` invocation (non-TTY stdin alone triggers print mode, as #1683 had already
+verified via `echo … | agy`). The verified fallback this D-2 anticipated — **drop `-p`
+entirely** — is therefore what shipped; the base-forms table above and
+`vendor_invoke.sh`'s own header comment record this verification. This probe result is
+also what motivated the `arg_parse_failed` classification rule added above: the ADR's
+original literal rule (`rc ≠ 0 otherwise → vendor`) would have classified agy 1.2.3's `-p`
+rejection as a *vendor* failure — sending an operator to check agy's auth/quota — when it
+is unambiguously a harness defect (wrong flags shipped in this repo). Getting either of
+these wrong would replace a silent `E2BIG` with a silent (or misdiagnosed) arg-parse
+failure, which is the same class of defect this ADR exists to remove — so both were
+verified and handled, not assumed.
 
 ### D-3 (Q-C) — `VALIDATOR_SUMMARY` is replaced by a derived digest. The full document does not belong in the prompt.
 
