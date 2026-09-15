@@ -6,7 +6,27 @@ them. The mechanism is **structural** (it introduces a new decision point that g
 autonomous work begins at all, a new trust roster, and a new agent role) and requires explicit human
 sign-off before `architect` binds it. Four §0 findings contradict the task brief's stated location of
 the gap and change what must be built (**VF-2**, **VF-3**, **VF-5**, **VF-8**).
-**Date:** 2026-09-10
+
+> **AMENDED 2026-09-15 — read `docs/v0.7.0/REQUIREMENTS-1540-AMENDMENT-1-fr4-ruling.md` before
+> designing or building anything against FR4.** The dual-lens adversarial panel
+> (`PANEL-1540-S1-S2-dual-lens-adversarial.md`, finding **P-2**, HIGH, blocking) found that **this
+> document's title and its own FR4 specify opposite gates**: the title states an *authorization*
+> model (an untrusted-authored request becomes work given a CODEOWNER's approval), FR4 as originally
+> written states an unqualified *origin-trust* model in which no act by any actor — human or bot —
+> can make such a request eligible. `ADR-1540` AD-4 and the technical design's Step D5 implement the
+> first; the design cites **neither**.
+> **Amendment 1 rules that the AUTHORIZATION model governs (AR-1)**, on the strength of the human's
+> 2026-09-10 ruling on **#1539** item 1, which names the authorizing act directly. **FR4 is narrowed,
+> not withdrawn**: it governs the **trust** determination (who is exempt from the gate) and no longer
+> reaches the **authorization** determination (who may release a gated request). Everything FR4 does
+> against *bot* label-laundering — #1539 item 2, **VF-3** — is retained in full. Two requirements are
+> added (**FR28**, **FR29**) and the S2-era disposition of **FR9, FR10, FR16 and FR17** is stated
+> (**AR-6**).
+> **Where Amendment 1 and this document differ, Amendment 1 governs.** The amendment is itself
+> **STRUCTURAL and escalated to the human** (its §5 — **Q10**, and a fifth item for **H1**);
+> `architect` and `technical-design` may build revisions against it, **`coder` is not cleared by it**.
+
+**Date:** 2026-09-10 (original), amended 2026-09-15 (Amendment 1, separate file)
 **Author:** pm-agent
 **Source issues:** #1540 (open, `enhancement`/`needs-ai`/`priority:high`, v0.7.0 — Quality; body +
 its 2026-09-10 clarifying comment are the binding requirements input); #1539 (open,
@@ -270,14 +290,46 @@ contributor who owns no path has nowhere to live in it.
 without a human approval; with an absent or empty roster the mechanism still functions with
 CODEOWNERS + trusted apps as the trusted set.
 
-**FR4 — Trust attaches to the request's origin, not to the last actor who touched a label.** The
-trust determination MUST be a function of the **issue author** as reported by the GitHub API. A
-subsequent label, milestone, or metadata change by a trusted actor (human **or** bot) MUST NOT
-convert an untrusted-authored request into a trusted one. In particular, the worker's own Step-0
-triage labelling an anonymous issue `needs-ai` (**VF-3**) MUST NOT satisfy the gate.
-*Verify:* an issue authored by an untrusted account and labelled `needs-ai` by the worker bot remains
-gated and is not selectable as work; an issue authored by the worker bot itself (e.g. a `[BLOCKED]`
-issue, or `self_review_source.file_finding_as_issue()`) is trusted by authorship and is not gated.
+> **AMENDED — `REQUIREMENTS-1540-AMENDMENT-1` AR-1/AR-3 (narrowed; panel finding P-2, HIGH).** FR4's
+> original text is **superseded** and preserved below for the record. The prohibition is scoped to the
+> **trust** determination and no longer reaches the **authorization** determination: a verified
+> individual human CODEOWNER's explicit act on one specific request may release that request, and
+> confers no trust on it or its author (**FR28**). Everything FR4 does against *bot* label-laundering
+> is retained. A `coder` implementing FR4's original text would gate every untrusted-authored request
+> permanently — 92 of the 96 candidates in the active milestone, **#1539 and #1540 among them**.
+
+**FR4 — Trust attaches to the request's origin, not to the last actor who touched a label.**
+*(Replacement text — binding. Supersedes the original, quoted beneath.)*
+The trust determination MUST be a function of the **issue author** as reported by the GitHub API.
+**No label, milestone, or metadata change by any actor — human or bot, trusted or not — may confer
+trust on an untrusted-authored request or on its author.** In particular, the worker's own Step-0
+triage labelling an anonymous issue `needs-ai` (**VF-3**) MUST NOT satisfy the trust test, and no
+sequence of such acts may ever promote an author into the trusted set (**FR3** is the only way in).
+**This requirement governs trust — exemption from the gate — and does not govern authorization —
+release from the gate.** A gated request may still be released, for that one request only, by an
+explicit act of a verified individual human CODEOWNER, under **FR16** and **FR28**. Such a release
+confers no trust on the request or its author (**FR28**), and the released request's content remains
+untrusted input (**FR10**).
+*Verify:* an issue authored by an untrusted account and labelled `needs-ai` **by the worker bot**
+remains gated and is not selectable as work; the same issue labelled **by the human-proxy App**
+remains gated; the same issue labelled **by a roster contributor who is not a CODEOWNER** remains
+gated; the same issue labelled **by a designated human CODEOWNER from their own account** is
+selectable — **and its author's next issue is gated exactly as before**; an issue authored by the
+worker bot itself (e.g. a `[BLOCKED]` issue, or `self_review_source.file_finding_as_issue()`) under
+an enumerated machine-filing marker is trusted by authorship and is not gated.
+
+> **SUPERSEDED — FR4 as originally written, 2026-09-10.** Preserved verbatim so the amendment is
+> auditable and nothing is silently rewritten. **Do not implement this text.**
+>
+> > **FR4 — Trust attaches to the request's origin, not to the last actor who touched a label.** The
+> > trust determination MUST be a function of the **issue author** as reported by the GitHub API. A
+> > subsequent label, milestone, or metadata change by a trusted actor (human **or** bot) MUST NOT
+> > convert an untrusted-authored request into a trusted one. In particular, the worker's own Step-0
+> > triage labelling an anonymous issue `needs-ai` (**VF-3**) MUST NOT satisfy the gate.
+> > *Verify:* an issue authored by an untrusted account and labelled `needs-ai` by the worker bot
+> > remains gated and is not selectable as work; an issue authored by the worker bot itself (e.g. a
+> > `[BLOCKED]` issue, or `self_review_source.file_finding_as_issue()`) is trusted by authorship and
+> > is not gated.
 
 **FR5 — Trust is determined from GitHub-reported identity only.** The determination MUST use
 GitHub-API-reported fields (`issue.user.login`, `user.type`, and the actor on the relevant issue
@@ -372,6 +424,14 @@ field rather than prose (the repo's existing convention for `run_second_review.s
 *Verify:* running the assessor twice on one issue yields one comment; the comment parses; a CODEOWNER
 reading only that comment can act without opening any other artefact.
 
+> **POINTER — `REQUIREMENTS-1540-AMENDMENT-1` AR-2(c) and AR-6 (no ruling changed).** FR16's
+> *property* — an individual human CODEOWNER, determined server-side from GitHub-reported identity —
+> is what **FR28** makes binding on every authorization. FR16's *named channel* does not work in the
+> S2 era: **AF-5** established that `label-swap.yml` performs `/approve`'s label write as
+> `github-actions[bot]`, so `/approve` authorizes nothing (see `ADR-1540-AMENDMENT-1` AM-6 and
+> `AMENDMENT-2` AM-15/AM-16 — the comment channel is **S3**). FR16 is not in breach; its
+> implementation is deferred with the rest of S3. See AR-6's table.
+
 **FR16 — Only a human CODEOWNER can approve, and the approval channel is the existing one.**
 Approval MUST come from an individual CODEOWNER, determined server-side from GitHub-reported identity
 in a context the requester cannot influence. `label-swap.yml`'s `/approve` already has exactly these
@@ -382,6 +442,13 @@ never counts as human. A new CODEOWNERS parser MUST NOT be introduced; the exist
 *Verify:* `/approve` from the CODEOWNER releases the request; the same command from a non-CODEOWNER,
 from `scottthurlow-claude[bot]`, or from the worker/overseer does not; no fourth CODEOWNERS parser is
 added.
+
+> **DISPOSITION — `REQUIREMENTS-1540-AMENDMENT-1` AR-6 (requirement unchanged; its S2-era status
+> stated).** In the S2 era **every** authorization is an approval without an assessment, because the
+> assessor does not exist until S5 — so FR17 is **deferred, deliberately, not satisfied**. That
+> deferral is a consequence of shipping the deterministic gate first (`ADR-1540` AF-1) and it is
+> **escalated for the human's ratification** (H1 item 5), not inherited by default. When S5 lands,
+> FR17 binds in full and **Q4** must be answered first.
 
 **FR17 — Approving without an assessment MUST NOT be silently possible.** Today `/approve` will flip
 labels on an issue nobody has assessed (**VF-7**). For an untrusted-authored issue, either the
@@ -465,6 +532,41 @@ as a GitHub comment that an actor with issue-write permission could later delete
 *Verify:* the sequence for one gated issue is reconstructable from the audit trail alone with the
 GitHub comments removed.
 
+### Trust versus authorization
+
+> **ADDED — `REQUIREMENTS-1540-AMENDMENT-1` AR-3 (new requirements; panel finding P-2).** These two
+> requirements state the distinction FR4's original text collapsed, and they are the reason FR4 could
+> be narrowed without weakening the gate. Numbering continues from FR27; no existing FR is renumbered.
+
+**FR28 — Authorization releases one request; it never confers trust, and never accumulates.** An
+authorization MUST be **per-request and per-content-state**: it makes exactly one issue, in exactly
+the title+body state that was authorized, eligible for selection. It MUST NOT make the issue's author
+trusted, MUST NOT make any other issue eligible, MUST NOT be recorded as a durable grant (**FR7** —
+it is re-derived live at every selection), and MUST NOT be usable as evidence toward trust in any
+later determination. The authorizing actor MUST be an individual human CODEOWNER, verified from
+GitHub-reported identity (**FR16**, **FR5**); no bot identity satisfies it, **including this
+deployment's own App identities** and including `github-actions[bot]` acting on a human's slash
+command (**AF-5**). An authorized request's body and title remain **untrusted input** to every agent
+that reads them as a task specification (#1539 item 3, **FR10**, **VF-11**).
+*Verify:* authorizing issue X does not make issue Y eligible; authorizing issue X does not make X's
+author trusted, and their next issue is gated; a static list, cache, flag or file recording
+"previously authorized" issues is non-compliant; an agent consuming an authorized issue still treats
+its body as untrusted input.
+
+**FR29 — The authorizing act MUST be legible as an authorization to the human performing it.**
+Because the authorization is a **human judgement** — and until the assessment layer ships, the only
+judgement in the loop — every artefact that tells a CODEOWNER how to perform it MUST state plainly
+(i) that the act authorizes autonomous work to begin on that specific issue, (ii) that this
+**includes issues the CODEOWNER did not author and whose content they do not control**, and (iii)
+what the act does *not* do — it does not make the author trusted, and it does not make the issue body
+trustworthy. It MUST NOT be described only as a routing, triage or visibility action. This binds
+`docs/LABELS.md`, `docs/OVERSIGHT-RUNBOOK.md`, any cutover material, and any agent instruction that
+describes the dispatch label.
+*Verify:* a reader of each such artefact can state, without opening another document, that applying
+the dispatch label from their personal account starts autonomous work on that issue; no such artefact
+describes the act as routing-only; a conformance test pins the statement in its durable documentation
+home.
+
 ---
 
 ## 3. Interaction with #1539 — layered, and *not* independent
@@ -500,6 +602,13 @@ unaddressed. #1540 alone leaves label-actor laundering open. Four seams the arch
    relabelling its own `[BLOCKED]` issue stays trusted; the worker relabelling an anonymous issue does
    not. A literal reading of #1539 item 2 without FR4 would break the first three and leave the fourth
    open. **This is the single most important interaction finding in this section.**
+   > **CONFIRMED and re-scoped — `REQUIREMENTS-1540-AMENDMENT-1` AR-1 reason 1.** This seam is
+   > unchanged and remains binding; the amendment cites it as the evidence that FR4's subject was
+   > always the *bot* label-laundering question — every example here is a bot, and none is a human
+   > CODEOWNER's deliberate act on a specific issue. Read "a bot-applied label inherits the trust of
+   > the issue's author" as the whole of FR4's reach. A **human CODEOWNER's** act is not a trust
+   > question at all; it is an **authorization** (FR16, FR28), and it is what #1539's ruling item 1
+   > names.
 4. **#1539's stated scope does not reach the live path (VF-2/Q1).** Scoped to `probe.py`'s
    `STRATEGY_MILESTONE` branch, it hardens a path this repo does not execute. Both issues need the
    enforcement point to be where work is actually selected.
@@ -535,6 +644,14 @@ picked up. This document does not gate it.
 
 Genuine product/policy choices I cannot settle from the ruling. Architect MUST NOT bind them until
 ruled; a recommendation is given for each.
+
+> **A TENTH decision is escalated in `REQUIREMENTS-1540-AMENDMENT-1` §5 — `Q10`.** It asks the human
+> to ratify the narrowing of **FR4** (the panel's **P-2**): the authorization model governs, on the
+> strength of their own 2026-09-10 ruling on #1539 item 1. The amendment also supplies **a fifth item
+> for H1** (`ADR-1540-AMENDMENT-2` §3(b)) telling the human that in the S2 era their act is the only
+> judgement in the loop, because the assessment layer (**FR11–FR15, FR17**) arrives in S5. Q1, Q2, Q8
+> and Q9 below were **bound by the architect** (`ADR-1540` §4) rather than escalated; Q3 is **H3**,
+> Q5 is bound at 3, and Q4/Q6/Q7 remain the human's as written.
 
 **Q1 — Enforcement point, given VF-2.** *Recommendation:* the gate is enforced at the live
 selection/claim point used by `bin/hos-cron` and the worker's fallback query, with `probe.py` brought
@@ -617,6 +734,12 @@ live GitHub repository settings (branch protection, collaborator permissions) th
 **BLAST RADIUS:** the intake path for every request that reaches this repo's autonomous worker, and —
 because the same primitive is intended for `probe.py` (Q1) — the consumer-deployment intake path as
 well. The roster, the gate, and the approval workflow are all control-defining surfaces (FR25).
+
+> **AMENDMENT 1 (2026-09-15) adds to this block.** The panel's **P-2** found the title and FR4
+> specifying opposite gates. `REQUIREMENTS-1540-AMENDMENT-1` rules the **authorization** model
+> governs, narrows FR4 to the trust determination, adds **FR28**/**FR29**, and states the S2-era
+> disposition of FR9/FR10/FR16/FR17. It is itself **STRUCTURAL** and carries its own risk block, a
+> tenth escalated decision (**Q10**) and a fifth **H1** item. Read it before acting on anything below.
 
 **Change classification: STRUCTURAL.** This introduces a new decision point in the pipeline, a new
 agent role, a new trust roster, and a new obligation on the human CODEOWNER — none of which existed
