@@ -11,7 +11,17 @@
 > Amendment 1 §3 lists exactly what remains blocking. A `coder` implementing AD-4 or AD-6 who has not
 > read Amendment 1 will build the wrong gate.
 
-**Date:** 2026-09-12 (original), amended 2026-09-15 (Amendment 1, separate file)
+> **AMENDED AGAIN 2026-09-15 — `docs/v0.7.0/ADR-1540-AMENDMENT-2-escalation-rulings.md`.** `technical-design`
+> revision 2 returned three further escalations (E-5, E-6, E-7), ruled in **Amendment 2** (AM-14 … AM-18)
+> with two findings of mine (**AF-6**, **AF-7**). **Where Amendment 2 differs from Amendment 1 or from this
+> document, Amendment 2 governs.** What it changes for a reader of *this* document: the S1/S2
+> protected-surface count is **five**, not the four ESC-6 item 4 and AD-14 state (AM-17); the cutover
+> costs **two acts per issue** on a set measured at **≥93**, so the single-pass recommendation is
+> withdrawn in favour of a lazy drain plus a small primed head (AM-14/AF-6); and the **milestone route is
+> forbidden** as an authorization act on an issue already in the milestone (AM-15). **ESC-6 / H1 must be
+> put to the human from Amendment 2 §3(b), not from this document and not from Amendment 1 §3(b).**
+
+**Date:** 2026-09-12 (original), amended 2026-09-15 (Amendment 1 and Amendment 2, separate files)
 **Author:** architect
 **Inputs:** `docs/v0.7.0/REQUIREMENTS-1540-request-intake-risk-agent.md` (pm-agent, merged in PR #1595); #1540's body and its 2026-09-10 clarifying ruling comment; #1539's 2026-09-10 "we should have both at play" and 2026-09-10 **rescope** ruling comments; my own independent re-verification against `origin/main` @ `511e2a2f` (§0).
 **Consumers:** `technical-design` (next), then the dual-lens adversarial panel #1540 mandates, then `needs-ai` issues in v0.7.0.
@@ -160,6 +170,13 @@ Today there are two copies of the eligibility filter — `bin/hos-cron:1137`'s `
 > to make older tests pass reintroduces the vulnerability. **AM-5:** the events read is paginated,
 > bounded. **AM-6:** this decision's own *"events **and comments**"* text was implemented as
 > events-only; S2 ships without the comment half and **S3 MUST close it**.
+>
+> **AMENDED FURTHER — Amendment 2 AM-15 (operational) and AM-16 (sequencing).** **AM-15:** because both
+> qualifying signals are already present on every issue in the cutover set, the authorizing act there is
+> **remove-then-re-add the dispatch label from the human's own account** — and the **milestone route is
+> FORBIDDEN** for it, because a milestone-less issue is swept by the worker's Step 0 triage, which may
+> re-apply both signals as a bot and consume the human's act. **AM-16:** the comment half stays in **S3**;
+> S2 remains event-only.
 
 For an untrusted-authored candidate the gate MUST NOT accept "carries `needs-ai`" as authorization. `needs-ai` has at least five writers (`docs/LABELS.md`), one of which is the worker's own Step 0 — the exact self-authorization VF-3 describes. Instead the gate re-derives, **live at selection time**, that a **verified human CODEOWNER** authorized this specific issue: walk the issue's events and comments, apply `is_bot_reviewer` as exclusion and CODEOWNERS-human membership as the positive test — `_verify_codeowner_actor`'s existing, shipped, tested shape (AF-2).
 
@@ -274,7 +291,7 @@ No environment variable, label, issue content, config file, or command-line flag
 - **Triage is not replaced.** `/hos-triage` and `triage.py` keep their current roles; VF-4/VF-8 are recorded because they change *where the gate must sit*, not because this work fixes them. `/hos-triage`'s `AUTOWORK` disposition remains valid only **after** the actor check passes, never as a path around it.
 - **The `needs-ai` rename is not done here** (#1349). AD-4 only requires that the gate survive it without a security regression.
 - **No automatic trust promotion, ever.** No "N merged PRs ⇒ trusted", no account age, no reputation score. All are behaviour-derived and farmable. `author_association` is corroborating evidence in the assessment record (AD-9), never the trust test — `CONTRIBUTOR` means only "has a merged PR."
-- **This ADR does not grant the human approvals its own implementation requires.** The mechanism touches `.claude/agents/**`, `bootstrap/**`, `scripts/framework/**`, and `.github/workflows/**` — four protected surfaces. Each lands through the normal human-approval gate. Nothing here pre-authorizes any of them.
+- **This ADR does not grant the human approvals its own implementation requires.** The mechanism touches `.claude/agents/**`, `bootstrap/**`, `scripts/framework/**`, and `.github/workflows/**` — ~~four protected surfaces~~. Each lands through the normal human-approval gate. Nothing here pre-authorizes any of them. **[CORRECTED BY `ADR-1540-AMENDMENT-2` AM-17 — 2026-09-15: **five**. This list omits `bin/**`, which S2 edits (`bin/hos-cron`'s candidates block). The authoritative S1/S2 enumeration is Amendment 2 §3(b) H1 item 4. A sixth, `CLAUDE.md`, is deliberately excluded from S1/S2 and named there.]**
 
 ### AD-15 — Relationship to #1586/#1580: this is a genuine-judgment gate, and it must ask the human exactly once. (BINDING.)
 
@@ -351,12 +368,18 @@ Ordering is driven by AF-1: **the deterministic gate is a live `priority:critica
 
 ### ESC-6 — Structural / product-boundary clearance. (The master gate.)
 
+> **AMENDED — `ADR-1540-AMENDMENT-2` §3(b) carries the replacement text for this escalation and it is the
+> only version that should be put to the human.** Item 2 below understates the cost (the act is **two
+> acts** per already-queued issue, on a set measured at **≥93**, and the cutover recommendation is
+> withdrawn — AM-14/AF-6/AM-15) and item 4 below **miscounts the surfaces for S1/S2** (five, not four —
+> AM-17). Amendment 1 §3(b) H1 restates the same two errors and is superseded for the same reason.
+
 Per the CORE product-boundary checkpoint, the following consequences are routed to the **human** (and, for the first, to `pm-agent`) for explicit clearance *before* the decisions above bind:
 
 1. **User-visible behaviour.** Every request from outside the trusted set now waits for a human decision before any work begins. For an outside contributor this is a new, visible hold with a new failure mode (nobody answers). That is a product decision about how this project receives outside contributions.
 2. **Operational obligation.** It creates a standing, recurring duty on the designated CODEOWNER — currently exactly one person, `@ScottThurlow`, per the generated `.github/CODEOWNERS` — to personally assess and approve or decline every outside request. A gate nobody has time to service is a gate that gets rubber-stamped, which is worse than no gate.
 3. **Cost model.** ESC-5, plus the per-cycle model spend of the assessor itself.
-4. **Protected-surface edits.** `.claude/agents/**` (new agent, possibly an `overseer.md` charter amendment), `bootstrap/worker-cron-prompt.md`, `scripts/framework/**`, `.github/workflows/label-swap.yml` — four protected surfaces, each human-gated at merge, none pre-authorized here.
+4. **Protected-surface edits.** `.claude/agents/**` (new agent, possibly an `overseer.md` charter amendment), `bootstrap/worker-cron-prompt.md`, `scripts/framework/**`, `.github/workflows/label-swap.yml` — ~~four protected surfaces~~, each human-gated at merge, none pre-authorized here. **[SUPERSEDED FOR S1/S2 BY `ADR-1540-AMENDMENT-2` AM-17 — 2026-09-15: **five** (`bin/**` is missing here). Quote Amendment 2 §3(b) item 4, not this list.]**
 
 **`technical-design` may design against the settled shape now. `coder` is NOT cleared to build until ESC-6 is cleared and ESC-2 is ruled.** ESC-3, ESC-4 and ESC-5 block only the slices that depend on them (S3, S5) and not S1/S2 — and given AF-1, **S1 and S2 should not wait on the rest of this document.**
 
