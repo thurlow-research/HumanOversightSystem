@@ -15,7 +15,7 @@
 
 ## 0. Verification — what I re-derived, and the four findings that change the design
 
-Every claim below was read from the working tree at `/home/scott/Code/HumanOversightSystem/Worker` this session (HEAD `80de8532`). I re-derived only what S1/S2 depend on; I did **not** re-derive the ADR's §0, which is authoritative.
+Every claim below was read from the Worker clone's working tree this session (HEAD `80de8532`). I re-derived only what S1/S2 depend on; I did **not** re-derive the ADR's §0, which is authoritative.
 
 ### 0.1 Confirmed, unchanged from the ADR
 
