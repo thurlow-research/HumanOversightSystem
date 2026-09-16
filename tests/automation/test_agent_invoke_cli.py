@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -1062,3 +1063,229 @@ def test_not_applicable_with_input_file_is_usage_error(repo_root, capsys):
     ]
     rc = cli.main(argv, repo_root=repo_root)
     assert rc == 2
+
+
+# --------------------------------------------------------------------------- #
+# T1.50-T1.56 (Amendment A) — the P0 interpreter-fitness precondition and the
+# ADR-1643 §10.3 conditions on INVOKE_AGENT_PYTHON. The wrapper-level rungs
+# (T1.50-T1.52) live in test_agent_invoke_wrapper.py, which shells out; these
+# are the ones the technical design's table marks "cli" — driven in-process.
+# --------------------------------------------------------------------------- #
+
+
+def test_T1_53_yaml_import_error_sentinel_confined_to_import_block_and_main():
+    """T1.53 — same idiom as `test_load_ledger_never_imported` (T2.8's
+    fence): the P0 sentinel must appear only in the module's guarded import
+    block and in `main()`'s precondition check, so it cannot decay into a
+    second, inconsistent consumer. `_parse_frontmatter` must never gain an
+    `if yaml is None` (or equivalent) branch — that would relabel a missing
+    runtime dependency as `agent_unavailable`/`posture_invalid`/
+    `schema_violation`, exactly the silent-wrong-answer failure mode P0
+    exists to prevent."""
+    source = Path(cli.__file__).read_text()
+    first_def = source.index("\ndef ")
+    import_block = source[:first_def]
+    rest = source[first_def:]
+    assert (
+        "_YAML_IMPORT_ERROR" in import_block
+    ), "the guarded import block must declare the sentinel"
+
+    main_start = rest.index("def main(")
+    next_def = rest.index("\ndef ", main_start + 1)
+    main_body = rest[main_start:next_def]
+    other_functions = rest[:main_start] + rest[next_def:]
+
+    assert "_YAML_IMPORT_ERROR" not in other_functions, (
+        "the P0 sentinel appeared outside main() and the import block — "
+        "found a second consumer, which risks it decaying into a fail-open"
+    )
+    assert "_YAML_IMPORT_ERROR" in main_body, "main() must check the sentinel (P0)"
+
+    frontmatter_start = source.index("def _parse_frontmatter")
+    frontmatter_end = source.index("\ndef ", frontmatter_start + 1)
+    frontmatter_body = source[frontmatter_start:frontmatter_end]
+    assert "yaml is None" not in frontmatter_body
+    assert "_YAML_IMPORT_ERROR" not in frontmatter_body
+
+
+def test_T1_54_every_module_level_third_party_import_is_declared_in_requirements():
+    """T1.54, generalised (Amendment A) — the rule is stated over *every*
+    module-level third-party import, not over `yaml` specifically, so the
+    next such import inherits P0's precondition instead of re-learning it
+    via a repeat of #1720."""
+    import ast
+
+    source = Path(cli.__file__).read_text()
+    tree = ast.parse(source)
+    module_level_names: set[str] = set()
+
+    # ast.walk() over the whole module (not just tree.body) so the guarded
+    # `try: import yaml` block (P0) is covered too — it is a module-level
+    # Try node, not a plain Import. This module has no function-local
+    # imports today (verified: grep for indented `import` finds only the
+    # one inside that Try block), so a whole-tree walk is equivalent to a
+    # module-level-only walk without needing to track scope.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_level_names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                module_level_names.add(node.module.split(".")[0])
+
+    stdlib = sys.stdlib_module_names
+    third_party = {
+        name
+        for name in module_level_names
+        if name not in stdlib and name != "__future__" and not name.startswith("scripts")
+    }
+
+    requirements_text = (
+        (Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "requirements.txt")
+        .read_text()
+        .lower()
+    )
+    # A handful of import names differ from their PyPI/requirements-file
+    # spelling; extend this map if a future import needs it (T1.54 fails
+    # loudly rather than silently passing on an unmapped mismatch).
+    name_to_requirement = {"yaml": "pyyaml"}
+
+    undeclared = sorted(
+        name for name in third_party if name_to_requirement.get(name, name) not in requirements_text
+    )
+    assert not undeclared, (
+        f"module-level third-party import(s) {undeclared} in agent_invoke_cli.py "
+        "are not declared in scripts/oversight/requirements.txt — the next such "
+        "import must inherit P0's precondition (ADR-1643 §10.5), not re-learn it"
+    )
+
+
+def test_T1_55_ci_workflow_carries_no_pyyaml_install():
+    """T1.55 — pins TD-D22's rejected alternative (a): installing PyYAML
+    into the bare `setup-python` environment would make the unfit-
+    interpreter path green in CI and delete the only place that catches
+    this defect class. `.github/workflows/tests.yml` must stay untouched by
+    this fix — only `ensure_venv.sh` builds the fit interpreter."""
+    workflow_path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "tests.yml"
+    text = workflow_path.read_text()
+    assert "ensure_venv.sh" in text
+    lowered = text.lower()
+    # Deliberately not checking for the substring "requirements.txt" as a
+    # whole: this workflow's own comments legitimately discuss why it skips
+    # project-requirements installation (#1380), which mentions the phrase
+    # without installing anything. The two commands that would actually mask
+    # this defect class are checked directly.
+    assert "pyyaml" not in lowered
+    assert "pip install" not in lowered
+
+
+def test_T1_56_p0_dominates_argparse_on_every_argv_shape(repo_root, monkeypatch, capsys):
+    """T1.56 — with `_YAML_IMPORT_ERROR` monkeypatched to a fake
+    ImportError, no argv shape (valid, invalid/forbidden-flag, or
+    --not-applicable) reaches a parser or emits a document. Proves P0
+    precedes argparse (exit 1 dominates exit 2) unconditionally."""
+    monkeypatch.setattr(cli, "_YAML_IMPORT_ERROR", ImportError("no module named 'yaml'"))
+
+    valid_argv = _base_argv(repo_root)
+    forbidden_argv = ["--agent", AGENT_NAME, "--not-applicable", "x", "--settings", "/tmp/x.json"]
+    not_applicable_argv = ["--agent", AGENT_NAME, "--not-applicable", "x"]
+
+    for argv in (valid_argv, forbidden_argv, not_applicable_argv):
+        rc = cli.main(argv, repo_root=repo_root)
+        captured = capsys.readouterr()
+        assert rc == 1, f"argv={argv!r} returned {rc}, expected 1"
+        assert captured.out == "", f"argv={argv!r} produced stdout: {captured.out!r}"
+        stderr_lines = [line for line in captured.err.splitlines() if line.strip()]
+        assert len(stderr_lines) == 1, f"argv={argv!r} stderr: {captured.err!r}"
+        assert stderr_lines[0].startswith("agent_invoke: "), stderr_lines[0]
+        assert "Traceback" not in captured.err
+
+
+# --------------------------------------------------------------------------- #
+# ADR-1643 §10.3 — the two source tests the architect's ruling requires,
+# beyond T1.50-T1.56.
+# --------------------------------------------------------------------------- #
+
+
+def test_l2_never_references_invoke_agent_python():
+    """§10.3 condition 2 — L2's only consumer of INVOKE_AGENT_PYTHON is L3
+    rung 1; agent_invoke_cli.py must contain no reference to it, for any
+    purpose, including diagnostics."""
+    source = Path(cli.__file__).read_text()
+    assert "INVOKE_AGENT_PYTHON" not in source
+
+
+def test_no_committed_non_test_caller_sets_invoke_agent_python():
+    """§10.3 condition 3 — INVOKE_AGENT_PYTHON is a human/diagnostic/test
+    seam only: it must not appear in bin/hos-cron, the sweep runner, any
+    committed script, any workflow, any posture file's environment
+    passthrough, or any installed consumer artifact. Pinned mechanically
+    (repo-wide grep) so the reachability argument — that a
+    `VAR=... bash bootstrap/invoke_agent.sh ...` command string does not
+    match the `Bash(bash bootstrap/invoke_agent.sh *)` allowlist rule —
+    stays true over time, not just on the day it was written."""
+    repo_root = Path(__file__).resolve().parents[2]
+    wrapper_path = repo_root / "bootstrap" / "invoke_agent.sh"
+    allowed_dirs = (repo_root / "tests", repo_root / "docs")
+
+    result = subprocess.run(
+        ["git", "grep", "-l", "-F", "INVOKE_AGENT_PYTHON"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode not in (0, 1):
+        pytest.skip(f"git grep unavailable: {result.stderr}")
+
+    hits = [repo_root / line for line in result.stdout.splitlines() if line.strip()]
+    offenders = [
+        p
+        for p in hits
+        if p != wrapper_path and not any(str(p).startswith(str(d) + os.sep) for d in allowed_dirs)
+    ]
+    assert not offenders, (
+        f"INVOKE_AGENT_PYTHON referenced outside the wrapper/test/doc seam: {offenders} — "
+        "it must remain a human/diagnostic/test-only override (ADR-1643 §10.3 condition 3)"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# ADR-1643 §10.3 condition 4 — invocation.interpreter / interpreter_version
+# --------------------------------------------------------------------------- #
+
+
+def test_invocation_records_interpreter_fields_on_a_completed_document(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """§10.3 condition 4 — recorded beside `cli_version`, for the same
+    reason: TD-D22's ladder makes the interpreter that runs this process
+    vary by host, so every record must say which one ran."""
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+    assert doc["invocation"]["interpreter"] == sys.executable
+    assert doc["invocation"]["interpreter_version"] == platform.python_version()
+
+
+def test_invocation_records_interpreter_fields_on_a_preflight_failure_document(repo_root, capsys):
+    """The interpreter is known even when no subprocess is ever launched
+    (unlike `cli_version`, which requires a `claude --version` subprocess) —
+    so a preflight-failure document (here: agent_unavailable) still carries
+    it."""
+    rc = cli.main(["--agent", "no-such-agent-xyz", "--not-applicable", "x"], repo_root=repo_root)
+    doc = _record(capsys)
+    assert rc == 0
+    assert doc["outcome_detail"] == "agent_unavailable"
+    assert doc["invocation"]["interpreter"] == sys.executable
+    assert doc["invocation"]["interpreter_version"] == platform.python_version()
+
+
+def test_invocation_records_interpreter_fields_on_a_not_applicable_document(
+    repo_root, monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    rc = cli.main(["--agent", AGENT_NAME, "--not-applicable", "x"], repo_root=repo_root)
+    doc = _record(capsys)
+    assert rc == 0
+    assert doc["invocation"]["interpreter"] == sys.executable
+    assert doc["invocation"]["interpreter_version"] == platform.python_version()

@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,16 +88,82 @@ def test_agent_unavailable_is_exit_0_with_a_document_not_a_silent_failure():
     assert doc["verdict"] == "error"
 
 
-def test_python3_missing_is_exit_1_with_stderr_message(tmp_path):
-    # A PATH with no python3 on it at all — invoke_agent.sh's own P2 check.
+def test_no_python3_on_path_still_succeeds_via_the_oversight_venv(tmp_path):
+    """T1.50 (Amendment A, ADR-1643 §10.6). **REVERSES** the prior
+    expectation of this test (formerly
+    `test_python3_missing_is_exit_1_with_stderr_message`, which asserted
+    exit 1 whenever PATH carried no `python3`): under TD-D22's three-rung
+    ladder, rung 2 (`scripts/oversight/.venv/bin/python`, present in this
+    real checkout) resolves an absolute interpreter path, so an empty PATH
+    is irrelevant. Do NOT "fix" this back to expecting exit 1 — that
+    expectation is what #1720 shipped against and it was wrong."""
+    # A PATH carrying no python3 — but the script's own non-ladder line
+    # (`dirname` in the SCRIPT_DIR resolution) needs to keep resolving, so
+    # the stub only omits python/python3, not every coreutil.
     stub_bin = tmp_path / "stub_bin"
     stub_bin.mkdir()
+    dirname_real = shutil.which("dirname")
+    assert dirname_real, "dirname must be on the test host's PATH"
+    (stub_bin / "dirname").symlink_to(dirname_real)
     env = os.environ.copy()
     env["PATH"] = str(stub_bin)
+    env.pop("INVOKE_AGENT_PYTHON", None)
+    result = _run(["--agent", REAL_AGENT, "--not-applicable", "x"], env=env)
+    assert result.returncode == 0
+    doc = json.loads(result.stdout.splitlines()[0])
+    assert doc["applicability"] == "not_applicable"
+
+
+def test_invoke_agent_python_non_executable_override_is_exit_1(tmp_path):
+    """T1.51 — a set-but-not-executable override is a hard error, never a
+    silent fall-through to rung 2."""
+    non_exec = tmp_path / "not-a-real-interpreter"
+    non_exec.write_text("not a real interpreter\n")
+    env = os.environ.copy()
+    env["INVOKE_AGENT_PYTHON"] = str(non_exec)
     result = _run(["--agent", REAL_AGENT, "--not-applicable", "x"], env=env)
     assert result.returncode == 1
     assert result.stdout == ""
-    assert "python3" in result.stderr
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(stderr_lines) == 1, f"expected exactly one stderr line, got: {result.stderr!r}"
+    assert "INVOKE_AGENT_PYTHON" in stderr_lines[0]
+
+
+def test_invoke_agent_python_without_pyyaml_fails_closed_no_traceback(tmp_path):
+    """T1.52 — the test that would have caught #1720. An interpreter that
+    can start but cannot import PyYAML must fail via P0 (TD-D23): exit 1,
+    empty stdout, one stderr line naming PyYAML, the interpreter path, and
+    ensure_venv.sh — never an uncaught ModuleNotFoundError traceback. This
+    is the consumer-host contract (§3.9) executed directly: after
+    `hos_install.sh`, a consumer host has scripts/oversight/ but no .venv,
+    so the ladder lands on rung 3, and an unfit rung-3 interpreter must
+    reproduce exactly this."""
+    venv_dir = tmp_path / "no-yaml-venv"
+    created = subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv_dir)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"venv creation unavailable in this environment: {created.stderr}")
+    interpreter = venv_dir / "bin" / "python"
+    if not interpreter.exists():
+        pytest.skip("venv interpreter not found after creation")
+
+    env = os.environ.copy()
+    env["INVOKE_AGENT_PYTHON"] = str(interpreter)
+    result = _run(["--agent", REAL_AGENT, "--not-applicable", "x"], env=env)
+
+    assert result.stdout == "", f"expected empty stdout, got: {result.stdout!r}"
+    assert result.returncode == 1
+    assert result.returncode not in (0, 2, 3)
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(stderr_lines) == 1, f"expected exactly one stderr line, got: {result.stderr!r}"
+    assert "PyYAML" in stderr_lines[0]
+    assert str(interpreter) in stderr_lines[0]
+    assert "ensure_venv.sh" in stderr_lines[0]
+    assert "Traceback" not in result.stderr
 
 
 def test_flags_pass_through_unaltered_dimension_and_binding():
@@ -127,12 +194,20 @@ def test_stderr_is_never_suppressed_on_a_usage_error():
     assert result.stderr.strip() != ""
 
 
-@pytest.mark.skipif(shutil.which("python3") is None, reason="direct comparison needs python3")
 def test_stdout_is_byte_identical_to_direct_module_invocation():
-    wrapper = _run(["--agent", REAL_AGENT, "--not-applicable", "byte-identity check"])
+    """Both sides MUST run under the same interpreter (Amendment A,
+    ADR-1643 §10.6): the prior version of this test shelled the wrapper
+    (whatever `python3` rung it happened to resolve) against a bare
+    `python3` on the direct side — two different interpreters, which is
+    why it was a second casualty of #1720. Pinning both sides to
+    `sys.executable` via `INVOKE_AGENT_PYTHON` tests L3's passthrough
+    contract, not the host's PATH."""
+    env = os.environ.copy()
+    env["INVOKE_AGENT_PYTHON"] = sys.executable
+    wrapper = _run(["--agent", REAL_AGENT, "--not-applicable", "byte-identity check"], env=env)
     direct = subprocess.run(
         [
-            "python3",
+            sys.executable,
             str(CLI_MODULE),
             "--agent",
             REAL_AGENT,

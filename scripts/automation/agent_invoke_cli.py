@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -58,7 +59,21 @@ _REPO_ROOT_STR = str(_DEFAULT_REPO_ROOT)
 if _REPO_ROOT_STR not in sys.path:
     sys.path.insert(0, _REPO_ROOT_STR)
 
-import yaml  # noqa: E402
+# TD-D23 (Amendment A, ADR-1643 §10.5) — P0's guarded import. This is the
+# fail-closed inverse of scripts/automation/lib/config_resolver.py's
+# tolerant `try: import yaml / except ImportError: yaml = None` idiom
+# (TD-VF-10 forbids copying that idiom here): the sentinel exists so a
+# missing runtime dependency can be reported precisely by main()'s P0, never
+# so a code path can silently continue without it. This sentinel's ONLY
+# consumer is P0, below (main()) — pinned by test T1.53. `_parse_frontmatter`
+# must NEVER gain a branch on it.
+try:
+    import yaml  # noqa: E402
+
+    _YAML_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # pragma: no cover — exercised via a rung-3 override, not this process
+    yaml = None  # type: ignore[assignment]
+    _YAML_IMPORT_ERROR = exc
 
 # ---------------------------------------------------------------------------
 # Module constants (TD §3.1 member 6)
@@ -1019,6 +1034,20 @@ def _capture_cli_version() -> str | None:
     return text or None
 
 
+def _interpreter_fields() -> dict:
+    """ADR-1643 §10.3 condition 4 — recorded beside `cli_version`, for the
+    same reason: TD-D22's ladder makes the interpreter that runs this
+    process vary by host, so every record must say which one ran. Present
+    in every invocation block regardless of outcome, because the process
+    running right now always knows its own interpreter, unlike `cli_version`
+    (which requires a subprocess launch that a preflight failure never
+    reaches). No decision anywhere reads either field (AD-8)."""
+    return {
+        "interpreter": sys.executable,
+        "interpreter_version": platform.python_version(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -1033,6 +1062,21 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
     `repo_root` is a test-only injection point: `argparse` never defines it
     and the `__main__` block never populates it from `sys.argv`.
     """
+    # P0 (TD-D23, ADR-1643 §10.5) — checked FIRST, before argparse runs and
+    # before anything else in this function, so exit 1 dominates exit 2 on
+    # every path (T1.56: valid argv, a forbidden flag, and --not-applicable
+    # all take this branch identically). A missing PyYAML means the #608
+    # anti-confusion check (P4) cannot run, so this module must not emit a
+    # document claiming anything was attempted — never a traceback, nothing
+    # on stdout, no exception permitted to reach argparse.
+    if _YAML_IMPORT_ERROR is not None:
+        print(
+            "agent_invoke: error: PyYAML is required to verify agent frontmatter "
+            f"but is not importable by {sys.executable} — run: bash scripts/oversight/ensure_venv.sh",
+            file=sys.stderr,
+        )
+        return 1
+
     resolved_root = Path(repo_root).resolve() if repo_root is not None else _DEFAULT_REPO_ROOT
     real_argv = sys.argv[1:] if argv is None else list(argv)
 
@@ -1130,6 +1174,7 @@ def _build_invocation_block(
         "model": model_value,
         "model_source": model_source,
         "cli_version": cli_version,
+        **_interpreter_fields(),
         "num_turns": envelope.get("num_turns"),
         "session_id": envelope.get("session_id"),
         "usage": envelope.get("usage"),
@@ -1449,6 +1494,7 @@ def _emit_preflight_document(
         "model": None,
         "model_source": None,
         "cli_version": None,
+        **_interpreter_fields(),
         "num_turns": None,
         "session_id": None,
         "usage": None,
@@ -1529,6 +1575,7 @@ def _emit_not_applicable(
         "model": None,
         "model_source": None,
         "cli_version": None,
+        **_interpreter_fields(),
         "num_turns": None,
         "session_id": None,
         "usage": None,
