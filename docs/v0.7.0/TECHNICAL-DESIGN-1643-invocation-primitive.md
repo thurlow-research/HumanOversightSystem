@@ -7,7 +7,21 @@ Three findings contradict or cannot implement the ADR as written and are raised 
 bump a merge stopper), **TD-F3** (REQ-A4's pre-invocation auth check cannot be performed — auth is not
 observable before launch when it comes from the keychain). Each is an **ESC** in §12. Everything else
 below is designed to be implementable without further design questions.
-**Date:** 2026-09-14
+
+> **AMENDED 2026-09-16 — Amendment A (interpreter fitness). Binding on W1.** PR #1720 was bounced with a
+> red `tests` check: `bootstrap/invoke_agent.sh` ended in a bare-PATH `exec python3 …`, and
+> `agent_invoke_cli.py` imports `yaml` at module scope, so every wrapper test that shells out died with
+> `ModuleNotFoundError: No module named 'yaml'` under CI's `setup-python` 3.12 (PyYAML is declared only in
+> `scripts/oversight/requirements.txt` and lives only in `scripts/oversight/.venv`). The same bare
+> `python3` breaks this canonical entry point on **any** host whose system interpreter lacks PyYAML —
+> including a consumer project after `bootstrap/hos_install.sh`, which ships `scripts/oversight/` but
+> deliberately builds **no** venv. **This design said the wrong thing**: §3.9 step 2 required the
+> *presence* of an interpreter, never its *fitness* to run L2. The ruling is **TD-D22** (§3.9, L3 resolves
+> the interpreter) + **TD-D23** (§3.4 P0, L2 fails closed on its own missing runtime dependency), with
+> §3.3, §8, §9.1 and §13 amended to match. A coder implementing §3.9 without Amendment A will reproduce
+> the defect.
+
+**Date:** 2026-09-14 (original), amended 2026-09-16 (Amendment A)
 **Iteration:** 1 of 5
 **Author:** technical-design
 **Binding inputs:** `docs/v0.7.0/ADR-1643-deterministic-agent-invocation.md` (AD-1…AD-16 BINDING);
@@ -580,7 +594,7 @@ Vocabulary is #1641's, unchanged (AD-1). **The pass/fail of the review is never 
 | Code | Meaning | Emits a document? |
 |---|---|---|
 | **0** | The invocation was attempted and a conforming AD-6 document was produced — whatever it says. Includes every `outcome: invocation_failed` case and every `verdict: request_changes`. | **Yes**, on stdout. |
-| **1** | Operational failure of the primitive itself: it could not emit a document. Only these causes: repo root unresolvable (`.claude/agents/` absent under the computed root); `--output-file` unwritable; a `json.dumps` failure; an unhandled exception caught at the top level. One machine-stable single line on **stderr**, prefixed `agent_invoke: `. | No. |
+| **1** | Operational failure of the primitive itself: it could not emit a document. Only these causes: **a declared module-level third-party runtime dependency of L2 is not importable by the interpreter that started it (P0, §3.4 — Amendment A)**; repo root unresolvable (`.claude/agents/` absent under the computed root); `--output-file` unwritable; a `json.dumps` failure; an unhandled exception caught at the top level. One machine-stable single line on **stderr**, prefixed `agent_invoke: ` — a traceback is never an acceptable rendering of any of these. **L3 owns two further exit-1 causes of its own** (no interpreter resolvable; `INVOKE_AGENT_PYTHON` set to a non-executable path), prefixed `invoke_agent.sh: ` (§3.9). | No. |
 | **2** | Usage error: unknown/forbidden flag, missing required flag, `--agent`/`--posture` failing the name grammar, `--timeout`/`--grace` out of range, `--input-file` missing/empty/not-UTF-8, `--not-applicable` combined with `--input-file`, a `--posture` that has no code-side counterpart (§3.6). One line on stderr, prefixed `agent_invoke: `. | No. |
 | **3** | **Never produced by this surface.** Reserved, as in `merge_authority.sh`. | — |
 
@@ -595,6 +609,7 @@ posture name** is exit 2 (that is a caller programming error, not an environment
 
 | # | Check | Failure |
 |---|---|---|
+| **P0** | **(Amendment A, TD-D23)** Every module-level third-party import of L2 succeeded — today exactly one, `yaml`. Checked **first, before `argparse` runs**, so exit 1 dominates exit 2 | exit **1** |
 | P1 | Repo root = `Path(__file__).resolve().parents[2]` (or the injected `repo_root`); `<root>/.claude/agents/` is a directory | exit **1** |
 | P2 | `--agent` matches `^[a-z][a-z0-9-]*$` | exit **2** |
 | P3 | `<root>/.claude/agents/<agent>.md` exists, is a regular file, and is non-empty | document, `agent_unavailable` |
@@ -603,6 +618,40 @@ posture name** is exit 2 (that is a caller programming error, not an environment
 | P6 | `--input-file` exists, is a regular file, is non-empty, decodes as UTF-8 | exit **2** |
 | P7 | `--require-env-auth` given ⟹ `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is set and non-empty | document, `not_authenticated` |
 | P8 | `shutil.which("claude")` resolves | document, `cli_unavailable` |
+
+**TD-D23 (Amendment A, mine) — P0: a missing runtime dependency is the primitive failing to run, not an
+invocation outcome.** `yaml` is used in exactly one place — `_parse_frontmatter`, feeding P4's `name:`
+equality check, i.e. the #608 anti-confusion check on a governance surface. An interpreter that cannot
+perform that check cannot be trusted to have performed anything else this module claims, so it must not
+emit a document at all. Binding rules:
+
+1. **The import is guarded, and the guard's only consumer is P0.** Module scope becomes
+   `try: import yaml / except ImportError as exc: yaml = None; _YAML_IMPORT_ERROR = exc / else:
+   _YAML_IMPORT_ERROR = None`. This preserves §3.1's "importing this module performs no I/O" and it is
+   the *fail-closed* inverse of `config_resolver.py`'s tolerant idiom TD-VF-10 forbids copying: the
+   sentinel exists so the failure can be **reported precisely**, never so a code path can continue
+   without it.
+2. **`main()` checks `_YAML_IMPORT_ERROR is not None` as its first statement**, before `argparse`,
+   before P1, and returns **1** after writing exactly one line to stderr:
+   `agent_invoke: error: PyYAML is required to verify agent frontmatter but is not importable by
+   <sys.executable> — run: bash scripts/oversight/ensure_venv.sh`. The interpreter path is in the message
+   because *which interpreter got chosen* is the whole diagnosis for this defect class. One line; never a
+   traceback; nothing on stdout.
+3. **Prohibited, and pinned by a source test (§9.1 T1.53):** no other code path may test the sentinel.
+   `_parse_frontmatter` must not gain an `if yaml is None` branch, and a missing PyYAML must **never**
+   produce `agent_unavailable`, `posture_invalid`, `schema_violation`, an exit-0 document, or an exit 2.
+   Those would each be a *different defect's* label attached to a deployment fault — the silent-wrong-
+   answer failure mode this whole design exists to prevent.
+4. **Why exit 1 and not a document** (the `cli_unavailable` analogy is the wrong one): a missing `claude`
+   binary is a property of the environment the primitive *drives*, so a record saying "the check did not
+   happen" is exactly right. A missing PyYAML is a property of the interpreter running the primitive
+   *itself* — the same class as §3.9's long-standing "no `python3` ⟹ exit 1" — and a `verdict: error`
+   document would assert that a review was attempted when none was. Exit 1 is already defined as
+   "operational failure of the primitive itself"; this is one, and it routes to the operator (Q1's
+   `HUMAN_REQUIRED` path for operational failure) rather than into the review record.
+5. **This generalises.** The rule is stated over *every* module-level third-party import, not over
+   `yaml` specifically, so the next such import inherits the precondition instead of re-learning it
+   (§9.1 T1.54 makes that mechanical).
 
 **TD-D3 rationale (P4).** AD-3 requires only existence. A file that exists but declares a different
 `name:` is a governance hole of the same family as #608 — the caller believes it invoked
@@ -845,21 +894,78 @@ for is preserved exactly — #669 and #1362 were both *value*-level fail-opens, 
 
 Copies `bootstrap/merge_authority.sh`'s proven shape (AF-1) and its header conventions verbatim.
 
-**Behaviour, exactly four steps, no logic beyond them:**
+**Behaviour, exactly four steps, no logic beyond them** (step 2 rewritten by **Amendment A / TD-D22**):
 1. `set -euo pipefail`; resolve `SCRIPT_DIR` / `REPO_ROOT` from `BASH_SOURCE`.
-2. Verify `python3` is on `PATH`; if not, exit 1 with one stderr line.
-3. `exec python3 "$REPO_ROOT/scripts/automation/agent_invoke_cli.py" "$@"`.
+2. **Resolve the interpreter** with this fixed three-rung ladder, in this order, and no other rung:
+   1. `$INVOKE_AGENT_PYTHON`, when set and non-empty. If it is set but not executable ⟹ exit **1**, one
+      stderr line naming the variable and the path. (Diagnostic/test override only; §9.1 uses it as the
+      only seam that can reach rung 3 inside a checkout that has a venv. **L2 must never read it.**)
+   2. `$REPO_ROOT/scripts/oversight/.venv/bin/python`, when executable — the venv
+      `scripts/oversight/requirements.txt` (which declares `PyYAML>=6.0`) is installed into by
+      `scripts/oversight/ensure_venv.sh`. This is the repo's established idiom
+      (`run_gates.sh:36-42`, `prompt_audit.sh:22`, `cut_release.sh:35`, `django_check.sh`).
+   3. `python3` from `PATH`, when `command -v` finds it. Safe as a last rung **only because** L2's P0
+      (§3.4) fails closed on it — it is not a silent degradation path.
+   4. None of the three ⟹ exit **1**, one stderr line containing the substring `python3`, naming all
+      three rungs and pointing at `bash scripts/oversight/ensure_venv.sh`.
+3. `exec "$PYTHON" "$REPO_ROOT/scripts/automation/agent_invoke_cli.py" "$@"`.
 4. There is no step 4.
+
+**TD-D22 (Amendment A, mine) — interpreter resolution belongs in L3, and AD-1 does not prohibit it.**
+AD-1's prohibition, quoted in this script's own header, has two clauses and interpreter resolution is
+outside both: it is not *"a JSON literal, a `printf`/`echo` to stdout, or any re-derivation of a field"*
+(it produces no field and writes nothing to stdout), and it is not *"a `case` statement, a flag of its
+own, or any validation/default/re-derivation of a caller-supplied flag"* (it never reads `$@`, never
+branches on a caller argument, and adds no flag). It is **launch**, which under #314's standing policy —
+*"prefer Python for logic, shell for launch"*, the very policy AD-1 cites to justify the L2/L3 split — is
+precisely and only what L3 is for. §3.9 step 2 has always contained an interpreter `if`; TD-D22 corrects
+*which* interpreter it selects, and does not widen its category. **L2 structurally cannot make this
+choice: by the time L2 runs, the interpreter has already been chosen.** The ladder is the maximum L3 may
+grow: three rungs over interpreter paths, plus the two error lines. Anything else is still forbidden.
+
+*Rejected alternatives, recorded so they are not re-proposed.* **(a) Declare PyYAML in the CI test
+environment.** Fixes the `tests` check and nothing else: the consumer host still breaks, and — decisively
+— it would make the bare-`python3` path **green in CI**, masking this exact defect class from the only
+place that would catch it. `.github/workflows/tests.yml` must therefore **not** gain a PyYAML install
+(§9.1 T1.55 pins that). **(b) Drop the `yaml` dependency and parse the frontmatter by hand.** Rejected on
+AGENTS.md's *"Use the Code, Don't Roll It Yourself"* and, more sharply, on the security posture of the
+check itself: P4 is an anti-confusion check, so a parser that disagrees with PyYAML on *any* input
+(quoting, block scalars, tags, duplicate keys, BOM, tabs) yields an agent file that the `claude` CLI's own
+reader and our governance check resolve **differently** — the #608 hole reopened from a new direction, in
+exchange for saving two lines. **(c) Hard-code the venv interpreter with no ladder** (the
+`prompt_audit.sh` idiom). Still needs an `-x` guard (a bare `exec` on an absent path exits **127**, a code
+outside this surface's 0/1/2/3-reserved vocabulary), so it is not actually simpler, and it fails on a host
+whose system interpreter legitimately carries PyYAML.
 
 **What it must never do:** mint or revoke a token (this surface performs no GitHub I/O — AD-1); compose or
 emit any JSON; print anything to stdout; suppress stderr (#1523); re-derive, default, or validate any
-flag; add a flag of its own; grow a `case` statement. **Its header must state, as
+flag; add a flag of its own; grow a `case` statement; **build, repair, or `pip install` into the venv**
+(a review invocation must never mutate its own environment as a side effect — `ensure_venv.sh` is the
+operator's call, *named* in the error message and never *invoked* here); **consult
+`$INVOKE_AGENT_PYTHON` for any purpose other than ladder rung 1**; **branch on any element of `$@`**.
+**Its header must state, as
 `merge_authority.sh`'s does, that it must never grow a JSON literal, a `printf`/`echo` to stdout, or any
 re-derivation of a field** — adding a document field is a change to `agent_invoke_cli.py` alone.
 
 Because every flag is `--name value`, the argv shape is fixed and statically allowlistable as
 `Bash(bash bootstrap/invoke_agent.sh *)`. That is the reason L3 exists at all (AD-1); it is ~40 lines and
-must not grow.
+must not grow. **TD-D22's ladder does not change that shape** — it branches only on interpreter paths, so
+the allowlistable argv is byte-for-byte what it was. Note the corollary for `$INVOKE_AGENT_PYTHON`: an
+`VAR=… bash bootstrap/invoke_agent.sh …` command string does **not** match that allowlist rule, so the
+override is not reachable through the allowlisted surface; it is an operator/test seam, and it widens no
+trust boundary (anyone who can set it can already invoke `agent_invoke_cli.py` directly).
+
+**The consumer-host contract (Amendment A), stated once so it is not re-derived.** After
+`bootstrap/hos_install.sh`, a consumer has `scripts/oversight/` (including `ensure_venv.sh` and
+`requirements.txt`) but **no `.venv`** — the installer excludes it deliberately, because a venv is
+absolute-path-bound to the source tree. On such a host the ladder therefore lands on rung 3, and if that
+interpreter lacks PyYAML the invocation **must** produce: exit **1**; **empty stdout** (no document, no
+partial JSON); **one** stderr line, P0's, naming the interpreter and `bash scripts/oversight/ensure_venv.sh`;
+no traceback; and no side effect of any kind. Exit `3` stays reserved and unused, exit `0` and exit `2`
+are unreachable on this path, and a caller that reads only the exit code fails closed. (Today the reach is
+narrower than it will be: TD-VF-6 records that `scripts/automation/**` is not in the consumer ship-set, and
+`bootstrap/invoke_agent.sh` is not in `framework_consumer_files.txt` either, so no consumer receives this
+surface yet. §12 ESC-E owns that decision; this contract is what must already be true when it is made.)
 
 ---
 
@@ -1883,7 +1989,10 @@ One table, so a coder never has to infer which surface owns a failure.
 | Agent payload fails strict parse | L2 invoke | 0 | yes | `schema_violation` |
 | `token_tracker` / audit write failed | L2 invoke | unchanged | yes | unchanged; `observability.*` records it |
 | Any loader rule L1–L21 | L2 registry | 1 | no (one stderr line) | — |
-| `python3` absent | L3 | 1 | no | — |
+| No interpreter resolvable (all three TD-D22 rungs miss) | L3 | 1 | no (one stderr line, contains `python3`) | — |
+| `INVOKE_AGENT_PYTHON` set but not executable | L3 | 1 | no (one stderr line) | — |
+| `python3` absent from `PATH` but the oversight venv is present | L3 | **as normal** | **yes** — rung 2 resolves; `PATH` is irrelevant to an absolute interpreter path | — |
+| A module-level third-party import of L2 fails (P0 — e.g. PyYAML absent on a consumer host) | L2 invoke | 1 | no (one stderr line naming `sys.executable`; **never a traceback**) | — |
 
 **Never** is a review's pass/fail an exit code. It is the `verdict` field, read by the caller.
 
@@ -1951,6 +2060,27 @@ pipes.
 period and `os.killpg` is called with the child's **process group**, not its pid; a child that spawns a
 grandchild leaves no live grandchild after the cap fires; `invocation.stdout_partial` is populated and
 truncated to 4 KiB on a timeout.
+
+**Interpreter fitness (T1.50–T1.56, Amendment A) — the regression fence for the #1720 defect class.**
+The defect was *not* "CI lacked a package"; it was **an entry point that ran under an interpreter unfit
+to run it, and said so only by traceback**. Tests must pin the class, not the instance.
+
+| # | Test | Asserts | File |
+|---|---|---|---|
+| T1.50 | `PATH` contains **no** `python3`, no override, oversight venv present (the real checkout) | exit **0** and one JSON document — rung 2 resolves an absolute path and `PATH` is irrelevant. **This replaces the current `test_python3_missing_is_exit_1_with_stderr_message` expectation**, which becomes wrong under TD-D22 | wrapper |
+| T1.51 | `INVOKE_AGENT_PYTHON` = a non-existent / non-executable path | exit **1**, `stdout == ""`, exactly one stderr line naming the variable | wrapper |
+| T1.52 | **`INVOKE_AGENT_PYTHON` = an interpreter without PyYAML** — built in `tmp_path` via `python3 -m venv --without-pip` (skip if venv creation is unavailable) | exit **1**; `stdout == ""` (no document, no partial JSON); stderr is **one** line containing `PyYAML`, the interpreter path, and `ensure_venv.sh`; stderr contains **no** `Traceback`; the exit code is neither 0 nor 2 nor 3. **This is the consumer-host contract (§3.9) executed, and the test that would have caught #1720** | wrapper |
+| T1.53 | **Source-level:** the yaml-unavailability sentinel (`_YAML_IMPORT_ERROR` / `yaml is None`) appears in `agent_invoke_cli.py` **only** in the module import block and in `main()`'s P0; `_parse_frontmatter` contains no `yaml is None` branch | fails otherwise. Same idiom as T2.8's `load_ledger` fence — it is what stops P0 decaying into a fail-open | cli |
+| T1.54 | **Source-level, generalised:** every module-level `import`/`from` in `agent_invoke_cli.py` whose top-level name is not in `sys.stdlib_module_names` and is not a first-party `scripts.*` path is declared in `scripts/oversight/requirements.txt` | fails otherwise — the *next* third-party import inherits the precondition instead of re-learning it | cli |
+| T1.55 | `.github/workflows/tests.yml` contains no PyYAML/`requirements.txt` install into the `setup-python` environment (only `ensure_venv.sh`) | fails otherwise — TD-D22 rejected alternative (a): satisfying the dependency in the system interpreter would make the bare-`python3` path green and mask this class | workflow/source |
+| T1.56 | `main()` with `_YAML_IMPORT_ERROR` monkeypatched to a fake `ImportError`, run three ways: valid argv, **invalid argv** (a forbidden flag), and `--not-applicable` | all three ⟹ exit **1**, one `agent_invoke: ` stderr line, **no** document on any of them. Proves P0 precedes argparse (1 dominates 2) and that no path emits a record under an unfit interpreter | cli |
+
+Two existing tests change rather than being added, and a reviewer must see both as *expectation* changes:
+**T1.50** (above) and the byte-identity test, which currently shells the wrapper *and* a bare `python3`
+side by side — two different interpreters, which is why it was a second casualty of #1720. It must pin
+**both** sides to one interpreter: the direct side runs `sys.executable`, the wrapper side runs with
+`INVOKE_AGENT_PYTHON` set to `sys.executable`. Only then is it testing L3's passthrough rather than the
+host's `PATH`.
 
 ### 9.2 W2 — the result document
 
@@ -2164,9 +2294,38 @@ technical design, before any code was written against it?"*
   session, so the guess is visible as a guess rather than inherited as a fact.
 - **`--max-budget-usd` (ESC-H).** No — it is a newly-observed CLI capability, not a gap in a prior
   artifact. Recorded, not escalated as a gap.
-- **Nothing else.** W1–W5 are all new build. **No code has been approved against any contract this
-  document changes, so no prior sign-off is invalidated by anything in it.** That will stop being true
-  the moment W1 lands, which is why ESC-A and ESC-B are raised now rather than after.
+- **Interpreter fitness (Amendment A, 2026-09-16).** **Yes — this is a genuine `startup-artifact-gap`,
+  and the first one in this design with code already written against it.** §3.9 step 2 required the
+  *presence* of an interpreter and never its *fitness* to run L2, even though §0.1 TD-VF-10 had already
+  observed that PyYAML is available **on this host** and warned about the wrong import idiom — an
+  observation that should have become a precondition and did not. W1 was then built exactly to the
+  contract as written, which is why the defect is the design's and not the coder's. **Recommend a
+  `startup-artifact-gap` issue** (filed by the orchestrating session, per this section's standing
+  practice), citing #1720's red `tests` check and naming the general form: *a canonical entry point must
+  state which interpreter satisfies its declared dependencies, and must fail closed in one line when none
+  does.* **Affected-sign-offs analysis:**
+  - **Stand, unchanged** — nothing in their contract moved: §3.3's exit-0/exit-2 semantics; §3.4 P1–P8;
+    §3.5's launch contract and reaping; §3.6's posture validation V1–V11; §3.7's classifier and
+    precedence; §4's document schema, `input_digest`, and round-trip obligations. Code approved against
+    any of those is **not** orphaned.
+  - **Orphaned until re-reviewed against the amended contract** — `bootstrap/invoke_agent.sh` (behaviour
+    change: interpreter selection, a new environment-controlled input, two new error lines; it is also
+    `bootstrap/**` protected surface, so a human gate re-fires on it regardless) and the import block +
+    `main()` entry of `scripts/automation/agent_invoke_cli.py` (new P0, new exit-1 cause). Those hunks
+    need `code-reviewer` **and** `security-reviewer`; the security lens specifically on
+    `INVOKE_AGENT_PYTHON` as a new operator-settable input to a governance surface (see §3.9 for why it
+    is unreachable through the allowlisted argv shape and widens no trust boundary — that argument is to
+    be *checked*, not inherited).
+  - **Re-read, not merely re-run** — `tests/automation/test_agent_invoke_wrapper.py`: T1.50 *reverses*
+    an existing test's expectation (a `PATH` with no `python3` is no longer fatal). Any sign-off that
+    read that test as evidence of fail-closed behaviour was reading a property that has moved to P0, and
+    must confirm it there.
+- **Nothing else.** W1–W5 are all new build. As of the original draft, no code had been approved against
+  any contract this document changed, so no prior sign-off was invalidated by it — and the draft noted
+  that this *"will stop being true the moment W1 lands"*. **It has: W1 landed as `60360661` / PR #1720,
+  and Amendment A is the first change to this document with code already written against the clause it
+  corrects.** The bullet above is therefore the live affected-sign-offs analysis, not a hypothetical one;
+  every further amendment must carry its own.
 
 ---
 
@@ -2234,3 +2393,56 @@ reviewed build artifact, and `technical-design` writes no register entry); no is
 write made (the ESCs in §12 name what the orchestrating session should file); no architect approval — this
 is **iteration 1 of 5 and it is requesting architect review now**, with ESC-A, ESC-B, ESC-C, ESC-D and
 ESC-J as the blocking items.
+
+---
+
+## Human Review Required — Amendment A (2026-09-16, interpreter fitness)
+
+**RISK: MEDIUM.** Amendment A changes a protected-surface launch script (`bootstrap/**`) on the path every
+future AI review will be invoked through, and adds one precondition to L2. It reverses no existing
+contract: exit-0 semantics, the classifier, the posture rules and the document schema are untouched. The
+failure mode it closes is the one this design is most concerned with — an entry point that is *unfit to
+run* announcing itself as a Python traceback on some hosts and as a red CI check on others, rather than as
+one machine-readable line. The residual risk it introduces is the ladder's rung 1: a new
+environment-controlled input (`INVOKE_AGENT_PYTHON`) on a governance surface, argued in §3.9 to be
+unreachable through the allowlisted argv shape and to widen no trust boundary — **an argument for
+`security-reviewer` to check, not to inherit.** The second-order risk is scope creep in L3: TD-D22 states
+the ladder is the maximum L3 may grow, because "it is only launch logic" is exactly how a wrapper that
+must not grow, grows.
+
+**CONFIDENCE:**
+- **HIGH on the diagnosis.** The failure is deterministic and was reproduced twice on the same commit;
+  the dependency path (`import yaml` at `agent_invoke_cli.py:61` → `_parse_frontmatter` → P4 → the #608
+  check), the declaration site (`scripts/oversight/requirements.txt:17`), the CI topology (`setup-python`
+  3.12 vs. a venv built in the same job and hard-required by `run_tests.sh:75`), and the installer's
+  deliberate venv exclusion (`hos_install.sh:1862`) were each read at source this session.
+- **HIGH on TD-D22's AD-1 ruling.** AD-1's two prohibitions are quoted verbatim in the script's own
+  header; interpreter resolution falls outside both by their own wording, and §3.9 step 2 already
+  contained an interpreter `if` that no review treated as a violation.
+- **HIGH on TD-D23's exit-1 ruling.** It follows from §3.3's existing definition and from the distinction
+  between the environment the primitive *drives* (`cli_unavailable`, a document) and the interpreter
+  running the primitive *itself* (exit 1, no document).
+- **MEDIUM on T1.52's mechanism.** `python3 -m venv --without-pip` in `tmp_path` is the cleanest seam I
+  can specify without copying the tree, but it depends on `ensurepip`/`venv` being available in the test
+  environment; the test must skip cleanly, and a skipped regression test is not a regression test. If it
+  skips in CI, that is a finding to raise, not to accept.
+
+**BLAST RADIUS:** `bootstrap/invoke_agent.sh` (behaviour), `scripts/automation/agent_invoke_cli.py`
+(import block + `main()` entry only), `tests/automation/test_agent_invoke_wrapper.py` (one expectation
+reversed, three tests added), `tests/automation/test_agent_invoke_cli.py` (three tests added). **Not
+touched:** `.github/workflows/tests.yml` (and it must stay untouched — T1.55), `scripts/oversight/`,
+`requirements.txt`, the result document schema, the classifier, the posture files, and every W2–W5
+contract.
+
+**Change classification: ADDITIVE** — a new precondition and a launch-layer resolution ladder; no existing
+semantics reversed, no new surface, no new outcome class, no schema field. (One **clarifying** correction
+rides along: an existing test's expectation, T1.50.) Not structural, so no pre-write human escalation was
+required; this block is the MEDIUM self-flag. **`architect` must be notified** — not for approval of the
+mechanism, which is inside AD-1, but because TD-D22 *interprets* AD-1's prohibition and the architect owns
+that text. If the architect reads AD-1 more strictly, the stated fallback is rung 2 alone (hard-code the
+venv interpreter behind an `-x` guard), which keeps P0 and the consumer contract intact and costs only the
+host whose system interpreter legitimately carries PyYAML.
+
+**Not done here:** no application code, no test code, and no script was written by this ruling — only this
+document. No sign-off register entry (`technical-design` writes none). No issue filed: §13 **recommends**
+a `startup-artifact-gap` issue and the orchestrating session files it.

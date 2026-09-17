@@ -1,0 +1,9 @@
+{
+  "schema": "hos.invocation-posture",
+  "schema_version": 1,
+  "id": "review-read-only",
+  "description": "Filesystem read + local read-only shell. No network, no write tools, no gh. The CLI auto-approves a class of commands it judges safe regardless of the allow list below and regardless of --permission-mode manual (probes D-G), so an empty or narrow allow list does not mean nothing runs — this posture's security value comes from its deny list and its tool lists, not from the allow list's narrowness.",
+  "permission_mode": "manual",
+  "allowed_tools": ["Read", "Grep", "Glob", "Bash"],
+  "disallowed_tools": ["Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task"]
+}

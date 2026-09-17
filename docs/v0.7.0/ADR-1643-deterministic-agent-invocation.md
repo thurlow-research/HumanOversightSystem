@@ -14,6 +14,14 @@ window first, or straight to enforcing?). Everything else below is **BINDING**.
 > carries an inline pointer, and §9.7 lists exactly which technical-design clauses are superseded. A
 > coder implementing AD-4 who has not read §9 will build the wrong classifier.
 
+> **AMENDED 2026-09-16 — read §10 (Amendment 2) before touching `bootstrap/invoke_agent.sh`.** It rules
+> on `technical-design`'s TD-D22/TD-D23 (the #1720 interpreter defect): the interpreter ladder is
+> **inside** AD-1 (new clause **AD-1a**, the launch/logic boundary, §10.1); the fallback is **not** taken
+> (§10.2); `INVOKE_AGENT_PYTHON` is **accepted under four binding conditions** (§10.3); AD-1's L3 bullet
+> and the wrapper's header are **amended, with the replacement text written out** (§10.4). **Where §10
+> and §2 differ, §10 governs; where §10 and the technical design differ, §10 governs.** §10.6 orphans two
+> W1 sign-offs on PR #1720.
+
 **Date:** 2026-09-14 (original), amended 2026-09-15 (Amendment 1, §9)
 **Author:** architect
 **Inputs:** `docs/v0.7.0/REQUIREMENTS-1643-1644-deterministic-agent-invocation.md` (pm-agent, merged in
@@ -274,6 +282,11 @@ is also why §3's arithmetic and ESC-4's rollout question are not optional paper
 - **L3 — `bootstrap/invoke_agent.sh`.** Fixed argv over a closed flag set, no JSON literal, no
   re-derivation of any field, stdout and exit code passed through byte-for-byte. Mints **no** token
   (this surface performs no GitHub I/O). Earns the CLAUDE.md canonical-entry-point row REQ-A1 requires.
+  **— AMENDED by §10.1/§10.4 (Amendment 2): L3 also resolves the interpreter that runs L2 (launch, not
+  logic — clause AD-1a), and may contain no other logic. Implement §10.4's replacement bullet and header
+  text, not this one. Note also §10.0: this bullet's "copy #1641's tiering verbatim" copied a bare
+  `exec python3` whose safety was a property of `merge_authority_cli.py`'s stdlib-only import list — that
+  precondition is now stated, and it is the root cause of #1720.**
 - **Exit vocabulary is #1641's, unchanged:** `0` the invocation was attempted and a result document was
   produced (whatever it says) / `1` operational failure of the CLI itself / `2` usage error. **The
   pass/fail of the review is never an exit code** — it is the `verdict` field, read by the caller. This
@@ -1404,3 +1417,253 @@ reviewed" means. Per the product-boundary checkpoint, ESC-1 (cost model + user-v
 (deployment topology + operational obligation), ESC-3 (interpretation of a human ruling that ESC-1's
 numbers depend on) and ESC-4 (throughput) must be cleared by the human before the corresponding slices
 bind. W1–W6 are unaffected by all four, which is why they are ordered first.
+
+---
+
+## 10. Amendment 2 — the launch/logic boundary in L3, and the interpreter ladder (2026-09-16)
+
+**Trigger.** PR #1720 (W1) was bounced with CI `tests` red: `bootstrap/invoke_agent.sh` ends with
+`exec python3 …` (a bare PATH lookup) and `agent_invoke_cli.py:61` does `import yaml`, which the
+`actions/setup-python` 3.12 interpreter does not carry. `technical-design` returned **Amendment A**
+(TD-D22, TD-D23) and routed the *interpretation of AD-1's prohibition* to me, because I own that text.
+This amendment rules on it. **Where §10 and §2 differ, §10 governs; where §10 and the technical design
+differ, §10 governs.**
+
+**Scope.** Four rulings, all inside my authority, none with a product consequence: no user-visible
+behaviour, cost, topology, retention or operational obligation changes — the primitive is not yet reached
+by any caller (TD-VF-6: `scripts/automation/**` and `bootstrap/invoke_agent.sh` are not in the consumer
+ship-set). No product-boundary checkpoint is required and none is claimed as cleared.
+
+### 10.0 What I verified myself this pass
+
+- `bootstrap/invoke_agent.sh:56-61` at `60360661` — the `command -v python3` guard and the bare
+  `exec python3` are both present, exactly as described.
+- `scripts/automation/agent_invoke_cli.py:61` — `import yaml` at module scope, after the `sys.path`
+  bootstrap, guarded by nothing.
+- `bootstrap/merge_authority.sh:135` — the precedent AD-1 copies **also** execs a bare `python3`. It gets
+  away with it because `merge_authority_cli.py` imports **stdlib only** (`argparse`, `importlib.util`,
+  `json`, `re`, `sys`, `dataclasses`, `datetime`, `pathlib`, `typing`) plus first-party
+  `scripts.automation.lib`. **AF-1's "copy #1641's tiering verbatim" therefore copied a launch line whose
+  safety was a property of the *other* module's import list, not of the pattern.** That is the actual
+  root cause of #1720 and it is mine, not the coder's (§10.5).
+- The two-rung venv/PATH ladder is this repo's established idiom, at source:
+  `scripts/oversight/run_gates.sh:35-44` (`-x .venv/bin/python` → `command -v python3` → exit 1) and
+  `scripts/prompt_audit.sh:22-27`.
+- An **environment interpreter override is also established idiom here**, in four places:
+  `scripts/oversight/gates/secret_scan.sh:95` and `gates/check_suspension.sh:31` (`OVERSIGHT_PYTHON`),
+  `gates/django_check.sh:36` (`DJANGO_PYTHON`), `gates/collection_integrity.sh:74`
+  (`COLLECTION_PYTHON`). `INVOKE_AGENT_PYTHON` is not a novel mechanism on this repo's surfaces.
+- `.github/workflows/tests.yml:67` runs `ensure_venv.sh` and installs no PyYAML into the `setup-python`
+  environment — so TD's T1.55 fence describes the current state, not a change.
+
+### 10.1 Ruling 1 — TD-D22's ladder is OUTSIDE AD-1's prohibition. `technical-design`'s reading is CONFIRMED. (Amends AD-1.)
+
+Confirmed, and not narrowly: the reading is correct on AD-1's wording *and* on what AD-1 exists to
+protect.
+
+- **On the wording.** Clause 1 forbids *"a JSON literal, a `printf`/`echo` to stdout, or any
+  re-derivation of a field."* Interpreter resolution emits no field and writes nothing to stdout. Clause 2
+  forbids *"a `case` statement, a flag of its own, or any validation/default/re-derivation of a
+  caller-supplied flag."* The ladder never reads `$@`. Neither clause is engaged.
+- **On the purpose, which matters more than the wording.** AD-1's prohibition exists so that **L3 never
+  becomes a second source of truth about the result document or the flag contract** — the two things a
+  consumer parses. An `if [[ -x … ]]` over an interpreter path is not a second source of truth about
+  anything a consumer reads; it is the act of starting L2 at all.
+- **On precedent inside this very design.** §3.9 step 2 has contained an interpreter `if` since the
+  original technical design, it shipped in `60360661`, and no review treated it as an AD-1 violation.
+  TD-D22 changes *which* interpreter is chosen, not the category of thing L3 does.
+- **On structural necessity.** L2 cannot make this choice: by the time L2 executes, the interpreter is
+  already fixed. A prohibition read to forbid the ladder would forbid the choice from being made
+  anywhere, which is not a reading of AD-1 — it is a defect.
+- **On #314.** *"Prefer Python for logic, shell for launch"* is the policy AD-1 cites to justify the
+  L2/L3 split at all. Choosing the interpreter is the launch half by definition.
+
+**AD-1a (NEW, BINDING — the launch/logic boundary, stated so it is not re-litigated).** L3 may contain
+**only** logic whose inputs are (a) its own location on disk and (b) the host's ability to start L2, and
+whose outputs are **only** the `exec`, or a non-zero exit with one stderr line. Concretely, L3 may:
+resolve its own directory and the repo root; select an interpreter; and fail with one stderr line when it
+cannot. L3 may **not**, ever: read or branch on any element of `$@`; write to stdout; emit or compose
+JSON; re-derive, default, or validate any flag or field; add a flag of its own; grow a `case` statement;
+mint or revoke a token; or mutate its environment (no `pip install`, no venv build or repair —
+`ensure_venv.sh` is *named* in an error message and never *invoked*).
+
+The test for any future addition to L3 is a single question: **does this read the caller's arguments, or
+produce a value a consumer parses?** If either, it belongs in L2. If neither, and it is required to start
+L2 at all, it is launch and it may live in L3. **The ladder is the maximum L3 grows under this ADR** —
+three rungs over interpreter paths plus two error lines, ~40 lines total. TD-D22's own warning is
+adopted verbatim as binding: *"it is only launch logic" is exactly how a wrapper that must not grow,
+grows.*
+
+**One consequence I bind explicitly, because AF-1 got it wrong (§10.0):** a bare `exec python3` is
+acceptable in an L3 wrapper **only** when its L2 module imports nothing outside the standard library and
+first-party `scripts.*`. `merge_authority.sh` satisfies that today; `invoke_agent.sh` does not and never
+did. A future L3 copying either shape must check the L2 import list, not the wrapper.
+
+### 10.2 Ruling 2 — I am NOT taking the fallback.
+
+Plainly: **the pre-stated fallback (rung 2 alone behind an `-x` guard) is rejected.** Build TD-D22's
+three-rung ladder as specified. Rung 3 is load-bearing — it is what makes the consumer-host contract and
+CI exercise the *unfit-interpreter* path rather than route around it, and dropping it would delete the
+only place in the system where P0 is proven to fire (T1.52, T1.55). Rung 1's fate is ruled in §10.3.
+
+### 10.3 Ruling 3 — `INVOKE_AGENT_PYTHON` is ACCEPTED on this surface, under four binding conditions. (Amends AD-1, AD-6.)
+
+The architecture question posed is the right one: does the deterministic-invocation guarantee require the
+interpreter to be a pure function of repo state? **No — and it never did.** What ADR-1643 guarantees is
+*what* is invoked (AD-3: a shipped, named, CODEOWNERS-protected agent file, verified present and
+name-matching before launch), *how* it is invoked (AD-1/AD-7: fixed argv, a named posture, no
+`bypassPermissions`, no inline agents), and *how the result is classified* (AD-4: a closed allowlist over
+the envelope; AD-6: strict schema, `invocation_failed ⟹ verdict: error`). Not one of those reads the
+interpreter. Determinism here is a property of the **record**, not of the launch path.
+
+What makes the varying launch path safe is **TD-D23's P0**, not trust: an interpreter unfit to run L2
+produces exit 1, empty stdout, no document, one stderr line — so the ladder's only reachable outcomes are
+"a correct document" or "no document and a loud failure". There is no interpreter that yields a
+plausible-but-wrong record. That is the architectural condition, and it is why §10.2 keeps rung 3 as well
+as §10.3 keeping rung 1. **If P0 is ever weakened, rungs 1 and 3 both lose their justification and this
+ruling is void.**
+
+Four conditions, all binding:
+
+1. **A dedicated variable name — `INVOKE_AGENT_PYTHON`, and specifically NOT `OVERSIGHT_PYTHON`.** The
+   repo already exports `OVERSIGHT_PYTHON` as a general gate-layer override (§10.0). Reusing it would let
+   an environment set for an unrelated gate silently redirect the interpreter of every future AI review —
+   the exact class of coupling this design exists to eliminate. One variable, one surface.
+2. **L2 must never read it.** `agent_invoke_cli.py` contains no reference to `INVOKE_AGENT_PYTHON`, for
+   any purpose, including diagnostics. Its only consumer is L3 rung 1. Pin with a source test alongside
+   T1.53.
+3. **No committed non-interactive caller may set it.** It is a human/diagnostic/test seam only: it must
+   not appear in `bin/hos-cron`, the sweep runner (W6), any committed script, any workflow, any posture
+   file's environment passthrough, or any installed consumer artifact. The only permitted committed use
+   is inside the test suite. **Pin this mechanically with a source test** (repo-wide grep: the only hits
+   outside `tests/` are `bootstrap/invoke_agent.sh` and documentation). This is what keeps `technical-
+   design`'s reachability argument true *over time* rather than true on the day it was written — the
+   argument that an `VAR=… bash bootstrap/invoke_agent.sh …` string does not match
+   `Bash(bash bootstrap/invoke_agent.sh *)` is correct, and it is a statement about today's callers, which
+   a test is what preserves.
+4. **The interpreter becomes an auditable field of the result document.** AD-6's `invocation` block gains
+   **`interpreter`** (`sys.executable`) and **`interpreter_version`** (`platform.python_version()`),
+   recorded beside `cli_version` and for the same reason. **No decision may read either** (AD-8). This is
+   the price of a ladder on a governance surface: if which interpreter ran can vary by host, every record
+   must say which one ran. TD §4.2 and §5.2 (the audit record) both take these two fields.
+
+I do **not** pre-empt `security-reviewer`, and this ruling is not a security clearance. It is the
+architecture judgment that the mechanism is admissible on this surface *given conditions 1–4*. If
+`security-reviewer` finds a reachable path by which an unattended committed caller can set the variable,
+condition 3 has failed, rung 1 is removed, and T1.52 must find another seam (a temporary tree, or
+invoking `agent_invoke_cli.py` directly under the unfit interpreter) — that is a mechanical consequence,
+not a new ruling.
+
+### 10.4 Ruling 4 — AD-1's text and the wrapper header ARE amended. Both are written here.
+
+Yes. Re-litigating a prohibition at the point of first contact with a real dependency is the failure this
+amendment closes; the boundary goes in the text.
+
+**AD-1's L3 bullet (§2) is amended to read** — this supersedes the corresponding bullet above:
+
+> - **L3 — `bootstrap/invoke_agent.sh`.** Fixed argv over a closed flag set, no JSON literal, no
+>   re-derivation of any field, stdout and exit code passed through byte-for-byte. Mints **no** token
+>   (this surface performs no GitHub I/O). **It resolves the interpreter that runs L2 — that is launch,
+>   not logic, and it is inside this ADR (AD-1a, §10.1). It may contain no other logic.** Earns the
+>   CLAUDE.md canonical-entry-point row REQ-A1 requires.
+
+**`bootstrap/invoke_agent.sh`'s header paragraph is replaced with the following text, verbatim** (the
+coder writes exactly this; it is governance text, not implementation detail):
+
+> ```
+> # BOUNDARY (ADR-1643 AD-1 + AD-1a, §10.1). This script may contain only
+> # logic whose inputs are its own location on disk and the host's ability to
+> # start agent_invoke_cli.py, and whose outputs are only the exec or a
+> # non-zero exit with one stderr line. Concretely it MAY: resolve its own
+> # directory and the repo root; select the interpreter (the three-rung
+> # ladder below); fail with one stderr line when it cannot. It must NEVER:
+> # read or branch on any element of "$@"; write to stdout; compose or emit
+> # JSON or re-derive any field (the record schema is agent_invoke_cli.py's
+> # alone — adding a document field is a change to that module, never to this
+> # one); validate or default a caller-supplied flag; add a flag of its own;
+> # grow a `case` statement; mint or revoke a token; or mutate its
+> # environment (no pip install, no venv build or repair — ensure_venv.sh is
+> # named in the error message and never invoked here).
+> #
+> # The test for any proposed addition: does it read the caller's arguments,
+> # or produce a value a consumer parses? If either, it belongs in
+> # agent_invoke_cli.py. The ladder is the maximum this file grows —
+> # "it is only launch logic" is how a wrapper that must not grow, grows.
+> #
+> # INVOKE_AGENT_PYTHON is a diagnostic/test seam only (ADR-1643 §10.3). It
+> # is deliberately NOT the repo-wide OVERSIGHT_PYTHON; agent_invoke_cli.py
+> # never reads it; and no committed non-interactive caller may set it.
+> ```
+
+**Not amended: `bootstrap/merge_authority.sh`.** Its header is #1641's and is correct for its own module
+(§10.0). AD-1a is stated over *this* ADR's L3. Generalising the boundary to every L3 wrapper in HOS is a
+real follow-up — the worker files it as a docs/`AGENTS.md` item, referencing §10.1's one-question test and
+§10.0's stdlib-only caveat — and it is **not** a blocker for W1.
+
+### 10.5 TD-D23 (P0) — RATIFIED as written, with one addition.
+
+Not asked of me, but the coder implements against it, so it is cleared here rather than left implicit.
+TD-D23 follows directly from AD-1's exit vocabulary (*"1 — operational failure of the CLI itself"*) and
+from AD-6's rule that a document asserts an invocation was attempted. A missing PyYAML means the #608
+anti-confusion check (P4) cannot run, so the module must not emit a record claiming anything. Exit 1,
+empty stdout, one stderr line naming the interpreter and `ensure_venv.sh`, no traceback — correct, and the
+generalisation to *every* module-level third-party import (T1.54) is the part that stops this recurring.
+
+**Addition:** the same rule binds every future L2 in this design family — `dimension_sweep_cli.py`
+(AD-13) and `dimension_registry_cli.py` (AD-9) each take a P0 of their own the moment either acquires a
+non-stdlib import, and their L3s take the ladder. `technical-design` states this once in TD §8's error
+contract rather than three times.
+
+### 10.6 Startup-gap analysis and affected sign-offs
+
+*"Should this have been settled in the initial architecture review, before design and code were built
+against it?"* — **Yes, and the gap is mine.**
+
+AD-1 directed `technical-design` to *"copy #1641's landed tiering verbatim"* and cited AF-1's line count
+as evidence of its cheapness. I did not read the one line that mattered: `merge_authority.sh:135` execs a
+bare `python3`, and that is safe only because `merge_authority_cli.py` imports stdlib only (§10.0). I
+copied a launch line without its precondition, onto a module I also required to parse YAML frontmatter
+(P4/TD-D3 was authored *after* AD-1, which is how the two passed each other). Meanwhile the repo's own
+two-rung venv idiom was sitting in `run_gates.sh` and `prompt_audit.sh`, unread by me, and the ADR's
+§0 verification pass never asked "what does L2 import, and does the interpreter L3 picks have it?"
+
+**Generalisable rule, for the same register as §9.8's** (the worker adds it to the existing
+`startup-artifact-gap` issue rather than opening a second one): **a wrapper's launch line is only as
+portable as its callee's import list — when an ADR mandates copying a landed pattern, it must name the
+precondition that made the pattern safe, not just the pattern.** Sibling to §9.8's *"no fail-closed
+classifier may be bound against an unprobed external contract."*
+
+**Affected sign-offs — explicit:**
+
+- **Stand, unaffected:** every requirements sign-off on PR #1651; every technical-design sign-off on
+  PR #1658 *except* the sections named below and in §9.7; every sign-off touching AD-2 through AD-16,
+  which this amendment does not alter.
+- **ORPHANED — must be re-reviewed against §10, not merely re-run:** the W1 code sign-offs on **PR #1720**
+  covering `bootstrap/invoke_agent.sh` and `agent_invoke_cli.py`'s module-import block and `main()`
+  entry. They were recorded against a wrapper whose launch contract this amendment changes and against an
+  L2 with no P0. Any approval of those two surfaces on #1720 is **not current** and must not be cited as
+  such. The rest of #1720's approvals (the classifier, posture loading, argv construction, the document
+  writer) stand — §10 does not touch them. `code-reviewer` re-reviews the two named surfaces against
+  §10.1, §10.3, §10.4 and TD-D23; `security-reviewer` reviews §10.3's condition 3 as a first-class item.
+- **Flagged for amendment, not re-review:** TD §4.2 and §5.2 (add `invocation.interpreter` and
+  `interpreter_version`, §10.3 condition 4); TD §8 (the P0 generalisation, §10.5); TD §3.9 (delete
+  *"pending the architect's ruling"* — it is ruled).
+- **Test-suite consequence, stated so it is not discovered late:** TD's T1.50 *reverses* an existing
+  passing test's expectation. A reversed expectation is the one change a re-run cannot catch, so it is
+  re-read, not re-run, and the reviewer records that it was re-read.
+
+### 10.7 What the coder builds, immediately and without further escalation
+
+1. TD-D22's **three-rung ladder** in `bootstrap/invoke_agent.sh`, exactly as §3.9 specifies, plus §10.4's
+   header text verbatim. Rung 1 is `INVOKE_AGENT_PYTHON`, not `OVERSIGHT_PYTHON`.
+2. TD-D23's **P0** in `agent_invoke_cli.py`, exactly as §3.4 specifies — guarded import, sentinel,
+   `main()`'s first statement, exit 1, one stderr line, no traceback, nothing on stdout.
+3. `invocation.interpreter` and `invocation.interpreter_version` in the result document and in the
+   per-invocation audit record (§10.3 condition 4).
+4. The **two source tests** §10.3 requires: L2 never references `INVOKE_AGENT_PYTHON` (condition 2), and
+   no committed non-test caller sets it (condition 3) — alongside T1.50–T1.56.
+5. `.github/workflows/tests.yml` stays untouched (T1.55). Do not fix CI by installing PyYAML into the
+   `setup-python` environment; that would make the defective path green and delete the fence.
+
+**Nothing in §10 is escalated to the human, and nothing in §10 blocks W1.** ESC-1 through ESC-4 are
+unchanged and still held.
