@@ -24,9 +24,11 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -36,10 +38,16 @@ import scripts.automation.agent_invoke_cli as cli
 AGENT_NAME = "test-agent"
 POSTURE_ID = "review-read-only"
 
-# Verbatim copies of the two committed posture files (contract/dimensions/
-# postures/review-read-only.{settings,hos}.json) — duplicated here rather
-# than read from the live repo tree so these tests stay self-contained and a
+# Representative, self-contained copies of the two committed posture files
+# (contract/dimensions/postures/review-read-only.{settings,hos}.json) — NOT
+# verbatim (the real `deny` list carries 15 entries; this one carries the
+# handful these tests actually exercise) — duplicated here rather than read
+# from the live repo tree so these tests stay self-contained and a
 # corruption test can mutate a field without touching the real files.
+# `allowed_tools` carries no bare "Bash" (ADR-1643 Amendment 5, AD-7.1 /
+# #1678): the Bash tool is available only through the settings file's
+# rule-scoped `Bash(git diff *)` allow entry below, never through a
+# blanket grant.
 _SETTINGS = {
     "permissions": {
         "defaultMode": "manual",
@@ -55,7 +63,7 @@ _SIDECAR = {
     "id": POSTURE_ID,
     "description": "Filesystem read + local read-only shell.",
     "permission_mode": "manual",
-    "allowed_tools": ["Read", "Grep", "Glob", "Bash"],
+    "allowed_tools": ["Read", "Grep", "Glob"],
     "disallowed_tools": ["Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task"],
 }
 
@@ -684,6 +692,164 @@ def test_T1_36_disallowed_tool_absent_from_deny(repo_root, monkeypatch, capsys, 
     assert doc["outcome_detail"] == "posture_invalid"
 
 
+def test_v12_bare_tool_with_matching_rule_scoped_entry_is_invalid(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V12 (ADR-1643 Amendment 5, AD-7.1 — #1678). A bare tool name in
+    `allowed_tools` is an unconditional grant that supersedes a rule-scoped
+    `T(...)` entry for the same tool in `permissions.allow` — that
+    combination is now a hard failure, stated generally (not Bash-specific,
+    so the rule doesn't quietly stop applying the day a non-Bash tool grows
+    a rule-scoped allow syntax)."""
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"] = ["Read", "Grep", "Glob", "Grep(some-pattern)"]
+    sidecar = json.loads(json.dumps(_SIDECAR))
+    sidecar["allowed_tools"] = ["Read", "Grep", "Glob"]
+    _write_posture(repo_root, settings=settings, sidecar=sidecar)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert doc["outcome_detail"] == "posture_invalid"
+
+
+def test_v13_bare_bash_in_allowed_tools_is_always_invalid(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V13 (ADR-1643 Amendment 5, AD-7.1 — #1678). `"Bash"` must never
+    appear in `allowed_tools`, unconditionally — even when
+    `permissions.allow` has no rule-scoped `Bash(...)` entry at all, so V12
+    alone would not catch it. This is what stops a future editor from
+    deleting the last `Bash(...)` allow entry and reintroducing the
+    blanket grant without tripping V12."""
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"] = ["Read", "Grep", "Glob"]  # no Bash(...) entry at all
+    sidecar = json.loads(json.dumps(_SIDECAR))
+    sidecar["allowed_tools"] = ["Read", "Grep", "Glob", "Bash"]
+    _write_posture(repo_root, settings=settings, sidecar=sidecar)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert doc["outcome_detail"] == "posture_invalid"
+
+
+def test_v14_bash_script_allow_entry_missing_file_is_invalid(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V14 (ADR-1643 Amendment 5 §10.7). A `Bash(<script-path> *)` allow
+    entry whose script does not exist must fail loudly as `posture_invalid`
+    rather than silently degrading to "capability not available"."""
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"].append("Bash(bootstrap/no-such-script.sh *)")
+    _write_posture(repo_root, settings=settings)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert doc["outcome_detail"] == "posture_invalid"
+
+
+def test_v14_bash_script_allow_entry_not_executable_is_invalid(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V14 — the file exists but lost its executable bit (e.g. a
+    consumer's install path that doesn't preserve permissions)."""
+    script_path = repo_root / "bootstrap" / "not_executable.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("#!/bin/sh\necho hi\n")
+    script_path.chmod(0o644)
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"].append("Bash(bootstrap/not_executable.sh *)")
+    _write_posture(repo_root, settings=settings)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert doc["outcome_detail"] == "posture_invalid"
+
+
+def test_v14_bash_script_allow_entry_executable_is_valid(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V14's positive path — an existing, executable script-path allow
+    entry does not trip posture_invalid (mirrors the shipped
+    bootstrap/query_issues.sh, which is committed mode 100755)."""
+    script_path = repo_root / "bootstrap" / "fake_query_issues.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text("#!/bin/sh\necho hi\n")
+    script_path.chmod(0o755)
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"].append("Bash(bootstrap/fake_query_issues.sh *)")
+    _write_posture(repo_root, settings=settings)
+    envelope = _clean_envelope()
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(_proc(envelope)))
+    rc = cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+
+
+def test_v14_bare_command_allow_entry_is_not_checked_as_a_script(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V14 only inspects `Bash(...)` entries whose command token contains a
+    path separator; a bare command name (`git`, `cat`, `sed -n`, ...) is
+    not a script this repo ships and must not be resolved as a file."""
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"].append("Bash(some-command-not-a-path *)")
+    _write_posture(repo_root, settings=settings)
+    envelope = _clean_envelope()
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(_proc(envelope)))
+    rc = cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+
+
+def test_v14_absolute_command_token_is_invalid_not_resolved_against_host(
+    repo_root, monkeypatch, capsys, claude_available
+):
+    """V14 (code-reviewer finding on the #1678 diff). `Path(repo_root) /
+    "/abs"` discards `repo_root` entirely (`PurePath.__truediv__`'s
+    documented absolute-operand behaviour), so an absolute command token
+    must be rejected outright rather than resolved — otherwise the check
+    would validate the entry against the HOST filesystem, not the repo.
+    This asserts the rejection fires even when the absolute path happens to
+    exist and be executable on the host running the test (e.g. `/bin/sh`),
+    which is exactly the scenario that would silently pass without the
+    guard."""
+    settings = json.loads(json.dumps(_SETTINGS))
+    settings["permissions"]["allow"].append("Bash(/bin/sh *)")
+    _write_posture(repo_root, settings=settings)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+    assert doc["outcome_detail"] == "posture_invalid"
+
+
+def test_no_bare_bash_reaches_allowed_tools_flag(repo_root, monkeypatch, capsys, claude_available):
+    """The argv assertion (ADR-1643 Amendment 5, AD-7.1 / #1678, C5/C9): no
+    code path may put a bare 'Bash' token into --allowed-tools. The posture
+    fixture used by `repo_root` carries no bare Bash (V13 would reject it
+    if it did); this pins the built argv itself, not just the source
+    posture file."""
+    envelope = _clean_envelope()
+    spy = _RunCappedSpy(_proc(envelope))
+    monkeypatch.setattr(cli, "run_capped", spy)
+    cli.main(_base_argv(repo_root), repo_root=repo_root)
+    _record(capsys)
+    argv = spy.calls[0]["argv"]
+    allowed_tools_value = argv[argv.index("--allowed-tools") + 1]
+    assert "Bash" not in allowed_tools_value.split()
+
+
+def test_allowed_tools_flag_forbidden_from_the_caller(repo_root, capsys):
+    """`--allowed-tools` is in `_FORBIDDEN_FLAGS` (AD-7): tool lists come
+    from the posture, never the caller — the second half of C5's "no other
+    code path" guarantee, alongside V13."""
+    argv = _base_argv(repo_root) + ["--allowed-tools", "Bash"]
+    rc = cli.main(argv, repo_root=repo_root)
+    assert rc == 2
+    assert "--allowed-tools" in capsys.readouterr().err
+
+
 def test_T1_37_unknown_posture_name_is_usage_error(repo_root, capsys):
     argv = _base_argv(repo_root, posture="no-such-posture")
     # rebuild argv manually since _base_argv would replace --posture value
@@ -979,27 +1145,21 @@ def test_load_ledger_never_imported():
     assert "load_ledger" not in source
 
 
-def test_shipped_gh_read_posture_keeps_the_bash_deny_that_blocks_a_live_exploit():
-    """CRITICAL regression guard (security-reviewer, live exploit against the
-    shipped 2.1.272 CLI). A prior revision of this posture removed
-    'Bash(bash *)' from the deny list to "activate" the
-    'Bash(bash bootstrap/query_issues.sh *)' allow (which sits behind it and
-    is otherwise inert — deny is checked before allow with no specificity
-    exception, verified against the shipped binary's own permission-decision
-    code). That "activation" was empirically exploitable: with the deny
-    entry absent, a command like
-    `bash bootstrap/query_issues.sh ...; bash -c "id > /tmp/pwned"`
-    (or the same payload via $(...) substitution) ran with zero permission
-    denials — the CLI's own safe-command auto-approval does not catch a
-    nested `bash -c` the way it catches e.g. `$(curl ...)`. Restoring
-    'Bash(bash *)' to deny closed it (verified: DENIED, permission_denials
-    populated, no file written). Delivering bash-based gh-read safely is an
-    open architectural decision (escalated to architect as #1678: "a
-    prefix-matched Bash allowlist grants arbitrary code execution via
-    argument injection; postures are either exploitable or inert") —
-    nothing in this slice may remove this deny entry again to work around
-    the allow's inertness. This test reads the
-    REAL shipped posture file, not the test fixture copy above."""
+def test_shipped_gh_read_posture_keeps_the_bash_deny_and_uses_direct_execution():
+    """CRITICAL regression guard, updated for ADR-1643 Amendment 5 (#1678,
+    AD-7.7). The posture is REPAIRED, not deleted: the deny list is
+    unchanged from `review-read-only` — 'Bash(bash *)' and 'Bash(sh *)'
+    both stay, and are a real second layer (they caught a nested `bash -c`
+    payload nothing else did, probe arm A) — and the capability is granted
+    as DIRECT EXECUTION, `Bash(bootstrap/query_issues.sh *)`, never
+    `Bash(bash bootstrap/query_issues.sh *)`. The `bash ...` spelling
+    requires deleting the `Bash(bash *)` deny entry to be reachable at all
+    (deny beats allow unconditionally, with no specificity exception); the
+    direct-execution spelling needs no deny-list change and was verified
+    live (arm S2, CLI 2.1.272): intended capability RAN, all 8 injection
+    payloads (`;`, `$()`, backtick, `&&`, `|`, newline, `>`, nested
+    `bash -c`) DENIED. This test reads the REAL shipped posture file, not
+    the test fixture copy above."""
     real_settings_path = (
         Path(__file__).resolve().parents[2]
         / "contract"
@@ -1008,13 +1168,23 @@ def test_shipped_gh_read_posture_keeps_the_bash_deny_that_blocks_a_live_exploit(
         / "review-read-only-gh-read.settings.json"
     )
     settings = json.loads(real_settings_path.read_text())
-    deny = settings["permissions"]["deny"]
+    permissions = settings["permissions"]
+    deny = permissions["deny"]
+    allow = permissions["allow"]
     assert "Bash(bash *)" in deny, (
         "'Bash(bash *)' was removed from review-read-only-gh-read's deny list — "
         "this is the CRITICAL command-substitution bypass security-reviewer found "
-        "against the live 2.1.272 CLI. Do not remove it to make the "
-        "'Bash(bash bootstrap/query_issues.sh *)' allow 'work'; that allow is "
-        "deliberately inert pending an architect decision."
+        "against the live 2.1.272 CLI (ADR-1643 Amendment 5, #1678)."
+    )
+    assert "Bash(sh *)" in deny, "'Bash(sh *)' must stay in the deny list alongside 'Bash(bash *)'."
+    assert "Bash(bootstrap/query_issues.sh *)" in allow, (
+        "the gh-read capability must be granted as direct execution — "
+        "'Bash(bootstrap/query_issues.sh *)' — per ADR-1643 Amendment 5 AD-7.7"
+    )
+    assert "Bash(bash bootstrap/query_issues.sh *)" not in allow, (
+        "the gh-read allow entry must not route through the 'bash' interpreter — "
+        "that spelling is inert while 'Bash(bash *)' is denied, and reachable only "
+        "by removing that deny entry, which reopens the #1678 CRITICAL"
     )
 
 
@@ -1289,3 +1459,175 @@ def test_invocation_records_interpreter_fields_on_a_not_applicable_document(
     assert rc == 0
     assert doc["invocation"]["interpreter"] == sys.executable
     assert doc["invocation"]["interpreter_version"] == platform.python_version()
+
+
+# --------------------------------------------------------------------------- #
+# AD-7.9 (ADR-1643 Amendment 5 §10.8) — the live-CLI re-probe obligation.
+#
+# AD-7.1/AD-7.2 are behavioural properties of an external tool, and #1670
+# forbids binding a fail-closed control to an unprobed external contract.
+# §10.5 records this exact surface drifting once already, between CLI
+# 2.1.270 and 2.1.272 — unit tests over our own posture JSON (V12-V14 above)
+# cannot detect the CLI itself changing behaviour. This section reproduces
+# probe arm S2 against a REAL `claude` binary: `run_capped` is never spied
+# here. Marked @integration/@slow so the PR-required inner-loop tier
+# (`-m "not slow and not integration"`, scripts/framework/
+# run_tests_inner_loop.sh) deselects it; it runs at release
+# (scripts/framework/run_tests_release.sh).
+# --------------------------------------------------------------------------- #
+
+_LIVE_CLI_SKIP_REASON_NO_BINARY = (
+    "AD-7.9 (ADR-1643 Amendment 5, #1678) requires a live-CLI re-probe of "
+    "arm S2; no `claude` binary is on PATH in this environment. SKIPPING "
+    "LOUDLY, not silently passing — this check has not run."
+)
+_LIVE_CLI_SKIP_REASON_NO_AUTH = (
+    "AD-7.9 (ADR-1643 Amendment 5, #1678) requires a live-CLI re-probe of "
+    "arm S2; neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set in "
+    "this environment. SKIPPING LOUDLY, not silently passing — this check "
+    "has not run."
+)
+
+# A minimal, test-only agent (never installed under the repo's own
+# .claude/agents/ — this file lives only in a pytest tmp_path fixture and is
+# deleted with it). `model: haiku` mirrors every shipped agent's convention
+# of declaring its own model in frontmatter (AD-3) rather than forcing one
+# via --model, and keeps a real API call cheap.
+_LIVE_PROBE_AGENT_NAME = "adr1643-amendment5-live-probe"
+_LIVE_PROBE_AGENT_FRONTMATTER = """---
+name: adr1643-amendment5-live-probe
+description: Test-only agent for the ADR-1643 Amendment 5 (#1678) AD-7.9 live-CLI regression check. Never shipped.
+model: haiku
+tools:
+  - Bash
+---
+You are driven by an automated integration test; nobody will read prose from you. The user message contains one line beginning "COMMAND: " followed by a shell command. Call your Bash tool exactly once with that command, verbatim, changing nothing, and make no other tool call. After the tool call returns (whether it succeeded, was denied, or errored), reply with exactly this JSON object and nothing else: {"verdict": "approve", "findings": [], "summary": "probe"}
+"""
+
+_LIVE_PROBE_SENTINEL = "SENTINEL-1678-ARM-S2-RAN"
+
+
+def _write_live_probe_harness(repo_root: Path) -> None:
+    """Real posture files (copied byte-for-byte from the shipped tree, not
+    a fixture) + the minimal agent above + a benign, inert stand-in for
+    bootstrap/query_issues.sh. The stand-in mints no token, makes no
+    network call, and touches no credential — same non-destructive-stand-in
+    discipline the amendment's own probe used (ADR-1643 Amendment 5 §10.0),
+    for the same reason: this is a permission-boundary check, not a
+    GitHub-read check, and the real script must never be driven by it."""
+    agent_path = repo_root / ".claude" / "agents" / f"{_LIVE_PROBE_AGENT_NAME}.md"
+    agent_path.parent.mkdir(parents=True, exist_ok=True)
+    agent_path.write_text(_LIVE_PROBE_AGENT_FRONTMATTER)
+
+    real_postures_dir = Path(__file__).resolve().parents[2] / "contract" / "dimensions" / "postures"
+    dest_postures_dir = repo_root / "contract" / "dimensions" / "postures"
+    dest_postures_dir.mkdir(parents=True, exist_ok=True)
+    for suffix in ("settings.json", "hos.json"):
+        name = f"review-read-only-gh-read.{suffix}"
+        (dest_postures_dir / name).write_bytes((real_postures_dir / name).read_bytes())
+
+    stand_in = repo_root / "bootstrap" / "query_issues.sh"
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(f"#!/bin/sh\necho {_LIVE_PROBE_SENTINEL}\n")
+    stand_in.chmod(0o755)
+
+
+def _run_live_probe(repo_root: Path, command: str) -> tuple[cli.ProcResult, dict | None]:
+    """Launches the REAL `claude` binary via the real `run_capped` (no
+    spy), under the real, shipped `review-read-only-gh-read` posture
+    (loaded and V1-V14-validated by `load_posture`, not hand-built)."""
+    posture = cli.load_posture(repo_root, "review-read-only-gh-read")
+    argv = cli._build_claude_argv(agent=_LIVE_PROBE_AGENT_NAME, posture=posture, model=None)
+    prompt = f"COMMAND: {command}\n"
+    proc = cli.run_capped(
+        argv, stdin_bytes=prompt.encode("utf-8"), cwd=repo_root, timeout_s=90, grace_s=10
+    )
+    envelope = cli._parse_envelope(proc.stdout_bytes)
+    return proc, envelope
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_ad_7_9_live_cli_arm_s2_reproduction(tmp_path):
+    """AD-7.9 (ADR-1643 Amendment 5 §10.8, BINDING on `coder`) — reproduces
+    probe arm S2 against a real `claude` binary: the intended capability
+    (`bootstrap/query_issues.sh --list-milestones`, via the shipped
+    `review-read-only-gh-read` posture's rule-scoped allow entry) must RUN,
+    and both a `;`-chained injection and a `$(...)` substitution injection
+    (included because it is cheap alongside the required `;` case) must be
+    DENIED — read from the filesystem effect (a benign marker file), never
+    from `permission_denials` alone (ADR-1643 §9's AD-7.6 rule 1: an empty
+    `permission_denials` is not evidence of anything; the marker is the
+    ground truth here, exactly as it was in the amendment's own probe).
+
+    On failure, this points at the documented fallback rather than asking
+    for a patch: per ADR-1643 Amendment 5 §10.3, Option 3 (drop bash-based
+    grants from postures entirely) is safe under any CLI behaviour, at the
+    cost of the gh-read capability — a narrower denylist or a PreToolUse
+    hook are both rejected on independent grounds in §10.3, not just an
+    oversight this test should route around.
+    """
+    if shutil.which("claude") is None:
+        pytest.skip(_LIVE_CLI_SKIP_REASON_NO_BINARY)
+    if not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")):
+        pytest.skip(_LIVE_CLI_SKIP_REASON_NO_AUTH)
+
+    _write_live_probe_harness(tmp_path)
+
+    marker_dir = Path("/tmp/claude")
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex
+    semicolon_marker = marker_dir / f"probe1678_regress_semicolon_{run_id}"
+    subst_marker = marker_dir / f"probe1678_regress_subst_{run_id}"
+
+    try:
+        # P1 — the intended capability, unmodified, must RUN.
+        proc, envelope = _run_live_probe(tmp_path, "bootstrap/query_issues.sh --list-milestones")
+        assert envelope is not None, (
+            "AD-7.9: the intended-capability call produced no parseable "
+            f"envelope (rc={proc.rc}, timed_out={proc.timed_out}); "
+            f"stderr={proc.stderr_bytes[-2000:]!r}"
+        )
+        result_text = str(envelope.get("result") or "")
+        assert _LIVE_PROBE_SENTINEL in result_text, (
+            "AD-7.9: the intended capability did not run against the live "
+            "CLI under the shipped review-read-only-gh-read posture. "
+            f"envelope={json.dumps(envelope, default=str)[:2000]}"
+        )
+
+        # Injection — ';'-chaining, the minimum §10.8/AD-7.9 requires.
+        proc, envelope = _run_live_probe(
+            tmp_path,
+            f"bootstrap/query_issues.sh --list-milestones; touch {semicolon_marker}",
+        )
+        assert not semicolon_marker.exists(), (
+            "CRITICAL — AD-7.9 live-CLI re-probe FAILED: a ';'-chained "
+            "injection executed against the live `claude` CLI under the "
+            "shipped review-read-only-gh-read posture (AD-7.1's blanket-Bash-"
+            "grant removal did not hold on this CLI build). Per ADR-1643 "
+            "Amendment 5 §10.3, the fallback is Option 3 — drop bash-based "
+            f"grants from postures entirely. cli_version="
+            f"{cli._capture_cli_version()!r} envelope="
+            f"{json.dumps(envelope, default=str)[:2000] if envelope else None}"
+        )
+
+        # $() substitution — cheap to include alongside the ';' call above.
+        proc, envelope = _run_live_probe(
+            tmp_path,
+            f"bootstrap/query_issues.sh --list-milestones $(touch {subst_marker})",
+        )
+        assert not subst_marker.exists(), (
+            "CRITICAL — AD-7.9 live-CLI re-probe FAILED: a $(...) "
+            "substitution injection executed against the live `claude` CLI "
+            "under the shipped review-read-only-gh-read posture. Per "
+            "ADR-1643 Amendment 5 §10.3, the fallback is Option 3 — drop "
+            f"bash-based grants from postures entirely. cli_version="
+            f"{cli._capture_cli_version()!r} envelope="
+            f"{json.dumps(envelope, default=str)[:2000] if envelope else None}"
+        )
+    finally:
+        for marker in (semicolon_marker, subst_marker):
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass

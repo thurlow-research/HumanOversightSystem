@@ -8,7 +8,7 @@
       "Bash(git diff *)", "Bash(git show *)", "Bash(git log *)", "Bash(git status)",
       "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)", "Bash(ls *)",
       "Bash(grep *)", "Bash(rg *)", "Bash(find *)", "Bash(sed -n *)",
-      "Bash(bash bootstrap/query_issues.sh *)"
+      "Bash(bootstrap/query_issues.sh *)"
     ],
     "deny": [
       "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task",

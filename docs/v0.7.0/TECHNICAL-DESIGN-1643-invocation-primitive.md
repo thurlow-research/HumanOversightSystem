@@ -692,6 +692,14 @@ claude --print
   It converts "there is no one to approve, so behaviour is whatever the CLI decides" into a stated
   contract. Probe H/K confirm the pair denies; probes D–G confirm it does not deny the CLI's
   auto-approved safe-command class.
+- **`--allowed-tools` is a GRANT list, not a narrowing list (ADR-1643 Amendment 5, AD-7.1 — #1678).** A
+  bare tool name passed through it is an **unconditional grant** of that tool that supersedes the
+  settings file's rule-scoped `Bash(...)` entries for it, leaving `permissions.deny` as the only
+  remaining boundary (128-invocation live probe, CLI 2.1.272, arms K/L/M/N and Q/R). `posture.allowed_tools`
+  therefore never contains the bare string `"Bash"` (`load_posture`'s V13, §3.6) — Bash remains an
+  *available, rule-governed* tool through the settings file's rule-scoped allow entries, never a blanket
+  grant. `--disallowed-tools` is unaffected by this finding and remains restrictive (arms E/H): omitting a
+  tool from it does not remove the tool, but including it does.
 - `--exclude-dynamic-system-prompt-sections` and `--no-session-persistence` are copied from
   `validate_self.sh:230-234`'s reasoning: the invocation is self-contained and must leave no session
   state.
@@ -768,14 +776,23 @@ decision off the human-gated surface, which is the opposite of AF-11's whole arg
   "id": "review-read-only",
   "description": "Filesystem read + local read-only shell. No network, no write tools, no gh.",
   "permission_mode": "manual",
-  "allowed_tools": ["Read", "Grep", "Glob", "Bash"],
+  "allowed_tools": ["Read", "Grep", "Glob"],
   "disallowed_tools": ["Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch", "Task"]
 }
 ```
-`review-read-only-gh-read` is the same pair with `Bash(bash bootstrap/query_issues.sh *)` added to
-`permissions.allow` and removed from nothing. **TD-D11: the id is spelled `review-read-only-gh-read`**;
-AD-7 writes it `review-read-only+gh-read`, and `+` is not in the `^[a-z][a-z0-9-]*$` id grammar the
-registry and filenames share. Same posture, different spelling of the name.
+**`allowed_tools` carries no `"Bash"` (ADR-1643 Amendment 5, AD-7.1 — #1678).** Bash remains available
+through the settings file's rule-scoped `Bash(...)` allow entries above; it is never granted as a bare,
+unconditional tool grant. This is a correction from this document's original W1 shape, which listed
+`"Bash"` in `allowed_tools` — see §3.5 and Amendment 5 §10 for the probe that found it exploitable.
+
+`review-read-only-gh-read` is the same pair with `Bash(bootstrap/query_issues.sh *)` (direct execution,
+not routed through the `bash` interpreter) added to `permissions.allow` and removed from nothing —
+**not** `Bash(bash bootstrap/query_issues.sh *)`, which the amendment rejects: that spelling requires
+deleting `Bash(bash *)` from the deny list to be reachable, and doing so reopens a live command-
+substitution bypass. The direct-execution spelling needs no deny-list change; `Bash(bash *)` and
+`Bash(sh *)` both stay, unchanged. **TD-D11: the id is spelled `review-read-only-gh-read`**; AD-7 writes
+it `review-read-only+gh-read`, and `+` is not in the `^[a-z][a-z0-9-]*$` id grammar the registry and
+filenames share. Same posture, different spelling of the name.
 
 **`coder` gets no posture here** (AD-7, Q7): nothing in W1–W5 invokes a code-writing agent, and inventing
 its posture ahead of #1644's re-derivation would be exactly the premature binding Q7 warns against. A
@@ -796,19 +813,32 @@ future posture is a new file pair; no code change.
 | V9 | `allowed_tools ∩ disallowed_tools == ∅` | document, `posture_invalid` |
 | V10 | Every entry in `disallowed_tools` appears in `permissions.deny` (the two layers agree) | document, `posture_invalid` |
 | V11 | `permissions` contains no `defaultMode` of `"bypassPermissions"` and the settings file contains no `dangerously` substring anywhere | document, `posture_invalid` |
+| V12 | For every tool `T` in `allowed_tools`: `permissions.allow` contains no entry matching `^T\(` (ADR-1643 Amendment 5, AD-7.1 — #1678: a bare tool name in `allowed_tools` is an unconditional grant that supersedes a rule-scoped `T(...)` entry for the same tool) | document, `posture_invalid` |
+| V13 | `"Bash"` is never a member of `allowed_tools`, unconditionally (Amendment 5 AD-7.1 — stated non-contingently so deleting the last `Bash(...)` allow entry can't silently reintroduce the blanket grant without tripping V12) | document, `posture_invalid` |
+| V14 | Every `permissions.allow` entry of the form `Bash(<script-path> *)`, where `<script-path>` contains a path separator, resolves (relative to repo root) to an existing file with the executable bit set (Amendment 5 §10.7 — the portability precondition for a rule-scoped script grant, made to fail loudly rather than degrade to a missing capability) | document, `posture_invalid` |
 
 **Two properties worth stating positively.**
-- *No `additionalDirectories` is needed.* Probe J: the CLI confines file tools to the working directory.
-  L2 launches with `cwd = repo root` and delivers the prompt on **stdin**, so a reviewer needs nothing
-  outside the repo. An empty list is the tightest correct value, not an oversight.
+- *No `additionalDirectories` is needed — conditional on AD-7.1 (Amendment 5 §10.5).* Probe J (CLI
+  2.1.270) found the CLI confines file tools to the working directory; a later probe on CLI 2.1.272
+  (Amendment 5 §10.0/§10.4) found markers written *outside* the launch directory under the shipped
+  (pre-amendment) launch contract — the bare-`Bash` grant bypassed containment along with every other
+  rule. **Restated, not withdrawn:** cwd containment holds for tools evaluated through the rule-based
+  path, and AD-7.1 (no bare tool grant) is what keeps Bash on that path. `additionalDirectories: []`
+  remains the tightest correct value; the *reason* it holds changed. Nothing in this design may pin a CLI
+  version, and no posture property may be inherited from a probe of an older build (Amendment 5 AD-7.9).
 - *The agent frontmatter `tools:` list is a real second layer.* Probe M: it **narrowed** a posture that
   would otherwise have permitted the call. AD-7's "defence in depth, not a substitute" is accurate.
 
 **Stated limit of the mechanism (probes D–G).** The CLI auto-approves a class of commands it judges safe,
 regardless of `permissions.allow` and regardless of `--permission-mode manual`. An empty `allow` list
-therefore does **not** mean "nothing runs". A posture's security value comes from its `deny` list and its
-tool lists (both proven effective, probes C and M), not from the narrowness of its `allow` list. This must
-be stated in each posture file's `description` so nobody reads the allow list as exhaustive.
+therefore does **not** mean "nothing runs". **A posture's security value comes from its `deny` list, its
+`disallowed_tools`, and — only under AD-7.1 (no bare tool grant in `allowed_tools`) — its rule-scoped
+`allow` entries** (corrected per ADR-1643 Amendment 5 §10.6 rule 3: this document's original statement,
+"not from the narrowness of its `allow` list", was half of the picture — a bare tool grant makes the
+allow list's rule-scoped entries for that tool count for nothing, which is the converse nobody had drawn
+until the amendment's probe). This must be stated in each posture file's `description` so nobody reads
+the allow list as exhaustive, and so nobody reads a rule-scoped allow entry as meaningful in the presence
+of a bare grant for the same tool.
 
 ### 3.7 The AD-4 classifier — complete, with precedence
 

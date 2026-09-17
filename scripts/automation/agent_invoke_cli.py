@@ -150,6 +150,13 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset({"applicability", "outcome", "input", "invoc
 AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 POSTURE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
+# V14 (ADR-1643 Amendment 5 §10.7) — matches the command token of a
+# `Bash(<command> ...)` permissions.allow entry, e.g. captures
+# "bootstrap/query_issues.sh" from "Bash(bootstrap/query_issues.sh *)" and
+# "git" from "Bash(git diff *)". Only entries whose captured token contains
+# a path separator are treated as script paths (see load_posture V14).
+_BASH_SCRIPT_ALLOW_RE = re.compile(r"^Bash\(([^\s)]+)")
+
 KNOWN_POSTURES = frozenset({"review-read-only", "review-read-only-gh-read"})
 
 DEFAULT_TIMEOUT_S = 300
@@ -348,6 +355,50 @@ def load_posture(repo_root: Path, name: str) -> Posture:
         raise _PreflightFailure("posture_invalid")  # V11
     if b"dangerously" in settings_bytes.lower():
         raise _PreflightFailure("posture_invalid")  # V11
+
+    # V12/V13 (ADR-1643 Amendment 5, AD-7.1 — #1678) — a bare tool name in
+    # `allowed_tools` is passed through `--allowed-tools` as an UNCONDITIONAL
+    # grant of that tool, which supersedes every rule-scoped entry for it in
+    # `permissions.allow` (probe arms K/L/M/N; live CLI 2.1.272). V12 catches
+    # the specific shape this amendment's probe found broken — a bare grant
+    # sitting alongside a rule-scoped entry for the same tool, which makes
+    # the rule-scoped entry's narrowness meaningless. V13 is unconditional
+    # (not contingent on a matching rule-scoped entry existing today) so a
+    # future edit that deletes the last `Bash(...)` allow entry cannot
+    # reintroduce the blanket grant without tripping anything.
+    for tool in allowed_tools:
+        rule_prefix = f"{tool}("
+        if any(entry.startswith(rule_prefix) for entry in allow):
+            raise _PreflightFailure("posture_invalid")  # V12
+    if "Bash" in allowed_tools:
+        raise _PreflightFailure("posture_invalid")  # V13
+
+    # V14 (ADR-1643 Amendment 5 §10.7) — a `Bash(<script-path> *)` allow
+    # entry delegates the boundary to the script's own argument handling
+    # (AD-7.2), which is void if the executable bit was lost on install
+    # (a differently-laid-out consumer project, a packaging step that
+    # strips permissions, ...). That must fail loudly as `posture_invalid`,
+    # not degrade silently to "capability not available". Only entries
+    # whose command token contains a path separator are script-path
+    # entries; a bare command name (`git`, `cat`, `sed -n`, ...) is not a
+    # script this repo ships and is not checked here. An absolute token is
+    # rejected outright rather than resolved: `Path(repo_root) / "/abs"`
+    # discards `repo_root` entirely (`PurePath.__truediv__`'s documented
+    # absolute-operand behaviour), which would validate the entry against
+    # the HOST filesystem instead of the repo — every shipped script path
+    # is and must stay repo-relative (code-reviewer finding).
+    for entry in allow:
+        match = _BASH_SCRIPT_ALLOW_RE.match(entry)
+        if match is None:
+            continue
+        command_token = match.group(1)
+        if "/" not in command_token:
+            continue
+        if command_token.startswith("/"):
+            raise _PreflightFailure("posture_invalid")  # V14
+        script_path = repo_root / command_token
+        if not script_path.is_file() or not os.access(script_path, os.X_OK):
+            raise _PreflightFailure("posture_invalid")  # V14
 
     posture_sha256 = hashlib.sha256(settings_bytes + b"\0" + sidecar_bytes).hexdigest()
     return Posture(
@@ -995,6 +1046,13 @@ def _build_claude_argv(
     posture: Posture,
     model: str | None,
 ) -> list[str]:
+    """`--allowed-tools`'s value is `posture.allowed_tools` and nothing else:
+    there is no other code path that can reach this flag. A caller cannot
+    override it directly (`--allowed-tools` is in `_FORBIDDEN_FLAGS`), and
+    `posture.allowed_tools` itself is guaranteed, by `load_posture`'s V13,
+    to never contain the bare string `"Bash"` — the ADR-1643 Amendment 5
+    (AD-7.1, #1678) grant that a bare tool name in this flag is an
+    unconditional, ungoverned grant of that tool."""
     return [
         "claude",
         "--print",
