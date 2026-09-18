@@ -1,0 +1,1 @@
+{"agent":"overseer","event":"pr-review-skipped-idempotent","head_sha":"7374beef282538b125eb4821d60ceb03f09bcb71","pr":1727,"reason":"full overseer review already posted at this head SHA (issuecomment-5734066862, decision HUMAN_REQUIRED); no new commits, comments, or human approval since - #1215 duplicate-comment precheck skip"}
