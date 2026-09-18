@@ -1494,14 +1494,25 @@ _LIVE_CLI_SKIP_REASON_NO_AUTH = (
 # of declaring its own model in frontmatter (AD-3) rather than forcing one
 # via --model, and keeps a real API call cheap.
 _LIVE_PROBE_AGENT_NAME = "adr1643-amendment5-live-probe"
-_LIVE_PROBE_AGENT_FRONTMATTER = """---
+# The body is one logical line in the written file. It is assembled here by
+# implicit concatenation purely so no source line exceeds the 120-column lint
+# ceiling — the emitted agent file is byte-identical to the single-line form.
+_LIVE_PROBE_AGENT_BODY = (
+    "You are driven by an automated integration test; nobody will read prose from you. "
+    'The user message contains one line beginning "COMMAND: " followed by a shell command. '
+    "Call your Bash tool exactly once with that command, verbatim, changing nothing, and make "
+    "no other tool call. After the tool call returns (whether it succeeded, was denied, or "
+    "errored), reply with exactly this JSON object and nothing else: "
+    '{"verdict": "approve", "findings": [], "summary": "probe"}'
+)
+_LIVE_PROBE_AGENT_FRONTMATTER = f"""---
 name: adr1643-amendment5-live-probe
 description: Test-only agent for the ADR-1643 Amendment 5 (#1678) AD-7.9 live-CLI regression check. Never shipped.
 model: haiku
 tools:
   - Bash
 ---
-You are driven by an automated integration test; nobody will read prose from you. The user message contains one line beginning "COMMAND: " followed by a shell command. Call your Bash tool exactly once with that command, verbatim, changing nothing, and make no other tool call. After the tool call returns (whether it succeeded, was denied, or errored), reply with exactly this JSON object and nothing else: {"verdict": "approve", "findings": [], "summary": "probe"}
+{_LIVE_PROBE_AGENT_BODY}
 """
 
 _LIVE_PROBE_SENTINEL = "SENTINEL-1678-ARM-S2-RAN"
