@@ -100,10 +100,11 @@ Return **exactly one JSON object and nothing else** — no prose before it, no c
 ```
 
 Binding rules on that object, whatever schema the caller supplies:
-- `verdict` is one of `approve`, `request_changes`, `error`, and `findings` is always a list — an empty list when the corpus is clean, never an omitted key.
+- **You emit `approve` or `request_changes`, and nothing else.** (`error` is a third value the extractor accepts, but it is the *harness's* value for an invocation that failed. It is never a verdict you choose — you cannot report that you did not run.)
+- **`findings` is always a list** — an empty list when the corpus is clean, never an omitted key.
 - Every finding carries a `severity` and at least one file path.
 - **Never emit the keys `applicability`, `outcome`, `input`, or `invocation`.** Those belong to the invoking primitive, which records what it observed about the run; an agent supplying one is asserting something it has no authority over, and the result is rejected wholesale.
-- **A `request_changes` verdict with an empty `findings` list, or an `approve` verdict whose summary describes problems, is a self-contradiction** — make the verdict follow the findings.
+- **The verdict follows the blocking findings, and only those.** `request_changes` iff at least one finding is `blocking`; `approve` otherwise. `approve` with `warning` findings is the normal, expected shape — warnings are non-blocking by definition, and your summary should describe them plainly. Suppressing a warning to keep a summary clean, or escalating to `request_changes` because warnings exist, are both wrong. A `request_changes` with no `blocking` finding is a self-contradiction.
 
 You do **not** write a sign-off register entry. You are a one-shot lens invoked by a script, not an inner-loop reviewer with a step to sign off; you have no `Write` tool, and the caller records the outcome from your returned document.
 

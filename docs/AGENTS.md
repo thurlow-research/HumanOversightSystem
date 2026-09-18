@@ -181,8 +181,11 @@ FRAMEWORK VALIDATION (run before committing agent/doc changes)
                                scripts/framework/validate_self.sh
   framework-validator        — runs static + AI review; acts on findings
   framework-setup-validator  — confirms installation is correct in a new repo
-       ^ these two are framework-dev only and are NOT installed into consumer
-         projects; self-reviewer above is, because its caller is
+  doc-validator              — catches the omission class of doc bug
+  spec-compliance-validator  — pipeline vs. its own governance spec
+       ^ these four are framework-dev only and are NOT installed into consumer
+         projects. self-reviewer above IS installed, because the script that
+         invokes it (validate_self.sh) is installed too.
 ```
 
 The pipeline above is the **work**. The **autonomous operation layer** is the
