@@ -126,7 +126,7 @@ Most agents run on **Sonnet 4.6**; only the highest-judgment authoring/gating ag
 | Tier | Agents |
 |---|---|
 | **Opus 4.8** | `architect`, `technical-design` (system-level design authority), `pm-agent` (spec/requirements authority), `overseer` (merge gate), `self-reviewer` (adversarial review of governance text) — 5 of 31 agent files |
-| **Sonnet 4.6** | every other agent (26 of 31) — all reviewers, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`, `risk-historian`, `coder`, `worker`, tests |
+| **Sonnet 4.6** | every other agent (26 of 31) — all the inner-loop reviewers, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`, `risk-historian`, `coder`, `worker`, tests. (`self-reviewer` is a reviewer but sits in the Opus row above: it reviews governance text, not code.) |
 
 The governing principle (`DECISIONS.md` D4): **the AI that authors does not review its own
 output.** Opus authors design and gates merges; Sonnet authors code, reviews, and acts as
