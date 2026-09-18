@@ -128,8 +128,8 @@ cat .hos-release
 # 2. Confirm every shipped file is present (the installer enumerates them here)
 test -f .hos-manifest && echo ".hos-manifest present"
 
-# 3. Confirm all 26 agents installed
-ls .claude/agents/*.md | wc -l        # expect 26
+# 3. Confirm all 27 agents installed
+ls .claude/agents/*.md | wc -l        # expect 27
 
 # 4. Confirm config.sh has no unfilled placeholders
 ! grep -q '{[A-Z_]*}' scripts/framework/config.sh && echo "config.sh fully substituted"
@@ -139,7 +139,7 @@ test -x scripts/oversight/run_validators.sh && echo "validators present"
 test -x scripts/framework/run_tests_inner_loop.sh && echo "inner-loop tests present"
 ```
 
-If each check passes — the release tag is recorded, the manifest exists, 26 agent files are present, `config.sh` has no `{PLACEHOLDER}` tokens left, and the governance scripts are executable — the framework is correctly installed.
+If each check passes — the release tag is recorded, the manifest exists, 27 agent files are present, `config.sh` has no `{PLACEHOLDER}` tokens left, and the governance scripts are executable — the framework is correctly installed.
 
 > `agy`/`codex` CLIs are optional at install time: validation and the inner-loop tests still run without them, but the cross-vendor AI review steps are skipped until they are available (see Step 0 prerequisites).
 
@@ -259,7 +259,7 @@ above. Set it up in this order:
 ```
 your-project/
 ├── .claude/
-│   └── agents/                  ← 26 agent definition files (from consumer_agents.txt)
+│   └── agents/                  ← 27 agent definition files (from consumer_agents.txt)
 ├── docs/
 │   ├── AGENTS.md                ← pipeline documentation
 │   ├── OVERSIGHT-RUNBOOK.md     ← operational runbook

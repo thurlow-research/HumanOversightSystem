@@ -30,10 +30,11 @@ bootstrap/             The copy-to-machine bundle (the only thing you copy to a 
                          a target repo (--release <tag> / --local). No sudo. Records
                          the installed tag at the target's .hos-release.
   setup_clis.sh          MACHINE bootstrap of agent CLIs (Node + claude/codex/agy + auth)
-.claude/agents/        All shipped agents: 8 oversight layer agents (evaluator, orchestrator,
-                       risk-assessor, etc.) + 16-agent base team (pm-agent, architect,
-                       technical-design, coder, 8 reviewers, unit-test, system-test,
-                       ops-designer, ux-designer). Each agent file is layered:
+.claude/agents/        All shipped agents: 10 oversight layer agents (worker, overseer,
+                       evaluator, orchestrator, risk-assessor, etc.) + 16-agent base team
+                       (pm-agent, architect, technical-design, coder, 8 reviewers,
+                       unit-test, system-test, ops-designer, ux-designer) + self-reviewer
+                       (adversarial review of governance text). Each agent file is layered:
                        CORE (HOS-owned generic) / PACK:<name> (HOS-owned stack depth) /
                        PROJECT (consumer-owned). Region order is CORE → PACK → PROJECT.
 packs/                 Stack-depth region bodies (body-only, no full agent files):
@@ -106,7 +107,7 @@ Teams using the framework's own agent templates (see `.claude/agents/`) get cont
 
 ## Agents in this repo
 
-`.claude/agents/` contains **26 shipped agents** in two groups — the oversight layer (10 agents) and the base development team (16 agents). As of v0.3.0 HOS ships the canonical base team; the consumer no longer hand-rolls it. The canonical agent list is `scripts/framework/consumer_agents.txt` (single source of truth for the installer + `.hos-manifest`, #225). Every agent file is layered: **CORE** (HOS-owned generic) / **PACK:\<name\>** (HOS-owned stack depth) / **PROJECT** (consumer-owned). Stack depth for a given stack lands in `packs/<name>/` as body-only region files injected during install.
+`.claude/agents/` contains **27 shipped agents** in three groups — the oversight layer (10 agents), the base development team (16 agents), and one framework self-review agent (`self-reviewer`). As of v0.3.0 HOS ships the canonical base team; the consumer no longer hand-rolls it. The canonical agent list is `scripts/framework/consumer_agents.txt` (single source of truth for the installer + `.hos-manifest`, #225). Every agent file is layered: **CORE** (HOS-owned generic) / **PACK:\<name\>** (HOS-owned stack depth) / **PROJECT** (consumer-owned). Stack depth for a given stack lands in `packs/<name>/` as body-only region files injected during install.
 
 ### Oversight layer (10 agents — invoked by the pipeline, not the base team)
 
@@ -143,6 +144,12 @@ Teams using the framework's own agent templates (see `.claude/agents/`) get cont
 | `system-test` | System/e2e test authoring |
 | `ops-designer` | Observability/telemetry authority; produces `TELEMETRY-SPEC.md` |
 | `ux-designer` | UX design authority; produces `UX-DESIGN-READINESS.md` |
+
+### Framework self-review (1 agent — shipped because the script that names it is shipped)
+
+| Agent | Role |
+|---|---|
+| `self-reviewer` | Adversarial review of **governance text** (rules, not code) across seven categories — contradiction, governance-hole, unenforceable, loop, gaming, stale-status, ownership. Fills the `opus-self` seat in `scripts/framework/validate_self.sh`, which supplies the corpus and the output schema (ADR-1643 §9.5) |
 
 > The framework-dev validators (`framework-validator`, `doc-validator`, `spec-compliance-validator`, `framework-setup-validator`) are **not** shipped to consumers — they belong to the planned `hos-dev-pack` (v0.3.0 dogfooding). They live in `.claude/agents/` in this source repo only.
 

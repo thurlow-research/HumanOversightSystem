@@ -92,6 +92,12 @@ A developer reviewing a PR does not open issues for "add a test here" or "this f
 | **doc-validator** | Catches the omission class of documentation bug (agent file says X and Y, doc says only X). Reads `doc-patterns.md` and `decisions.md` for prior-session context. Loop exit: 3 cycles max. |
 | **spec-compliance-validator** | Verifies the pipeline implementation satisfies its governance spec (METHODOLOGY.md, AGENTS.md): cross-vendor independence, risk tiers, human gates, model assignments, loop exits. Checks `decisions.md` verification criteria. |
 
+**Framework self-review (shipped).** One agent sits in neither table above: it reviews HOS's *rules* rather than either the oversight process or an application. It **is** in `consumer_agents.txt`, because the script that names it — `scripts/framework/validate_self.sh` — is itself installed into consumer projects, and an installed script naming an unshipped agent is the exact defect ADR-1643 AF-6.2 records.
+
+| Agent | Role |
+|---|---|
+| **self-reviewer** | Adversarial review of governance text — agent definitions, the contract, governance docs, and the rules encoded in framework scripts — across seven categories: contradiction, governance-hole, unenforceable, loop, gaming, stale-status, ownership. Reviews **rules, not programs**. Invoked as a one-shot read-only subprocess; `validate_self.sh` supplies the review corpus, the known-issues suppression list, and the output schema (ADR-1643 §9.5). |
+
 ### Base Project Agents
 
 **[CondoParkShare](https://github.com/ScottThurlow/CondoParkShare)** is the reference implementation of a HOS-governed project. It is a real parking management application for condo communities — residents book shared parking spaces, HOA admins configure availability, and operators manage multi-building deployments. It was built specifically to exercise the HOS framework against genuine real-world complexity: multi-tenant data isolation, authentication flows, time-based booking logic with business rule gates, and administrative portals. The goal is dual-purpose: stress-test the framework on a domain with meaningful security and correctness requirements while delivering something useful to an actual user community.
