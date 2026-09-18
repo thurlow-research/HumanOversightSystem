@@ -52,3 +52,10 @@ system-test
 # ── Design authorities ───────────────────────────────────────────────────────
 ops-designer
 ux-designer
+
+# ── Framework self-review ────────────────────────────────────────────────────
+# Fills the `opus-self` seat in scripts/framework/validate_self.sh, which IS
+# installed into consumer projects — so the agent it names must ship too, or the
+# install reproduces ADR-1643 AF-6.2 (an installed script naming an agent the
+# install never shipped). ADR-1643 §9.5 / #1673.
+self-reviewer

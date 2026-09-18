@@ -125,8 +125,8 @@ Most agents run on **Sonnet 4.6**; only the highest-judgment authoring/gating ag
 
 | Tier | Agents |
 |---|---|
-| **Opus 4.8** | `architect`, `technical-design` (system-level design authority), `pm-agent` (spec/requirements authority), `overseer` (merge gate) — 4 of 30 shipped agents |
-| **Sonnet 4.6** | every other agent (26 of 30) — all reviewers, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`, `risk-historian`, `coder`, `worker`, tests |
+| **Opus 4.8** | `architect`, `technical-design` (system-level design authority), `pm-agent` (spec/requirements authority), `overseer` (merge gate), `self-reviewer` (adversarial review of governance text) — 5 of 31 agent files |
+| **Sonnet 4.6** | every other agent (26 of 31) — all reviewers, `oversight-orchestrator`, `oversight-evaluator`, `risk-assessor`, `risk-historian`, `coder`, `worker`, tests |
 
 The governing principle (`DECISIONS.md` D4): **the AI that authors does not review its own
 output.** Opus authors design and gates merges; Sonnet authors code, reviews, and acts as
@@ -284,7 +284,7 @@ review outcomes are not conflated with LLM spend.
 |---|---|---|---|
 | Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles (PR pre-filters) |
 | Diff-centric / scoped context (§3) | Tokens per reviewer; better signal | Misses cross-cutting issues | Multi-agent split; security gets extra context; cross-vendor panel |
-| Sonnet default, Opus for design + merge gate (§4) | Per-token cost across 26 agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
+| Sonnet default, Opus for design + merge gate (§4) | Per-token cost across 27 shipped agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
 | Risk-stratified effort (§5) | Exhaustive review on LOW/MEDIUM | Mis-triaged defect slips auto-pass | SQC random red-team sample → escaped-defect rate |
 | Deterministic validators first (§6) | Expensive review on lint-rejectable code | Heuristic false +/− | Graceful degradation; tuning vs. escaped-defect signal |
 | Fail-closed, no retry (§7) | Retry storms of model calls | Occasional false CRITICAL | False-CRITICAL shape detection; human absorbs over-escalation |

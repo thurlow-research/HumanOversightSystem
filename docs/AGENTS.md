@@ -176,8 +176,13 @@ SUPPORT (available on demand throughout the build)
                          relevant agents in dependency order
 
 FRAMEWORK VALIDATION (run before committing agent/doc changes)
+  self-reviewer              — SHIPPED. adversarial review of the governance text
+                               itself (rules, not code); one-shot seat filled by
+                               scripts/framework/validate_self.sh
   framework-validator        — runs static + AI review; acts on findings
   framework-setup-validator  — confirms installation is correct in a new repo
+       ^ these two are framework-dev only and are NOT installed into consumer
+         projects; self-reviewer above is, because its caller is
 ```
 
 The pipeline above is the **work**. The **autonomous operation layer** is the
@@ -925,6 +930,37 @@ Track 2 dependency: `code-reviewer` must approve before `security-reviewer`, `pr
 
 ---
 
+### 30. `self-reviewer` — Adversarial Self-Review of Governance Text
+
+**Invoked:** As a one-shot subprocess by `scripts/framework/validate_self.sh`, which fills the `opus-self` seat. Not an inner-loop reviewer — it is not dispatched per build step and writes no sign-off register entry.
+
+**Role:** Adversarially reviews the framework's own **rules** — agent definitions, the oversight contract, governance docs, and the rules encoded in framework scripts. Its subject is a rule, not a program: whether a rule contradicts another rule, whether anything can enforce it, whether it can be gamed, whether it still describes reality, and who owns it.
+
+**The seven finding categories:**
+
+| Category | What it catches |
+|---|---|
+| `contradiction` | Two files, or two parts of one file, that disagree |
+| `governance-hole` | A path by which an automated action reduces oversight without a human (ratchet violation), a forgeable human gate, or a required check that can be silently skipped |
+| `unenforceable` | An instruction asserting a behavior with no mechanism that could verify it happened |
+| `loop` | Escalation cycles with no exit, escalation to an undefined handler, iteration with no round cap |
+| `gaming` | An agent classifying its own work (risk tier, change class, N/A status) in a way it could bias to reduce scrutiny |
+| `stale-status` | Text marked done/shipped/validated for something not actually built or wired |
+| `ownership` | A decision two agents could both claim, or one neither owns |
+
+**Inputs:** the caller supplies a self-contained review package (the framework files, an already-tracked known-issues list to suppress re-reports, and the output schema) via the invocation's input file. The prompt stays in the script; the agent file supplies the lens and the posture. `Read`/`Grep`/`Glob` are for **verifying** a claim before reporting it — never for widening the corpus.
+
+**Output:** exactly one JSON object matching the caller's schema — findings with `severity`, `category`, `files`, `description`, `fix`; a `verdict`; and an honest one-paragraph `summary`. No prose outside the JSON, since the caller parses strictly.
+
+**Why it is a distinct agent:** the seat needs a named, shipped agent under ADR-1643 AD-3, and no existing agent's lens matches. `code-reviewer` is bound by CORE to a diff-centric input contract it would violate on every invocation, and substituting an agent whose lens differs from the seat's is the precise "a mechanism that looks like it is reviewing and is not" failure #1643 exists to close. `framework-validator` describes the lens but is not in the consumer ship set, which would reproduce AF-6.2. See ADR-1643 §9.5.
+
+**Constraints:** read-only (no `Write`, `Edit`, or `Bash`). Writes nothing, files nothing, fixes nothing, comments nowhere.
+
+**Escalation out:** None — it returns findings to its caller, which decides the gate outcome.
+**Escalation in:** None.
+
+---
+
 ## Escalation map
 
 ```
@@ -1015,13 +1051,16 @@ oversight-orchestrator
 
 ### Quick reference — what gets copied
 
-The install copies agents from `scripts/framework/consumer_agents.txt` (the single source of truth for the installer). Current consumer agent list (26 agents):
+The install copies agents from `scripts/framework/consumer_agents.txt` (the single source of truth for the installer). Current consumer agent list (27 agents):
 
 **Pipeline agents** (core build pipeline):
 `pm-agent`, `architect`, `technical-design`, `ux-designer`, `coder`, `code-reviewer`, `security-reviewer`, `privacy-reviewer`, `ui-reviewer`, `a11y-reviewer`, `ops-designer` *(optional)*, `ops-reviewer` *(optional)*, `reliability-reviewer` *(optional)*, `infra-reviewer`, `unit-test`, `system-test`
 
 **Oversight agents** (autonomous operation, risk scoring, second review, cross-vendor panel):
 `worker`, `overseer`, `risk-assessor`, `risk-historian`, `dep-mapper`, `spec-red-team`, `prompt-fidelity`, `oversight-evaluator`, `oversight-orchestrator`, `post-change-sweep`
+
+**Framework self-review** (adversarial review of the governance text itself):
+`self-reviewer` — shipped because `scripts/framework/validate_self.sh`, which names it, is shipped too.
 
 > **`worker` and `overseer` are the autonomous operation layer** — see [Autonomous Operation Layer](#autonomous-operation-layer). `worker` is also the single human entry point for building work in an interactive session.
 
