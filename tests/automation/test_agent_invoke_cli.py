@@ -1462,6 +1462,802 @@ def test_invocation_records_interpreter_fields_on_a_not_applicable_document(
 
 
 # --------------------------------------------------------------------------- #
+# W3 — observability (ADR-1643 AD-8, TD §5). Governing rule (ADR-1604 AD-4,
+# carried forward verbatim): no decision may read an audit event or a token
+# record, and both writes are non-fatal — a failure sets the corresponding
+# `observability` field and writes one stderr line, but never changes
+# `outcome`, `verdict`, or the exit code. `audit_log.write_event()` is
+# exercised for real against `repo_root` (a tmp_path, so this writes and
+# reads real files under <repo_root>/audit/log/ and is cleaned up by pytest
+# — no monkeypatch needed for its success path); `token_tracker.py`'s
+# subprocess launch is spied at the `subprocess.run` call site (mirrors the
+# `subprocess.Popen` spy at T1.44) because the synthetic `repo_root` fixture
+# has no real `scripts/oversight/token_tracker.py` on disk.
+# --------------------------------------------------------------------------- #
+
+
+class _SubprocessRunSpy:
+    """Stands in for `subprocess.run` at the token_tracker call site (§5.1).
+    Records every call's argv/cwd/timeout and either returns a fixed
+    `CompletedProcess` or raises, so both the success and the non-fatal
+    failure paths (non-zero rc, timeout, OSError) can be driven without a
+    real `token_tracker.py` under the synthetic `repo_root` fixture."""
+
+    def __init__(self, *, returncode: int = 0, raises: Exception | None = None):
+        self.returncode = returncode
+        self.raises = raises
+        self.calls: list[dict] = []
+
+    def __call__(self, argv, *, cwd, stdout, stderr, timeout):
+        self.calls.append({"argv": argv, "cwd": cwd, "timeout": timeout})
+        if self.raises is not None:
+            raise self.raises
+        return subprocess.CompletedProcess(argv, self.returncode, b"", b"")
+
+
+def _audit_record_path(repo_root: Path, doc: dict) -> Path:
+    relpath = doc["observability"]["audit_record"]
+    assert relpath, f"expected a non-null audit_record, got: {doc['observability']!r}"
+    return repo_root / "audit" / "log" / relpath
+
+
+def test_w3_both_writes_succeed_on_a_completed_document(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["observability"]["token_tracker_recorded"] is True
+    audit_path = _audit_record_path(repo_root, doc)
+    assert audit_path.is_file()
+    record = json.loads(audit_path.read_text())
+    assert record["event"] == "agent-invocation"
+    assert record["agent"] == AGENT_NAME
+    assert record["outcome"] == "completed"
+    assert record["verdict"] == "approve"
+    assert record["input_digest"] == doc["input"]["input_digest"]
+    assert record["timestamp"] == doc["invocation"]["ended_at"]
+
+    assert len(spy.calls) == 1
+    argv = spy.calls[0]["argv"]
+    assert argv[0] == sys.executable
+    assert argv[1] == str(repo_root / "scripts" / "oversight" / "token_tracker.py")
+    assert "--vendor" in argv and argv[argv.index("--vendor") + 1] == "claude"
+    assert argv[argv.index("--stage") + 1] == "dimension:ad-hoc"
+    assert spy.calls[0]["cwd"] == str(repo_root)
+
+
+def test_w3_token_tracker_nonzero_rc_is_non_fatal(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=1))
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["verdict"] == "approve"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert doc["observability"]["audit_record"] is not None
+    assert "token_tracker not recorded" in _record.last_err
+
+
+def test_w3_token_tracker_timeout_is_non_fatal(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        _SubprocessRunSpy(raises=subprocess.TimeoutExpired(cmd="token_tracker.py", timeout=15)),
+    )
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert doc["observability"]["audit_record"] is not None
+    assert "token_tracker not recorded" in _record.last_err
+
+
+def test_w3_token_tracker_oserror_is_non_fatal(repo_root, monkeypatch, capsys):
+    """No monkeypatch of subprocess.run at all: the synthetic `repo_root`
+    fixture has no real scripts/oversight/token_tracker.py on disk, so the
+    real subprocess launch itself raises FileNotFoundError (an OSError
+    subclass) — exercising the un-spied, genuinely-missing-script path."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert doc["observability"]["audit_record"] is not None
+    assert "token_tracker not recorded" in _record.last_err
+
+
+def test_w3_audit_write_exception_is_non_fatal(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    def _boom(event, *, root):
+        raise RuntimeError("audit record hash collision on non-identical content")
+
+    monkeypatch.setattr(cli, "_audit_write_event", _boom)
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["verdict"] == "approve"
+    assert doc["observability"]["token_tracker_recorded"] is True
+    assert doc["observability"]["audit_record"] is None
+    assert "audit record not written" in _record.last_err
+
+
+def test_w3_both_writes_fail_independently_neither_affects_outcome_or_exit_code(
+    repo_root, monkeypatch, capsys
+):
+    """Both non-fatal failures at once — the sharpest form of the governing
+    rule: even total observability loss never changes outcome/verdict/exit."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=17))
+    monkeypatch.setattr(
+        cli,
+        "_audit_write_event",
+        lambda event, *, root: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    envelope = _clean_envelope(
+        result=json.dumps(
+            {
+                "verdict": "request_changes",
+                "findings": [
+                    {"severity": "high", "files": ["x.py"], "description": "d", "fix": "f"}
+                ],
+            }
+        )
+    )
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["verdict"] == "request_changes"
+    assert doc["observability"] == {"token_tracker_recorded": False, "audit_record": None}
+
+
+def test_w3_invocation_failed_document_still_gets_observability(repo_root, monkeypatch, capsys):
+    """§5.2: an audit record is written for EVERY invocation_failed outcome
+    too, not just a completed one."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, timed_out=True, raw="anything")
+
+    assert doc["outcome"] == "invocation_failed"
+    assert doc["outcome_detail"] == "timeout"
+    assert doc["verdict"] == "error"
+    assert doc["observability"]["token_tracker_recorded"] is True
+    audit_path = _audit_record_path(repo_root, doc)
+    record = json.loads(audit_path.read_text())
+    assert record["outcome"] == "invocation_failed"
+    assert record["outcome_detail"] == "timeout"
+    assert record["verdict"] == "error"
+
+
+def test_w3_not_applicable_skips_token_tracker_but_writes_audit_record(
+    repo_root, monkeypatch, capsys
+):
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+
+    rc = cli.main(
+        ["--agent", AGENT_NAME, "--not-applicable", "no matching files"], repo_root=repo_root
+    )
+    doc = _record(capsys)
+
+    assert rc == 0
+    assert doc["applicability"] == "not_applicable"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert len(spy.calls) == 0, "token_tracker must never be invoked for --not-applicable (§5.1)"
+    audit_path = _audit_record_path(repo_root, doc)
+    assert audit_path.is_file()
+    record = json.loads(audit_path.read_text())
+    assert record["applicability"] == "not_applicable"
+    assert record["outcome"] == "completed"
+
+
+def test_w3_preflight_failure_does_not_call_token_tracker_but_still_writes_audit_record(
+    repo_root, monkeypatch, capsys
+):
+    """TD-D24 (ADR-1643 §5.1 Amendment B) — INVERTED from this module's
+    original (defective) assertion that a preflight failure calls
+    token_tracker via the char-estimate fallback. `agent_unavailable` never
+    reaches `run_capped` — "launching is the entire test" — so no subprocess
+    may be spawned at all, even though a real non-empty --input-file is on
+    disk (the phantom-spend trap T3.10 exists to catch: asserting "recorded
+    zero" would pass against the defect, since token_tracker's estimate is
+    `max(1, …)` and never zero — this asserts the spy was never called,
+    full stop). The audit record is still written regardless (§5.2 is
+    unconditional)."""
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    rc = cli.main(
+        [
+            "--agent",
+            "no-such-agent-xyz",
+            "--posture",
+            POSTURE_ID,
+            "--input-file",
+            str(repo_root / "input.txt"),
+        ],
+        repo_root=repo_root,
+    )
+    doc = _record(capsys)
+
+    assert rc == 0
+    assert doc["outcome_detail"] == "agent_unavailable"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert (
+        len(spy.calls) == 0
+    ), "token_tracker must never be spawned for a preflight failure (TD-D24)"
+    audit_path = _audit_record_path(repo_root, doc)
+    record = json.loads(audit_path.read_text())
+    assert record["outcome_detail"] == "agent_unavailable"
+    assert record["findings_count"] == 0
+
+
+def test_T3_10_posture_invalid_never_spawns_token_tracker(repo_root, monkeypatch, capsys):
+    """Same as the two `--posture`-usage-error rows above, but for the
+    `posture_invalid` DOCUMENT outcome (V2-V14, §3.6) rather than the
+    unknown-posture-name usage error — a malformed posture file with a real
+    non-empty --input-file present."""
+    _write_posture(repo_root, settings_text="{not json")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+
+    rc = cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+
+    assert rc == 0
+    assert doc["outcome_detail"] == "posture_invalid"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert len(spy.calls) == 0
+    audit_path = _audit_record_path(repo_root, doc)
+    assert audit_path.is_file()
+
+
+def test_T3_10_not_authenticated_via_p7_never_spawns_token_tracker(repo_root, monkeypatch, capsys):
+    """The trap row: P7 (pre-launch env check, never contacts the API) must
+    NOT call token_tracker — distinct from the post-launch not_authenticated
+    row covered by T3.11 below, which DOES. A real non-empty --input-file is
+    on disk (P6 already validated it before P7 runs)."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+
+    argv = _base_argv(repo_root) + ["--require-env-auth"]
+    rc = cli.main(argv, repo_root=repo_root)
+    doc = _record(capsys)
+
+    assert rc == 0
+    assert doc["outcome_detail"] == "not_authenticated"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert len(spy.calls) == 0
+    audit_path = _audit_record_path(repo_root, doc)
+    assert audit_path.is_file()
+
+
+def test_T3_10_cli_unavailable_never_spawns_token_tracker(repo_root, monkeypatch, capsys):
+    """P8: `claude` itself does not resolve on PATH. A real non-empty
+    --input-file is on disk (P6 already validated it before P8 runs)."""
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+    monkeypatch.setattr(cli, "run_capped", _RunCappedSpy(None))
+
+    rc = cli.main(_base_argv(repo_root), repo_root=repo_root)
+    doc = _record(capsys)
+
+    assert rc == 0
+    assert doc["outcome_detail"] == "cli_unavailable"
+    assert doc["observability"]["token_tracker_recorded"] is False
+    assert len(spy.calls) == 0
+    audit_path = _audit_record_path(repo_root, doc)
+    assert audit_path.is_file()
+
+
+def test_T3_11_post_launch_not_authenticated_does_call_token_tracker(
+    repo_root, monkeypatch, capsys
+):
+    """T3.11 — the paired case that proves T3.10's four tests are not simply
+    keyed on `outcome_detail == "not_authenticated"`: this one reaches the
+    §3.7 step-4 classifier (the CLI actually ran, hit the API, and came back
+    "not logged in") rather than P7's pre-launch env check, and MUST call
+    token_tracker — the two `not_authenticated` rows are different events,
+    decided by whether `run_capped` was reached, never by the label alone."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    envelope = _clean_envelope(
+        terminal_reason="api_error", result="Not logged in · Please run /login"
+    )
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert doc["outcome_detail"] == "not_authenticated"
+    assert doc["observability"]["token_tracker_recorded"] is True
+    assert len(spy.calls) == 1
+    audit_path = _audit_record_path(repo_root, doc)
+    record = json.loads(audit_path.read_text())
+    assert record["outcome_detail"] == "not_authenticated"
+
+
+def test_w3_usage_present_derives_actual_tokens_not_char_estimate(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    envelope = _clean_envelope(
+        usage={
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 50,
+            "output_tokens": 9,
+        }
+    )
+    _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    argv = spy.calls[0]["argv"]
+    assert "--prompt-chars" not in argv
+    assert argv[argv.index("--actual-prompt-tokens") + 1] == str(2 + 100 + 50)
+    assert argv[argv.index("--actual-output-tokens") + 1] == "9"
+
+
+def test_w3_usage_absent_falls_back_to_char_estimate(repo_root, monkeypatch, capsys):
+    """T1.2's shape (empty stdout -> unparseable -> no envelope at all):
+    §5.1's char-estimate fallback, keyed on the --input-file byte length."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, raw="")
+    assert doc["outcome_detail"] == "unparseable"
+
+    input_len = len((repo_root / "input.txt").read_bytes())
+    argv = spy.calls[0]["argv"]
+    assert "--actual-prompt-tokens" not in argv
+    assert argv[argv.index("--prompt-chars") + 1] == str(input_len)
+    assert argv[argv.index("--output-chars") + 1] == "0"
+
+
+@pytest.mark.parametrize(
+    "malformed_usage",
+    [
+        pytest.param(
+            {"input_tokens": "garbage-not-a-number", "output_tokens": 9}, id="non-numeric-string"
+        ),
+        pytest.param({"input_tokens": float("nan"), "output_tokens": 9}, id="float-nan"),
+        pytest.param("not-a-dict-at-all", id="usage-not-a-dict"),
+        pytest.param(["also", "not", "a", "dict"], id="usage-is-a-list"),
+    ],
+)
+def test_w3_malformed_usage_degrades_to_char_estimate_never_crashes(
+    repo_root, monkeypatch, capsys, malformed_usage
+):
+    """code-reviewer finding 1 (W3 fix pass): `usage` is raw, unvalidated
+    envelope data. A malformed shape must degrade the token record to the
+    char-estimate fallback — never raise past `_record_token_usage` (which
+    would previously propagate through `_record_observability` -> `main()`'s
+    outermost handler and emit ZERO documents, violating §3.1's 'a silence
+    is never a result'). The document, its outcome/verdict, and the exit
+    code must all be unaffected."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    spy = _SubprocessRunSpy(returncode=0)
+    monkeypatch.setattr(cli.subprocess, "run", spy)
+
+    envelope = _clean_envelope(usage=malformed_usage)
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["verdict"] == "approve"
+    assert doc["observability"]["token_tracker_recorded"] is True
+    assert doc["observability"]["audit_record"] is not None
+
+    input_len = len((repo_root / "input.txt").read_bytes())
+    argv = spy.calls[0]["argv"]
+    assert "--actual-prompt-tokens" not in argv
+    assert argv[argv.index("--prompt-chars") + 1] == str(input_len)
+    assert argv[argv.index("--output-chars") + 1] == "0"
+
+
+def test_w3_bool_usage_values_do_not_crash(repo_root, monkeypatch, capsys):
+    """A bool is a valid Python int subtype (`int(True) == 1`), so this
+    shape does not hit _derive_actual_tokens' except clause the way the
+    other malformed shapes do — recorded as its own case so the distinction
+    from the crashing shapes above is explicit and the document is still
+    proven unaffected either way."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(usage={"input_tokens": True, "output_tokens": False})
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["verdict"] == "approve"
+    assert doc["observability"]["token_tracker_recorded"] is True
+
+
+def test_w3_audit_record_carries_no_prompt_or_finding_text(repo_root, monkeypatch, capsys):
+    """Constraint 3: the audit record carries no prompt text, no agent
+    output, no finding descriptions, and no file contents — only counts and
+    identity."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    marker_prompt_text = "this exact prompt text must never leak into the audit log 12345"
+    (repo_root / "input.txt").write_text(marker_prompt_text)
+    marker_finding_text = "this exact finding description must never leak into the audit log 67890"
+    marker_summary_text = "this exact summary text must never leak into the audit log 13579"
+    envelope = _clean_envelope(
+        result=json.dumps(
+            {
+                "verdict": "request_changes",
+                "summary": marker_summary_text,
+                "findings": [
+                    {
+                        "severity": "high",
+                        "files": ["scripts/automation/agent_invoke_cli.py"],
+                        "description": marker_finding_text,
+                        "fix": "do the thing",
+                    }
+                ],
+            }
+        )
+    )
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+    assert doc["summary"] == marker_summary_text  # confirms the payload really carried it
+
+    audit_path = _audit_record_path(repo_root, doc)
+    raw_record_text = audit_path.read_text()
+    assert marker_prompt_text not in raw_record_text
+    assert marker_finding_text not in raw_record_text
+    assert marker_summary_text not in raw_record_text
+    record = json.loads(raw_record_text)
+    assert set(record.keys()) == {
+        "event",
+        "timestamp",
+        "role",
+        "agent",
+        "dimension",
+        "binding",
+        "posture",
+        "outcome",
+        "outcome_detail",
+        "applicability",
+        "verdict",
+        "findings_count",
+        "blocking_findings_count",
+        "model",
+        "cli_version",
+        "duration_ms",
+        "timed_out",
+        "exit_code",
+        "num_turns",
+        "total_cost_usd",
+        "input_digest",
+        "session_id",
+    }
+    assert record["findings_count"] == 1
+    assert record["blocking_findings_count"] == 1
+
+
+def test_w3_role_read_from_hos_role_env(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+    monkeypatch.setenv("HOS_ROLE", "worker")
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+    audit_path = _audit_record_path(repo_root, doc)
+    assert json.loads(audit_path.read_text())["role"] == "worker"
+
+
+def test_w3_role_defaults_to_null_when_hos_role_unset(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+    monkeypatch.delenv("HOS_ROLE", raising=False)
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+    audit_path = _audit_record_path(repo_root, doc)
+    assert json.loads(audit_path.read_text())["role"] is None
+
+
+# --------------------------------------------------------------------------- #
+# security-reviewer MEDIUM (W3 fix pass 2) — `_write_audit_event`'s four
+# envelope-controlled fields (`outcome_detail`, `session_id`, `num_turns`,
+# `total_cost_usd`) must be type-checked and length-capped before entering
+# the committed, append-only audit log. Oversized string, wrong-typed value,
+# and missing value, for each field.
+# --------------------------------------------------------------------------- #
+
+
+def test_security_oversized_session_id_is_capped_in_audit_record(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    oversized = "s" * 10_000
+    envelope = _clean_envelope(session_id=oversized)
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["session_id"] == oversized[: cli._AUDIT_FIELD_MAX_LEN]
+    assert len(record["session_id"]) == cli._AUDIT_FIELD_MAX_LEN
+
+
+def test_security_wrong_typed_session_id_is_dropped_to_null(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(session_id={"nested": "object"})
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["session_id"] is None
+
+
+def test_security_missing_session_id_is_null(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope()
+    del envelope["session_id"]
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["session_id"] is None
+
+
+def test_security_oversized_outcome_detail_is_capped_in_audit_record(
+    repo_root, monkeypatch, capsys
+):
+    """`outcome_detail`'s `terminal_reason:<value>` catch-all (§3.7 rule 4)
+    embeds the envelope's raw, attacker-controlled `terminal_reason` string
+    verbatim — the length-cap applies here too, even though this field is
+    produced by our own code rather than read directly off the envelope."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    oversized_reason = "x" * 10_000
+    envelope = _clean_envelope(terminal_reason=oversized_reason)
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "invocation_failed"
+    full_detail = f"terminal_reason:{oversized_reason}"
+    assert (
+        doc["outcome_detail"] == full_detail
+    ), "the main document is NOT capped, only the audit record"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["outcome_detail"] == full_detail[: cli._AUDIT_FIELD_MAX_LEN]
+    assert len(record["outcome_detail"]) == cli._AUDIT_FIELD_MAX_LEN
+
+
+def test_security_null_outcome_detail_stays_null(repo_root, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope()
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    assert doc["outcome_detail"] is None
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["outcome_detail"] is None
+
+
+@pytest.mark.parametrize("field", ["num_turns", "total_cost_usd"])
+def test_security_wrong_typed_numeric_field_is_dropped_to_null(
+    repo_root, monkeypatch, capsys, field
+):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(**{field: "not-a-number"})
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record[field] is None
+
+
+@pytest.mark.parametrize("field", ["num_turns", "total_cost_usd"])
+def test_security_oversized_numeric_field_is_dropped_to_null(repo_root, monkeypatch, capsys, field):
+    """An attacker-controlled envelope integer literal has no Python-side
+    magnitude limit — a value whose str() form would itself be an oversized
+    audit-record entry is rejected outright (never truncated: truncating a
+    number's digits would silently corrupt its meaning, unlike truncating
+    free text)."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    huge_number = int("9" * 600)
+    envelope = _clean_envelope(**{field: huge_number})
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record[field] is None
+
+
+@pytest.mark.parametrize("field", ["num_turns", "total_cost_usd"])
+def test_security_bool_numeric_field_is_dropped_to_null(repo_root, monkeypatch, capsys, field):
+    """`isinstance(True, int)` is True in Python — the same trap
+    `_classify_refused` already guards against for `subagent_stats.refused`;
+    a bool must not silently pass the numeric-field guard as 0 or 1."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(**{field: True})
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record[field] is None
+
+
+@pytest.mark.parametrize("field", ["num_turns", "total_cost_usd"])
+def test_security_missing_numeric_field_is_null(repo_root, monkeypatch, capsys, field):
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope()
+    del envelope[field]
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    assert doc["outcome"] == "completed"
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record[field] is None
+
+
+def test_security_valid_numeric_fields_pass_through_unchanged(repo_root, monkeypatch, capsys):
+    """The positive case, so the guard is proven to not over-reject a
+    well-formed record — native JSON int/float types, matching TD §4.1/§5.2's
+    documented shape (never stringified)."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(num_turns=7, total_cost_usd=0.1246)
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["num_turns"] == 7
+    assert record["total_cost_usd"] == 0.1246
+    assert isinstance(record["num_turns"], int)
+    assert isinstance(record["total_cost_usd"], float)
+
+
+def test_security_no_control_character_double_escaping(repo_root, monkeypatch, capsys):
+    """Explicitly NOT adding a second escaping layer: audit_log.canonical_bytes
+    already serializes with json.dumps(..., ensure_ascii=False), which
+    escapes control characters on its own. A newline in an envelope-derived
+    string must round-trip through JSON exactly once, not be double-escaped
+    into literal backslash-n characters."""
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    monkeypatch.setattr(cli, "_capture_cli_version", lambda: "2.1.271")
+    monkeypatch.setattr(cli.subprocess, "run", _SubprocessRunSpy(returncode=0))
+
+    envelope = _clean_envelope(session_id="line-one\nline-two")
+    rc, doc = _invoke_with_envelope(repo_root, monkeypatch, capsys, envelope)
+
+    assert rc == 0
+    record = json.loads(_audit_record_path(repo_root, doc).read_text())
+    assert record["session_id"] == "line-one\nline-two"
+
+
+# --------------------------------------------------------------------------- #
 # AD-7.9 (ADR-1643 Amendment 5 §10.8) — the live-CLI re-probe obligation.
 #
 # AD-7.1/AD-7.2 are behavioural properties of an external tool, and #1670

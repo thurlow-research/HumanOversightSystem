@@ -21,6 +21,23 @@ below is designed to be implementable without further design questions.
 > §3.3, §8, §9.1 and §13 amended to match. A coder implementing §3.9 without Amendment A will reproduce
 > the defect.
 
+> **AMENDED 2026-09-18 — Amendment B (the `token_tracker` call rule). Binding on W3.** §5.1 named exactly
+> one case in which `token_tracker.py record` is not called (`--not-applicable`, "nothing was spent") and
+> said nothing about the four preflight-failure outcomes — `agent_unavailable`, `posture_invalid`,
+> `not_authenticated` (P7), `cli_unavailable` — which also launch no process. The coder read the silence
+> as a deliberate single exemption and recorded a char-estimate entry for all four; `code-reviewer` read
+> it as an omission. **This design said too little**: one named exemption plus four outcome classes left
+> to inference is not a contract. The ruling is **TD-D24** (§5.1): *`token_tracker` is called if and only if
+> the `claude` subprocess was launched*, with an exhaustive per-outcome-class table, so no outcome is
+> decided by inference again. The four preflight failures therefore do **not** record — a fallback entry
+> there is proportional to the real input file (`_emit_preflight_document` reads and hashes it), so it is
+> a phantom non-zero spend flagged `"estimated": true`, not a harmless zero. §9.3 (T3.8 amended, T3.10
+> added) and §13 are amended to match. Post-launch failures — `timeout`, `unparseable`, `crash`, and
+> `not_authenticated` reached via the §3.7 classifier — are **unchanged** and still record. **One
+> consequential correction rides along:** §3.7's enumeration of the pre-flight details said "three" over
+> a list of four — the exact set TD-D24 keys on — and is corrected to "four" under this amendment rather
+> than a new one.
+
 **Date:** 2026-09-14 (original), amended 2026-09-16 (Amendment A)
 **Iteration:** 1 of 5
 **Author:** technical-design
@@ -884,9 +901,15 @@ and is set for diagnosability:
 9. payload fails the strict AD-6 body parse ⟹ **`schema_violation`**
 10. otherwise ⟹ `outcome: completed`, `outcome_detail: null`
 
-Plus the three pre-flight details that never reach `classify` because no process is launched:
-**`agent_unavailable`** (P3/P4), **`posture_invalid`** (P5/V2–V11), **`not_authenticated`** (P7),
-**`cli_unavailable`** (P8).
+Plus the **four** pre-flight details that never reach `classify` because no process is launched:
+**`agent_unavailable`** (P3/P4), **`posture_invalid`** (P5/V2–V14), **`not_authenticated`** (P7),
+**`cli_unavailable`** (P8). (**Amendment B, 2026-09-18:** this sentence read "three" while listing four —
+a count error corrected here because **§5.1 TD-D24 keys on exactly this set**, and because a clause that
+says "three" over a list of four invites a reader to treat one of them as not really belonging, which is
+a plausible contributing cause of the §5.1 omission Amendment B exists to close. The parenthetical
+`V2–V11` is widened to `V2–V14` on the same line to match §3.6's table, which ADR-1643 Amendment 5
+extended with V12–V14 — all three also produce `posture_invalid`.) **The four are exactly the rows
+§5.1's table marks "Not called", together with `--not-applicable`; there is no fifth.**
 
 **The one rule that is not negotiable (AD-4, AD-6):**
 > `outcome == "invocation_failed"` ⟹ `verdict == "error"` in the emitted document, **always**, whatever
@@ -1256,10 +1279,90 @@ cwd=<repo_root>, stdout=PIPE, stderr=PIPE, timeout=15
 - Token derivation from the envelope's `usage`, when present:
   `prompt_tokens = input_tokens + cache_creation_input_tokens + cache_read_input_tokens`;
   `output_tokens = output_tokens`. All four keys default to 0 if absent.
-- When `usage` is absent (an `unparseable` or `timeout` outcome), fall back to the existing char
-  estimate: pass `--prompt-chars <len(input bytes)> --output-chars 0` instead. `token_tracker` already
-  marks these `"estimated": true` (`:104`).
-- Never called for a `--not-applicable` document (nothing was spent).
+- When `usage` is absent **on a post-launch outcome** (`unparseable`, `timeout`, `crash` — a call that
+  happened whose counts cannot be read), fall back to the existing char estimate: pass
+  `--prompt-chars <len(input bytes)> --output-chars 0` instead. `token_tracker` already marks these
+  `"estimated": true` (`:104`). **The fallback is post-launch-only** — it is never the representation of
+  a call that did not happen (TD-D24).
+- **When it is called, and when it is not: see TD-D24 below.** (This bullet previously read only
+  "Never called for a `--not-applicable` document (nothing was spent)" — that wording named one exemption
+  and left the **four** pre-flight classes of §3.7 to inference. Amendment B replaces it. The post-launch
+  classes were never in doubt: the two bullets above already cover them.)
+
+**TD-D24 — AMENDED 2026-09-18, Amendment B. The call rule, stated for every outcome class. Binding on
+W3.** The original text named exactly one exemption and was silent on the four preflight-failure details
+(`agent_unavailable`, `posture_invalid`, `not_authenticated`, `cli_unavailable`), none of which launches a
+process either. The coder read the silence as *deliberate* — one named exemption, everything else records.
+`code-reviewer` read it as an *omission* — the stated rationale ("nothing was spent") applies to all five
+with equal force. **Both readings are supportable from the text, which is the defect.** The rule is:
+
+> **`token_tracker.py record` is called if and only if the `claude` subprocess was launched** — that is,
+> only on a path that reaches `run_capped` (§3.5). *Launching is the entire test.* Whether the launched
+> process then succeeded, timed out, crashed, or emitted unparseable stdout is irrelevant — all of those
+> spent tokens and all of them record. Whether the invocation was "attempted" in some looser sense is
+> equally irrelevant — if no process was launched, there is no spend to record.
+
+| Emission path | `outcome` / `outcome_detail` | Launched? | `token_tracker` | Audit record (§5.2) |
+|---|---|---|---|---|
+| `--not-applicable` (§4.5) | `not_applicable` | No | **Not called** | **Written** |
+| P3/P4 | `invocation_failed` / `agent_unavailable` | No | **Not called** | **Written** |
+| P5, V2–V14 (§3.6) | `invocation_failed` / `posture_invalid` | No | **Not called** | **Written** |
+| P7 (pre-launch auth) | `invocation_failed` / `not_authenticated` | No | **Not called** | **Written** |
+| P8 | `invocation_failed` / `cli_unavailable` | No | **Not called** | **Written** |
+| post-launch | `completed` | Yes | **Called** — actual counts from `usage` | **Written** |
+| post-launch | `invocation_failed` / any §3.7 detail: `timeout`, `unparseable`, `envelope_shape_violation`, `crash`, `permission_denied`, `refused`, `schema_violation`, `usage_limit`, `api_error`, `max_turns`, `refusal`, `terminal_reason:<value>`, **and `not_authenticated` reached via §3.7 step 4** | Yes | **Called** — `usage` when present, else the char-estimate fallback | **Written** |
+
+The table is exhaustive over the emission paths this design defines. **A path that emits no document
+(exit 1, exit 2 — §3.3) calls neither writer**, because there is no `observability` block to report the
+result in; this includes `Popen` itself raising after P8 passed, which reaches `main()`'s top-level
+handler as exit 1 and emits nothing. Any outcome class added to §3.7 later is classified by the
+iff-rule above, not by extending this table — the table is the rule's current expansion, not its source.
+
+**The two `not_authenticated` rows are different events and are decided by the test, not by the label.**
+The P7 row is a pre-launch environment check that never contacts the API; the §3.7 step-4 row means the
+CLI *ran*, reached the API and came back "not logged in" — that one spent tokens and must be recorded.
+An implementation that keys on `outcome_detail` alone will get this pair wrong; key on "did we reach
+`run_capped`".
+
+**Why not-called, and not a nominal-zero record, for the five non-launching paths:**
+1. **The char-estimate fallback is not a zero.** `token_tracker.estimate_tokens` is
+   `max(1, round(chars / 4))`, and `_emit_preflight_document` independently reads and hashes
+   `--input-file` for its `input_file_sha256` — so the byte length is in hand and a fallback record would
+   be *proportional to the real input*. For the P7 and P8 rows this is guaranteed non-trivial, because
+   P6 has already validated that the input file exists and is non-empty: a 48 KB review input records
+   ~12,000 prompt tokens for a call that never happened. This is the concrete consequence the "one named
+   exemption" reading did not account for, and it is the reason the ambiguity is not harmless.
+2. **It would be recorded as `"estimated": true`, which is a claim about a real spend.** That flag means
+   *"a call happened and we could not get exact counts"* — it is not a null marker. Such records count
+   in `by_vendor["claude"]["calls"]`, add to the vendor total, add to the `dimension:<dimension>` stage
+   bar (which is **normalised against the largest stage**, so one dimension failing preflight repeatedly
+   can dominate the ranking of where tokens actually go), and raise the report's
+   "⚠ Some counts are estimated" notice. `token_tracker.py`'s stated purpose is usage tracking and
+   subscription impact; a phantom entry degrades exactly that.
+3. **The design already implied this reading and should have said it.** The fallback bullet above
+   introduces the char estimate for "an `unparseable` or `timeout` outcome" — both **post-launch**. The
+   fallback was specified for *a call that happened whose counts we cannot read*, never for *a call that
+   did not happen*.
+4. **The diagnostic signal is not lost — it has a better home.** "This dimension keeps failing preflight"
+   is a real thing to want to see, and §5.2 already delivers it: **one audit record per invocation,
+   including every `invocation_failed` one**, carrying `outcome`, `outcome_detail`, `agent`, `dimension`,
+   `binding`, `posture` and `input_digest`. That log is committed and durable; `token-usage.jsonl` lives
+   under `.claudetmp/` and is ephemeral. Counting failures in the *spend* report would put a weaker copy
+   of the signal in the wrong ledger — and would put it there in a unit (tokens) that is false.
+5. **No zero-cost record form is available without a new mechanism.** `token_tracker.py`'s only
+   zero-token path is `--review-event`, whose semantics are REQ-255-25/26/27 (a *review* outcome,
+   excluded from token totals). Overloading it for preflight failures would need a new `--outcome` value
+   and would redefine an existing contract — outside W3 and against REQ-A10 / CLAUDE.md search-first.
+
+**Implementation note (contract, not code):** the existing `skip_token_tracker` parameter on the shared
+observability writer is the correct seam and needs no new one — it must be **true on all five
+non-launching emission paths** and false only on the post-launch path. The audit record is written on
+every one of the seven rows regardless; `skip_token_tracker` must never gate it.
+
+- **`observability.token_tracker_recorded` on a non-calling path is `false`.** It is a record of whether
+  a record was written, not a claim that one was owed; `outcome`/`applicability` in the same document
+  distinguish "not owed" from "owed and failed", so no third state is added. **No new field** (§4.2's
+  schema is unchanged by Amendment B).
 - Non-zero rc, timeout, or exception ⟹ `observability.token_tracker_recorded = false`, one stderr line,
   and nothing else.
 
@@ -2133,7 +2236,8 @@ host's `PATH`.
 
 T3.1 `token_tracker` is invoked as a subprocess with `cwd=repo_root` and its stdout captured (spy).
 T3.2 `--actual-prompt-tokens`/`--actual-output-tokens` are derived from `usage` per §5.1's formula.
-T3.3 A missing `usage` falls back to `--prompt-chars`.
+T3.3 A missing `usage` **on a post-launch outcome** (`timeout`, `unparseable`, `crash`) falls back to
+`--prompt-chars`. (Amendment B: the fallback is post-launch-only — see T3.10.)
 T3.4 A `token_tracker` non-zero exit sets `observability.token_tracker_recorded=false` and **does not**
 change `outcome`, `verdict`, or the exit code.
 T3.5 One `audit_log.write_event` call per invocation, with `root=repo_root` and a `timestamp` field.
@@ -2141,6 +2245,15 @@ T3.6 The audit record contains **no** prompt text, no finding `description`, and
 (assert by scanning the serialized record for a canary string planted in the input file and in a finding).
 T3.7 `write_event` raising sets `observability.audit_record=None` and does not change the exit code.
 T3.8 A `not_applicable` document still writes an audit record and does **not** call `token_tracker`.
+T3.10 **(Amendment B, TD-D24.)** **One test per preflight-failure outcome** — `agent_unavailable`,
+`posture_invalid`, `not_authenticated` (P7), `cli_unavailable` — each asserting, with a real non-empty
+`--input-file` present on disk, that **no `token_tracker` subprocess is spawned at all** (spy on the
+subprocess seam; asserting "recorded zero tokens" would pass against the defect this closes, since the
+char estimate is `max(1, …)` and never zero), **and** that the audit record for the same invocation *is*
+written with the matching `outcome_detail`. Paired with T3.11: a **post-launch** `not_authenticated`
+(reached via §3.7 step 4, envelope `terminal_reason: "api_error"` + `/not logged in/i`) **does** call
+`token_tracker` — the two `not_authenticated` rows must be pinned as different events, or an
+implementation keyed on `outcome_detail` alone passes T3.10 and is still wrong.
 T3.9 `terminal_reason:"usage_limit"` emits the `usage limit reached` stderr line **matching
 `bin/hos-cron`'s grep pattern `usage limit reached|hit your (session|weekly|opus) limit` verbatim** — the
 test asserts against the pattern, not against a copy of the phrase, so the two cannot drift.
@@ -2350,6 +2463,35 @@ technical design, before any code was written against it?"*
     an existing test's expectation (a `PATH` with no `python3` is no longer fatal). Any sign-off that
     read that test as evidence of fail-closed behaviour was reading a property that has moved to P0, and
     must confirm it there.
+- **The `token_tracker` call rule (Amendment B, 2026-09-18).** **Yes — this should have been settled
+  before W3 was written, and it is a `startup-artifact-gap` of the same family as Amendment A: a clause
+  that stated a rule for one case and left the rest to inference.** §5.1 named `--not-applicable` as the
+  sole exemption and gave the correct *reason* ("nothing was spent") without noticing that the reason
+  covers four further outcome classes. Two agents read the same sentence to opposite conclusions, which
+  is the definition of an under-specified contract, not a disagreement about it. **Recommend a
+  `startup-artifact-gap` issue** (filed by the orchestrating session, per this section's standing
+  practice), naming the general form: *a design clause that names an exemption must enumerate the
+  outcome classes it does not exempt, or state the property that decides them* — TD-D24 now states the
+  property (was a process launched?) and enumerates the expansion. Severity is lower than Amendment A's:
+  this is an **observability-accuracy** defect, not a gating one. §5's governing rule (carried from
+  ADR-1604 AD-4) is that **no decision in this design may read a token record**, so no verdict, exit code
+  or merge outcome was ever affected by the reading in force. **Affected-sign-offs analysis:**
+  - **Stand, unchanged** — everything outside the `token_tracker` call decision: §3.3 exit codes, §3.4
+    P1–P8 *ordering and failure details* (the preflight documents themselves are unchanged in content —
+    same `outcome`, `outcome_detail`, `verdict`, `input_block`, `input_digest`), §3.6, §3.7, §4's schema
+    and round-trip obligations, §5.2's audit record (written on every path before and after), §5.3. No
+    sign-off on any of those is orphaned, and the `observability` block gains **no new field**.
+  - **Orphaned until re-reviewed against TD-D24** — only the W3 hunks that decide the call: the
+    `skip_token_tracker` argument at the preflight-failure emission site, and the input-byte-length plumbed
+    into it. That code was written to the *old* clause and does what that clause could be read to say, so
+    this is a design correction, not a coder defect. It needs `code-reviewer` only — **no security,
+    privacy or reliability re-review is triggered**: the change *removes* a subprocess spawn and a write,
+    adds no input, no field and no branch on untrusted data, and touches no protected surface.
+  - **Re-read, not merely re-run** — any W3 test asserting that a preflight-failure document records a
+    token entry is now asserting the defect and must be **inverted**, not deleted (T3.10 replaces it).
+    T3.3's own expectation is narrowed from "a missing `usage` falls back" to "a missing `usage`
+    *post-launch* falls back"; a sign-off that read T3.3 as covering the preflight paths was reading
+    coverage that never existed.
 - **Nothing else.** W1–W5 are all new build. As of the original draft, no code had been approved against
   any contract this document changed, so no prior sign-off was invalidated by it — and the draft noted
   that this *"will stop being true the moment W1 lands"*. **It has: W1 landed as `60360661` / PR #1720,
@@ -2476,3 +2618,63 @@ host whose system interpreter legitimately carries PyYAML.
 **Not done here:** no application code, no test code, and no script was written by this ruling — only this
 document. No sign-off register entry (`technical-design` writes none). No issue filed: §13 **recommends**
 a `startup-artifact-gap` issue and the orchestrating session files it.
+
+---
+
+## Self-flag — Amendment B (2026-09-18, the `token_tracker` call rule)
+
+**RISK: LOW.** Amendment B changes no gating behaviour and no schema. §5's governing rule (carried verbatim
+from ADR-1604 AD-4) is that **no decision in this design may read a token record**, so neither reading of
+the old clause could ever have changed a `verdict`, an `outcome`, or an exit code. What was at stake is
+the accuracy of one ephemeral report. The ruling *reduces* what W3 does on the **four** paths it changes
+(`--not-applicable`, the fifth non-launching path, already skipped under the old clause): one fewer
+subprocess spawn, one fewer write, no new input, no new field, no new branch. It does not touch a
+protected surface, and it does not alter the content of any emitted document.
+
+**CONFIDENCE:**
+- **HIGH on the factual claim**, verified in the tree this session rather than taken from either agent:
+  `_emit_preflight_document` reads and hashes `--input-file` when present and carries the byte length
+  into the shared observability writer with `skip_token_tracker=False`, which with `usage=None` passes
+  `--prompt-chars <real byte length>`; `token_tracker.estimate_tokens` is `max(1, round(chars / 4))`, so
+  the recorded estimate is proportional to the real input and is never zero. For the P7/P8 rows P6 has
+  already proven the input file non-empty, so the phantom spend there is guaranteed material, not
+  hypothetical. `code-reviewer`'s finding is **confirmed**, and is confirmed one step further than it was
+  stated: it holds for all four preflight outcomes, not only the two it named.
+- **HIGH on the ruling.** §5.1 records five reasons; **three of them are independent of each other** and
+  each would carry the ruling alone (reason 3 — the fallback bullet was already written in terms of
+  post-launch outcomes only; reason 2 — `"estimated": true` is a positive claim about a real call, not a
+  null marker; reason 4 — §5.2's audit record already carries the failure signal in a committed ledger in
+  a unit that is true). Reasons 1 and 5 are corroborating, not load-bearing: reason 1 establishes the
+  *magnitude* of the defect rather than its existence, and reason 5 closes the one alternative remedy. The counter-case — "a preflight failure is a legitimate signal worth keeping" — is
+  **accepted as a real need and satisfied elsewhere**, not dismissed: §5.2 writes one record per
+  invocation including every `invocation_failed` one. The coder's reading was a reasonable construction
+  of a bad clause; the clause is what is being corrected.
+- **HIGH that the iff-rule closes the ambiguity class.** "Was a process launched?" is decidable at every
+  emission site, admits no third answer, and classifies any outcome added to §3.7 later without a further
+  ruling — which the enumerated table alone would not do.
+- **MEDIUM on T3.10's framing being adopted as written.** The trap it guards (asserting "recorded zero"
+  instead of "did not spawn") would pass against the very defect being closed, and the paired T3.11
+  (post-launch `not_authenticated` *does* record) is the one an implementer keying on `outcome_detail` is
+  most likely to skip. If either is dropped in implementation, the regression is silent.
+
+**BLAST RADIUS:** this document only — §5.1 (TD-D24 + the amended bullet), §9.3 (T3.3 narrowed, T3.8
+extended by T3.10/T3.11), §13 (one bullet), §3.7 (**the count correction only** — "three" → "four" over
+an unchanged list, and `V2–V11` → `V2–V14` on the same line to match §3.6's post-Amendment-5 table; **no
+classifier rule, precedence step, or detail value is touched**), and the header banner. Downstream, the
+coder's change is confined to the `skip_token_tracker` argument at the preflight-failure emission site in
+`scripts/automation/agent_invoke_cli.py` and the W3 tests. **Not touched:** the document schema, the
+classifier's rules C1–C8 and precedence 1–10, the preconditions, the posture rules, §5.2's audit record,
+§5.3, and every W4–W8 seam.
+
+**Change classification: CLARIFYING.** No contract is reversed — the clause had no stated rule for the
+four outcomes to reverse, which is the defect. No new surface, no new field, no new outcome class, no
+new mechanism. Not additive and not structural, so no pre-write human escalation was required and this
+block is a LOW self-flag recorded for traceability rather than a MEDIUM-or-above gate. **`architect` is
+notified** (a design-contract edit under §5.1's W3 scope), but no architecture decision is implicated:
+AD-8 mandates that observability exist and ADR-1604 AD-4 forbids reading it for decisions; *which
+non-spending paths write a spend record* is a detail AD-8 left to this document, and it is settled here.
+
+**Not done here:** no application code and no test code was written by this ruling — `agent_invoke_cli.py`
+was read, not edited, and the coder implements TD-D24. No sign-off register entry (`technical-design`
+writes none). No issue filed: §13 **recommends** a `startup-artifact-gap` issue and the orchestrating
+session files it.

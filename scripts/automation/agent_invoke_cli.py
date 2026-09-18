@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -158,6 +159,17 @@ POSTURE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _BASH_SCRIPT_ALLOW_RE = re.compile(r"^Bash\(([^\s)]+)")
 
 KNOWN_POSTURES = frozenset({"review-read-only", "review-read-only-gh-read"})
+
+# Severities that count toward the audit record's blocking_findings_count
+# (§5.2). Not imported: mirrors SEVERITIES above — copied here as a literal
+# from scripts/oversight/validation_logic.py's own BLOCKING_SEVERITIES and
+# must be kept in sync by hand if that constant ever changes.
+_BLOCKING_SEVERITIES = frozenset({"critical", "high", "blocking"})
+
+# Lazily-loaded scripts/oversight/lib/audit_log.py module (TD-D1). Populated
+# on first use by _load_audit_log_module(), never at import time (§3.1: this
+# module's own import must perform no I/O).
+_AUDIT_LOG_MODULE = None
 
 DEFAULT_TIMEOUT_S = 300
 MIN_TIMEOUT_S = 30
@@ -910,6 +922,7 @@ def build_document(
     posture: str | None,
     input_block: dict,
     invocation_block: dict,
+    observability: dict,
 ) -> dict:
     """AD-6's document assembler. Field order is fixed (not
     `sort_keys=True`) so two documents diff readably; `main()` serialises
@@ -919,7 +932,9 @@ def build_document(
     site (see `_verdict_for_outcome`), never here — this function assembles
     what it is given and asserts nothing about the relationship itself, so a
     caller bug can't silently launder an unenforced invariant through a
-    default."""
+    default. `observability` is likewise assembled by the caller
+    (`_record_observability`, §5) before this function runs — never here —
+    so this stays a pure assembler with no I/O of its own."""
     return {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -939,10 +954,7 @@ def build_document(
         "posture": posture,
         "input": input_block,
         "invocation": invocation_block,
-        "observability": {
-            "token_tracker_recorded": False,
-            "audit_record": None,
-        },
+        "observability": observability,
     }
 
 
@@ -965,6 +977,332 @@ def _ad_hoc_applicability_reason(binding: str | None) -> str:
     if binding:
         return "matched by binding"
     return "invoked directly (no binding)"
+
+
+# ---------------------------------------------------------------------------
+# W3 — observability (AD-8, TD §5)
+#
+# Governing rule, carried forward verbatim from ADR-1604 AD-4: no decision in
+# this module — or downstream — may read an audit event or a token record.
+# Both writes below are therefore non-fatal: a failure is recorded in
+# `observability` and in stderr, and never changes `outcome`, `verdict`, or
+# the exit code. If either write is silently lost, this mechanism degrades to
+# *less observable*, never to *not gating*.
+# ---------------------------------------------------------------------------
+
+
+def _load_audit_log_module():
+    """Load scripts/oversight/lib/audit_log.py by file path (TD-D1, mirrors
+    scripts/automation/lib/merge_authority.py's `_load_audit_log`) —
+    `scripts/oversight` is not an importable package (no `__init__.py`).
+    Loaded lazily, on first use inside a call and cached module-globally,
+    never at module import time (§3.1: importing this module must perform no
+    I/O)."""
+    global _AUDIT_LOG_MODULE
+    if _AUDIT_LOG_MODULE is None:
+        path = _DEFAULT_REPO_ROOT / "scripts" / "oversight" / "lib" / "audit_log.py"
+        spec = importlib.util.spec_from_file_location("hos_audit_log", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        _AUDIT_LOG_MODULE = mod
+    return _AUDIT_LOG_MODULE
+
+
+def _audit_write_event(event: dict, *, root: str) -> str:
+    """One-line indirection around the lazily-loaded `audit_log.write_event`
+    (TD-VF-9) so tests can monkeypatch this call site directly instead of
+    reaching into the lazy-load machinery."""
+    return _load_audit_log_module().write_event(event, root=root)
+
+
+def _derive_actual_tokens(usage: dict) -> tuple[int, int] | None:
+    """Best-effort token derivation from the envelope's `usage` block
+    (§5.1). Returns `None` on ANY malformed shape — `usage` isn't a dict,
+    a value isn't int()-able (a non-numeric string, a float NaN, etc.) — so
+    the caller degrades to the char-estimate fallback exactly as it does
+    when `usage` is absent outright.
+
+    `usage` is raw, unvalidated envelope data (never type-checked by
+    `classify()`, unlike the decision fields it does check — cf.
+    `_classify_refused`'s bool/shape guards), and this path is pure
+    observability (AD-8: never read by any decision) — so a malformed
+    value here must degrade the RECORD's precision, never the module's
+    ability to run at all (code-reviewer finding 1, W3 fix pass)."""
+    try:
+        prompt_tokens = (
+            int(usage.get("input_tokens") or 0)
+            + int(usage.get("cache_creation_input_tokens") or 0)
+            + int(usage.get("cache_read_input_tokens") or 0)
+        )
+        output_tokens = int(usage.get("output_tokens") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return prompt_tokens, output_tokens
+
+
+def _record_token_usage(
+    repo_root: Path,
+    *,
+    dimension: str,
+    step: str | None,
+    usage: dict | None,
+    input_byte_len: int,
+) -> bool:
+    """TD §5.1 — `token_tracker.py` wiring, invoked as a SUBPROCESS, never
+    in-process (TD-D17, TD-VF-8): `record()` writes to a cwd-relative path
+    and prints to stdout; in-process it would land the record wherever this
+    CLI happens to run and would corrupt L2's one-JSON-object stdout
+    contract (§3.1, §3.8 rule 6). `claude` is already an accepted `--vendor`
+    value (`token_tracker.py:249`) — no new mechanism (REQ-A10).
+
+    Non-fatal: a non-zero rc, a timeout, a malformed `usage` shape, or an
+    exception is reported with exactly one stderr line and returns False (or,
+    for a malformed `usage`, degrades to the char-estimate path below rather
+    than failing outright); the caller (`_record_observability`) folds a
+    `False` return into `observability.token_tracker_recorded`."""
+    argv = [
+        sys.executable,
+        str(repo_root / "scripts" / "oversight" / "token_tracker.py"),
+        "record",
+        "--vendor",
+        "claude",
+        "--stage",
+        f"dimension:{dimension}",
+        "--step",
+        step or "",
+    ]
+    derived = _derive_actual_tokens(usage) if usage else None
+    if derived is not None:
+        prompt_tokens, output_tokens = derived
+        argv += [
+            "--actual-prompt-tokens",
+            str(prompt_tokens),
+            "--actual-output-tokens",
+            str(output_tokens),
+        ]
+    else:
+        # usage absent OR malformed (an unparseable/timeout outcome, no
+        # process ever launched, or a shape _derive_actual_tokens rejected)
+        # — fall back to the char estimate; token_tracker already marks
+        # these "estimated": true (:104).
+        argv += ["--prompt-chars", str(input_byte_len), "--output-chars", "0"]
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(repo_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"agent_invoke: token_tracker not recorded: {exc}", file=sys.stderr)
+        return False
+    if proc.returncode != 0:
+        print(f"agent_invoke: token_tracker not recorded: exit {proc.returncode}", file=sys.stderr)
+        return False
+    return True
+
+
+# Fixed-length cap applied to every envelope-controlled audit-record field
+# below (security-reviewer MEDIUM, W3 fix pass 2). audit/log/ is a committed,
+# append-only tree that cannot be cheaply purged from history, so an
+# unbounded envelope-controlled value is a repo-bloat vector, not a gating
+# one — hence a cap, not a rejection-that-blocks-anything.
+_AUDIT_FIELD_MAX_LEN = 500
+
+
+def _bounded_audit_str(value: object) -> str | None:
+    """Type-check + length-cap for an audit-record STRING field sourced from
+    untrusted CLI envelope data (`session_id`; the `terminal_reason:<value>`
+    tail folded into `outcome_detail`). Mirrors `classify()`'s own
+    envelope-guard idiom (isinstance first, reject the wrong shape) rather
+    than inventing a new validation style — same as `_classify_refused`'s
+    treatment of `subagent_stats.refused`. `None` is a valid, expected
+    absence and passes through unchanged; any other non-string value is a
+    shape violation and is dropped to `None` (this is a best-effort
+    OBSERVABILITY field — AD-8: never read by any decision — so dropping the
+    bad value is the correct degradation, not a raise)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    return value[:_AUDIT_FIELD_MAX_LEN]
+
+
+def _bounded_audit_number(value: object) -> int | float | None:
+    """Type-check + length-cap for an audit-record NUMERIC field sourced
+    from untrusted CLI envelope data (`num_turns`, `total_cost_usd`).
+    Shape-checked as numeric, not blindly stringified: excludes `bool`
+    explicitly (`isinstance(True, int)` is True in Python — the same trap
+    `_classify_refused` already guards against for `subagent_stats.refused`)
+    and rejects a value whose `str()` form would itself make an oversized
+    record (an attacker-controlled envelope integer literal has no
+    Python-side magnitude limit). The value's native JSON type (int/float)
+    is preserved on success — never converted to a string — matching the
+    document shape TD §4.1/§5.2 already show for these two fields."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if len(str(value)) > _AUDIT_FIELD_MAX_LEN:
+        return None
+    return value
+
+
+def _write_audit_event(
+    repo_root: Path,
+    *,
+    timestamp: str,
+    agent: str,
+    dimension: str,
+    binding: str | None,
+    posture: str | None,
+    outcome: str,
+    outcome_detail: str | None,
+    applicability: str,
+    verdict: str,
+    findings: list[dict],
+    model: str | None,
+    cli_version: str | None,
+    duration_ms: int,
+    timed_out: bool,
+    exit_code: int | None,
+    num_turns: int | None,
+    total_cost_usd: float | None,
+    input_digest: str,
+    session_id: str | None,
+) -> str | None:
+    """TD §5.2 — one per-invocation audit record, written through
+    `audit_log.write_event()` (TD-VF-9). Called for EVERY emitted document,
+    including `--not-applicable` ones and every `invocation_failed` one.
+
+    Carries no prompt text, no agent output, no finding descriptions, and no
+    file contents (constraint 3) — only counts and identity; the audit log
+    is committed, review prose and diff excerpts are not audit data.
+
+    `outcome_detail`, `session_id`, `num_turns`, and `total_cost_usd` are
+    envelope-controlled (untrusted CLI stdout) and are passed through
+    `_bounded_audit_str`/`_bounded_audit_number` before entering `event` —
+    the same isinstance-guard idiom `classify()` already applies to every
+    other envelope field it touches, closing the one gap in that pattern
+    (security-reviewer MEDIUM, W3 fix pass 2). No control-character or
+    newline escaping is added here: `audit_log.canonical_bytes` already
+    serializes with `json.dumps(..., ensure_ascii=False)`, which escapes
+    every control character, so an injection-style bypass of the
+    one-file-per-record JSON shard format is not reachable through this
+    field set; adding a second escaping layer here would only double-escape.
+
+    Non-fatal: `write_event` raising (a hash collision on non-identical
+    bytes is its only documented raise) is caught here, reported as one
+    stderr line, and folded by the caller into `observability.audit_record =
+    None`."""
+    blocking_findings_count = sum(
+        1 for f in findings if str(f.get("severity", "")).lower() in _BLOCKING_SEVERITIES
+    )
+    event = {
+        "event": "agent-invocation",
+        "timestamp": timestamp,
+        "role": os.environ.get("HOS_ROLE") or None,
+        "agent": agent,
+        "dimension": dimension,
+        "binding": binding,
+        "posture": posture,
+        "outcome": outcome,
+        "outcome_detail": _bounded_audit_str(outcome_detail),
+        "applicability": applicability,
+        "verdict": verdict,
+        "findings_count": len(findings),
+        "blocking_findings_count": blocking_findings_count,
+        "model": model,
+        "cli_version": cli_version,
+        "duration_ms": duration_ms,
+        "timed_out": timed_out,
+        "exit_code": exit_code,
+        "num_turns": _bounded_audit_number(num_turns),
+        "total_cost_usd": _bounded_audit_number(total_cost_usd),
+        "input_digest": input_digest,
+        "session_id": _bounded_audit_str(session_id),
+    }
+    try:
+        return _audit_write_event(event, root=str(repo_root))
+    except Exception as exc:  # noqa: BLE001 — non-fatal per this section's governing rule
+        print(f"agent_invoke: audit record not written: {exc}", file=sys.stderr)
+        return None
+
+
+def _record_observability(
+    repo_root: Path,
+    *,
+    skip_token_tracker: bool,
+    dimension: str,
+    step: str | None,
+    usage: dict | None,
+    input_byte_len: int,
+    timestamp: str,
+    agent: str,
+    binding: str | None,
+    posture: str | None,
+    outcome: str,
+    outcome_detail: str | None,
+    applicability: str,
+    verdict: str,
+    findings: list[dict],
+    model: str | None,
+    cli_version: str | None,
+    duration_ms: int,
+    timed_out: bool,
+    exit_code: int | None,
+    num_turns: int | None,
+    total_cost_usd: float | None,
+    input_digest: str,
+    session_id: str | None,
+) -> dict:
+    """TD §5 — assembles the `observability` block for exactly one emitted
+    document. `skip_token_tracker` is TD-D24's (§5.1 Amendment B) iff-rule,
+    decided by the CALLER: True whenever the `claude` subprocess was never
+    launched (`--not-applicable` AND every one of the four preflight-failure
+    outcomes — `agent_unavailable`, `posture_invalid`, `not_authenticated`
+    via P7, `cli_unavailable`); False whenever it was (every post-launch
+    outcome, `completed` or `invocation_failed` alike, INCLUDING a
+    post-launch `not_authenticated` reached via the §3.7 step-4 classifier —
+    the two `not_authenticated` rows are different events keyed on whether
+    `run_capped` was reached, never on `outcome_detail` alone). The audit
+    record is written unconditionally regardless of `skip_token_tracker`.
+    Shared by every emission path (post-launch, preflight-failure,
+    not-applicable) so the field set and the ordering of the two writes has
+    exactly one definition."""
+    token_tracker_recorded = False
+    if not skip_token_tracker:
+        token_tracker_recorded = _record_token_usage(
+            repo_root,
+            dimension=dimension,
+            step=step,
+            usage=usage,
+            input_byte_len=input_byte_len,
+        )
+    audit_record = _write_audit_event(
+        repo_root,
+        timestamp=timestamp,
+        agent=agent,
+        dimension=dimension,
+        binding=binding,
+        posture=posture,
+        outcome=outcome,
+        outcome_detail=outcome_detail,
+        applicability=applicability,
+        verdict=verdict,
+        findings=findings,
+        model=model,
+        cli_version=cli_version,
+        duration_ms=duration_ms,
+        timed_out=timed_out,
+        exit_code=exit_code,
+        num_turns=num_turns,
+        total_cost_usd=total_cost_usd,
+        input_digest=input_digest,
+        session_id=session_id,
+    )
+    return {"token_tracker_recorded": token_tracker_recorded, "audit_record": audit_record}
 
 
 # ---------------------------------------------------------------------------
@@ -1319,6 +1657,7 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
             lens=lens,
             matched_files=matched_files,
             agent_file_sha256=None,
+            repo_root=resolved_root,
         )
 
     if not_applicable_reason is not None:
@@ -1352,6 +1691,7 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
             lens=lens,
             matched_files=matched_files,
             agent_file_sha256=agent_ref.sha256,
+            repo_root=resolved_root,
         )
 
     # P6 — input file.
@@ -1379,6 +1719,7 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
                 matched_files=matched_files,
                 agent_file_sha256=agent_ref.sha256,
                 posture=posture,
+                repo_root=resolved_root,
             )
 
     # P8 — the CLI itself must resolve.
@@ -1391,6 +1732,7 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
             matched_files=matched_files,
             agent_file_sha256=agent_ref.sha256,
             posture=posture,
+            repo_root=resolved_root,
         )
 
     # ------------------------------------------------------------------
@@ -1447,12 +1789,41 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
         model_source=model_source,
     )
 
+    envelope = classification.envelope or {}
+    findings = payload.get("findings", [])
+    observability = _record_observability(
+        resolved_root,
+        skip_token_tracker=False,
+        dimension=dimension,
+        step=args.step,
+        usage=envelope.get("usage"),
+        input_byte_len=len(input_bytes),
+        timestamp=ended_at,
+        agent=args.agent,
+        binding=args.binding,
+        posture=posture.id,
+        outcome=classification.outcome,
+        outcome_detail=classification.outcome_detail,
+        applicability="applicable",
+        verdict=verdict,
+        findings=findings,
+        model=model_value,
+        cli_version=cli_version,
+        duration_ms=proc.duration_ms,
+        timed_out=proc.timed_out,
+        exit_code=proc.rc,
+        num_turns=envelope.get("num_turns"),
+        total_cost_usd=envelope.get("total_cost_usd"),
+        input_digest=input_block["input_digest"],
+        session_id=envelope.get("session_id"),
+    )
+
     doc = build_document(
         outcome=classification.outcome,
         outcome_detail=classification.outcome_detail,
         verdict=verdict,
         summary=payload.get("summary"),
-        findings=payload.get("findings", []),
+        findings=findings,
         attacks=payload.get("attacks", []),
         applicability="applicable",
         applicability_reason=_ad_hoc_applicability_reason(args.binding),
@@ -1463,6 +1834,7 @@ def _main_impl(real_argv: list[str], resolved_root: Path) -> int:
         posture=posture.id,
         input_block=input_block,
         invocation_block=invocation_block,
+        observability=observability,
     )
     return _emit(doc, args.output_file)
 
@@ -1501,11 +1873,22 @@ def _emit_preflight_document(
     lens: str,
     matched_files: list[str],
     agent_file_sha256: str | None,
+    repo_root: Path,
     posture: Posture | None = None,
 ) -> int:
     """A precondition failed before any process was launched (P3/P4, P5, P7,
     P8). Emits a full `invocation_failed` document — never a silent exit —
-    with as much of the input block populated as is knowable at this point."""
+    with as much of the input block populated as is knowable at this point.
+
+    TD-D24 (ADR-1643 §5.1 Amendment B): none of P3/P4/P5/P7/P8 ever reaches
+    `run_capped` — "launching is the entire test" — so `token_tracker` is
+    NEVER called from this function, unconditionally, for all four
+    preflight-failure outcomes alike (`agent_unavailable`, `posture_invalid`,
+    `not_authenticated` via P7, `cli_unavailable`). This is deliberately NOT
+    keyed on `outcome_detail`: a post-launch `not_authenticated` (reached via
+    the §3.7 step-4 classifier, after the CLI actually ran and hit the API)
+    is a DIFFERENT event that goes through `_main_impl`'s own
+    `_record_observability` call, not through here — see TD-D24's table."""
     input_file_sha256 = None
     if args.input_file:
         input_path = Path(args.input_file)
@@ -1563,6 +1946,36 @@ def _emit_preflight_document(
         "stdout_partial": None,
         "stderr_tail": None,
     }
+    observability = _record_observability(
+        repo_root,
+        # TD-D24: none of P3/P4/P5/P7/P8 reaches run_capped, so no spend
+        # ever happened here — the char-estimate fallback (input_byte_len=0,
+        # below) is unreachable for this call site because it is gated off
+        # entirely, not because there is nothing to estimate from.
+        skip_token_tracker=True,
+        dimension=dimension,
+        step=args.step,
+        usage=None,
+        input_byte_len=0,
+        timestamp=invocation_block["ended_at"],
+        agent=args.agent,
+        binding=args.binding,
+        posture=posture_id,
+        outcome="invocation_failed",
+        outcome_detail=detail,
+        applicability="applicable",
+        verdict="error",
+        findings=[],
+        model=None,
+        cli_version=None,
+        duration_ms=0,
+        timed_out=False,
+        exit_code=None,
+        num_turns=None,
+        total_cost_usd=None,
+        input_digest=input_digest,
+        session_id=None,
+    )
     doc = build_document(
         outcome="invocation_failed",
         outcome_detail=detail,
@@ -1579,6 +1992,7 @@ def _emit_preflight_document(
         posture=posture_id,
         input_block=input_block,
         invocation_block=invocation_block,
+        observability=observability,
     )
     return _emit(doc, args.output_file)
 
@@ -1644,6 +2058,34 @@ def _emit_not_applicable(
         "stdout_partial": None,
         "stderr_tail": None,
     }
+    observability = _record_observability(
+        repo_root,
+        # §5.1: never called for a --not-applicable document — nothing was
+        # spent, since no process is launched on this path.
+        skip_token_tracker=True,
+        dimension=dimension,
+        step=args.step,
+        usage=None,
+        input_byte_len=0,
+        timestamp=invocation_block["ended_at"],
+        agent=args.agent,
+        binding=args.binding,
+        posture=None,
+        outcome="completed",
+        outcome_detail=None,
+        applicability="not_applicable",
+        verdict="approve",
+        findings=[],
+        model=None,
+        cli_version=None,
+        duration_ms=0,
+        timed_out=False,
+        exit_code=None,
+        num_turns=None,
+        total_cost_usd=None,
+        input_digest=input_digest,
+        session_id=None,
+    )
     doc = build_document(
         outcome="completed",
         outcome_detail=None,
@@ -1660,6 +2102,7 @@ def _emit_not_applicable(
         posture=None,
         input_block=input_block,
         invocation_block=invocation_block,
+        observability=observability,
     )
     return _emit(doc, args.output_file)
 
