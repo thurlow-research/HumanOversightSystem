@@ -284,7 +284,7 @@ review outcomes are not conflated with LLM spend.
 |---|---|---|---|
 | Orchestration in shell, not model (§2) | Tokens on discovery/sync/auth/polling | Shell can't pre-decide judgment cases | Skip only on *provably* empty cycles (PR pre-filters) |
 | Diff-centric / scoped context (§3) | Tokens per reviewer; better signal | Misses cross-cutting issues | Multi-agent split; security gets extra context; cross-vendor panel |
-| Sonnet default, Opus for design + merge gate (§4) | Per-token cost across 27 shipped agents | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
+| Sonnet default, Opus for design + merge gate (§4) | Per-token cost across the 27-agent shipped fleet | A weaker reviewer misses a defect | Cross-vendor decorrelation; deterministic floor; escaped-defect tracking |
 | Risk-stratified effort (§5) | Exhaustive review on LOW/MEDIUM | Mis-triaged defect slips auto-pass | SQC random red-team sample → escaped-defect rate |
 | Deterministic validators first (§6) | Expensive review on lint-rejectable code | Heuristic false +/− | Graceful degradation; tuning vs. escaped-defect signal |
 | Fail-closed, no retry (§7) | Retry storms of model calls | Occasional false CRITICAL | False-CRITICAL shape detection; human absorbs over-escalation |
