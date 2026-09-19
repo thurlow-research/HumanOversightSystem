@@ -76,6 +76,28 @@ BASE_REF="HEAD~1"
 # rather than looping — a human decides, never automation (the ratchet).
 SELF_REVIEW_MAX_PASSES="${SELF_REVIEW_MAX_PASSES:-3}"
 PASS_COUNT_FILE="$OUT_DIR/self-review-pass-count"
+# Per-invocation budget passed to bootstrap/invoke_agent.sh (#1643 W4 §6.1).
+# Same env override + default as validate_scripts.sh's sibling path, so a
+# release-wide override (e.g. CI budget tuning) covers both call sites with
+# one setting.
+AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
+# bootstrap/invoke_agent.sh's --require-env-auth is MANDATORY for every
+# non-interactive caller (ADR-1643 Amendment 1 §9.3: "bin/hos-cron in either
+# role, the sweep runner, and any script a cron cycle executes"). This
+# script is reachable BOTH ways: a human runs it directly at a terminal
+# (keychain auth, no env token — passing the flag unconditionally would
+# break that path, TD §3.4), and the autonomous worker runs it directly as a
+# release-gate step from inside a cron cycle (worker.md Step R2), where only
+# env-var auth is available. HOS_CYCLE_ROLE is the codebase's purpose-built
+# cron-cycle identity breadcrumb — exported by bin/hos-cron:359 and already
+# used exactly this way (a presence check gating cron-only behavior) at
+# bootstrap/create_branch.sh:96 — so its presence is the signal used here to
+# opt in, rather than repurposing HOS_CRON_MAX_SECONDS (a timeout budget, not
+# an identity signal).
+REQUIRE_ENV_AUTH_FLAG=""
+if [[ -n "${HOS_CYCLE_ROLE:-}" ]]; then
+    REQUIRE_ENV_AUTH_FLAG="--require-env-auth"
+fi
 
 PROJECT_NAME="(unnamed project)"
 PROJECT_STACK="(unspecified stack)"
@@ -116,10 +138,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! command -v claude >/dev/null 2>&1; then
-    echo "validate_self: claude CLI not found — cannot run Opus self-review." >&2
-    exit 2
-fi
+# No `command -v claude` preflight here (#1643 W4 §6.1): CLI resolution is now
+# bootstrap/invoke_agent.sh's job. A missing `claude` binary surfaces through
+# agent_invoke_cli.py's own P8 check as a `cli_unavailable` document
+# (outcome: invocation_failed, verdict: error, exit 0) — the SAME fail-closed
+# reviewer-block path that already handles a hang or a bad response, rather
+# than a second, divergent early-exit check duplicating that resolution here.
 
 mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
@@ -216,38 +240,52 @@ Return JSON only — no prose outside the JSON block:
   \"verdict\": \"approve|request_changes\",
   \"summary\": \"one paragraph — be honest, not reassuring\"
 }"
-    # CONTEXT ISOLATION (reduce self-review bias):
-    #   -p                                    fresh session — does NOT inherit the
-    #                                         caller's interactive conversation.
-    #   --exclude-dynamic-system-prompt-sections
-    #                                         drop cwd/env/memory-paths/git status so
-    #                                         the reviewer is not primed by project
-    #                                         memory or our own framing.
-    #   --no-session-persistence              leave no session state behind.
-    # The review package is fully self-contained (all files inline in the prompt),
-    # so the reviewer needs no project context at all.
-    local result rc=0
-    # Pass the prompt via stdin, not as a CLI argument (#1368): at release scale
-    # (--changed-only spanning a full minor release) the review package can
-    # exceed the OS ARG_MAX ceiling shared by argv and the environment, causing
-    # execve to fail (E2BIG, rc=126) before claude ever runs. Piping removes
-    # that ceiling entirely — matches the pattern already used for the same
-    # invocation in validate_scripts.sh.
-    result=$(printf '%s' "$prompt" | claude -p --model "$MODEL" \
-        --exclude-dynamic-system-prompt-sections \
-        --no-session-persistence 2>/dev/null) || rc=$?
-    # Fail-closed on an invocation that errored or produced empty/whitespace-only
-    # output (same class of bug as #669/#670 in the sibling scripts): a broken
-    # `claude` call must not read as "reviewed, found nothing". The synthesized
-    # block below carries "verdict":"error" so the finalize step (which now
-    # inspects each block's own verdict field, not just its findings count) fails
-    # the gate rather than silently approving it (#1362).
+    local result tmp_prompt rc=0
+    # --input-file is the only input path into bootstrap/invoke_agent.sh
+    # (REQ-A3, #1643 W4 §6.1): the prompt moves from a piped stdin argument
+    # to a file — same pattern already used for the agy call in
+    # validate_agents.sh (tmpfile, #1384) and for the sibling review package
+    # in validate_scripts.sh. This also removes the ARG_MAX exposure #1368
+    # fixed for the old direct-CLI stdin path: a file has no such ceiling.
+    tmp_prompt=$(mktemp "${TMPDIR:-/tmp}/vself_opus_prompt.XXXXXX")
+    printf '%s' "$prompt" > "$tmp_prompt"
+    # bootstrap/invoke_agent.sh replaces the raw direct-CLI invocation. Context
+    # isolation (fresh session, no dynamic system-prompt sections, no
+    # session persistence) is no longer spelled out here — it is baked into
+    # agent_invoke_cli.py's own claude invocation for every caller, not
+    # something this script asserts. --agent self-reviewer fills the
+    # adversarial self-review seat (self-reviewer.md, #1673).
+    # REQUIRE_ENV_AUTH_FLAG (set near the top of this file) is the opt-in
+    # --require-env-auth pass for a cron-launched run; empty and inert for
+    # an interactive one (ADR-1643 §3.4, §9.3).
+    result=$(bash "$ROOT/bootstrap/invoke_agent.sh" \
+        --agent self-reviewer \
+        --posture review-read-only \
+        --input-file "$tmp_prompt" \
+        --dimension self-review \
+        --lens self-review \
+        --timeout "$AI_REVIEW_TIMEOUT" \
+        --model "$MODEL" \
+        ${REQUIRE_ENV_AUTH_FLAG}) || rc=$?
+    rm -f "$tmp_prompt"
+    # invoke_agent.sh exits non-zero ONLY when no document was produced at
+    # all (its own interpreter-resolution failure, or a usage error, §3.3);
+    # a structured invocation_failed document (cli_unavailable, timeout,
+    # not_authenticated, a malformed response, ...) still exits 0 with a
+    # "verdict":"error" document already in $result — AD-6's rule
+    # (`_verdict_for_outcome`'s outcome=="invocation_failed" forces verdict=
+    # "error" unconditionally, `agent_invoke_cli.py:961-969`). That document
+    # is a SUPERSET of the block this function used to synthesize by hand
+    # (same "verdict":"error" signal, plus outcome/outcome_detail/
+    # observability fields the old stub never had), so nothing is
+    # synthesized here (#1362's fix generalised): on the hard-failure path
+    # below, $result is empty; extract_json_objects finds no parseable
+    # block in it, and --strict-empty (used by the finalize step below)
+    # already treats "no blocks parsed" as verdict=error.
     if [[ $rc -ne 0 || -z "${result//[[:space:]]/}" ]]; then
-        echo "  ERROR: Opus self-review invocation failed (rc=$rc) or produced empty output — recording as a review FAILURE, not a clean pass (#1362)." >&2
-        result='{"reviewer":"opus-self","error":"claude invocation failed","findings":[],"verdict":"error","summary":"claude failed"}'
+        echo "  ERROR: bootstrap/invoke_agent.sh produced no result (rc=$rc) for Opus self-review — recording as a review FAILURE, not a clean pass (#1362)." >&2
     fi
-    # Strip any markdown fencing the CLI may add around the JSON.
-    echo "$result" | sed -e 's/^```json$//' -e 's/^```$//'
+    echo "$result"
 }
 
 echo "Running Opus self-review (${MODEL})..."
@@ -260,9 +298,45 @@ OPUS_OUT=$(run_opus)
     echo ""
 } >> "$OUTFILE"
 # "done" means the reviewer actually produced a review, not merely that the call
-# returned — a failed invocation was already reported by run_opus above (#1362).
-if printf '%s' "$OPUS_OUT" | grep -q '"error"[[:space:]]*:[[:space:]]*"claude invocation failed"'; then
-    echo "  FAILED — see error above"
+# returned — an empty $OPUS_OUT (the wrapper's own launch failure) was already
+# reported by run_opus above (#1362), so "see error above" is true for THAT
+# case. It is NOT true for the much larger structured invocation_failed
+# taxonomy (timeout, not_authenticated, cli_unavailable, unparseable, crash,
+# permission_denied, refused, schema_violation, usage_limit, posture_invalid,
+# agent_unavailable, ...): invoke_agent.sh's own header is explicit that exit
+# 0 covers the ENTIRE taxonomy ("the invocation was attempted and a result
+# document was produced [whatever it says]") — run_opus's rc-based guard never
+# fires for it, so nothing is printed above for that case, and claiming
+# otherwise would send an operator looking for output that does not exist.
+# Extract outcome/outcome_detail HERE instead and say WHICH failure occurred,
+# not just THAT one did — otherwise outcome_detail (the whole point of this
+# migration's observability improvement) survives only inside the raw JSON
+# blob in $OUTFILE where no human reads it (#1676: "failure records say that,
+# not why", reproduced at this exact call site until now). python3 is already
+# a hard dependency of this script (the $VALIDATION_LOGIC delegation below);
+# jq is not guaranteed present, so this reuses that same tooling rather than
+# adding a new one.
+_opus_outcome="__EMPTY__"
+_opus_outcome_detail="-"
+if [[ -n "${OPUS_OUT//[[:space:]]/}" ]]; then
+    IFS=$'\t' read -r _opus_outcome _opus_outcome_detail < <(
+        printf '%s' "$OPUS_OUT" | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print("__PARSE_ERROR__\t__PARSE_ERROR__")
+else:
+    print("{}\t{}".format(doc.get("outcome") or "-", doc.get("outcome_detail") or "-"))
+' 2>/dev/null
+    ) || { _opus_outcome="__PARSE_ERROR__"; _opus_outcome_detail="__PARSE_ERROR__"; }
+fi
+if [[ "$_opus_outcome" == "__EMPTY__" ]]; then
+    echo "  FAILED — no result produced (see ERROR above)"
+elif [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
+    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as JSON"
+elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
+    echo "  FAILED — outcome=invocation_failed outcome_detail=${_opus_outcome_detail}"
 else
     echo "  done"
 fi
