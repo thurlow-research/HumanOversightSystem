@@ -230,6 +230,12 @@ fi
     printf "new_blocking_count: 0\n\n"
 } > "$OUTFILE"
 
+# Script-global (not `local` to run_opus below) so the EXIT trap it installs
+# can still reference this path correctly at actual script exit, after the
+# function that set it has long since returned — see the comment at its
+# assignment for why a `local` here breaks that.
+_VSELF_TMP_DIR=""
+
 run_opus() {
     local prompt
     prompt="You are performing an ADVERSARIAL SELF-REVIEW of an AI agent pipeline framework (the Human Oversight System). You are the same model family that authored much of this — so your single biggest risk is SYCOPHANCY and SHARED BLIND SPOTS. Do not be agreeable. Assume an external reviewer (Gemini, then GPT) will see this next; find everything you would be embarrassed for them to catch first.
@@ -268,34 +274,76 @@ Return JSON only — no prose outside the JSON block:
   \"verdict\": \"approve|request_changes\",
   \"summary\": \"one paragraph — be honest, not reassuring\"
 }"
-    local result tmp_prompt rc=0
+    local result="" tmp_prompt rc=0
     # --input-file is the only input path into bootstrap/invoke_agent.sh
     # (REQ-A3, #1643 W4 §6.1): the prompt moves from a piped stdin argument
     # to a file — same pattern already used for the agy call in
     # validate_agents.sh (tmpfile, #1384) and for the sibling review package
     # in validate_scripts.sh. This also removes the ARG_MAX exposure #1368
     # fixed for the old direct-CLI stdin path: a file has no such ceiling.
-    tmp_prompt=$(mktemp "${TMPDIR:-/tmp}/vself_opus_prompt.XXXXXX")
+    #
+    # codex HIGH/MEDIUM (round 4): the prompt now lives in a PRIVATE,
+    # mode-700 directory under $OUT_DIR (already created above; gitignored
+    # .claudetmp/ working state — contract/OVERSIGHT-CONTRACT.md §1) rather
+    # than directly in the shared $TMPDIR — this removes the shared-directory
+    # substitution surface rather than mitigating it. The trap is installed
+    # IMMEDIATELY after the directory is created, before anything else can
+    # fail and skip cleanup.
+    #
+    # EXIT, not RETURN, and the path is held in the script-global
+    # _VSELF_TMP_DIR (declared above run_opus), not a `local`: tested both
+    # ways before choosing. A RETURN trap fires reliably on a *graceful*
+    # function return, but empirically does NOT fire when a `set -e` abort
+    # inside the function is fatal to the whole process (the realistic case
+    # here — nothing guards the invoke_agent.sh call site above with
+    # `|| true`, so an abort propagates all the way up) — confirmed by
+    # direct test: a RETURN trap left the directory on disk in that case. A
+    # bare `local tmp_dir` referenced by an EXIT trap has its own failure
+    # mode: once this function returns, the local variable goes out of
+    # scope, and the trap firing later at actual script exit hits `set -u`'s
+    # unbound-variable error instead of cleaning up — also confirmed by
+    # direct test. The combination used here (global path variable + EXIT
+    # trap) is the one that survives both: it fires on every path out of the
+    # whole script — normal completion, any set -e abort anywhere after this
+    # point, and a signal — proportionate for a local gate (not a privilege
+    # boundary), with no broader trap machinery than that one line. Deferred
+    # cleanup (the directory lives until the script's own exit, not the
+    # instant this function returns) is the accepted cost of that
+    # robustness; the directory is mode 700 the entire time regardless.
+    # run_opus is called exactly once in this script, so one global variable
+    # and one EXIT trap registration is sufficient — a second call would
+    # need its own cleanup accounting, which this does not attempt.
+    _VSELF_TMP_DIR=$(mktemp -d "$OUT_DIR/vself_opus.XXXXXX")
+    trap 'rm -rf "$_VSELF_TMP_DIR"' EXIT
+    chmod 700 "$_VSELF_TMP_DIR"
+    tmp_prompt="$_VSELF_TMP_DIR/prompt.txt"
     printf '%s' "$prompt" > "$tmp_prompt"
-    # bootstrap/invoke_agent.sh replaces the raw direct-CLI invocation. Context
-    # isolation (fresh session, no dynamic system-prompt sections, no
-    # session persistence) is no longer spelled out here — it is baked into
-    # agent_invoke_cli.py's own claude invocation for every caller, not
-    # something this script asserts. --agent self-reviewer fills the
-    # adversarial self-review seat (self-reviewer.md, #1673).
-    # REQUIRE_ENV_AUTH_FLAG (set near the top of this file, AD-16.7) is
-    # "--require-env-auth" by default (strict) and empty only when the
-    # caller explicitly passed --allow-keychain-auth.
-    result=$(bash "$ROOT/bootstrap/invoke_agent.sh" \
-        --agent self-reviewer \
-        --posture review-read-only \
-        --input-file "$tmp_prompt" \
-        --dimension self-review \
-        --lens self-review \
-        --timeout "$AI_REVIEW_TIMEOUT" \
-        --model "$MODEL" \
-        ${REQUIRE_ENV_AUTH_FLAG}) || rc=$?
-    rm -f "$tmp_prompt"
+    # Pre-use sanity check (codex HIGH, round 4): fail closed on anything
+    # other than a regular file this process owns, rather than handing an
+    # unexpected path to the subprocess.
+    if [[ -f "$tmp_prompt" && -O "$tmp_prompt" ]]; then
+        # bootstrap/invoke_agent.sh replaces the raw direct-CLI invocation. Context
+        # isolation (fresh session, no dynamic system-prompt sections, no
+        # session persistence) is no longer spelled out here — it is baked into
+        # agent_invoke_cli.py's own claude invocation for every caller, not
+        # something this script asserts. --agent self-reviewer fills the
+        # adversarial self-review seat (self-reviewer.md, #1673).
+        # REQUIRE_ENV_AUTH_FLAG (set near the top of this file, AD-16.7) is
+        # "--require-env-auth" by default (strict) and empty only when the
+        # caller explicitly passed --allow-keychain-auth.
+        result=$(bash "$ROOT/bootstrap/invoke_agent.sh" \
+            --agent self-reviewer \
+            --posture review-read-only \
+            --input-file "$tmp_prompt" \
+            --dimension self-review \
+            --lens self-review \
+            --timeout "$AI_REVIEW_TIMEOUT" \
+            --model "$MODEL" \
+            ${REQUIRE_ENV_AUTH_FLAG}) || rc=$?
+    else
+        echo "  ERROR: prompt temp file failed its pre-use sanity check ($tmp_prompt is not a regular file owned by this process) — aborting Opus self-review rather than proceeding." >&2
+        rc=1
+    fi
     # invoke_agent.sh exits non-zero ONLY when no document was produced at
     # all (its own interpreter-resolution failure, or a usage error, §3.3);
     # a structured invocation_failed document (cli_unavailable, timeout,
@@ -398,7 +446,17 @@ fi
 # synthesis shape validate_scripts.sh's run_reviewer() already uses for its
 # own required-lane failures.
 if [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
-    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh produced output that could not be parsed as exactly one JSON document (a required precondition for the Opus self-review lane).","fix":"Re-run validate_self.sh; if this recurs, inspect the raw output captured in this file for the cause."}],"verdict":"request_changes","summary":"Opus self-review output was unparseable — fail-closed (agy HIGH, round 3)."}'
+    # agy MEDIUM (round 4): the synthesized document's own "fix" field used
+    # to tell the operator to "inspect the raw output captured in this
+    # file" — but $OUTFILE gets THIS synthesized document in place of the
+    # raw output, so that raw output is exactly what is no longer there. An
+    # operator debugging an unparseable response needs the bytes that
+    # failed to parse, so they are preserved in a SEPARATE file (never fed
+    # back into $OUTFILE — that would reintroduce the round-3 fail-open),
+    # and the message names its real path.
+    _opus_raw_dump="$OUT_DIR/self-review-unparseable-${TIMESTAMP}.txt"
+    printf '%s' "$OPUS_OUT" > "$_opus_raw_dump"
+    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh produced output that could not be parsed as exactly one JSON document (a required precondition for the Opus self-review lane).","fix":"Re-run validate_self.sh; the unparseable output was preserved at '"$_opus_raw_dump"' for inspection."}],"verdict":"request_changes","summary":"Opus self-review output was unparseable — fail-closed (agy HIGH, round 3)."}'
 elif [[ "$_opus_outcome" != "__EMPTY__" && "$_opus_outcome" != "completed" && "$_opus_outcome" != "invocation_failed" ]]; then
     _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh returned an outcome value this script does not recognise (neither completed nor invocation_failed).","fix":"Investigate — the primitive is expected to emit only those two outcome values."}],"verdict":"request_changes","summary":"Unrecognised outcome — fail-closed."}'
 fi
@@ -427,7 +485,12 @@ fi
 if [[ "$_opus_outcome" == "__EMPTY__" ]]; then
     echo "  FAILED — no result produced (see ERROR above)"
 elif [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
-    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as exactly one JSON document — recorded as a blocking finding (see \$OUTFILE)"
+    # agy LOW (round 4): the two occurrences below used a single-quoted
+    # `\$OUTFILE`/`\$_opus_raw_dump`-style escape inside a double-quoted
+    # string, which prints the LITERAL text "$OUTFILE" rather than
+    # expanding it — the operator never saw the real path. Unescaped here
+    # (and throughout this if/elif chain) so the actual paths print.
+    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as exactly one JSON document — recorded as a blocking finding in $OUTFILE; the unparseable bytes are preserved at $_opus_raw_dump"
 elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
     echo "  FAILED — outcome=invocation_failed outcome_detail=${_opus_outcome_detail}"
     # Discoverability (AD-16.7): strict-by-default auth is a deliberate
@@ -441,10 +504,10 @@ elif [[ "$_opus_outcome" == "completed" ]]; then
     if [[ "$_opus_verdict" == "approve" ]]; then
         echo "  done"
     else
-        echo "  FAILED — review completed with verdict=${_opus_verdict} (blocking findings present — see \$OUTFILE)"
+        echo "  FAILED — review completed with verdict=${_opus_verdict} (blocking findings present — see $OUTFILE)"
     fi
 else
-    echo "  FAILED — unrecognised outcome '${_opus_outcome}' — recorded as a blocking finding (see \$OUTFILE)"
+    echo "  FAILED — unrecognised outcome '${_opus_outcome}' — recorded as a blocking finding (see $OUTFILE)"
 fi
 echo ""
 

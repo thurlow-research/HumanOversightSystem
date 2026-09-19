@@ -435,17 +435,30 @@ def _extract_opus_status_block():
     return text[start:end]
 
 
-def _run_opus_status_block_integration(synthetic_opus_out: str) -> dict:
+def _run_opus_status_block_integration(tmp_path, synthetic_opus_out: str) -> dict:
     """Runs the REAL extracted block, with run_opus() stubbed to return
     `synthetic_opus_out`, followed by the REAL validation_logic.py finalize
     step reading the SAME $OUTFILE the block wrote to. Returns the console
     stdout and the finalizer's own computed verdict, so a test can assert
-    they never disagree."""
+    they never disagree.
+
+    `OUT_DIR` is a real, pytest-managed directory under `tmp_path` — not a
+    bare `mktemp -d` inside the subprocess — for two reasons: it is the same
+    parameter every caller already threads through for the mode-700/cleanup
+    test below, and pytest preserves `tmp_path` on a failing test, whereas a
+    directory created only inside the subprocess leaves nothing to inspect
+    afterward (round 5: an earlier version of this helper didn't define
+    OUT_DIR at all, and the resulting `unbound variable` abort masked the
+    very disagreement these tests exist to catch)."""
     block = _extract_opus_status_block()
+    out_dir = tmp_path / "out_dir"
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
 VALIDATION_LOGIC={str(_VALIDATION_LOGIC_PATH)!r}
 MODEL="opus"
+OUT_DIR={str(out_dir)!r}
+mkdir -p "$OUT_DIR"
+TIMESTAMP="20260101T000000"
 OUTFILE="$(mktemp)"
 LEDGER="$(mktemp)"
 : > "$LEDGER"
@@ -461,34 +474,80 @@ grep '^verdict:' "$OUTFILE" | head -1 | awk '{{print $2}}'
     return {"console": "\n".join(lines[:-1]), "finalizer_verdict": lines[-1]}
 
 
-def test_status_line_and_finalizer_agree_on_a_clean_pass():
+def test_status_line_and_finalizer_agree_on_a_clean_pass(tmp_path):
     r = _run_opus_status_block_integration(
-        '{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}'
+        tmp_path,
+        '{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}',
     )
     assert "done" in r["console"]
     assert r["finalizer_verdict"] == "approve"
 
 
-def test_status_line_and_finalizer_agree_on_invocation_failed():
+def test_status_line_and_finalizer_agree_on_invocation_failed(tmp_path):
     r = _run_opus_status_block_integration(
-        '{"outcome":"invocation_failed","outcome_detail":"not_authenticated","verdict":"error","findings":[]}'
+        tmp_path,
+        '{"outcome":"invocation_failed","outcome_detail":"not_authenticated","verdict":"error","findings":[]}',
     )
     assert "FAILED" in r["console"]
     assert r["finalizer_verdict"] == "request_changes"
 
 
-def test_status_line_and_finalizer_agree_on_a_multi_block_parse_error():
+def test_status_line_and_finalizer_agree_on_a_multi_block_parse_error(tmp_path):
     """The exact agy HIGH scenario: two clean "approve" blocks concatenated.
     Before the fix, extract_json_objects (no "exactly one" rule) could reach
     approve here even though the status line said FAILED. Now the PARSE_ERROR
     branch injects a blocking document into $OUTFILE, so both agree."""
     r = _run_opus_status_block_integration(
+        tmp_path,
         '{"outcome":"completed","verdict":"approve","findings":[]} '
-        '{"outcome":"completed","verdict":"approve","findings":[]}'
+        '{"outcome":"completed","verdict":"approve","findings":[]}',
     )
     assert "FAILED" in r["console"]
     assert r["finalizer_verdict"] != "approve"
     assert r["finalizer_verdict"] == "request_changes"
+
+
+# ── agy MEDIUM/LOW, round 4/5 — a remedy message must name something that
+#    actually exists: no literal "$VARNAME" text, and no pointer to raw
+#    output that the parse-error branch itself just replaced ───────────────
+def test_no_literal_dollar_outfile_or_raw_dump_text_in_status_messages():
+    """The escaping bug (round 5): a `\\$OUTFILE`-style escape inside a
+    double-quoted echo prints the literal text "$OUTFILE" instead of the
+    resolved path. Scoped to the status if/elif chain specifically, since
+    line 558's `\\$SELF_REVIEW_MAX_PASSES=${SELF_REVIEW_MAX_PASSES}` is a
+    different, intentional, pre-existing pattern (showing the env var NAME
+    next to its expanded value) outside that chain. Checked on CODE lines
+    only (comment-only lines legitimately name the bug pattern in prose)."""
+    for _lineno, line in _code_lines(ROOT / "scripts" / "framework" / "validate_self.sh"):
+        assert r"\$OUTFILE" not in line, f"literal (unexpanded) \\$OUTFILE found: {line!r}"
+        assert (
+            r"\$_opus_raw_dump" not in line
+        ), f"literal (unexpanded) \\$_opus_raw_dump found: {line!r}"
+
+
+def test_parse_error_preserves_raw_output_and_names_its_real_path(tmp_path):
+    """agy MEDIUM (round 4): the synthesized document's "fix" field used to
+    say "inspect the raw output captured in this file" on the exact path
+    where that raw output had just been REPLACED by the synthesized
+    document. Now the raw bytes are dumped to a separate, named file before
+    the console message or the document's own "fix" field reference it —
+    verified by actually reading that file back, not just checking the
+    message text. Uses the same shared helper (and the same pytest-managed
+    OUT_DIR under tmp_path) as the agreement tests above, rather than a
+    second bespoke script — the round-5 `unbound variable` bug was exactly
+    this test's own private, out-of-sync copy of the script template."""
+    raw_doc = (
+        '{"outcome":"completed","verdict":"approve","findings":[]} '
+        '{"outcome":"completed","verdict":"approve","findings":[]}'
+    )
+    r = _run_opus_status_block_integration(tmp_path, raw_doc)
+    dump_path = tmp_path / "out_dir" / "self-review-unparseable-20260101T000000.txt"
+
+    # The message names this exact path...
+    assert str(dump_path) in r["console"], r["console"]
+    # ...and the path is real, and contains the bytes that failed to parse.
+    assert dump_path.is_file(), f"{dump_path} was named in the message but does not exist"
+    assert dump_path.read_text(encoding="utf-8") == raw_doc
 
 
 def test_status_line_requires_approve_verdict_not_just_completed_outcome():
@@ -512,6 +571,100 @@ def test_status_line_and_finalizer_agree_on_empty_output():
     r = _run_opus_status_block_integration("")
     assert "FAILED" in r["console"]
     assert r["finalizer_verdict"] == "error"
+
+
+# ── codex HIGH/MEDIUM, round 4 — the prompt temp file lives in a private
+#    mode-700 directory (not the shared $TMPDIR), is cleaned up on every
+#    exit path, and is sanity-checked before use ──────────────────────────
+def test_run_opus_tmpdir_shape_matches_the_codex_round_4_ruling():
+    """Static shape checks — no new dependency, no subprocess needed for
+    these: the private directory is created under $OUT_DIR (not bare
+    $TMPDIR), its mode is set explicitly, a pre-use ownership/regular-file
+    check gates the invoke_agent.sh call, and the old unconditional
+    `rm -f "$tmp_prompt"` (no trap, single exit path) is gone."""
+    text = (ROOT / "scripts" / "framework" / "validate_self.sh").read_text(encoding="utf-8")
+    assert '_VSELF_TMP_DIR=$(mktemp -d "$OUT_DIR/vself_opus.XXXXXX")' in text
+    assert 'chmod 700 "$_VSELF_TMP_DIR"' in text
+    assert "trap 'rm -rf \"$_VSELF_TMP_DIR\"' EXIT" in text
+    assert '[[ -f "$tmp_prompt" && -O "$tmp_prompt" ]]' in text
+    assert 'rm -f "$tmp_prompt"' not in text
+
+
+def _fake_invoke_agent_root(tmp_path):
+    """A minimal stand-in for bootstrap/invoke_agent.sh that (a) proves it
+    was handed a real, existing --input-file, (b) records the octal mode of
+    that file's containing directory to a side file OUTSIDE the temp
+    directory under test (so the recording survives the directory's later
+    cleanup), and (c) returns a clean, valid document."""
+    root = tmp_path / "fake_root"
+    (root / "bootstrap").mkdir(parents=True)
+    mode_sidecar = tmp_path / "observed_mode.txt"
+    script = root / "bootstrap" / "invoke_agent.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '    --input-file) INPUT_FILE="$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        '[[ -f "$INPUT_FILE" ]] || { echo "no input file" >&2; exit 1; }\n'
+        f'stat -c "%a" "$(dirname "$INPUT_FILE")" > {str(mode_sidecar)!r}\n'
+        'echo \'{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}\'\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return root, mode_sidecar
+
+
+def test_run_opus_creates_a_mode_700_dir_and_cleans_it_up_on_return(tmp_path):
+    """Real subprocess, not a text check: runs the ACTUAL run_opus function
+    body (extracted, same technique as the status-line block above) with a
+    stubbed invoke_agent.sh, and asserts (a) the directory containing the
+    prompt file was mode 700 at the moment invoke_agent.sh read it, and
+    (b) that directory no longer exists once run_opus's own subshell (it is
+    always invoked as `OPUS_OUT=$(run_opus)` in the real script) has
+    returned — proving the EXIT trap fired without waiting for the whole
+    script to exit."""
+    text = (ROOT / "scripts" / "framework" / "validate_self.sh").read_text(encoding="utf-8")
+    start = text.index('_VSELF_TMP_DIR=""')
+    end = text.index("\n}\n", text.index("run_opus() {")) + len("\n}")
+    block = text[start:end]
+
+    fake_root, mode_sidecar = _fake_invoke_agent_root(tmp_path)
+    out_dir = tmp_path / "out_dir"
+    out_dir.mkdir()
+
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+ROOT={str(fake_root)!r}
+OUT_DIR={str(out_dir)!r}
+AI_REVIEW_TIMEOUT=300
+MODEL="opus"
+REQUIRE_ENV_AUTH_FLAG=""
+PROJECT_NAME="test"
+PROJECT_STACK="test"
+KNOWN_ISSUES="none"
+REVIEW_PACKAGE="test package"
+{block}
+OUT=$(run_opus)
+echo "$OUT" > {str(tmp_path / "run_opus_stdout.txt")!r}
+find {str(out_dir)!r} -mindepth 1 -maxdepth 1 > {str(tmp_path / "out_dir_listing.txt")!r}
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+    observed_mode = mode_sidecar.read_text(encoding="utf-8").strip()
+    assert observed_mode == "700", f"prompt directory was mode {observed_mode}, not 700"
+
+    stdout = (tmp_path / "run_opus_stdout.txt").read_text(encoding="utf-8")
+    assert '"outcome":"completed"' in stdout
+
+    listing = (tmp_path / "out_dir_listing.txt").read_text(encoding="utf-8")
+    assert listing.strip() == "", (
+        f"the private prompt directory was still present under $OUT_DIR "
+        f"after run_opus returned: {listing!r} — cleanup did not fire"
+    )
 
 
 # ── T4.5 — setup_clis.sh carries the exemption comment citing ADR-1643 ────────
