@@ -145,6 +145,10 @@ install_agy() {
 }
 
 # ── Smoke tests (a tiny real call that proves auth end-to-end) ─────────────────
+# EXEMPT from ADR-1643 AD-16 / the bootstrap/invoke_agent.sh rule: this is the machine-bootstrap smoke
+# test. It runs BEFORE the primitive's preconditions can hold — possibly with no HOS project checked out
+# and certainly before any agent file is installed. Routing it through the primitive would make the smoke
+# test depend on the thing it exists to prove works.
 smoke_claude() { claude -p "Reply with exactly: OK" 2>/dev/null | grep -qi "ok"; }
 smoke_codex()  { codex exec "Reply with exactly: OK" 2>/dev/null | grep -qi "ok"; }
 # verified: agy -p/--print/--prompt runs a single prompt non-interactively and prints it.
