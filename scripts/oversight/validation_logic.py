@@ -26,8 +26,16 @@ ARCHITECT BINDINGS (SPEC-334):
   6. The robust string-aware brace extractor from validate_agents.sh is the
      single extractor for both scripts.
   7. No-blocks-parsed behavior is flag-controlled (--strict-empty): set → "error"
-     verdict (validate_agents.sh behavior); unset → "approve"/exit 0
-     (validate_scripts.sh compat). Default OFF.
+     verdict; unset → "approve"/exit 0. Default OFF, but this default is a pure
+     module-API fallback, not something any caller currently relies on: every
+     production caller passes --strict-empty explicitly — validate_agents.sh,
+     validate_scripts.sh (since #669, itself a fail-open fix), validate_self.sh
+     (since #1362), and run_second_review.sh (#1737: its own $OUTFILE always
+     carries reviewer sections, populated or SKIPPED, so zero extractable
+     blocks there means a reviewer answered and we failed to read it, which
+     must default to "error", not silently to "approve"). #1737 was the last
+     caller not passing the flag; the unset default has had no remaining
+     production caller since that fix landed.
   8. Stdlib only; never sources config.sh; the logic functions perform no
      subprocess/network I/O. The only file I/O is reading the ledger (an input
      to the verdict) and the dedicated ledger append in record_ledger_entry; the
@@ -152,6 +160,17 @@ def extract_json_objects(text: str) -> list[dict]:
 
 
 # ── Fingerprinting (binding 5) ────────────────────────────────────────────────
+def _safe_items(block: dict, key: str) -> list:
+    """`block[key]` coerced to a list, tolerating `None`/a non-list value
+    (security review, #1737 Low): a reviewer block's `findings`/`attacks` is
+    attacker-influenceable input, and `block.get(key, [])` does NOT fall back
+    to `[]` when the key is present with value `None` (the default is only
+    used when the key is ABSENT) — `None + []` then raises TypeError one line
+    later. Fails closed to an empty list rather than raising."""
+    items = block.get(key)
+    return items if isinstance(items, list) else []
+
+
 def _files_of(obj: dict) -> list[str]:
     """Files for a finding (`files` list, or a singular `file`), sorted."""
     files = obj.get("files")
@@ -271,8 +290,18 @@ def compute_verdict(
             if SEVERITIES.index("blocking") < SEVERITIES.index(highest):
                 highest = "blocking"
 
-        for item in block.get("findings", []) + block.get("attacks", []):
-            sev = str(item.get("severity", "low")).lower()
+        # Malformed findings/attacks (security review, #1737 Low, same class
+        # of bug as second_review_logic.py's _aggregate_full — these two
+        # modules are the defence-in-depth pair, so both must tolerate the
+        # same attacker-influenceable shapes): `findings`/`attacks` may be
+        # `null`, a non-list, or contain non-dict entries. `_safe_items`
+        # coerces the former to `[]`; a non-dict entry degrades to "unknown"
+        # severity here rather than raising AttributeError out of `.get()`.
+        # Fail-closed direction preserved: "unknown" never counts as a NEW
+        # critical/high/blocking finding, so a malformed entry can only ever
+        # be a no-op here, never lower an already-established severity.
+        for item in _safe_items(block, "findings") + _safe_items(block, "attacks"):
+            sev = str(item.get("severity", "low")).strip().lower() if isinstance(item, dict) else "unknown"
             try:
                 if SEVERITIES.index(sev) < SEVERITIES.index(highest):
                     highest = sev
@@ -332,8 +361,31 @@ def _cmd_process(args: argparse.Namespace) -> int:
         # The shell's own guards handle a missing/unreadable output file.
         return 0
 
-    blocks = extract_json_objects(content)
-    result = compute_verdict(blocks, args.ledger, strict_empty=args.strict_empty)
+    # Security review (#1737 Low, same treatment as second_review_logic.py's
+    # _cmd_aggregate — the two are a defence-in-depth pair): an unexpected
+    # exception computing the verdict (a malformed-shape this function's own
+    # guards don't cover, or any other future bug) must not leave the
+    # artifact at whatever verdict it already had — most commonly its
+    # `verdict: pending` starting default for validate_agents.sh/
+    # validate_scripts.sh/validate_self.sh, which call this directly with no
+    # prior aggregate step. Write a deterministic `error` verdict instead of
+    # relying on the caller's `set -e` to fail closed only by accident.
+    try:
+        blocks = extract_json_objects(content)
+        result = compute_verdict(blocks, args.ledger, strict_empty=args.strict_empty)
+    except Exception as exc:
+        new_content = re.sub(
+            r"^verdict: \S+$", f"verdict: {ERROR_VERDICT}", content, count=1, flags=re.M
+        )
+        with open(args.file, "w", encoding="utf-8") as fh:
+            fh.write(new_content)
+        print(
+            f"validation_logic process: FAILED — {type(exc).__name__}: {exc}; "
+            f"wrote verdict: {ERROR_VERDICT} rather than leaving the prior verdict",
+            file=sys.stderr,
+        )
+        return 0
+
     verdict = result["verdict"]
     highest = result["highest_severity"]
     blocking = result["blocking_count"]
@@ -412,8 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     p_proc.add_argument(
         "--strict-empty",
         action="store_true",
-        help="empty parse → 'error' verdict (validate_agents.sh behavior); "
-        "without it, empty parse → 'approve' (validate_scripts.sh compat).",
+        help="empty parse → 'error' verdict; without it, empty parse → "
+        "'approve' (an API default only — every in-repo caller passes this flag).",
     )
     p_proc.set_defaults(func=_cmd_process)
 

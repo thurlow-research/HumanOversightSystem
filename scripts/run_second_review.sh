@@ -481,49 +481,44 @@ for f in findings:
 PYEOF
 }
 
-# ── JSON salvage (HOS#113) ──────────────────────────────────────────────────
+# ── JSON salvage (HOS#113, #1737) ────────────────────────────────────────────
 # Agentic review CLIs (agy especially) sometimes wrap the requested JSON in
-# markdown fences or prose, or narrate instead of emitting JSON at all. This
-# reads a CLI's raw response on stdin and prints the first balanced, parseable
-# {...} object that looks like a review (has verdict / findings / attacks). It is
-# STRING-AWARE so a brace inside a JSON string value can't fool the scan. Prints
-# nothing and exits 1 when there is no review JSON to salvage (true prose).
+# markdown fences or prose, narrate instead of emitting JSON at all, or (agy's
+# `--output-format json`) wrap it in a STATUS ENVELOPE whose review is a JSON
+# STRING nested in a `response` field (#1737 — the envelope's top-level keys
+# are conversation_id/status/response/usage and never `verdict`/`findings`/
+# `attacks`, so the original key-test scan below never matched it and this
+# function fell through to treating the whole envelope as unparseable prose,
+# which the aggregator then silently defaulted to `verdict: approve`).
+#
+# The logic now lives in scripts/oversight/second_review_logic.py
+# (`salvage_review_json` / `_unwrap_envelope`), importable and unit-testable
+# per #314 policy. This function is a thin shell wrapper: write the raw
+# response to a tmpfile (vendor_invoke_tmpfile — cleaned up on every exit
+# path per D-6, no per-call rm needed) and call the `salvage` CLI subcommand.
+# Contract unchanged: prints the salvaged review JSON on stdout and exits 0,
+# or prints nothing and exits 1 when there is no review JSON to salvage.
+#
+# Optional 2nd arg (`metadata_file`, #1718): when given, the envelope's own
+# metadata — principally `usage.input_tokens` — is written there as JSON.
+# #1718 established that agy can silently truncate an oversized prompt and
+# still report `status: SUCCESS`; `usage.input_tokens` (what the model
+# actually RECEIVED) is the only signal that catches that, and it is NOT
+# recoverable from the salvaged review returned on stdout (the review is the
+# unwrapped `response` body; the envelope's `usage` sits alongside it, one
+# level up, and is discarded by the unwrap unless captured separately here).
+# A char-based estimate of what was SENT cannot substitute for it — see
+# salvage_with_metadata's docstring.
 salvage_review_json() {
-    # Data comes via env (REVIEW_RAW), NOT stdin: the heredoc already occupies
-    # stdin as the python program, so piping the data in would be discarded.
-    REVIEW_RAW="$1" python3 - <<'PYEOF'
-import json, os, sys
-
-raw = os.environ.get("REVIEW_RAW", "")
-
-def objects(s):
-    depth = 0; start = None; in_str = False; esc = False
-    for i, ch in enumerate(s):
-        if in_str:
-            if esc:            esc = False
-            elif ch == '\\':   esc = True
-            elif ch == '"':    in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == '{':
-            if depth == 0: start = i
-            depth += 1
-        elif ch == '}' and depth > 0:
-            depth -= 1
-            if depth == 0:
-                yield s[start:i + 1]
-
-for cand in objects(raw):
-    try:
-        obj = json.loads(cand)
-    except Exception:
-        continue
-    if isinstance(obj, dict) and ("verdict" in obj or "findings" in obj or "attacks" in obj):
-        print(json.dumps(obj))
-        sys.exit(0)
-sys.exit(1)
-PYEOF
+    local raw="$1" metadata_file="${2:-}" tmp
+    tmp=$(vendor_invoke_tmpfile)
+    printf '%s' "$raw" > "$tmp"
+    if [[ -n "$metadata_file" ]]; then
+        python3 "$(dirname "$0")/oversight/second_review_logic.py" salvage \
+            --file "$tmp" --metadata-file "$metadata_file"
+    else
+        python3 "$(dirname "$0")/oversight/second_review_logic.py" salvage --file "$tmp"
+    fi
 }
 
 # ── SPEC-379 R4: advisory when a reviewer requests full-repository context ────
@@ -600,6 +595,11 @@ print(json.dumps({
 run_agy_review() {
     local lens="$1"
     local extra_instructions="$2"
+    # #1718: optional path to receive the envelope's actual usage (input/output
+    # token counts) — the token-usage-report section below reads this instead
+    # of trying to recover it from the returned review text, which no longer
+    # carries the envelope wrapper after #1737's fix.
+    local metadata_file="${3:-}"
 
     local prompt="You are an independent code reviewer. Your lens is CORRECTNESS and SPEC ADHERENCE.
 
@@ -682,7 +682,7 @@ Return JSON only:
     else
         raw=""
     fi
-    clean=$(salvage_review_json "$raw") || clean=""
+    clean=$(salvage_review_json "$raw" "$metadata_file") || clean=""
 
     # Retry ONLY when agy was actually invoked and responded with something
     # that didn't parse as JSON (prose) — a genuine invocation failure
@@ -699,7 +699,9 @@ CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object a
         else
             raw=""
         fi
-        clean=$(salvage_review_json "$raw") || clean=""
+        # Overwrites metadata_file with the retry's envelope (#1718) — correct,
+        # since $clean (used below) is now the retry's salvage result too.
+        clean=$(salvage_review_json "$raw" "$metadata_file") || clean=""
     fi
 
     if [[ -n "$clean" ]]; then
@@ -814,7 +816,12 @@ Return JSON only:
 # ── Execute reviewers ────────────────────────────────────────────────────────
 if $RUN_AGY && $AGY_AVAILABLE; then
     echo "Running agy (correctness + spec adherence)..."
-    AGY_OUT=$(run_agy_review "correctness+spec" "")
+    # #1718: created BEFORE the call (not inside run_agy_review, which runs in
+    # a command-substitution subshell — a variable it set would not survive
+    # back into this scope, but a file it writes to a path decided out here
+    # does). Read below in the token-usage-report section.
+    AGY_USAGE_METADATA_FILE=$(vendor_invoke_tmpfile)
+    AGY_OUT=$(run_agy_review "correctness+spec" "" "$AGY_USAGE_METADATA_FILE")
     {
         echo "## agy — Correctness + Spec Adherence"
         echo '```json'
@@ -878,8 +885,30 @@ python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate --file "$OU
 # only place that reads the ledger — imported from validation_logic.py, never
 # reimplemented here (C1). A missing ledger is treated as empty (zero seen
 # fingerprints), so first-run behavior is unchanged.
+#
+# --strict-empty (#1737): every real invocation of this script writes at least
+# one "## agy"/"## codex" section (populated, or "SKIPPED") — there is no
+# legitimate case where this script's own $OUTFILE has reviewer sections that
+# validation_logic.py's independent extraction should find nothing in.
+# Without this flag, zero extractable blocks default to `approve` regardless
+# of WHY nothing was extracted — including a reviewer section whose body
+# failed to parse into anything findings/attacks/verdict-shaped. That is "we
+# could not read what the reviewer said", which must never present as a clean
+# pass. With the flag it defaults to `error` instead, which the fail-closed
+# guard below already acts on. This does not change the all-SKIPPED case
+# (score below both reviewer thresholds): `second_review_logic.py aggregate`
+# already writes `error` there (empty reviewer list, binding 4), which
+# outranks and is preserved over whatever this step recomputes, strict or
+# not — see the ratchet below.
+#
+# This was the LAST production caller of validation_logic.py process not
+# passing --strict-empty: scripts/framework/validate_agents.sh,
+# validate_scripts.sh (since #669), and validate_self.sh (since #1362) all
+# already pass it. With this diff, every caller in this repo does — the unset
+# (`approve`-on-empty-parse) default in validation_logic.py binding 7 has zero
+# remaining production callers relying on it.
 python3 "$(dirname "$0")/oversight/validation_logic.py" process \
-    --file "$OUTFILE" --ledger "$LEDGER_FILE"
+    --file "$OUTFILE" --ledger "$LEDGER_FILE" --strict-empty
 
 echo "Second review complete: $OUTFILE"
 echo "Oversight-evaluator reads this before determining PROCEED/CONDITIONAL/ESCALATE."
@@ -893,15 +922,37 @@ if [[ -f "$TRACKER" ]]; then
         # its length here too, or this estimate silently drifts stale again.
         PROMPT_CHARS=$(( ${#DIFF_CONTENT} + ${#SPEC_CONTEXT} + ${#VALIDATOR_DIGEST} + 800 ))
         OUT_CHARS=${#AGY_OUT}
-        # Try to extract actual token counts from agy JSON output
-        ACTUAL_IN=$(echo "${AGY_OUT:-}" | python3 -c \
+        # #1718/#1737: actual token counts come from the envelope metadata file
+        # salvage_review_json wrote (AGY_USAGE_METADATA_FILE), NOT from parsing
+        # AGY_OUT — AGY_OUT is now the salvaged REVIEW (the unwrapped `response`
+        # body), which never carried `usage` even in the pre-#1737 envelope
+        # (that field lives on the envelope, one level up). Re-parsing AGY_OUT
+        # here would silently degrade every agy call to the char-based estimate
+        # below, which is derived from what was SENT, not what the model
+        # RECEIVED — exactly the distinction #1718's truncation defence needs.
+        # A missing/unwritten metadata file (prose fallback, invocation
+        # failure) yields {} and 0/0 here, falling through to the same
+        # char-estimate behavior those paths always had.
+        ACTUAL_IN=$(python3 -c \
             "import json,sys
-d=json.load(sys.stdin)
-print(d.get('usage',{}).get('input_tokens',d.get('usage',{}).get('prompt_tokens',0)))" 2>/dev/null || echo "0")
-        ACTUAL_OUT=$(echo "${AGY_OUT:-}" | python3 -c \
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        d = json.load(fh)
+except Exception:
+    d = {}
+usage = d.get('usage') or {}
+print(usage.get('input_tokens', usage.get('prompt_tokens', 0)))" \
+            "${AGY_USAGE_METADATA_FILE:-/dev/null}" 2>/dev/null || echo "0")
+        ACTUAL_OUT=$(python3 -c \
             "import json,sys
-d=json.load(sys.stdin)
-print(d.get('usage',{}).get('output_tokens',d.get('usage',{}).get('completion_tokens',0)))" 2>/dev/null || echo "0")
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        d = json.load(fh)
+except Exception:
+    d = {}
+usage = d.get('usage') or {}
+print(usage.get('output_tokens', usage.get('completion_tokens', 0)))" \
+            "${AGY_USAGE_METADATA_FILE:-/dev/null}" 2>/dev/null || echo "0")
         python3 "$TRACKER" record --vendor agy --stage second-review \
             --step "${STEP:-?}" --prompt-chars "$PROMPT_CHARS" --output-chars "$OUT_CHARS" \
             --actual-prompt-tokens "$ACTUAL_IN" --actual-output-tokens "$ACTUAL_OUT" 2>/dev/null || true

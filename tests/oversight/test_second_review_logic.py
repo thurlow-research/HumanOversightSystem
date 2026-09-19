@@ -203,6 +203,206 @@ def test_fenced_body_json_parses():
 
 
 # --------------------------------------------------------------------------- #
+# #1737 — a verdict-less JSON body must never default to approve             #
+# --------------------------------------------------------------------------- #
+def test_verdict_less_review_shaped_body_is_unparseable_not_approve():
+    """A JSON body that parses and carries findings but no recognizable
+    `verdict` key answered the review — just not in the exact expected shape.
+    That is `unparseable` (preserved for a human), never a silent `approve`."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        '{"reviewer":"agy","findings":[{"severity":"medium","finding":"x"}]}',
+    )
+    result = aggregate_verdicts(content)
+    assert result["verdict"] == "unparseable"
+    assert result["highest_severity"] == "medium"
+
+
+def test_verdict_less_non_review_shaped_body_is_error_not_approve():
+    """A JSON body that parses but has neither `verdict` nor `findings`/
+    `attacks` is exactly the shape of an unsalvaged agy status envelope
+    (conversation_id/status/response/usage). Defense-in-depth: even fed
+    directly here (bypassing salvage_review_json entirely), this must never
+    read as a clean pass."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        '{"conversation_id":"x","status":"SUCCESS","response":"{}","usage":{}}',
+    )
+    assert aggregate_verdicts(content)["verdict"] == "error"
+
+
+def test_unsalvaged_envelope_fed_directly_is_error_not_approve():
+    """The exact real-world envelope shape (#1737) — if it ever reached this
+    layer unsalvaged — must aggregate to `error`, never `approve`."""
+    import json as _json
+
+    envelope = _json.dumps(
+        {
+            "conversation_id": "abc",
+            "status": "SUCCESS",
+            "response": _json.dumps({"verdict": "request_changes", "findings": []}),
+            "duration_seconds": 1.0,
+            "num_turns": 1,
+            "usage": {},
+        }
+    )
+    content = _HEADER + _section("agy — Correctness", envelope)
+    assert aggregate_verdicts(content)["verdict"] == "error"
+
+
+def test_recognized_approve_verdict_still_approves():
+    """Regression: a well-formed `{"verdict":"approve", ...}` body is
+    unaffected by the #1737 tightening."""
+    content = _HEADER + _section(
+        "agy — Correctness", '{"reviewer":"agy","verdict":"approve","findings":[]}'
+    )
+    assert aggregate_verdicts(content)["verdict"] == "approve"
+
+
+# --------------------------------------------------------------------------- #
+# #1737 test-unit review — severity value edge cases (unexpected casing/type) #
+# --------------------------------------------------------------------------- #
+def test_mixed_case_severity_is_normalized():
+    """A finding severity of 'HIGH' (uppercase — a real vendor formatting
+    variance, not just 'high') must still be recognized as high, not silently
+    treated as an unrecognized/low severity."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        json.dumps(
+            {"verdict": "request_changes", "findings": [{"severity": "HIGH", "finding": "x"}]}
+        ),
+    )
+    result = aggregate_verdicts(content)
+    assert result["highest_severity"] == "high"
+    assert result["unresolved_findings"] == 1
+
+
+def test_non_string_severity_does_not_crash_and_is_not_treated_as_high():
+    """A finding whose `severity` is a non-string (e.g. an integer some
+    malformed reviewer output could produce) must not crash the aggregator —
+    it degrades safely to an unrecognized/`none` severity rather than raising,
+    since `_SEV_RANK` only recognizes canonical string severities."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        json.dumps({"verdict": "request_changes", "findings": [{"severity": 5, "finding": "x"}]}),
+    )
+    result = aggregate_verdicts(content)  # must not raise
+    assert result["verdict"] == "request_changes"
+    assert result["highest_severity"] == "none"
+    assert result["unresolved_findings"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# #1737 security review — severity/verdict whitespace normalization (Medium) #
+# --------------------------------------------------------------------------- #
+def test_leading_whitespace_severity_is_normalized():
+    """A finding severity of ' critical' (leading space — a real vendor
+    formatting variance) must still rank as critical, not fall to
+    unrecognized/'none' — an un-.strip()'d comparison let this through
+    create_finding_issues's `sev not in ("critical","high")` check too,
+    silently skipping issue creation for a real critical finding."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        json.dumps(
+            {"verdict": "request_changes", "findings": [{"severity": " critical", "finding": "x"}]}
+        ),
+    )
+    result = aggregate_verdicts(content)
+    assert result["highest_severity"] == "critical"
+    assert result["unresolved_findings"] == 1
+
+
+def test_verdict_casing_and_whitespace_is_normalized():
+    """`"Request_Changes"` (mixed case) and `" request_changes "` (padded)
+    must both still be recognized as the canonical `request_changes` verdict.
+    An exact-match comparison downgraded a hard block (exit 2) to a soft
+    `unparseable` warning (exit 0) purely on casing/whitespace."""
+    for raw_verdict in ("Request_Changes", " request_changes ", "REQUEST_CHANGES"):
+        content = _HEADER + _section(
+            "agy — Correctness", json.dumps({"verdict": raw_verdict, "findings": []})
+        )
+        result = aggregate_verdicts(content)
+        assert result["verdict"] == "request_changes", f"raw_verdict={raw_verdict!r}"
+
+
+def test_verdict_approve_casing_is_normalized():
+    content = _HEADER + _section(
+        "agy — Correctness", json.dumps({"verdict": " Approve ", "findings": []})
+    )
+    assert aggregate_verdicts(content)["verdict"] == "approve"
+
+
+# --------------------------------------------------------------------------- #
+# #1737 security review — malformed findings must not crash (Low)           #
+# --------------------------------------------------------------------------- #
+def test_non_dict_finding_entry_does_not_crash():
+    """A bare string in the findings list (`["not a dict"]`) must not raise
+    AttributeError out of `_aggregate_full` — it degrades to unknown severity
+    and is never counted as a NEW critical/high finding."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        json.dumps({"verdict": "request_changes", "findings": ["not a dict"]}),
+    )
+    result = aggregate_verdicts(content)  # must not raise
+    assert result["verdict"] == "request_changes"
+    assert result["highest_severity"] == "none"
+    assert result["unresolved_findings"] == 0
+
+
+def test_null_findings_does_not_crash():
+    content = _HEADER + _section(
+        "agy — Correctness", json.dumps({"verdict": "request_changes", "findings": None})
+    )
+    result = aggregate_verdicts(content)  # must not raise
+    assert result["verdict"] == "request_changes"
+    assert result["unresolved_findings"] == 0
+
+
+def test_non_list_findings_does_not_crash():
+    content = _HEADER + _section(
+        "agy — Correctness", json.dumps({"verdict": "request_changes", "findings": "oops"})
+    )
+    result = aggregate_verdicts(content)  # must not raise
+    assert result["verdict"] == "request_changes"
+    assert result["unresolved_findings"] == 0
+
+
+def test_mixed_valid_and_malformed_findings_still_counts_the_valid_one():
+    """Fail-closed direction: a malformed entry must not suppress a genuine
+    critical/high finding sitting alongside it in the same list."""
+    content = _HEADER + _section(
+        "agy — Correctness",
+        json.dumps(
+            {
+                "verdict": "request_changes",
+                "findings": ["not a dict", {"severity": "critical", "finding": "real one"}, None],
+            }
+        ),
+    )
+    result = aggregate_verdicts(content)
+    assert result["highest_severity"] == "critical"
+    assert result["unresolved_findings"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# #1737 security review — an aggregation crash must write `error`, never    #
+# leave the artifact at its `verdict: pending` default (Low, defence-in-depth)#
+# --------------------------------------------------------------------------- #
+def test_cmd_aggregate_crash_writes_error_verdict_not_pending(tmp_path, monkeypatch):
+    def _boom(content):
+        raise RuntimeError("synthetic aggregation crash")
+
+    monkeypatch.setattr(second_review_logic, "_aggregate_full", _boom)
+    f = tmp_path / "out.md"
+    f.write_text(_HEADER)
+    rc = second_review_logic.main(["aggregate", "--file", str(f)])
+    assert rc == 0
+    text = f.read_text()
+    assert "verdict: error" in text
+    assert "verdict: pending" not in text
+
+
+# --------------------------------------------------------------------------- #
 # #982 — prose reviewer report with its own "## " headings must not truncate  #
 # --------------------------------------------------------------------------- #
 def test_prose_report_with_internal_headings_not_truncated():
