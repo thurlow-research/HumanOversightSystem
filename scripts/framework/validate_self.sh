@@ -27,12 +27,14 @@
 #   ./scripts/framework/validate_self.sh --allow-keychain-auth # interactive human on keychain auth (see Auth: below)
 #
 # Auth (AD-16.7): every run requires env-token auth (CLAUDE_CODE_OAUTH_TOKEN
-# or ANTHROPIC_API_KEY) by default — pass --allow-keychain-auth to opt out
-# for an interactive human on keychain auth. This is a deliberate breaking
-# change: a maintainer running this by hand must now pass the flag. There is
-# no auto-detection of "interactive" — see the REQUIRE_ENV_AUTH_FLAG comment
-# below for why. A cron cycle (HOS_CYCLE_ROLE set) may never pass
-# --allow-keychain-auth; doing so is refused (exit 2).
+# or ANTHROPIC_API_KEY) by default. This is NOT a flag you pass — it is the
+# unconditional default; there is nothing to type to request it. The ONLY
+# auth-related CLI option this script accepts is --allow-keychain-auth, to
+# opt OUT of the default for an interactive human on keychain auth. This is
+# a deliberate breaking change: a maintainer running this by hand must now
+# pass that flag. There is no auto-detection of "interactive" — see the
+# REQUIRE_ENV_AUTH_FLAG comment below for why. A cron cycle (HOS_CYCLE_ROLE
+# set) may never pass --allow-keychain-auth; doing so is refused (exit 2).
 #
 # Capped-iterate protocol (why a non-deterministic reviewer still terminates):
 #   1. --reset at the start of a new change set.
@@ -308,58 +310,57 @@ Return JSON only — no prose outside the JSON block:
     # below, $result is empty; extract_json_objects finds no parseable
     # block in it, and --strict-empty (used by the finalize step below)
     # already treats "no blocks parsed" as verdict=error.
+    #
+    # rc != 0 means, by invoke_agent.sh's own contract, that NO document was
+    # produced — any bytes present on $result in that case are not a result
+    # document (a crash's partial stdout, at most) and must not reach the
+    # parser downstream as if they were one (agy LOW, round 3). Clear it
+    # explicitly rather than relying on it happening to already be empty.
     if [[ $rc -ne 0 || -z "${result//[[:space:]]/}" ]]; then
         echo "  ERROR: bootstrap/invoke_agent.sh produced no result (rc=$rc) for Opus self-review — recording as a review FAILURE, not a clean pass (#1362)." >&2
+        result=""
     fi
     echo "$result"
 }
 
 echo "Running Opus self-review (${MODEL})..."
 OPUS_OUT=$(run_opus)
-{
-    echo "## opus-self — Adversarial Self-Review"
-    echo '```json'
-    echo "$OPUS_OUT"
-    echo '```'
-    echo ""
-} >> "$OUTFILE"
-# "done" means the reviewer actually produced a review, not merely that the call
-# returned — an empty $OPUS_OUT (the wrapper's own launch failure) was already
-# reported by run_opus above (#1362), so "see error above" is true for THAT
-# case. It is NOT true for the much larger structured invocation_failed
-# taxonomy (timeout, not_authenticated, cli_unavailable, unparseable, crash,
-# permission_denied, refused, schema_violation, usage_limit, posture_invalid,
-# agent_unavailable, ...): invoke_agent.sh's own header is explicit that exit
-# 0 covers the ENTIRE taxonomy ("the invocation was attempted and a result
-# document was produced [whatever it says]") — run_opus's rc-based guard never
-# fires for it, so nothing is printed above for that case, and claiming
-# otherwise would send an operator looking for output that does not exist.
-# Extract outcome/outcome_detail HERE instead and say WHICH failure occurred,
-# not just THAT one did — otherwise outcome_detail (the whole point of this
-# migration's observability improvement) survives only inside the raw JSON
-# blob in $OUTFILE where no human reads it (#1676: "failure records say that,
-# not why", reproduced at this exact call site until now). python3 is already
-# a hard dependency of this script (the $VALIDATION_LOGIC delegation below);
-# jq is not guaranteed present, so this reuses that same tooling rather than
-# adding a new one.
+# Extract outcome/outcome_detail HERE, BEFORE anything is written to
+# $OUTFILE — say WHICH failure occurred, not just THAT one did, so
+# outcome_detail (the whole point of this migration's observability
+# improvement, #1676) doesn't survive only inside a raw JSON blob no human
+# reads. python3 is already a hard dependency of this script (the
+# $VALIDATION_LOGIC delegation below); jq is not guaranteed present, so this
+# reuses that same tooling rather than adding a new one.
 #
 # Parsed through validation_logic.extract_json_objects — the SAME function
-# and the SAME bytes ($OPUS_OUT, byte-identical to what is written into
-# $OUTFILE below and handed to `process` at the finalize step further down —
-# a plain `json.load` here would be a second, independent parser reading the
-# same input, and a gate whose status line and blocking decision can read the
-# same bytes differently is worse than one that is merely terse. Requiring
-# EXACTLY one matched block is deliberate: extract_json_objects is prose/
-# multi-object tolerant (built for agy/codex, which sometimes wrap replies in
+# the finalize step's `process` call uses further down, on the SAME bytes —
+# a plain `json.load` here would be a second, independent parser, and a gate
+# whose status line and blocking decision can read the same bytes
+# differently is worse than one that is merely terse. Requiring EXACTLY one
+# matched block is deliberate: extract_json_objects is prose/multi-object
+# tolerant (built for agy/codex, which sometimes wrap replies in
 # commentary), but invoke_agent.sh's own contract is one bare JSON document
 # with nothing else — zero or 2+ blocks means something is unexpectedly
-# wrong, and this fails closed (PARSE_ERROR → "FAILED") rather than risk
-# reporting "done" on block[0] while the finalizer's aggregate blocks on
-# a different one.
+# wrong.
+#
+# agy HIGH (round 3): a PARSE_ERROR must fail closed by CONSTRUCTION, not by
+# hoping the finalizer happens to agree — extract_json_objects has no
+# "exactly one block" rule of its own, so a multi-block $OUTFILE could still
+# parse to "approve" there even though the status line said FAILED (the
+# console and the exit code disagreeing, the exact inverse of the divergence
+# this parser-unification was built to close). So on PARSE_ERROR, $OUTFILE
+# gets a SYNTHESIZED blocking document in place of the unparseable raw
+# output — never the raw $OPUS_OUT — guaranteeing the finalizer, reading
+# ONLY that document, blocks too. This is the same fail-closed synthesis
+# shape validate_scripts.sh's run_reviewer() already uses for its own
+# required-lane failures.
 _opus_outcome="__EMPTY__"
 _opus_outcome_detail="-"
+_opus_verdict="-"
+_opus_emit="$OPUS_OUT"
 if [[ -n "${OPUS_OUT//[[:space:]]/}" ]]; then
-    IFS=$'\t' read -r _opus_outcome _opus_outcome_detail < <(
+    IFS=$'\t' read -r _opus_outcome _opus_outcome_detail _opus_verdict < <(
         printf '%s' "$OPUS_OUT" | python3 -c '
 import importlib.util, sys
 
@@ -374,16 +375,59 @@ try:
         raise ValueError("expected exactly one JSON block, got {}".format(len(blocks)))
     doc = blocks[0]
 except Exception:
-    print("__PARSE_ERROR__\t__PARSE_ERROR__")
+    print("__PARSE_ERROR__\t__PARSE_ERROR__\t__PARSE_ERROR__")
 else:
-    print("{}\t{}".format(doc.get("outcome") or "-", doc.get("outcome_detail") or "-"))
+    print("{}\t{}\t{}".format(
+        doc.get("outcome") or "-", doc.get("outcome_detail") or "-", doc.get("verdict") or "-"
+    ))
 ' "$VALIDATION_LOGIC" 2>/dev/null
-    ) || { _opus_outcome="__PARSE_ERROR__"; _opus_outcome_detail="__PARSE_ERROR__"; }
+    ) || { _opus_outcome="__PARSE_ERROR__"; _opus_outcome_detail="__PARSE_ERROR__"; _opus_verdict="__PARSE_ERROR__"; }
 fi
+# agy HIGH (round 3): a PARSE_ERROR must fail closed by CONSTRUCTION, not by
+# hoping the finalizer happens to agree — extract_json_objects has no
+# "exactly one block" rule of its own, so a multi-block $OUTFILE could still
+# parse to "approve" there even though the status line said FAILED (the
+# console and the exit code disagreeing, the exact inverse of the divergence
+# this parser-unification was built to close). So on PARSE_ERROR — and on
+# any outcome value that is neither "completed" nor "invocation_failed"
+# (the primitive's own closed 2-value type; unreachable today, but a status
+# line that fails open on a future third value would be the same bug again)
+# — $OUTFILE gets a SYNTHESIZED blocking document in place of the raw
+# output, never the raw $OPUS_OUT itself, guaranteeing the finalizer,
+# reading ONLY that document, blocks too. This is the same fail-closed
+# synthesis shape validate_scripts.sh's run_reviewer() already uses for its
+# own required-lane failures.
+if [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
+    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh produced output that could not be parsed as exactly one JSON document (a required precondition for the Opus self-review lane).","fix":"Re-run validate_self.sh; if this recurs, inspect the raw output captured in this file for the cause."}],"verdict":"request_changes","summary":"Opus self-review output was unparseable — fail-closed (agy HIGH, round 3)."}'
+elif [[ "$_opus_outcome" != "__EMPTY__" && "$_opus_outcome" != "completed" && "$_opus_outcome" != "invocation_failed" ]]; then
+    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh returned an outcome value this script does not recognise (neither completed nor invocation_failed).","fix":"Investigate — the primitive is expected to emit only those two outcome values."}],"verdict":"request_changes","summary":"Unrecognised outcome — fail-closed."}'
+fi
+{
+    echo "## opus-self — Adversarial Self-Review"
+    echo '```json'
+    echo "$_opus_emit"
+    echo '```'
+    echo ""
+} >> "$OUTFILE"
+# "done" means the reviewer actually completed a review AND found nothing
+# blocking — nothing else does. Two agy findings, round 3:
+#   MEDIUM (:398) — the previous `else → done` fallthrough treated ANY
+#     outcome other than the three named failure buckets as success,
+#     including a missing/unexpected value the extractor renders "-".
+#     Inverted: `done` requires outcome=="completed" explicitly; every other
+#     outcome, named or not, is reported as a failure naming the value.
+#   Found during the requested sweep of this same seam, not originally
+#     reported: outcome=="completed" only means the INVOCATION succeeded —
+#     the self-reviewer AGENT can still legitimately return
+#     verdict:"request_changes" with real blocking findings (the normal,
+#     expected shape when it finds something), and the previous version
+#     printed "done" for that too, misleading the console even though the
+#     finalizer below was already correctly blocking. `done` now also
+#     requires the document's own verdict to be "approve".
 if [[ "$_opus_outcome" == "__EMPTY__" ]]; then
     echo "  FAILED — no result produced (see ERROR above)"
 elif [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
-    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as JSON"
+    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as exactly one JSON document — recorded as a blocking finding (see \$OUTFILE)"
 elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
     echo "  FAILED — outcome=invocation_failed outcome_detail=${_opus_outcome_detail}"
     # Discoverability (AD-16.7): strict-by-default auth is a deliberate
@@ -393,8 +437,14 @@ elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
     if [[ "$_opus_outcome_detail" == "not_authenticated" ]]; then
         echo "  If you are running this interactively with keychain auth (no CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY set), re-run with --allow-keychain-auth." >&2
     fi
+elif [[ "$_opus_outcome" == "completed" ]]; then
+    if [[ "$_opus_verdict" == "approve" ]]; then
+        echo "  done"
+    else
+        echo "  FAILED — review completed with verdict=${_opus_verdict} (blocking findings present — see \$OUTFILE)"
+    fi
 else
-    echo "  done"
+    echo "  FAILED — unrecognised outcome '${_opus_outcome}' — recorded as a blocking finding (see \$OUTFILE)"
 fi
 echo ""
 
