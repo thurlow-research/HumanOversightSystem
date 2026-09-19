@@ -332,6 +332,10 @@ def _extract_opus_outcome_detail_python_snippet():
 
 
 def _run_opus_status_snippet(doc_text: str) -> subprocess.CompletedProcess:
+    """The snippet now emits THREE tab-separated fields — outcome,
+    outcome_detail, verdict (added round 3: "done" must require the
+    document's own verdict too, not just outcome=="completed" — see
+    test_status_line_requires_approve_verdict_not_just_completed_outcome)."""
     snippet = _extract_opus_outcome_detail_python_snippet()
     return subprocess.run(
         ["python3", "-c", snippet, str(_VALIDATION_LOGIC_PATH)],
@@ -345,26 +349,29 @@ def test_status_line_surfaces_outcome_detail_on_invocation_failed():
     doc = '{"outcome":"invocation_failed","outcome_detail":"not_authenticated","findings":[],"verdict":"error"}'
     result = _run_opus_status_snippet(doc)
     assert result.returncode == 0, result.stderr
-    outcome, _, detail = result.stdout.strip().partition("\t")
+    outcome, detail, verdict = result.stdout.strip().split("\t")
     assert outcome == "invocation_failed"
     assert detail == "not_authenticated"
+    assert verdict == "error"
 
 
 def test_status_line_reports_completed_outcome_with_no_detail():
     doc = '{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}'
     result = _run_opus_status_snippet(doc)
     assert result.returncode == 0, result.stderr
-    outcome, _, detail = result.stdout.strip().partition("\t")
+    outcome, detail, verdict = result.stdout.strip().split("\t")
     assert outcome == "completed"
     assert detail == "-"
+    assert verdict == "approve"
 
 
 def test_status_line_handles_unparseable_output_without_crashing():
     result = _run_opus_status_snippet("not json at all")
     assert result.returncode == 0, result.stderr
-    outcome, _, detail = result.stdout.strip().partition("\t")
+    outcome, detail, verdict = result.stdout.strip().split("\t")
     assert outcome == "__PARSE_ERROR__"
     assert detail == "__PARSE_ERROR__"
+    assert verdict == "__PARSE_ERROR__"
 
 
 def test_status_line_fails_closed_on_multiple_blocks_rather_than_risk_a_false_done():
@@ -379,9 +386,10 @@ def test_status_line_fails_closed_on_multiple_blocks_rather_than_risk_a_false_do
     )
     result = _run_opus_status_snippet(doc)
     assert result.returncode == 0, result.stderr
-    outcome, _, detail = result.stdout.strip().partition("\t")
+    outcome, detail, verdict = result.stdout.strip().split("\t")
     assert outcome == "__PARSE_ERROR__"
     assert detail == "__PARSE_ERROR__"
+    assert verdict == "__PARSE_ERROR__"
 
 
 def test_status_line_uses_the_same_extractor_the_finalizer_uses():
@@ -405,6 +413,105 @@ def test_status_line_no_longer_makes_the_false_see_error_above_claim():
     assert (
         "outcome_detail=" in text
     ), "the status line no longer surfaces outcome_detail to the operator (#1676)"
+
+
+# ── agy HIGH/MEDIUM, round 3 — the status line must never disagree with the
+#    finalizer, in EITHER direction. End-to-end integration tests: extract the
+#    real block (start/end anchors below, so they drift-detect the same way
+#    the python-snippet extraction does), stub run_opus() to return a
+#    synthetic document, run it for real, and assert the printed status line
+#    AND validation_logic.py's own computed verdict never disagree ─────────
+def _extract_opus_status_block():
+    """Everything from `OPUS_OUT=$(run_opus)` through the status if/fi chain
+    — i.e. the whole seam between the reviewer call and the finalize step,
+    bounded by two anchors already present in the shipped file."""
+    text = (ROOT / "scripts" / "framework" / "validate_self.sh").read_text(encoding="utf-8")
+    start = text.index("OPUS_OUT=$(run_opus)")
+    end = text.index("# ── Finalize verdict", start)
+    assert start != -1 and end != -1, (
+        "could not locate the status-line block's start/end anchors in "
+        "validate_self.sh — has it been renamed or restructured?"
+    )
+    return text[start:end]
+
+
+def _run_opus_status_block_integration(synthetic_opus_out: str) -> dict:
+    """Runs the REAL extracted block, with run_opus() stubbed to return
+    `synthetic_opus_out`, followed by the REAL validation_logic.py finalize
+    step reading the SAME $OUTFILE the block wrote to. Returns the console
+    stdout and the finalizer's own computed verdict, so a test can assert
+    they never disagree."""
+    block = _extract_opus_status_block()
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+VALIDATION_LOGIC={str(_VALIDATION_LOGIC_PATH)!r}
+MODEL="opus"
+OUTFILE="$(mktemp)"
+LEDGER="$(mktemp)"
+: > "$LEDGER"
+printf 'verdict: pending\\nhighest_severity: none\\nblocking_count: 0\\nnew_blocking_count: 0\\n\\n' > "$OUTFILE"
+run_opus() {{ printf '%s' {synthetic_opus_out!r}; }}
+{block}
+python3 "$VALIDATION_LOGIC" process --file "$OUTFILE" --ledger "$LEDGER" --strict-empty
+grep '^verdict:' "$OUTFILE" | head -1 | awk '{{print $2}}'
+"""
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    return {"console": "\n".join(lines[:-1]), "finalizer_verdict": lines[-1]}
+
+
+def test_status_line_and_finalizer_agree_on_a_clean_pass():
+    r = _run_opus_status_block_integration(
+        '{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}'
+    )
+    assert "done" in r["console"]
+    assert r["finalizer_verdict"] == "approve"
+
+
+def test_status_line_and_finalizer_agree_on_invocation_failed():
+    r = _run_opus_status_block_integration(
+        '{"outcome":"invocation_failed","outcome_detail":"not_authenticated","verdict":"error","findings":[]}'
+    )
+    assert "FAILED" in r["console"]
+    assert r["finalizer_verdict"] == "request_changes"
+
+
+def test_status_line_and_finalizer_agree_on_a_multi_block_parse_error():
+    """The exact agy HIGH scenario: two clean "approve" blocks concatenated.
+    Before the fix, extract_json_objects (no "exactly one" rule) could reach
+    approve here even though the status line said FAILED. Now the PARSE_ERROR
+    branch injects a blocking document into $OUTFILE, so both agree."""
+    r = _run_opus_status_block_integration(
+        '{"outcome":"completed","verdict":"approve","findings":[]} '
+        '{"outcome":"completed","verdict":"approve","findings":[]}'
+    )
+    assert "FAILED" in r["console"]
+    assert r["finalizer_verdict"] != "approve"
+    assert r["finalizer_verdict"] == "request_changes"
+
+
+def test_status_line_requires_approve_verdict_not_just_completed_outcome():
+    """Found during the round-3 sweep, not originally reported: outcome ==
+    "completed" only means the INVOCATION succeeded — the self-reviewer AGENT
+    can still legitimately return verdict:"request_changes" with real
+    blocking findings. The status line must not say "done" for that, even
+    though the finalizer was already (independently) computing the correct
+    blocking verdict."""
+    r = _run_opus_status_block_integration(
+        '{"outcome":"completed","verdict":"request_changes",'
+        '"findings":[{"severity":"blocking","category":"governance-hole",'
+        '"files":["x.md"],"description":"d","fix":"f"}]}'
+    )
+    assert "done" not in r["console"]
+    assert "FAILED" in r["console"]
+    assert r["finalizer_verdict"] == "request_changes"
+
+
+def test_status_line_and_finalizer_agree_on_empty_output():
+    r = _run_opus_status_block_integration("")
+    assert "FAILED" in r["console"]
+    assert r["finalizer_verdict"] == "error"
 
 
 # ── T4.5 — setup_clis.sh carries the exemption comment citing ADR-1643 ────────
