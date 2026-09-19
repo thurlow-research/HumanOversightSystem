@@ -362,9 +362,7 @@ def _is_review_shaped(obj) -> bool:
     """True for a dict that looks like a reviewer's answer — carries verdict,
     findings, or attacks. Matches the pre-#1737 shell salvage's key test
     exactly (no behavior change for the plain/fenced/prose-embedded case)."""
-    return isinstance(obj, dict) and (
-        "verdict" in obj or "findings" in obj or "attacks" in obj
-    )
+    return isinstance(obj, dict) and ("verdict" in obj or "findings" in obj or "attacks" in obj)
 
 
 def _unwrap_envelope(obj, depth: int = 0) -> list[dict]:
@@ -708,9 +706,7 @@ def salvage_with_metadata(raw: str) -> tuple[dict | None, dict]:
             # looks like an envelope, not an unrelated JSON blob that
             # happened to appear in raw text (e.g. embedded validator digest
             # content) and coincidentally parses.
-            if not fallback_metadata and (
-                "response" in obj or "status" in obj or "usage" in obj
-            ):
+            if not fallback_metadata and ("response" in obj or "status" in obj or "usage" in obj):
                 fallback_metadata = _envelope_metadata_fields(obj)
             continue
         if len(found) == 1 and found[0] is obj:

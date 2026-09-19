@@ -31,24 +31,43 @@ _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # this stub makes that call fail with FileNotFoundError, caught and logged by
 # the script's own `except Exception` — no network, no real issue, hermetic.
 _REQUIRED_BINS = [
-    "bash", "python3", "git", "cat", "grep", "awk", "sed", "mkdir", "date",
-    "head", "wc", "tr", "cut", "dirname", "mktemp", "rm", "env", "tail",
-    "find", "timeout",
+    "bash",
+    "python3",
+    "git",
+    "cat",
+    "grep",
+    "awk",
+    "sed",
+    "mkdir",
+    "date",
+    "head",
+    "wc",
+    "tr",
+    "cut",
+    "dirname",
+    "mktemp",
+    "rm",
+    "env",
+    "tail",
+    "find",
+    "timeout",
 ]
 
 
 def _minimal_stub_path(tmp_path: Path) -> Path:
-    missing = [b for b in _REQUIRED_BINS if shutil.which(b) is None]
+    resolved = {b: shutil.which(b) for b in _REQUIRED_BINS}
+    missing = [b for b, path in resolved.items() if path is None]
     if missing:
         import pytest
 
         pytest.skip(f"required binaries unavailable: {missing}")
     stub = tmp_path / "stub_bin"
     stub.mkdir(exist_ok=True)
-    for b in _REQUIRED_BINS:
+    for b, path in resolved.items():
+        assert path is not None  # narrowed by the `missing` guard above
         target = stub / b
         if not target.exists():
-            target.symlink_to(shutil.which(b))
+            target.symlink_to(path)
     return stub
 
 
@@ -72,13 +91,27 @@ def _run(tmp_path: Path, agy_stdout: str, score: str = "0.5") -> subprocess.Comp
     env["PATH"] = str(stub)
 
     return subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py",
-         "--step", "1737", "--tier", "MEDIUM", "--score", score],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "1737",
+            "--tier",
+            "MEDIUM",
+            "--score",
+            score,
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
 
 
-def _artifact_fields(tmp_path: Path, step: str) -> dict[str, str]:
+def _artifact_fields(tmp_path: Path, step: str) -> tuple[dict[str, str], Path]:
     matches = sorted((tmp_path / ".claudetmp" / "second-review").glob(f"step{step}-*.md"))
     assert matches, f"no second-review artifact written for step {step}"
     fields: dict[str, str] = {}
@@ -126,9 +159,7 @@ def test_non_success_envelope_status_does_not_yield_a_review(tmp_path):
         {
             "conversation_id": "x",
             "status": "ERROR",
-            "response": json.dumps(
-                {"reviewer": "agy", "verdict": "approve", "findings": []}
-            ),
+            "response": json.dumps({"reviewer": "agy", "verdict": "approve", "findings": []}),
             "usage": {},
         }
     )
@@ -163,16 +194,32 @@ def test_codex_plain_json_review_is_unaffected_by_envelope_unwrapping(tmp_path):
         '"verdict":"request_changes","summary":"one critical finding"}'
     )
     codex_stub = stub / "codex"
-    codex_stub.write_text(f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{codex_json}\nJSON\n")
+    codex_stub.write_text(
+        f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{codex_json}\nJSON\n"
+    )
     codex_stub.chmod(codex_stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     env = dict(os.environ)
     env["PATH"] = str(stub)  # no agy anywhere on PATH
 
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py",
-         "--step", "1737codex", "--tier", "HIGH", "--score", "0.9"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "1737codex",
+            "--tier",
+            "HIGH",
+            "--score",
+            "0.9",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
     fields, artifact = _artifact_fields(tmp_path, "1737codex")
 
@@ -222,7 +269,9 @@ def test_agy_prose_fallback_still_degrades_to_estimate(tmp_path):
     char-based estimate, exactly as it did before both the #1737 and #1718
     fixes touched this path."""
     r = _run(tmp_path, "Looks fine overall, no concerns to report here at all.")
-    assert r.returncode == 1, f"stdout={r.stdout}\nstderr={r.stderr}"  # verdict=error, no JSON at all
+    assert (
+        r.returncode == 1
+    ), f"stdout={r.stdout}\nstderr={r.stderr}"  # verdict=error, no JSON at all
 
     entry = _last_usage_entry(tmp_path, "agy")
     assert entry["estimated"] is True, entry
@@ -272,16 +321,32 @@ def test_codex_path_still_always_estimates_never_actual(tmp_path):
     (tmp_path / "target.py").write_text("def f():\n    return 1\n")
     stub = _minimal_stub_path(tmp_path)
     codex_stub = stub / "codex"
-    codex_stub.write_text(f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{codex_json}\nJSON\n")
+    codex_stub.write_text(
+        f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{codex_json}\nJSON\n"
+    )
     codex_stub.chmod(codex_stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     env = dict(os.environ)
     env["PATH"] = str(stub)  # no agy on PATH
 
     subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py",
-         "--step", "1737codexusage", "--tier", "HIGH", "--score", "0.9"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "1737codexusage",
+            "--tier",
+            "HIGH",
+            "--score",
+            "0.9",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
     entry = _last_usage_entry(tmp_path, "codex")
     assert entry["estimated"] is True, entry
