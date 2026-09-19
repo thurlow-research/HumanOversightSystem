@@ -710,9 +710,7 @@ def test_non_success_envelope_with_multiple_nested_candidates_fails_closed():
         '{"verdict":"approve","findings":[]}\n\n'
         '{"verdict":"request_changes","findings":[{"severity":"critical","finding":"SQLi"}]}'
     )
-    envelope = json.dumps(
-        {"status": "ERROR", "response": resp, "usage": {"input_tokens": 10}}
-    )
+    envelope = json.dumps({"status": "ERROR", "response": resp, "usage": {"input_tokens": 10}})
     review, metadata = salvage_with_metadata(envelope)
     assert review is None
     # Metadata capture is diagnostic-only and unconditional on status (#1718

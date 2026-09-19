@@ -128,7 +128,7 @@ def _brace_objects(text: str) -> list[dict]:
                 depth -= 1
                 if depth == 0:
                     try:
-                        out.append(json.loads(text[i:j + 1]))
+                        out.append(json.loads(text[i : j + 1]))
                     except Exception:
                         pass
                     break
@@ -148,14 +148,12 @@ def extract_json_objects(text: str) -> list[dict]:
     objs: list[dict] = []
     for m in re.finditer(r"```json(.*?)```", text, re.DOTALL):
         objs.extend(
-            o for o in _brace_objects(m.group(1))
+            o
+            for o in _brace_objects(m.group(1))
             if "findings" in o or "attacks" in o or "verdict" in o
         )
     if not objs:
-        objs.extend(
-            o for o in _brace_objects(text)
-            if "findings" in o or "attacks" in o
-        )
+        objs.extend(o for o in _brace_objects(text) if "findings" in o or "attacks" in o)
     return objs
 
 
@@ -301,7 +299,11 @@ def compute_verdict(
         # critical/high/blocking finding, so a malformed entry can only ever
         # be a no-op here, never lower an already-established severity.
         for item in _safe_items(block, "findings") + _safe_items(block, "attacks"):
-            sev = str(item.get("severity", "low")).strip().lower() if isinstance(item, dict) else "unknown"
+            sev = (
+                str(item.get("severity", "low")).strip().lower()
+                if isinstance(item, dict)
+                else "unknown"
+            )
             try:
                 if SEVERITIES.index(sev) < SEVERITIES.index(highest):
                     highest = sev
@@ -312,8 +314,10 @@ def compute_verdict(
                 # A degenerate (file-less, class-less) finding has no stable
                 # fingerprint to dedup against, so it always counts as NEW —
                 # never silenced by a `[[], ""]` ledger key (#983, cf. #670).
-                if _is_degenerate(_files_of(item), _class_of_finding(item)) \
-                        or fingerprint(item) not in seen:
+                if (
+                    _is_degenerate(_files_of(item), _class_of_finding(item))
+                    or fingerprint(item) not in seen
+                ):
                     new_blocking_count += 1
 
     # Verdict keyed on NEW (un-ledgered) blocking findings: convergence is "zero
@@ -416,9 +420,7 @@ def _cmd_process(args: argparse.Namespace) -> int:
     if _severity_rank(existing_sev) <= _severity_rank(highest):
         highest = existing_sev
 
-    new_content = re.sub(
-        r"^verdict: \S+$", f"verdict: {verdict}", content, count=1, flags=re.M
-    )
+    new_content = re.sub(r"^verdict: \S+$", f"verdict: {verdict}", content, count=1, flags=re.M)
     new_content = re.sub(
         r"^highest_severity: \S+$", f"highest_severity: {highest}", new_content, count=1, flags=re.M
     )
@@ -426,14 +428,17 @@ def _cmd_process(args: argparse.Namespace) -> int:
         r"^blocking_count: \d+$", f"blocking_count: {blocking}", new_content, count=1, flags=re.M
     )
     new_content = re.sub(
-        r"^new_blocking_count: \d+$", f"new_blocking_count: {new_blocking}", new_content, count=1, flags=re.M
+        r"^new_blocking_count: \d+$",
+        f"new_blocking_count: {new_blocking}",
+        new_content,
+        count=1,
+        flags=re.M,
     )
     with open(args.file, "w", encoding="utf-8") as fh:
         fh.write(new_content)
 
     print(
-        f"  verdict={verdict} highest_severity={highest} "
-        f"blocking={blocking} new={new_blocking}"
+        f"  verdict={verdict} highest_severity={highest} " f"blocking={blocking} new={new_blocking}"
     )
     return 0
 
