@@ -92,14 +92,40 @@ done
 
 command -v claude >/dev/null 2>&1 || { echo "ERROR: claude CLI required for the Opus script self-review (--skip not supported; this is the deterministic lane)" >&2; exit 2; }
 
-# ── Portable hard timeout (agy/codex can hang) — shared with validate_agents,
-# validate_self, and every other AI-review caller (AD-5.3, #1643 W4 §6.3):
-# with_timeout() from run_with_retry.sh replaces this file's own private
-# run_capped copy. Unlike run_capped, with_timeout does not redirect stdout
-# to a file or discard stderr on its own — each call site below grows its
-# own explicit `> "$out" 2>/dev/null` (not free; TD §6.3).
-# shellcheck source=../oversight/run_with_retry.sh
-source "$ROOT/scripts/oversight/run_with_retry.sh"
+# DELIBERATE, TEMPORARY private copy — do not "finish the job" by migrating
+# this to with_timeout()/run_with_retry.sh. AD-16.6 (architect ruling, reversing
+# an earlier acceptance) keeps this file's own portable-fallback behavior
+# because the shared with_timeout() has no equivalent to it: on a host with
+# neither `timeout` nor `gtimeout`, this function's background-poll-and-kill
+# branch still terminates the call, where with_timeout would let it run
+# unbounded. That matters here specifically because run_reviewer's prompt
+# embeds KNOWN_ISSUES built from live `gh issue list` titles — attacker-
+# influenceable content, not just a portability nicety — so a run that can be
+# made to hang forever is a security-relevant gate that never returns a
+# verdict, not merely a slow one. Porting the fallback into with_timeout()
+# itself was rejected as the right fix in the wrong place: that helper has
+# five other live callers, including the blocking gates/secret_scan.sh and
+# gates/security_scan.sh, where the timeout argument is currently inert on an
+# affected host — porting the fallback there would newly let those gates
+# return 124 where they previously ran to completion, a behavior change that
+# needs its own reviewed slice. The fix (porting the fallback into
+# with_timeout(), AD-5.3) is tracked as #1757 — that issue is where it
+# belongs, not here.
+# ── Portable hard timeout (agy/codex can hang) — same pattern as validate_agents ──
+_TIMEOUT_BIN=""
+if command -v timeout &>/dev/null; then _TIMEOUT_BIN="timeout"
+elif command -v gtimeout &>/dev/null; then _TIMEOUT_BIN="gtimeout"; fi
+run_capped() {
+    local secs="$1" out="$2"; shift 2
+    if [[ -n "$_TIMEOUT_BIN" ]]; then "$_TIMEOUT_BIN" "$secs" "$@" > "$out" 2>/dev/null; return $?; fi
+    "$@" > "$out" 2>/dev/null &
+    local pid=$! waited=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( waited >= secs )); then kill -TERM "$pid" 2>/dev/null; sleep 2; kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; fi
+        sleep 3; waited=$(( waited + 3 ))
+    done
+    wait "$pid"; return $?
+}
 
 # ── Collect scripts (changed-only via --base, or all) ─────────────────────────
 collect_scripts() {
@@ -172,9 +198,9 @@ ${PKG}
 ${JSON_SCHEMA/REVIEWER/$name}"
     out=$(mktemp /tmp/vscripts_${name}_XXXXXX)
     case "$kind" in
-        opus)  printf '%s' "$prompt" | with_timeout "$AI_REVIEW_TIMEOUT" claude -p --model "$MODEL" > "$out" 2>/dev/null || rc=$? ;;
-        agy)   with_timeout "$AI_REVIEW_TIMEOUT" agy --sandbox -p "$prompt" > "$out" 2>/dev/null || rc=$? ;;
-        codex) printf '%s' "$prompt" | with_timeout "$AI_REVIEW_TIMEOUT" codex exec > "$out" 2>/dev/null || rc=$? ;;
+        opus)  printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" claude -p --model "$MODEL" || rc=$? ;;
+        agy)   run_capped "$AI_REVIEW_TIMEOUT" "$out" agy --sandbox -p "$prompt" || rc=$? ;;
+        codex) printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" codex exec || rc=$? ;;
     esac
     body=$(cat "$out" 2>/dev/null)
     rm -f "$out"

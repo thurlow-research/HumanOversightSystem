@@ -18,25 +18,36 @@ later amendments:
      (the primitive's own subprocess-launch helper) — explicitly out of scope
      here ("Do not change ... agent_invoke_cli.py") — plus its dedicated test
      file `tests/automation/test_agent_invoke_cli.py`.
-  3. T4.2's "delete both `run_capped` copies" premise (TD §6.3) was itself
-     amended by ADR-1643 §9.4 (ESC-D/TD-F5, "Amends AD-5.3"), AFTER the TD
-     table was written and never revised there: `validate_agents.sh`'s copy
-     has no `claude` consumer to migrate (`validate_agents.sh` has no claude
-     call site at all — only `agy`/`codex`), so its `run_capped` deletion is
-     an unrelated refactor of the cross-vendor validation path and MOVES OUT
-     of W4 to a follow-up issue. Only `validate_scripts.sh`'s copy — the one
-     actually attached to a real migration — is deleted here. The ADR's own
-     "copy ledger" for the state after W4 (§9.4): one shared bash helper
-     (`with_timeout`, in `scripts/oversight/run_with_retry.sh`) and exactly
-     two remaining PRIVATE bash timeout-capping copies —
-     `scripts/framework/validate_agents.sh` (the follow-up) and
-     `bin/hos-cron` (deliberately out of scope of both W4 and the follow-up:
-     it bounds a whole cron cycle, not an AI review, per §9.4). T4.2 below
-     asserts exactly that ledger, using the marker both remaining private
-     copies actually share (`_TIMEOUT_BIN`) rather than the literal string
-     `run_capped`, since `bin/hos-cron`'s copy never used that function name.
+  3. T4.2's "delete both `run_capped` copies" premise (TD §6.3) was amended
+     TWICE, in opposite directions, after the TD table was written and never
+     revised there. First, ADR-1643 §9.4 (ESC-D/TD-F5, "Amends AD-5.3") took
+     `validate_agents.sh`'s copy out of W4 entirely (no `claude` consumer to
+     migrate — only `agy`/`codex` — so its deletion is an unrelated refactor,
+     moved to follow-up #1671), leaving `validate_scripts.sh`'s copy — the
+     one actually attached to a real migration — as the only one W4 deleted.
+     Then AD-16.6 (2026-09-19) REVERSED that: a HIGH cross-vendor finding
+     (codex, CWE-400) showed `with_timeout` has no equivalent to
+     `run_capped`'s TERM/KILL fallback, and `validate_scripts.sh`'s prompt
+     embeds attacker-influenceable content (`KNOWN_ISSUES`, from live `gh
+     issue list` titles) — turning a lost fallback into a reachable hang on
+     a required, fail-closed gate, not a portability nicety. So
+     `validate_scripts.sh`'s copy is RESTORED too; W4 now deletes NEITHER
+     copy. The ledger after W4: one shared bash helper (`with_timeout`, in
+     `scripts/oversight/run_with_retry.sh`) and exactly THREE remaining
+     PRIVATE bash timeout-capping copies — `scripts/framework/validate_agents.sh`
+     (#1671), `scripts/framework/validate_scripts.sh` (#1757, AD-16.6), and
+     `bin/hos-cron` (deliberately out of scope of everything: it bounds a
+     whole cron cycle, not an AI review). T4.2 below asserts exactly that
+     ledger, using the marker all three private copies actually share
+     (`_TIMEOUT_BIN`) rather than the literal string `run_capped`, since
+     `bin/hos-cron`'s copy never used that function name. Note
+     `validate_scripts.sh` also still appears in T4.1's exemption set, for
+     the SEPARATE, independently-tracked #1756 reason (the unmigrated
+     `claude -p` opus seat, §6.2/W4c) — the two exemptions are not the same
+     thing and must not be conflated.
 """
 
+import ast
 import importlib.util
 import re
 import subprocess
@@ -120,48 +131,52 @@ def test_T4_1_no_raw_claude_cli_outside_named_exemptions():
     )
 
 
-# ── T4.2 — validate_scripts.sh's private run_capped copy is gone; the ADR-1643
-#          §9.4 "copy ledger" for everything else holds (AD-5.3 as amended) ──
+# ── T4.2 — the private _TIMEOUT_BIN/run_capped copy ledger, per AD-16.6 ────────
+#
+# AD-16.6 (2026-09-19) REVERSED the earlier AD-5.3-as-amended acceptance:
+# codex's HIGH cross-vendor finding (CWE-400) showed `with_timeout`'s missing
+# TERM/KILL fallback turns a required, fail-closed gate into one an
+# attacker-influenceable input (KNOWN_ISSUES, built from live `gh issue list`
+# titles) can hang forever — not the availability nicety it was first framed
+# as. validate_scripts.sh's private `run_capped` copy is therefore RESTORED,
+# not deleted: W4 changes its timeout behaviour not at all. The fix (porting
+# the fallback into with_timeout() itself) is tracked as #1757, not done
+# here — that helper has five other live callers, including the blocking
+# gates/secret_scan.sh and gates/security_scan.sh, where the timeout argument
+# is currently inert on an affected host, so porting the fallback needs its
+# own reviewed slice.
 _TIMEOUT_BIN_ASSIGNMENT_PATTERN = re.compile(r"_TIMEOUT_BIN\s*=")
 
 # scripts/oversight/run_with_retry.sh is the ADR's "one shared bash helper"
 # (with_timeout) — its own _TIMEOUT_BIN is the canonical implementation every
-# migrated call site now delegates to, not a "private copy", so it is
-# excluded from the private-copy ledger below by construction.
+# migrated call site delegates to, not a "private copy", so it is excluded
+# from the private-copy ledger below by construction.
 _SHARED_HELPER = "scripts/oversight/run_with_retry.sh"
 
-# The two remaining PRIVATE bash timeout-capping copies per ADR-1643 §9.4's
-# ledger (both still use `_TIMEOUT_BIN`; only validate_agents.sh's still
-# wraps it in a function literally named `run_capped` — bin/hos-cron's never
-# used that name, so this checks the marker they actually share).
+# The three PRIVATE bash timeout-capping copies after W4 (all still use
+# `_TIMEOUT_BIN`; only validate_agents.sh's and validate_scripts.sh's wrap it
+# in a function literally named `run_capped` — bin/hos-cron's never used
+# that name, so this checks the marker all three actually share). Two
+# INDEPENDENT reasons put validate_scripts.sh in this set specifically — see
+# its comment below; do not conflate them.
 _T4_2_EXPECTED_TIMEOUT_BIN_COPIES = {
-    # EXEMPT (ADR-1643 §9.4): moved to a follow-up issue, not W4 — no claude consumer to migrate.
+    # EXEMPT (#1671): moved to a follow-up issue, not W4 — no claude consumer to migrate.
     "scripts/framework/validate_agents.sh",
-    # EXEMPT (ADR-1643 §9.4): out of scope of W4 AND the follow-up — bounds a whole cron cycle, not an AI review.
+    # EXEMPT (#1757, AD-16.6): the attacker-influenceable-hang finding above — a
+    # DIFFERENT reason than this same file's T4.1 exemption (#1756, the
+    # unmigrated claude -p seat). validate_scripts.sh is tracked in BOTH
+    # ledgers, independently.
+    "scripts/framework/validate_scripts.sh",
+    # EXEMPT: out of scope of W4 and every follow-up — bounds a whole cron cycle, not an AI review.
     "bin/hos-cron",
 }
 
 
-def test_T4_2_validate_scripts_no_longer_has_a_private_timeout_bin_copy():
-    """Positive confirmation of the one migration T4.2 actually covers: no
-    `run_capped` function and no `_TIMEOUT_BIN` definition remain in
-    validate_scripts.sh (ADR-1643 §9.4 — this is the copy that WAS attached
-    to a real migration)."""
-    path = ROOT / "scripts" / "framework" / "validate_scripts.sh"
-    for lineno, line in _code_lines(path):
-        assert (
-            "run_capped" not in line
-        ), f"validate_scripts.sh:{lineno} still references run_capped in code: {line!r}"
-        assert not _TIMEOUT_BIN_ASSIGNMENT_PATTERN.search(
-            line
-        ), f"validate_scripts.sh:{lineno} still defines _TIMEOUT_BIN: {line!r}"
-
-
-def test_T4_2_private_timeout_bin_copy_ledger_matches_adr_1643_section_9_4():
-    """After W4: one shared bash helper (with_timeout, excluded here) and
-    exactly the two remaining private copies ADR-1643 §9.4 names. If a third
-    copy appears, or one of these two is unexpectedly migrated/deleted
-    without updating this ledger, this test catches the drift."""
+def test_T4_2_private_timeout_bin_copy_ledger_is_exactly_three():
+    """One shared bash helper (with_timeout, excluded here) and exactly the
+    three remaining private copies named above. If a fourth copy appears, or
+    one of these three is unexpectedly migrated/deleted without updating
+    this ledger, this test catches the drift."""
     hits = set()
     for path in _iter_files("scripts", "bootstrap", "bin"):
         rel = str(path.relative_to(ROOT))
@@ -173,10 +188,29 @@ def test_T4_2_private_timeout_bin_copy_ledger_matches_adr_1643_section_9_4():
                 break
     assert hits == _T4_2_EXPECTED_TIMEOUT_BIN_COPIES, (
         f"private _TIMEOUT_BIN copies found: {sorted(hits)} — expected exactly "
-        f"{sorted(_T4_2_EXPECTED_TIMEOUT_BIN_COPIES)} per ADR-1643 §9.4's copy "
-        "ledger (one shared helper in run_with_retry.sh, two remaining private "
-        "copies)."
+        f"{sorted(_T4_2_EXPECTED_TIMEOUT_BIN_COPIES)} (one shared helper in "
+        "run_with_retry.sh, three remaining private copies, AD-16.6)."
     )
+
+
+def test_T4_2_validate_scripts_run_capped_is_unchanged_by_w4():
+    """Net effect of AD-16.6: validate_scripts.sh's timeout behaviour is
+    untouched by W4. All three run_reviewer branches still call the private
+    run_capped, and no CODE line (comments may explain the rejected
+    alternative by name, per AD-16.6's own restored comment) depends on
+    with_timeout/run_with_retry.sh."""
+    path = ROOT / "scripts" / "framework" / "validate_scripts.sh"
+    text = path.read_text(encoding="utf-8")
+    assert 'run_capped "$AI_REVIEW_TIMEOUT" "$out" claude -p --model "$MODEL"' in text
+    assert 'run_capped "$AI_REVIEW_TIMEOUT" "$out" agy --sandbox -p "$prompt"' in text
+    assert 'run_capped "$AI_REVIEW_TIMEOUT" "$out" codex exec' in text
+    for lineno, line in _code_lines(path):
+        assert (
+            "with_timeout" not in line
+        ), f"validate_scripts.sh:{lineno} still calls with_timeout: {line!r}"
+        assert (
+            "run_with_retry.sh" not in line
+        ), f"validate_scripts.sh:{lineno} still sources run_with_retry.sh: {line!r}"
 
 
 # ── T4.3 — validate_self.sh synthesizes no `"verdict":"error"` literal ─────────
@@ -191,7 +225,10 @@ def test_T4_3_validate_self_has_no_synthesized_verdict_error_literal():
 
 
 # ── ops-reviewer finding (#1676) — the Opus status line must surface WHICH
-#    failure occurred (outcome/outcome_detail), not just THAT one did ─────────
+#    failure occurred (outcome/outcome_detail), not just THAT one did; and
+#    codex's cross-vendor finding — it must use the SAME parser the
+#    finalizer uses, so status reporting and the blocking decision can never
+#    read the same bytes differently ────────────────────────────────────────
 #
 # invoke_agent.sh's own header is explicit that exit 0 covers the ENTIRE
 # invocation_failed taxonomy (timeout, not_authenticated, cli_unavailable,
@@ -202,7 +239,10 @@ def test_T4_3_validate_self_has_no_synthesized_verdict_error_literal():
 # for this case points the operator at output that does not exist. These
 # tests exercise the ACTUAL python3 snippet embedded in validate_self.sh
 # (extracted by regex, so they drift-detect if the snippet changes) rather
-# than a hand-copied duplicate.
+# than a hand-copied duplicate. The snippet now parses through
+# validation_logic.extract_json_objects — the same function the finalizer
+# uses — so it takes validation_logic.py's path as sys.argv[1]; every
+# subprocess.run below passes it explicitly for that reason.
 def _extract_opus_outcome_detail_python_snippet():
     text = (ROOT / "scripts" / "framework" / "validate_self.sh").read_text(encoding="utf-8")
     match = re.search(r"python3 -c '\n(.*?)\n'", text, re.DOTALL)
@@ -214,10 +254,19 @@ def _extract_opus_outcome_detail_python_snippet():
     return match.group(1)
 
 
-def test_status_line_surfaces_outcome_detail_on_invocation_failed():
+def _run_opus_status_snippet(doc_text: str) -> subprocess.CompletedProcess:
     snippet = _extract_opus_outcome_detail_python_snippet()
-    doc = '{"outcome":"invocation_failed","outcome_detail":"not_authenticated"}'
-    result = subprocess.run(["python3", "-c", snippet], input=doc, capture_output=True, text=True)
+    return subprocess.run(
+        ["python3", "-c", snippet, str(_VALIDATION_LOGIC_PATH)],
+        input=doc_text,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_status_line_surfaces_outcome_detail_on_invocation_failed():
+    doc = '{"outcome":"invocation_failed","outcome_detail":"not_authenticated","findings":[],"verdict":"error"}'
+    result = _run_opus_status_snippet(doc)
     assert result.returncode == 0, result.stderr
     outcome, _, detail = result.stdout.strip().partition("\t")
     assert outcome == "invocation_failed"
@@ -225,9 +274,8 @@ def test_status_line_surfaces_outcome_detail_on_invocation_failed():
 
 
 def test_status_line_reports_completed_outcome_with_no_detail():
-    snippet = _extract_opus_outcome_detail_python_snippet()
-    doc = '{"outcome":"completed","outcome_detail":null,"verdict":"approve"}'
-    result = subprocess.run(["python3", "-c", snippet], input=doc, capture_output=True, text=True)
+    doc = '{"outcome":"completed","outcome_detail":null,"verdict":"approve","findings":[]}'
+    result = _run_opus_status_snippet(doc)
     assert result.returncode == 0, result.stderr
     outcome, _, detail = result.stdout.strip().partition("\t")
     assert outcome == "completed"
@@ -235,14 +283,39 @@ def test_status_line_reports_completed_outcome_with_no_detail():
 
 
 def test_status_line_handles_unparseable_output_without_crashing():
-    snippet = _extract_opus_outcome_detail_python_snippet()
-    result = subprocess.run(
-        ["python3", "-c", snippet], input="not json at all", capture_output=True, text=True
-    )
+    result = _run_opus_status_snippet("not json at all")
     assert result.returncode == 0, result.stderr
     outcome, _, detail = result.stdout.strip().partition("\t")
     assert outcome == "__PARSE_ERROR__"
     assert detail == "__PARSE_ERROR__"
+
+
+def test_status_line_fails_closed_on_multiple_blocks_rather_than_risk_a_false_done():
+    """codex's finding, made concrete: if the input ever contains more than
+    one parseable JSON block (never true for a real invoke_agent.sh emission,
+    but the whole point is not to assume that), the status line must not
+    silently report "done" off block[0] while a later block would have made
+    the finalizer's aggregate block. It must fail closed instead."""
+    doc = (
+        '{"outcome":"completed","verdict":"approve","findings":[]} '
+        '{"outcome":"invocation_failed","outcome_detail":"crash","verdict":"error","findings":[]}'
+    )
+    result = _run_opus_status_snippet(doc)
+    assert result.returncode == 0, result.stderr
+    outcome, _, detail = result.stdout.strip().partition("\t")
+    assert outcome == "__PARSE_ERROR__"
+    assert detail == "__PARSE_ERROR__"
+
+
+def test_status_line_uses_the_same_extractor_the_finalizer_uses():
+    """Static guard against the exact parser-divergence codex flagged: the
+    embedded snippet must call validation_logic's own extract_json_objects,
+    not a bare json.load, so status reporting and the blocking decision
+    (python3 "$VALIDATION_LOGIC" process, below in the same file) can never
+    read the same $OPUS_OUT bytes through two different parsers."""
+    snippet = _extract_opus_outcome_detail_python_snippet()
+    assert "extract_json_objects" in snippet
+    assert "json.load(sys.stdin)" not in snippet
 
 
 def test_status_line_no_longer_makes_the_false_see_error_above_claim():
@@ -348,6 +421,34 @@ def test_T4_4_optional_lane_absence_does_not_block():
 def test_T4_4_skip_3p_flag_still_exists():
     """The optional lanes remain independently skippable post-migration — the
     flag wiring itself (SKIP_AGY/SKIP_CODEX) is untouched by W4."""
-    text = (ROOT / "scripts" / "framework" / "validate_scripts.sh").read_text()
+    text = (ROOT / "scripts" / "framework" / "validate_scripts.sh").read_text(encoding="utf-8")
     assert "--skip-agy" in text and "--skip-codex" in text and "--skip-3p" in text
     assert "SKIP_AGY=true; SKIP_CODEX=true" in text
+
+
+# ── agy finding (round N) — every read_text() in THIS file passes an explicit
+#    encoding. This module reads its own subject files (validate_self.sh,
+#    validate_scripts.sh, ...), which contain non-ASCII (em dash, §); under a
+#    C/ASCII locale a bare .read_text() raises UnicodeDecodeError rather than
+#    reading the file. A regression here would break every test that follows
+#    it, silently, on any host with a non-UTF-8 default locale.
+def test_this_test_file_never_reads_text_without_an_explicit_encoding():
+    """AST-based, not a text/regex scan: a substring or regex check over this
+    file's own source text is self-referential (this very check's code and
+    docstrings legitimately mention `.read_text(` in prose/string literals,
+    which a naive scan flags against itself). Walking the parsed syntax tree
+    for actual `.read_text(...)` Call nodes sidesteps that entirely."""
+    this_file = Path(__file__)
+    tree = ast.parse(this_file.read_text(encoding="utf-8"), filename=str(this_file))
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "read_text"
+        ):
+            continue
+        has_encoding = any(kw.arg == "encoding" for kw in node.keywords)
+        assert has_encoding, (
+            f"{this_file.name}:{node.lineno} calls .read_text() without an "
+            "explicit encoding= keyword argument"
+        )

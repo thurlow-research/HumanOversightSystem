@@ -88,14 +88,35 @@ AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
 # (keychain auth, no env token — passing the flag unconditionally would
 # break that path, TD §3.4), and the autonomous worker runs it directly as a
 # release-gate step from inside a cron cycle (worker.md Step R2), where only
-# env-var auth is available. HOS_CYCLE_ROLE is the codebase's purpose-built
-# cron-cycle identity breadcrumb — exported by bin/hos-cron:359 and already
-# used exactly this way (a presence check gating cron-only behavior) at
-# bootstrap/create_branch.sh:96 — so its presence is the signal used here to
-# opt in, rather than repurposing HOS_CRON_MAX_SECONDS (a timeout budget, not
-# an identity signal).
+# env-var auth is available.
+#
+# This script also SHIPS TO CONSUMER PROJECTS (ARCHITECTURE.md,
+# test_consumer_framework_files.py) — so "non-interactive caller" is not just
+# this repo's bin/hos-cron; a consumer's own CI can run it with no
+# HOS_CYCLE_ROLE anywhere in its environment. Three independent signals, any
+# one of which is sufficient:
+#   1. HOS_CYCLE_ROLE — this codebase's own cron-cycle identity breadcrumb,
+#      exported by bin/hos-cron:359 and already used exactly this way (a
+#      presence check gating cron-only behavior) at
+#      bootstrap/create_branch.sh:96.
+#   2. CI — the near-universal convention every major CI system (GitHub
+#      Actions, GitLab CI, CircleCI, Travis, ...) sets unconditionally.
+#   3. No controlling terminal on ANY of stdin/stdout/stderr — deliberately
+#      the CONJUNCTION (`! -t 0 && ! -t 1 && ! -t 2`), not `! -t 0` alone: a
+#      human at a terminal who merely pipes or redirects ONE stream (e.g.
+#      `./validate_self.sh | tee out.log`, or `< /dev/null` to dodge an
+#      accidental prompt) is still interactively present and must still NOT
+#      get the flag, or that ordinary workflow fails closed on keychain auth
+#      (TD §3.4). Requiring all three absent is the strong signal that
+#      genuinely nothing is attached — cron/systemd/CI's usual shape.
+# HOS_CRON_MAX_SECONDS was considered and rejected (a timeout budget, not an
+# identity signal). This is defence in depth, not a fail-open being closed:
+# omitting the flag still fails closed via the primitive's own post-hoc
+# not_authenticated classification (security-reviewer, round 4) — this
+# broadens WHEN the pre-flight check fires, it does not change what happens
+# when it doesn't.
 REQUIRE_ENV_AUTH_FLAG=""
-if [[ -n "${HOS_CYCLE_ROLE:-}" ]]; then
+if [[ -n "${HOS_CYCLE_ROLE:-}" || -n "${CI:-}" || ( ! -t 0 && ! -t 1 && ! -t 2 ) ]]; then
     REQUIRE_ENV_AUTH_FLAG="--require-env-auth"
 fi
 
@@ -316,19 +337,42 @@ OPUS_OUT=$(run_opus)
 # a hard dependency of this script (the $VALIDATION_LOGIC delegation below);
 # jq is not guaranteed present, so this reuses that same tooling rather than
 # adding a new one.
+#
+# Parsed through validation_logic.extract_json_objects — the SAME function
+# and the SAME bytes ($OPUS_OUT, byte-identical to what is written into
+# $OUTFILE below and handed to `process` at the finalize step further down —
+# a plain `json.load` here would be a second, independent parser reading the
+# same input, and a gate whose status line and blocking decision can read the
+# same bytes differently is worse than one that is merely terse. Requiring
+# EXACTLY one matched block is deliberate: extract_json_objects is prose/
+# multi-object tolerant (built for agy/codex, which sometimes wrap replies in
+# commentary), but invoke_agent.sh's own contract is one bare JSON document
+# with nothing else — zero or 2+ blocks means something is unexpectedly
+# wrong, and this fails closed (PARSE_ERROR → "FAILED") rather than risk
+# reporting "done" on block[0] while the finalizer's aggregate blocks on
+# a different one.
 _opus_outcome="__EMPTY__"
 _opus_outcome_detail="-"
 if [[ -n "${OPUS_OUT//[[:space:]]/}" ]]; then
     IFS=$'\t' read -r _opus_outcome _opus_outcome_detail < <(
         printf '%s' "$OPUS_OUT" | python3 -c '
-import json, sys
+import importlib.util, sys
+
 try:
-    doc = json.load(sys.stdin)
+    spec = importlib.util.spec_from_file_location("validation_logic", sys.argv[1])
+    if spec is None or spec.loader is None:
+        raise RuntimeError("no loader for validation_logic.py")
+    vl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vl)
+    blocks = vl.extract_json_objects(sys.stdin.read())
+    if len(blocks) != 1:
+        raise ValueError("expected exactly one JSON block, got {}".format(len(blocks)))
+    doc = blocks[0]
 except Exception:
     print("__PARSE_ERROR__\t__PARSE_ERROR__")
 else:
     print("{}\t{}".format(doc.get("outcome") or "-", doc.get("outcome_detail") or "-"))
-' 2>/dev/null
+' "$VALIDATION_LOGIC" 2>/dev/null
     ) || { _opus_outcome="__PARSE_ERROR__"; _opus_outcome_detail="__PARSE_ERROR__"; }
 fi
 if [[ "$_opus_outcome" == "__EMPTY__" ]]; then
