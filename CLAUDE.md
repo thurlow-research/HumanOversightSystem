@@ -324,7 +324,15 @@ generated one-line descriptions), see `SCRIPTS-INDEX.md` at the repo root
 (regenerate with `scripts/framework/gen_scripts_index.sh`; it can lag, so
 prefer a live search when in doubt — see item 1 above). Entry points already
 named above (token minting, issue/PR creation, comments, metadata edits,
-issue/PR reads) are not repeated here.
+issue/PR reads) are not repeated here. Nothing else in the repository invokes
+the raw `claude -p`/`claude --print` CLI directly — every shipped-agent
+subprocess invocation goes through `bootstrap/invoke_agent.sh` (ADR-1643
+AD-16), except three recorded exemptions: `setup_clis.sh`'s machine-bootstrap
+smoke test (**permanent**, §6.5 — it runs before the primitive's own
+preconditions can hold) and, only until their respective follow-up slices
+land, `scripts/run_panel.sh` (until W4b) and `scripts/framework/validate_scripts.sh`
+(until W4c, #1756) — see `tests/framework/test_agent_invocation_migration.py`
+T4.1 for the enforced, current exemption set.
 
 | Task | Entry point |
 |---|---|
@@ -340,6 +348,7 @@ issue/PR reads) are not repeated here.
 | Regenerate or check all self-healing generated artifacts (index + CODEOWNERS) in one step | `scripts/framework/regen_all.sh [--check]` |
 | CODEOWNERS regeneration | `scripts/framework/gen_codeowners.sh` |
 | Full script/module index regeneration | `scripts/framework/gen_scripts_index.sh` |
+| Invoking a shipped Claude agent as a subprocess and getting a machine-readable verdict | `bootstrap/invoke_agent.sh` |
 
 #### When a prompt does appear
 

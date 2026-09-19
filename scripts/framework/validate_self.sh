@@ -20,10 +20,21 @@
 # of what is under review (sycophancy / shared-blind-spot risk).
 #
 # Usage:
-#   ./scripts/framework/validate_self.sh                 # one review pass
-#   ./scripts/framework/validate_self.sh --changed-only  # only files changed vs HEAD~1
-#   ./scripts/framework/validate_self.sh --reset         # new change set: clear ledger+counter
+#   ./scripts/framework/validate_self.sh                       # one review pass
+#   ./scripts/framework/validate_self.sh --changed-only        # only files changed vs HEAD~1
+#   ./scripts/framework/validate_self.sh --reset               # new change set: clear ledger+counter
 #   ./scripts/framework/validate_self.sh --record FILES CATEGORY DISPOSITION
+#   ./scripts/framework/validate_self.sh --allow-keychain-auth # interactive human on keychain auth (see Auth: below)
+#
+# Auth (AD-16.7): every run requires env-token auth (CLAUDE_CODE_OAUTH_TOKEN
+# or ANTHROPIC_API_KEY) by default. This is NOT a flag you pass — it is the
+# unconditional default; there is nothing to type to request it. The ONLY
+# auth-related CLI option this script accepts is --allow-keychain-auth, to
+# opt OUT of the default for an interactive human on keychain auth. This is
+# a deliberate breaking change: a maintainer running this by hand must now
+# pass that flag. There is no auto-detection of "interactive" — see the
+# REQUIRE_ENV_AUTH_FLAG comment below for why. A cron cycle (HOS_CYCLE_ROLE
+# set) may never pass --allow-keychain-auth; doing so is refused (exit 2).
 #
 # Capped-iterate protocol (why a non-deterministic reviewer still terminates):
 #   1. --reset at the start of a new change set.
@@ -76,6 +87,34 @@ BASE_REF="HEAD~1"
 # rather than looping — a human decides, never automation (the ratchet).
 SELF_REVIEW_MAX_PASSES="${SELF_REVIEW_MAX_PASSES:-3}"
 PASS_COUNT_FILE="$OUT_DIR/self-review-pass-count"
+# Per-invocation budget passed to bootstrap/invoke_agent.sh (#1643 W4 §6.1).
+# Same env override + default as validate_scripts.sh's sibling path, so a
+# release-wide override (e.g. CI budget tuning) covers both call sites with
+# one setting.
+AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
+# bootstrap/invoke_agent.sh's --require-env-auth is MANDATORY for every
+# non-interactive caller (ADR-1643 Amendment 1 §9.3). AD-16.7 (architect
+# ruling, codex CWE-287, cross-vendor second review): the caller's identity
+# is NEVER inferred from an environment heuristic. An earlier revision of
+# this script gated on HOS_CYCLE_ROLE / CI / terminal-attachment, but every
+# one of those signals is controllable by the very process being classified
+# — a cron/systemd/CI wrapper can allocate a pty, omit CI, and preserve
+# terminal fds, walking straight past the check onto the interactive
+# keychain-auth path. No signal an unauthenticated caller can shape may
+# decide whether that caller must authenticate.
+#
+# The mode is EXPLICIT and STRICT BY DEFAULT instead: every caller gets
+# --require-env-auth unless it opts out with --allow-keychain-auth (below).
+# This is a deliberate breaking change to the interactive human workflow —
+# a maintainer running this by hand must now pass --allow-keychain-auth —
+# accepted on condition that the remedy is discoverable (see the
+# not_authenticated branch further down, which names the flag verbatim).
+# Do not reintroduce a detection fallback here.
+#
+# HOS_CYCLE_ROLE is used for exactly one thing below: a ONE-DIRECTION veto
+# that can only make a run STRICTER — refusing --allow-keychain-auth from
+# inside a cron cycle — never looser. It never sets this flag itself.
+REQUIRE_ENV_AUTH_FLAG="--require-env-auth"
 
 PROJECT_NAME="(unnamed project)"
 PROJECT_STACK="(unspecified stack)"
@@ -109,17 +148,30 @@ fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --agents-dir)   AGENTS_DIR="$2"; shift 2 ;;
-        --changed-only) CHANGED_ONLY=true; shift ;;
-        --base)         BASE_REF="$2"; shift 2 ;;
+        --agents-dir)         AGENTS_DIR="$2"; shift 2 ;;
+        --changed-only)       CHANGED_ONLY=true; shift ;;
+        --base)               BASE_REF="$2"; shift 2 ;;
+        --allow-keychain-auth) REQUIRE_ENV_AUTH_FLAG=""; shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
 
-if ! command -v claude >/dev/null 2>&1; then
-    echo "validate_self: claude CLI not found — cannot run Opus self-review." >&2
+# One-direction veto (AD-16.7): HOS_CYCLE_ROLE may only REFUSE
+# --allow-keychain-auth, never route around --require-env-auth on its own.
+# A cron cycle asking to skip the env-token check is asking to run this
+# framework-validation gate under keychain auth from inside an unattended
+# process — exactly the identity confusion AD-16.7 exists to prevent.
+if [[ -n "${HOS_CYCLE_ROLE:-}" && -z "$REQUIRE_ENV_AUTH_FLAG" ]]; then
+    echo "validate_self: --allow-keychain-auth is not permitted inside a cron cycle (HOS_CYCLE_ROLE=${HOS_CYCLE_ROLE}) — a cron-launched run must authenticate via CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY, never keychain auth (AD-16.7)." >&2
     exit 2
 fi
+
+# No `command -v claude` preflight here (#1643 W4 §6.1): CLI resolution is now
+# bootstrap/invoke_agent.sh's job. A missing `claude` binary surfaces through
+# agent_invoke_cli.py's own P8 check as a `cli_unavailable` document
+# (outcome: invocation_failed, verdict: error, exit 0) — the SAME fail-closed
+# reviewer-block path that already handles a hang or a bad response, rather
+# than a second, divergent early-exit check duplicating that resolution here.
 
 mkdir -p "$OUT_DIR"
 TIMESTAMP=$(date +%Y%m%dT%H%M%S)
@@ -178,6 +230,12 @@ fi
     printf "new_blocking_count: 0\n\n"
 } > "$OUTFILE"
 
+# Script-global (not `local` to run_opus below) so the EXIT trap it installs
+# can still reference this path correctly at actual script exit, after the
+# function that set it has long since returned — see the comment at its
+# assignment for why a `local` here breaks that.
+_VSELF_TMP_DIR=""
+
 run_opus() {
     local prompt
     prompt="You are performing an ADVERSARIAL SELF-REVIEW of an AI agent pipeline framework (the Human Oversight System). You are the same model family that authored much of this — so your single biggest risk is SYCOPHANCY and SHARED BLIND SPOTS. Do not be agreeable. Assume an external reviewer (Gemini, then GPT) will see this next; find everything you would be embarrassed for them to catch first.
@@ -216,55 +274,240 @@ Return JSON only — no prose outside the JSON block:
   \"verdict\": \"approve|request_changes\",
   \"summary\": \"one paragraph — be honest, not reassuring\"
 }"
-    # CONTEXT ISOLATION (reduce self-review bias):
-    #   -p                                    fresh session — does NOT inherit the
-    #                                         caller's interactive conversation.
-    #   --exclude-dynamic-system-prompt-sections
-    #                                         drop cwd/env/memory-paths/git status so
-    #                                         the reviewer is not primed by project
-    #                                         memory or our own framing.
-    #   --no-session-persistence              leave no session state behind.
-    # The review package is fully self-contained (all files inline in the prompt),
-    # so the reviewer needs no project context at all.
-    local result rc=0
-    # Pass the prompt via stdin, not as a CLI argument (#1368): at release scale
-    # (--changed-only spanning a full minor release) the review package can
-    # exceed the OS ARG_MAX ceiling shared by argv and the environment, causing
-    # execve to fail (E2BIG, rc=126) before claude ever runs. Piping removes
-    # that ceiling entirely — matches the pattern already used for the same
-    # invocation in validate_scripts.sh.
-    result=$(printf '%s' "$prompt" | claude -p --model "$MODEL" \
-        --exclude-dynamic-system-prompt-sections \
-        --no-session-persistence 2>/dev/null) || rc=$?
-    # Fail-closed on an invocation that errored or produced empty/whitespace-only
-    # output (same class of bug as #669/#670 in the sibling scripts): a broken
-    # `claude` call must not read as "reviewed, found nothing". The synthesized
-    # block below carries "verdict":"error" so the finalize step (which now
-    # inspects each block's own verdict field, not just its findings count) fails
-    # the gate rather than silently approving it (#1362).
-    if [[ $rc -ne 0 || -z "${result//[[:space:]]/}" ]]; then
-        echo "  ERROR: Opus self-review invocation failed (rc=$rc) or produced empty output — recording as a review FAILURE, not a clean pass (#1362)." >&2
-        result='{"reviewer":"opus-self","error":"claude invocation failed","findings":[],"verdict":"error","summary":"claude failed"}'
+    local result="" tmp_prompt rc=0
+    # --input-file is the only input path into bootstrap/invoke_agent.sh
+    # (REQ-A3, #1643 W4 §6.1): the prompt moves from a piped stdin argument
+    # to a file — same pattern already used for the agy call in
+    # validate_agents.sh (tmpfile, #1384) and for the sibling review package
+    # in validate_scripts.sh. This also removes the ARG_MAX exposure #1368
+    # fixed for the old direct-CLI stdin path: a file has no such ceiling.
+    #
+    # codex HIGH/MEDIUM (round 4): the prompt now lives in a PRIVATE,
+    # mode-700 directory under $OUT_DIR (already created above; gitignored
+    # .claudetmp/ working state — contract/OVERSIGHT-CONTRACT.md §1) rather
+    # than directly in the shared $TMPDIR — this removes the shared-directory
+    # substitution surface rather than mitigating it. The trap is installed
+    # IMMEDIATELY after the directory is created, before anything else can
+    # fail and skip cleanup.
+    #
+    # EXIT, not RETURN, and the path is held in the script-global
+    # _VSELF_TMP_DIR (declared above run_opus), not a `local`: tested both
+    # ways before choosing. A RETURN trap fires reliably on a *graceful*
+    # function return, but empirically does NOT fire when a `set -e` abort
+    # inside the function is fatal to the whole process (the realistic case
+    # here — nothing guards the invoke_agent.sh call site above with
+    # `|| true`, so an abort propagates all the way up) — confirmed by
+    # direct test: a RETURN trap left the directory on disk in that case. A
+    # bare `local tmp_dir` referenced by an EXIT trap has its own failure
+    # mode: once this function returns, the local variable goes out of
+    # scope, and the trap firing later at actual script exit hits `set -u`'s
+    # unbound-variable error instead of cleaning up — also confirmed by
+    # direct test. The combination used here (global path variable + EXIT
+    # trap) is the one that survives both: it fires on every path out of the
+    # whole script — normal completion, any set -e abort anywhere after this
+    # point, and a signal — proportionate for a local gate (not a privilege
+    # boundary), with no broader trap machinery than that one line. Deferred
+    # cleanup (the directory lives until the script's own exit, not the
+    # instant this function returns) is the accepted cost of that
+    # robustness; the directory is mode 700 the entire time regardless.
+    # run_opus is called exactly once in this script, so one global variable
+    # and one EXIT trap registration is sufficient — a second call would
+    # need its own cleanup accounting, which this does not attempt.
+    _VSELF_TMP_DIR=$(mktemp -d "$OUT_DIR/vself_opus.XXXXXX")
+    trap 'rm -rf "$_VSELF_TMP_DIR"' EXIT
+    chmod 700 "$_VSELF_TMP_DIR"
+    tmp_prompt="$_VSELF_TMP_DIR/prompt.txt"
+    printf '%s' "$prompt" > "$tmp_prompt"
+    # Pre-use sanity check (codex HIGH, round 4): fail closed on anything
+    # other than a regular file this process owns, rather than handing an
+    # unexpected path to the subprocess.
+    if [[ -f "$tmp_prompt" && -O "$tmp_prompt" ]]; then
+        # bootstrap/invoke_agent.sh replaces the raw direct-CLI invocation. Context
+        # isolation (fresh session, no dynamic system-prompt sections, no
+        # session persistence) is no longer spelled out here — it is baked into
+        # agent_invoke_cli.py's own claude invocation for every caller, not
+        # something this script asserts. --agent self-reviewer fills the
+        # adversarial self-review seat (self-reviewer.md, #1673).
+        # REQUIRE_ENV_AUTH_FLAG (set near the top of this file, AD-16.7) is
+        # "--require-env-auth" by default (strict) and empty only when the
+        # caller explicitly passed --allow-keychain-auth.
+        result=$(bash "$ROOT/bootstrap/invoke_agent.sh" \
+            --agent self-reviewer \
+            --posture review-read-only \
+            --input-file "$tmp_prompt" \
+            --dimension self-review \
+            --lens self-review \
+            --timeout "$AI_REVIEW_TIMEOUT" \
+            --model "$MODEL" \
+            ${REQUIRE_ENV_AUTH_FLAG}) || rc=$?
+    else
+        echo "  ERROR: prompt temp file failed its pre-use sanity check ($tmp_prompt is not a regular file owned by this process) — aborting Opus self-review rather than proceeding." >&2
+        rc=1
     fi
-    # Strip any markdown fencing the CLI may add around the JSON.
-    echo "$result" | sed -e 's/^```json$//' -e 's/^```$//'
+    # invoke_agent.sh exits non-zero ONLY when no document was produced at
+    # all (its own interpreter-resolution failure, or a usage error, §3.3);
+    # a structured invocation_failed document (cli_unavailable, timeout,
+    # not_authenticated, a malformed response, ...) still exits 0 with a
+    # "verdict":"error" document already in $result — AD-6's rule
+    # (`_verdict_for_outcome`'s outcome=="invocation_failed" forces verdict=
+    # "error" unconditionally, `agent_invoke_cli.py:961-969`). That document
+    # is a SUPERSET of the block this function used to synthesize by hand
+    # (same "verdict":"error" signal, plus outcome/outcome_detail/
+    # observability fields the old stub never had), so nothing is
+    # synthesized here (#1362's fix generalised): on the hard-failure path
+    # below, $result is empty; extract_json_objects finds no parseable
+    # block in it, and --strict-empty (used by the finalize step below)
+    # already treats "no blocks parsed" as verdict=error.
+    #
+    # rc != 0 means, by invoke_agent.sh's own contract, that NO document was
+    # produced — any bytes present on $result in that case are not a result
+    # document (a crash's partial stdout, at most) and must not reach the
+    # parser downstream as if they were one (agy LOW, round 3). Clear it
+    # explicitly rather than relying on it happening to already be empty.
+    if [[ $rc -ne 0 || -z "${result//[[:space:]]/}" ]]; then
+        echo "  ERROR: bootstrap/invoke_agent.sh produced no result (rc=$rc) for Opus self-review — recording as a review FAILURE, not a clean pass (#1362)." >&2
+        result=""
+    fi
+    echo "$result"
 }
 
 echo "Running Opus self-review (${MODEL})..."
 OPUS_OUT=$(run_opus)
+# Extract outcome/outcome_detail HERE, BEFORE anything is written to
+# $OUTFILE — say WHICH failure occurred, not just THAT one did, so
+# outcome_detail (the whole point of this migration's observability
+# improvement, #1676) doesn't survive only inside a raw JSON blob no human
+# reads. python3 is already a hard dependency of this script (the
+# $VALIDATION_LOGIC delegation below); jq is not guaranteed present, so this
+# reuses that same tooling rather than adding a new one.
+#
+# Parsed through validation_logic.extract_json_objects — the SAME function
+# the finalize step's `process` call uses further down, on the SAME bytes —
+# a plain `json.load` here would be a second, independent parser, and a gate
+# whose status line and blocking decision can read the same bytes
+# differently is worse than one that is merely terse. Requiring EXACTLY one
+# matched block is deliberate: extract_json_objects is prose/multi-object
+# tolerant (built for agy/codex, which sometimes wrap replies in
+# commentary), but invoke_agent.sh's own contract is one bare JSON document
+# with nothing else — zero or 2+ blocks means something is unexpectedly
+# wrong.
+#
+# agy HIGH (round 3): a PARSE_ERROR must fail closed by CONSTRUCTION, not by
+# hoping the finalizer happens to agree — extract_json_objects has no
+# "exactly one block" rule of its own, so a multi-block $OUTFILE could still
+# parse to "approve" there even though the status line said FAILED (the
+# console and the exit code disagreeing, the exact inverse of the divergence
+# this parser-unification was built to close). So on PARSE_ERROR, $OUTFILE
+# gets a SYNTHESIZED blocking document in place of the unparseable raw
+# output — never the raw $OPUS_OUT — guaranteeing the finalizer, reading
+# ONLY that document, blocks too. This is the same fail-closed synthesis
+# shape validate_scripts.sh's run_reviewer() already uses for its own
+# required-lane failures.
+_opus_outcome="__EMPTY__"
+_opus_outcome_detail="-"
+_opus_verdict="-"
+_opus_emit="$OPUS_OUT"
+if [[ -n "${OPUS_OUT//[[:space:]]/}" ]]; then
+    IFS=$'\t' read -r _opus_outcome _opus_outcome_detail _opus_verdict < <(
+        printf '%s' "$OPUS_OUT" | python3 -c '
+import importlib.util, sys
+
+try:
+    spec = importlib.util.spec_from_file_location("validation_logic", sys.argv[1])
+    if spec is None or spec.loader is None:
+        raise RuntimeError("no loader for validation_logic.py")
+    vl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vl)
+    blocks = vl.extract_json_objects(sys.stdin.read())
+    if len(blocks) != 1:
+        raise ValueError("expected exactly one JSON block, got {}".format(len(blocks)))
+    doc = blocks[0]
+except Exception:
+    print("__PARSE_ERROR__\t__PARSE_ERROR__\t__PARSE_ERROR__")
+else:
+    print("{}\t{}\t{}".format(
+        doc.get("outcome") or "-", doc.get("outcome_detail") or "-", doc.get("verdict") or "-"
+    ))
+' "$VALIDATION_LOGIC" 2>/dev/null
+    ) || { _opus_outcome="__PARSE_ERROR__"; _opus_outcome_detail="__PARSE_ERROR__"; _opus_verdict="__PARSE_ERROR__"; }
+fi
+# agy HIGH (round 3): a PARSE_ERROR must fail closed by CONSTRUCTION, not by
+# hoping the finalizer happens to agree — extract_json_objects has no
+# "exactly one block" rule of its own, so a multi-block $OUTFILE could still
+# parse to "approve" there even though the status line said FAILED (the
+# console and the exit code disagreeing, the exact inverse of the divergence
+# this parser-unification was built to close). So on PARSE_ERROR — and on
+# any outcome value that is neither "completed" nor "invocation_failed"
+# (the primitive's own closed 2-value type; unreachable today, but a status
+# line that fails open on a future third value would be the same bug again)
+# — $OUTFILE gets a SYNTHESIZED blocking document in place of the raw
+# output, never the raw $OPUS_OUT itself, guaranteeing the finalizer,
+# reading ONLY that document, blocks too. This is the same fail-closed
+# synthesis shape validate_scripts.sh's run_reviewer() already uses for its
+# own required-lane failures.
+if [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
+    # agy MEDIUM (round 4): the synthesized document's own "fix" field used
+    # to tell the operator to "inspect the raw output captured in this
+    # file" — but $OUTFILE gets THIS synthesized document in place of the
+    # raw output, so that raw output is exactly what is no longer there. An
+    # operator debugging an unparseable response needs the bytes that
+    # failed to parse, so they are preserved in a SEPARATE file (never fed
+    # back into $OUTFILE — that would reintroduce the round-3 fail-open),
+    # and the message names its real path.
+    _opus_raw_dump="$OUT_DIR/self-review-unparseable-${TIMESTAMP}.txt"
+    printf '%s' "$OPUS_OUT" > "$_opus_raw_dump"
+    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh produced output that could not be parsed as exactly one JSON document (a required precondition for the Opus self-review lane).","fix":"Re-run validate_self.sh; the unparseable output was preserved at '"$_opus_raw_dump"' for inspection."}],"verdict":"request_changes","summary":"Opus self-review output was unparseable — fail-closed (agy HIGH, round 3)."}'
+elif [[ "$_opus_outcome" != "__EMPTY__" && "$_opus_outcome" != "completed" && "$_opus_outcome" != "invocation_failed" ]]; then
+    _opus_emit='{"reviewer":"opus-self","lens":"self-review","findings":[{"severity":"blocking","category":"fail-open","files":["<reviewer:opus-self>"],"description":"bootstrap/invoke_agent.sh returned an outcome value this script does not recognise (neither completed nor invocation_failed).","fix":"Investigate — the primitive is expected to emit only those two outcome values."}],"verdict":"request_changes","summary":"Unrecognised outcome — fail-closed."}'
+fi
 {
     echo "## opus-self — Adversarial Self-Review"
     echo '```json'
-    echo "$OPUS_OUT"
+    echo "$_opus_emit"
     echo '```'
     echo ""
 } >> "$OUTFILE"
-# "done" means the reviewer actually produced a review, not merely that the call
-# returned — a failed invocation was already reported by run_opus above (#1362).
-if printf '%s' "$OPUS_OUT" | grep -q '"error"[[:space:]]*:[[:space:]]*"claude invocation failed"'; then
-    echo "  FAILED — see error above"
+# "done" means the reviewer actually completed a review AND found nothing
+# blocking — nothing else does. Two agy findings, round 3:
+#   MEDIUM (:398) — the previous `else → done` fallthrough treated ANY
+#     outcome other than the three named failure buckets as success,
+#     including a missing/unexpected value the extractor renders "-".
+#     Inverted: `done` requires outcome=="completed" explicitly; every other
+#     outcome, named or not, is reported as a failure naming the value.
+#   Found during the requested sweep of this same seam, not originally
+#     reported: outcome=="completed" only means the INVOCATION succeeded —
+#     the self-reviewer AGENT can still legitimately return
+#     verdict:"request_changes" with real blocking findings (the normal,
+#     expected shape when it finds something), and the previous version
+#     printed "done" for that too, misleading the console even though the
+#     finalizer below was already correctly blocking. `done` now also
+#     requires the document's own verdict to be "approve".
+if [[ "$_opus_outcome" == "__EMPTY__" ]]; then
+    echo "  FAILED — no result produced (see ERROR above)"
+elif [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
+    # agy LOW (round 4): the two occurrences below used a single-quoted
+    # `\$OUTFILE`/`\$_opus_raw_dump`-style escape inside a double-quoted
+    # string, which prints the LITERAL text "$OUTFILE" rather than
+    # expanding it — the operator never saw the real path. Unescaped here
+    # (and throughout this if/elif chain) so the actual paths print.
+    echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as exactly one JSON document — recorded as a blocking finding in $OUTFILE; the unparseable bytes are preserved at $_opus_raw_dump"
+elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
+    echo "  FAILED — outcome=invocation_failed outcome_detail=${_opus_outcome_detail}"
+    # Discoverability (AD-16.7): strict-by-default auth is a deliberate
+    # breaking change for an interactive human on keychain auth — the
+    # remedy must be named verbatim right where the failure surfaces, not
+    # left to be inferred from outcome_detail alone.
+    if [[ "$_opus_outcome_detail" == "not_authenticated" ]]; then
+        echo "  If you are running this interactively with keychain auth (no CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY set), re-run with --allow-keychain-auth." >&2
+    fi
+elif [[ "$_opus_outcome" == "completed" ]]; then
+    if [[ "$_opus_verdict" == "approve" ]]; then
+        echo "  done"
+    else
+        echo "  FAILED — review completed with verdict=${_opus_verdict} (blocking findings present — see $OUTFILE)"
+    fi
 else
-    echo "  done"
+    echo "  FAILED — unrecognised outcome '${_opus_outcome}' — recorded as a blocking finding (see $OUTFILE)"
 fi
 echo ""
 
