@@ -20,10 +20,19 @@
 # of what is under review (sycophancy / shared-blind-spot risk).
 #
 # Usage:
-#   ./scripts/framework/validate_self.sh                 # one review pass
-#   ./scripts/framework/validate_self.sh --changed-only  # only files changed vs HEAD~1
-#   ./scripts/framework/validate_self.sh --reset         # new change set: clear ledger+counter
+#   ./scripts/framework/validate_self.sh                       # one review pass
+#   ./scripts/framework/validate_self.sh --changed-only        # only files changed vs HEAD~1
+#   ./scripts/framework/validate_self.sh --reset               # new change set: clear ledger+counter
 #   ./scripts/framework/validate_self.sh --record FILES CATEGORY DISPOSITION
+#   ./scripts/framework/validate_self.sh --allow-keychain-auth # interactive human on keychain auth (see Auth: below)
+#
+# Auth (AD-16.7): every run requires env-token auth (CLAUDE_CODE_OAUTH_TOKEN
+# or ANTHROPIC_API_KEY) by default — pass --allow-keychain-auth to opt out
+# for an interactive human on keychain auth. This is a deliberate breaking
+# change: a maintainer running this by hand must now pass the flag. There is
+# no auto-detection of "interactive" — see the REQUIRE_ENV_AUTH_FLAG comment
+# below for why. A cron cycle (HOS_CYCLE_ROLE set) may never pass
+# --allow-keychain-auth; doing so is refused (exit 2).
 #
 # Capped-iterate protocol (why a non-deterministic reviewer still terminates):
 #   1. --reset at the start of a new change set.
@@ -82,43 +91,28 @@ PASS_COUNT_FILE="$OUT_DIR/self-review-pass-count"
 # one setting.
 AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
 # bootstrap/invoke_agent.sh's --require-env-auth is MANDATORY for every
-# non-interactive caller (ADR-1643 Amendment 1 §9.3: "bin/hos-cron in either
-# role, the sweep runner, and any script a cron cycle executes"). This
-# script is reachable BOTH ways: a human runs it directly at a terminal
-# (keychain auth, no env token — passing the flag unconditionally would
-# break that path, TD §3.4), and the autonomous worker runs it directly as a
-# release-gate step from inside a cron cycle (worker.md Step R2), where only
-# env-var auth is available.
+# non-interactive caller (ADR-1643 Amendment 1 §9.3). AD-16.7 (architect
+# ruling, codex CWE-287, cross-vendor second review): the caller's identity
+# is NEVER inferred from an environment heuristic. An earlier revision of
+# this script gated on HOS_CYCLE_ROLE / CI / terminal-attachment, but every
+# one of those signals is controllable by the very process being classified
+# — a cron/systemd/CI wrapper can allocate a pty, omit CI, and preserve
+# terminal fds, walking straight past the check onto the interactive
+# keychain-auth path. No signal an unauthenticated caller can shape may
+# decide whether that caller must authenticate.
 #
-# This script also SHIPS TO CONSUMER PROJECTS (ARCHITECTURE.md,
-# test_consumer_framework_files.py) — so "non-interactive caller" is not just
-# this repo's bin/hos-cron; a consumer's own CI can run it with no
-# HOS_CYCLE_ROLE anywhere in its environment. Three independent signals, any
-# one of which is sufficient:
-#   1. HOS_CYCLE_ROLE — this codebase's own cron-cycle identity breadcrumb,
-#      exported by bin/hos-cron:359 and already used exactly this way (a
-#      presence check gating cron-only behavior) at
-#      bootstrap/create_branch.sh:96.
-#   2. CI — the near-universal convention every major CI system (GitHub
-#      Actions, GitLab CI, CircleCI, Travis, ...) sets unconditionally.
-#   3. No controlling terminal on ANY of stdin/stdout/stderr — deliberately
-#      the CONJUNCTION (`! -t 0 && ! -t 1 && ! -t 2`), not `! -t 0` alone: a
-#      human at a terminal who merely pipes or redirects ONE stream (e.g.
-#      `./validate_self.sh | tee out.log`, or `< /dev/null` to dodge an
-#      accidental prompt) is still interactively present and must still NOT
-#      get the flag, or that ordinary workflow fails closed on keychain auth
-#      (TD §3.4). Requiring all three absent is the strong signal that
-#      genuinely nothing is attached — cron/systemd/CI's usual shape.
-# HOS_CRON_MAX_SECONDS was considered and rejected (a timeout budget, not an
-# identity signal). This is defence in depth, not a fail-open being closed:
-# omitting the flag still fails closed via the primitive's own post-hoc
-# not_authenticated classification (security-reviewer, round 4) — this
-# broadens WHEN the pre-flight check fires, it does not change what happens
-# when it doesn't.
-REQUIRE_ENV_AUTH_FLAG=""
-if [[ -n "${HOS_CYCLE_ROLE:-}" || -n "${CI:-}" || ( ! -t 0 && ! -t 1 && ! -t 2 ) ]]; then
-    REQUIRE_ENV_AUTH_FLAG="--require-env-auth"
-fi
+# The mode is EXPLICIT and STRICT BY DEFAULT instead: every caller gets
+# --require-env-auth unless it opts out with --allow-keychain-auth (below).
+# This is a deliberate breaking change to the interactive human workflow —
+# a maintainer running this by hand must now pass --allow-keychain-auth —
+# accepted on condition that the remedy is discoverable (see the
+# not_authenticated branch further down, which names the flag verbatim).
+# Do not reintroduce a detection fallback here.
+#
+# HOS_CYCLE_ROLE is used for exactly one thing below: a ONE-DIRECTION veto
+# that can only make a run STRICTER — refusing --allow-keychain-auth from
+# inside a cron cycle — never looser. It never sets this flag itself.
+REQUIRE_ENV_AUTH_FLAG="--require-env-auth"
 
 PROJECT_NAME="(unnamed project)"
 PROJECT_STACK="(unspecified stack)"
@@ -152,12 +146,23 @@ fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --agents-dir)   AGENTS_DIR="$2"; shift 2 ;;
-        --changed-only) CHANGED_ONLY=true; shift ;;
-        --base)         BASE_REF="$2"; shift 2 ;;
+        --agents-dir)         AGENTS_DIR="$2"; shift 2 ;;
+        --changed-only)       CHANGED_ONLY=true; shift ;;
+        --base)               BASE_REF="$2"; shift 2 ;;
+        --allow-keychain-auth) REQUIRE_ENV_AUTH_FLAG=""; shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
+
+# One-direction veto (AD-16.7): HOS_CYCLE_ROLE may only REFUSE
+# --allow-keychain-auth, never route around --require-env-auth on its own.
+# A cron cycle asking to skip the env-token check is asking to run this
+# framework-validation gate under keychain auth from inside an unattended
+# process — exactly the identity confusion AD-16.7 exists to prevent.
+if [[ -n "${HOS_CYCLE_ROLE:-}" && -z "$REQUIRE_ENV_AUTH_FLAG" ]]; then
+    echo "validate_self: --allow-keychain-auth is not permitted inside a cron cycle (HOS_CYCLE_ROLE=${HOS_CYCLE_ROLE}) — a cron-launched run must authenticate via CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY, never keychain auth (AD-16.7)." >&2
+    exit 2
+fi
 
 # No `command -v claude` preflight here (#1643 W4 §6.1): CLI resolution is now
 # bootstrap/invoke_agent.sh's job. A missing `claude` binary surfaces through
@@ -276,9 +281,9 @@ Return JSON only — no prose outside the JSON block:
     # agent_invoke_cli.py's own claude invocation for every caller, not
     # something this script asserts. --agent self-reviewer fills the
     # adversarial self-review seat (self-reviewer.md, #1673).
-    # REQUIRE_ENV_AUTH_FLAG (set near the top of this file) is the opt-in
-    # --require-env-auth pass for a cron-launched run; empty and inert for
-    # an interactive one (ADR-1643 §3.4, §9.3).
+    # REQUIRE_ENV_AUTH_FLAG (set near the top of this file, AD-16.7) is
+    # "--require-env-auth" by default (strict) and empty only when the
+    # caller explicitly passed --allow-keychain-auth.
     result=$(bash "$ROOT/bootstrap/invoke_agent.sh" \
         --agent self-reviewer \
         --posture review-read-only \
@@ -381,6 +386,13 @@ elif [[ "$_opus_outcome" == "__PARSE_ERROR__" ]]; then
     echo "  FAILED — bootstrap/invoke_agent.sh output could not be parsed as JSON"
 elif [[ "$_opus_outcome" == "invocation_failed" ]]; then
     echo "  FAILED — outcome=invocation_failed outcome_detail=${_opus_outcome_detail}"
+    # Discoverability (AD-16.7): strict-by-default auth is a deliberate
+    # breaking change for an interactive human on keychain auth — the
+    # remedy must be named verbatim right where the failure surfaces, not
+    # left to be inferred from outcome_detail alone.
+    if [[ "$_opus_outcome_detail" == "not_authenticated" ]]; then
+        echo "  If you are running this interactively with keychain auth (no CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY set), re-run with --allow-keychain-auth." >&2
+    fi
 else
     echo "  done"
 fi

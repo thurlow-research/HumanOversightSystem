@@ -1,12 +1,20 @@
-# ADR-1643 — AMENDMENT 6: which shipped agent fills `validate_scripts.sh`'s Opus seat (W4 §6.2)
+# ADR-1643 — AMENDMENT 6: W4's ruling record — the scripts-review seat, `validate_scripts.sh`'s retained timeout copy, and `validate_self.sh`'s auth routing
+
+This document has grown beyond its original title's subject (AD-16.1–16.3, which shipped agent fills
+`validate_scripts.sh`'s Opus seat) to record every ruling made against W4 in flight: AD-16.4/AD-16.6 on
+`validate_scripts.sh`'s private timeout copy, and AD-16.7 on `validate_self.sh`'s env-auth routing. It is
+retitled to match — the ruling text of every section (AD-16.1 through AD-16.7) is unchanged; only this
+title and the summary metadata below have been updated to describe the full contents accurately. The
+filename is kept as-is so existing references (issues, the TD, `tests/framework/test_agent_invocation_migration.py`) still resolve.
 
 **Status:** ACCEPTED — binding on `technical-design` (TD-1643 §6.2, §6.3), on `coder` for slice W4, and on the future slice W4c (#1756) defined below.
 **Date:** 2026-09-19
 **Author:** architect
 **Amends:** **AD-16** — its enumeration of which `claude -p` sites migrate in W4. `scripts/framework/validate_scripts.sh` is **removed from W4** and becomes **W4c** (#1756), a third recorded exemption until W4c lands. AD-16's escape clause ("if promoting the lens to an agent is too large for W4, say so and split it — **not** add a bare-model escape hatch") is the mechanism being exercised, exactly as TD-F4 exercised it for `run_panel.sh`/W4b.
 Also amends **AD-5.3** — its deletion of `validate_scripts.sh`'s private `run_capped` is **SEQUENCED behind #1757**, not cancelled (AD-16.4, AD-16.6).
+Also amends **Amendment 1 §9.3** — its default-off framing of `--require-env-auth` is **SUPERSEDED** for `validate_self.sh` and every future HOS-shipped primitive caller: the default is now on, with an explicit opt-out (AD-16.7).
 **Confirms without change:** **AD-3** (no bare-model path), and W4 §6.1, §6.4, §6.5, §6.6.
-**Inputs:** `scripts/framework/validate_scripts.sh` (the `LENS` variable and `run_reviewer`); `.claude/agents/self-reviewer.md`; `.claude/agents/code-reviewer.md`; `.claude/agents/security-reviewer.md`; `TECHNICAL-DESIGN-1643-invocation-primitive.md` §6.1–§6.6; `tests/framework/test_agent_invocation_migration.py` T4.1.
+**Inputs:** `scripts/framework/validate_scripts.sh` (the `LENS` variable and `run_reviewer`); `scripts/framework/validate_self.sh` (`REQUIRE_ENV_AUTH_FLAG` and its argument parser); `.claude/agents/self-reviewer.md`; `.claude/agents/code-reviewer.md`; `.claude/agents/security-reviewer.md`; `TECHNICAL-DESIGN-1643-invocation-primitive.md` §6.1–§6.6; ADR-1643 Amendment 1 §9.3; `tests/framework/test_agent_invocation_migration.py`.
 
 ---
 
@@ -160,3 +168,62 @@ copy is **deliberate and temporary**, citing AD-5.3, this section, and **#1757**
 **Affected sign-offs:** any W4 sign-off taken against the `with_timeout` version of
 `validate_scripts.sh` is invalidated by this reversal and must re-review the reverted file. No other file
 in the slice is affected.
+
+---
+
+## AD-16.7 — `validate_self.sh`'s env-auth routing: explicit flag, fail-closed default (2026-09-19)
+
+**Ruling: adopt codex's second option — default to `--require-env-auth`, add an explicit
+`--allow-keychain-auth` opt-out, and delete the TTY/`CI`/`HOS_CYCLE_ROLE` inference.** codex's first
+option (autonomous callers opt *in*) is rejected: its failure mode is inverted, so a new or forgetful
+autonomous caller silently gets keychain auth, which is the defect being reported.
+
+**Reasoning.** Identity routing must not be inferred from ambient environment shape, because every signal
+available — a pty, an unset `CI`, a supervisor that preserves terminal fds — is controllable by the
+caller being classified. The only sound default for a control that distinguishes bot credentials from
+human ones is the strict branch, with a deliberate, named opt-out. `security-reviewer` is right that a
+missed flag still fails closed post-hoc, which correctly bounds this to HIGH rather than CRITICAL, but
+fail-closed-eventually is not an answer to *which identity the gate ran under* — that is the question
+codex asked, and it is the right one.
+
+**`HOS_CYCLE_ROLE` is retained, in one direction only: as a veto on the opt-out, never as a router.**
+When `HOS_CYCLE_ROLE` is set and `--allow-keychain-auth` was passed, the run is refused. That use can
+only ever make a run *stricter*, so codex's "do not infer" objection does not reach it: a false positive
+fails closed and is corrected by unsetting a variable, whereas the inference being deleted had a false
+*negative* that silently weakened the control. Retaining it as a belt-and-braces *router* alongside the
+explicit flag is rejected — that would reinstate exactly the heuristic being removed.
+
+**The human-workflow cost is accepted, conditionally.** A maintainer running `validate_self.sh` by hand
+must now pass `--allow-keychain-auth`. This is a contract change on a script that ships to consumer
+projects, so it is accepted **only if the failure names the remedy**: the failure path must emit one
+stderr line naming `--allow-keychain-auth` verbatim and saying why, and the script's usage block and
+header must document both flags. An undiscoverable fail-closed is a worse outcome than the heuristic.
+`scripts/framework/**` is a protected surface, so the human approval gate on this PR is where the
+contract change gets its product sign-off; it needs no separate routing.
+
+**Amends Amendment 1 §9.3.** That ruling's sentence *"The flag's default stays off"* is **SUPERSEDED**
+for `validate_self.sh` and for every future HOS-shipped caller of the primitive: the default is **on**,
+and the opt-out is explicit. §9.3's substance is otherwise confirmed in full — the pre-flight remains
+opt-*out* rather than mandatory-always (a human path still exists), post-hoc `not_authenticated`
+classification remains unconditional, and §9.3's rejection of the three probe/keychain/file-layout
+alternatives stands untouched. §9.3's framing of the flag as a **caller obligation** is strengthened, not
+weakened: an obligation discharged by default cannot be forgotten.
+
+**Exact change for `coder` (W4):**
+1. In `scripts/framework/validate_self.sh`, delete the `REQUIRE_ENV_AUTH_FLAG` inference block
+   (`HOS_CYCLE_ROLE` / `CI` / the three-way `! -t` conjunction) and the comment explaining it.
+2. Initialise `REQUIRE_ENV_AUTH_FLAG="--require-env-auth"`. Add `--allow-keychain-auth` to the argument
+   parser; when passed, set it empty.
+3. Veto: if `HOS_CYCLE_ROLE` is non-empty **and** `--allow-keychain-auth` was passed, print a one-line
+   explanation to stderr and exit 2. Never the reverse — `HOS_CYCLE_ROLE` alone changes nothing.
+4. Name `--allow-keychain-auth` verbatim on stderr in the auth-failure path, and document both flags in
+   the usage block and the file header.
+5. Tests: the default argv contains `--require-env-auth`; `--allow-keychain-auth` omits it; the
+   `HOS_CYCLE_ROLE` + opt-out combination exits non-zero; no `-t 0`/`-t 1`/`-t 2` or `CI` test remains in
+   the file's auth routing.
+
+**Scope.** `validate_scripts.sh` is unaffected in W4 — its `REQUIRE_ENV_AUTH_FLAG` stanza is reverted out
+with §6.2 (AD-16.4). **W4c (#1756) must adopt this same contract** when it migrates that site; it does not
+get to reinvent the routing. **#1758** (the primitive does not record which auth branch it took) remains
+complementary and is not satisfied by this ruling: this decides which branch is taken, #1758 makes the
+branch observable after the fact.

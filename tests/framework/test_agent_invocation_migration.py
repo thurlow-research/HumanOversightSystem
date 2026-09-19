@@ -49,6 +49,7 @@ later amendments:
 
 import ast
 import importlib.util
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -222,6 +223,82 @@ def test_T4_3_validate_self_has_no_synthesized_verdict_error_literal():
             f'"verdict":"error" block: {line!r} — the invocation_failed '
             "document already carries verdict:error structurally (AD-6)."
         )
+
+
+# ── AD-16.7 (architect ruling, codex HIGH CWE-287) — the auth mode is explicit
+#    and strict by default; NO environment heuristic may decide identity ─────
+#
+# codex's finding: HOS_CYCLE_ROLE / CI / terminal-attachment are all
+# controllable by the very process being classified (a cron/systemd/CI
+# wrapper can allocate a pty, omit CI, and preserve terminal fds), so none of
+# them may carry an identity decision. The fix makes the mode explicit
+# (--allow-keychain-auth) and defaults it strict (--require-env-auth),
+# with a one-direction veto: HOS_CYCLE_ROLE may only REFUSE
+# --allow-keychain-auth, never route around the default itself.
+_VALIDATE_SELF_PATH = ROOT / "scripts" / "framework" / "validate_self.sh"
+
+
+def test_default_auth_mode_is_strict_require_env_auth():
+    """No argv, no env: REQUIRE_ENV_AUTH_FLAG is unconditionally
+    "--require-env-auth" — not empty, not gated on any condition."""
+    text = _VALIDATE_SELF_PATH.read_text(encoding="utf-8")
+    assert 'REQUIRE_ENV_AUTH_FLAG="--require-env-auth"' in text
+    # It must be a plain, unconditional assignment — not the tail of an
+    # `if`/ternary-style construct that could silently reintroduce a
+    # heuristic. The two lines immediately preceding the assignment (in the
+    # live file) are prose comments, not a conditional; confirmed by the
+    # negative check below that no -t/CI test exists anywhere in the file.
+    assert text.count('REQUIRE_ENV_AUTH_FLAG="--require-env-auth"') == 1
+
+
+def test_allow_keychain_auth_flag_clears_the_require_env_auth_flag():
+    text = _VALIDATE_SELF_PATH.read_text(encoding="utf-8")
+    assert '--allow-keychain-auth) REQUIRE_ENV_AUTH_FLAG=""; shift ;;' in text
+
+
+def test_no_tty_or_ci_heuristic_survives_in_auth_routing():
+    """The exact regression codex flagged: HOS_CYCLE_ROLE/CI/terminal
+    detection must never again decide whether --require-env-auth is passed.
+    HOS_CYCLE_ROLE itself is still allowed to appear (it powers the
+    one-direction veto, which can only make a run stricter) — what must
+    never reappear is a `-t 0`/`-t 1`/`-t 2` test or a `${CI` env read."""
+    for lineno, line in _code_lines(_VALIDATE_SELF_PATH):
+        assert not re.search(r"-t\s+[012]\b", line), (
+            f"validate_self.sh:{lineno} still contains a terminal-attachment "
+            f"test: {line!r} (AD-16.7: no environment heuristic may decide "
+            "auth identity)"
+        )
+        assert "${CI" not in line and "$CI" not in line, (
+            f"validate_self.sh:{lineno} still reads the CI env var for auth "
+            f"routing: {line!r} (AD-16.7)"
+        )
+
+
+def test_veto_refuses_allow_keychain_auth_inside_a_cron_cycle(tmp_path):
+    """Real subprocess, not a text check: HOS_CYCLE_ROLE set + --allow-
+    keychain-auth passed must exit non-zero before any review work starts
+    (the veto fires immediately after arg parsing, before file collection or
+    any network call) — the one-direction guarantee, exercised end-to-end."""
+    result = subprocess.run(
+        ["bash", str(_VALIDATE_SELF_PATH), "--allow-keychain-auth"],
+        cwd=tmp_path,
+        env={**os.environ, "HOS_CYCLE_ROLE": "worker"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "--allow-keychain-auth" in result.stderr
+    assert "HOS_CYCLE_ROLE" in result.stderr
+
+
+def test_not_authenticated_branch_names_the_remedy_flag_verbatim():
+    """Discoverability is a condition of AD-16.7, not a nicety: the
+    auth-failure path must name --allow-keychain-auth verbatim so a human
+    who hits the new fail-closed is told the remedy."""
+    text = _VALIDATE_SELF_PATH.read_text(encoding="utf-8")
+    assert "not_authenticated" in text
+    assert "re-run with --allow-keychain-auth" in text
 
 
 # ── ops-reviewer finding (#1676) — the Opus status line must surface WHICH
