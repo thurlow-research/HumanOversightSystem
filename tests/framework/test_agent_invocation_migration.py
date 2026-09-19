@@ -36,6 +36,7 @@ later amendments:
      copies actually share (`_TIMEOUT_BIN`) rather than the literal string
      `run_capped`, since `bin/hos-cron`'s copy never used that function name.
 """
+
 import importlib.util
 import re
 import subprocess
@@ -45,6 +46,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 _VALIDATION_LOGIC_PATH = ROOT / "scripts" / "oversight" / "validation_logic.py"
 _spec = importlib.util.spec_from_file_location("validation_logic", _VALIDATION_LOGIC_PATH)
+assert (
+    _spec is not None and _spec.loader is not None
+), f"could not build a module spec for {_VALIDATION_LOGIC_PATH} — has it moved?"
 validation_logic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validation_logic)
 
@@ -97,7 +101,8 @@ _CLAUDE_CLI_PATTERN = re.compile(r"claude -p|claude --print")
 _T4_1_EXPECTED_EXEMPTIONS = {
     "bootstrap/setup_clis.sh",  # EXEMPT (§6.5): the machine-bootstrap smoke test.
     "scripts/run_panel.sh",  # EXEMPT until W4b (TD §6.4) migrates the panel's Claude seats.
-    "scripts/framework/validate_scripts.sh",  # EXEMPT until W4c (ADR-1643 Amendment 6, tracked as #1756) ships a scripts-reviewer agent.
+    # EXEMPT until W4c (#1756, ADR-1643 Amendment 6) ships a scripts-reviewer agent.
+    "scripts/framework/validate_scripts.sh",
 }
 
 
@@ -130,8 +135,10 @@ _SHARED_HELPER = "scripts/oversight/run_with_retry.sh"
 # wraps it in a function literally named `run_capped` — bin/hos-cron's never
 # used that name, so this checks the marker they actually share).
 _T4_2_EXPECTED_TIMEOUT_BIN_COPIES = {
-    "scripts/framework/validate_agents.sh",  # EXEMPT (ADR-1643 §9.4): moved to a follow-up issue, not W4 — no claude consumer to migrate.
-    "bin/hos-cron",  # EXEMPT (ADR-1643 §9.4): deliberately out of scope of W4 AND the follow-up — bounds a whole cron cycle, not an AI review.
+    # EXEMPT (ADR-1643 §9.4): moved to a follow-up issue, not W4 — no claude consumer to migrate.
+    "scripts/framework/validate_agents.sh",
+    # EXEMPT (ADR-1643 §9.4): out of scope of W4 AND the follow-up — bounds a whole cron cycle, not an AI review.
+    "bin/hos-cron",
 }
 
 
@@ -142,12 +149,12 @@ def test_T4_2_validate_scripts_no_longer_has_a_private_timeout_bin_copy():
     to a real migration)."""
     path = ROOT / "scripts" / "framework" / "validate_scripts.sh"
     for lineno, line in _code_lines(path):
-        assert "run_capped" not in line, (
-            f"validate_scripts.sh:{lineno} still references run_capped in code: {line!r}"
-        )
-        assert not _TIMEOUT_BIN_ASSIGNMENT_PATTERN.search(line), (
-            f"validate_scripts.sh:{lineno} still defines _TIMEOUT_BIN: {line!r}"
-        )
+        assert (
+            "run_capped" not in line
+        ), f"validate_scripts.sh:{lineno} still references run_capped in code: {line!r}"
+        assert not _TIMEOUT_BIN_ASSIGNMENT_PATTERN.search(
+            line
+        ), f"validate_scripts.sh:{lineno} still defines _TIMEOUT_BIN: {line!r}"
 
 
 def test_T4_2_private_timeout_bin_copy_ledger_matches_adr_1643_section_9_4():
@@ -210,9 +217,7 @@ def _extract_opus_outcome_detail_python_snippet():
 def test_status_line_surfaces_outcome_detail_on_invocation_failed():
     snippet = _extract_opus_outcome_detail_python_snippet()
     doc = '{"outcome":"invocation_failed","outcome_detail":"not_authenticated"}'
-    result = subprocess.run(
-        ["python3", "-c", snippet], input=doc, capture_output=True, text=True
-    )
+    result = subprocess.run(["python3", "-c", snippet], input=doc, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     outcome, _, detail = result.stdout.strip().partition("\t")
     assert outcome == "invocation_failed"
@@ -222,9 +227,7 @@ def test_status_line_surfaces_outcome_detail_on_invocation_failed():
 def test_status_line_reports_completed_outcome_with_no_detail():
     snippet = _extract_opus_outcome_detail_python_snippet()
     doc = '{"outcome":"completed","outcome_detail":null,"verdict":"approve"}'
-    result = subprocess.run(
-        ["python3", "-c", snippet], input=doc, capture_output=True, text=True
-    )
+    result = subprocess.run(["python3", "-c", snippet], input=doc, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     outcome, _, detail = result.stdout.strip().partition("\t")
     assert outcome == "completed"
@@ -249,9 +252,9 @@ def test_status_line_no_longer_makes_the_false_see_error_above_claim():
         "(structured invocation_failed) where run_opus's rc-based guard "
         "never printed anything above (#1676)"
     )
-    assert "outcome_detail=" in text, (
-        "the status line no longer surfaces outcome_detail to the operator (#1676)"
-    )
+    assert (
+        "outcome_detail=" in text
+    ), "the status line no longer surfaces outcome_detail to the operator (#1676)"
 
 
 # ── T4.5 — setup_clis.sh carries the exemption comment citing ADR-1643 ────────
