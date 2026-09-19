@@ -550,7 +550,7 @@ def test_parse_error_preserves_raw_output_and_names_its_real_path(tmp_path):
     assert dump_path.read_text(encoding="utf-8") == raw_doc
 
 
-def test_status_line_requires_approve_verdict_not_just_completed_outcome():
+def test_status_line_requires_approve_verdict_not_just_completed_outcome(tmp_path):
     """Found during the round-3 sweep, not originally reported: outcome ==
     "completed" only means the INVOCATION succeeded — the self-reviewer AGENT
     can still legitimately return verdict:"request_changes" with real
@@ -558,17 +558,18 @@ def test_status_line_requires_approve_verdict_not_just_completed_outcome():
     though the finalizer was already (independently) computing the correct
     blocking verdict."""
     r = _run_opus_status_block_integration(
+        tmp_path,
         '{"outcome":"completed","verdict":"request_changes",'
         '"findings":[{"severity":"blocking","category":"governance-hole",'
-        '"files":["x.md"],"description":"d","fix":"f"}]}'
+        '"files":["x.md"],"description":"d","fix":"f"}]}',
     )
     assert "done" not in r["console"]
     assert "FAILED" in r["console"]
     assert r["finalizer_verdict"] == "request_changes"
 
 
-def test_status_line_and_finalizer_agree_on_empty_output():
-    r = _run_opus_status_block_integration("")
+def test_status_line_and_finalizer_agree_on_empty_output(tmp_path):
+    r = _run_opus_status_block_integration(tmp_path, "")
     assert "FAILED" in r["console"]
     assert r["finalizer_verdict"] == "error"
 
