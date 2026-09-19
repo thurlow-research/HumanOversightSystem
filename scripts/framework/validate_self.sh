@@ -230,10 +230,14 @@ fi
     printf "new_blocking_count: 0\n\n"
 } > "$OUTFILE"
 
-# Script-global (not `local` to run_opus below) so the EXIT trap it installs
-# can still reference this path correctly at actual script exit, after the
-# function that set it has long since returned — see the comment at its
-# assignment for why a `local` here breaks that.
+# Script-global (not `local` to run_opus below) so the EXIT trap run_opus
+# installs can still reference this path when it fires — which is at the end
+# of the command-substitution subshell run_opus is called in, just after the
+# function itself returns. A `local` is already out of scope by then and the
+# trap dies on `set -u` instead of cleaning up. This declaration keeps the
+# parent shell's own reference defined under `set -u`; the subshell's
+# assignment never propagates back here, so it stays "" in the parent. See
+# the SCOPE note at the assignment for the full rationale.
 _VSELF_TMP_DIR=""
 
 run_opus() {
@@ -292,27 +296,44 @@ Return JSON only — no prose outside the JSON block:
     #
     # EXIT, not RETURN, and the path is held in the script-global
     # _VSELF_TMP_DIR (declared above run_opus), not a `local`: tested both
-    # ways before choosing. A RETURN trap fires reliably on a *graceful*
-    # function return, but empirically does NOT fire when a `set -e` abort
-    # inside the function is fatal to the whole process (the realistic case
-    # here — nothing guards the invoke_agent.sh call site above with
-    # `|| true`, so an abort propagates all the way up) — confirmed by
-    # direct test: a RETURN trap left the directory on disk in that case. A
-    # bare `local tmp_dir` referenced by an EXIT trap has its own failure
-    # mode: once this function returns, the local variable goes out of
-    # scope, and the trap firing later at actual script exit hits `set -u`'s
-    # unbound-variable error instead of cleaning up — also confirmed by
-    # direct test. The combination used here (global path variable + EXIT
-    # trap) is the one that survives both: it fires on every path out of the
-    # whole script — normal completion, any set -e abort anywhere after this
-    # point, and a signal — proportionate for a local gate (not a privilege
-    # boundary), with no broader trap machinery than that one line. Deferred
-    # cleanup (the directory lives until the script's own exit, not the
-    # instant this function returns) is the accepted cost of that
-    # robustness; the directory is mode 700 the entire time regardless.
-    # run_opus is called exactly once in this script, so one global variable
-    # and one EXIT trap registration is sufficient — a second call would
-    # need its own cleanup accounting, which this does not attempt.
+    # ways before choosing.
+    #
+    # SCOPE — read this before relying on the lifetime. run_opus has exactly
+    # one call site below, where its output is captured by a command
+    # substitution, i.e. a SUBSHELL. (That call site is deliberately not
+    # quoted verbatim here: the tests anchor on the first occurrence of that
+    # assignment's text, so a copy of it in this comment would silently
+    # capture the anchor.) Everything here happens inside that
+    # subshell: the trap belongs to it and fires when IT ends, which is when
+    # run_opus returns — not at the outer script's exit. The assignment to
+    # _VSELF_TMP_DIR likewise never reaches the parent shell, which still
+    # holds "" afterwards. So cleanup is prompt, not deferred: by the time
+    # the parent resumes, the directory is already gone. Do NOT write code
+    # after the substitution that expects $tmp_prompt or $_VSELF_TMP_DIR to
+    # still be there — both are gone. (An earlier version of this comment
+    # claimed the trap covered "every path out of the whole script" and that
+    # the directory lived until script exit; that described a non-subshell
+    # call site this script does not have. Corrected per the #1760 review.)
+    #
+    # Within that subshell the choice still matters, and both alternatives
+    # were confirmed by direct test to fail:
+    #   - A RETURN trap fires on a *graceful* function return but NOT when a
+    #     `set -e` abort inside the function is fatal (the realistic case —
+    #     nothing guards the invoke_agent.sh call site above with `|| true`);
+    #     it left the directory on disk.
+    #   - `local _VSELF_TMP_DIR` goes out of scope the moment the function
+    #     returns, so the EXIT trap firing just after hits `set -u`'s
+    #     unbound-variable error instead of cleaning up — the directory
+    #     leaks. The script-global is load-bearing for this reason, not for
+    #     any cross-function lifetime.
+    # Global + EXIT survives both: it fires on graceful return, on a set -e
+    # abort anywhere inside run_opus, and on a signal delivered while the
+    # subshell runs. Proportionate for a local gate (not a privilege
+    # boundary), with no broader trap machinery than that one line; the
+    # directory is mode 700 for its whole (short) life regardless.
+    # run_opus is called exactly once, so one global variable and one EXIT
+    # trap registration is sufficient — a second call would need its own
+    # cleanup accounting, which this does not attempt.
     _VSELF_TMP_DIR=$(mktemp -d "$OUT_DIR/vself_opus.XXXXXX")
     trap 'rm -rf "$_VSELF_TMP_DIR"' EXIT
     chmod 700 "$_VSELF_TMP_DIR"
