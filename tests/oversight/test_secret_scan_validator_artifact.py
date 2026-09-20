@@ -673,6 +673,33 @@ def test_verifier_marks_an_unusable_git_undecidable(tmp_path, monkeypatch):
     assert [item.cause for item in verifier.undecidable] == ["git-unavailable"]
 
 
+def test_verifier_marks_an_unreadable_depth_answer_undecidable(tmp_path, monkeypatch):
+    """git ran, and would not say whether the clone is shallow.
+
+    Injected rather than staged: there is no ordinary way to make a healthy git
+    answer `--is-shallow-repository` with something other than true/false. Worth
+    pinning anyway, because the failure mode if this branch were wrong is the
+    exact conflation this change exists to undo — an unanswerable question
+    silently reading as "we checked, and the value is not a commit".
+    """
+    calls: list[tuple] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(tuple(argv))
+        if "rev-parse" in argv:
+            # Answered, but with something that is neither true nor false.
+            return subprocess.CompletedProcess(argv, 0, b"maybe\n", b"")
+        return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+    verifier = _verifier_in(monkeypatch, tmp_path)
+    monkeypatch.setattr(ssl_.subprocess, "run", fake_run)
+    assert verifier(_SHA) is False
+    assert [item.cause for item in verifier.undecidable] == ["unknown-depth"]
+    # It did ask both questions, in order — the depth question is only reachable
+    # once cat-file has already declined.
+    assert [argv[1] for argv in calls] == ["cat-file", "rev-parse"]
+
+
 def test_undecidable_entries_are_deduplicated(tmp_path, monkeypatch):
     """A ~2,000-line artifact can flag one SHA many times; say it once."""
     clone, unreachable = _shallow_clone(tmp_path)

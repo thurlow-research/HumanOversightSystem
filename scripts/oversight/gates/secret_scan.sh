@@ -102,6 +102,9 @@ fi
 FILES=("${FILTERED_FILES[@]+"${FILTERED_FILES[@]}"}")
 
 ERRORS=0
+# Declared out here, not in the detect-secrets branch, so the summary below can
+# tell "we scanned and found something" from "we could not read the scan".
+SCAN_STATUS=0
 GATE_TIMEOUT="${GATE_TIMEOUT:-60}"
 GATE_RETRIES="${GATE_RETRIES:-2}"
 
@@ -137,7 +140,6 @@ if [[ -n "$DETECT_SECRETS" ]]; then
         # PASSED, the same report-success-having-checked-nothing shape #1750 and
         # #1759 are about. It is now a gate failure.
         SCAN_FILTER="$_GATES_DIR/../secret_scan_logic.py"
-        SCAN_STATUS=0
         echo "$BASELINE" | PYTHONSAFEPATH=1 "$PARSE_PY" "$SCAN_FILTER" filter || SCAN_STATUS=$?
         if [[ "$SCAN_STATUS" -ne 0 ]]; then
             ERRORS=$((ERRORS + 1))
@@ -172,7 +174,16 @@ fi
 
 echo ""
 if [[ $ERRORS -gt 0 ]]; then
-    echo "GATE FAIL: potential secrets detected — review and remove before commit"
+    if [[ "$SCAN_STATUS" -eq 2 ]]; then
+        # Exit 2 is "the scan could not be read", not "a secret was found".
+        # Saying "potential secrets detected" here would send someone hunting
+        # for a credential that was never reported, and — worse — implies the
+        # file WAS scanned. The specific cause is printed above by the module.
+        echo "GATE FAIL: the secret scan could not be read — see the parse error above."
+        echo "           Nothing was scanned; this is a failure to check, not a clean result."
+    else
+        echo "GATE FAIL: potential secrets detected — review and remove before commit"
+    fi
     exit 1
 else
     echo "GATE PASS: no secrets detected"
