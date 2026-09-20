@@ -127,14 +127,80 @@ def test_malformed_finding_is_kept_not_dropped():
     assert len(kept) == 1
 
 
-def test_base_sha_and_future_sha_fields_are_covered():
-    """A new range field must not silently re-block the pipeline."""
-    for field in ("base_sha", "merge_base_sha", "sha"):
-        kept, suppressed = ssl_.partition_findings(
-            _results(_ARTIFACT, 3, _HEX_TYPE), _reader(f'  "{field}": "{_SHA}",\n')
-        )
-        assert kept == [], field
-        assert len(suppressed) == 1, field
+@pytest.mark.parametrize("field", ssl_._SHA_FIELDS)
+def test_every_allowlisted_sha_field_is_covered(field):
+    kept, suppressed = ssl_.partition_findings(
+        _results(_ARTIFACT, 3, _HEX_TYPE), _reader(f'  "{field}": "{_SHA}",\n')
+    )
+    assert kept == [], field
+    assert len(suppressed) == 1, field
+
+
+@pytest.mark.parametrize("field", ["sha", "commit_sha", "parent_sha", "sha1"])
+def test_unlisted_sha_like_fields_are_kept(field):
+    """An explicit allowlist, not a `*_sha` family pattern.
+
+    The family pattern was the first attempt here, on the reasoning that a new
+    range field would otherwise re-block the pipeline. That trade is backwards:
+    an unlisted field fails as a VISIBLE gate failure someone then fixes in
+    SUPPRESSIONS, whereas a too-permissive pattern is a silent bypass.
+    """
+    kept, suppressed = ssl_.partition_findings(
+        _results(_ARTIFACT, 3, _HEX_TYPE), _reader(f'  "{field}": "{_SHA}",\n')
+    )
+    assert suppressed == [], field
+    assert len(kept) == 1, field
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial cases from this change's own cross-vendor second review          #
+# (codex, CWE-693). Both were exploitable in the first implementation.         #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A leaked credential sharing the physical line with a legitimate SHA.
+        '  "head_sha": "%s", "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae",\n' % _SHA,
+        '  "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae", "head_sha": "%s",\n' % _SHA,
+        '{"head_sha": "%s", "leaked": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}\n' % _SHA,
+    ],
+)
+def test_mixed_line_is_never_suppressed(line):
+    """detect-secrets reports per LINE, not per token.
+
+    So a substring match for a `*_sha` field cannot tell WHICH value on the
+    line was flagged, and would drop a leaked credential that merely shares a
+    line with a legitimate `head_sha`. The predicate therefore requires the
+    whole line to be that one property and nothing else.
+    """
+    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(line))
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "signoffs/validators/step7/nested/summary.json",
+        "signoffs/validators/a/b/summary.json",
+        "signoffs/validators/notastep/summary.json",
+        "signoffs/validators/step7/summary.json.bak",
+        "x/signoffs/validators/step7/summary.json",
+    ],
+)
+def test_paths_outside_the_exact_artifact_shape_are_kept(path):
+    """`fnmatch`'s `*` crosses `/`; the rule uses an anchored regex instead.
+
+    A crafted file at a deeper or differently-named path must not inherit the
+    exemption just because it sits under signoffs/validators/.
+    """
+    kept, suppressed = ssl_.partition_findings(
+        _results(path, 2, _HEX_TYPE), _reader(f'  "head_sha": "{_SHA}",\n')
+    )
+    assert suppressed == [], path
+    assert len(kept) == 1, path
 
 
 def test_leading_dot_slash_paths_match(monkeypatch, tmp_path):

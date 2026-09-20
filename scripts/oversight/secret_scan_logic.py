@@ -23,16 +23,19 @@ pipeline for a blind spot in the one artifact that quotes source code.
 
 So the suppression here is keyed on all three of:
 
-  1. the file path matching a known artifact glob,
+  1. the path matching `signoffs/validators/step<N>/summary.json` exactly
+     (an anchored regex — an fnmatch glob's `*` would cross `/`),
   2. the detector type being the one the known-benign shape provokes, and
-  3. the flagged LINE actually being that shape — a `*_sha` field whose value is
-     a bare 40-hex git SHA.
+  3. the flagged LINE being nothing but one allowlisted `*_sha` property
+     holding a bare 40-hex value.
 
 Every other detector (AWS keys, private keys, JWTs, base64 high entropy) still
-runs against the artifact, and a 40-hex string anywhere other than a `*_sha`
-field is still reported. Condition 3 is what makes this narrower than a
-`(path, type)` filter: planting `"aws_key": "<40 hex>"` in the artifact does not
-inherit the exemption.
+runs against the artifact, and a 40-hex string anywhere other than an
+allowlisted SHA field is still reported. Condition 3 is what makes this narrower
+than a `(path, type)` filter: planting `"aws_key": "<40 hex>"` in the artifact
+does not inherit the exemption — and because detect-secrets reports per LINE
+rather than per token, the line must contain the SHA property and nothing else,
+or a leaked credential sharing that line would ride along on it.
 
 VISIBILITY
 ----------
@@ -50,24 +53,41 @@ the CLI shim at the bottom reads stdin and the filesystem.
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import re
 import sys
 from typing import Callable, Iterable, NamedTuple
 
-# A bare 40-hex git object name as the whole value of a `*_sha` JSON field.
-# Anchored on the field name so a high-entropy value under any other key keeps
-# its finding. `base_sha`/`head_sha` are the two the artifacts carry today; the
-# pattern admits the family rather than enumerating it, because a new range
-# field would otherwise silently re-block the pipeline.
-_SHA_FIELD_RE = re.compile(r'"\w*_?sha"\s*:\s*"[0-9a-f]{40}"', re.IGNORECASE)
+# The suppressible line shape: a WHOLE line that is exactly one allowlisted SHA
+# property. Both halves of that matter, and both were findings in this change's
+# own cross-vendor review (codex, CWE-693):
+#
+#   * Anchored `^...$`, not a substring search. detect-secrets reports findings
+#     per LINE, not per token, so a substring match would suppress ANY
+#     high-entropy finding that merely shares a line with a legitimate
+#     `head_sha` — e.g. `"head_sha": "<sha>", "api_token": "<40 hex>"` on one
+#     physical line. The rule cannot tell which token was flagged, so it must
+#     refuse unless the line holds nothing else.
+#
+#   * An explicit field allowlist, not a `\w*_?sha` family pattern. A family
+#     pattern was the first attempt, reasoning that a future range field would
+#     otherwise re-block the pipeline. That trade is backwards: an unlisted
+#     field fails as a VISIBLE gate failure someone then fixes here, whereas a
+#     too-permissive pattern is a silent bypass. Fail closed; add the field.
+_SHA_FIELDS = ("head_sha", "base_sha", "merge_base_sha")
+_SHA_FIELD_RE = re.compile(
+    r'^\s*"(?:' + "|".join(_SHA_FIELDS) + r')"\s*:\s*"[0-9a-f]{40}"\s*,?\s*$'
+)
 
 
 class Suppression(NamedTuple):
     """One narrowly-scoped exemption. All three conditions must hold."""
 
-    path_glob: str
+    # An anchored regex, NOT an fnmatch glob: fnmatch's `*` matches `/` too, so
+    # `signoffs/validators/*/summary.json` would also admit
+    # `signoffs/validators/a/b/summary.json` — a wider surface than the artifact
+    # path this exempts (codex, CWE-693, in this change's own second review).
+    path_re: "re.Pattern[str]"
     finding_type: str
     line_predicate: Callable[[str], bool]
     reason: str
@@ -79,7 +99,7 @@ def _is_sha_field_line(line: str) -> bool:
 
 SUPPRESSIONS: tuple[Suppression, ...] = (
     Suppression(
-        path_glob="signoffs/validators/*/summary.json",
+        path_re=re.compile(r"^signoffs/validators/step[0-9]+/summary\.json$"),
         finding_type="Hex High Entropy String",
         line_predicate=_is_sha_field_line,
         reason=(
@@ -113,7 +133,7 @@ def _matching_rule(
 ) -> Suppression | None:
     path = _normalize(finding.path)
     for rule in rules:
-        if not fnmatch.fnmatch(path, rule.path_glob):
+        if not rule.path_re.match(path):
             continue
         if finding.type != rule.finding_type:
             continue
