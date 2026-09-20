@@ -52,130 +52,72 @@ def _results(path: str, line_number: int, type_: str) -> dict:
     return {path: [{"type": type_, "filename": path, "line_number": line_number}]}
 
 
-def _reader(line: str | None):
-    return lambda _path, _line_number: line
+def _reader(text: str | None):
+    """A text_reader that hands back `text` for any path."""
+    return lambda _path: text
+
+
+def _artifact_text(**fields: object) -> str:
+    """A realistic artifact: `head_sha` first, as run_validators.sh writes it."""
+    body = {"head_sha": _SHA, "artifact_version": "1", "step": 7}
+    body.update(fields)
+    return json.dumps(body, indent=2) + "\n"
+
+
+def _line_of(text: str, needle: str) -> int:
+    for number, line in enumerate(text.splitlines(), start=1):
+        if needle in line:
+            return number
+    raise AssertionError(f"{needle!r} not found")
 
 
 # --------------------------------------------------------------------------- #
-# The three conditions                                                        #
+# The exempted invariant: the artifact's TOP-LEVEL SHA metadata field          #
 # --------------------------------------------------------------------------- #
 
 
-def test_sha_field_in_a_validator_artifact_is_suppressed():
+def test_top_level_head_sha_is_suppressed():
+    text = _artifact_text()
     kept, suppressed = ssl_.partition_findings(
-        _results(_ARTIFACT, 2, _HEX_TYPE), _reader(f'  "head_sha": "{_SHA}",\n')
+        _results(_ARTIFACT, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert kept == []
     assert len(suppressed) == 1
+    assert "head_sha" in suppressed[0].reason
     assert "#1754" in suppressed[0].reason
 
 
-def test_same_shape_outside_a_validator_artifact_is_kept():
-    """Condition 1 — the path glob. A config file is not exempt."""
-    kept, suppressed = ssl_.partition_findings(
-        _results("config/app.json", 2, _HEX_TYPE), _reader(f'  "head_sha": "{_SHA}",\n')
-    )
-    assert suppressed == []
-    assert len(kept) == 1
-
-
-@pytest.mark.parametrize(
-    "type_", ["AWS Access Key", "Private Key", "Base64 High Entropy String", "Secret Keyword"]
-)
-def test_other_detectors_are_never_suppressed(type_):
-    """Condition 2 — AC-2. Only the one benign detector is in scope."""
-    kept, suppressed = ssl_.partition_findings(
-        _results(_ARTIFACT, 2, type_), _reader(f'  "head_sha": "{_SHA}",\n')
-    )
-    assert suppressed == []
-    assert len(kept) == 1
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        '  "api_token": "8ed0daac85c1745824acfbddab9f3f77591039f8",\n',  # pragma: allowlist secret
-        '  "password": "8ed0daac85c1745824acfbddab9f3f77591039f8",\n',  # pragma: allowlist secret
-        '  "head_sha_note": "see 8ed0daac85c1745824acfbddab9f3f77591039f8 elsewhere",\n',
-        '  "head_sha": "not-a-sha",\n',
-    ],
-)
-def test_hex_under_a_non_sha_field_is_kept(line):
-    """Condition 3 — the narrowing a plain (path, type) filter would not give.
-
-    Planting a credential under `api_token` inside the artifact must not
-    inherit the exemption just because the file and detector match.
-    """
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 588, _HEX_TYPE), _reader(line))
-    assert suppressed == []
-    assert len(kept) == 1
-
-
-def test_unreadable_line_fails_closed():
-    """No evidence for the exemption → no exemption."""
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(None))
-    assert suppressed == []
-    assert len(kept) == 1
-
-
-def test_malformed_finding_is_kept_not_dropped():
-    """The gate must never lose a finding it cannot parse."""
-    kept, suppressed = ssl_.partition_findings(
-        {_ARTIFACT: [{"type": _HEX_TYPE}]}, _reader(f'  "head_sha": "{_SHA}",\n')
-    )
-    assert suppressed == []
-    assert len(kept) == 1
-
-
 @pytest.mark.parametrize("field", ssl_._SHA_FIELDS)
-def test_every_allowlisted_sha_field_is_covered(field):
+def test_every_allowlisted_field_is_covered(field):
+    text = json.dumps({field: _SHA, "step": 7}, indent=2) + "\n"
     kept, suppressed = ssl_.partition_findings(
-        _results(_ARTIFACT, 3, _HEX_TYPE), _reader(f'  "{field}": "{_SHA}",\n')
+        _results(_ARTIFACT, _line_of(text, field), _HEX_TYPE), _reader(text)
     )
     assert kept == [], field
     assert len(suppressed) == 1, field
 
 
-@pytest.mark.parametrize("field", ["sha", "commit_sha", "parent_sha", "sha1"])
-def test_unlisted_sha_like_fields_are_kept(field):
+@pytest.mark.parametrize("field", ["sha", "commit_sha", "parent_sha", "api_token"])
+def test_unlisted_top_level_fields_are_kept(field):
     """An explicit allowlist, not a `*_sha` family pattern.
 
-    The family pattern was the first attempt here, on the reasoning that a new
-    range field would otherwise re-block the pipeline. That trade is backwards:
-    an unlisted field fails as a VISIBLE gate failure someone then fixes in
-    SUPPRESSIONS, whereas a too-permissive pattern is a silent bypass.
+    An unlisted field fails as a VISIBLE gate failure someone then fixes in
+    SUPPRESSIONS; a loose pattern would be a silent bypass.
     """
+    text = json.dumps({field: _SHA, "step": 7}, indent=2) + "\n"
     kept, suppressed = ssl_.partition_findings(
-        _results(_ARTIFACT, 3, _HEX_TYPE), _reader(f'  "{field}": "{_SHA}",\n')
+        _results(_ARTIFACT, _line_of(text, field), _HEX_TYPE), _reader(text)
     )
     assert suppressed == [], field
     assert len(kept) == 1, field
 
 
-# --------------------------------------------------------------------------- #
-# Adversarial cases from this change's own cross-vendor second review          #
-# (codex, CWE-693). Both were exploitable in the first implementation.         #
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        # A leaked credential sharing the physical line with a legitimate SHA.
-        '  "head_sha": "%s", "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae",\n' % _SHA,
-        '  "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae", "head_sha": "%s",\n' % _SHA,
-        '{"head_sha": "%s", "leaked": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}\n' % _SHA,
-    ],
-)
-def test_mixed_line_is_never_suppressed(line):
-    """detect-secrets reports per LINE, not per token.
-
-    So a substring match for a `*_sha` field cannot tell WHICH value on the
-    line was flagged, and would drop a leaked credential that merely shares a
-    line with a legitimate `head_sha`. The predicate therefore requires the
-    whole line to be that one property and nothing else.
-    """
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(line))
+def test_same_shape_outside_a_validator_artifact_is_kept():
+    """Condition: the path. A config file is not exempt."""
+    text = _artifact_text()
+    kept, suppressed = ssl_.partition_findings(
+        _results("config/app.json", _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
+    )
     assert suppressed == []
     assert len(kept) == 1
 
@@ -196,20 +138,164 @@ def test_paths_outside_the_exact_artifact_shape_are_kept(path):
     A crafted file at a deeper or differently-named path must not inherit the
     exemption just because it sits under signoffs/validators/.
     """
+    text = _artifact_text()
     kept, suppressed = ssl_.partition_findings(
-        _results(path, 2, _HEX_TYPE), _reader(f'  "head_sha": "{_SHA}",\n')
+        _results(path, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert suppressed == [], path
     assert len(kept) == 1, path
 
 
-def test_leading_dot_slash_paths_match(monkeypatch, tmp_path):
-    """The full-project scan emits `./`-prefixed paths; the glob must still hit."""
+@pytest.mark.parametrize(
+    "type_", ["AWS Access Key", "Private Key", "Base64 High Entropy String", "Secret Keyword"]
+)
+def test_other_detectors_are_never_suppressed(type_):
+    """AC-2. Only the one benign detector is in scope, even on the exempt line."""
+    text = _artifact_text()
     kept, suppressed = ssl_.partition_findings(
-        _results(f"./{_ARTIFACT}", 2, _HEX_TYPE), _reader(f'  "head_sha": "{_SHA}",\n')
+        _results(_ARTIFACT, _line_of(text, "head_sha"), type_), _reader(text)
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_findings_on_other_lines_are_kept():
+    """A planted credential elsewhere in the artifact keeps its finding."""
+    text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    kept, suppressed = ssl_.partition_findings(
+        _results(_ARTIFACT, _line_of(text, "leaked"), _HEX_TYPE), _reader(text)
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial cases from this change's own cross-vendor second review          #
+# (codex, CWE-693). Each was exploitable in an earlier revision of this file.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_nested_key_named_head_sha_is_not_exempt():
+    """The invariant is the TOP-LEVEL field, not any line that looks like one.
+
+    A validator summary embeds changeset-derived content, so a 40-hex value
+    could reach a nested key. Round 2 of the review found that a line-shape
+    check suppressed it.
+    """
+    text = (
+        json.dumps(
+            {
+                "head_sha": _SHA,
+                "results": [{"head_sha": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    nested_line = _line_of(text, "a5cd90d8")
+    kept, suppressed = ssl_.partition_findings(
+        _results(_ARTIFACT, nested_line, _HEX_TYPE), _reader(text)
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_duplicate_key_deeper_in_the_file_cannot_stand_in():
+    """Only the line whose value matches the PARSED document is exempt.
+
+    With a duplicate top-level key, `json` keeps the last; the earlier line
+    must not be exempted on the strength of the later one.
+    """
+    text = (
+        '{\n  "head_sha": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae",\n  "head_sha": "%s"\n}\n'
+        % _SHA
+    )
+    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(text))
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"head_sha": "%s", "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}\n' % _SHA,
+        '{"api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae", "head_sha": "%s"}\n' % _SHA,
+    ],
+)
+def test_mixed_line_is_never_suppressed(text):
+    """detect-secrets reports per LINE, not per token.
+
+    A rule that matched a `head_sha` substring could not tell WHICH value on
+    the line was flagged, and dropped a leaked credential sharing that line.
+    """
+    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_braces_inside_strings_do_not_confuse_depth_tracking():
+    """Evidence snippets in the artifact contain code, and code contains braces."""
+    text = json.dumps({"note": "def f() { return '{'; }", "head_sha": _SHA}, indent=2) + "\n"
+    kept, suppressed = ssl_.partition_findings(
+        _results(_ARTIFACT, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert kept == []
     assert len(suppressed) == 1
+
+
+@pytest.mark.parametrize(
+    "text", ["not json at all\n", "[]\n", '"a string"\n', '{"head_sha": "short"}\n', ""]
+)
+def test_unparseable_or_unexpected_document_suppresses_nothing(text):
+    """No confirmable evidence → no exemption."""
+    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_unreadable_file_fails_closed():
+    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(None))
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_malformed_finding_is_kept_not_dropped():
+    """The gate must never lose a finding it cannot parse."""
+    kept, suppressed = ssl_.partition_findings(
+        {_ARTIFACT: [{"type": _HEX_TYPE}]}, _reader(_artifact_text())
+    )
+    assert suppressed == []
+    assert len(kept) == 1
+
+
+def test_leading_dot_slash_paths_match():
+    """The full-project scan emits `./`-prefixed paths; the rule must still hit."""
+    text = _artifact_text()
+    kept, suppressed = ssl_.partition_findings(
+        _results(f"./{_ARTIFACT}", _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
+    )
+    assert kept == []
+    assert len(suppressed) == 1
+
+
+def test_file_is_read_once_per_path():
+    """The artifact is ~2,000 lines; re-reading it per finding is wasteful."""
+    text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    calls: list[str] = []
+
+    def reader(path: str) -> str:
+        calls.append(path)
+        return text
+
+    results = {
+        _ARTIFACT: [
+            {"type": _HEX_TYPE, "line_number": _line_of(text, "head_sha")},
+            {"type": _HEX_TYPE, "line_number": _line_of(text, "leaked")},
+        ]
+    }
+    kept, suppressed = ssl_.partition_findings(results, reader)
+    assert calls == [_ARTIFACT]
+    assert len(kept) == 1 and len(suppressed) == 1
 
 
 # --------------------------------------------------------------------------- #

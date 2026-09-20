@@ -58,53 +58,127 @@ import re
 import sys
 from typing import Callable, Iterable, NamedTuple
 
-# The suppressible line shape: a WHOLE line that is exactly one allowlisted SHA
-# property. Both halves of that matter, and both were findings in this change's
-# own cross-vendor review (codex, CWE-693):
+# The invariant being exempted is narrow and specific: **the top-level
+# `head_sha`/`base_sha` metadata field of a committed validator artifact**. Each
+# tightening below came from this change's own cross-vendor second review
+# (codex, CWE-693), and each closed a real bypass in the version before it:
 #
-#   * Anchored `^...$`, not a substring search. detect-secrets reports findings
-#     per LINE, not per token, so a substring match would suppress ANY
-#     high-entropy finding that merely shares a line with a legitimate
-#     `head_sha` — e.g. `"head_sha": "<sha>", "api_token": "<40 hex>"` on one
-#     physical line. The rule cannot tell which token was flagged, so it must
-#     refuse unless the line holds nothing else.
+#   1. A substring match for a `*_sha` field. detect-secrets reports findings
+#      per LINE, not per token, so this could not tell WHICH value on the line
+#      was flagged: `"head_sha": "<sha>", "api_token": "<40 hex>"` on one
+#      physical line suppressed the leaked token.
+#   2. An anchored whole-line match, still with a `\w*_?sha` family pattern.
+#      A family pattern was chosen so a future range field would not re-block
+#      the pipeline — a backwards trade. An unlisted field fails as a VISIBLE
+#      gate failure someone then fixes in SUPPRESSIONS; a loose pattern is a
+#      silent bypass.
+#   3. An anchored whole-line match against an explicit field allowlist. Still
+#      only a PROXY for the invariant: a 40-hex secret placed under a NESTED
+#      key that happens to be named `head_sha` — anywhere in a ~2,000-line
+#      artifact that embeds changeset-derived content — inherited the
+#      exemption.
 #
-#   * An explicit field allowlist, not a `\w*_?sha` family pattern. A family
-#     pattern was the first attempt, reasoning that a future range field would
-#     otherwise re-block the pipeline. That trade is backwards: an unlisted
-#     field fails as a VISIBLE gate failure someone then fixes here, whereas a
-#     too-permissive pattern is a silent bypass. Fail closed; add the field.
+# So the check now binds to the invariant directly: parse the artifact, find
+# which lines its TOP-LEVEL SHA fields occupy, and suppress only findings on
+# exactly those lines, only when the value on the line is the one the parsed
+# document carries. Nesting depth is computed from the raw text (string-aware),
+# because the exemption is about a line number and `json.load` discards them.
 _SHA_FIELDS = ("head_sha", "base_sha", "merge_base_sha")
-_SHA_FIELD_RE = re.compile(
-    r'^\s*"(?:' + "|".join(_SHA_FIELDS) + r')"\s*:\s*"[0-9a-f]{40}"\s*,?\s*$'
+_SHA_LINE_RE = re.compile(
+    r'^\s*"(?P<field>' + "|".join(_SHA_FIELDS) + r')"\s*:\s*"(?P<value>[0-9a-f]{40})"\s*,?\s*$'
 )
 
 
+def _line_depths(text: str) -> list[int]:
+    """Depth of the JSON container each line OPENS in, ignoring braces in strings.
+
+    Returns one entry per line; `1` marks a line sitting directly inside the
+    document's root object. Written by hand because `json` discards positions
+    and the exemption is fundamentally about a line number.
+    """
+    depths: list[int] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    for line in text.splitlines():
+        depths.append(depth)
+        for ch in line:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\" and in_string:
+                escaped = True
+            elif ch == '"':
+                in_string = not in_string
+            elif not in_string and ch in "{[":
+                depth += 1
+            elif not in_string and ch in "}]":
+                depth -= 1
+        escaped = False
+    return depths
+
+
+def top_level_sha_lines(text: str) -> dict[int, str]:
+    """Map 1-indexed line number → field name for the artifact's top-level SHAs.
+
+    Empty (so: nothing suppressible) unless ALL of the following hold, because
+    a suppression that applies when its own evidence is missing is a fail-open:
+
+      * the text parses as JSON and its root is an object,
+      * the line sits at depth 1 — directly inside that root object,
+      * the line is nothing but one allowlisted SHA property, and
+      * the value on the line is exactly what the parsed document holds for
+        that key, so a duplicate key deeper in the file cannot stand in for it.
+
+    Pure: takes text, returns a mapping.
+    """
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(document, dict):
+        return {}
+
+    depths = _line_depths(text)
+    found: dict[int, str] = {}
+    for index, line in enumerate(text.splitlines()):
+        if depths[index] != 1:
+            continue
+        match = _SHA_LINE_RE.match(line)
+        if match is None:
+            continue
+        field = match.group("field")
+        if document.get(field) != match.group("value"):
+            continue
+        found[index + 1] = field
+    return found
+
+
 class Suppression(NamedTuple):
-    """One narrowly-scoped exemption. All three conditions must hold."""
+    """One narrowly-scoped exemption. Every condition must hold."""
 
     # An anchored regex, NOT an fnmatch glob: fnmatch's `*` matches `/` too, so
     # `signoffs/validators/*/summary.json` would also admit
-    # `signoffs/validators/a/b/summary.json` — a wider surface than the artifact
-    # path this exempts (codex, CWE-693, in this change's own second review).
+    # `signoffs/validators/a/b/summary.json` — a wider surface than the one
+    # artifact path this exempts (codex, CWE-693).
     path_re: "re.Pattern[str]"
     finding_type: str
-    line_predicate: Callable[[str], bool]
+    # text → {line number: what makes that line exempt}. Receives the whole
+    # file because the invariant is a document-structure property, not a
+    # line-local one.
+    exempt_lines: Callable[[str], dict[int, str]]
     reason: str
-
-
-def _is_sha_field_line(line: str) -> bool:
-    return bool(_SHA_FIELD_RE.search(line))
 
 
 SUPPRESSIONS: tuple[Suppression, ...] = (
     Suppression(
         path_re=re.compile(r"^signoffs/validators/step[0-9]+/summary\.json$"),
         finding_type="Hex High Entropy String",
-        line_predicate=_is_sha_field_line,
+        exempt_lines=top_level_sha_lines,
         reason=(
-            "committed validator artifact: a git SHA in a `*_sha` field is an "
-            "artifact fingerprint the overseer verifies (#555, #1754), not a secret"
+            "committed validator artifact: the top-level `{field}` is an artifact "
+            "fingerprint the overseer verifies against the commit's parent "
+            "(#555, #1754), not a secret"
         ),
     ),
 )
@@ -122,48 +196,54 @@ class Suppressed(NamedTuple):
 
 
 def _normalize(path: str) -> str:
-    """Strip a leading `./` so the full-project scan's paths match the globs."""
+    """Strip a leading `./` so the full-project scan's paths match the rules."""
     return path[2:] if path.startswith("./") else path
 
 
-def _matching_rule(
+def _suppression_for(
     finding: Finding,
-    line: str | None,
+    text: str | None,
     rules: Iterable[Suppression],
-) -> Suppression | None:
+) -> tuple[Suppression, str] | None:
+    """Return (rule, field) when every condition holds, else None."""
     path = _normalize(finding.path)
     for rule in rules:
         if not rule.path_re.match(path):
             continue
         if finding.type != rule.finding_type:
             continue
-        # Fail CLOSED on an unreadable line: if we cannot confirm the flagged
-        # text is the benign shape, the finding stands. A suppression that
-        # applies when its own evidence is missing is a fail-open.
-        if line is None or not rule.line_predicate(line):
+        # Fail CLOSED on an unreadable file: without the evidence we cannot
+        # confirm the flagged line is the benign shape, so the finding stands.
+        if text is None:
             continue
-        return rule
+        field = rule.exempt_lines(text).get(finding.line_number)
+        if field is None:
+            continue
+        return rule, field
     return None
 
 
 def partition_findings(
     results: dict,
-    line_reader: Callable[[str, int], str | None],
+    text_reader: Callable[[str], str | None],
     rules: Iterable[Suppression] = SUPPRESSIONS,
 ) -> tuple[list[Finding], list[Suppressed]]:
     """Split detect-secrets `results` into (kept, suppressed).
 
     `results` is the `results` object of a detect-secrets scan: a mapping of
-    path → list of finding dicts. `line_reader(path, line_number)` returns that
-    source line, or None when it cannot be read.
+    path → list of finding dicts. `text_reader(path)` returns that file's full
+    text, or None when it cannot be read; it is called at most once per path.
 
-    Pure apart from whatever `line_reader` does. A malformed finding entry is
+    Pure apart from whatever `text_reader` does. A malformed finding entry is
     KEPT rather than dropped — the gate must not lose a finding it cannot parse.
     """
     kept: list[Finding] = []
     suppressed: list[Suppressed] = []
 
     for path, findings in sorted((results or {}).items()):
+        text: str | None = None
+        text_read = False
+
         for raw in findings or []:
             try:
                 finding = Finding(
@@ -175,11 +255,16 @@ def partition_findings(
                 kept.append(Finding(path=path, line_number=-1, type=str(raw)[:80]))
                 continue
 
-            rule = _matching_rule(finding, line_reader(finding.path, finding.line_number), rules)
-            if rule is None:
+            if not text_read:
+                text = text_reader(path)
+                text_read = True
+
+            match = _suppression_for(finding, text, rules)
+            if match is None:
                 kept.append(finding)
             else:
-                suppressed.append(Suppressed(finding, rule.reason))
+                rule, field = match
+                suppressed.append(Suppressed(finding, rule.reason.format(field=field)))
 
     return kept, suppressed
 
@@ -189,15 +274,12 @@ def partition_findings(
 # --------------------------------------------------------------------------- #
 
 
-def _file_line_reader(path: str, line_number: int) -> str | None:
+def _file_text_reader(path: str) -> str | None:
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            for i, line in enumerate(fh, start=1):
-                if i == line_number:
-                    return line
+            return fh.read()
     except OSError:
         return None
-    return None
 
 
 def _cmd_filter(_args: argparse.Namespace) -> int:
@@ -223,7 +305,7 @@ def _cmd_filter(_args: argparse.Namespace) -> int:
         )
         return 2
 
-    kept, suppressed = partition_findings(results, _file_line_reader)
+    kept, suppressed = partition_findings(results, _file_text_reader)
 
     # Print suppressions FIRST and always — before any pass/fail line, so they
     # are visible on a passing run too, not only when something else fails.
