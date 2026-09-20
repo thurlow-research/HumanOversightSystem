@@ -24,6 +24,7 @@ absent, matching tests/oversight/test_scan_gates_empty_args.py.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -57,6 +58,17 @@ def _reader(text: str | None):
     return lambda _path: text
 
 
+def _verifier(*known: str):
+    """A sha_verifier accepting only `known` SHAs; defaults to the real one."""
+    allowed = set(known) or {_SHA}
+    return lambda value: value in allowed
+
+
+def _partition(results, reader, verifier=None):
+    """partition_findings with a verifier that accepts the canonical SHA."""
+    return ssl_.partition_findings(results, reader, sha_verifier=verifier or _verifier())
+
+
 def _artifact_text(**fields: object) -> str:
     """A realistic artifact: `head_sha` first, as run_validators.sh writes it."""
     body = {"head_sha": _SHA, "artifact_version": "1", "step": 7}
@@ -78,7 +90,7 @@ def _line_of(text: str, needle: str) -> int:
 
 def test_top_level_head_sha_is_suppressed():
     text = _artifact_text()
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert kept == []
@@ -90,14 +102,16 @@ def test_top_level_head_sha_is_suppressed():
 @pytest.mark.parametrize("field", ssl_._SHA_FIELDS)
 def test_every_allowlisted_field_is_covered(field):
     text = json.dumps({field: _SHA, "step": 7}, indent=2) + "\n"
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, field), _HEX_TYPE), _reader(text)
     )
     assert kept == [], field
     assert len(suppressed) == 1, field
 
 
-@pytest.mark.parametrize("field", ["sha", "commit_sha", "parent_sha", "api_token"])
+@pytest.mark.parametrize(
+    "field", ["sha", "commit_sha", "parent_sha", "api_token", "base_sha", "merge_base_sha"]
+)
 def test_unlisted_top_level_fields_are_kept(field):
     """An explicit allowlist, not a `*_sha` family pattern.
 
@@ -105,7 +119,7 @@ def test_unlisted_top_level_fields_are_kept(field):
     SUPPRESSIONS; a loose pattern would be a silent bypass.
     """
     text = json.dumps({field: _SHA, "step": 7}, indent=2) + "\n"
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, field), _HEX_TYPE), _reader(text)
     )
     assert suppressed == [], field
@@ -115,7 +129,7 @@ def test_unlisted_top_level_fields_are_kept(field):
 def test_same_shape_outside_a_validator_artifact_is_kept():
     """Condition: the path. A config file is not exempt."""
     text = _artifact_text()
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results("config/app.json", _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert suppressed == []
@@ -139,7 +153,7 @@ def test_paths_outside_the_exact_artifact_shape_are_kept(path):
     exemption just because it sits under signoffs/validators/.
     """
     text = _artifact_text()
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(path, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert suppressed == [], path
@@ -152,7 +166,7 @@ def test_paths_outside_the_exact_artifact_shape_are_kept(path):
 def test_other_detectors_are_never_suppressed(type_):
     """AC-2. Only the one benign detector is in scope, even on the exempt line."""
     text = _artifact_text()
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, "head_sha"), type_), _reader(text)
     )
     assert suppressed == []
@@ -162,7 +176,7 @@ def test_other_detectors_are_never_suppressed(type_):
 def test_findings_on_other_lines_are_kept():
     """A planted credential elsewhere in the artifact keeps its finding."""
     text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, "leaked"), _HEX_TYPE), _reader(text)
     )
     assert suppressed == []
@@ -193,9 +207,7 @@ def test_nested_key_named_head_sha_is_not_exempt():
         + "\n"
     )
     nested_line = _line_of(text, "a5cd90d8")
-    kept, suppressed = ssl_.partition_findings(
-        _results(_ARTIFACT, nested_line, _HEX_TYPE), _reader(text)
-    )
+    kept, suppressed = _partition(_results(_ARTIFACT, nested_line, _HEX_TYPE), _reader(text))
     assert suppressed == []
     assert len(kept) == 1
 
@@ -210,7 +222,7 @@ def test_duplicate_key_deeper_in_the_file_cannot_stand_in():
         '{\n  "head_sha": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae",\n  "head_sha": "%s"\n}\n'
         % _SHA
     )
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(text))
+    kept, suppressed = _partition(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(text))
     assert suppressed == []
     assert len(kept) == 1
 
@@ -228,7 +240,7 @@ def test_mixed_line_is_never_suppressed(text):
     A rule that matched a `head_sha` substring could not tell WHICH value on
     the line was flagged, and dropped a leaked credential sharing that line.
     """
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
+    kept, suppressed = _partition(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
     assert suppressed == []
     assert len(kept) == 1
 
@@ -236,7 +248,7 @@ def test_mixed_line_is_never_suppressed(text):
 def test_braces_inside_strings_do_not_confuse_depth_tracking():
     """Evidence snippets in the artifact contain code, and code contains braces."""
     text = json.dumps({"note": "def f() { return '{'; }", "head_sha": _SHA}, indent=2) + "\n"
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert kept == []
@@ -248,22 +260,20 @@ def test_braces_inside_strings_do_not_confuse_depth_tracking():
 )
 def test_unparseable_or_unexpected_document_suppresses_nothing(text):
     """No confirmable evidence → no exemption."""
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
+    kept, suppressed = _partition(_results(_ARTIFACT, 1, _HEX_TYPE), _reader(text))
     assert suppressed == []
     assert len(kept) == 1
 
 
 def test_unreadable_file_fails_closed():
-    kept, suppressed = ssl_.partition_findings(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(None))
+    kept, suppressed = _partition(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(None))
     assert suppressed == []
     assert len(kept) == 1
 
 
 def test_malformed_finding_is_kept_not_dropped():
     """The gate must never lose a finding it cannot parse."""
-    kept, suppressed = ssl_.partition_findings(
-        {_ARTIFACT: [{"type": _HEX_TYPE}]}, _reader(_artifact_text())
-    )
+    kept, suppressed = _partition({_ARTIFACT: [{"type": _HEX_TYPE}]}, _reader(_artifact_text()))
     assert suppressed == []
     assert len(kept) == 1
 
@@ -271,7 +281,7 @@ def test_malformed_finding_is_kept_not_dropped():
 def test_leading_dot_slash_paths_match():
     """The full-project scan emits `./`-prefixed paths; the rule must still hit."""
     text = _artifact_text()
-    kept, suppressed = ssl_.partition_findings(
+    kept, suppressed = _partition(
         _results(f"./{_ARTIFACT}", _line_of(text, "head_sha"), _HEX_TYPE), _reader(text)
     )
     assert kept == []
@@ -293,7 +303,7 @@ def test_file_is_read_once_per_path():
             {"type": _HEX_TYPE, "line_number": _line_of(text, "leaked")},
         ]
     }
-    kept, suppressed = ssl_.partition_findings(results, reader)
+    kept, suppressed = _partition(results, reader)
     assert calls == [_ARTIFACT]
     assert len(kept) == 1 and len(suppressed) == 1
 
@@ -316,9 +326,10 @@ def _run_filter(stdin: str, cwd: Path) -> subprocess.CompletedProcess:
 
 def test_cli_reports_every_suppression(tmp_path):
     """AC-3 — suppression is never silent, including on a passing run."""
+    head = _init_repo(tmp_path)
     artifact = tmp_path / _ARTIFACT
-    artifact.parent.mkdir(parents=True)
-    artifact.write_text('{\n  "head_sha": "%s"\n}\n' % _SHA)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text('{\n  "head_sha": "%s"\n}\n' % head)
 
     result = _run_filter(json.dumps({"results": _results(_ARTIFACT, 2, _HEX_TYPE)}), tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -344,10 +355,41 @@ def test_cli_fails_closed_on_unparseable_scan_output(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def _fixture_artifact(tmp_path: Path, extra: dict | None = None) -> Path:
+def _init_repo(tmp_path: Path) -> str:
+    """A throwaway repo with one commit; returns its SHA.
+
+    The gate verifies a candidate `head_sha` against real git state, so these
+    end-to-end tests need a real object to point at — a hardcoded SHA would
+    (correctly) fail to resolve and suppress nothing.
+    """
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    run = lambda *a: subprocess.run(  # noqa: E731
+        a, cwd=str(tmp_path), check=True, capture_output=True, env=env, timeout=60
+    )
+    run("git", "init", "-q")
+    (tmp_path / "seed.txt").write_text("seed\n")
+    run("git", "add", "seed.txt")
+    run("git", "commit", "-qm", "seed")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+
+
+def _fixture_artifact(tmp_path: Path, head: str, extra: dict | None = None) -> Path:
     artifact = tmp_path / _ARTIFACT
     artifact.parent.mkdir(parents=True, exist_ok=True)
-    body = {"head_sha": _SHA, "artifact_version": "1", "step": 7, "tier": "LOW"}
+    body = {"head_sha": head, "artifact_version": "1", "step": 7, "tier": "LOW"}
     body.update(extra or {})
     artifact.write_text(json.dumps(body, indent=2))
     return artifact
@@ -366,7 +408,7 @@ def _run_gate(tmp_path: Path) -> subprocess.CompletedProcess:
 @pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
 def test_gate_passes_a_clean_validator_artifact(tmp_path):
     """AC-1/AC-4 — the artifact the overseer requires no longer fails the gate."""
-    _fixture_artifact(tmp_path)
+    _fixture_artifact(tmp_path, _init_repo(tmp_path))
     result = _run_gate(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "GATE PASS" in result.stdout
@@ -376,12 +418,30 @@ def test_gate_passes_a_clean_validator_artifact(tmp_path):
 @pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
 def test_gate_still_fails_on_a_planted_key_in_the_same_artifact(tmp_path):
     """AC-2 end to end — the file stays in the scan, it is not skipped."""
-    _fixture_artifact(tmp_path, {"leaked": "AKIAIOSFODNN7EXAMPLE"})  # pragma: allowlist secret
+    head = _init_repo(tmp_path)
+    _fixture_artifact(
+        tmp_path, head, {"leaked": "AKIAIOSFODNN7EXAMPLE"}
+    )  # pragma: allowlist secret
     result = _run_gate(tmp_path)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE FAIL" in result.stdout
     # The benign one is still reported as suppressed alongside the real failure.
     assert "suppressed" in result.stdout
+
+
+@pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
+def test_gate_rejects_a_head_sha_that_is_not_a_real_commit(tmp_path):
+    """The last proxy closed: SHA-shaped is not the same as being a SHA.
+
+    A 40-hex credential parked in the one exempted field must still fail,
+    because the gate now checks the value against git rather than trusting
+    that some other stage verified it.
+    """
+    _init_repo(tmp_path)
+    _fixture_artifact(tmp_path, "a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    result = _run_gate(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "suppressed" not in result.stdout
 
 
 @pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")

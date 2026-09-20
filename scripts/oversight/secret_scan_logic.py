@@ -26,8 +26,9 @@ So the suppression here is keyed on all three of:
   1. the path matching `signoffs/validators/step<N>/summary.json` exactly
      (an anchored regex — an fnmatch glob's `*` would cross `/`),
   2. the detector type being the one the known-benign shape provokes, and
-  3. the flagged LINE being nothing but one allowlisted `*_sha` property
-     holding a bare 40-hex value.
+  3. the flagged LINE being nothing but the artifact's top-level `head_sha`
+     property, and
+  4. that value resolving to a real commit object in this repository.
 
 Every other detector (AWS keys, private keys, JWTs, base64 high entropy) still
 runs against the artifact, and a 40-hex string anywhere other than an
@@ -55,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from typing import Callable, Iterable, NamedTuple
 
@@ -83,7 +85,14 @@ from typing import Callable, Iterable, NamedTuple
 # exactly those lines, only when the value on the line is the one the parsed
 # document carries. Nesting depth is computed from the raw text (string-aware),
 # because the exemption is about a line number and `json.load` discards them.
-_SHA_FIELDS = ("head_sha", "base_sha", "merge_base_sha")
+#   4. An allowlist of `head_sha`, `base_sha`, `merge_base_sha`, with no check
+#      that the value is a real git object. `head_sha` is the only field
+#      `run_validators.sh` actually writes; the other two were speculative
+#      future-proofing, i.e. two extra author-controlled hiding places bought
+#      for a problem nobody has. And "the overseer verifies this field" was
+#      doing the security work while THIS gate verified nothing — so the value
+#      is now checked against real git state here, where it is relied on.
+_SHA_FIELDS = ("head_sha",)
 _SHA_LINE_RE = re.compile(
     r'^\s*"(?P<field>' + "|".join(_SHA_FIELDS) + r')"\s*:\s*"(?P<value>[0-9a-f]{40})"\s*,?\s*$'
 )
@@ -118,8 +127,8 @@ def _line_depths(text: str) -> list[int]:
     return depths
 
 
-def top_level_sha_lines(text: str) -> dict[int, str]:
-    """Map 1-indexed line number → field name for the artifact's top-level SHAs.
+def top_level_sha_lines(text: str) -> dict[int, tuple[str, str]]:
+    """Map 1-indexed line number → (field name, value) for top-level SHA fields.
 
     Empty (so: nothing suppressible) unless ALL of the following hold, because
     a suppression that applies when its own evidence is missing is a fail-open:
@@ -140,7 +149,7 @@ def top_level_sha_lines(text: str) -> dict[int, str]:
         return {}
 
     depths = _line_depths(text)
-    found: dict[int, str] = {}
+    found: dict[int, tuple[str, str]] = {}
     for index, line in enumerate(text.splitlines()):
         if depths[index] != 1:
             continue
@@ -150,7 +159,7 @@ def top_level_sha_lines(text: str) -> dict[int, str]:
         field = match.group("field")
         if document.get(field) != match.group("value"):
             continue
-        found[index + 1] = field
+        found[index + 1] = (field, match.group("value"))
     return found
 
 
@@ -163,10 +172,9 @@ class Suppression(NamedTuple):
     # artifact path this exempts (codex, CWE-693).
     path_re: "re.Pattern[str]"
     finding_type: str
-    # text → {line number: what makes that line exempt}. Receives the whole
-    # file because the invariant is a document-structure property, not a
-    # line-local one.
-    exempt_lines: Callable[[str], dict[int, str]]
+    # text → {line number: (field, value)}. Receives the whole file because
+    # the invariant is a document-structure property, not a line-local one.
+    exempt_lines: Callable[[str], dict[int, tuple[str, str]]]
     reason: str
 
 
@@ -176,8 +184,8 @@ SUPPRESSIONS: tuple[Suppression, ...] = (
         finding_type="Hex High Entropy String",
         exempt_lines=top_level_sha_lines,
         reason=(
-            "committed validator artifact: the top-level `{field}` is an artifact "
-            "fingerprint the overseer verifies against the commit's parent "
+            "committed validator artifact: the top-level `{field}` resolves to a "
+            "real commit in this repository, so it is an artifact fingerprint "
             "(#555, #1754), not a secret"
         ),
     ),
@@ -204,6 +212,7 @@ def _suppression_for(
     finding: Finding,
     text: str | None,
     rules: Iterable[Suppression],
+    sha_verifier: Callable[[str], bool] | None,
 ) -> tuple[Suppression, str] | None:
     """Return (rule, field) when every condition holds, else None."""
     path = _normalize(finding.path)
@@ -216,8 +225,16 @@ def _suppression_for(
         # confirm the flagged line is the benign shape, so the finding stands.
         if text is None:
             continue
-        field = rule.exempt_lines(text).get(finding.line_number)
-        if field is None:
+        entry = rule.exempt_lines(text).get(finding.line_number)
+        if entry is None:
+            continue
+        field, value = entry
+        # The last proxy: "it is shaped like a git SHA" is not "it IS one".
+        # Without this, an author could park a 40-hex credential in the one
+        # top-level field the gate exempts, and the exemption's justification
+        # ("the overseer verifies it") would be a claim this gate never checks.
+        # No verifier configured is treated as unverifiable, not as verified.
+        if sha_verifier is None or not sha_verifier(value):
             continue
         return rule, field
     return None
@@ -227,14 +244,18 @@ def partition_findings(
     results: dict,
     text_reader: Callable[[str], str | None],
     rules: Iterable[Suppression] = SUPPRESSIONS,
+    sha_verifier: Callable[[str], bool] | None = None,
 ) -> tuple[list[Finding], list[Suppressed]]:
     """Split detect-secrets `results` into (kept, suppressed).
 
     `results` is the `results` object of a detect-secrets scan: a mapping of
     path → list of finding dicts. `text_reader(path)` returns that file's full
     text, or None when it cannot be read; it is called at most once per path.
+    `sha_verifier(value)` says whether a candidate SHA resolves to a real commit
+    in this repository; omitting it suppresses NOTHING, since an unverifiable
+    value must not be exempted.
 
-    Pure apart from whatever `text_reader` does. A malformed finding entry is
+    Pure apart from whatever the two callables do. A malformed finding entry is
     KEPT rather than dropped — the gate must not lose a finding it cannot parse.
     """
     kept: list[Finding] = []
@@ -259,7 +280,7 @@ def partition_findings(
                 text = text_reader(path)
                 text_read = True
 
-            match = _suppression_for(finding, text, rules)
+            match = _suppression_for(finding, text, rules, sha_verifier)
             if match is None:
                 kept.append(finding)
             else:
@@ -280,6 +301,29 @@ def _file_text_reader(path: str) -> str | None:
             return fh.read()
     except OSError:
         return None
+
+
+def _git_commit_exists(sha: str) -> bool:
+    """True when `sha` names a commit object in this repository.
+
+    A leaked credential is not going to be one. Fails closed on every error
+    path — git missing, not a repository, timeout, or the object simply being
+    absent (a shallow clone) — because "we could not check" must never read as
+    "we checked and it was fine". The cost of that is a visible gate failure on
+    a real artifact in a shallow checkout, which is the safe direction and is
+    fixable by fetching.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return False
+    try:
+        completed = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def _cmd_filter(_args: argparse.Namespace) -> int:
@@ -305,7 +349,9 @@ def _cmd_filter(_args: argparse.Namespace) -> int:
         )
         return 2
 
-    kept, suppressed = partition_findings(results, _file_text_reader)
+    kept, suppressed = partition_findings(
+        results, _file_text_reader, sha_verifier=_git_commit_exists
+    )
 
     # Print suppressions FIRST and always — before any pass/fail line, so they
     # are visible on a passing run too, not only when something else fails.
