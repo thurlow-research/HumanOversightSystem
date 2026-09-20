@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"e8fa4a6862c02349ec55d9bc60c99f1bffba9c2f","pr":1780,"reason":"full review already posted for this head SHA (2026-09-20T03:09:47Z, verdict HUMAN_REQUIRED); no new commits, comments, or reviews since"}
