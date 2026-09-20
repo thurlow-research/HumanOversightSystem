@@ -288,6 +288,47 @@ def test_leading_dot_slash_paths_match():
     assert len(suppressed) == 1
 
 
+def test_non_candidate_paths_are_never_opened():
+    """A security gate must not become a file-read primitive.
+
+    detect-secrets output is tool output — data. A crafted baseline naming
+    `../../secrets.env` must not get this gate to open it while deciding what
+    to suppress (codex, CWE-22).
+    """
+    opened: list[str] = []
+
+    def reader(path: str) -> str | None:
+        opened.append(path)
+        return None
+
+    results = {
+        "../../secrets.env": [{"type": _HEX_TYPE, "line_number": 1}],
+        "/etc/shadow": [{"type": _HEX_TYPE, "line_number": 1}],
+        "some/other/file.json": [{"type": _HEX_TYPE, "line_number": 1}],
+    }
+    kept, suppressed = ssl_.partition_findings(results, reader, sha_verifier=_verifier())
+    assert opened == []
+    assert suppressed == []
+    assert len(kept) == 3
+
+
+@pytest.mark.parametrize(
+    "path", ["../../secrets.env", "/etc/passwd", "signoffs/../../../etc/passwd"]
+)
+def test_reader_refuses_paths_outside_the_repository(tmp_path, monkeypatch, path):
+    """The second, independent barrier: the reader contains itself."""
+    monkeypatch.chdir(tmp_path)
+    assert ssl_._file_text_reader(path) is None
+
+
+def test_reader_reads_a_contained_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "a" / "b.json"
+    target.parent.mkdir()
+    target.write_text("hello")
+    assert ssl_._file_text_reader("a/b.json") == "hello"
+
+
 def test_file_is_read_once_per_path():
     """The artifact is ~2,000 lines; re-reading it per finding is wasteful."""
     text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")

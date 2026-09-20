@@ -58,6 +58,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
 
 # The invariant being exempted is narrow and specific: **the top-level
@@ -262,6 +263,16 @@ def partition_findings(
     suppressed: list[Suppressed] = []
 
     for path, findings in sorted((results or {}).items()):
+        # Only open a file some rule could actually exempt. detect-secrets
+        # output is TOOL OUTPUT, i.e. data, and a security gate must treat it
+        # as hostile: a crafted or compromised baseline naming
+        # `../../secrets.env` would otherwise have this gate open it while
+        # deciding what to suppress (codex, CWE-22). Nothing is ever printed
+        # from the contents, but a protected surface should not be a
+        # file-read primitive at all. The candidate rules are also the only
+        # ones consulted below, so this is a narrowing, not a second policy.
+        candidates = [r for r in rules if r.path_re.match(_normalize(path))]
+
         text: str | None = None
         text_read = False
 
@@ -276,11 +287,15 @@ def partition_findings(
                 kept.append(Finding(path=path, line_number=-1, type=str(raw)[:80]))
                 continue
 
+            if not candidates:
+                kept.append(finding)
+                continue
+
             if not text_read:
                 text = text_reader(path)
                 text_read = True
 
-            match = _suppression_for(finding, text, rules, sha_verifier)
+            match = _suppression_for(finding, text, candidates, sha_verifier)
             if match is None:
                 kept.append(finding)
             else:
@@ -296,8 +311,27 @@ def partition_findings(
 
 
 def _file_text_reader(path: str) -> str | None:
+    """Read a scanner-reported path, refusing anything outside the repository.
+
+    `partition_findings` already declines to call this for a path no rule
+    matches, and every rule's `path_re` is anchored to a repo-relative shape —
+    so this containment check is the second of two independent barriers, not
+    the only one. It is here because the argument arrives from tool output: an
+    absolute path, a `..` traversal, or a symlink pointing out of the tree must
+    be refused by the function that does the opening, not only by the caller
+    that happens to filter today (codex, CWE-22).
+    """
+    root = Path.cwd().resolve()
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return None
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        resolved = (root / candidate).resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    try:
+        with open(resolved, encoding="utf-8", errors="replace") as fh:
             return fh.read()
     except OSError:
         return None
