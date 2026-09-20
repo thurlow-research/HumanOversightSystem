@@ -55,6 +55,15 @@ jobs:
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
+        with:
+          # Full history, matching every job in oversight-gates.yml. Not
+          # optional: parts of this suite drive the real gates against real
+          # repo history, and a gate that resolves a committed artifact's
+          # `head_sha` against git (scripts/oversight/secret_scan_logic.py,
+          # #1754) cannot do so in the depth-1 clone actions/checkout gives by
+          # default — the object is simply not in the clone, so the check fails
+          # closed and the gate reports a finding on a required artifact.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5

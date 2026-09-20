@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -47,6 +48,13 @@ ssl_ = load_module_from_path("secret_scan_logic_1754", _LOGIC_PATH)
 _ARTIFACT = "signoffs/validators/step7/summary.json"
 _HEX_TYPE = "Hex High Entropy String"
 _SHA = "8ed0daac85c1745824acfbddab9f3f77591039f8"  # pragma: allowlist secret
+# A second 40-hex value, for the cases that need one which is NOT the
+# artifact's top-level `head_sha`. Hoisted to a constant so the
+# `# pragma: allowlist secret` has one home: this file is itself scanned by the
+# gate it tests, detect-secrets reports every 40-hex literal as a Hex High
+# Entropy String, and the pragma must sit on the flagged line — inline in a
+# `json.dumps({...})` call it lands wherever black last wrapped the argument.
+_NESTED_SHA = "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"  # pragma: allowlist secret
 
 
 def _results(path: str, line_number: int, type_: str) -> dict:
@@ -175,7 +183,7 @@ def test_other_detectors_are_never_suppressed(type_):
 
 def test_findings_on_other_lines_are_kept():
     """A planted credential elsewhere in the artifact keeps its finding."""
-    text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    text = _artifact_text(leaked=_NESTED_SHA)
     kept, suppressed = _partition(
         _results(_ARTIFACT, _line_of(text, "leaked"), _HEX_TYPE), _reader(text)
     )
@@ -200,7 +208,7 @@ def test_nested_key_named_head_sha_is_not_exempt():
         json.dumps(
             {
                 "head_sha": _SHA,
-                "results": [{"head_sha": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}],
+                "results": [{"head_sha": _NESTED_SHA}],
             },
             indent=2,
         )
@@ -218,10 +226,7 @@ def test_duplicate_key_deeper_in_the_file_cannot_stand_in():
     With a duplicate top-level key, `json` keeps the last; the earlier line
     must not be exempted on the strength of the later one.
     """
-    text = (
-        '{\n  "head_sha": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae",\n  "head_sha": "%s"\n}\n'
-        % _SHA
-    )
+    text = '{\n  "head_sha": "%s",\n  "head_sha": "%s"\n}\n' % (_NESTED_SHA, _SHA)
     kept, suppressed = _partition(_results(_ARTIFACT, 2, _HEX_TYPE), _reader(text))
     assert suppressed == []
     assert len(kept) == 1
@@ -230,8 +235,8 @@ def test_duplicate_key_deeper_in_the_file_cannot_stand_in():
 @pytest.mark.parametrize(
     "text",
     [
-        '{"head_sha": "%s", "api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae"}\n' % _SHA,
-        '{"api_token": "a5cd90d8ae66c69755dca4cd38b9a417088b32ae", "head_sha": "%s"}\n' % _SHA,
+        '{"head_sha": "%s", "api_token": "%s"}\n' % (_SHA, _NESTED_SHA),
+        '{"api_token": "%s", "head_sha": "%s"}\n' % (_NESTED_SHA, _SHA),
     ],
 )
 def test_mixed_line_is_never_suppressed(text):
@@ -331,7 +336,7 @@ def test_reader_reads_a_contained_path(tmp_path, monkeypatch):
 
 def test_file_is_read_once_per_path():
     """The artifact is ~2,000 lines; re-reading it per finding is wasteful."""
-    text = _artifact_text(leaked="a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    text = _artifact_text(leaked=_NESTED_SHA)
     calls: list[str] = []
 
     def reader(path: str) -> str:
@@ -427,6 +432,52 @@ def _init_repo(tmp_path: Path) -> str:
     ).stdout.strip()
 
 
+def _git_env() -> dict:
+    return {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+
+def _commit_file(repo: Path, name: str, body: str) -> str:
+    """Add one more commit, so a clone can be shallow enough to miss the first."""
+    (repo / name).write_text(body + "\n")
+    for args in (("add", name), ("commit", "-qm", name)):
+        subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            env=_git_env(),
+            timeout=60,
+        )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+
+
+def _verifier_in(monkeypatch, repo: Path):
+    """A `GitShaVerifier` resolving against `repo`.
+
+    Via chdir rather than a cwd argument, because that is how the real thing
+    works: the CLI shim runs inside the tree the gate was invoked in.
+
+    Unannotated: `ssl_` is loaded at runtime by path (the module lives in
+    scripts/, outside the importable package tree), so mypy cannot resolve a
+    type off it.
+    """
+    monkeypatch.chdir(repo)
+    return ssl_.GitShaVerifier()
+
+
 def _fixture_artifact(tmp_path: Path, head: str, extra: dict | None = None) -> Path:
     artifact = tmp_path / _ARTIFACT
     artifact.parent.mkdir(parents=True, exist_ok=True)
@@ -460,9 +511,12 @@ def test_gate_passes_a_clean_validator_artifact(tmp_path):
 def test_gate_still_fails_on_a_planted_key_in_the_same_artifact(tmp_path):
     """AC-2 end to end — the file stays in the scan, it is not skipped."""
     head = _init_repo(tmp_path)
-    _fixture_artifact(
-        tmp_path, head, {"leaked": "AKIAIOSFODNN7EXAMPLE"}
-    )  # pragma: allowlist secret
+    # Bound to a name first so the pragma stays on the literal's own line.
+    # Inline as a third argument, black wrapped the call and carried the
+    # trailing comment to the closing-paren line, where detect-secrets — which
+    # matches per line — never saw it, and this file tripped its own gate.
+    planted = {"leaked": "AKIAIOSFODNN7EXAMPLE"}  # pragma: allowlist secret
+    _fixture_artifact(tmp_path, head, planted)
     result = _run_gate(tmp_path)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "GATE FAIL" in result.stdout
@@ -479,7 +533,7 @@ def test_gate_rejects_a_head_sha_that_is_not_a_real_commit(tmp_path):
     that some other stage verified it.
     """
     _init_repo(tmp_path)
-    _fixture_artifact(tmp_path, "a5cd90d8ae66c69755dca4cd38b9a417088b32ae")
+    _fixture_artifact(tmp_path, _NESTED_SHA)
     result = _run_gate(tmp_path)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "suppressed" not in result.stdout
@@ -487,7 +541,15 @@ def test_gate_rejects_a_head_sha_that_is_not_a_real_commit(tmp_path):
 
 @pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
 def test_gate_passes_the_artifact_committed_on_main():
-    """AC-4 literally: the file that has been failing this gate on `main`."""
+    """AC-4 literally: the file that has been failing this gate on `main`.
+
+    Branches on the clone rather than skipping, because a skip here is exactly
+    the blind spot that let this ship: the assertion held locally (a complete
+    clone) and the CI job ran it in a depth-1 checkout, where the artifact's
+    commit is absent, the exemption cannot be verified and the gate correctly
+    fails closed. Both are specified behaviour, so both are asserted — and in
+    the shallow case what is asserted is that the gate NAMES the reason.
+    """
     committed = _REPO / "signoffs" / "validators" / "step1" / "summary.json"
     if not committed.exists():
         pytest.skip("no committed validator artifact in this checkout")
@@ -498,4 +560,192 @@ def test_gate_passes_the_artifact_committed_on_main():
         text=True,
         timeout=180,
     )
+    output = result.stdout + result.stderr
+    # Branch on the precise condition the gate branches on — whether THIS
+    # artifact's commit is in THIS object store. "Shallow" alone is too coarse:
+    # a clone can be depth-limited and still hold the commit, which is why the
+    # failure reproduced in CI's depth-1 checkout and not in a developer's
+    # partially-truncated one.
+    head_sha = json.loads(committed.read_text())["head_sha"]
+    if _commit_present(_REPO, head_sha):
+        assert result.returncode == 0, output
+    elif _is_shallow(_REPO):
+        assert result.returncode == 1, output
+        assert "SHALLOW" in result.stdout, output
+        assert "fetch-depth: 0" in result.stdout, output
+    else:
+        pytest.fail(
+            f"{head_sha} names no commit in a complete clone — the committed "
+            f"artifact's head_sha is wrong, not the environment:\n{output}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# The clone the gate runs in (#1754 bounce #1)                                 #
+#                                                                              #
+# Condition 4 resolves the artifact's `head_sha` against the local object      #
+# store. `actions/checkout` fetches depth 1 by default, so in an ordinary CI   #
+# checkout no artifact SHA resolves and the suppression stops applying. Safe   #
+# (fail-closed) but, until this change, silent.                                #
+# --------------------------------------------------------------------------- #
+
+
+def _is_shallow(repo: Path) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.strip()
+        == "true"
+    )
+
+
+def _commit_present(repo: Path, sha: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=str(repo),
+            capture_output=True,
+            timeout=60,
+        ).returncode
+        == 0
+    )
+
+
+def _shallow_clone(tmp_path: Path) -> tuple[Path, str]:
+    """A depth-1 clone of a two-commit repo, plus the SHA it cannot see.
+
+    The returned SHA is a genuine commit in the source repo and genuinely
+    absent from the clone — the exact shape a committed validator artifact has
+    in CI, where `head_sha` names an ancestor of the checked-out tip.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    old = _init_repo(source)
+    _commit_file(source, "second.txt", "second")
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "--depth=1", "--quiet", source.as_uri(), str(clone)],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert _is_shallow(clone)
+    return clone, old
+
+
+def test_verifier_confirms_a_real_commit(tmp_path, monkeypatch):
+    head = _init_repo(tmp_path)
+    verifier = _verifier_in(monkeypatch, tmp_path)
+    assert verifier(head) is True
+    assert verifier.undecidable == []
+
+
+def test_verifier_reports_a_missing_commit_without_a_remedy(tmp_path, monkeypatch):
+    """A complete clone CAN answer, and the answer is no.
+
+    This is the bypass condition 4 exists to catch — a SHA-shaped value that is
+    not a SHA — so it must stay a plain finding about the artifact, with no
+    environment remedy attached to soften it.
+    """
+    _init_repo(tmp_path)
+    verifier = _verifier_in(monkeypatch, tmp_path)
+    assert verifier(_NESTED_SHA) is False
+    assert verifier.undecidable == []
+
+
+def test_verifier_marks_a_shallow_clone_undecidable(tmp_path, monkeypatch):
+    """Same False, different meaning — and the difference is now recorded."""
+    clone, unreachable = _shallow_clone(tmp_path)
+    verifier = _verifier_in(monkeypatch, clone)
+    assert verifier(unreachable) is False
+    assert verifier.undecidable == [ssl_.Undecided(unreachable, "shallow")]
+
+
+def test_verifier_marks_an_unusable_git_undecidable(tmp_path, monkeypatch):
+    """No git is not evidence the value is bad, and must not read as such."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    verifier = _verifier_in(monkeypatch, tmp_path)
+    assert verifier(_SHA) is False
+    assert [item.cause for item in verifier.undecidable] == ["git-unavailable"]
+
+
+def test_undecidable_entries_are_deduplicated(tmp_path, monkeypatch):
+    """A ~2,000-line artifact can flag one SHA many times; say it once."""
+    clone, unreachable = _shallow_clone(tmp_path)
+    verifier = _verifier_in(monkeypatch, clone)
+    for _ in range(4):
+        verifier(unreachable)
+    assert len(verifier.undecidable) == 1
+
+
+def test_every_cause_the_verifier_emits_has_a_remedy():
+    """The CLI indexes UNDECIDABLE_REMEDY by cause — a gap would be a KeyError.
+
+    That would turn a gate failure into a crash at the exact moment the gate is
+    trying to explain itself, so the two are pinned together here.
+    """
+    source = Path(ssl_.__file__).read_text()
+    emitted = set(re.findall(r'_record\([^,]+, "([a-z-]+)"\)', source))
+    assert emitted
+    assert emitted <= set(ssl_.UNDECIDABLE_REMEDY)
+
+
+def test_a_non_sha_shaped_value_is_never_called_undecidable(tmp_path, monkeypatch):
+    """Rejected on shape alone — git is never asked, so nothing is unresolved."""
+    _init_repo(tmp_path)
+    verifier = _verifier_in(monkeypatch, tmp_path)
+    assert verifier("not-a-sha") is False
+    assert verifier.undecidable == []
+
+
+@pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
+def test_gate_in_a_shallow_clone_fails_closed_and_says_why(tmp_path):
+    """The bounce, end to end: fail-closed is fine; unexplained is not."""
+    clone, unreachable = _shallow_clone(tmp_path)
+    _fixture_artifact(clone, unreachable)
+    result = _run_gate(clone)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "suppressed" not in result.stdout, output
+    # Names the cause, not just the symptom, and carries the fix.
+    assert "SHALLOW" in result.stdout, output
+    assert "fetch-depth: 0" in result.stdout, output
+    assert "git fetch --unshallow" in result.stdout, output
+
+
+@pytest.mark.skipif(not _DETECT_SECRETS, reason="detect-secrets not installed")
+def test_this_file_passes_the_gate_it_tests():
+    """Fixtures for a secret-scan gate get scanned by that gate.
+
+    Both 40-hex values and the planted AWS key here are inert test data, and
+    each carries `# pragma: allowlist secret` on its own line — which is the
+    only place detect-secrets looks, since it matches per line. That is easy to
+    get wrong by accident: black reflows a call and carries the trailing comment
+    to the closing-paren line, away from the literal, and the pragma stops
+    applying while still reading as if it does. Exactly that shipped in #1778
+    and was caught by CI rather than here.
+    """
+    result = subprocess.run(
+        ["bash", str(_GATE), "tests/oversight/test_secret_scan_validator_artifact.py"],
+        cwd=str(_REPO),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_tests_workflow_checks_out_full_history():
+    """The environment half of the fix, pinned against config drift.
+
+    `.github/workflows/tests.yml` runs this suite, which drives the real gate
+    against real repo history. Restoring the actions/checkout default would
+    make the test above pass (it branches on shallowness) while the gate it
+    guards is broken for every PR — so the workflow is asserted directly.
+    """
+    workflow = (_REPO / ".github" / "workflows" / "tests.yml").read_text()
+    assert "fetch-depth: 0" in workflow

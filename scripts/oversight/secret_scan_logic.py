@@ -45,6 +45,17 @@ a gate must not quietly decline to do its job). Every suppressed finding is
 printed with its path, line and the rule that suppressed it, and the count is
 repeated in the gate's summary line.
 
+Neither is NON-suppression, which is the same requirement read the other way.
+Condition 4 needs the artifact's commit to be in the local object store, and
+`actions/checkout` fetches depth 1 unless told otherwise — so in an ordinary CI
+checkout every real artifact SHA fails to resolve and the rule stops applying.
+That is fail-closed and therefore safe, but on its own it is invisible: the
+gate fails on exactly the required artifact it was changed to stop failing on,
+and says only "Hex High Entropy String". `GitShaVerifier` separates "git says
+this is not a commit" from "git could not be asked", and the CLI prints the
+second with its remedy, so a suppression that stops working announces that it
+has.
+
 PURITY
 ------
 `partition_findings` performs no I/O — the caller supplies a `line_reader`. Only
@@ -337,27 +348,120 @@ def _file_text_reader(path: str) -> str | None:
         return None
 
 
-def _git_commit_exists(sha: str) -> bool:
-    """True when `sha` names a commit object in this repository.
+class Undecided(NamedTuple):
+    """One SHA the verifier could not rule on, and why."""
 
-    A leaked credential is not going to be one. Fails closed on every error
-    path — git missing, not a repository, timeout, or the object simply being
-    absent (a shallow clone) — because "we could not check" must never read as
-    "we checked and it was fine". The cost of that is a visible gate failure on
-    a real artifact in a shallow checkout, which is the safe direction and is
-    fixable by fetching.
+    sha: str
+    cause: str
+
+
+# Keyed by `Undecided.cause`. Each is a remedy for the OPERATOR, because an
+# undecidable result is a defect in the environment, not in the artifact.
+UNDECIDABLE_REMEDY: dict[str, str] = {
+    "shallow": (
+        "this clone is SHALLOW, so the artifact's commit object is simply not "
+        "here and the exemption cannot be verified. `actions/checkout` fetches "
+        "depth 1 unless told otherwise — set `fetch-depth: 0` on the checkout "
+        "step (as every job in .github/workflows/oversight-gates.yml already "
+        "does), or run `git fetch --unshallow` before the gate."
+    ),
+    "git-unavailable": (
+        "git could not be run here, so no candidate SHA can be verified at all. "
+        "Run the gate inside a git working tree, with git on PATH."
+    ),
+    "unknown-depth": (
+        "git could not report whether this clone is shallow, so a genuinely "
+        "missing commit cannot be told apart from a shallow checkout. Check "
+        "`git rev-parse --is-shallow-repository` in this working tree."
+    ),
+}
+
+
+class GitShaVerifier:
+    """Does this 40-hex value name a commit in this repository?
+
+    THREE outcomes, not two — collapsing the last two is the defect this class
+    exists to prevent:
+
+      verified     git resolved it to a commit object.
+      absent       git is healthy, the clone is complete, and no such object
+                   exists. The value is SHA-SHAPED but is not a SHA, which is
+                   the bypass condition 4 was added to catch.
+      undecidable  git could not be asked, or the clone is shallow, so the
+                   object is legitimately not present.
+
+    All three decline to suppress: the gate stays fail-closed, and this class
+    never widens what is exempted. What changes is what the operator is told.
+    `absent` is a finding about the ARTIFACT — someone parked a 40-hex value in
+    the one exempted field and it is not a commit. `undecidable` is a finding
+    about the ENVIRONMENT, and it carries a one-line remedy.
+
+    That distinction is not cosmetic. `actions/checkout` defaults to
+    `fetch-depth: 1`, so a shallow clone is the NORMAL state of a CI checkout,
+    and in one every real artifact SHA reads as absent. With both outcomes
+    printing the same nothing, #1754's fix appeared to work locally (full
+    clone) and silently did not in CI — the gate failed on exactly the required
+    artifact it was changed to stop failing on, giving no hint why. A gate that
+    quietly stops doing its job is the failure mode #1643/#1750 are about; so
+    is one that fails loudly for a reason it declines to name.
+
+    Instances are callable, so this drops straight into `partition_findings`'
+    `sha_verifier` slot and that function stays pure.
     """
-    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+
+    _SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+    def __init__(self, timeout: int = 15) -> None:
+        self.timeout = timeout
+        # Populated as a side effect of verification; read by the caller after
+        # partitioning, so one diagnostic is printed per run rather than per
+        # finding. Deduplicated: a ~2,000-line artifact can produce many
+        # findings that all turn on the same SHA.
+        self.undecidable: list[Undecided] = []
+        self._shallow_checked = False
+        self._shallow: bool | None = None
+
+    def __call__(self, sha: str) -> bool:
+        if not self._SHA_RE.fullmatch(sha):
+            return False
+        completed = self._git("cat-file", "-e", f"{sha}^{{commit}}")
+        if completed is None:
+            self._record(sha, "git-unavailable")
+            return False
+        if completed.returncode == 0:
+            return True
+        # Non-zero means "not an object HERE", which is not the same as "not an
+        # object". Ask what kind of "here" this is before reporting it.
+        shallow = self._is_shallow()
+        if shallow is None:
+            self._record(sha, "unknown-depth")
+        elif shallow:
+            self._record(sha, "shallow")
         return False
-    try:
-        completed = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-            capture_output=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return completed.returncode == 0
+
+    def _record(self, sha: str, cause: str) -> None:
+        entry = Undecided(sha, cause)
+        if entry not in self.undecidable:
+            self.undecidable.append(entry)
+
+    def _is_shallow(self) -> bool | None:
+        """True/False, or None when git would not answer. Asked at most once."""
+        if self._shallow_checked:
+            return self._shallow
+        self._shallow_checked = True
+        completed = self._git("rev-parse", "--is-shallow-repository")
+        if completed is not None and completed.returncode == 0:
+            answer = completed.stdout.decode("utf-8", "replace").strip()
+            if answer in ("true", "false"):
+                self._shallow = answer == "true"
+        return self._shallow
+
+    def _git(self, *args: str) -> subprocess.CompletedProcess | None:
+        """Run a git command; None when it could not be run at all."""
+        try:
+            return subprocess.run(["git", *args], capture_output=True, timeout=self.timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
 
 
 def _cmd_filter(_args: argparse.Namespace) -> int:
@@ -383,9 +487,21 @@ def _cmd_filter(_args: argparse.Namespace) -> int:
         )
         return 2
 
-    kept, suppressed = partition_findings(
-        results, _file_text_reader, sha_verifier=_git_commit_exists
-    )
+    verifier = GitShaVerifier()
+    kept, suppressed = partition_findings(results, _file_text_reader, sha_verifier=verifier)
+
+    # Print the environment diagnostic FIRST, ahead of the findings it explains.
+    # Without it the gate fails on a required artifact naming only the artifact,
+    # and the actual cause — a depth-1 CI checkout — is invisible.
+    if verifier.undecidable:
+        print(
+            f"  NOTE: {len(verifier.undecidable)} candidate SHA(s) could not be "
+            "verified against git, so the known-benign-shape rule declined to "
+            "suppress. Any finding below on a validator artifact's `head_sha` is "
+            "UNVERIFIED, not necessarily a secret:"
+        )
+        for cause in dict.fromkeys(item.cause for item in verifier.undecidable):
+            print(f"    - {UNDECIDABLE_REMEDY[cause]}")
 
     # Print suppressions FIRST and always — before any pass/fail line, so they
     # are visible on a passing run too, not only when something else fails.

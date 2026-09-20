@@ -89,9 +89,49 @@ both from running the real gate rather than from the prompt:
   `*_sha` field holding a bare 40-hex value. Verified by planting a distinct
   high-entropy 40-hex value under `api_token` in a copy of the real artifact
   and confirming it still fails while `head_sha` is suppressed.
-- The field-name pattern was widened from a literal `head_sha` to the `*_sha`
-  family, so a future range field (`base_sha`, already written by some
-  artifacts) does not silently re-block the pipeline.
+- The field-name pattern was briefly widened from a literal `head_sha` to the
+  `*_sha` family, so a future range field would not silently re-block the
+  pipeline. Cross-vendor second review (codex) called that a backwards trade —
+  an unlisted field fails as a *visible* gate failure someone then fixes, while
+  a loose pattern is a silent bypass — and it was reverted. `_SHA_FIELDS` is
+  the single literal `head_sha`, the only field `run_validators.sh` writes.
+- The same review round replaced the line-shape check with one bound to the
+  document structure (top-level key, value matching the parsed document), and
+  added a fourth condition: the value must resolve to a real commit object.
+  Without it, "SHA-shaped" was standing in for "is a SHA", and the stated
+  justification ("the overseer verifies this field") was security work no
+  layer actually did at this gate.
+
+**Round 2 — after overseer bounce #1 (2026-09-20).** The PR was returned with
+`tests` red in CI. Condition 4 resolves the artifact's `head_sha` against the
+local object store; `.github/workflows/tests.yml` used `actions/checkout@v4`
+with no `fetch-depth`, so CI cloned at depth 1 and the artifact's commit was
+absent. The verification failed closed, the finding was not suppressed, and the
+gate failed on exactly the required artifact this change exists to unblock —
+i.e. AC-1 and AC-4 held only in a complete clone.
+
+Fail-closed was the right direction and is unchanged. What was wrong is that it
+was *silent*: "git says this is not a commit" and "git could not be asked"
+produced the same output, so the gate named a symptom it declined to explain —
+the very shape AC-3 forbids for suppressions, read in the other direction.
+Two changes, one per half of the defect:
+
+- `GitShaVerifier` replaces the boolean `_git_commit_exists` with three
+  outcomes (verified / absent / undecidable) and records the undecidable ones.
+  The CLI prints them with an operator remedy before the findings they explain.
+  Still fail-closed; nothing new is ever suppressed.
+- `tests.yml` checks out with `fetch-depth: 0`, matching every job in
+  `oversight-gates.yml`. Pinned by a test asserting the workflow says so, since
+  the behavioural test branches on the clone and would otherwise pass while the
+  gate it guards was broken for every PR.
+
+Also fixed in the same round: this change's own test file tripped the
+`oversight-gate-secret-scan` job. A nested 40-hex fixture carried no
+`# pragma: allowlist secret`, and on the planted-AWS-key fixture black had
+wrapped the call so the pragma landed on the closing-paren line, where
+detect-secrets — which matches per line — never saw it. Both 40-hex fixtures
+are now module constants carrying the pragma on their own line, and a
+regression test runs the real gate over this test file.
 
 One defect was found in the code being replaced and fixed in passing: the
 inline count used `|| echo "0"`, so a detect-secrets output that failed to
@@ -119,7 +159,8 @@ To verify this prompt still produces equivalent output in a new session:
 1. Open a fresh Claude Code session
 2. Paste the prompt above verbatim
 3. Compare key logic paths against `scripts/oversight/secret_scan_logic.py` —
-   in particular that all three suppression conditions are present, that an
-   unreadable line fails closed, and that an unparseable baseline is a gate
-   failure rather than a zero count
+   in particular that all four suppression conditions are present, that an
+   unreadable line fails closed, that an unparseable baseline is a gate failure
+   rather than a zero count, and that a SHA which cannot be verified is
+   reported differently from one git says is not a commit
 4. Note any drift in a new version artifact (`secret_scan_logic.v1.md`)
