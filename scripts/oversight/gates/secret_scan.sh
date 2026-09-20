@@ -62,12 +62,34 @@ if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
         -not -path "./.git/*")
 fi
 
-# Validation stamps carry a 64-hex-char content-fingerprint `hash:` line by
-# design (verified by check_validation_current.sh) — detect-secrets flags it
-# as a Hex High Entropy String. This is a known non-secret shape, not a scan
-# gap: skip stamp files regardless of how they arrived (explicit CI args,
-# --staged, or the full-project default), since CI passes changed files
-# explicitly and bypasses the extension filters above. (#1572)
+# ── Known-benign high-entropy shapes: one policy, two mechanisms ────────────
+#
+# Some committed artifacts carry hex fingerprints BY DESIGN, and detect-secrets
+# reports every one as a Hex High Entropy String. Both cases below are the same
+# policy — "a fingerprint the pipeline itself writes and verifies is not a
+# secret" — and the mechanism differs only by how much coverage the exemption
+# costs.
+#
+#   1. WHOLE-FILE SKIP (#1572) — scripts/framework/validation-stamps/*.stamp.
+#      A stamp is a handful of short, fixed fields built around a 64-hex
+#      content fingerprint (verified by check_validation_current.sh). Skipping
+#      the file forgoes almost no coverage, so the cheap mechanism is
+#      proportionate. Skipped regardless of how it arrived (explicit CI args,
+#      --staged, or the full-project default), since CI passes changed files
+#      explicitly and bypasses the extension filters above.
+#
+#   2. FINDING-LEVEL SUPPRESSION (#1754) — signoffs/validators/*/summary.json.
+#      This artifact is REQUIRED (overseer.md step 3b fail-closes to
+#      HUMAN_REQUIRED without it) and its 40-hex `head_sha` is checked against
+#      the artifact commit's parent — so the gate was failing on a file the
+#      pipeline demands, and had been for as long as one has been on `main`.
+#      A whole-file skip is NOT proportionate here: the artifact runs to ~2,000
+#      lines and quotes file paths and code evidence from the changeset, which
+#      is exactly where a real credential could land. So the file stays in the
+#      scan and only the specific benign finding is dropped — see
+#      scripts/oversight/secret_scan_logic.py, which requires the path, the
+#      detector type AND the flagged line's shape to match before suppressing,
+#      and prints every suppression it makes.
 FILTERED_FILES=()
 if [[ ${#FILES[@]} -gt 0 ]]; then
     for f in "${FILES[@]}"; do
@@ -106,20 +128,19 @@ if [[ -n "$DETECT_SECRETS" ]]; then
             exit 1
         fi
         BASELINE=$(cat "$DS_TMP"); rm -f "$DS_TMP"
-        SECRET_COUNT=$(echo "$BASELINE" | PYTHONSAFEPATH=1 "$PARSE_PY" -c \
-            "import json,sys; d=json.load(sys.stdin); \
-             total=sum(len(v) for v in d.get('results',{}).values()); print(total)" 2>/dev/null || echo "0")
-        if [[ "$SECRET_COUNT" -gt 0 ]]; then
-            echo "GATE FAIL: $SECRET_COUNT potential secret(s) detected:"
-            echo "$BASELINE" | PYTHONSAFEPATH=1 "$PARSE_PY" -c \
-                "import json,sys
-d=json.load(sys.stdin)
-for fpath, findings in d.get('results',{}).items():
-    for f in findings:
-        print(f'  {fpath}:{f[\"line_number\"]} — {f[\"type\"]}')" 2>/dev/null || true
+        # Counting, reporting and known-benign-shape suppression live in a named,
+        # unit-testable module (#314 policy: logic in Python, shell for launch).
+        # The shell still decides pass/fail, from the module's exit status.
+        #
+        # Exit 2 = the scan output could not be parsed. That used to be
+        # `|| echo "0"` — an unreadable scan counted zero secrets and the gate
+        # PASSED, the same report-success-having-checked-nothing shape #1750 and
+        # #1759 are about. It is now a gate failure.
+        SCAN_FILTER="$_GATES_DIR/../secret_scan_logic.py"
+        SCAN_STATUS=0
+        echo "$BASELINE" | PYTHONSAFEPATH=1 "$PARSE_PY" "$SCAN_FILTER" filter || SCAN_STATUS=$?
+        if [[ "$SCAN_STATUS" -ne 0 ]]; then
             ERRORS=$((ERRORS + 1))
-        else
-            echo "OK: no secrets detected"
         fi
     else
         echo "No files to scan"
