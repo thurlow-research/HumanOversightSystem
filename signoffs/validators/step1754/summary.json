@@ -1,0 +1,1110 @@
+{
+  "head_sha": "161d51b762b2fb2be29c9d7f5383779942ccd457",
+  "head_sha_source": "git_head_fallback",
+  "artifact_version": "1",
+  "step": 1754,
+  "written_at": "2026-09-20T02:10:40Z",
+  "composite_score": 0.4009,
+  "tier": "MEDIUM",
+  "validator_count": 13,
+  "successful_validators": 13,
+  "results": [
+    {
+      "dimension": "complexity",
+      "score": 0.7143,
+      "raw_value": {
+        "max_cyclomatic": 11,
+        "mean_cyclomatic": 3.28,
+        "high_complexity_functions": [
+          "_line_depths",
+          "partition_findings"
+        ],
+        "min_maintainability_index": 40.8,
+        "maintainability_concern": true,
+        "parse_errors": []
+      },
+      "weight": 0.08,
+      "evidence": [
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 102,
+          "message": "cyclomatic=11 \u2014 _line_depths()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 244,
+          "message": "cyclomatic=11 \u2014 partition_findings()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 212,
+          "message": "cyclomatic=8 \u2014 _suppression_for()",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 363,
+          "message": "cyclomatic=8 \u2014 _cmd_filter()",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 131,
+          "message": "cyclomatic=7 \u2014 top_level_sha_lines()",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "_line_depths() \u2014 cyclomatic=11: verify all independent paths have test coverage",
+        "partition_findings() \u2014 cyclomatic=11: verify all independent paths have test coverage"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "diff_size",
+      "score": 0.0,
+      "raw_value": {
+        "changed_lines": 1113,
+        "changed_files": 5,
+        "floor_rule_fired": "changed_lines",
+        "domain_count": 2,
+        "domains_detected": [
+          "other",
+          "scripts"
+        ],
+        "thresholds": {
+          "diff_size_floor": 400,
+          "file_count_floor": 15,
+          "domain_split_threshold": 3
+        }
+      },
+      "weight": 0.0,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": "HIGH"
+    },
+    {
+      "dimension": "function_metrics",
+      "score": 0.0217,
+      "raw_value": {
+        "total_functions": 46,
+        "long_functions": 1,
+        "high_param_count": 0,
+        "deeply_nested": 1,
+        "many_return_paths": 0,
+        "parse_errors": []
+      },
+      "weight": 0.07,
+      "evidence": [
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 244,
+          "message": "partition_findings(): lines=62",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 102,
+          "message": "_line_depths(): nesting=6",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "partition_findings() \u2014 62 lines: can this be decomposed into smaller units?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "hallucination_surface",
+      "score": 0.0,
+      "raw_value": {
+        "version_sensitive_count": 0,
+        "findings": [],
+        "parse_errors": []
+      },
+      "weight": 0.06,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "historical_density",
+      "score": 0.79,
+      "raw_value": {
+        "issue_count": 9,
+        "issues": [
+          {
+            "number": 1754,
+            "title": "secret_scan rejects the committed validator artifact the overseer requires \u2014 every MEDIUM+ PR fails oversight-gate-secret_scan",
+            "label": "bug",
+            "file": "scripts/oversight/gates/secret_scan.sh"
+          },
+          {
+            "number": 1698,
+            "title": "bug: docs/planning/README.md milestone numbering is two cascades stale \u2014 documented triage rule silently files testability work into Sandboxing & Isolation",
+            "label": "bug",
+            "file": "SCRIPTS-INDEX.md"
+          },
+          {
+            "number": 1674,
+            "title": "bug: diff_size tier floor is blind to untracked files \u2014 a new-files-only slice scored 2 lines instead of 2,573 and the HIGH floor never fired",
+            "label": "bug",
+            "file": "SCRIPTS-INDEX.md"
+          },
+          {
+            "number": 1572,
+            "title": "bug: secret_scan gate in CI flags validation-stamp hash lines as secrets \u2014 blocks every PR that adds a stamp (regression from #1548)",
+            "label": "bug",
+            "file": "scripts/oversight/gates/secret_scan.sh"
+          },
+          {
+            "number": 1380,
+            "title": "security: untrusted PR requirements*.txt is pip-installed during gate execution \u2014 code execution from reviewed content",
+            "label": "bug",
+            "file": "scripts/oversight/gates/secret_scan.sh"
+          },
+          {
+            "number": 976,
+            "title": "[AI: audit] bug: security_scan.sh + secret_scan.sh silently PASS when invoked with zero file arguments",
+            "label": "bug",
+            "file": "scripts/oversight/gates/secret_scan.sh"
+          },
+          {
+            "number": 1680,
+            "title": "security: characterize the CLI's safe-command auto-approval class \u2014 unlisted commands chained onto an allowed prefix run with zero denials on both postures",
+            "label": "security-finding",
+            "file": "SCRIPTS-INDEX.md"
+          },
+          {
+            "number": 1678,
+            "title": "architect (#1643): CRITICAL \u2014 a prefix-matched Bash allowlist grants arbitrary code execution via argument injection; postures are either exploitable or inert",
+            "label": "security-finding",
+            "file": "SCRIPTS-INDEX.md"
+          },
+          {
+            "number": 1460,
+            "title": "LIL: transport security is aspirational prose \u2014 mandate private overlay, enforce auth, protect the token",
+            "label": "spec-gap",
+            "file": "scripts/oversight/gates/secret_scan.sh"
+          }
+        ],
+        "churn": {
+          "SCRIPTS-INDEX.md": 6,
+          "prompts/scripts/oversight/secret_scan_logic.md": 1,
+          "scripts/oversight/gates/secret_scan.sh": 2,
+          "scripts/oversight/secret_scan_logic.py": 5,
+          "tests/oversight/test_secret_scan_validator_artifact.py": 5
+        },
+        "gh_status": "ok",
+        "gh_failed_labels": 0,
+        "note": "empty on new projects \u2014 accumulates value over time"
+      },
+      "weight": 0.12,
+      "evidence": [
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "[bug] #1754: secret_scan rejects the committed validator artifact the overseer requires \u2014 every MEDIUM+ PR fails oversight-gate-secret_scan",
+          "severity": "medium"
+        },
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "[bug] #1698: bug: docs/planning/README.md milestone numbering is two cascades stale \u2014 documented triage rule silently files testability work into Sandboxing & Isolation",
+          "severity": "medium"
+        },
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "[bug] #1674: bug: diff_size tier floor is blind to untracked files \u2014 a new-files-only slice scored 2 lines instead of 2,573 and the HIGH floor never fired",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "[bug] #1572: bug: secret_scan gate in CI flags validation-stamp hash lines as secrets \u2014 blocks every PR that adds a stamp (regression from #1548)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "[bug] #1380: security: untrusted PR requirements*.txt is pip-installed during gate execution \u2014 code execution from reviewed content",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "[bug] #976: [AI: audit] bug: security_scan.sh + secret_scan.sh silently PASS when invoked with zero file arguments",
+          "severity": "medium"
+        },
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "[security-finding] #1680: security: characterize the CLI's safe-command auto-approval class \u2014 unlisted commands chained onto an allowed prefix run with zero denials on both postures",
+          "severity": "high"
+        },
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "[security-finding] #1678: architect (#1643): CRITICAL \u2014 a prefix-matched Bash allowlist grants arbitrary code execution via argument injection; postures are either exploitable or inert",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "[spec-gap] #1460: LIL: transport security is aspirational prose \u2014 mandate private overlay, enforce auth, protect the token",
+          "severity": "medium"
+        },
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "high churn: 6 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 0,
+          "message": "high churn: 5 commits in 90 days",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 0,
+          "message": "high churn: 5 commits in 90 days",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "9 historical issue(s) reference these files \u2014 review prior bugs before approving similar logic.",
+        "SCRIPTS-INDEX.md: 6 commits in 90 days \u2014 high churn may indicate persistent complexity."
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "ip_check",
+      "score": 0.6,
+      "raw_value": {
+        "dependency_findings": [],
+        "prompt_findings": [
+          {
+            "file": "SCRIPTS-INDEX.md",
+            "prompt_artifact": "prompts/scripts/oversight/secret_scan_logic.md",
+            "trigger": "taken from",
+            "severity": "medium",
+            "category": "attribution-trigger",
+            "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible."
+          },
+          {
+            "file": "prompts/scripts/oversight/secret_scan_logic.md",
+            "prompt_artifact": "prompts/scripts/oversight/secret_scan_logic.md",
+            "trigger": "taken from",
+            "severity": "medium",
+            "category": "attribution-trigger",
+            "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible."
+          },
+          {
+            "file": "scripts/oversight/gates/secret_scan.sh",
+            "prompt_artifact": "prompts/scripts/oversight/secret_scan_logic.md",
+            "trigger": "taken from",
+            "severity": "medium",
+            "category": "attribution-trigger",
+            "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible."
+          },
+          {
+            "file": "scripts/oversight/secret_scan_logic.py",
+            "prompt_artifact": "prompts/scripts/oversight/secret_scan_logic.md",
+            "trigger": "taken from",
+            "severity": "medium",
+            "category": "attribution-trigger",
+            "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible."
+          },
+          {
+            "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+            "prompt_artifact": "prompts/scripts/oversight/secret_scan_logic.md",
+            "trigger": "taken from",
+            "severity": "medium",
+            "category": "attribution-trigger",
+            "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible."
+          }
+        ],
+        "regurgitation": {
+          "stub": true,
+          "integration_active": false,
+          "planned_tool": "ai-gen-code-search (AboutCode) REST API \u2014 LSH snippet matching against FOSS index",
+          "status": "awaiting API access from AboutCode (hello@aboutcode.org)",
+          "files_checked": 5,
+          "ip_regurgitation_enabled_env": false,
+          "message": "Regurgitation lens (Level 3) is NOT YET ACTIVE \u2014 requires AboutCode API access. A clean result here is NOT evidence against code regurgitation. ScanCode is available (Level 1 active)."
+        },
+        "high_count": 0,
+        "medium_count": 5,
+        "cleanroom_positive_count": 0,
+        "note": "A clean result is NOT an IP clearance. Regurgitation lens is a stub (Level 3 not yet implemented). Route any ELEVATED findings to legal/counsel \u2014 not legal advice."
+      },
+      "weight": 0.08,
+      "evidence": [
+        {
+          "file": "SCRIPTS-INDEX.md",
+          "line": 0,
+          "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible.",
+          "severity": "medium"
+        },
+        {
+          "file": "prompts/scripts/oversight/secret_scan_logic.md",
+          "line": 0,
+          "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible.",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 0,
+          "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible.",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 0,
+          "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible.",
+          "severity": "medium"
+        },
+        {
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 0,
+          "message": "Prompt references external code ('taken from'). Verify attribution obligations are met and license is compatible.",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "\u2696\ufe0f SCRIPTS-INDEX.md: prompt references external code \u2014 verify attribution notice is preserved in source and docs",
+        "\u2696\ufe0f prompts/scripts/oversight/secret_scan_logic.md: prompt references external code \u2014 verify attribution notice is preserved in source and docs",
+        "\u2696\ufe0f scripts/oversight/gates/secret_scan.sh: prompt references external code \u2014 verify attribution notice is preserved in source and docs",
+        "\u2696\ufe0f scripts/oversight/secret_scan_logic.py: prompt references external code \u2014 verify attribution notice is preserved in source and docs",
+        "\u2696\ufe0f tests/oversight/test_secret_scan_validator_artifact.py: prompt references external code \u2014 verify attribution notice is preserved in source and docs"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "migration_risk",
+      "score": 0.0,
+      "raw_value": {
+        "note": "no migration files in changeset"
+      },
+      "weight": 0.12,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "n1_queries",
+      "score": 0.25,
+      "raw_value": {
+        "candidate_count": 2,
+        "locations": [
+          {
+            "file": "scripts/oversight/secret_scan_logic.py",
+            "line": 161,
+            "loop_depth": 1,
+            "attr": "get"
+          },
+          {
+            "file": "scripts/oversight/secret_scan_logic.py",
+            "line": 229,
+            "loop_depth": 1,
+            "attr": "get"
+          }
+        ],
+        "parse_errors": []
+      },
+      "weight": 0.08,
+      "evidence": [
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 161,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 229,
+          "message": "potential N+1: .get() inside loop (depth=1)",
+          "severity": "medium"
+        }
+      ],
+      "checklist_items": [
+        "N+1 candidates found \u2014 verify each ORM call inside a loop uses select_related() or prefetch_related() on the queryset that feeds the loop.",
+        "  secret_scan_logic.py:161 \u2014 .get() inside loop: is this queryset prefetched upstream?",
+        "  secret_scan_logic.py:229 \u2014 .get() inside loop: is this queryset prefetched upstream?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "portability",
+      "score": 0.0,
+      "raw_value": {
+        "finding_count": 0
+      },
+      "weight": 0.06,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "prompt_ambiguity",
+      "score": 0.25,
+      "raw_value": {
+        "ambiguity_score": 0.25,
+        "fidelity_surface_score": 0.2,
+        "ambiguity_signals": [
+          "normative language (reduces ambiguity)",
+          "33 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+        ],
+        "fidelity_signals": [
+          "2 function(s) in code not mentioned in prompt: reader, reader",
+          "2 function(s) in code not mentioned in prompt: top_level_sha_lines, partition_findings"
+        ],
+        "process_signals": [
+          "33 spec-gap issue(s) on record \u2014 historical spec ambiguity"
+        ],
+        "missing_artifacts": [],
+        "files_with_artifacts": 2
+      },
+      "weight": 0.07,
+      "evidence": [
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 0,
+          "message": "Fidelity surface: 2 function(s) in code not mentioned in prompt: top_level_sha_lines, partition_findings",
+          "severity": "low"
+        },
+        {
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 0,
+          "message": "Fidelity surface: 2 function(s) in code not mentioned in prompt: reader, reader",
+          "severity": "low"
+        }
+      ],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "risk_number",
+      "score": 1.0,
+      "raw_value": {
+        "max_rn": 25.1,
+        "mean_rn": 1.85,
+        "high_risk_functions": [
+          "_line_depths",
+          "top_level_sha_lines",
+          "_suppression_for",
+          "partition_findings",
+          "_cmd_filter"
+        ],
+        "function_count": 46,
+        "parse_errors": [],
+        "task_class": "fix",
+        "task_class_source": "commit_prefix",
+        "floor_applied": false,
+        "pre_floor_tier": "CRITICAL",
+        "post_floor_tier": "CRITICAL"
+      },
+      "weight": 0.18,
+      "evidence": [
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 102,
+          "message": "RN=25.1 \u2014 _line_depths()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 244,
+          "message": "RN=20.0 \u2014 partition_findings()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 212,
+          "message": "RN=12.0 \u2014 _suppression_for()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 131,
+          "message": "RN=9.0 \u2014 top_level_sha_lines()",
+          "severity": "high"
+        },
+        {
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 363,
+          "message": "RN=8.0 \u2014 _cmd_filter()",
+          "severity": "high"
+        }
+      ],
+      "checklist_items": [
+        "_line_depths:123 \u2014 can this condition be both true and false as expected?",
+        "_line_depths:123 \u2014 are all branches (including implicit else) handled?",
+        "_line_depths:119 \u2014 can this condition be both true and false as expected?",
+        "_line_depths:119 \u2014 are all branches (including implicit else) handled?",
+        "_line_depths:116 \u2014 can this condition be both true and false as expected?",
+        "_line_depths:116 \u2014 are all branches (including implicit else) handled?",
+        "partition_findings:286 \u2014 is the exception caught at the right granularity (not bare `except`)?",
+        "partition_findings:290 \u2014 can this condition be both true and false as expected?",
+        "partition_findings:290 \u2014 are all branches (including implicit else) handled?",
+        "partition_findings:294 \u2014 can this condition be both true and false as expected?",
+        "partition_findings:294 \u2014 are all branches (including implicit else) handled?",
+        "_suppression_for:238 \u2014 can this condition be both true and false as expected?",
+        "_suppression_for:238 \u2014 are all branches (including implicit else) handled?",
+        "_suppression_for:221 \u2014 can this condition be both true and false as expected?",
+        "_suppression_for:221 \u2014 are all branches (including implicit else) handled?",
+        "_suppression_for:223 \u2014 can this condition be both true and false as expected?",
+        "_suppression_for:223 \u2014 are all branches (including implicit else) handled?"
+      ],
+      "findings": [
+        {
+          "function": "_line_depths",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 102,
+          "risk_number": 25.1,
+          "top_statements": [
+            {
+              "line": 123,
+              "type": "If",
+              "rn": 9.1,
+              "nesting_depth": 4
+            },
+            {
+              "line": 119,
+              "type": "If",
+              "rn": 5.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 116,
+              "type": "If",
+              "rn": 4.0,
+              "nesting_depth": 2
+            }
+          ]
+        },
+        {
+          "function": "partition_findings",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 244,
+          "risk_number": 20.0,
+          "top_statements": [
+            {
+              "line": 286,
+              "type": "ExceptHandler",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 290,
+              "type": "If",
+              "rn": 4.0,
+              "nesting_depth": 2
+            },
+            {
+              "line": 294,
+              "type": "If",
+              "rn": 4.0,
+              "nesting_depth": 2
+            }
+          ]
+        },
+        {
+          "function": "_suppression_for",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 212,
+          "risk_number": 12.0,
+          "top_statements": [
+            {
+              "line": 238,
+              "type": "If",
+              "rn": 3.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 221,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 223,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "top_level_sha_lines",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 131,
+          "risk_number": 9.0,
+          "top_statements": [
+            {
+              "line": 155,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 158,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 161,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            }
+          ]
+        },
+        {
+          "function": "_cmd_filter",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 363,
+          "risk_number": 8.0,
+          "top_statements": [
+            {
+              "line": 394,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 402,
+              "type": "For",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 375,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_file_text_reader",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 313,
+          "risk_number": 4.0,
+          "top_statements": [
+            {
+              "line": 326,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 331,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 334,
+              "type": "With",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_line_of",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 79,
+          "risk_number": 3.0,
+          "top_statements": [
+            {
+              "line": 81,
+              "type": "If",
+              "rn": 2.0,
+              "nesting_depth": 1
+            },
+            {
+              "line": 80,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_git_commit_exists",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 340,
+          "risk_number": 2.0,
+          "top_statements": [
+            {
+              "line": 350,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            },
+            {
+              "line": 358,
+              "type": "ExceptHandler",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_cli_fails_closed_on_unparseable_scan_output",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 382,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 388,
+              "type": "For",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "test_gate_passes_the_artifact_committed_on_main",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 489,
+          "risk_number": 1.0,
+          "top_statements": [
+            {
+              "line": 492,
+              "type": "If",
+              "rn": 1.0,
+              "nesting_depth": 0
+            }
+          ]
+        },
+        {
+          "function": "_normalize",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 207,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "main",
+          "file": "scripts/oversight/secret_scan_logic.py",
+          "line": 411,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_results",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 52,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_reader",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 56,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_verifier",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 61,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_partition",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 67,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_artifact_text",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 72,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_top_level_head_sha_is_suppressed",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 91,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_every_allowlisted_field_is_covered",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 103,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_unlisted_top_level_fields_are_kept",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 115,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_same_shape_outside_a_validator_artifact_is_kept",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 129,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_paths_outside_the_exact_artifact_shape_are_kept",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 149,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_other_detectors_are_never_suppressed",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 166,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_findings_on_other_lines_are_kept",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 176,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_nested_key_named_head_sha_is_not_exempt",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 192,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_duplicate_key_deeper_in_the_file_cannot_stand_in",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 215,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_mixed_line_is_never_suppressed",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 237,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_braces_inside_strings_do_not_confuse_depth_tracking",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 248,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_unparseable_or_unexpected_document_suppresses_nothing",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 261,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_unreadable_file_fails_closed",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 268,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_malformed_finding_is_kept_not_dropped",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 274,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_leading_dot_slash_paths_match",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 281,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_non_candidate_paths_are_never_opened",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 291,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "reader",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 300,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_reader_refuses_paths_outside_the_repository",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 318,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_reader_reads_a_contained_path",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 324,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_file_is_read_once_per_path",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 332,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "reader",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 337,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_run_filter",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 357,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_cli_reports_every_suppression",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 368,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_init_repo",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 399,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_fixture_artifact",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 430,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "_run_gate",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 439,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_gate_passes_a_clean_validator_artifact",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 450,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_gate_still_fails_on_a_planted_key_in_the_same_artifact",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 460,
+          "risk_number": 0.0,
+          "top_statements": []
+        },
+        {
+          "function": "test_gate_rejects_a_head_sha_that_is_not_a_real_commit",
+          "file": "tests/oversight/test_secret_scan_validator_artifact.py",
+          "line": 474,
+          "risk_number": 0.0,
+          "top_statements": []
+        }
+      ],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "shell_logic",
+      "score": 0.6,
+      "raw_value": {
+        "decision_construct_count": 7,
+        "per_file_counts": {
+          "scripts/oversight/gates/secret_scan.sh": 7
+        },
+        "exempted_files": []
+      },
+      "weight": 0.05,
+      "evidence": [
+        {
+          "file": "scripts/oversight/gates/secret_scan.sh",
+          "line": 32,
+          "message": "7 decision construct(s) in this file after excluding fixed-flag-parsing \u2014 extraction to a tested module recommended",
+          "severity": "high"
+        }
+      ],
+      "checklist_items": [
+        "Is this decision (conditional, retry, transform) better expressed in a language inside the test regime, with the shell reduced to a thin invoker?",
+        "If this is genuinely fixed-shape flag parsing or a single-outcome guard clause, is that clear from the code, or should it be simplified to read that way?"
+      ],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    },
+    {
+      "dimension": "static_analysis",
+      "score": 0.0,
+      "raw_value": {
+        "bandit_high_count": 0,
+        "bandit_medium_count": 0,
+        "semgrep_count": 0,
+        "semgrep_status": "ok"
+      },
+      "weight": 0.15,
+      "evidence": [],
+      "checklist_items": [],
+      "findings": [],
+      "error": null,
+      "tier_floor": null
+    }
+  ],
+  "tier_floor": "HIGH"
+}
