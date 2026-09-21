@@ -31,26 +31,22 @@ _BLACK = (_VENV_BIN / "black").exists()
 _MYPY = (_VENV_BIN / "mypy").exists()
 _DETECT_SECRETS = (_VENV_BIN / "detect-secrets").exists()
 
-_BAD_PY = (
-    "import os\n"
-    'x: int = "not an int"\n'
-    "y=1\n"
-)
+_BAD_PY = "import os\n" 'x: int = "not an int"\n' "y=1\n"
 _NOTES_MD = "# notes\n\nnothing interesting here.\n"
 _HELPER_SH = "#!/usr/bin/env bash\necho hi\n"
 
 # Built by concatenation so this test's own source never contains the literal
 # substring — portability_check.sh would otherwise flag this very file when
 # the PR that adds it is itself scanned (TC-P3 design note).
-_HOME_PATH_LINE = "config_path = " + '"' + "/" + "home" + "/" + "devuser" + "/project/config.py" + '"' + "\n"
+_HOME_PATH_LINE = (
+    "config_path = " + '"' + "/" + "home" + "/" + "devuser" + "/project/config.py" + '"' + "\n"
+)
 # A recognizable AWS-style access key for detect-secrets.
 _SECRET_LINE = 'API_TOKEN = "AKIAIOSFODNN7EXAMPLEKEY1234567890abcd"\n'  # pragma: allowlist secret
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
 
 def _build_fixture(cwd: Path, bad_py_extra: str = "", extra_files: dict | None = None) -> None:
@@ -70,7 +66,9 @@ def _build_fixture(cwd: Path, bad_py_extra: str = "", extra_files: dict | None =
     _git(cwd, "commit", "-q", "-m", "changeset")
 
 
-def _run(gate: str, cwd: Path, *args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+def _run(
+    gate: str, cwd: Path, *args: str, env_extra: dict | None = None
+) -> subprocess.CompletedProcess:
     script = _GATES_DIR / f"{gate}.sh"
     env = {**os.environ, "GATE_TIMEOUT": "20", "GATE_RETRIES": "1"}
     if env_extra:
@@ -141,9 +139,9 @@ def test_portability_check_diff_matches_explicit(tmp_path):
     )
 
     assert diff_res.returncode == explicit_res.returncode == 1
-    assert _findings_from(
-        "machine-specific absolute path", diff_res.stdout
-    ) == _findings_from("machine-specific absolute path", explicit_res.stdout)
+    assert _findings_from("machine-specific absolute path", diff_res.stdout) == _findings_from(
+        "machine-specific absolute path", explicit_res.stdout
+    )
 
 
 # ── TC-P4 — secret_scan primary AC-4 ─────────────────────────────────────────

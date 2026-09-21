@@ -293,9 +293,17 @@ def test_step_with_no_base_commit_is_fatal(tmp_path):
     head_sha = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
     env = {**os.environ}
     result = subprocess.run(
-        ["bash", "-c", f'source "{_AUDIT_LOG_SH}" && audit_write_event "$1" "$2"',
-         "_", f'{{"event":"step-head","step":1,"head_sha":"{head_sha}"}}', str(tmp_path)],
-        capture_output=True, text=True, env=env,
+        [
+            "bash",
+            "-c",
+            f'source "{_AUDIT_LOG_SH}" && audit_write_event "$1" "$2"',
+            "_",
+            f'{{"event":"step-head","step":1,"head_sha":"{head_sha}"}}',
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
 
@@ -315,9 +323,17 @@ def test_step_non_numeric_is_usage_error(tmp_path):
 
 def _write_step_event(repo: Path, step: int, head_sha: str) -> None:
     result = subprocess.run(
-        ["bash", "-c", 'source "$1" && audit_write_event "$2" "$3"',
-         "_", str(_AUDIT_LOG_SH), f'{{"event":"step-head","step":{step},"head_sha":"{head_sha}"}}', str(repo)],
-        capture_output=True, text=True,
+        [
+            "bash",
+            "-c",
+            'source "$1" && audit_write_event "$2" "$3"',
+            "_",
+            str(_AUDIT_LOG_SH),
+            f'{{"event":"step-head","step":{step},"head_sha":"{head_sha}"}}',
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
 

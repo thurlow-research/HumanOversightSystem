@@ -30,9 +30,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
 
 def _init_repo(cwd: Path) -> None:
@@ -105,7 +103,7 @@ def test_real_changeset_records_changeset_fields(tmp_path):
     _git(tmp_path, "add", "a.py", "b.py")
     _git(tmp_path, "commit", "-q", "-m", "add two files")
 
-    res = _run(tmp_path, "--diff", "HEAD~1")
+    _run(tmp_path, "--diff", "HEAD~1")
     # Not asserting overall rc: a real gate finding (e.g. an unrelated
     # dependency advisory in the shared oversight venv) is orthogonal to
     # what this test pins — the artifact's changeset bookkeeping.

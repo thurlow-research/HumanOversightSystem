@@ -60,9 +60,7 @@ KIND_FILTER_GATES = {
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
-    )
+    return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
 
 def _init_repo(cwd: Path) -> None:
