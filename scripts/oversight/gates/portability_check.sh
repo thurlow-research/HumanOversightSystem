@@ -15,7 +15,13 @@
 # Exit 0 = no machine-specific paths found. Exit 1 = found.
 #
 # Usage: ./portability_check.sh file.py [file2.py ...]
-#        ./portability_check.sh --all
+#        ./portability_check.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759). Note the extension filter
+# below applies only to the --all/no-selector full-project enumeration; an
+# explicit/diff/step/staged changeset is scanned as-is, any extension
+# (pre-existing asymmetry, kept — see the design's §11).
 
 set -euo pipefail
 
@@ -23,30 +29,35 @@ _GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/gates/check_suspension.sh
 source "$_GATES_DIR/check_suspension.sh"
 is_suspended "portability" && { print_suspended "portability"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$_GATES_DIR/../lib/changeset.sh"
 
 PASS=0
 FAIL=1
 
+hos_changeset_parse portability_check "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary portability_check
+
 FILES=()
-CHECK_ALL=false
-
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
-done
-
-if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
-    # bash 3.2 (macOS default) has no `mapfile` — use a portable read loop.
-    FILES=()
-    while IFS= read -r _f; do
-        [[ -n "$_f" ]] && FILES+=("$_f")
-    done < <(find . -type f \
-        \( -name '*.py' -o -name '*.sh' -o -name '*.toml' -o -name '*.cfg' -o -name '*.ini' \) \
-        -not -path "*/.venv/*" -not -path "./.git/*" -not -path "./node_modules/*")
-fi
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked portability_check
+        exit $PASS
+        ;;
+    all|unscoped)
+        # bash 3.2 (macOS default) has no `mapfile` — use a portable read loop.
+        FILES=()
+        while IFS= read -r _f; do
+            [[ -n "$_f" ]] && FILES+=("$_f")
+        done < <(find . -type f \
+            \( -name '*.py' -o -name '*.sh' -o -name '*.toml' -o -name '*.cfg' -o -name '*.ini' \) \
+            -not -path "*/.venv/*" -not -path "./.git/*" -not -path "./node_modules/*")
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "portability_check: no files to check"

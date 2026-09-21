@@ -19,7 +19,10 @@
 # Exit 0 = all referenced templates exist (or no manage.py). Exit 1 = missing.
 #
 # Usage: ./template_refs_check.sh file.py [file2.py ...]
-#        ./template_refs_check.sh --all
+#        ./template_refs_check.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759).
 
 set -euo pipefail
 
@@ -27,30 +30,37 @@ _GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/gates/check_suspension.sh
 source "$_GATES_DIR/check_suspension.sh"
 is_suspended "template-refs" && { print_suspended "template-refs"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$_GATES_DIR/../lib/changeset.sh"
 
 PASS=0
 
-FILES=()
-CHECK_ALL=false
+hos_changeset_parse template_refs_check "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary template_refs_check
 
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
-done
-
+# The manage.py guard stays first (relative to file collection) — a
+# non-Django project is a repo-level SKIP regardless of changeset mode.
 if [[ ! -f "manage.py" ]]; then
     echo "template_refs_check: not a Django project — skipping"
     exit $PASS
 fi
 
-if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
-    while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
-        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
-        -not -path "./.git/*" -not -path "./node_modules/*")
-fi
+FILES=()
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked template_refs_check
+        exit $PASS
+        ;;
+    all|unscoped)
+        while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
+            -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
+            -not -path "./.git/*" -not -path "./node_modules/*")
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
 
 if [[ ${#FILES[@]} -eq 0 ]]; then
     echo "template_refs_check: no Python files to check"
@@ -103,5 +113,5 @@ if missing:
             print(f"      referenced at {ref}")
     sys.exit(1)
 
-print(f"GATE PASS: all referenced templates exist ({len(existing)} templates found on disk)")
+print(f"GATE PASS: all referenced templates exist ({len(files)} source file(s) scanned, {len(existing)} templates found on disk)")
 PY

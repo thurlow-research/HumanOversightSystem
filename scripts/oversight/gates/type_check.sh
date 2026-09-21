@@ -10,7 +10,10 @@
 # Exit 0 = type-clean. Exit 1 = type errors found.
 #
 # Usage: ./type_check.sh file.py [file2.py ...]
-#        ./type_check.sh --all
+#        ./type_check.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759).
 #
 # Note: mypy may surface false positives on Django ORM code without
 # django-stubs installed. Configure per-project in mypy.ini or pyproject.toml.
@@ -25,6 +28,8 @@ source "$GATES_DIR/check_suspension.sh"
 # shellcheck source=scripts/oversight/lib/resolve_node_tool.sh
 source "$GATES_DIR/../lib/resolve_node_tool.sh"
 is_suspended "types" && { print_suspended "types"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$GATES_DIR/../lib/changeset.sh"
 
 # Same marker check as detect_stack.sh's _detect_astro_marker_present
 # (duplicated, not sourced — same _js-sibling independence convention used
@@ -40,34 +45,49 @@ _astro_marker_present() {
     return 1
 }
 
-FILES=()
-CHECK_ALL=false
-
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
-done
-
-if $CHECK_ALL; then
-    # bash 3.2 (macOS default) has no `mapfile` — use a portable read loop.
+_collect_all_py_files() {
     FILES=()
     while IFS= read -r _f; do
         [[ -n "$_f" ]] && FILES+=("$_f")
     done < <(find . -name "*.py" -not -path "./.venv/*" \
+        -not -path "./scripts/oversight/.venv/*" -not -path "./node_modules/*" \
         -not -path "*/migrations/*" -not -path "./.git/*")
-fi
+}
 
-if [[ ${#FILES[@]} -eq 0 ]] && ! $CHECK_ALL; then
-    # No files specified and --all not set: default to scanning all Python files
-    # rather than silently passing (a no-op pass is indistinguishable from a real pass).
-    echo "type_check: no files specified — defaulting to --all (full project scan)"
-    while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
-        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
-        -not -path "./node_modules/*" -not -path "./.git/*")
-fi
+hos_changeset_parse type_check "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary type_check
+
+FILES=()
+# Whether an empty Python subset should read as "no Python files found in
+# project" (case 1/all — a whole-project claim) or as a changeset-scoped SKIP
+# (case 2's per-kind wording, so it never repeats the false statement the
+# issue quotes: a changeset CAN contain a .py file while still having none
+# left after this gate's own filtering makes it look like the project has
+# none — #1759).
+PROJECT_WIDE=false
+
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked type_check
+        exit 0
+        ;;
+    all)
+        _collect_all_py_files
+        PROJECT_WIDE=true
+        ;;
+    unscoped)
+        # No files specified and --all not set: default to scanning all
+        # Python files rather than silently passing (a no-op pass is
+        # indistinguishable from a real pass).
+        echo "type_check: no files specified — defaulting to --all (full project scan)"
+        _collect_all_py_files
+        PROJECT_WIDE=true
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
 
 # Filter to Python files only — FILES may include non-.py paths when passed
 # individually (run_gates.sh forwards the whole changeset to every gate).
@@ -83,7 +103,11 @@ ERRORS=0
 
 echo "=== mypy ==="
 if [[ ${#PY_FILES[@]} -eq 0 ]]; then
-    echo "SKIP: no Python files found in project"
+    if $PROJECT_WIDE; then
+        echo "SKIP: no Python files found in project"
+    else
+        hos_changeset_skip_kind type_check "Python" 0
+    fi
 elif [[ ! -x "$VENV_BIN/mypy" ]]; then
     echo "SKIP: mypy not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
 elif "$VENV_BIN/mypy" --ignore-missing-imports --no-error-summary "${PY_FILES[@]}"; then

@@ -8,10 +8,44 @@
 # Usage:
 #   ./scripts/oversight/run_gates.sh [file ...]
 #   ./scripts/oversight/run_gates.sh --all
+#   ./scripts/oversight/run_gates.sh --diff <ref>     (e.g. origin/main, or a
+#                                                       "base...head" range)
+#   ./scripts/oversight/run_gates.sh --step <n>       (step N's recorded
+#                                                       commit range)
+#   ./scripts/oversight/run_gates.sh --staged
+#   ./scripts/oversight/run_gates.sh --help
+#
+# Selectors are mutually exclusive (--all/--diff/--staged/explicit paths
+# cannot be combined with each other); --step may accompany another selector
+# as metadata only. See scripts/oversight/lib/changeset.sh for the full
+# grammar (#1759) — this runner and every file-list gate under gates/ share
+# one argument parser and one changeset-resolution library, so a selector
+# means the same thing everywhere it is accepted.
+#
+# The changeset resolves to exactly one of three distinguishable states:
+#   1. no selector at all       -> each gate falls back to its own
+#                                  full-project scan (#976's contract).
+#   2. a selector resolving to
+#      zero files                -> every gate SKIPs / NOT CHECKs; this is
+#                                    reported as "GATE NOT RUN", never as a
+#                                    pass.
+#   3. resolution failed         -> nothing runs; the runner exits non-zero
+#                                    before any gate is invoked.
+#
+# Exit codes:
+#   0   every gate ran clean, or nothing was checked (see case 2 above)
+#   1   one or more non-suspended gates failed
+#   2   usage error — the argv was malformed; nothing ran
+#   3   resolution error — the changeset could not be determined; nothing ran
 #
 # Output:
 #   .claudetmp/oversight/validators/gate-results.json
-#       Array of objects: {"gate","exit_code","suspended","script","ts"}
+#       Array of objects: {"gate","exit_code","suspended","script","ts",
+#                           "changeset_mode","files_forwarded","outcome"}
+#       A resolution failure (exit 2/3) writes `[]`, which
+#       gate_compliance.load_gate_results/pr_readiness._check_gates already
+#       treat as "no evidence" -> COMPLIANCE FAIL, so a bad changeset
+#       fail-closes downstream rather than leaving a stale prior result.
 #
 # Each gate's own suspension check (check_suspension.sh) is authoritative for
 # that gate's exit code; this script additionally queries suspension_manager.py
@@ -30,6 +64,8 @@ SUSPENSION_MANAGER="$SCRIPT_DIR/suspension_manager.py"
 
 # shellcheck source=scripts/oversight/lib/detect_stack.sh
 source "$SCRIPT_DIR/lib/detect_stack.sh"
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$SCRIPT_DIR/lib/changeset.sh"
 
 # Resolve python — prefer the oversight venv if present.
 PYTHON=""
@@ -42,11 +78,49 @@ else
     exit 1
 fi
 
-# ── Argument forwarding ───────────────────────────────────────────────────────
-# All arguments are forwarded verbatim to each gate script.
-# Each gate decides independently how to interpret them.
-# bash 3.2: "${arr[@]}" on empty array triggers unbound under set -u; use safe expansion
-GATE_ARGS=("$@")
+# ── Changeset resolution (#1759) ───────────────────────────────────────────────
+# One argument grammar, shared with every file-list gate (lib/changeset.sh).
+# A resolution failure writes an empty gate-results.json (see header) before
+# exiting, so a stale prior run's evidence can never be mistaken for this run's.
+if ! hos_changeset_parse run_gates "$@"; then
+    if [[ "$HOS_CHANGESET_EXIT" -eq 0 ]]; then
+        # --help: usage already printed to stdout. No artifact written.
+        exit 0
+    fi
+    mkdir -p "$OUT_DIR"
+    printf '[]' > "$OUT_FILE"
+    exit "$HOS_CHANGESET_EXIT"
+fi
+
+hos_changeset_summary run_gates
+
+# Build the argv every gate receives. INV-SELECTOR: this switches on
+# HOS_CHANGESET_STATUS only — never on ${#HOS_CHANGESET_FILES[@]} — so cases 1
+# and 2 (both an empty file array) stay distinguishable to every gate.
+GATE_ARGS=()
+case "$HOS_CHANGESET_STATUS" in
+    unscoped) GATE_ARGS=() ;;
+    all)      GATE_ARGS=("--all") ;;
+    ok)       GATE_ARGS=(${HOS_CHANGESET_FILES[@]+"${HOS_CHANGESET_FILES[@]}"}) ;;
+    empty)    GATE_ARGS=("--empty-changeset") ;;
+esac
+
+# ── Testability seam (mirrors RUN_VALIDATORS_FILELIST_ONLY, #981) ─────────────
+# Emits the resolved changeset and forwarded argv, then exits before the
+# (network/tool-dependent) preflight and before any gate runs — so tests can
+# pin resolution deterministically without external tooling.
+if [[ -n "${RUN_GATES_RESOLVE_ONLY:-}" ]]; then
+    printf 'MODE\t%s\n' "$HOS_CHANGESET_MODE"
+    printf 'STATUS\t%s\n' "$HOS_CHANGESET_STATUS"
+    printf 'SOURCE\t%s\n' "$HOS_CHANGESET_SOURCE"
+    for _f in ${HOS_CHANGESET_FILES[@]+"${HOS_CHANGESET_FILES[@]}"}; do
+        printf 'FILE\t%s\n' "$_f"
+    done
+    for _tok in ${GATE_ARGS[@]+"${GATE_ARGS[@]}"}; do
+        printf 'FORWARD\t%s\n' "$_tok"
+    done
+    exit 0
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _ts() {
@@ -94,6 +168,19 @@ echo "=== Gate runner: ${#GATE_SCRIPTS[@]} gate(s) ==="
 echo "Output: $OUT_FILE"
 echo ""
 
+# files_forwarded is null for none/all (no changeset file count applies);
+# otherwise the count of files actually resolved (0 for an empty changeset).
+case "$HOS_CHANGESET_MODE" in
+    none|all) FILES_FORWARDED_JSON="null" ;;
+    *)        FILES_FORWARDED_JSON="${#HOS_CHANGESET_FILES[@]}" ;;
+esac
+
+case "$HOS_CHANGESET_STATUS" in
+    ok)     GATE_OUTCOME="checked" ;;
+    empty)  GATE_OUTCOME="not-checked" ;;
+    *)      GATE_OUTCOME="$HOS_CHANGESET_STATUS" ;;
+esac
+
 # ── Run gates ─────────────────────────────────────────────────────────────────
 RESULTS_JSON="["
 FIRST=1
@@ -124,8 +211,9 @@ for script in "${GATE_SCRIPTS[@]}"; do
     fi
 
     escaped_script="$(_escape_json_string "$script")"
-    record=$(printf '{"gate":"%s","exit_code":%d,"suspended":%s,"script":"%s","ts":"%s"}' \
-        "$gate_name" "$gate_rc" "$suspended" "$escaped_script" "$ts")
+    record=$(printf '{"gate":"%s","exit_code":%d,"suspended":%s,"script":"%s","ts":"%s","changeset_mode":"%s","files_forwarded":%s,"outcome":"%s"}' \
+        "$gate_name" "$gate_rc" "$suspended" "$escaped_script" "$ts" \
+        "$HOS_CHANGESET_MODE" "$FILES_FORWARDED_JSON" "$GATE_OUTCOME")
 
     if [[ $FIRST -eq 1 ]]; then
         RESULTS_JSON="${RESULTS_JSON}${record}"
@@ -142,7 +230,13 @@ printf '%s\n' "$RESULTS_JSON" > "$OUT_FILE"
 
 echo ""
 if [[ $OVERALL_RC -eq 0 ]]; then
-    echo "GATE PASS: all non-suspended gates passed"
+    if [[ "$HOS_CHANGESET_STATUS" == "empty" ]]; then
+        # Case 2 (TD-D8): a legitimately empty changeset is exit 0 but is
+        # explicitly not a pass — "GATE PASS" must never appear here.
+        echo "GATE NOT RUN: ${HOS_CHANGESET_SOURCE} resolved to 0 scannable files — nothing was checked (this is not a pass)"
+    else
+        echo "GATE PASS: all non-suspended gates passed"
+    fi
 else
     echo "GATE FAIL: one or more non-suspended gates failed — see above"
 fi

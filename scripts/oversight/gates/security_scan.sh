@@ -10,7 +10,10 @@
 # Exit 0 = no HIGH findings. Exit 1 = HIGH findings or dependency vulnerabilities.
 #
 # Usage: ./security_scan.sh file.py [file2.py ...]
-#        ./security_scan.sh --all
+#        ./security_scan.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759).
 
 set -euo pipefail
 
@@ -20,40 +23,44 @@ source "$GATES_DIR/../ensure_venv.sh"
 # shellcheck source=scripts/oversight/gates/check_suspension.sh
 source "$GATES_DIR/check_suspension.sh"
 is_suspended "security" && { print_suspended "security"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$GATES_DIR/../lib/changeset.sh"
+
+hos_changeset_parse security_scan "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary security_scan
 
 FILES=()
-CHECK_ALL=false
-
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
-done
-
-if $CHECK_ALL; then
-    while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
-        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
-        -not -path "./.git/*")
-fi
-
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    # No files specified and --all not set: default to scanning all Python files
-    # rather than silently skipping bandit and recording GATE PASS (a no-op pass
-    # is indistinguishable from a real pass — HIGH-severity findings would go
-    # unscanned yet the gate would exit 0). Mirrors lint_check.sh / type_check.sh.
-    # (#976)
-    echo "security_scan: no files specified — defaulting to --all (full project scan)"
-    while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
-        -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
-        -not -path "./.git/*")
-    if [[ ${#FILES[@]} -eq 0 ]]; then
-        # A project with zero Python files is an honest bandit skip (not a hidden
-        # pass); pip-audit below still runs against the dependency set.
-        echo "security_scan: no Python files found in project — bandit SKIP"
-    fi
-fi
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759). STATUS=empty
+# skips pip-audit too — nothing changed, so there is nothing to gate, and
+# skipping keeps the empty path fast and side-effect-free (network call).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked security_scan
+        exit 0
+        ;;
+    all|unscoped)
+        if [[ "$HOS_CHANGESET_STATUS" == "unscoped" ]]; then
+            # No files specified and --all not set: default to scanning all
+            # Python files rather than silently skipping bandit and recording
+            # GATE PASS (a no-op pass is indistinguishable from a real pass —
+            # HIGH-severity findings would go unscanned yet the gate would
+            # exit 0). Mirrors lint_check.sh / type_check.sh. (#976)
+            echo "security_scan: no files specified — defaulting to --all (full project scan)"
+        fi
+        FILES=()
+        while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
+            -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
+            -not -path "./.git/*")
+        if [[ ${#FILES[@]} -eq 0 ]]; then
+            # A project with zero Python files is an honest bandit skip (not a
+            # hidden pass); pip-audit below still runs against the dependency set.
+            echo "security_scan: no Python files found in project — bandit SKIP"
+        fi
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
 
 ERRORS=0
 GATE_TIMEOUT="${GATE_TIMEOUT:-120}"   # seconds per tool invocation
@@ -61,6 +68,7 @@ GATE_RETRIES="${GATE_RETRIES:-2}"     # retries on crash/timeout
 
 # --- bandit: HIGH severity only (blocking) ---
 echo "=== bandit (HIGH severity) ==="
+echo "security_scan: bandit received ${#FILES[@]} file(s)"
 if [[ -x "$VENV_BIN/bandit" ]]; then
     if [[ ${#FILES[@]} -gt 0 ]]; then
         BANDIT_TMP=$(mktemp /tmp/bandit_XXXXXX)
