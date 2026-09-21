@@ -305,6 +305,23 @@ hos_changeset_summary() {
         "$label" "${#HOS_CHANGESET_FILES[@]}" "$HOS_CHANGESET_SOURCE" "$suffix"
 }
 
+# shellcheck disable=SC2034
+# The five HOS_CHANGESET_{STATUS,MODE,REF,STEP,EXIT} globals are this library's
+# public output contract (§4.3 above), read by the sourcing caller — run_gates.sh
+# and every file-list gate. shellcheck cannot follow a `source` back into the
+# consumer, so it reports each of them as unused. Scoped to this function rather
+# than the whole file: shellcheck anchors SC2034 at a variable's LAST assignment,
+# and all five land inside this function, so a function-level directive clears
+# every finding while leaving the rest of the file checked.
+#
+# Known cost, verified rather than assumed (shellcheck 0.11.0): the directive
+# suppresses SC2034 on this function's locals too, so an unused `local` in
+# hos_changeset_parse will NOT be reported. That blind spot stops at the closing
+# brace — the resolution helpers above (_hcs_apply_rex, _hcs_classify_missing,
+# _hcs_resolve_via_diff), where an unused local is a far more plausible bug, are
+# still fully checked. This is deliberately narrower than the file-level
+# equivalent in lib/vendor_invoke.sh, per that comment's own advice to narrow
+# the scope once a file grows logic worth checking.
 hos_changeset_parse() {
     local label="$1"; shift
 
