@@ -128,6 +128,7 @@ excluded.
 - `scripts/oversight/agents_static_logic.py` — pure classification logic for check_agents_static.sh.
 - `scripts/oversight/audit_conditional_proceed.sh` — retroactive audit of CONDITIONAL_PROCEED PRs (#370).
 - `scripts/oversight/change_classifier.py` — deterministic, independent classification of a diff.
+- `scripts/oversight/changeset_logic.py` — the missing-path classifier (#1759, Ruling I / TD-D15).
 - `scripts/oversight/check_pr_reviewed.sh` — PR-review idempotency precheck (#1524).
 - `scripts/oversight/codeowners.py` — CODEOWNERS-derived HUMAN_REQUIRED gate (SPEC-303b).
 - `scripts/oversight/ensure_venv.sh` — Create the oversight pip venv if it does not exist.
@@ -169,7 +170,9 @@ excluded.
 
 - `scripts/oversight/lib/audit_log.py` — canonical per-entry audit-record helper (SPEC-888 / TD-888 P1).
 - `scripts/oversight/lib/audit_log.sh` — Bash facade over the canonical Python audit-record helper. (SPEC-888 / TD-888 §2.2, P1)
+- `scripts/oversight/lib/changeset.sh` — shared changeset-resolution library (#1759).
 - `scripts/oversight/lib/detect_stack.sh` — repo-marker tool detection + fail-hard preflight (D1, ADR-032).
+- `scripts/oversight/lib/git_depth.py` — shared shallow-clone detector (#1759, Ruling I / TD-D15).
 - `scripts/oversight/lib/resolve_node_tool.sh` — discover-only consumer JS toolchain resolver (D2, ADR-032).
 - `scripts/oversight/lib/step_range.sh` — shared step commit-range helper (SPEC-220 BC-220-5).
 - `scripts/oversight/lib/vendor_invoke.sh` — one bash launch primitive for agy/codex (ADR-1683 D-1/D-2).

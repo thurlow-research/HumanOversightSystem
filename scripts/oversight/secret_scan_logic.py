@@ -65,12 +65,30 @@ the CLI shim at the bottom reads stdin and the filesystem.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Iterable, NamedTuple
+
+
+def _load_git_depth():
+    """Load the sibling lib/git_depth.py by file path.
+
+    This module runs as a plain script (sys.path[0] = its own dir), so a
+    package import is not reliable here — same convention as
+    suspension_manager.py's `_load_audit_log()`.
+    """
+    path = Path(__file__).resolve().parent / "lib" / "git_depth.py"
+    spec = importlib.util.spec_from_file_location("hos_git_depth", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_GIT_DEPTH = _load_git_depth()
 
 # The invariant being exempted is narrow and specific: **the top-level
 # `head_sha`/`base_sha` metadata field of a committed validator artifact**. Each
@@ -445,15 +463,16 @@ class GitShaVerifier:
             self.undecidable.append(entry)
 
     def _is_shallow(self) -> bool | None:
-        """True/False, or None when git would not answer. Asked at most once."""
+        """True/False, or None when git would not answer. Asked at most once.
+
+        Delegates to the shared detector (#1759 TD-D15) — one implementation
+        of this tri-state, not two. This method keeps its own caching (the
+        detector itself is stateless) and its own timeout.
+        """
         if self._shallow_checked:
             return self._shallow
         self._shallow_checked = True
-        completed = self._git("rev-parse", "--is-shallow-repository")
-        if completed is not None and completed.returncode == 0:
-            answer = completed.stdout.decode("utf-8", "replace").strip()
-            if answer in ("true", "false"):
-                self._shallow = answer == "true"
+        self._shallow = _GIT_DEPTH.is_shallow_repository(timeout=self.timeout)
         return self._shallow
 
     def _git(self, *args: str) -> subprocess.CompletedProcess | None:

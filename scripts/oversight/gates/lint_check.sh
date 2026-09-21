@@ -7,7 +7,10 @@
 # Exit 0 = all pass. Exit 1 = any failure; diff/output is printed for the human.
 #
 # Usage: ./lint_check.sh file.py [file2.ts ...]
-#        ./lint_check.sh --all        (check entire project)
+#        ./lint_check.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759).
 #
 # Part of the oversight pipeline cheap-gates stage (DECISIONS.md §D7).
 # Run before risk assessment — no point scoring code that fails style checks.
@@ -22,6 +25,8 @@ source "$GATES_DIR/check_suspension.sh"
 # shellcheck source=scripts/oversight/lib/resolve_node_tool.sh
 source "$GATES_DIR/../lib/resolve_node_tool.sh"
 is_suspended "lint" && { print_suspended "lint"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$GATES_DIR/../lib/changeset.sh"
 
 PASS=0
 FAIL=1
@@ -54,32 +59,38 @@ _collect_all_files() {
         \( -name "*.py" -o "${JS_NAME_MATCH[@]}" \))
 }
 
+hos_changeset_parse lint_check "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary lint_check
+
 FILES=()
-CHECK_ALL=false
-
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
-done
-
-if $CHECK_ALL; then
-    _collect_all_files
-fi
-
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    # No files specified and --all not set: default to scanning all Python and
-    # JS/TS files rather than silently passing (a no-op pass is
-    # indistinguishable from a real pass).
-    echo "lint_check: no files specified — defaulting to --all (full project scan)"
-    _collect_all_files
-    if [[ ${#FILES[@]} -eq 0 ]]; then
-        echo "lint_check: no Python or JS/TS files found in project — SKIP"
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked lint_check
         exit $PASS
-    fi
-fi
+        ;;
+    all)
+        _collect_all_files
+        if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "lint_check: no Python or JS/TS files found in project — SKIP"
+            exit $PASS
+        fi
+        ;;
+    unscoped)
+        # No files specified and --all not set: default to scanning all
+        # Python and JS/TS files rather than silently passing (a no-op pass
+        # is indistinguishable from a real pass).
+        echo "lint_check: no files specified — defaulting to --all (full project scan)"
+        _collect_all_files
+        if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "lint_check: no Python or JS/TS files found in project — SKIP"
+            exit $PASS
+        fi
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
 
 PY_FILES=()
 JS_FILES=()
@@ -93,7 +104,7 @@ done
 ERRORS=0
 
 if [[ ${#PY_FILES[@]} -eq 0 && ${#JS_FILES[@]} -eq 0 ]]; then
-    echo "lint_check: no Python or JS/TS files in changeset — SKIP"
+    hos_changeset_skip_kind lint_check "Python or JS/TS" 0
     exit $PASS
 fi
 

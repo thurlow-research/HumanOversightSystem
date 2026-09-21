@@ -22,7 +22,10 @@
 # Exit 0 = all checks pass. Exit 1 = one or more findings.
 #
 # Usage: ./bash_check.sh file.sh [file2.sh ...]
-#        ./bash_check.sh --all        (check all *.sh in the repo)
+#        ./bash_check.sh --diff <ref> | --step <n> | --staged | --all | --help
+#
+# Argument grammar shared with run_gates.sh and the other file-list gates —
+# see scripts/oversight/lib/changeset.sh (#1759).
 
 set -euo pipefail
 
@@ -30,34 +33,52 @@ _GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/gates/check_suspension.sh
 source "$_GATES_DIR/check_suspension.sh"
 is_suspended "bash_check" && { print_suspended "bash_check"; exit 0; }
+# shellcheck source=scripts/oversight/lib/changeset.sh
+source "$_GATES_DIR/../lib/changeset.sh"
 
 PASS=0
 FAIL=1
 
-FILES=()
-CHECK_ALL=false
+hos_changeset_parse bash_check "$@" || exit $HOS_CHANGESET_EXIT
+hos_changeset_summary bash_check
 
-for arg in "$@"; do
-    if [[ "$arg" == "--all" ]]; then
-        CHECK_ALL=true
-    else
-        FILES+=("$arg")
-    fi
+FILES=()
+PROJECT_WIDE=false
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
+case "$HOS_CHANGESET_STATUS" in
+    empty)
+        hos_changeset_not_checked bash_check
+        exit $PASS
+        ;;
+    all|unscoped)
+        FILES=()
+        while IFS= read -r _f; do
+            [[ -n "$_f" ]] && FILES+=("$_f")
+        done < <(find . -type f -name '*.sh' \
+            -not -path "./.git/*" \
+            -not -path "./.venv/*" \
+            -not -path "./scripts/oversight/.venv/*" \
+            -not -path "./node_modules/*")
+        PROJECT_WIDE=true
+        ;;
+    ok)
+        FILES=("${HOS_CHANGESET_FILES[@]}")
+        ;;
+esac
+
+# Filter to *.sh — FILES may include non-.sh paths in explicit/diff/step/staged
+# mode (run_gates.sh forwards the whole changeset to every gate).
+SH_FILES=()
+for f in ${FILES[@]+"${FILES[@]}"}; do
+    [[ "${f##*.}" == "sh" ]] && SH_FILES+=("$f")
 done
 
-if $CHECK_ALL || [[ ${#FILES[@]} -eq 0 ]]; then
-    FILES=()
-    while IFS= read -r _f; do
-        [[ -n "$_f" ]] && FILES+=("$_f")
-    done < <(find . -type f -name '*.sh' \
-        -not -path "./.git/*" \
-        -not -path "./.venv/*" \
-        -not -path "./scripts/oversight/.venv/*" \
-        -not -path "./node_modules/*")
-fi
-
-if [[ ${#FILES[@]} -eq 0 ]]; then
-    echo "bash_check: no .sh files to check"
+if [[ ${#SH_FILES[@]} -eq 0 ]]; then
+    if $PROJECT_WIDE; then
+        echo "bash_check: no .sh files to check"
+    else
+        hos_changeset_skip_kind bash_check ".sh" 0
+    fi
     exit $PASS
 fi
 
@@ -67,8 +88,7 @@ ERRORS=0
 SHEBANG_FAILS=()
 UNSAFE_HITS=()
 
-for f in "${FILES[@]}"; do
-    [[ "${f##*.}" != "sh" ]] && continue
+for f in "${SH_FILES[@]}"; do
     [[ -f "$f" ]] || continue
 
     # ── 1. Shebang check ──────────────────────────────────────────────────────
@@ -204,6 +224,6 @@ if [[ $ERRORS -gt 0 ]]; then
     echo "GATE FAIL: $ERRORS file(s) with portability issue(s)"
     exit $FAIL
 else
-    echo "GATE PASS: all shell scripts use bash shebang and Bash-3.2-safe constructs"
+    echo "GATE PASS: ${#SH_FILES[@]} shell script(s) use bash shebang and Bash-3.2-safe constructs"
     exit $PASS
 fi

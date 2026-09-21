@@ -41,6 +41,16 @@ is_suspended "collection_integrity" && { print_suspended "collection_integrity";
 # always checks the FULL suite (not just changed files); this guard controls
 # WHEN it runs, not what it checks.
 #
+# Deliberate #1759 exemption (Ruling G): this gate takes NO changeset argv at
+# all — not the shared --diff/--step/--staged/--all grammar, not even a plain
+# file list. It derives its own change set below (merge-base against the base
+# branch) purely to decide whether to run; the check itself is always the
+# whole suite. Any argv run_gates.sh forwards here (including a resolved
+# --diff file list) is intentionally ignored — narrowing this gate's own
+# integrity check to "only these files" would defeat the point of a
+# whole-suite collection check. See docs/v0.7.0/TECHNICAL-DESIGN-1759-run-gates-diff-parsing.md
+# §6 row 10 / §9.3 TC-G8.
+#
 # The change set must be scoped against the BASE BRANCH, not the working tree.
 # In PR/CI context every change is already committed, so `git diff HEAD` (which
 # only shows uncommitted changes) is empty and the gate wrongly SKIPs — the

@@ -33,10 +33,15 @@ def _run(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def test_non_py_arg_alone_skips_mypy_without_crashing(tmp_path):
+    # Wording changed under #1759: the old string ("no Python files found in
+    # project") was a false statement about the *project* when only the
+    # *changeset* (an explicit, single non-.py argument here) had none — the
+    # exact false statement the issue quotes. The subject of this test is
+    # unchanged: a non-.py arg must not reach mypy, and must not crash it.
     sh_file = tmp_path / "some_gate.sh"
     sh_file.write_text("#!/usr/bin/env bash\necho hi\n")
     res = _run(tmp_path, "some_gate.sh")
-    assert "SKIP: no Python files found in project" in res.stdout
+    assert "SKIP — 0 of 1 changeset file(s) are Python" in res.stdout
     assert "Invalid syntax" not in res.stdout
     assert res.returncode == 0
 

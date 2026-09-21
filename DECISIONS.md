@@ -1073,3 +1073,69 @@ engine control flow unforked), `scripts/oversight/release_panel_exclusions.txt`
 `.claude/agents/worker.md`, `.claude/agents/overseer.md`, `token_tracker.py`, or the
 shallow-clone remediation (tracked separately) — and nothing in the repository calls
 the new suite yet.
+
+## 2026-09-21 — `run_gates.sh` gains a real argument grammar; the seven file-list gates
+adopt it; a missing path is classified, not guessed (#1759)
+
+`run_gates.sh --diff <ref>` never parsed `--diff` — `GATE_ARGS=("$@")` forwarded every
+argument verbatim to each gate script, so `--diff` and its ref reached, e.g.,
+`gates/lint_check.sh` as two positional tokens: bogus filenames appended to `FILES`.
+Five of the seven file-list gates read that as an empty changeset and silently
+defaulted or SKIPped (`GATE PASS`/SKIP having scanned zero files); the two security
+gates (`secret_scan`, `security_scan`) instead handed the literal strings to
+`detect-secrets`/`bandit`, which reject them (`exit 2`) — read by `run_with_retry` as
+tool flakiness (`GATE FAIL: … did not complete after retries`), a misleading failure
+mode for a usage error. This is the second time verbatim argv forwarding produced a
+wrong answer from the same mechanism (`DECISIONS.md`'s 2026-09-11 `--all` entry was the
+first) — the fix is a shared grammar, not a third point patch.
+
+**The fix.** A new sourced library, `scripts/oversight/lib/changeset.sh`, owns one
+argument grammar (`--diff <ref>`, `--step <n>`, `--staged`, `--all`, `--help`, explicit
+paths — mutually exclusive selectors) for `run_gates.sh` and all seven file-list gates
+(`lint_check`, `type_check`, `portability_check`, `secret_scan`, `security_scan`,
+`bash_check`, `template_refs_check`). It resolves a selector to a candidate list,
+filters to paths that exist, and — the load-bearing piece — never infers scope intent
+from an empty file count (`HOS_CHANGESET_STATUS` is the sole authority: `unscoped` |
+`all` | `ok` | `empty`, so "no selector was given" and "a selector resolved to zero
+files" stay distinguishable, preserving #976's full-project-scan default without
+letting `--diff origin/main` on a clean tree silently degrade into one). A resolution
+failure is fail-closed: exit 2 (usage) or 3 (resolution), nothing runs, and
+`run_gates.sh` overwrites `gate-results.json` with `[]` rather than leaving a stale
+prior result for `pr_readiness._check_gates` to read as a false green.
+
+**The missing-path classifier.** A caller-supplied path that is not on disk is
+classified, not uniformly dropped: `deleted` (git tracks or has tracked it — drop,
+case-2-eligible), `fabricated` (git has never heard of it, explicit mode only — fatal,
+immediately, without waiting for the whole set to empty), or `shallow`/`undecidable`
+(history is truncated or git could not be asked — degraded drop, never fatal). The
+decision lives in `scripts/oversight/changeset_logic.py` (Python, not shell — a
+four-state decision over three fallback tiers is exactly what `shell_logic_check.py`
+scores as risk), resolving via a ref-tree lookup when a ref is known (depth-independent,
+correct even in a shallow clone) or via index → history → depth-check in explicit mode.
+This closes a regression an earlier iteration of the design surfaced and fixed before
+shipping: a deletion-only changeset (e.g. removing a stale doc) must resolve as case 2
+(nothing to check), not as case 3 (resolution failed) — treating "every path is missing"
+as automatically fatal would have turned every deletion-only PR in six CI jobs red for
+a reason unrelated to the change. The shallow-clone detector
+(`scripts/oversight/lib/git_depth.py`) is extracted, not duplicated, from
+`secret_scan_logic.py`'s `GitShaVerifier._is_shallow` (#1754) — one detector, two
+callers.
+
+**Scope.** New: `scripts/oversight/lib/changeset.sh`, `scripts/oversight/changeset_logic.py`,
+`scripts/oversight/lib/git_depth.py`. Modified: `scripts/oversight/run_gates.sh` (parses
+the shared grammar; `gate-results.json` gains additive `changeset_mode` /
+`files_forwarded` / `outcome` fields); the seven file-list gates under
+`scripts/oversight/gates/**` (a protected surface — human approval is required on this
+PR regardless of computed risk tier); `scripts/oversight/secret_scan_logic.py` (its
+shallow-clone check now delegates to the shared detector); one existing test assertion
+(`test_type_check_py_filter.py`) whose old wording — "no Python files found in
+project" — was itself a symptom of the bug (a false claim about the *project* when only
+the *changeset* had none). Does not touch `.github/workflows/oversight-gates.yml` (CI
+still computes its own file lists and calls gates directly — unaffected in behavior for
+every existing shape, and now gets the missing-path classification for free without a
+workflow edit), `run_validators.sh` (`--step`'s stale "reads changed files from git"
+header is a separate, documented divergence — not fixed here), `pr_readiness.py`, or
+diff-hunk scoping (issue item 5, filed separately as #1791 along with a genuine,
+pre-existing `portability_check` finding in `CLAUDE.md` that `--diff` now makes visible
+but this slice deliberately does not touch, to avoid dragging a protected surface into
+an unrelated PR).
