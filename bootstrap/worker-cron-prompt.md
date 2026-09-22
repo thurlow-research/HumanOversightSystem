@@ -97,9 +97,10 @@ Context pre-computed — see "Next work candidates" in the context block at the 
 
 Fallback (if context block is absent) — run from `$REPO_ROOT` so it uses the same canonical ordering filter as the context block (single source of truth; do not re-inline the jq):
 ```bash
-gh api "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=100" \
-  --jq "$(cat scripts/automation/lib/next_candidates.jq)"
+gh api --paginate "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=100" \
+  | jq -sr "add | $(cat scripts/automation/lib/next_candidates.jq)"
 ```
+Run it exactly in that shape (#1805). `--paginate` is required: the endpoint sorts newest-first, so a single-page fetch silently drops the oldest issues — the ones the ascending-number tie-break says to pick first. The filter must then be applied **once** to the combined set, which is why it is piped to `jq -sr "add | ..."` rather than passed as `gh --jq`: `gh api --paginate --jq` runs the filter once **per page**, sorting within each page and concatenating, which leaves the list globally unordered while looking correct at the top.
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
 

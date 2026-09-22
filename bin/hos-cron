@@ -1131,11 +1131,28 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
   # "Next work candidates" section of _build_context below (same query, same
   # jq filter — next_candidates.jq is the single source of truth, per its own
   # header comment; querying it twice here would violate that).
+  #
+  # #1805: MUST paginate, and MUST apply the filter ONCE to the combined set.
+  # The list-issues endpoint defaults to sort=created&direction=desc, so an
+  # unpaginated fetch silently drops the OLDEST issues — precisely the ones
+  # next_candidates.jq's ascending-number tie-break says to pick first. At the
+  # time of the fix v0.7.0 held 135 eligible issues; the 36 on page 2 (24 of
+  # them priority:high) were unselectable, and nothing surfaced the loss.
+  #
+  # Note the shape: `--paginate` WITHOUT `--jq`, piped to `jq -sr 'add | FILTER'`.
+  # `gh api --paginate --jq FILTER` would apply the filter once PER PAGE, so
+  # sort_by() would sort within each page and concatenate — still broken, but
+  # invisible, because _build_context only prints head -5 and page 1's head is
+  # unchanged. `gh --slurp` would be the clean fix but needs gh >= 2.47; this
+  # form works on the 2.45 baseline. `add` concatenates the page arrays into the
+  # single array the filter already expects, so the filter file is unchanged.
+  # Under the global `set -o pipefail` a gh failure fails the whole pipeline,
+  # which lands in the else branch below as "unknown" rather than "no work".
   _GATE_CANDIDATES=""
   _gate_candidates_ok=1
   if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
-    if _GATE_CANDIDATES=$(gh api "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" \
-        --jq "$(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
+    if _GATE_CANDIDATES=$(gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" 2>/dev/null \
+        | jq -sr "add | $(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
         2>/dev/null); then
       _gate_candidates_ok=1
     else
@@ -1886,9 +1903,12 @@ _build_context() {
     printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"
     # #901: order by (priority desc, number asc) via the canonical jq filter so
     # this path and the worker-cron-prompt.md Step-2 fallback select identically.
-    # per_page=100 (GitHub's single-page max): the priority sort must see the WHOLE
-    # backlog, else a high-priority issue on a later page would be missed. A single
-    # milestone exceeding 100 open needs-ai issues is the (documented) ceiling.
+    # The priority sort must see the WHOLE backlog, else a high-priority issue on
+    # a later page is missed. That is no longer capped at one page: #1805 replaced
+    # the old "a milestone exceeding 100 open needs-ai issues is the documented
+    # ceiling" assumption with real pagination, after v0.7.0 crossed it unnoticed
+    # and made 36 issues unselectable. _GATE_CANDIDATES is already the fully
+    # paginated, globally sorted list — see the fetch above.
     # Fail-open: a missing/broken filter yields no section. head -5 caps display
     # only — the worker picks the first non-blocked candidate.
     if [[ -n "${_GATE_CANDIDATES:-}" ]]; then
