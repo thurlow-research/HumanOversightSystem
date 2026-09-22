@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"6ca12b7986453da99a5aad122721d0a1fee7c49d","pr":1806,"prior_event":"human-required","reason":"Full review already posted for this head SHA (issuecomment-5780029932); needs-human label present, no new comments/reviews since. Section 1215 precheck: skip duplicate comment."}
