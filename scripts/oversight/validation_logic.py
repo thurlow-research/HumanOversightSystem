@@ -189,7 +189,17 @@ def _normalize_class(cls) -> str:
     side and the ledger side, so AC-2's match property is preserved (#1770)."""
     s = str(cls or "").strip().casefold()
     m = _CWE_RE.match(s)
-    return f"cwe-{m.group(1)}" if m else s
+    # int() drops leading zeros so "CWE-0703" and "CWE-703" are one class.
+    return f"cwe-{int(m.group(1))}" if m else s
+
+
+def _safe_log(value) -> str:
+    """Neutralise control characters before interpolating a value into a log or
+    confirmation line (CWE-117). `--class`/`--files` can carry reviewer-emitted
+    text, which is influenceable by the diff under review, so a newline or ANSI
+    escape in it could forge an extra log line. The ledger write itself is
+    already safe — `record_ledger_entry` goes through `json.dumps`."""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in str(value))
 
 
 def _class_of_finding(finding: dict) -> str:
@@ -280,7 +290,17 @@ def load_ledger(ledger_path: str) -> set[str]:
                     continue
                 if not _is_resolving(entry.get("disposition", "")):
                     continue
-                if _is_degenerate(_files_of(entry), entry.get("class", "")):
+                # Normalize BEFORE the degeneracy check, with the same rule
+                # `_ledger_fingerprint` uses below. Checking the raw value here
+                # while hashing the normalized one let a whitespace-only class
+                # ("   ") pass as non-degenerate and then store the degenerate
+                # key `[[<file>], ""]` — reintroducing the exact file-granular
+                # silencing this fix removes, for any consumer without its own
+                # finding-side degenerate check (`run_panel.sh` is one). The
+                # invariant has to hold here, not only at `_cmd_record`: the
+                # ledger is a committed, append-only baseline that is also
+                # hand-edited and written directly via `record_ledger_entry`.
+                if _is_degenerate(_files_of(entry), _normalize_class(entry.get("class", ""))):
                     continue
                 seen.add(_ledger_fingerprint(entry))
     except FileNotFoundError:
@@ -504,7 +524,10 @@ def _cmd_record(args: argparse.Namespace) -> int:
         {"files": files, "class": args.cls, "disposition": args.disposition},
         args.ledger,
     )
-    print(f"Recorded to ledger: [{args.files}] {args.cls} → {args.disposition}")
+    print(
+        f"Recorded to ledger: [{_safe_log(args.files)}] "
+        f"{_safe_log(args.cls)} → {_safe_log(args.disposition)}"
+    )
     return 0
 
 
