@@ -619,6 +619,12 @@ Review this diff for:
 
 Do NOT comment on style, formatting, or repeat obvious design decisions.
 
+Every finding MUST carry a \`category\` — exactly one of the five values in the
+schema below, matching the numbered concern it came from (1 → logic-error,
+2 → spec-adherence, 3 → stack-risk, 4 → error-handling, anything else → other).
+Use the literal token, lowercase, no other wording: it is a dedup key that must
+be byte-identical when the same finding is raised again on a later review pass.
+
 ## Risk context (static analysis scores — NOT internal reviewer findings)
 \`\`\`json
 ${VALIDATOR_DIGEST}
@@ -641,6 +647,7 @@ Return JSON only:
   \"findings\": [
     {
       \"severity\": \"critical|high|medium|low\",
+      \"category\": \"logic-error|spec-adherence|stack-risk|error-handling|other\",
       \"file\": \"path/to/file.py\",
       \"line\": 0,
       \"finding\": \"one sentence: what is wrong\",
@@ -752,6 +759,12 @@ Probe for:
 - CSRF on state-changing endpoints
 - Injection: SQL, template, shell
 - TOTP replay or bypass
+
+Every finding MUST carry a real \`cwe\` id in the form \`CWE-<number>\` (e.g.
+\`CWE-89\`) — never the literal placeholder \`CWE-XXX\`, never prose. It is used
+as a dedup key that must be byte-identical when the same finding is raised again
+on a later review pass, and it is what distinguishes two different findings in
+the same file.
 
 ## Diff
 \`\`\`diff
