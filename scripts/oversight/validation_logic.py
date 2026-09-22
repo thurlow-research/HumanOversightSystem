@@ -178,10 +178,36 @@ def _files_of(obj: dict) -> list[str]:
     return sorted(files)
 
 
+_CWE_RE = re.compile(r"^cwe[-_ ]?(\d+)\b")
+
+
+def _normalize_class(cls) -> str:
+    """Canonical form of a finding class, so the SAME class written two ways
+    produces ONE fingerprint. Trims and casefolds, and canonicalises a CWE id to
+    `cwe-<digits>` (codex writes "CWE-703", a `--record` caller may type
+    "cwe-703" or "CWE-703: Improper Check"). Applied identically on the finding
+    side and the ledger side, so AC-2's match property is preserved (#1770)."""
+    s = str(cls or "").strip().casefold()
+    m = _CWE_RE.match(s)
+    return f"cwe-{m.group(1)}" if m else s
+
+
 def _class_of_finding(finding: dict) -> str:
-    """Finding class: agy uses `category`, codex uses `type` — prefer whichever
-    is present (binding 5)."""
-    return finding.get("category") or finding.get("type") or ""
+    """Finding class: the reviewer-supplied taxonomy slot this fingerprint keys
+    on. Precedence `category` (agy) → `type` → `cwe` (codex), first non-empty
+    wins, normalised by `_normalize_class`.
+
+    `cwe` is in this chain because it is what `run_second_review.sh` ACTUALLY
+    sends in the codex schema — the earlier contract here named a `type` field
+    no caller in this repository ever populated, so the class resolved to "" for
+    every finding the script could produce and the fingerprint silently collapsed
+    to file granularity (#1770). `type` is retained ahead of `cwe` for any
+    producer that does send it. `tests/oversight/test_ledger_class_linkage.py`
+    pins this chain against the schemas the script really sends, so the same
+    drift cannot recur silently."""
+    return _normalize_class(
+        finding.get("category") or finding.get("type") or finding.get("cwe") or ""
+    )
 
 
 def fingerprint(finding: dict) -> str:
@@ -196,7 +222,7 @@ def _ledger_fingerprint(entry: dict) -> str:
     """Fingerprint of a ledger entry, built with the SAME rule as `fingerprint`
     so AC-2 holds: a recorded entry whose `class` equals a finding's category/type
     (and same files) produces an equal key."""
-    return json.dumps([_files_of(entry), entry.get("class", "")], sort_keys=True)
+    return json.dumps([_files_of(entry), _normalize_class(entry.get("class", ""))], sort_keys=True)
 
 
 # Dispositions that RESOLVE a finding and may therefore silence a re-surfaced
@@ -216,12 +242,21 @@ def _is_resolving(disposition) -> bool:
 
 
 def _is_degenerate(files: list[str], cls: str) -> bool:
-    """A fingerprint with NO files AND no class is degenerate: it collapses every
-    file-less, class-less finding onto the single key `[[], ""]`, so one such
-    ledger entry would silence ALL of them (#983). A degenerate key can neither
+    """A fingerprint with NO class is degenerate. A degenerate key can neither
     silence nor be silenced — fail-closed, mirroring the #670 no-stable-
-    fingerprint rule for reviewer-error blocks."""
-    return not files and not cls
+    fingerprint rule for reviewer-error blocks.
+
+    #983 scoped this to file-less AND class-less (the key `[[], ""]`). That was
+    under-scoped: a class-less entry WITH files collapses to `[[<file>], ""]`,
+    which matches every finding on that file whatever its class, so one
+    `filed:#N` disposition silenced materially different findings — a different
+    CWE, a different line, a different lens (#1770). Keying on the class alone
+    covers both: the #983 case has no class either.
+
+    `files` is retained in the signature because both call sites already compute
+    it and a future rule may need it; an empty `files` with a real class is NOT
+    degenerate, and stays silence-able exactly as before."""
+    return not cls
 
 
 def load_ledger(ledger_path: str) -> set[str]:
@@ -444,8 +479,27 @@ def _cmd_process(args: argparse.Namespace) -> int:
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
-    """Append one disposition entry to the ledger (unified --record, binding 4)."""
-    files = [f for f in args.files.split(",") if f]
+    """Append one disposition entry to the ledger (unified --record, binding 4).
+
+    Rejects an empty class or file list. argparse's `required=True` only asserts
+    the FLAG is present — `--class ""` satisfies it and used to write an entry
+    whose fingerprint was class-less, i.e. file-granular, silencing unrelated
+    findings on the same file (#1770). `run_second_review.sh --record` already
+    refused this; the guard belongs here too, since this CLI is directly callable
+    and was the one path that could still write a degenerate key. Such an entry
+    would now be inert under `_is_degenerate`, so this is defence-in-depth AND a
+    clear error instead of a silently useless record."""
+    files = [f.strip() for f in args.files.split(",") if f.strip()]
+    if not files:
+        print("record: --files must name at least one file", file=sys.stderr)
+        return 2
+    if not _normalize_class(args.cls):
+        print(
+            "record: --class must be a non-empty finding class "
+            "(the category/type/cwe the finding was reported under)",
+            file=sys.stderr,
+        )
+        return 2
     record_ledger_entry(
         {"files": files, "class": args.cls, "disposition": args.disposition},
         args.ledger,
