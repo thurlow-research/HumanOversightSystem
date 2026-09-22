@@ -63,8 +63,15 @@ if [[ "${1:-}" == "--record" ]]; then
     mkdir -p "$OUT_DIR" "$(dirname "$LEDGER")"
     _files="${2:?--record needs FILES}"; _cls="${3:?--record needs CLASS}"; _disp="${4:?--record needs DISPOSITION}"
     # Ledger write delegated to validation_logic.py (SPEC-334 binding 4).
+    # Propagate the exit code: this script runs under `set -uo pipefail` with NO
+    # `-e` (unlike validate_agents.sh / validate_self.sh), so a failed record is
+    # not fatal by default. `record` now rejects an empty/whitespace class or
+    # file list (#1770) — without this guard the rejection is swallowed and the
+    # canned success line below prints with exit 0, reporting a write that never
+    # happened. Matches the `exit $?` other ledger wrappers already use.
     python3 "$VALIDATION_LOGIC" record \
-        --ledger "$LEDGER" --files "$_files" --class "$_cls" --disposition "$_disp" >/dev/null
+        --ledger "$LEDGER" --files "$_files" --class "$_cls" --disposition "$_disp" >/dev/null \
+        || exit $?
     echo "Recorded to scripts-review ledger: [$_files] $_cls → $_disp"
     exit 0
 fi

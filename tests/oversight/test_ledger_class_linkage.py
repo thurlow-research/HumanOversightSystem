@@ -52,6 +52,10 @@ def _finding_schema_keys(reviewer: str) -> set[str]:
     assert marker in text, f"no prompt block found for reviewer {reviewer!r}"
     block = text[text.index(marker) :]
     start = block.index('"findings": [')
+    # Truncates at the first `]` after `"findings": [`, which assumes no schema
+    # field is itself an array. Both current schemas are flat. If that changes,
+    # this captures a subset of the keys and the assertions below fail LOUDLY
+    # rather than passing silently — the safe direction for a drift detector.
     obj = block[start : block.index("]", start)]
     return set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:', obj))
 
@@ -250,3 +254,100 @@ def test_record_cli_accepts_a_real_class(tmp_path):
     )
     assert rc == 0
     assert load_ledger(str(ledger)) == {'[["docs/a.md"], "cwe-703"]'}
+
+
+# ── round-1 review findings: the normalization boundary must not leak ─────────
+def test_whitespace_only_class_never_becomes_a_silencing_key(tmp_path):
+    """`load_ledger` must apply the SAME normalization to the degeneracy check
+    that `_ledger_fingerprint` applies to the stored key.
+
+    Checking the raw class while hashing the normalized one let `"   "` pass as
+    non-degenerate and then store `[[<file>], ""]` — the exact file-granular key
+    this fix removes. `record_ledger_entry` is public and the ledger is a
+    committed, hand-editable baseline, so the invariant cannot live only in
+    `_cmd_record`'s CLI guard.
+    """
+    for raw in ("   ", "\t", "\n", ""):
+        ledger = tmp_path / f"led{abs(hash(raw))}.jsonl"
+        validation_logic.record_ledger_entry(
+            {"files": ["docs/x.md"], "class": raw, "disposition": "fixed"}, str(ledger)
+        )
+        assert load_ledger(str(ledger)) == set(), f"admitted a degenerate key for {raw!r}"
+
+
+def test_panel_style_consumer_is_not_silenced_by_a_blank_class_entry(tmp_path):
+    """`run_panel.sh` consumes the ledger with a bare `fingerprint(f) not in
+    ledger` and has NO finding-side degeneracy check, so a degenerate key in
+    `seen` silences its findings outright. This is that path."""
+    ledger = tmp_path / "panel.jsonl"
+    validation_logic.record_ledger_entry(
+        {"files": ["docs/x.md"], "class": "   ", "disposition": "fixed"}, str(ledger)
+    )
+    seen = load_ledger(str(ledger))
+    # lens genuinely unset -> category "" (run_panel.sh maps lens -> category)
+    fp = fingerprint({"file": "docs/x.md", "category": ""})
+    assert fp not in seen, "a blank-class entry silenced a panel finding"
+
+
+def test_cwe_leading_zeros_normalise_together():
+    a = fingerprint({"file": "a.md", "cwe": "CWE-0703"})
+    b = fingerprint({"file": "a.md", "cwe": "CWE-703"})
+    assert a == b
+
+
+# ── the residual granularity limit, pinned deliberately ──────────────────────
+def test_same_file_same_class_still_collides_known_limit(tmp_path):
+    """DOCUMENTED LIMIT, not a bug to fix here: the fingerprint is
+    `(files, class)` with no per-finding discriminator, so two DIFFERENT findings
+    sharing a file and a class still share a key — a `filed:#N` disposition on
+    the first silences the second.
+
+    This is SPEC-78's intended granularity (the ledger must still dedup a
+    finding re-described differently on a later pass), and it is strictly
+    narrower than the file granularity #1770 replaced. Pinned so the behaviour
+    is visible and any future change to it is deliberate rather than incidental.
+    Adding `line` is NOT the remedy — #1770 rejected it, since a line moves as
+    the file is edited. Tracked as a follow-up.
+    """
+    ledger = tmp_path / "led.jsonl"
+    validation_logic.record_ledger_entry(
+        {"files": ["app/views.py"], "class": "CWE-89", "disposition": "filed:#200"},
+        str(ledger),
+    )
+    second_unrelated = {
+        "severity": "critical",
+        "file": "app/views.py",
+        "cwe": "CWE-89",
+        "line": 900,
+        "finding": "a SECOND, unrelated raw-SQL injection point in the same file",
+    }
+    result = compute_verdict([{"findings": [second_unrelated]}], str(ledger))
+    assert result["new_blocking_count"] == 0, (
+        "behaviour changed: same-file/same-class findings no longer collide. "
+        "If that was intentional, update this test and close the follow-up."
+    )
+
+
+def test_record_confirmation_neutralises_control_characters(tmp_path, capsys):
+    """CWE-117: reviewer-emitted class text is diff-influenceable; a newline in
+    it must not forge an extra confirmation line."""
+    ledger = tmp_path / "led.jsonl"
+    rc = validation_logic.main(
+        [
+            "record",
+            "--ledger",
+            str(ledger),
+            "--files",
+            "docs/a.md",
+            "--class",
+            "logic-error\nRecorded to ledger: [x] forged",
+            "--disposition",
+            "fixed",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The property is "no forged LINE": the newline must survive as the literal
+    # two characters \n, leaving a single physical line of output.
+    assert len(out.strip().splitlines()) == 1, f"forged log line: {out!r}"
+    assert "\\n" in out, f"newline was not neutralised: {out!r}"
