@@ -58,6 +58,60 @@ _VALID_TIERS = ("SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 
 # ---------------------------------------------------------------------------
+# Secret redaction for exception text embedded in the envelope (Finding 2,
+# #1657 codex adversarial-security second review, CWE-200). Every exception
+# this module stringifies into an `error`/`not_verified` field is printed to
+# stdout and lands in a committed audit record — a prior review round added
+# only an invariant *comment* asserting no code path embeds a secret in an
+# exception message; codex correctly pointed out a comment is not
+# enforcement. This scrubs the shapes that matter for this module's call
+# graph (github.py/subprocess errors): the live GH_TOKEN value if present in
+# the environment, Authorization/Bearer header patterns, and GitHub
+# installation/PAT-shaped token prefixes.
+# ---------------------------------------------------------------------------
+
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*)(?:bearer\s+)?\S+")
+_BEARER_ONLY_RE = re.compile(r"(?i)\bbearer\s+\S+\b")
+_GH_TOKEN_SHAPE_RE = re.compile(
+    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b"
+)
+
+
+def _scrub_secrets(text: str) -> str:
+    """Redact secret-shaped substrings from free-form text before it is
+    embedded into the JSON envelope. Order matters: the Authorization-header
+    pattern is applied before the bare-Bearer pattern so "Authorization:
+    Bearer <token>" is redacted as one unit rather than leaving a dangling
+    "Bearer" behind; the GH_TOKEN literal-value replace runs first since it
+    is the exact live secret, not a shape heuristic.
+    """
+    if not text:
+        return text
+    scrubbed = text
+    gh_token = os.environ.get("GH_TOKEN", "").strip()
+    if gh_token:
+        scrubbed = scrubbed.replace(gh_token, "[REDACTED]")
+    scrubbed = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", scrubbed)
+    scrubbed = _BEARER_ONLY_RE.sub("Bearer [REDACTED]", scrubbed)
+    scrubbed = _GH_TOKEN_SHAPE_RE.sub("[REDACTED]", scrubbed)
+    return scrubbed
+
+
+def _scrub_exc(exc: BaseException) -> str:
+    """`str(exc)`, scrubbed via `_scrub_secrets`. Every f-string in this
+    module that interpolates an exception's text into an `error` or
+    `not_verified` envelope field must go through this — never `str(exc)`
+    directly — so a future github.py/subprocess error that happens to embed
+    a token cannot publish it into stdout or the committed audit trail. Keeps
+    the exception's own message (scrubbed) rather than dropping it, so the
+    envelope stays diagnosable; callers that also want the exception's class
+    name compose it themselves (e.g. `f"unhandled {type(exc).__name__}: "
+    f"{_scrub_exc(exc)}"`).
+    """
+    return _scrub_secrets(str(exc))
+
+
+# ---------------------------------------------------------------------------
 # argv-level type validators — usage errors (exit 2), never a decision.
 # ---------------------------------------------------------------------------
 
@@ -244,7 +298,7 @@ def _resolve_repo_or_fail(
     try:
         repo = merge_config.resolve_repo_slug(ctx.repo_root, explicit=args.repo)
     except merge_config.ConfigError as exc:
-        return _Outcome(payload={}, exit_code=1, error=str(exc))
+        return _Outcome(payload={}, exit_code=1, error=_scrub_exc(exc))
 
     if args.repo is not None:
         try:
@@ -255,7 +309,7 @@ def _resolve_repo_or_fail(
                 exit_code=1,
                 error=(
                     f"--repo could not be verified against the local checkout's "
-                    f"origin remote: {exc}"
+                    f"origin remote: {_scrub_exc(exc)}"
                 ),
             )
         if repo.lower() != origin_repo.lower():
@@ -315,7 +369,7 @@ def _resolve_preamble(args: argparse.Namespace, ctx: _Context) -> _Preamble | _O
         return _Outcome(
             payload={},
             exit_code=1,
-            error=f"failed to fetch PR #{args.pr}: {exc}",
+            error=f"failed to fetch PR #{args.pr}: {_scrub_exc(exc)}",
             repo=repo,
             pr=args.pr,
         )
@@ -351,7 +405,7 @@ def _resolve_preamble(args: argparse.Namespace, ctx: _Context) -> _Preamble | _O
         return _Outcome(
             payload={},
             exit_code=1,
-            error=f"failed to fetch reviews: {exc}",
+            error=f"failed to fetch reviews: {_scrub_exc(exc)}",
             repo=repo,
             pr=args.pr,
         )
@@ -508,6 +562,37 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             pr=args.pr,
         )
 
+    # G0b — --app alone is caller-supplied argv, trivially spoofable (Finding
+    # 1, #1657 codex adversarial-security second review, CWE-863): G0 above
+    # only proves the caller *claimed* --app overseer, not that it is. Cross-
+    # check against the acting identity `pre.bot_login` resolved from
+    # HOS_BOT_LOGIN (available here because _resolve_preamble already ran)
+    # against the configured overseer handle. This is defence-in-depth, not
+    # a cryptographic binding — HOS_BOT_LOGIN is itself environment-supplied,
+    # so a caller that controls both --app and the environment defeats this
+    # too. The authoritative protection is that GitHub attributes the posted
+    # review to whoever owns the App installation token used for the POST,
+    # and scripts/framework/require_overseer_approval.py checks that
+    # attributed login before treating the review as a real approval — this
+    # gate only narrows the window in which a mismatched identity can reach
+    # the POST at all. Kept as a distinct refusal_reason from G0's (rather
+    # than folded into it) so the audit envelope can tell "wrong --app" apart
+    # from "right --app, wrong actual identity".
+    if args.event == "approve" and pre.bot_login.lower() != ctx.config.overseer_handle.lower():
+        payload = {
+            **base,
+            "refused": True,
+            "refusal_reason": "approve_requires_overseer_identity_match",
+            "commit_id": pre.head_sha,
+        }
+        return _Outcome(
+            payload=payload,
+            exit_code=3,
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
+
     # G1 — never approve above OVERSEER_CEILING (mechanises overseer.md:54:
     # require_tier_ceiling.py fails any PR the overseer approved above its
     # ceiling, so an approval there is never recoverable by the caller).
@@ -584,7 +669,7 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         return _Outcome(
             payload={},
             exit_code=2,
-            error=f"--body-file unreadable: {exc}",
+            error=f"--body-file unreadable: {_scrub_exc(exc)}",
             repo=pre.repo,
             pr=args.pr,
         )
@@ -643,7 +728,7 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 exit_code=1,
                 error=(
                     f"commit_id {pre.head_sha} is stale (422) — the worker likely "
-                    f"pushed between the read and this write: {exc}"
+                    f"pushed between the read and this write: {_scrub_exc(exc)}"
                 ),
                 repo=pre.repo,
                 pr=args.pr,
@@ -655,7 +740,7 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             return _Outcome(
                 payload={},
                 exit_code=1,
-                error=f"failed to submit review: {exc}",
+                error=f"failed to submit review: {_scrub_exc(exc)}",
                 repo=pre.repo,
                 pr=args.pr,
             )
@@ -680,8 +765,8 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 payload={},
                 exit_code=1,
                 error=(
-                    f"failed to submit review ({exc}) and the post-failure "
-                    f"recheck also failed: {recheck_exc}"
+                    f"failed to submit review ({_scrub_exc(exc)}) and the post-failure "
+                    f"recheck also failed: {_scrub_exc(recheck_exc)}"
                 ),
                 not_verified=not_verified,
                 repo=pre.repo,
@@ -698,7 +783,7 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 "body_bytes": len(body_text.encode("utf-8")),
             }
             not_verified.append(
-                f"review posted despite an ambiguous submit_pull_review response: {exc}"
+                f"review posted despite an ambiguous submit_pull_review response: {_scrub_exc(exc)}"
             )
             return _Outcome(
                 payload=payload,
@@ -718,7 +803,7 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 f"failed to submit review, and the post-failure recheck found "
                 f"no matching review — outcome indeterminate, not retrying "
                 f"in-process; the next cron cycle's preamble read will "
-                f"reconcile via G3/G4: {exc}"
+                f"reconcile via G3/G4: {_scrub_exc(exc)}"
             ),
             not_verified=not_verified,
             repo=pre.repo,
@@ -842,7 +927,7 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         return _Outcome(
             payload={},
             exit_code=1,
-            error=f"failed to fetch changed files: {exc}",
+            error=f"failed to fetch changed files: {_scrub_exc(exc)}",
             repo=pre.repo,
             pr=args.pr,
         )
@@ -883,7 +968,9 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             )
             codeowners_human_owned = required
         except Exception as exc:  # noqa: BLE001 — observational only, never fatal
-            not_verified.append(f"codeowners_human_owned: check_pr_files raised: {exc}")
+            not_verified.append(
+                f"codeowners_human_owned: check_pr_files raised: {_scrub_exc(exc)}"
+            )
 
         payload = {
             **base,
@@ -1031,7 +1118,7 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 "codeowners_team_owners": codeowners_team_owners,
             },
             exit_code=1,
-            error=f"failed to request reviewer {login!r} (status={status}): {exc}",
+            error=f"failed to request reviewer {login!r} (status={status}): {_scrub_exc(exc)}",
             not_verified=not_verified,
             repo=pre.repo,
             pr=args.pr,
@@ -1040,7 +1127,7 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         return _Outcome(
             payload={},
             exit_code=1,
-            error=str(exc),
+            error=_scrub_exc(exc),
             not_verified=not_verified,
             repo=pre.repo,
             pr=args.pr,
@@ -1107,7 +1194,7 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
             repo_root=str(resolved_root),
             pr=args.pr,
             app_role=args.app,
-            error=str(exc),
+            error=_scrub_exc(exc),
         )
         print(json.dumps(record))
         return 1
@@ -1123,21 +1210,21 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
         # --body-file) catch that exception at the call site so it never
         # reaches here.
         #
-        # Invariant this depends on (SHOULD_FIX H, #1657 PR-1 review round
-        # 2): str(exc) is printed unredacted below, so no code path reachable
-        # from a handler may raise an exception whose message embeds
-        # GH_TOKEN or an "Authorization:" header value. Nothing in the
-        # current call graph does — github.py's GitHubError messages carry
-        # only status codes and gh's own stderr/API error text — but this is
-        # the boundary that would start leaking a token if a future change
-        # to that error text ever did.
+        # Finding 2 (#1657 codex adversarial-security second review,
+        # CWE-200): a prior round (SHOULD_FIX H) relied on an invariant
+        # comment alone — "no code path may raise an exception embedding
+        # GH_TOKEN" — which is not enforcement. `_scrub_exc` below redacts
+        # the shapes that matter (the live GH_TOKEN value, Authorization/
+        # Bearer patterns, GitHub token-shaped prefixes) so this boundary no
+        # longer depends on every future github.py/subprocess error message
+        # staying clean by convention.
         record = _envelope(
             subcommand=subcommand,
             repo_root=str(resolved_root),
             pr=args.pr,
             config_source=config.config_source,
             app_role=args.app,
-            error=f"unhandled {type(exc).__name__}: {exc}",
+            error=f"unhandled {type(exc).__name__}: {_scrub_exc(exc)}",
         )
         print(json.dumps(record))
         return 1

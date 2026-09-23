@@ -323,3 +323,211 @@ def test_r12_at_or_below_ceiling_non_protected_never_triggers(surfaces_root):
     for tier in ("SAFE", "LOW", "MEDIUM", "HIGH"):
         result = cli.evaluate_reviewer_trigger(tier, "HIGH", [NON_PROTECTED_FILE], surfaces_root)
         assert result.triggered is False, (tier, result)
+
+
+# --------------------------------------------------------------------------- #
+# S1-S4 — Finding 1 (#1657 codex adversarial-security second review, CWE-863):
+# G0b, the identity-match gate. Exercised directly against
+# `cli._cmd_submit_verdict` (not through the bash wrapper) so the gate is
+# proven to hold on a direct L2 invocation, which is the whole point of the
+# finding — a caller invoking `python -m scripts.automation.pr_review_cli`
+# (or any other path that never goes through bootstrap/pr_review.sh) must be
+# refused exactly the same way.
+# --------------------------------------------------------------------------- #
+
+DEFAULT_OVERSEER_HANDLE = "hos-overseer-hos[bot]"
+DEFAULT_PR_AUTHOR = "some-pr-author"
+
+
+def _make_submit_ctx(tmp_path, *, overseer_handle=DEFAULT_OVERSEER_HANDLE, ceiling="HIGH"):
+    _init_git_origin(tmp_path)
+    config = MergeConfig(
+        overseer_ceiling=RiskTier.from_str(ceiling),
+        human_reviewer=DEFAULT_HUMAN_REVIEWER,
+        overseer_handle=overseer_handle,
+        worker_handle="hos-worker-hos[bot]",
+        bot_accounts=frozenset(DEFAULT_BOT_ACCOUNTS),
+        tier_ceiling_check_name="require-tier-ceiling",
+        config_source="test-fixture",
+    )
+    return cli._Context(repo_root=tmp_path, config=config, app_role="overseer")
+
+
+def _make_submit_args(body_file, *, event="approve", tier="LOW", pr=42, repo="test-owner/test-repo"):
+    return argparse.Namespace(
+        app="overseer", repo=repo, pr=pr, tier=tier, event=event, body_file=str(body_file)
+    )
+
+
+@pytest.fixture
+def submit_preamble_mocks(monkeypatch):
+    """A PR authored by someone other than the acting bot, with no existing
+    reviews — clears G2 (self-authored) and G3 (already-approved) so a test
+    reaches whichever of G0/G0b it targets."""
+    monkeypatch.setattr(
+        gh,
+        "get_pull",
+        lambda o, r, n: {
+            "head": {"sha": "sha1"},
+            "user": {"login": DEFAULT_PR_AUTHOR},
+            "requested_reviewers": [],
+            "review_comments": 0,
+        },
+    )
+    monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
+
+
+def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(tmp_path, monkeypatch, submit_preamble_mocks):
+    """The core of Finding 1: HOS_BOT_LOGIN (the acting identity) does not
+    match `ctx.config.overseer_handle`, even though `--app overseer` was
+    supplied — direct L2 invocation, no bash wrapper involved."""
+    monkeypatch.setenv("HOS_BOT_LOGIN", "some-other-bot[bot]")
+    body_file = tmp_path / "body.md"
+    body_file.write_text("a verdict body\n")
+    ctx = _make_submit_ctx(tmp_path)
+    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
+    assert outcome.exit_code == 3
+    assert outcome.payload["refusal_reason"] == "approve_requires_overseer_identity_match"
+    assert outcome.payload["refused"] is True
+    assert outcome.payload["commit_id"] == "sha1"
+    # Distinguishable from G0's own refusal_reason (--app-only mismatch) in
+    # the audit envelope.
+    assert outcome.payload["refusal_reason"] != "approve_requires_overseer_identity"
+
+
+def test_s2_direct_l2_approve_succeeds_when_identity_matches(
+    tmp_path, monkeypatch, submit_preamble_mocks
+):
+    monkeypatch.setenv("HOS_BOT_LOGIN", DEFAULT_OVERSEER_HANDLE)
+    monkeypatch.setattr(
+        gh,
+        "submit_pull_review",
+        lambda o, r, n, event, body, sha: {
+            "id": 9001,
+            "state": "APPROVED",
+            "body": body,
+            "commit_id": sha,
+            "html_url": "https://github.com/test-owner/test-repo/pull/42#pullrequestreview-9001",
+        },
+    )
+    body_file = tmp_path / "body.md"
+    body_file.write_text("a verdict body\n")
+    ctx = _make_submit_ctx(tmp_path)
+    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["posted"] is True
+    assert outcome.payload["refused"] is False
+
+
+def test_s3_direct_l2_comment_unaffected_by_identity_mismatch(
+    tmp_path, monkeypatch, submit_preamble_mocks
+):
+    """G0/G0b are gated on `args.event == "approve"` — a mismatched identity
+    must never block a comment verdict."""
+    monkeypatch.setenv("HOS_BOT_LOGIN", "some-other-bot[bot]")
+    monkeypatch.setattr(
+        gh,
+        "submit_pull_review",
+        lambda o, r, n, event, body, sha: {
+            "id": 9002,
+            "state": "COMMENTED",
+            "body": body,
+            "commit_id": sha,
+            "html_url": "https://github.com/test-owner/test-repo/pull/42#pullrequestreview-9002",
+        },
+    )
+    body_file = tmp_path / "body.md"
+    body_file.write_text("a verdict body\n")
+    ctx = _make_submit_ctx(tmp_path)
+    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file, event="comment"), ctx)
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["posted"] is True
+
+
+def test_s4_case_insensitive_identity_match(tmp_path, monkeypatch, submit_preamble_mocks):
+    """Case must not matter for the comparison — mirrors G2/G3's own
+    `.lower()` comparisons elsewhere in this module and
+    require_overseer_approval.py's login comparison idiom."""
+    monkeypatch.setenv("HOS_BOT_LOGIN", DEFAULT_OVERSEER_HANDLE.upper())
+    monkeypatch.setattr(
+        gh,
+        "submit_pull_review",
+        lambda o, r, n, event, body, sha: {
+            "id": 9003,
+            "state": "APPROVED",
+            "body": body,
+            "commit_id": sha,
+            "html_url": "https://github.com/test-owner/test-repo/pull/42#pullrequestreview-9003",
+        },
+    )
+    body_file = tmp_path / "body.md"
+    body_file.write_text("a verdict body\n")
+    ctx = _make_submit_ctx(tmp_path)
+    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
+    assert outcome.exit_code == 0, outcome.error
+    assert outcome.payload["posted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# T1-T8 — Finding 2 (#1657 codex adversarial-security second review, CWE-200):
+# `cli._scrub_secrets` / `cli._scrub_exc`, the exception-text redaction
+# helper. Each token shape named in the finding, plus that a bounded,
+# non-secret message survives untouched (the envelope must stay
+# diagnosable).
+# --------------------------------------------------------------------------- #
+
+
+def test_t1_gh_token_env_value_redacted(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "sekrit-value-12345")
+    assert cli._scrub_secrets("boom: sekrit-value-12345 was rejected") == (
+        "boom: [REDACTED] was rejected"
+    )
+
+
+def test_t2_authorization_header_redacted():
+    text = "request failed, headers: {'Authorization': 'Bearer abcdEFGH12345678'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t3_bare_bearer_token_redacted():
+    text = "curl error: Bearer ghs_abcdefgh12345678 invalid"
+    scrubbed = cli._scrub_secrets(text)
+    assert "ghs_abcdefgh12345678" not in scrubbed
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["ghs", "ghp", "gho", "ghu", "ghr"],
+)
+def test_t4_github_token_prefixes_redacted(prefix):
+    token = f"{prefix}_ABCDEFGHijklmnop12345678"
+    text = f"gh api failed: token {token} rejected"
+    scrubbed = cli._scrub_secrets(text)
+    assert token not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t5_github_pat_prefix_redacted():
+    token = "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"
+    text = f"failed to authenticate with {token}"
+    scrubbed = cli._scrub_secrets(text)
+    assert token not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t6_non_secret_message_preserved_diagnosable():
+    text = "PR #42 not found"
+    assert cli._scrub_secrets(text) == text
+
+
+def test_t7_scrub_exc_wraps_str_exc():
+    exc = ValueError("contains ghp_ABCDEFGHijklmnop12345678 inline")
+    scrubbed = cli._scrub_exc(exc)
+    assert "ghp_ABCDEFGHijklmnop12345678" not in scrubbed
+    assert "contains" in scrubbed and "inline" in scrubbed
+
+
+def test_t8_empty_text_returned_as_is():
+    assert cli._scrub_secrets("") == ""

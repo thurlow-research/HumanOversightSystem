@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+import scripts.automation.pr_review_cli as cli
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PR_REVIEW_SH = REPO_ROOT / "bootstrap" / "pr_review.sh"
@@ -298,6 +300,17 @@ class Harness:
 
     def set_codeowners(self, text: str) -> None:
         self.codeowners_path.write_text(text)
+
+    def set_overseer_handle(self, handle: str) -> None:
+        """Rewrite BOT_OVERSEER_USERNAME in machine-accounts.env, keeping
+        every other key at its DEFAULT_ENV value. Used to construct a G0b
+        identity mismatch: GET_APP_TOKEN_STUB always exports a fixed
+        HOS_BOT_LOGIN (mirroring a real mint's own env override, which
+        env_overrides cannot pre-empt), so the mismatch must come from the
+        configured overseer handle diverging from that fixed mint identity,
+        not the other way around."""
+        env_path = self.repo_root / "scripts" / "framework" / "machine-accounts.env"
+        env_path.write_text(DEFAULT_ENV.replace(f'"{DEFAULT_BOT_LOGIN}"', f'"{handle}"', 1))
 
     def run(self, args, env_overrides=None):
         env = {
@@ -1485,6 +1498,309 @@ def test_w18_ambiguous_post_response_not_found_reports_failure_no_duplicate(h):
     posts = [line for line in cap.splitlines() if "GH_STDIN_BODY:" in line]
     # Exactly one POST attempt — no in-process retry.
     assert len(posts) == 1, cap
+
+
+# --------------------------------------------------------------------------- #
+# S — Finding 1 (#1657 codex adversarial-security second review, CWE-863),
+# exercised end to end through the real bash wrapper: the acting identity
+# (HOS_BOT_LOGIN, as get_app_token.sh actually minted it) not matching
+# ctx.config.overseer_handle (BOT_OVERSEER_USERNAME) must refuse an approve,
+# distinctly from the pre-existing --app-only G0 refusal. GET_APP_TOKEN_STUB
+# always exports a fixed HOS_BOT_LOGIN (mirroring a real mint's own env
+# export, which no caller-supplied env var can pre-empt), so the mismatch is
+# constructed via Harness.set_overseer_handle() on the configured side
+# instead — the two are equivalent from G0b's point of view, since it only
+# ever compares them to each other.
+# --------------------------------------------------------------------------- #
+
+
+def test_s_approve_refuses_when_minted_identity_mismatches_overseer_handle(h):
+    # GET_APP_TOKEN_STUB always exports a fixed HOS_BOT_LOGIN (mirroring a
+    # real mint's own env export, which a caller-supplied env var cannot
+    # pre-empt) — so the mismatch is constructed from the configured
+    # overseer handle side instead.
+    h.set_overseer_handle("some-other-bot[bot]")
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 3, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "approve_requires_overseer_identity_match"
+    assert record["commit_id"] == DEFAULT_HEAD_SHA
+    cap = h.capture()
+    stdin_lines = [line for line in cap.splitlines() if line.startswith("GH_STDIN_BODY:")]
+    assert not stdin_lines, cap
+
+
+def test_s_approve_succeeds_when_minted_identity_matches_overseer_handle(h):
+    """The matching case, stated explicitly (complements
+    test_overseer_app_can_still_approve_when_otherwise_eligible, which relies
+    on the fixture's default minted HOS_BOT_LOGIN already matching
+    BOT_OVERSEER_USERNAME without naming that as the thing under test)."""
+    h.set_overseer_handle(DEFAULT_BOT_LOGIN)
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["posted"] is True
+
+
+def test_s_comment_unaffected_by_identity_mismatch(h):
+    """G0b is gated on --event approve only — a mismatched configured
+    overseer handle must not block a comment verdict."""
+    h.set_overseer_handle("some-other-bot[bot]")
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["posted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# SHOULD_FIX (added to the same #1657 batch, coordinator-relayed
+# security-reviewer finding): bootstrap/pr_review.sh does its own bash-level
+# argv scan to decide which --app value to mint a token for, entirely
+# separate from pr_review_cli.py's argparse, which decides which identity is
+# *authorized* (G0/G0b above). A divergence between the two would be a
+# mint/authorize mismatch — exactly the vulnerability class Finding 1 closes.
+# Today every constructible divergent case is safe by accident: argparse's
+# own strictness refuses to parse before any handler (hence any POST) can
+# run. This is a pinned regression test for that invariant, deliberately NOT
+# a unification of the two parsers (out of scope for this change — see the
+# coordinator's explicit instruction not to half-refactor the wrapper's
+# argv contract in this pass).
+#
+# `_run_wrapper_capture_argv` replaces `python3` on PATH with a stub that
+# records the exact argv pr_review.sh would have handed to the real CLI
+# (never running it), and reads back which --app value (if any)
+# GET_APP_TOKEN_STUB was invoked with — the two independent decisions this
+# test compares.
+# --------------------------------------------------------------------------- #
+
+PYTHON_ARGV_CAPTURE_STUB = """#!/usr/bin/env bash
+shift
+printf '%s\\n' "$@" > "$PY_ARGV_CAPTURE"
+echo '{"schema_version":1,"subcommand":null,"pr":null,"app_role":null,"not_verified":[],"error":null}'
+exit 0
+"""
+
+
+def _run_wrapper_capture_argv(h, full_argv):
+    """Run the real bootstrap/pr_review.sh with `full_argv` passed through
+    verbatim (no automatic --repo injection, unlike Harness.run()), with
+    `python3` shadowed by a stub that captures argv and never runs the real
+    CLI. Returns (minted_app_or_None, py_argv_or_None) — `minted_app` is the
+    --app value bash's own scan decided to mint a token for (None if it
+    decided not to mint at all); `py_argv` is the exact argv that would have
+    reached argparse.
+    """
+    py_stub_dir = h.tmp / "py_argv_stub_bin"
+    py_stub_dir.mkdir(exist_ok=True)
+    _write_exec(py_stub_dir / "python3", PYTHON_ARGV_CAPTURE_STUB)
+    py_argv_capture = h.tmp / "py_argv_capture.txt"
+    if py_argv_capture.exists():
+        py_argv_capture.unlink()
+    env = {
+        "PATH": f"{py_stub_dir}:{h.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CAPTURE_FILE": str(h.capture_file),
+        "HOME": str(h.tmp / "home"),
+        "PY_ARGV_CAPTURE": str(py_argv_capture),
+    }
+    subprocess.run(
+        [BASH, str(h.repo_root / "bootstrap" / "pr_review.sh"), *full_argv],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env=env,
+    )
+    cap = h.capture()
+    minted_app = None
+    for line in cap.splitlines():
+        if line.startswith("GET_APP_TOKEN_CALLED_WITH:--app "):
+            minted_app = line[len("GET_APP_TOKEN_CALLED_WITH:--app ") :].strip()
+    py_argv = py_argv_capture.read_text().splitlines() if py_argv_capture.exists() else None
+    return minted_app, py_argv
+
+
+def _assert_no_mint_authorize_divergence(minted_app, py_argv):
+    """If bash never decided to mint, there is nothing to compare — no token
+    means no privileged call is reachable. Otherwise, feed the exact same
+    argv through the real argparse parser: either it refuses to parse at all
+    (safe — no handler, hence no POST, is reachable), or it must resolve
+    --app to the identical value bash minted for."""
+    if minted_app is None:
+        return
+    assert py_argv is not None, "bash minted a token but python3 was never invoked"
+    parser = cli._build_parser()
+    try:
+        args = parser.parse_args(py_argv)
+    except cli._UsageExit:
+        return
+    assert args.app == minted_app, (minted_app, py_argv, args.app)
+
+
+def test_app_role_agreement_equals_form(h):
+    full_argv = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+        "--app=overseer",
+    ]
+    minted_app, py_argv = _run_wrapper_capture_argv(h, full_argv)
+    assert minted_app == "overseer"
+    _assert_no_mint_authorize_divergence(minted_app, py_argv)
+
+
+def test_app_role_agreement_space_form(h):
+    full_argv = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+        "--app",
+        "overseer",
+    ]
+    minted_app, py_argv = _run_wrapper_capture_argv(h, full_argv)
+    assert minted_app == "overseer"
+    _assert_no_mint_authorize_divergence(minted_app, py_argv)
+
+
+def test_app_role_agreement_missing_value_never_mints(h):
+    """A dangling --app with no following value: bash's `_prev_arg` check
+    only fires on the *next* iteration, so a trailing --app is never picked
+    up — bash correctly declines to mint, and argparse independently refuses
+    to parse ('expected one argument')."""
+    full_argv = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+        "--app",
+    ]
+    minted_app, py_argv = _run_wrapper_capture_argv(h, full_argv)
+    assert minted_app is None
+    _assert_no_mint_authorize_divergence(minted_app, py_argv)
+
+
+def test_app_role_agreement_repeated_flag_last_wins_both_sides(h):
+    full_argv = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+        "--app",
+        "worker",
+        "--app",
+        "overseer",
+    ]
+    minted_app, py_argv = _run_wrapper_capture_argv(h, full_argv)
+    assert minted_app == "overseer"
+    parser = cli._build_parser()
+    args = parser.parse_args(py_argv)
+    assert args.app == "overseer"
+    _assert_no_mint_authorize_divergence(minted_app, py_argv)
+
+
+def test_app_role_agreement_after_double_dash_argparse_refuses(h):
+    """`--app overseer` appearing after a `--` positional-separator: bash's
+    naive scan has no concept of `--` and still picks it up (mints
+    'overseer'), but argparse never saw a --app before `--` (required-
+    argument error) and treats the tokens after `--` as unrecognized
+    positionals — a usage error either way, so no handler (hence no POST)
+    is ever reachable despite bash's mint. This is the exact
+    divergence-risk shape the security-reviewer's finding named; pinned so a
+    future argparse behaviour change cannot silently make this shape
+    resolve successfully in a way that disagrees with bash's mint."""
+    full_argv = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+        "--",
+        "--app",
+        "overseer",
+    ]
+    minted_app, py_argv = _run_wrapper_capture_argv(h, full_argv)
+    assert minted_app == "overseer"
+    parser = cli._build_parser()
+    with pytest.raises(cli._UsageExit):
+        parser.parse_args(py_argv)
+    _assert_no_mint_authorize_divergence(minted_app, py_argv)
 
 
 def test_w18_stale_content_review_does_not_short_circuit_as_success(h):
