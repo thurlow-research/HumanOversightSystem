@@ -27,6 +27,7 @@ Individual tests then perturb exactly one input to drive a single branch.
 (mirrors machine_lock.sh's `HOS_LOCK_JITTER_MAX`).
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -47,6 +48,26 @@ def _write_exec(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     path.chmod(0o755)
+
+
+def _candidates_json(*issues: tuple) -> str:
+    """Build a GitHub list-issues response body for the needs-ai gh stub (#1809).
+
+    Each issue is ``(number, title, [label, ...])``. The shape must match what
+    scripts/automation/lib/next_candidates.jq consumes — a JSON array of objects
+    with ``number``, ``title`` and ``labels: [{"name": ...}]`` — because
+    bin/hos-cron pipes this stub's output straight into that filter.
+    """
+    return json.dumps(
+        [
+            {
+                "number": number,
+                "title": title,
+                "labels": [{"name": name} for name in labels],
+            }
+            for number, title, labels in issues
+        ]
+    )
 
 
 class CronEnv:
@@ -134,8 +155,15 @@ class CronEnv:
             '    echo "${HOS_TEST_HALT_COUNT:-0}" ;;\n'
             # Milestone-less issues (#1395 actionable-work gate) — one issue number per line.
             '  *"milestone=none"*)\n' '    printf "%s\\n" ${HOS_TEST_MILESTONELESS_ISSUES:-} ;;\n'
-            # Context: next work candidates (needs-ai issues, not needs-human)
-            '  *"labels=needs-ai"*)\n' '    printf "%s\\n" ${HOS_TEST_ISSUE_CANDIDATES:-} ;;\n'
+            # Context: next work candidates (needs-ai issues, not needs-human).
+            # #1809: this stub MUST emit JSON. bin/hos-cron pipes this query's
+            # output into `jq -sr "add | next_candidates.jq"` (#1805), so the
+            # plain-text form this used to emit made jq exit non-zero on every
+            # run: _gate_candidates_ok=0, _GATE_CANDIDATES="", and the candidate
+            # branch was never exercised. The guard that was supposed to cover
+            # it still passed — via the query-failure branch — silently vacuous.
+            '  *"labels=needs-ai"*)\n'
+            "    printf '%s' \"${HOS_TEST_ISSUE_CANDIDATES_JSON:-[]}\" ;;\n"
             # #1347 Amendment 1 (NG3b): open release-request issues. Quoted (unlike
             # the space-joined number lists above) so a fake issue line's embedded
             # spaces (title text) survive as one line instead of being word-split.
@@ -291,6 +319,25 @@ class CronEnv:
         _write_exec(
             self.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest",
             "#!/usr/bin/env bash\nexit 0\n",
+        )
+        # #1809: the REAL next_candidates.jq, not a stub. bin/hos-cron's
+        # work-selection query inlines it via `$(cat "$REPO_ROOT"/...)`; absent
+        # from the fake repo, `cat` fails, the jq program degrades to a bare
+        # `add |`, jq exits non-zero, and _gate_candidates_ok is 0 on every run
+        # — so the candidate branch of the actionable-work gate was never
+        # reachable in this suite. Copying the shipped filter (same rationale as
+        # install_branch_ownership_lib) means these tests exercise the ordering
+        # the worker actually ships, not an approximation of it.
+        jq_dst = self.repo / "scripts" / "automation" / "lib" / "next_candidates.jq"
+        jq_dst.parent.mkdir(parents=True, exist_ok=True)
+        jq_dst.write_text(
+            (
+                Path(__file__).parent.parent.parent
+                / "scripts"
+                / "automation"
+                / "lib"
+                / "next_candidates.jq"
+            ).read_text()
         )
 
         # ── HOME config: project registry + claude OAuth (#728) ──
@@ -739,6 +786,21 @@ class CronEnv:
 
     def claude_ran(self) -> bool:
         return self.claude_log.exists()
+
+    def capture_claude_stdin(self) -> Path:
+        """Swap in a claude stub that records the prompt piped to it, and return
+        the capture path. Unlike the ad-hoc capture stubs elsewhere in this file
+        it still touches self.claude_log, so claude_ran() keeps working and a
+        test can assert BOTH that the cycle launched and what it was told."""
+        stdin_capture = self.home / "claude_stdin.log"
+        _write_exec(
+            self.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            f'cat > "{stdin_capture}"\n'
+            f'echo "argv0=$0" > "{self.claude_log}"\n'
+            "exit 0\n",
+        )
+        return stdin_capture
 
     def aa_issue_created(self) -> bool:
         """True if the launcher filed a [BLOCKED] agent-unavailable issue."""
@@ -3113,12 +3175,22 @@ class TestActionableWorkGate:
         """A next-work candidate alone is sufficient to make the cycle proceed.
         Milestone resolution is skipped by setting HOS_TARGET_MILESTONE_NUMBER
         directly (mirrors the REST-lookup-skip pattern the launcher itself
-        supports)."""
+        supports).
+
+        #1809: "no actionable work" not in stdout is NOT sufficient on its own —
+        that assertion is equally satisfied by the query-failure branch
+        (_gate_all_ok=0 ⇒ never skip), which is what it silently degraded to
+        when the gh stub stopped parsing as JSON. The rendered candidate line is
+        asserted below so this guard can only pass via the candidate branch.
+        """
+        stdin_capture = cron.capture_claude_stdin()
         r = cron.run(
             env_overrides={
                 "HOS_TEST_MILESTONELESS_ISSUES": "",
                 "HOS_TEST_OPEN_PR_NUMS": "",
-                "HOS_TEST_ISSUE_CANDIDATES": "#901 Some candidate issue",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
+                    (901, "Some candidate issue", ["needs-ai", "priority:high"]),
+                ),
                 "HOS_TARGET_RELEASE": "v0.6.1",
                 "HOS_TARGET_MILESTONE_NUMBER": "7",
             }
@@ -3126,6 +3198,68 @@ class TestActionableWorkGate:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "no actionable work" not in r.stdout
         assert cron.claude_ran()
+        # Non-vacuity: the candidate must actually reach the prompt, which only
+        # happens when the query parsed and _GATE_CANDIDATES is non-empty.
+        context = stdin_capture.read_text()
+        assert "#901 [high] Some candidate issue" in context
+
+    def test_empty_candidate_list_still_skips(self, cron):
+        """Companion to the test above, and the guard on the stub itself: with a
+        milestone set and the candidates query returning a well-formed EMPTY
+        list, the gate must read "no candidates" (not "query failed") and skip.
+
+        If the stub ever regresses to output jq cannot parse, _gate_candidates_ok
+        drops to 0, _gate_all_ok follows, and this test fails — whereas
+        test_next_work_candidate_alone_proceeds' "not in stdout" assertion alone
+        would keep passing (#1809)."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": "[]",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_candidates_ordered_by_priority_then_number(self, cron):
+        """The rendered section applies next_candidates.jq end to end inside the
+        real `gh ... | jq -sr "add | ..."` pipeline: needs-human is excluded,
+        priority outranks issue number, and an unlabelled issue defaults to low.
+
+        This is the only test that exercises that shipped pipeline shape — the
+        next_candidates.jq tests run jq standalone against fixture files (#1809).
+        """
+        stdin_capture = cron.capture_claude_stdin()
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
+                    (700, "No priority label", ["needs-ai"]),
+                    (800, "Blocked on a human", ["needs-ai", "needs-human"]),
+                    (900, "Later but critical", ["needs-ai", "priority:critical"]),
+                    (400, "Earlier and critical", ["needs-ai", "priority:critical"]),
+                    (500, "Medium priority", ["needs-ai", "priority:medium"]),
+                ),
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        section = context.split("### Next work candidates", 1)[1]
+        rendered = [ln for ln in section.splitlines() if ln.startswith("#")]
+        assert rendered == [
+            "#400 [critical] Earlier and critical",
+            "#900 [critical] Later but critical",
+            "#500 [medium] Medium priority",
+            "#700 [low] No priority label",
+        ], rendered
+        assert "#800" not in section
 
     def test_query_failure_does_not_skip(self, cron):
         """A query failure is "unknown", never "empty" — it must never cause a
