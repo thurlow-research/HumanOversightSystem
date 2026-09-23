@@ -106,3 +106,59 @@ To verify this prompt still produces equivalent output in a new session:
 2. Paste the prompt above verbatim
 3. Compare key logic paths against `tests/framework/test_vendor_argv_sweep.py`
 4. Note any drift in a new version artifact (`test_vendor_argv_sweep.v1.md`)
+
+---
+
+## Revision 2 — review iteration (2026-09-23)
+
+**Trigger:** overseer review of PR #1830 (comment 2026-09-23T09:41:38Z) returned
+REQUEST CHANGES with two findings; human review (`ScottThurlow`,
+CHANGES_REQUESTED) directed: "Please make changes requested by overseer".
+
+**Finding 1 — lint.** The new file was the sole *in-scope* cause of a red
+`oversight-gate-lint`: flake8 `E201`/`E202` ×4 on the
+`f"... { {k: hits[k] for k in sorted(...)} }"` construct (the spaces are
+load-bearing — without them `{{` is an f-string brace escape), plus black
+wanting the `hits.setdefault(...).append(...)` calls on one line.
+
+**Finding 2 — pattern evasion.** The overseer ran `_VENDOR_ARGV_PATTERN`
+directly and found five forms that MISS but must MATCH, from two causes:
+a literal prefix before the expansion (`agy -p "Review this: $CODE"` — the
+*more* natural way a fresh call site gets written, and squarely in the E2BIG
+class), and an incomplete command-position alternation (missing `if`, `while`,
+`until`, `!`, `time`). `_CAT_INTO_ARGV_PATTERN` had the same literal-prefix gap.
+
+**Prompt issued for the fix:**
+
+```
+Fix both findings in tests/framework/test_vendor_argv_sweep.py ONLY.
+
+1. Lint: hoist the dict comprehension into a local before the f-string and
+   interpolate the plain name (do NOT just delete the load-bearing spaces);
+   collapse the two setdefault().append() calls to one line.
+2. Widen the argv-element clause from "argument BEGINS with an expansion"
+   to "quoted argument CONTAINS an expansion anywhere":
+   "?\$(?:\(|\{|[A-Za-z_])  ->  (?:"[^"]*)?\$(?:\(|\{|[A-Za-z_])
+   Apply the same widening to _CAT_INTO_ARGV_PATTERN's "\$\(\s*cat\b tail.
+3. Add if/while/until/time as \b-anchored keyword alternatives and `!` to the
+   [|&;`(] class in the command-position prefix.
+4. Pin all seven new forms in `reintroductions`, and add a literal-prefix
+   assertion for _CAT_INTO_ARGV_PATTERN.
+
+CRITICAL: the `migrated` list must still NOT match after the widening — that
+list is the whole reason the command-position anchor exists. If the widened
+pattern false-positives on any of it, the widening is wrong.
+```
+
+**Verification of this revision (both directions, re-run independently of the
+implementing agent):** all ten must-match forms — including all five the
+overseer reported as MISS — now match; all five must-not-match forms (the
+migrated `vendor_invoke` shape, the `claude -p` stdin pipe, `codex exec <
+"$tmpfile"`, and a docs mention) still miss. Full suite 3532 passed, 15 skipped.
+`lint_check.sh` on this file alone: GATE PASS.
+
+**Known residual, deliberately out of scope (overseer-scoped):** the changeset
+gate still reports one black failure on `tests/oversight/test_red_team_fail_closed.py`.
+Confirmed pre-existing — `black --check` fails on that file as it stands on
+`origin/main`. Per the overseer, "not this PR's to fix" (#1571 item 4 territory);
+this PR merely drags it into a changeset-scoped gate.

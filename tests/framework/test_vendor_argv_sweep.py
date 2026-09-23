@@ -71,15 +71,22 @@ def _iter_shell_files(*root_dirs):
 # also matches `vendor_invoke agy "$TIMEOUT" ...` — the CORRECT, migrated form,
 # where `agy` is an argument naming the vendor rather than the binary being
 # launched — and the check would block the migration it exists to enforce.
-# `test_the_sweep_would_actually_catch_a_reintroduction` pins both directions.
+# The alternation covers every shell construct that puts the next word in
+# command position: start of string/line, a command substitution or grouping
+# opener, a pipe/list/subshell separator (including `!` negation), and the
+# keyword-introduced forms (`if`, `while`, `until`, `then`, `do`, `else`,
+# `time`). `test_the_sweep_would_actually_catch_a_reintroduction` pins both
+# directions.
 _VENDOR_ARGV_PATTERN = re.compile(
     r"""
-    (?:^|\$\(|[|&;`(]|\bthen\s|\bdo\s|\belse\s)  # command position only
+    (?:^|\$\(|[|&;`(!]|\bif\s|\bwhile\s|\buntil\s|\btime\s|\bthen\s|\bdo\s|\belse\s)
     \s*
     (?:agy|codex)\b                          # the vendor CLI being launched
     (?:\s+(?:exec|-p|--print|--prompt))+     # its subcommand / prompt flag
     \s+
-    "?\$(?:\(|\{|[A-Za-z_])                 # an argv element expanded at runtime
+    (?:"[^"]*)?\$(?:\(|\{|[A-Za-z_])         # a quoted argv element containing
+                                              # a runtime expansion anywhere,
+                                              # not just at its start
     """,
     re.VERBOSE,
 )
@@ -89,8 +96,11 @@ _VENDOR_ARGV_PATTERN = re.compile(
 # then `cat`s it back into an argument and defeats it. Anchored to a preceding
 # flag/subcommand token so it means "passed as an argument" — a plain
 # `VAR="$(cat f)"` assignment is ordinary, ubiquitous shell and not this bug.
+# The quoted argument may carry literal text before the `$(cat ...)` (e.g. a
+# label prefix), so the pattern allows anything up to the expansion, not just
+# an immediate `"$(cat`.
 _CAT_INTO_ARGV_PATTERN = re.compile(
-    r"""(?:^|\s)(?:-\w|--[\w-]+|exec)\s+"\$\(\s*cat\b""",
+    r"""(?:^|\s)(?:-\w|--[\w-]+|exec)\s+"[^"]*\$\(\s*cat\b""",
     re.VERBOSE,
 )
 
@@ -109,13 +119,12 @@ def test_no_vendor_cli_receives_content_through_argv():
     for path in _iter_shell_files("scripts", "bootstrap", "bin"):
         for lineno, line in _code_lines(path):
             if _VENDOR_ARGV_PATTERN.search(line):
-                hits.setdefault(str(path.relative_to(ROOT)), []).append(
-                    f"{lineno}: {line.strip()}"
-                )
+                hits.setdefault(str(path.relative_to(ROOT)), []).append(f"{lineno}: {line.strip()}")
     offenders = set(hits) - _VENDOR_ARGV_EXEMPTIONS
+    offending = {k: hits[k] for k in sorted(offenders)}
     assert not offenders, (
         "vendor CLI invocation(s) passing content through argv (#1364 E2BIG "
-        f"class): { {k: hits[k] for k in sorted(offenders)} }. Route the call "
+        f"class): {offending}. Route the call "
         "through vendor_invoke() in scripts/oversight/lib/vendor_invoke.sh — "
         "content goes on stdin, never argv."
     )
@@ -128,12 +137,11 @@ def test_no_file_contents_are_cat_into_argv():
     for path in _iter_shell_files("scripts", "bootstrap", "bin"):
         for lineno, line in _code_lines(path):
             if _CAT_INTO_ARGV_PATTERN.search(line):
-                hits.setdefault(str(path.relative_to(ROOT)), []).append(
-                    f"{lineno}: {line.strip()}"
-                )
+                hits.setdefault(str(path.relative_to(ROOT)), []).append(f"{lineno}: {line.strip()}")
+    offending = {k: hits[k] for k in sorted(hits)}
     assert not hits, (
-        "file contents interpolated into an argv element via `\"$(cat ...)\"` "
-        f"(#1364 E2BIG class): { {k: hits[k] for k in sorted(hits)} }. Pass the "
+        'file contents interpolated into an argv element via `"$(cat ...)"` '
+        f"(#1364 E2BIG class): {offending}. Pass the "
         "file PATH and let the callee read it, or feed it on stdin."
     )
 
@@ -147,6 +155,13 @@ def test_the_sweep_would_actually_catch_a_reintroduction(tmp_path):
         'CODEX_OUT=$(codex exec "$CODEX_PROMPT")',
         'result=$(agy -p "$(cat "$tmpfile")" 2>/dev/null)',
         'AGY_OUT=$(agy -p "${AGY_PROMPT}")',
+        'result=$(agy -p "Review this code: $PROMPT")',
+        'AGY_OUT=$(codex exec "Here is the diff: $DIFF")',
+        'if agy -p "$PROMPT"; then',
+        'while agy -p "$PROMPT"; do',
+        'until agy -p "$PROMPT"; do',
+        '! agy -p "$PROMPT"',
+        'time agy -p "$PROMPT"',
     ]
     for line in reintroductions:
         assert _VENDOR_ARGV_PATTERN.search(line), (
@@ -155,6 +170,7 @@ def test_the_sweep_would_actually_catch_a_reintroduction(tmp_path):
         )
 
     assert _CAT_INTO_ARGV_PATTERN.search('agy -p "$(cat "$tmpfile")"')
+    assert _CAT_INTO_ARGV_PATTERN.search('agy -p "Review: $(cat f)"')
 
     # And must NOT fire on the migrated form, or the sweep is unusable.
     migrated = [
