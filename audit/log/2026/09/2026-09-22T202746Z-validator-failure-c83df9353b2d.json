@@ -1,0 +1,1 @@
+{"attempts":2,"event":"validator-failure","final_outcome":"skipped","last_error":"exit 3","required":false,"timestamp":"2026-09-22T20:27:46Z","validator":"pip-audit"}
