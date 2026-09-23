@@ -408,6 +408,16 @@ class TestRequestReviewers:
                 request_reviewers("o", "r", 1, ["@org/some-team"])
         mock_run.assert_not_called()
 
+    def test_unprefixed_team_slug_raises_value_error_without_calling_gh(self):
+        """SHOULD_FIX 4 (#1657 PR-1 review round 4): the guard must catch
+        "org/team" even without a leading '@' — the original
+        `startswith("@") and "/" in login[1:]` check missed this form, which
+        would otherwise be POSTed to the user-reviewers endpoint and 422."""
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="team reviewers are not supported"):
+                request_reviewers("o", "r", 1, ["org/some-team"])
+        mock_run.assert_not_called()
+
     def test_empty_logins_raises_without_calling_gh(self):
         with patch("subprocess.run") as mock_run:
             with pytest.raises(GitHubError, match="non-empty"):

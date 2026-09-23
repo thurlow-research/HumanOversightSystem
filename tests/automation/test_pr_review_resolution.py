@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -174,9 +175,24 @@ def test_r13_mixed_bot_and_human_owner_resolves_to_human(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+def _init_git_origin(root: Path, slug: str = "test-owner/test-repo") -> None:
+    """A real (if minimal) git checkout with an `origin` remote matching
+    `_make_args`'s default explicit --repo, so MUST_FIX 2's repo-scope-match
+    check (#1657 PR-1 review round 4) has something real to compare against
+    — `_cmd_request_reviewer` now always resolves the checkout's own origin
+    whenever --repo is explicit, even though that value is never itself used
+    as the git remote target here (it never shells out further)."""
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "remote", "add", "origin", f"https://github.com/{slug}.git"],
+        check=True,
+    )
+
+
 def _make_ctx(
     tmp_path, *, human_reviewer=DEFAULT_HUMAN_REVIEWER, bot_accounts=None, ceiling="HIGH"
 ):
+    _init_git_origin(tmp_path)
     config = MergeConfig(
         overseer_ceiling=RiskTier.from_str(ceiling),
         human_reviewer=human_reviewer,

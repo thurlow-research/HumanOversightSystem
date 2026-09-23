@@ -76,15 +76,24 @@ REPO_ROOT="$SCRIPT_DIR/.."
 RED="\033[31m"; YELLOW="\033[33m"; RESET="\033[0m"
 err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 1; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
+# Usage errors get exit 2, matching pr_review_cli.py's own exit-2 usage-error
+# class (TD-1657 §4.0/§4.6 step 2: this --body precheck exists purely as a
+# friendlier message than argparse's own "unrecognized arguments" rejection
+# would give — L2's argparse would reject an unknown --body flag as exit 2
+# regardless, so this bash-level shortcut must not diverge to exit 1).
+err_usage() { echo -e "  ${RED}✘${RESET}  $*" >&2; exit 2; }
 
 # shellcheck source=lib/comment_format_check.sh
 source "$SCRIPT_DIR/lib/comment_format_check.sh"
 
 # ── Reject inline --body up front, whatever subcommand this is (#1155 class,
-# same message post_comment.sh / post_review_thread.sh use) ─────────────────
+# same message post_comment.sh / post_review_thread.sh use). Matches both
+# `--body <text>` and `--body=<text>` — the split form alone missed the
+# `=` form, which argparse would otherwise reject only as a generic unknown
+# flag (also verify-then-fix, #1657 PR-1 review round 4) ─────────────────
 for _arg in "$@"; do
-    if [[ "$_arg" == "--body" ]]; then
-        err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate."
+    if [[ "$_arg" == "--body" || "$_arg" == "--body="* ]]; then
+        err_usage "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate."
     fi
 done
 unset _arg
@@ -134,7 +143,18 @@ esac
 # post_comment.sh:79-86 and post_review_thread.sh:103-112. A missing or
 # unreadable --body-file is not decided here: it surfaces as
 # pr_review_cli.py's own G5 (exit 2) or argparse's exit-2 usage error.
-if [[ "$SUBCOMMAND" == "submit-verdict" ]]; then
+#
+# That "not decided here" claim only holds if this block does not itself
+# run the format check against an absent/unreadable file (also
+# verify-then-fix, #1657 PR-1 review round 4): hos_cfc_check_overseer_format
+# reads the file via `cat ... 2>/dev/null`, so a missing file reads as an
+# empty body, which the check reports as "missing the leading **Executive
+# summary:** heading" rather than as a missing-file condition — in
+# HOS_COMMENT_FORMAT_MODE=enforce with --app overseer that misreport would
+# `err` (exit 1, no JSON), pre-empting G5's exit-2 envelope with the wrong
+# reason. Gate on file existence/readability first, exactly the condition
+# G5 itself checks, so the two never disagree about which of them owns it.
+if [[ "$SUBCOMMAND" == "submit-verdict" && -n "$BODY_FILE" && -r "$BODY_FILE" ]]; then
     hos_cfc_check_at_path_literal "$BODY_FILE" || err "$HOS_CFC_REASON"
     hos_cfc_enforce_overseer_format "$BODY_FILE" "$APP_ROLE" warn \
         || err "comment format violation (#1270): $HOS_CFC_REASON"
@@ -145,8 +165,18 @@ fi
 # of whether a token was ever actually minted (TOKEN_FILE / GH_TOKEN unset is
 # a no-op below) and regardless of the child's exit code.
 TOKEN_FILE=""
+_HOS_PR_REVIEW_REVOKED=0
 
 revoke_token() {
+    # Idempotency guard (SHOULD_FIX 6, #1657 PR-1 review round 4): both the
+    # signal trap below and the EXIT trap that follows it can reach this
+    # function for the same process, and revoke_app_token.sh's own
+    # idempotency is no substitute — this guard is what keeps the trap
+    # firing exactly once instead of twice.
+    if [[ "$_HOS_PR_REVIEW_REVOKED" == "1" ]]; then
+        return
+    fi
+    _HOS_PR_REVIEW_REVOKED=1
     if [[ -n "$TOKEN_FILE" ]]; then
         rm -f "$TOKEN_FILE"
     fi
@@ -161,7 +191,25 @@ revoke_token() {
     # expires naturally within the hour either way).
     bash "$SCRIPT_DIR/revoke_app_token.sh"
 }
+
+# A cron-imposed SIGTERM (or an operator SIGINT) kills this script without
+# ever running an EXIT trap on its own — EXIT only fires on a normal return
+# or an explicit `exit`, not on death-by-signal — which would leave the
+# minted installation token live until its natural expiry (SHOULD_FIX 6,
+# #1657 PR-1 review round 4). Route INT/TERM through the same revoke_token,
+# then re-raise the signal against the default disposition (after clearing
+# our own traps, so the re-raise cannot re-enter this handler) rather than
+# calling `exit` with a made-up code, so the parent still observes the
+# conventional 128+signal exit status.
+_on_signal() {
+    local sig="$1"
+    revoke_token
+    trap - EXIT INT TERM
+    kill -s "$sig" "$$"
+}
 trap revoke_token EXIT
+trap '_on_signal INT' INT
+trap '_on_signal TERM' TERM
 
 if $MINT_TOKEN; then
     TOKEN_FILE="$(mktemp)"

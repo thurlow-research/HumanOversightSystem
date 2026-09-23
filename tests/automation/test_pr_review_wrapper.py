@@ -22,8 +22,10 @@ CAPTURE_FILE. No network access.
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -46,6 +48,18 @@ printf "export HOS_BOT_LOGIN='{DEFAULT_BOT_LOGIN}'\\n"
 
 GIT_STUB = """#!/usr/bin/env bash
 echo "GIT_CALLED_WITH:$*" >> "$CAPTURE_FILE"
+args=("$@")
+n=${#args[@]}
+is_get_url_origin=0
+if [[ $n -ge 3 ]]; then
+    a="${args[$((n-3))]}"; b="${args[$((n-2))]}"; c="${args[$((n-1))]}"
+    if [[ "$a" == "remote" && "$b" == "get-url" && "$c" == "origin" ]]; then
+        is_get_url_origin=1
+    fi
+fi
+if [[ "$is_get_url_origin" == "1" ]]; then
+    echo "${GIT_ORIGIN_URL:-https://github.com/test-owner/test-repo.git}"
+fi
 exit 0
 """
 
@@ -55,6 +69,10 @@ exit 0
 # non-zero exit on API errors, which _run_gh relies on).
 GH_STUB = r"""#!/usr/bin/env bash
 echo "GH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
+# Only used by the SIGTERM-mid-flight test below — a deliberate stall so the
+# test has a reliable window to deliver the signal while pr_review_cli.py is
+# genuinely in flight. 0 (no sleep) for every other test.
+sleep "${GH_STUB_SLEEP_SECONDS:-0}"
 
 HAS_INPUT=0
 for a in "$@"; do
@@ -396,7 +414,33 @@ def test_w3_rejects_inline_body(h):
             "inline text",
         ]
     )
-    assert result.returncode != 0
+    # TD-1657 §4.6 step 2: this is a usage error (exit 2), not an operational
+    # failure — the same class argparse's own "unrecognized arguments" would
+    # produce for an unknown --body flag (also verify-then-fix, #1657 PR-1
+    # review round 4: this previously used err() and exited 1).
+    assert result.returncode == 2, result.stderr
+    assert "--body-file" in result.stderr
+
+
+def test_w3_rejects_inline_body_equals_form(h):
+    """`--body=<text>` must be caught too — the split-token match alone
+    (`"$_arg" == "--body"`) missed the `=` form (also verify-then-fix,
+    #1657 PR-1 review round 4)."""
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body=inline text",
+        ]
+    )
+    assert result.returncode == 2, result.stderr
     assert "--body-file" in result.stderr
 
 
@@ -432,6 +476,35 @@ def test_w4_missing_body_file_exits_2(h):
         ]
     )
     assert result.returncode == 2, result.stderr
+
+
+def test_w4_missing_body_file_path_in_enforce_mode_still_exits_2_with_envelope(h):
+    """Also verify-then-fix (#1657 PR-1 review round 4): in
+    HOS_COMMENT_FORMAT_MODE=enforce, a --body-file path that does not exist
+    must still reach pr_review_cli.py's own G5 (exit 2, one JSON envelope)
+    rather than being misread by the bash-level format check as a "missing
+    **Executive summary:** heading" content violation and refused via
+    err() — exit 1, no JSON, wrong reason."""
+    missing_path = h.tmp / "does-not-exist.md"
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(missing_path),
+        ],
+        env_overrides={"HOS_COMMENT_FORMAT_MODE": "enforce"},
+    )
+    assert result.returncode == 2, result.stderr
+    record = _parse_stdout_json(result)
+    assert "body-file" in (record["error"] or "").lower()
 
 
 def test_w5_request_changes_rejected(h):
@@ -511,6 +584,80 @@ def test_w6_token_revoked_on_failure_path(h):
         "CURL_CALLED_WITH:-s -o /dev/null -w %{http_code} --connect-timeout 10 --max-time 30 -X DELETE"
         in cap
     )
+
+
+def test_w6_token_revoked_exactly_once_on_sigterm(h):
+    """SHOULD_FIX 6 (#1657 PR-1 review round 4): a cron-imposed SIGTERM
+    kills the script without ever running an EXIT-only trap, leaving the
+    minted token live until natural expiry. Send SIGTERM mid-flight (after
+    the mint succeeded, while pr_review_cli.py's GitHub fetch is
+    deliberately stalled) and confirm the token is still revoked — exactly
+    once, proving the idempotency guard as well as the trap itself."""
+    env = {
+        "PATH": f"{h.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CAPTURE_FILE": str(h.capture_file),
+        "HOME": str(h.tmp / "home"),
+        "PR_HEAD_SHA": DEFAULT_HEAD_SHA,
+        "PR_AUTHOR": DEFAULT_AUTHOR,
+        "PR_FILES": "README.md",
+        "PR_REVIEWS_JSON": "[]",
+        "PR_REQUESTED_REVIEWERS": "",
+        "PR_REVIEW_COMMENTS": "0",
+        "GH_STUB_SLEEP_SECONDS": "5",
+    }
+    full_args = [
+        "submit-verdict",
+        "--repo",
+        "test-owner/test-repo",
+        "--app",
+        "overseer",
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+    ]
+    proc = subprocess.Popen(
+        [BASH, str(h.repo_root / "bootstrap" / "pr_review.sh"), *full_args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        # Poll (bounded, short interval) for the mint to have completed —
+        # the process is genuinely in flight, stalled inside the (now
+        # slow) GH_STUB call, once this line is present.
+        deadline = 10.0
+        waited = 0.0
+        while waited < deadline:
+            if "GET_APP_TOKEN_CALLED_WITH" in h.capture():
+                break
+            time.sleep(0.1)
+            waited += 0.1
+        else:
+            proc.kill()
+            pytest.fail("mint never happened within the poll deadline")
+
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert proc.returncode == -signal.SIGTERM, (proc.returncode, proc.stderr.read())
+    cap = h.capture()
+    revoke_calls = [
+        line
+        for line in cap.splitlines()
+        if line.startswith("CURL_CALLED_WITH") and "installation/token" in line
+    ]
+    assert len(revoke_calls) == 1, cap
 
 
 # --------------------------------------------------------------------------- #
@@ -648,6 +795,37 @@ def test_w10_critical_tier_requests_regardless_of_protected_surface(h):
     assert len(stdin_lines) == 1, cap
 
 
+def test_explicit_reviewer_leading_at_is_stripped(h):
+    """SHOULD_FIX 5 (#1657 PR-1 review round 4): an explicit `--reviewer
+    @someone` must have its leading '@' stripped before the bot-account and
+    PR-author self-request checks (which compare against un-prefixed
+    logins) and before the POST — GitHub itself 422s a "@login" reviewer
+    request."""
+    result = h.run(
+        [
+            "request-reviewer",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--tier",
+            "CRITICAL",
+            "--reviewer",
+            "@carol",
+        ],
+        env_overrides={"PR_FILES": "README.md"},
+    )
+    assert result.returncode == 0, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["requested"] is True
+    assert record["resolved_reviewer"] == "carol"
+    cap = h.capture()
+    stdin_lines = [line for line in cap.splitlines() if line.startswith("GH_STDIN_BODY:")]
+    assert len(stdin_lines) == 1, cap
+    payload = json.loads(stdin_lines[0][len("GH_STDIN_BODY:") :])
+    assert payload == {"reviewers": ["carol"]}
+
+
 # --------------------------------------------------------------------------- #
 # W11-W12 — idempotency, and the livelock guard (ARCH-9: APPROVED and COMMENTED)
 # --------------------------------------------------------------------------- #
@@ -742,9 +920,190 @@ def test_w13_above_ceiling_approve_refused(h):
     assert result.returncode == 3, result.stderr
     record = _parse_stdout_json(result)
     assert record["refusal_reason"] == "above_ceiling_approve"
+    # SHOULD_FIX 3 (#1657 PR-1 review round 4): the refusal payload must
+    # still pin the evaluated commit, not leave commit_id null.
+    assert record["commit_id"] == DEFAULT_HEAD_SHA
     cap = h.capture()
     stdin_lines = [line for line in cap.splitlines() if line.startswith("GH_STDIN_BODY:")]
     assert not stdin_lines, cap
+
+
+def test_w13b_self_authored_approve_refused_carries_commit_id(h):
+    """SHOULD_FIX 3 (#1657 PR-1 review round 4) — the G2 self_authored
+    refusal must also pin commit_id, not leave it null."""
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ],
+        env_overrides={"PR_AUTHOR": DEFAULT_BOT_LOGIN},
+    )
+    assert result.returncode == 3, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "self_authored"
+    assert record["commit_id"] == DEFAULT_HEAD_SHA
+
+
+# --------------------------------------------------------------------------- #
+# MUST_FIX 1 (#1657 PR-1 review round 4) — --app never authorizes approve on
+# its own; only the overseer app role may clear G1/G2 and post an APPROVE.
+# --------------------------------------------------------------------------- #
+
+
+def test_worker_app_cannot_approve_even_when_otherwise_eligible(h):
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "worker",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 3, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "approve_requires_overseer_identity"
+    assert record["commit_id"] == DEFAULT_HEAD_SHA
+    cap = h.capture()
+    stdin_lines = [line for line in cap.splitlines() if line.startswith("GH_STDIN_BODY:")]
+    assert not stdin_lines, cap
+
+
+def test_human_app_cannot_approve(h):
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "human",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 3, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "approve_requires_overseer_identity"
+
+
+def test_worker_app_comment_event_unaffected_by_approve_identity_gate(h):
+    """Non-approve events must not be touched by the new G0 gate — a
+    worker-app `comment` still posts normally."""
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "worker",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert "repos/test-owner/test-repo/pulls/42/reviews" in cap
+
+
+def test_overseer_app_can_still_approve_when_otherwise_eligible(h):
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "approve",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["posted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# MUST_FIX 2 (#1657 PR-1 review round 4) — an explicit --repo that does not
+# match the local checkout's own origin remote is refused before any GitHub
+# call is made.
+# --------------------------------------------------------------------------- #
+
+
+def test_explicit_repo_mismatching_origin_is_refused_before_any_gh_call(h):
+    # h.run() itself always injects `--repo test-owner/test-repo` ahead of
+    # these args; argparse's default store action keeps the *last*
+    # occurrence of a repeated flag, so appending a second, mismatching
+    # --repo here is what the CLI actually sees.
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+            "--repo",
+            "some-other-org/some-other-repo",
+        ]
+    )
+    assert result.returncode == 3, result.stderr
+    record = _parse_stdout_json(result)
+    assert record["refusal_reason"] == "repo_scope_mismatch"
+    cap = h.capture()
+    assert "GH_CALLED_WITH" not in cap
+
+
+def test_explicit_repo_matching_origin_still_works(h):
+    """An explicit --repo that matches origin's own slug must still work —
+    this guard is scoped to a mismatch only."""
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # --------------------------------------------------------------------------- #

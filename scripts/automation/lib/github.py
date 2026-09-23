@@ -479,8 +479,9 @@ def request_reviewers(
     supported by this function — a team request needs the separate
     `team_reviewers` field and org membership a personal-repo install may
     not have; see docs/v0.7.0/TECHNICAL-DESIGN-1657-overseer-review-objects.md
-    §4.5 step 5. An "@org/team" token raises ValueError rather than being
-    silently posted as a user login.
+    §4.5 step 5. Any login containing "/" — "@org/team" or the un-prefixed
+    "org/team" alike (SHOULD_FIX 4, #1657 PR-1 review round 4) — raises
+    ValueError rather than being silently posted as a user login and 422ing.
 
     Uses JSON-encoded body via --input - (stdin) for the same #752 reason as
     post_comment / submit_pull_review.
@@ -496,7 +497,7 @@ def request_reviewers(
     if not logins:
         raise GitHubError("request_reviewers: logins must be non-empty")
     for login in logins:
-        if login.startswith("@") and "/" in login[1:]:
+        if "/" in login:
             raise ValueError(f"request_reviewers: team reviewers are not supported, got: {login!r}")
     result = _run_gh(
         [f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", "--method", "POST"],

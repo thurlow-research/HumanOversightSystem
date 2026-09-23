@@ -226,11 +226,45 @@ class _Preamble:
 def _resolve_repo_or_fail(
     args: argparse.Namespace, ctx: _Context
 ) -> tuple[str, str, str] | _Outcome:
-    """Resolve owner/repo, or return a ready-to-emit exit-1 _Outcome."""
+    """Resolve owner/repo, or return a ready-to-emit exit-1/exit-3 _Outcome.
+
+    An explicit --repo is a formatting convenience only, never an
+    authorization boundary (MUST_FIX 2, #1657 PR-1 review round 4):
+    `merge_config.resolve_repo_slug` only regex-validates the slug shape and
+    returns it verbatim, and this primitive performs state-changing GitHub
+    writes with an App installation token that may have multi-repo access.
+    So an explicit --repo that does not match the slug resolved from this
+    checkout's own `origin` remote is refused (exit 3) before any GitHub
+    call is made — never after, since a wrong-repo PR fetch would itself be
+    the cross-repo leak this guard exists to prevent. This check lives here,
+    not in merge_config.resolve_repo_slug, because merge_config is shared
+    with the read-only merge_authority_cli and must not change behaviour for
+    it.
+    """
     try:
         repo = merge_config.resolve_repo_slug(ctx.repo_root, explicit=args.repo)
     except merge_config.ConfigError as exc:
         return _Outcome(payload={}, exit_code=1, error=str(exc))
+
+    if args.repo is not None:
+        try:
+            origin_repo = merge_config.resolve_repo_slug(ctx.repo_root, explicit=None)
+        except merge_config.ConfigError as exc:
+            return _Outcome(
+                payload={},
+                exit_code=1,
+                error=(
+                    f"--repo could not be verified against the local checkout's "
+                    f"origin remote: {exc}"
+                ),
+            )
+        if repo.lower() != origin_repo.lower():
+            return _Outcome(
+                payload={"refused": True, "refusal_reason": "repo_scope_mismatch"},
+                exit_code=3,
+                repo=repo,
+            )
+
     owner, repo_name = repo.split("/", 1)
     return repo, owner, repo_name
 
@@ -452,13 +486,40 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     base = _verdict_payload_base(args.event, args.tier, ceiling_name, pre.author_login)
     require_tier_ceiling = _load_require_tier_ceiling()
 
+    # G0 — --app never authorizes an approve on its own (MUST_FIX 1, #1657
+    # PR-1 review round 4). Elsewhere ctx.app_role/args.app is only ever
+    # echoed into the envelope and no gate below reads it, so without this
+    # check `--app worker --event approve` on a PR the worker did not author
+    # would clear G1/G2 and post a real APPROVE review under the wrong
+    # identity. Only the overseer app may ever request approve; non-approve
+    # events (comment) are unaffected for every app role.
+    if args.event == "approve" and ctx.app_role != "overseer":
+        payload = {
+            **base,
+            "refused": True,
+            "refusal_reason": "approve_requires_overseer_identity",
+            "commit_id": pre.head_sha,
+        }
+        return _Outcome(
+            payload=payload,
+            exit_code=3,
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
+
     # G1 — never approve above OVERSEER_CEILING (mechanises overseer.md:54:
     # require_tier_ceiling.py fails any PR the overseer approved above its
     # ceiling, so an approval there is never recoverable by the caller).
     if args.event == "approve" and require_tier_ceiling.tier_exceeds_ceiling(
         args.tier, ceiling_name
     ):
-        payload = {**base, "refused": True, "refusal_reason": "above_ceiling_approve"}
+        payload = {
+            **base,
+            "refused": True,
+            "refusal_reason": "above_ceiling_approve",
+            "commit_id": pre.head_sha,
+        }
         return _Outcome(
             payload=payload,
             exit_code=3,
@@ -470,7 +531,12 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     # G2 — never approve a PR this overseer App itself authored (mechanises
     # overseer.md:53).
     if args.event == "approve" and pre.author_login.lower() == pre.bot_login.lower():
-        payload = {**base, "refused": True, "refusal_reason": "self_authored"}
+        payload = {
+            **base,
+            "refused": True,
+            "refusal_reason": "self_authored",
+            "commit_id": pre.head_sha,
+        }
         return _Outcome(
             payload=payload,
             exit_code=3,
@@ -837,6 +903,12 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     not_verified = list(pre.not_verified)
     if args.reviewer:
         login = args.reviewer.strip()
+        # Strip a leading '@' (SHOULD_FIX 5, #1657 PR-1 review round 4):
+        # left un-stripped, the bot-account and PR-author self-request
+        # checks below compare against un-prefixed logins and both miss,
+        # and GitHub itself 422s a "@login" reviewer request. Same idiom as
+        # scripts/oversight/codeowners.py's owner-normalisation.
+        login = login[1:] if login.startswith("@") else login
         source = "explicit-flag"
         codeowners_owners: list[str] = []
         codeowners_team_owners: list[str] = []
