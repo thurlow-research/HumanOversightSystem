@@ -16,12 +16,44 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile() — content goes on stdin, never argv.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
+# 900s matches SECOND_REVIEW_VENDOR_TIMEOUT (run_second_review.sh) — well above
+# agy's own --print-timeout default of 5m. No timeout existed on this script's
+# agy/codex calls before this migration.
+REDTEAM_SAMPLE_VENDOR_TIMEOUT="${REDTEAM_SAMPLE_VENDOR_TIMEOUT:-900}"
+
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
 info() { echo -e "  ${CYAN}→${RESET}  $*"; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*"; }
 fail() { echo -e "  ${RED}✘${RESET}  $*"; }
+
+# ── ADR-1683 D-4-style invocation-failure record (#1364) ─────────────────────
+# Preserves this script's own per-commit schema (sha/reviewer/tier_escape/
+# max_severity/findings/rationale). `invocation_failed:true` is the flag the
+# loop below checks (NOT the `rationale` string) to detect "this reviewer
+# produced no real judgement" — see the fail-closed note at the call sites.
+sample_invoke_failure_json() {
+    local reviewer="$1" sha="$2"
+    VI_SHA="$sha" VI_REVIEWER="$reviewer" VI_CLASS="$VENDOR_INVOKE_CLASS" \
+    VI_DETAIL="$VENDOR_INVOKE_DETAIL" python3 -c '
+import json, os
+print(json.dumps({
+    "sha": os.environ["VI_SHA"],
+    "reviewer": os.environ["VI_REVIEWER"],
+    "tier_escape": False,
+    "max_severity": "NONE",
+    "findings": [],
+    "rationale": "invocation_failed:{}/{}".format(os.environ["VI_CLASS"], os.environ["VI_DETAIL"]),
+    "invocation_failed": True,
+}))
+'
+}
 
 SAMPLE_N=20
 LOOKBACK_DAYS=30
@@ -101,6 +133,7 @@ echo ""
 
 # ── Step 3: Red-team each sampled diff ────────────────────────────────────────
 TIER_ESCAPES=0
+FAILED_SAMPLES=0
 FINDINGS_SUMMARY=()
 
 for sha in "${SAMPLE[@]}"; do
@@ -163,14 +196,49 @@ Respond with JSON only:
   \"rationale\": \"one sentence explaining the verdict\"
 }"
 
+    CODEX_FAILED=false
+    AGY_FAILED=false
     if ! $DRY_RUN; then
-        CODEX_OUT=$(codex exec "$CODEX_PROMPT" 2>/dev/null || \
-            echo "{\"sha\":\"${sha:0:8}\",\"reviewer\":\"codex\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"error\"}")
-        AGY_OUT=$(agy -p "$AGY_PROMPT" 2>/dev/null || \
-            echo "{\"sha\":\"${sha:0:8}\",\"reviewer\":\"agy\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"error\"}")
+        # STDIN, NOT ARGV (ADR-1683/#1364): see vendor_invoke.sh header.
+        CODEX_PROMPT_FILE=$(vendor_invoke_tmpfile)
+        CODEX_STDOUT_FILE=$(vendor_invoke_tmpfile)
+        printf '%s' "$CODEX_PROMPT" > "$CODEX_PROMPT_FILE"
+        if vendor_invoke codex "$REDTEAM_SAMPLE_VENDOR_TIMEOUT" "$CODEX_PROMPT_FILE" "$CODEX_STDOUT_FILE"; then
+            CODEX_OUT=$(cat "$CODEX_STDOUT_FILE")
+        else
+            CODEX_OUT=$(sample_invoke_failure_json codex "${sha:0:8}")
+            CODEX_FAILED=true
+        fi
+
+        AGY_PROMPT_FILE=$(vendor_invoke_tmpfile)
+        AGY_STDOUT_FILE=$(vendor_invoke_tmpfile)
+        printf '%s' "$AGY_PROMPT" > "$AGY_PROMPT_FILE"
+        if vendor_invoke agy "$REDTEAM_SAMPLE_VENDOR_TIMEOUT" "$AGY_PROMPT_FILE" "$AGY_STDOUT_FILE"; then
+            AGY_OUT=$(cat "$AGY_STDOUT_FILE")
+        else
+            AGY_OUT=$(sample_invoke_failure_json agy "${sha:0:8}")
+            AGY_FAILED=true
+        fi
     else
         CODEX_OUT="{\"sha\":\"${sha:0:8}\",\"reviewer\":\"codex\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"dry-run\"}"
         AGY_OUT="{\"sha\":\"${sha:0:8}\",\"reviewer\":\"agy\",\"tier_escape\":false,\"max_severity\":\"NONE\",\"findings\":[],\"rationale\":\"dry-run\"}"
+    fi
+
+    # #1364 fail-closed fix: previously, an invocation failure fell back to a
+    # placeholder with tier_escape:false — a SUCCESS-LOOKING value — which
+    # silently counted a commit that was never actually reviewed as "clean",
+    # deflating the escape-rate statistic this script exists to produce. When
+    # BOTH reviewers fail to invoke, no independent judgement exists for this
+    # commit at all; exclude it from the escape-rate denominator entirely
+    # (tracked in FAILED_SAMPLES) instead of counting it as evidence of safety.
+    # A single-reviewer failure is left as before: the other reviewer's real
+    # verdict still applies via the OR below (matches run_red_team.sh's own
+    # "if neither reviewer produced a real review" symmetry).
+    if $CODEX_FAILED && $AGY_FAILED; then
+        warn "  ${sha:0:8}: both reviewers failed to invoke — excluded from escape-rate sample (not counted as clean)"
+        FAILED_SAMPLES=$(( FAILED_SAMPLES + 1 ))
+        echo "{\"codex\":${CODEX_OUT},\"agy\":${AGY_OUT}}" > "$COMMIT_OUT"
+        continue
     fi
 
     # A tier escape if EITHER reviewer flags MEDIUM+
@@ -193,11 +261,26 @@ done
 
 # ── Step 4: Aggregate report ──────────────────────────────────────────────────
 echo ""
-ESCAPE_RATE=$(python3 -c "print(round(${TIER_ESCAPES}/${ACTUAL_N}*100,1))" 2>/dev/null || echo "0")
 
-if python3 -c "exit(0 if ${TIER_ESCAPES}/${ACTUAL_N} < 0.05 else 1)" 2>/dev/null; then
+# #1364: EFFECTIVE_N excludes commits where both reviewers failed to invoke
+# (FAILED_SAMPLES) — those carry no real judgement and must not be silently
+# treated as "sampled and clean" in the denominator. Fail closed if nothing
+# in the whole sample produced a real review: an escape rate computed from
+# zero real reviews is not a valid statistic.
+EFFECTIVE_N=$(( ACTUAL_N - FAILED_SAMPLES ))
+if [[ $EFFECTIVE_N -le 0 ]]; then
+    echo "run_redteam_sample: FAIL-CLOSED — all ${ACTUAL_N} sampled commit(s) failed to invoke both reviewers; no escape rate can be computed." >&2
+    exit 1
+fi
+if [[ $FAILED_SAMPLES -gt 0 ]]; then
+    warn "${FAILED_SAMPLES} of ${ACTUAL_N} sampled commits excluded from the escape-rate denominator (both reviewers failed to invoke)"
+fi
+
+ESCAPE_RATE=$(python3 -c "print(round(${TIER_ESCAPES}/${EFFECTIVE_N}*100,1))" 2>/dev/null || echo "0")
+
+if python3 -c "exit(0 if ${TIER_ESCAPES}/${EFFECTIVE_N} < 0.05 else 1)" 2>/dev/null; then
     RECOMMENDATION="LOW tier well-calibrated (escape rate ${ESCAPE_RATE}% < 5% threshold)"
-elif python3 -c "exit(0 if ${TIER_ESCAPES}/${ACTUAL_N} < 0.15 else 1)" 2>/dev/null; then
+elif python3 -c "exit(0 if ${TIER_ESCAPES}/${EFFECTIVE_N} < 0.15 else 1)" 2>/dev/null; then
     RECOMMENDATION="LOW threshold may be too permissive (escape rate ${ESCAPE_RATE}% — review tier criteria)"
 else
     RECOMMENDATION="LOW threshold is miscalibrated (escape rate ${ESCAPE_RATE}% > 15% — escalate tier criteria revision to human)"
@@ -208,6 +291,8 @@ SUMMARY_JSON="{
   \"branch\": \"${CURRENT_BRANCH}\",
   \"pool_size\": ${POOL_SIZE},
   \"sample_size\": ${ACTUAL_N},
+  \"effective_sample_size\": ${EFFECTIVE_N},
+  \"failed_samples\": ${FAILED_SAMPLES},
   \"lookback_days\": ${LOOKBACK_DAYS},
   \"tier_escapes\": ${TIER_ESCAPES},
   \"escape_rate_pct\": ${ESCAPE_RATE},
@@ -221,14 +306,14 @@ echo "$SUMMARY_JSON" > "${OUT_DIR}/summary.json"
 if [[ -d "audit" ]]; then
     # shellcheck source=oversight/lib/audit_log.sh
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/oversight/lib/audit_log.sh"
-    audit_write_event "{\"event\":\"sampling-audit\",\"timestamp\":\"${TIMESTAMP}\",\"pool_size\":${POOL_SIZE},\"sample_size\":${ACTUAL_N},\"tier_escapes\":${TIER_ESCAPES},\"escape_rate_pct\":${ESCAPE_RATE},\"recommendation\":\"${RECOMMENDATION}\"}" >/dev/null
+    audit_write_event "{\"event\":\"sampling-audit\",\"timestamp\":\"${TIMESTAMP}\",\"pool_size\":${POOL_SIZE},\"sample_size\":${ACTUAL_N},\"effective_sample_size\":${EFFECTIVE_N},\"failed_samples\":${FAILED_SAMPLES},\"tier_escapes\":${TIER_ESCAPES},\"escape_rate_pct\":${ESCAPE_RATE},\"recommendation\":\"${RECOMMENDATION}\"}" >/dev/null
 fi
 
 # ── Step 5: Print summary ─────────────────────────────────────────────────────
 echo -e "${BOLD}=== Sampling Audit Complete ===${RESET}"
 echo ""
 echo "  Pool size:      ${POOL_SIZE} LOW-tier commits"
-echo "  Sampled:        ${ACTUAL_N}"
+echo "  Sampled:        ${ACTUAL_N} (${EFFECTIVE_N} effective; ${FAILED_SAMPLES} excluded — both reviewers failed to invoke)"
 echo "  Tier escapes:   ${TIER_ESCAPES} (${ESCAPE_RATE}%)"
 echo ""
 if [[ ${#FINDINGS_SUMMARY[@]} -gt 0 ]]; then

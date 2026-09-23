@@ -32,6 +32,15 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile() — content goes on stdin, never argv.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
+# 900s matches SECOND_REVIEW_VENDOR_TIMEOUT (run_second_review.sh) — well above
+# agy's own --print-timeout default of 5m, so this catches only a genuine hang.
+CAPTURE_SESSION_VENDOR_TIMEOUT="${CAPTURE_SESSION_VENDOR_TIMEOUT:-900}"
+
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
 info() { echo -e "  ${CYAN}→${RESET}  $*"; }
@@ -164,10 +173,27 @@ Write a session summary in this format:
 
 Keep the summary factual and specific. Avoid filler. The Rerun prompt section is the most important — it should be detailed enough that an agent could execute the session from scratch."
 
+    # STDIN, NOT ARGV (ADR-1683/#1364): the prompt goes to a tmpfile read on
+    # stdin through vendor_invoke — never a single argv element (Linux's
+    # per-argument MAX_ARG_STRLEN silently E2BIGs execve on a large prompt).
+    prompt_file=$(vendor_invoke_tmpfile)
+    stdout_file=$(vendor_invoke_tmpfile)
+    printf '%s' "$PROMPT" > "$prompt_file"
+
     if command -v agy &>/dev/null; then
-        SUMMARY=$(agy -p "$PROMPT" 2>/dev/null || echo "")
+        if vendor_invoke agy "$CAPTURE_SESSION_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file"; then
+            SUMMARY=$(cat "$stdout_file")
+        else
+            warn "agy invocation failed (${VENDOR_INVOKE_CLASS}/${VENDOR_INVOKE_DETAIL}, rc=${VENDOR_INVOKE_RC}): ${VENDOR_INVOKE_STDERR}"
+            SUMMARY=""
+        fi
     elif command -v codex &>/dev/null; then
-        SUMMARY=$(codex exec "$PROMPT" 2>/dev/null || echo "")
+        if vendor_invoke codex "$CAPTURE_SESSION_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file"; then
+            SUMMARY=$(cat "$stdout_file")
+        else
+            warn "codex invocation failed (${VENDOR_INVOKE_CLASS}/${VENDOR_INVOKE_DETAIL}, rc=${VENDOR_INVOKE_RC}): ${VENDOR_INVOKE_STDERR}"
+            SUMMARY=""
+        fi
     else
         warn "Neither agy nor codex available — cannot generate summary"
         exit 1

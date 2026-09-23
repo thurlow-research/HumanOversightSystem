@@ -26,6 +26,15 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile() — content goes on stdin, never argv.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
+# 900s matches SECOND_REVIEW_VENDOR_TIMEOUT (run_second_review.sh) — well above
+# agy's own --print-timeout default of 5m, so this catches only a genuine hang.
+REVIEW_SELF_VENDOR_TIMEOUT="${REVIEW_SELF_VENDOR_TIMEOUT:-900}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$REPO_ROOT/.claudetmp/self-review"
@@ -244,13 +253,27 @@ if ! command -v "$REVIEWER" &>/dev/null; then
     exit 1
 fi
 
+# STDIN, NOT ARGV (ADR-1683/#1364): the prompt goes to a tmpfile read on stdin
+# through vendor_invoke — never a single argv element (Linux's per-argument
+# MAX_ARG_STRLEN silently E2BIGs execve on a large prompt otherwise). This also
+# closes a fail-OPEN gap the old `2>&1` capture had: an rc=0/empty-output
+# response used to be written out and reported as a successful (empty) review;
+# vendor_invoke classifies that as a failure (empty_output).
+prompt_file=$(vendor_invoke_tmpfile)
+stdout_file=$(vendor_invoke_tmpfile)
+printf '%s' "$PROMPT" > "$prompt_file"
+
+VENDOR_OK=true
 case "$REVIEWER" in
-    agy)   REVIEW_OUTPUT=$(agy   -p "$PROMPT"   2>&1) ;;
-    codex) REVIEW_OUTPUT=$(codex exec "$PROMPT"  2>&1) ;;
-esac || {
-    err "$REVIEWER invocation failed (exit $?)"
+    agy)   vendor_invoke agy   "$REVIEW_SELF_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" || VENDOR_OK=false ;;
+    codex) vendor_invoke codex "$REVIEW_SELF_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file" || VENDOR_OK=false ;;
+esac
+
+if ! $VENDOR_OK; then
+    err "$REVIEWER invocation failed (${VENDOR_INVOKE_CLASS}/${VENDOR_INVOKE_DETAIL}, rc=${VENDOR_INVOKE_RC}): ${VENDOR_INVOKE_STDERR}"
     exit 1
-}
+fi
+REVIEW_OUTPUT=$(cat "$stdout_file")
 
 # ── Write output ──────────────────────────────────────────────────────────────
 REVIEWER_LABEL="$REVIEWER"

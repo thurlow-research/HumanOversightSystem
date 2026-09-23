@@ -29,6 +29,17 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile() — content goes on stdin, never argv.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
+# 900s matches SECOND_REVIEW_VENDOR_TIMEOUT (run_second_review.sh) — well above
+# agy's own --print-timeout default of 5m. This checkpoint reviews the full
+# codebase (larger than a diff), so a generous timeout matters even more here.
+# No timeout existed on this script's agy/codex calls before this migration.
+RED_TEAM_VENDOR_TIMEOUT="${RED_TEAM_VENDOR_TIMEOUT:-900}"
+
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 BOLD="\033[1m"; RESET="\033[0m"
 ok()   { echo -e "  ${GREEN}✔${RESET}  $*"; }
@@ -238,6 +249,47 @@ sys.exit(1)
 PYEOF
 }
 
+# ── ADR-1683 D-4-style harness vs vendor invocation-failure record ───────────
+# Emits this script's OWN error-JSON shape (exploitable_findings /
+# not_exploitable_attestations — NOT run_second_review.sh's shape, per #1364's
+# instruction to preserve each script's existing contract) once vendor_invoke()
+# has classified a failed call. `failure_class` distinguishes "fix the
+# invocation" (harness) from "resolve the vendor condition and re-run"
+# (vendor) — the same taxonomy run_second_review.sh uses, expressed in this
+# script's own fields so reviewer_state()'s `"error"` substring check below
+# still fires (fail-closed, unchanged).
+redteam_invoke_failure_json() {
+    local reviewer="$1"
+    local rc="${VENDOR_INVOKE_RC:-}"
+    [[ -z "$rc" ]] && rc=0
+    VI_REVIEWER="$reviewer" VI_MILESTONE="$MILESTONE" VI_CLASS="$VENDOR_INVOKE_CLASS" \
+    VI_DETAIL="$VENDOR_INVOKE_DETAIL" VI_RC="$rc" VI_BYTES="${VENDOR_INVOKE_BYTES:-0}" \
+    VI_STDERR="$VENDOR_INVOKE_STDERR" python3 -c '
+import json, os
+
+reviewer = os.environ["VI_REVIEWER"]
+failure_class = os.environ["VI_CLASS"]
+detail = os.environ["VI_DETAIL"]
+rc = int(os.environ["VI_RC"])
+error = f"{reviewer} invocation failed ({detail})" if failure_class == "harness" \
+    else f"{reviewer} ran and failed ({detail}, rc={rc})"
+
+print(json.dumps({
+    "reviewer": reviewer,
+    "milestone": os.environ["VI_MILESTONE"],
+    "error": error,
+    "failure_class": failure_class,
+    "outcome_detail": detail,
+    "exit_code": rc,
+    "prompt_bytes": int(os.environ["VI_BYTES"]),
+    "stderr_tail": os.environ["VI_STDERR"],
+    "exploitable_findings": [],
+    "not_exploitable_attestations": [],
+    "summary": "error",
+}))
+'
+}
+
 # ── codex: adversarial attack chains ─────────────────────────────────────────
 info "Running codex (adversarial attack chains)..."
 
@@ -285,8 +337,15 @@ Return JSON with BOTH exploitable findings AND explicit not-exploitable attestat
 }"
 
 if ! $DRY_RUN && command -v codex &>/dev/null; then
-    CODEX_OUT=$(codex exec "$CODEX_PROMPT" 2>/dev/null || \
-        echo '{"reviewer":"codex","error":"invocation failed","exploitable_findings":[],"not_exploitable_attestations":[],"summary":"error"}')
+    # STDIN, NOT ARGV (ADR-1683/#1364): see vendor_invoke.sh header.
+    CODEX_PROMPT_FILE=$(vendor_invoke_tmpfile)
+    CODEX_STDOUT_FILE=$(vendor_invoke_tmpfile)
+    printf '%s' "$CODEX_PROMPT" > "$CODEX_PROMPT_FILE"
+    if vendor_invoke codex "$RED_TEAM_VENDOR_TIMEOUT" "$CODEX_PROMPT_FILE" "$CODEX_STDOUT_FILE"; then
+        CODEX_OUT=$(cat "$CODEX_STDOUT_FILE")
+    else
+        CODEX_OUT=$(redteam_invoke_failure_json codex)
+    fi
 else
     CODEX_OUT='{"reviewer":"codex","skipped":true,"exploitable_findings":[],"not_exploitable_attestations":[],"summary":"dry-run or codex unavailable"}'
 fi
@@ -355,8 +414,15 @@ ${CODEBASE_SAMPLE}
 }"
 
 if ! $DRY_RUN && command -v agy &>/dev/null; then
-    AGY_OUT=$(agy -p "$AGY_PROMPT" 2>/dev/null || \
-        echo '{"reviewer":"agy","error":"invocation failed","exploitable_findings":[],"not_exploitable_attestations":[],"summary":"error"}')
+    # STDIN, NOT ARGV (ADR-1683/#1364): see vendor_invoke.sh header.
+    AGY_PROMPT_FILE=$(vendor_invoke_tmpfile)
+    AGY_STDOUT_FILE=$(vendor_invoke_tmpfile)
+    printf '%s' "$AGY_PROMPT" > "$AGY_PROMPT_FILE"
+    if vendor_invoke agy "$RED_TEAM_VENDOR_TIMEOUT" "$AGY_PROMPT_FILE" "$AGY_STDOUT_FILE"; then
+        AGY_OUT=$(cat "$AGY_STDOUT_FILE")
+    else
+        AGY_OUT=$(redteam_invoke_failure_json agy)
+    fi
 else
     AGY_OUT='{"reviewer":"agy","skipped":true,"exploitable_findings":[],"not_exploitable_attestations":[],"summary":"dry-run or agy unavailable"}'
 fi
