@@ -353,7 +353,9 @@ def _make_submit_ctx(tmp_path, *, overseer_handle=DEFAULT_OVERSEER_HANDLE, ceili
     return cli._Context(repo_root=tmp_path, config=config, app_role="overseer")
 
 
-def _make_submit_args(body_file, *, event="approve", tier="LOW", pr=42, repo="test-owner/test-repo"):
+def _make_submit_args(
+    body_file, *, event="approve", tier="LOW", pr=42, repo="test-owner/test-repo"
+):
     return argparse.Namespace(
         app="overseer", repo=repo, pr=pr, tier=tier, event=event, body_file=str(body_file)
     )
@@ -377,7 +379,9 @@ def submit_preamble_mocks(monkeypatch):
     monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
 
 
-def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(tmp_path, monkeypatch, submit_preamble_mocks):
+def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(
+    tmp_path, monkeypatch, submit_preamble_mocks
+):
     """The core of Finding 1: HOS_BOT_LOGIN (the acting identity) does not
     match `ctx.config.overseer_handle`, even though `--app overseer` was
     supplied — direct L2 invocation, no bash wrapper involved."""
@@ -484,6 +488,19 @@ def test_t1_gh_token_env_value_redacted(monkeypatch):
     )
 
 
+def test_t1b_github_token_env_value_redacted(monkeypatch):
+    # Finding 4 (#1657 round-3 cross-vendor second review, LOW): GITHUB_TOKEN
+    # is the GitHub Actions default env var name — a token supplied that way
+    # must be scrubbed too, not only GH_TOKEN.
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "actions-default-token-67890")  # pragma: allowlist secret
+    assert cli._scrub_secrets(
+        "boom: actions-default-token-67890 was rejected"
+    ) == (  # pragma: allowlist secret
+        "boom: [REDACTED] was rejected"
+    )
+
+
 def test_t2_authorization_header_redacted():
     text = "request failed, headers: {'Authorization': 'Bearer abcdEFGH12345678'}"
     scrubbed = cli._scrub_secrets(text)
@@ -491,10 +508,79 @@ def test_t2_authorization_header_redacted():
     assert "[REDACTED]" in scrubbed
 
 
+def test_t2b_authorization_header_token_scheme_redacted():
+    # Finding 1 (#1657 round-3 cross-vendor second review, HIGH, agy and
+    # codex independently): the prior regex's optional group only matched
+    # the literal word "bearer", so "Authorization: token <secret>" left the
+    # secret itself in plaintext and redacted only the word "token".
+    text = "request failed: Authorization: token abcdEFGH12345678secret"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2c_authorization_header_basic_scheme_redacted():
+    text = "request failed: Authorization: Basic abcdEFGH12345678secret"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2d_authorization_header_bearer_scheme_redacted():
+    text = "request failed: Authorization: Bearer abcdEFGH12345678secret"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2e_authorization_header_dict_repr_redacted():
+    # A Python dict repr embeds the header as a quoted key/value pair rather
+    # than a "Name: value" line — a shape a bare requests/urllib exception
+    # commonly produces.
+    text = "headers={'Authorization': 'token abcdEFGH12345678secret', 'Accept': '*/*'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "[REDACTED]" in scrubbed
+    # The unrelated header alongside it must survive.
+    assert "'Accept': '*/*'" in scrubbed
+
+
+def test_t2f_authorization_header_base64_padding_redacted():
+    # Finding 2 (#1657 round-3 cross-vendor second review, MEDIUM): a
+    # trailing `\b` after a greedy `\S+` forced backtracking off a token's
+    # trailing non-word characters (base64 `=` padding), leaving them
+    # unredacted.
+    text = "Authorization: Bearer abcdEFGH12345678secret=="
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "==" not in scrubbed
+
+
+def test_t2g_diagnostic_text_either_side_of_header_preserved():
+    # The redaction must not swallow the whole message — only the header
+    # line itself.
+    text = (
+        "fetching PR #42 failed with status 401\n"
+        "Authorization: Bearer abcdEFGH12345678secret\n"
+        'response body: {"message": "Bad credentials"}'
+    )
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "fetching PR #42 failed with status 401" in scrubbed
+    assert "Bad credentials" in scrubbed
+
+
 def test_t3_bare_bearer_token_redacted():
     text = "curl error: Bearer ghs_abcdefgh12345678 invalid"
     scrubbed = cli._scrub_secrets(text)
     assert "ghs_abcdefgh12345678" not in scrubbed
+
+
+def test_t3b_bare_bearer_token_base64_padding_redacted():
+    text = "curl error: Bearer abcdEFGH12345678secret== invalid"
+    scrubbed = cli._scrub_secrets(text)
+    assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
+    assert "==" not in scrubbed
 
 
 @pytest.mark.parametrize(
@@ -510,7 +596,7 @@ def test_t4_github_token_prefixes_redacted(prefix):
 
 
 def test_t5_github_pat_prefix_redacted():
-    token = "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"
+    token = "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz"  # pragma: allowlist secret
     text = f"failed to authenticate with {token}"
     scrubbed = cli._scrub_secrets(text)
     assert token not in scrubbed
@@ -523,9 +609,9 @@ def test_t6_non_secret_message_preserved_diagnosable():
 
 
 def test_t7_scrub_exc_wraps_str_exc():
-    exc = ValueError("contains ghp_ABCDEFGHijklmnop12345678 inline")
+    exc = ValueError("contains ghp_ABCDEFGHijklmnop12345678 inline")  # pragma: allowlist secret
     scrubbed = cli._scrub_exc(exc)
-    assert "ghp_ABCDEFGHijklmnop12345678" not in scrubbed
+    assert "ghp_ABCDEFGHijklmnop12345678" not in scrubbed  # pragma: allowlist secret
     assert "contains" in scrubbed and "inline" in scrubbed
 
 

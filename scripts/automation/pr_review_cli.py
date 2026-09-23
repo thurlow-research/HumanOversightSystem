@@ -65,32 +65,46 @@ _VALID_TIERS = ("SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 # only an invariant *comment* asserting no code path embeds a secret in an
 # exception message; codex correctly pointed out a comment is not
 # enforcement. This scrubs the shapes that matter for this module's call
-# graph (github.py/subprocess errors): the live GH_TOKEN value if present in
-# the environment, Authorization/Bearer header patterns, and GitHub
-# installation/PAT-shaped token prefixes.
+# graph (github.py/subprocess errors): the live GH_TOKEN/GITHUB_TOKEN value
+# if present in the environment, Authorization/Bearer header patterns, and
+# GitHub installation/PAT-shaped token prefixes.
+#
+# _AUTH_HEADER_RE redacts the *entire* header value (scheme word and
+# credential together), not just one whitespace-delimited word after an
+# optional literal "bearer" — round-3 cross-vendor second review (agy and
+# codex independently) found the prior version left the credential itself
+# in plaintext for any scheme other than "Bearer" (e.g. "Authorization:
+# token abc123" redacted only the word "token"). It matches the header name
+# in either a plain "Authorization: ..." form or a Python dict-repr key
+# ("'Authorization': ...") and redacts up to the next sensible delimiter —
+# line end, a quote, a comma, or a closing brace — rather than to the end of
+# the whole string, so unrelated diagnostic text on either side survives.
 # ---------------------------------------------------------------------------
 
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*)(?:bearer\s+)?\S+")
-_BEARER_ONLY_RE = re.compile(r"(?i)\bbearer\s+\S+\b")
+_AUTH_HEADER_RE = re.compile(r"(?i)([\"']?\bauthorization\b[\"']?\s*[:=]\s*[\"']?)([^\"'\r\n,}]*)")
+_BEARER_ONLY_RE = re.compile(r"(?i)\bbearer\s+\S+")
 _GH_TOKEN_SHAPE_RE = re.compile(
     r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b"
 )
+_TOKEN_ENV_VARS = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def _scrub_secrets(text: str) -> str:
     """Redact secret-shaped substrings from free-form text before it is
-    embedded into the JSON envelope. Order matters: the Authorization-header
-    pattern is applied before the bare-Bearer pattern so "Authorization:
-    Bearer <token>" is redacted as one unit rather than leaving a dangling
-    "Bearer" behind; the GH_TOKEN literal-value replace runs first since it
-    is the exact live secret, not a shape heuristic.
+    embedded into the JSON envelope. Order matters: the literal-env-value
+    replace runs first since it is the exact live secret, not a shape
+    heuristic; the Authorization-header pattern then redacts the whole
+    header value (any scheme) so a bare "Bearer <token>" is never left
+    dangling; the standalone-Bearer pattern then catches any remaining
+    "Bearer <token>" occurrence not attached to an Authorization header.
     """
     if not text:
         return text
     scrubbed = text
-    gh_token = os.environ.get("GH_TOKEN", "").strip()
-    if gh_token:
-        scrubbed = scrubbed.replace(gh_token, "[REDACTED]")
+    for env_var in _TOKEN_ENV_VARS:
+        token = os.environ.get(env_var, "").strip()
+        if token:
+            scrubbed = scrubbed.replace(token, "[REDACTED]")
     scrubbed = _AUTH_HEADER_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", scrubbed)
     scrubbed = _BEARER_ONLY_RE.sub("Bearer [REDACTED]", scrubbed)
     scrubbed = _GH_TOKEN_SHAPE_RE.sub("[REDACTED]", scrubbed)
@@ -968,9 +982,7 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             )
             codeowners_human_owned = required
         except Exception as exc:  # noqa: BLE001 — observational only, never fatal
-            not_verified.append(
-                f"codeowners_human_owned: check_pr_files raised: {_scrub_exc(exc)}"
-            )
+            not_verified.append(f"codeowners_human_owned: check_pr_files raised: {_scrub_exc(exc)}")
 
         payload = {
             **base,
@@ -1214,8 +1226,9 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
         # CWE-200): a prior round (SHOULD_FIX H) relied on an invariant
         # comment alone — "no code path may raise an exception embedding
         # GH_TOKEN" — which is not enforcement. `_scrub_exc` below redacts
-        # the shapes that matter (the live GH_TOKEN value, Authorization/
-        # Bearer patterns, GitHub token-shaped prefixes) so this boundary no
+        # the shapes that matter (the live GH_TOKEN/GITHUB_TOKEN values, any
+        # Authorization header value whatever its scheme, standalone Bearer
+        # values, and GitHub token-shaped prefixes) so this boundary no
         # longer depends on every future github.py/subprocess error message
         # staying clean by convention.
         record = _envelope(
