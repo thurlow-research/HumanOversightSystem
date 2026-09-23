@@ -541,8 +541,11 @@ def test_t2e_authorization_header_dict_repr_redacted():
     scrubbed = cli._scrub_secrets(text)
     assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
     assert "[REDACTED]" in scrubbed
-    # The unrelated header alongside it must survive.
-    assert "'Accept': '*/*'" in scrubbed
+    # The redaction is deliberately whole-line (see _AUTH_HEADER_RE's
+    # comment): a same-line "Accept" header sitting after Authorization in
+    # this dict repr is accepted collateral, not preserved. Diagnosability
+    # across *lines* is what's guaranteed — see test_t2g.
+    assert "'Accept': '*/*'" not in scrubbed
 
 
 def test_t2f_authorization_header_base64_padding_redacted():
@@ -568,6 +571,83 @@ def test_t2g_diagnostic_text_either_side_of_header_preserved():
     assert "abcdEFGH12345678secret" not in scrubbed  # pragma: allowlist secret
     assert "fetching PR #42 failed with status 401" in scrubbed
     assert "Bad credentials" in scrubbed
+
+
+def test_t2h_authorization_header_bytes_prefix_non_bearer_scheme_redacted():
+    # Finding (#1657 round-4 second review, codex, CWE-200): a
+    # bytes-repr value with a non-Bearer scheme was caught by neither the
+    # header-value regex (which stopped before the `b` prefix) nor the
+    # standalone-Bearer layer (which only ever matches the literal word
+    # "Bearer") — the credential leaked in full. This is the exact reported
+    # shape.
+    text = '{"Authorization": b"token SEKRIT123"}'
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2i_authorization_header_bytes_prefix_bearer_scheme_redacted():
+    text = "{'Authorization': b'Bearer SEKRIT123'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2j_authorization_header_raw_bytes_prefix_redacted():
+    text = "{'Authorization': rb'Bearer SEKRIT123'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2k_authorization_header_raw_bytes_prefix_non_bearer_scheme_redacted():
+    text = "{'Authorization': rb'token SEKRIT123'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2l_authorization_header_unquoted_line_redacted():
+    text = "Authorization: token SEKRIT123"
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2m_authorization_header_single_quoted_redacted():
+    text = "{'Authorization': 'token SEKRIT123'}"
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2n_authorization_header_double_quoted_redacted():
+    text = '{"Authorization": "token SEKRIT123"}'
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_t2o_bytes_prefix_leak_redacted_across_lines_following_line_survives():
+    # Same reported bytes-prefix/non-Bearer shape as test_t2h, but embedded
+    # in a multi-line message — proves the fix redacts to end-of-*line*,
+    # not end-of-string: the credential on the marker's own line must be
+    # gone, and a *following* line's ordinary diagnostic text must survive
+    # untouched.
+    text = (
+        "fetching PR #42 failed with status 401\n"
+        '{"Authorization": b"token SEKRIT123"}\n'
+        'response body: {"message": "Bad credentials"}'
+    )
+    scrubbed = cli._scrub_secrets(text)
+    assert "SEKRIT123" not in scrubbed
+    assert "fetching PR #42 failed with status 401" in scrubbed
+    assert "Bad credentials" in scrubbed
+
+
+def test_t2p_reauthorization_word_not_treated_as_header_marker():
+    text = "reauthorization: notasecret"
+    assert cli._scrub_secrets(text) == text
 
 
 def test_t3_bare_bearer_token_redacted():

@@ -69,19 +69,30 @@ _VALID_TIERS = ("SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 # if present in the environment, Authorization/Bearer header patterns, and
 # GitHub installation/PAT-shaped token prefixes.
 #
-# _AUTH_HEADER_RE redacts the *entire* header value (scheme word and
-# credential together), not just one whitespace-delimited word after an
-# optional literal "bearer" — round-3 cross-vendor second review (agy and
-# codex independently) found the prior version left the credential itself
-# in plaintext for any scheme other than "Bearer" (e.g. "Authorization:
-# token abc123" redacted only the word "token"). It matches the header name
-# in either a plain "Authorization: ..." form or a Python dict-repr key
-# ("'Authorization': ...") and redacts up to the next sensible delimiter —
-# line end, a quote, a comma, or a closing brace — rather than to the end of
-# the whole string, so unrelated diagnostic text on either side survives.
+# _AUTH_HEADER_RE redacts the *entire remainder of the line* once an
+# Authorization header marker is seen, rather than attempting to identify
+# exactly where the credential value starts and ends. This is deliberate
+# over-redaction, and it costs some adjacent diagnostic text on the header's
+# own line (e.g. a same-line "Accept" header sitting after it in a dict
+# repr). That cost is accepted explicitly: this is the third consecutive
+# round in which a precise value-boundary match leaked a credential —
+# round 3 (agy and codex independently) found a "Bearer"-only optional
+# group left non-Bearer schemes ("Authorization: token abc123") in
+# plaintext; the following fix scoped the value to end at a quote/comma/
+# brace, which then round-4 (codex) found left Python bytes/raw-bytes repr
+# prefixes (`b'Bearer ...'`, `rb'...'`) unmatched for any scheme other than
+# "Bearer" (the standalone-Bearer layer below only saved the Bearer case by
+# accident). Each precise fix revealed a new repr shape the previous one
+# didn't anticipate. Redacting to end-of-line closes that class of leak for
+# good: it matches the header name in either a plain "Authorization: ..."
+# form or a Python dict-repr key ("'Authorization': ...") and discards
+# everything after it up to the next newline (or end of string, if the
+# marker's line has none — which in a single-line dict/JSON repr also
+# swallows the closing brace). A newline is still respected as a boundary,
+# so diagnostic text on a *following* line survives untouched.
 # ---------------------------------------------------------------------------
 
-_AUTH_HEADER_RE = re.compile(r"(?i)([\"']?\bauthorization\b[\"']?\s*[:=]\s*[\"']?)([^\"'\r\n,}]*)")
+_AUTH_HEADER_RE = re.compile(r"(?i)([\"']?\bauthorization\b[\"']?\s*[:=]\s*)(.*)")
 _BEARER_ONLY_RE = re.compile(r"(?i)\bbearer\s+\S+")
 _GH_TOKEN_SHAPE_RE = re.compile(
     r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b"
@@ -93,10 +104,13 @@ def _scrub_secrets(text: str) -> str:
     """Redact secret-shaped substrings from free-form text before it is
     embedded into the JSON envelope. Order matters: the literal-env-value
     replace runs first since it is the exact live secret, not a shape
-    heuristic; the Authorization-header pattern then redacts the whole
-    header value (any scheme) so a bare "Bearer <token>" is never left
-    dangling; the standalone-Bearer pattern then catches any remaining
-    "Bearer <token>" occurrence not attached to an Authorization header.
+    heuristic; the Authorization-header pattern then redacts the rest of
+    the line following any Authorization marker, regardless of scheme or
+    repr shape (str/bytes/raw-bytes, quoted or not), so nothing after it on
+    that line can leak; the standalone-Bearer pattern then catches any
+    remaining "Bearer <token>" occurrence not attached to an Authorization
+    header; the GitHub token-shape pattern catches any remaining
+    installation/PAT-shaped token regardless of context.
     """
     if not text:
         return text
