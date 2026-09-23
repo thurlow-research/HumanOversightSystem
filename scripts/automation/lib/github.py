@@ -24,6 +24,17 @@ class RateLimitError(GitHubError):
     """Raised when the rate limit is hit and retry budget is exhausted."""
 
 
+# Bounded wall-clock budget for a single `gh api` subprocess call (MUST_FIX
+# C, #1657 PR-1 review round 2). Without this, `gh` stalling on DNS, TLS, or
+# a proxy blocks the calling process forever — every read AND write this
+# module makes (get_pull, list_pull_reviews, list_pull_files,
+# submit_pull_review, request_reviewers) goes through here, and on
+# Worker/Overseer's unattended cron there is nothing to interrupt a hang
+# (CLAUDE.md "Shell usage under the sandbox": this is a genuine timeout, not
+# a permission event — no rule catches it).
+_GH_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+
 def _run_gh(
     args: list[str],
     retries: int = 3,
@@ -33,9 +44,10 @@ def _run_gh(
     """
     Run a `gh api` command and return the parsed JSON response.
 
-    Retries on transient failures (5xx, network errors) with exponential
-    backoff.  Raises RateLimitError on 429/403 rate-limit responses after
-    honoring the Retry-After header.  Raises GitHubError on permanent 4xx.
+    Retries on transient failures (5xx, network errors, a subprocess
+    timeout) with exponential backoff.  Raises RateLimitError on 429/403
+    rate-limit responses after honoring the Retry-After header.  Raises
+    GitHubError on permanent 4xx.
 
     Never calls `gh search` — callers that need Search must go through a
     separate, explicitly-named surface (none exists here by design).
@@ -43,6 +55,16 @@ def _run_gh(
     stdin_json: if provided, serialised as JSON and piped via --input -.
     Use this for POST/PATCH bodies so that @path strings are NEVER expanded
     by the gh CLI's --field type-coercion (the root cause of #752).
+
+    A timeout is never treated as a retryable-and-then-silently-successful
+    outcome: each attempt is independent (a fresh `subprocess.run` call), so
+    a timed-out attempt that is retried and a later attempt that succeeds is
+    an ordinary retry, not a masked failure — but a non-idempotent write
+    (`submit_pull_review`) is called with `retries=0` specifically so this
+    generic loop never retries it at all (MUST_FIX D); a POST that times out
+    may have already reached GitHub, and only the call site — which can
+    re-fetch and check whether the write landed — is positioned to decide
+    that safely.
     """
     stdin_input: Optional[str] = None
     base_cmd = ["gh", "api", "--include"]
@@ -53,10 +75,23 @@ def _run_gh(
     for attempt in range(retries + 1):
         try:
             result = subprocess.run(
-                base_cmd + args, input=stdin_input, capture_output=True, text=True, check=False
+                base_cmd + args,
+                input=stdin_input,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_GH_SUBPROCESS_TIMEOUT_SECONDS,
             )
         except FileNotFoundError:
             raise GitHubError("gh CLI not found — ensure it is installed and on PATH")
+        except subprocess.TimeoutExpired:
+            if attempt < retries:
+                time.sleep(backoff_base**attempt)
+                continue
+            raise GitHubError(
+                f"gh command timed out after {_GH_SUBPROCESS_TIMEOUT_SECONDS}s "
+                f"(attempt {attempt + 1}/{retries + 1})"
+            )
 
         headers, _, body = result.stdout.partition("\r\n\r\n")
         if not body and "\n\n" in result.stdout:
@@ -375,4 +410,98 @@ def post_comment(
                 "@path literal was stored instead of file content (#752)"
             )
 
+    return result
+
+
+def submit_pull_review(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    event: str,
+    body: str,
+    commit_id: str,
+) -> dict[str, Any]:
+    """
+    POST /repos/{owner}/{repo}/pulls/{pr_number}/reviews (#1657).
+
+    event must be "APPROVE" or "COMMENT" (uppercase, validated here) —
+    REQUEST_CHANGES is never emitted by this primitive (ADR-1657 AD-2;
+    bootstrap/post_review_thread.sh owns blocking, resolvable findings).
+    commit_id is required: it pins the verdict to the exact diff reviewed,
+    so a worker push between the caller's read and this write surfaces as a
+    422 from GitHub rather than silently approving a different diff.
+
+    Uses JSON-encoded body via --input - (stdin) so a body string starting
+    with '@/' is never misinterpreted by gh's --field type-coercion as a
+    file path (#752), the same reason post_comment does.
+
+    Called with retries=0 (MUST_FIX D, #1657 PR-1 review round 2): this POST
+    is not idempotent and carries no idempotency key, so every successful
+    call creates a new review object. `_run_gh`'s generic retry loop treats
+    "no parseable status, non-zero exit" (the connection-reset-after-send
+    case) as retryable — correct for an idempotent GET, but for this POST it
+    risks creating a duplicate review that no downstream dedup guard can
+    catch, since those guards read the reviews list once at the start of
+    the caller's own invocation and have no visibility into a duplicate
+    created inside a single call's own retry loop. The caller
+    (pr_review_cli.py's _cmd_submit_verdict) handles an ambiguous failure
+    from this function explicitly: it re-fetches list_pull_reviews filtered
+    to this head_sha and bot login to determine whether the write actually
+    landed before deciding whether to report success or retry.
+
+    Returns the created review object (at least id, state, body, commit_id,
+    html_url). Raises GitHubError on an invalid event or a null response.
+    """
+    if event not in ("APPROVE", "COMMENT"):
+        raise GitHubError(
+            f"submit_pull_review: event must be 'APPROVE' or 'COMMENT', got: {event!r}"
+        )
+    result = _run_gh(
+        [f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews", "--method", "POST"],
+        retries=0,
+        stdin_json={"event": event, "body": body, "commit_id": commit_id},
+    )
+    if result is None:
+        raise GitHubError("submit_pull_review: GitHub returned no response for POST")
+    return result
+
+
+def request_reviewers(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    logins: list[str],
+) -> dict[str, Any]:
+    """
+    POST /repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers (#1657).
+
+    logins: a non-empty list of user logins. Team reviewers are NOT
+    supported by this function — a team request needs the separate
+    `team_reviewers` field and org membership a personal-repo install may
+    not have; see docs/v0.7.0/TECHNICAL-DESIGN-1657-overseer-review-objects.md
+    §4.5 step 5. An "@org/team" token raises ValueError rather than being
+    silently posted as a user login.
+
+    Uses JSON-encoded body via --input - (stdin) for the same #752 reason as
+    post_comment / submit_pull_review.
+
+    Unlike submit_pull_review, this call keeps `_run_gh`'s default retries:
+    POST .../requested_reviewers IS idempotent at the API level (re-adding
+    an already-requested login is a no-op), so a retry after an ambiguous
+    failure carries none of submit_pull_review's duplicate-object risk
+    (MUST_FIX D, #1657 PR-1 review round 2 — do not copy that change here).
+
+    Returns the updated PR object. Raises GitHubError on a null response.
+    """
+    if not logins:
+        raise GitHubError("request_reviewers: logins must be non-empty")
+    for login in logins:
+        if login.startswith("@") and "/" in login[1:]:
+            raise ValueError(f"request_reviewers: team reviewers are not supported, got: {login!r}")
+    result = _run_gh(
+        [f"/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", "--method", "POST"],
+        stdin_json={"reviewers": logins},
+    )
+    if result is None:
+        raise GitHubError("request_reviewers: GitHub returned no response for POST")
     return result

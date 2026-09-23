@@ -156,10 +156,10 @@ def requires_human_approval(
 ) -> tuple[bool, str]:
     """Per-file gate decision: ``(required, reason)`` (§3.2).
 
-      - any ``@org/team`` owner  → (True, "team-owned path: <owner>")        [B1]
-      - any human owner          → (True, "human CODEOWNERS owner: <owner>")
-      - all owners are bots       → (False, "bot-only CODEOWNERS entry")
-      - no matching entry/owners  → (False, "no CODEOWNERS entry")
+    - any ``@org/team`` owner  → (True, "team-owned path: <owner>")        [B1]
+    - any human owner          → (True, "human CODEOWNERS owner: <owner>")
+    - all owners are bots       → (False, "bot-only CODEOWNERS entry")
+    - no matching entry/owners  → (False, "no CODEOWNERS entry")
     """
     owners = get_owners_for_path(codeowners_entries, file_path)
     if not owners:
@@ -218,3 +218,159 @@ def check_pr_files(
         return (True, matched_paths, reason)
 
     return (False, [], "no CODEOWNERS-human-owned path matched")
+
+
+# ---------------------------------------------------------------------------
+# resolve_human_reviewer (#1657 §4.5) — which login to request as reviewer.
+#
+# This is a distinct question from requires_human_approval/check_pr_files
+# above: those decide WHETHER a human is required; this decides WHO to name
+# as `requested_reviewers`. Kept separate rather than folded into
+# check_pr_files so the gate's conservative "over-match -> HUMAN_REQUIRED"
+# contract is never entangled with a resolution routine whose own fallback
+# is "pick someone" rather than "escalate".
+# ---------------------------------------------------------------------------
+
+
+class Resolution:
+    """Result of resolve_human_reviewer: which login to request, and why.
+
+    A plain class, not @dataclass: this module is loaded by file path (it is
+    not an importable package — see merge_authority_cli._load_codeowners_module
+    and pr_review_cli._load_codeowners_module), and a dataclass's own
+    field-processing resolves postponed annotations via
+    sys.modules.get(cls.__module__) — which is None for a by-path load that
+    never registers itself in sys.modules, raising at import time. Immutable
+    by convention (attributes are set once in __init__ and never reassigned).
+    """
+
+    def __init__(
+        self,
+        login: str | None,
+        source: str,  # "codeowners" | "machine-accounts.env" | "explicit-flag"
+        codeowners_owners: list[str] | None = None,
+        codeowners_team_owners: list[str] | None = None,
+        note: str | None = None,
+    ) -> None:
+        self.login = login
+        self.source = source
+        self.codeowners_owners = codeowners_owners if codeowners_owners is not None else []
+        self.codeowners_team_owners = (
+            codeowners_team_owners if codeowners_team_owners is not None else []
+        )
+        self.note = note
+
+
+def _owner_is_email(owner: str) -> bool:
+    """True when `owner` (after stripping one leading '@', if present)
+    still contains '@' — CODEOWNERS permits email-address owners; they
+    cannot be passed to POST .../requested_reviewers."""
+    login = owner[1:] if owner.startswith("@") else owner
+    return "@" in login
+
+
+def _owner_is_bot(owner: str, bot_accounts: set[str]) -> bool:
+    """True when `owner`'s login (leading '@' stripped) is a known bot
+    account (case-insensitive) or carries GitHub's own "[bot]" suffix.
+    Deliberately broader than `_is_bot` above (case-insensitive, suffix
+    check) — this is a resolution-time safety check, not the SPEC-303b gate
+    decision, and the two must not be conflated."""
+    login = (owner[1:] if owner.startswith("@") else owner).lower()
+    if login.endswith("[bot]"):
+        return True
+    return any(login == b.lower() for b in bot_accounts)
+
+
+def resolve_human_reviewer(
+    changed_files: list[str],
+    repo_root,
+    bot_accounts: set[str],
+    human_reviewer: str,
+) -> Resolution:
+    """Resolve the login to request as reviewer for `changed_files` (#1657
+    §4.5). Pure: no network, no subprocess — `load_codeowners`'s file read
+    is the only I/O.
+
+    Steps 1-6: prefer the first human CODEOWNERS owner (in first-seen order
+    over the sorted changed-file list); fall back to `human_reviewer` when
+    no user candidate is found (no CODEOWNERS file, only team/bot/email
+    owners matched, or no entry matched at all) — recording which case it
+    was in `note` rather than silently collapsing them.
+
+    Step 7's fail-closed terminal checks (empty login, bot login, login ==
+    PR author) are NOT performed here: they need the PR author login, which
+    this function does not have. The caller (pr_review_cli.py) applies them
+    to whichever login this returns, and to an explicit `--reviewer`
+    override, which skips steps 1-6 but not step 7.
+    """
+    text = load_codeowners(repo_root)
+    if text is None:
+        return Resolution(
+            login=human_reviewer,
+            source="machine-accounts.env",
+            note="no CODEOWNERS file",
+        )
+
+    entries = parse_codeowners(text)
+
+    accumulated: list[str] = []
+    seen: set[str] = set()
+    for f in sorted(changed_files):
+        for owner in sorted(get_owners_for_path(entries, f)):
+            if owner not in seen:
+                seen.add(owner)
+                accumulated.append(owner)
+
+    team_owners: list[str] = []
+    email_owners: list[str] = []
+    bot_owners: list[str] = []
+    user_owners: list[str] = []
+    for owner in accumulated:
+        if _is_team(owner):
+            team_owners.append(owner)
+        elif _owner_is_email(owner):
+            email_owners.append(owner)
+        elif _owner_is_bot(owner, bot_accounts):
+            bot_owners.append(owner)
+        else:
+            user_owners.append(owner)
+
+    # Never surface a raw e-mail-shaped owner token: this Resolution is
+    # copied verbatim into pr_review_cli.py's printed JSON envelope, which
+    # the overseer commits to a durable, git-committed audit record on every
+    # disposition (audit/automation/<customer>/runs/). resolve_human_reviewer
+    # has already decided not to use an e-mail owner as `login` — surfacing
+    # it in `codeowners_owners` anyway would give a legitimate, common
+    # CODEOWNERS pattern (e.g. "/docs/** dev@example.com") no purpose other
+    # than leaking a personal e-mail address into that record, re-emitted on
+    # every idempotent re-run with no erasure path. `note` remains the
+    # record that an e-mail owner was present and skipped (MUST_FIX A,
+    # #1657 PR-1 review round 2 / privacy-reviewer).
+    safe_owners = [owner for owner in accumulated if not _owner_is_email(owner)]
+
+    if user_owners:
+        login = user_owners[0]
+        login = login[1:] if login.startswith("@") else login
+        return Resolution(
+            login=login,
+            source="codeowners",
+            codeowners_owners=safe_owners,
+            codeowners_team_owners=team_owners,
+        )
+
+    if team_owners:
+        note = f"CODEOWNERS owner is a team ({team_owners[0]}); team review requests are not made"
+    elif bot_owners and not email_owners:
+        note = "bot-only CODEOWNERS entry"
+    elif email_owners:
+        note = "CODEOWNERS owners are e-mail addresses; not requestable"
+    else:
+        note = "no CODEOWNERS entry matched the changed files"
+
+    return Resolution(
+        login=human_reviewer,
+        source="machine-accounts.env",
+        codeowners_owners=safe_owners,
+        codeowners_team_owners=team_owners,
+        note=note,
+    )

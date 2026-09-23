@@ -36,6 +36,7 @@ excluded.
 - `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority read-only primitive surface (#1357 slice 1).
 - `bootstrap/post_comment.sh` — canonical wrapper for posting a GitHub issue/PR comment under a HOS bot identity (#1155)
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
+- `bootstrap/pr_review.sh` — L3 wrapper for the PR-review verdict primitive (#1657)
 - `bootstrap/query_issues.sh` — canonical read-side wrapper for GitHub issue and PR queries under a HOS bot identity (#1192, consolidated by #1204)
 - `bootstrap/revoke_app_token.sh` — revoke the GitHub App installation token currently held in GH_TOKEN (#1191)
 - `bootstrap/setup_clis.sh` — Repo-independent machine bootstrap for the AI-oversight agent CLIs.
@@ -63,6 +64,7 @@ excluded.
 
 - `scripts/automation/agent_invoke_cli.py` — L2 deterministic agent-invocation primitive (#1643 W1).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
+- `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
 
 ## scripts/automation/lib/
