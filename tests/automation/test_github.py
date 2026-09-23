@@ -16,8 +16,6 @@ from scripts.automation.lib.github import (
     RateLimitError,
     _run_gh,
     get_branch,
-    get_branch_protection,
-    get_repo,
     list_check_runs_for_ref,
     list_issue_comments,
     list_pulls,
