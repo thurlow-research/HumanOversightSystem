@@ -29,6 +29,16 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for agy/codex. Provides
+# vendor_invoke() / vendor_invoke_tmpfile() — content goes on stdin, never argv.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../oversight/lib/vendor_invoke.sh"
+
+# Matches AI_REVIEW_TIMEOUT's default in this directory's sibling validators
+# (validate_agents.sh, validate_scripts.sh) — same knob, same value, for the
+# same class of call (an AI review CLI in this framework-validation suite).
+AI_REVIEW_TIMEOUT="${AI_REVIEW_TIMEOUT:-300}"
+
 AGENTS_DIR=".claude/agents"
 OUT_DIR=".claudetmp/framework"
 SKIP_CODEX=false
@@ -100,6 +110,39 @@ done
 
 echo "Checking $AGENT_COUNT agents against governance spec..."
 echo ""
+
+# ── ADR-1683 D-4-style invocation-failure record (#1364) ─────────────────────
+# Preserves this script's own error-JSON shape (verdict:"error", checked at
+# the "Finalize verdict" step below) — NOT run_second_review.sh's shape.
+# `findings_key` is "failures" for agy, "bypass_vectors" for codex (matches
+# each reviewer's own schema above). Uses python3 for the stderr tail so an
+# embedded quote/backslash in vendor output can't break the JSON.
+_compliance_failure_json() {
+    local reviewer="$1" findings_key="$2"
+    local rc="${VENDOR_INVOKE_RC:-}"
+    [[ -z "$rc" ]] && rc=0
+    VI_REVIEWER="$reviewer" VI_KEY="$findings_key" VI_CLASS="$VENDOR_INVOKE_CLASS" \
+    VI_DETAIL="$VENDOR_INVOKE_DETAIL" VI_RC="$rc" VI_STDERR="$VENDOR_INVOKE_STDERR" python3 -c '
+import json, os
+reviewer = os.environ["VI_REVIEWER"]
+detail = os.environ["VI_DETAIL"]
+failure_class = os.environ["VI_CLASS"]
+rc = int(os.environ["VI_RC"])
+error = f"{reviewer} invocation failed ({detail})" if failure_class == "harness" \
+    else f"{reviewer} ran and failed ({detail}, rc={rc})"
+print(json.dumps({
+    "reviewer": reviewer,
+    "error": error,
+    "failure_class": failure_class,
+    "outcome_detail": detail,
+    "exit_code": rc,
+    "stderr_tail": os.environ["VI_STDERR"],
+    os.environ["VI_KEY"]: [],
+    "verdict": "error",
+    "summary": f"{reviewer} failed",
+}))
+'
+}
 
 # ── agy: governance requirements compliance ───────────────────────────────────
 run_agy_compliance() {
@@ -204,13 +247,20 @@ Return JSON only:
   \"summary\": \"one paragraph overall assessment\"
 }"
 
-    local tmpfile
-    tmpfile=$(mktemp .claudetmp/validate_compliance_agy.XXXXXX)
-    printf '%s' "$prompt" > "$tmpfile"
-    local result
-    result=$(agy -p "$(cat "$tmpfile")" 2>/dev/null) || \
-        result='{"reviewer":"agy","error":"agy invocation failed","failures":[],"verdict":"error","summary":"agy failed"}'
-    rm -f "$tmpfile"
+    # STDIN, NOT ARGV (ADR-1683/#1364): the old `agy -p "$(cat "$tmpfile")"`
+    # put the whole prompt into a single argv element — Linux's per-argument
+    # MAX_ARG_STRLEN silently E2BIGs execve on a large prompt. vendor_invoke
+    # reads it on stdin instead; its own tmpfiles are auto-cleaned, so no
+    # local mktemp/rm is needed.
+    local prompt_file stdout_file result
+    prompt_file=$(vendor_invoke_tmpfile)
+    stdout_file=$(vendor_invoke_tmpfile)
+    printf '%s' "$prompt" > "$prompt_file"
+    if vendor_invoke agy "$AI_REVIEW_TIMEOUT" "$prompt_file" "$stdout_file"; then
+        result=$(cat "$stdout_file")
+    else
+        result=$(_compliance_failure_json agy failures)
+    fi
     echo "$result"
 }
 
@@ -277,13 +327,18 @@ Return JSON:
   \"summary\": \"one paragraph\"
 }"
 
-    local tmpfile
-    tmpfile=$(mktemp .claudetmp/validate_compliance_codex.XXXXXX)
-    printf '%s' "$prompt" > "$tmpfile"
-    local result
-    result=$(codex exec < "$tmpfile" 2>/dev/null) || \
-        result='{"reviewer":"codex","error":"codex invocation failed","bypass_vectors":[],"verdict":"error","summary":"codex failed"}'
-    rm -f "$tmpfile"
+    # Already stdin-safe before this migration; migrated onto vendor_invoke
+    # anyway (ADR-1683/#1364) because `2>/dev/null` discarded the failure
+    # reason and left two invocation idioms in one file.
+    local prompt_file stdout_file result
+    prompt_file=$(vendor_invoke_tmpfile)
+    stdout_file=$(vendor_invoke_tmpfile)
+    printf '%s' "$prompt" > "$prompt_file"
+    if vendor_invoke codex "$AI_REVIEW_TIMEOUT" "$prompt_file" "$stdout_file"; then
+        result=$(cat "$stdout_file")
+    else
+        result=$(_compliance_failure_json codex bypass_vectors)
+    fi
     echo "$result"
 }
 

@@ -43,9 +43,20 @@ _CLEAN_AGY = (
 
 # Externals run_red_team.sh needs before/around the guard (codex/agy deliberately
 # excluded so we can simulate them being absent).
+#
+# `mktemp` and `rm` are needed since #1364 moved this script onto the shared
+# scripts/oversight/lib/vendor_invoke.sh primitive: that helper initializes its
+# per-process temp dir EAGERLY at source time (vendor_invoke.sh line ~294 — it
+# cannot be purely lazy, because a lazy first call inside a command-substitution
+# subshell would leak its dir), and registers an `rm -rf` EXIT/INT/TERM trap.
+# Both therefore run on this minimal PATH even in this test, where neither
+# reviewer CLI exists and vendor_invoke() itself is never reached. Without them
+# the script dies 127 at startup and the fail-closed guard under test never
+# executes — a green-looking test that has stopped testing anything.
 _REQUIRED_BINS = [
     "env", "bash", "find", "tr", "cat", "mkdir", "date",
     "git", "python3", "dirname", "grep", "awk", "head",
+    "mktemp", "rm",
 ]
 
 

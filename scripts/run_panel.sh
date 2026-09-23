@@ -54,6 +54,20 @@
 
 set -euo pipefail
 
+# ADR-1683/#1364: the one shared bash launch primitive for the agy/codex arms
+# of call_model() below. Provides vendor_invoke() / vendor_invoke_tmpfile() —
+# content goes on stdin, never argv. Deliberately NOT used for the claude/haiku
+# /sonnet arms (ADR-1683 D-7 / ADR-1643 AD-16 boundary — those stay on the
+# direct `claude -p` form this script already uses) or the local `ipcheck`
+# built-in.
+# shellcheck source=scripts/oversight/lib/vendor_invoke.sh
+source "$(dirname "${BASH_SOURCE[0]}")/oversight/lib/vendor_invoke.sh"
+
+# 900s matches SECOND_REVIEW_VENDOR_TIMEOUT (run_second_review.sh) — well above
+# agy's own --print-timeout default of 5m, so this catches only a genuine hang.
+# No timeout existed on this script's agy/codex calls before this migration.
+PANEL_VENDOR_TIMEOUT="${PANEL_VENDOR_TIMEOUT:-900}"
+
 # ── Colours / log helpers (match setup_clis.sh / setup_oversight.sh) ───────────
 GREEN="\033[32m"; YELLOW="\033[33m"; CYAN="\033[36m"
 RED="\033[31m"; BOLD="\033[1m"; RESET="\033[0m"
@@ -139,16 +153,35 @@ max_risk() { [[ "$(rank "$1")" -ge "$(rank "$2")" ]] && echo "$1" || echo "$2"; 
 # `extract-json` subcommand (raw response on stdin, extracted JSON on stdout).
 # `$PANEL_LOGIC` is resolved in the TRIAGE section before any extract-json call.
 
+# ── agy/codex dispatch via the shared stdin primitive (ADR-1683/#1364) ────────
+# Preserves call_model's stdout-only-carries-model-output contract and its
+# existing stderr-to-errors.log behaviour: the vendor's own stderr is captured,
+# redacted and bounded by vendor_invoke (D-5), and on failure a one-line
+# summary (including that redacted tail) is appended to $RUN_DIR/errors.log —
+# the same destination the claude/haiku/sonnet arms already write to.
+_panel_vendor_invoke() {
+  local vendor="$1" prompt="$2" prompt_file stdout_file
+  prompt_file=$(vendor_invoke_tmpfile)
+  stdout_file=$(vendor_invoke_tmpfile)
+  printf '%s' "$prompt" > "$prompt_file"
+  if vendor_invoke "$vendor" "$PANEL_VENDOR_TIMEOUT" "$prompt_file" "$stdout_file"; then
+    cat "$stdout_file"
+    return 0
+  fi
+  echo "${vendor} invocation failed (${VENDOR_INVOKE_CLASS}/${VENDOR_INVOKE_DETAIL}, rc=${VENDOR_INVOKE_RC}): ${VENDOR_INVOKE_STDERR}" >> "$RUN_DIR/errors.log"
+  return 1
+}
+
 # ── Model dispatch (subscription CLIs; Opus is the author and is NEVER called here) ─
 call_model() {
   local which="$1" prompt="$2"
   case "$which" in
-    haiku)  claude -p --model haiku  "$prompt" 2>>"$RUN_DIR/errors.log" ;;
-    sonnet) claude -p --model sonnet "$prompt" 2>>"$RUN_DIR/errors.log" ;;
-    agy)    agy   -p "$prompt"                 2>>"$RUN_DIR/errors.log" ;;
-    codex)  codex exec "$prompt"               2>>"$RUN_DIR/errors.log" ;;
+    haiku)   claude -p --model haiku  "$prompt" 2>>"$RUN_DIR/errors.log" ;;
+    sonnet)  claude -p --model sonnet "$prompt" 2>>"$RUN_DIR/errors.log" ;;
+    agy)     _panel_vendor_invoke agy   "$prompt" ;;
+    codex)   _panel_vendor_invoke codex "$prompt" ;;
     ipcheck) ip_agent "$prompt" ;;             # LOCAL built-in agent — not a vendor CLI
-    *)      echo "" ;;
+    *)       echo "" ;;
   esac
 }
 
