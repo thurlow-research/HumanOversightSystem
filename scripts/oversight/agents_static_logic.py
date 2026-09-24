@@ -86,12 +86,13 @@ def extract_path_refs(agent_text: str) -> list[str]:
 
 
 def _clean_ref(ref: str) -> str:
-    """Reproduce the shell `tr -d '`"' | sed 's/#.*//' | xargs` cleaning.
+    """Clean a raw path reference down to the single path it names.
 
     1. Strip all backtick and double-quote characters.
     2. Truncate at the first '#' (drop the anchor fragment).
-    3. xargs-equivalent: trim whitespace and take the first shell word; an
-       all-whitespace / empty input yields "" (matches xargs on empty input).
+    3. Trim whitespace and take the first shell word (intended behaviour: a
+       reference like `script.sh subcommand` names the script, not the
+       subcommand); an all-whitespace / empty input yields "".
     """
     cleaned = ref.replace("`", "").replace('"', "")
     cleaned = cleaned.split("#", 1)[0]
@@ -203,6 +204,7 @@ def classify_token(
 #   extract-path-refs            stdin: agent text  -> one ref per line        #
 #   extract-escalation-targets   stdin: agent text  -> one name per line       #
 #   filter-path-ref <ref> [output_doc...]           -> SKIP|CHECK              #
+#   clean-path-ref <ref>                            -> cleaned path            #
 #   classify-token <token> <known_agents_pipe> <non_agent> <labels> \          #
 #                  <short_agents> <external>         -> SKIP|EXTERNAL|CHECK     #
 # Result is on STDOUT (not the exit code); the shell branches on the text,     #
@@ -235,6 +237,12 @@ def main(argv: list[str] | None = None) -> int:
         ref = rest[0]
         output_docs = set(rest[1:])
         sys.stdout.write(filter_path_ref(ref, output_docs) + "\n")
+        return 0
+
+    if cmd == "clean-path-ref":
+        if not rest:
+            return _usage("clean-path-ref requires <ref>")
+        sys.stdout.write(_clean_ref(rest[0]) + "\n")
         return 0
 
     if cmd == "classify-token":

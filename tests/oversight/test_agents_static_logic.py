@@ -9,6 +9,8 @@ criterion AC1-AC10 plus the anchoring and extraction edge cases.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 _MOD_PATH = (
@@ -26,6 +28,19 @@ filter_path_ref = asl.filter_path_ref
 extract_escalation_targets = asl.extract_escalation_targets
 classify_token = asl.classify_token
 SKIP, CHECK, EXTERNAL = asl.SKIP, asl.CHECK, asl.EXTERNAL
+
+_REPO_ROOT = _MOD_PATH.parents[2]
+
+
+def _clean_path_ref_cli(ref: str) -> str:
+    """Invoke the actual `clean-path-ref` subcommand (not a reimplementation)."""
+    result = subprocess.run(
+        [sys.executable, str(_MOD_PATH), "clean-path-ref", ref],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.rstrip("\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -204,3 +219,42 @@ def test_extract_path_refs_preserves_order():
     # multi-char.
     text = "`aa/one.md` then `bb/two.py` then `cc/three.yaml`"
     assert extract_path_refs(text) == ["aa/one.md", "bb/two.py", "cc/three.yaml"]
+
+
+# --------------------------------------------------------------------------- #
+# clean-path-ref subcommand + script+subcommand cleaning — #1846 regression    #
+# --------------------------------------------------------------------------- #
+def test_script_plus_subcommand_resolves_to_script_and_checks():
+    # The real reference from .claude/agents/overseer.md that triggered #1846:
+    # a script named alongside a subcommand must clean down to the script path
+    # alone (CHECK), and that path exists in this repo.
+    ref = "bootstrap/pr_review.sh submit-verdict"
+    assert filter_path_ref(ref, set()) == CHECK
+    cleaned = asl._clean_ref(ref)
+    assert cleaned == "bootstrap/pr_review.sh"
+    assert (_REPO_ROOT / cleaned).exists()
+
+
+def test_missing_script_still_fails_without_subcommand():
+    ref = "bootstrap/does_not_exist_1846.sh"
+    assert filter_path_ref(ref, set()) == CHECK
+    cleaned = asl._clean_ref(ref)
+    assert cleaned == ref
+    assert not (_REPO_ROOT / cleaned).exists()
+
+
+def test_missing_script_still_fails_with_subcommand():
+    ref = "bootstrap/does_not_exist_1846.sh submit-verdict"
+    assert filter_path_ref(ref, set()) == CHECK
+    cleaned = asl._clean_ref(ref)
+    assert cleaned == "bootstrap/does_not_exist_1846.sh"
+    assert not (_REPO_ROOT / cleaned).exists()
+
+
+def test_clean_path_ref_cli_matches_python_side_for_multiword_ref():
+    # Criterion 4: shell-side (now: the actual clean-path-ref subprocess the
+    # shell calls) and Python-side (_clean_ref) cleaning must agree for a
+    # multi-word reference, so the two implementations cannot drift again.
+    ref = "bootstrap/pr_review.sh submit-verdict"
+    assert _clean_path_ref_cli(ref) == asl._clean_ref(ref)
+    assert _clean_path_ref_cli(ref) == "bootstrap/pr_review.sh"

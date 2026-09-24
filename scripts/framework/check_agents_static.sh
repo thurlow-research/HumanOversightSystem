@@ -95,10 +95,13 @@ section "3. File path references in agent files"
 # Only check paths that contain a directory separator — bare filenames like
 # `tokens.css` or `TECHNICAL-DESIGN.md` are prose shorthand, not path claims.
 # Output documents produced at project-start don't exist yet — exempt them.
-# Extraction (grep -oE at the old line 128) and the per-reference SKIP/CHECK
-# cascade are now in scripts/oversight/agents_static_logic.py (SPEC-336). The
-# shell still iterates files, derives the cleaned path for the existence test +
-# display, and runs the [[ -e ]] check; it no longer re-implements the cascade.
+# Extraction (grep -oE at the old line 128), the per-reference SKIP/CHECK
+# cascade, and the path cleaning are all in scripts/oversight/agents_static_logic.py
+# (SPEC-336 / #1846 — single source of truth for cleaning, since a shell
+# re-derivation of it previously disagreed with the Python one on multi-word
+# references). The shell iterates files, consumes the Python-cleaned path for
+# the existence test + display, and runs the [[ -e ]] check; it no longer
+# derives or re-implements any of the cleaning or classification.
 LOGIC_PY="scripts/oversight/agents_static_logic.py"
 OUTPUT_DOCS="docs/pm/CONFIRMED-REQUIREMENTS.md
 docs/design/UX-DESIGN-READINESS.md
@@ -121,9 +124,10 @@ while IFS= read -r -d '' f; do
     while IFS= read -r ref; do
         verdict=$(python3 "$LOGIC_PY" filter-path-ref "$ref")
         [[ "$verdict" == SKIP ]] && continue
-        # CHECK: derive the cleaned path (display + existence test only — the
-        # classification decision already happened in Python).
-        ref_clean=$(echo "$ref" | tr -d '`"' | sed 's/#.*//' | xargs)
+        # CHECK: consume the Python-cleaned path (display + existence test only —
+        # the classification decision already happened in Python, and the
+        # cleaning itself is Python's single source of truth per #1846).
+        ref_clean=$(python3 "$LOGIC_PY" clean-path-ref "$ref")
         # Exempt project-start output docs — written during the build, not before.
         if echo "$OUTPUT_DOCS" | grep -qx "$ref_clean"; then
             ok "[$agent_name] $ref_clean (output doc — existence not required)"
