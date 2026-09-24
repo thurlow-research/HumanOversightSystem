@@ -55,9 +55,9 @@ The `hos-cron` launcher has already pre-filtered open PRs — only actionable (n
 ```bash
 bash scripts/oversight/check_pr_reviewed.sh <pr#> <head_sha>
 ```
-Never suppress this command's stderr — a wrong root or a malformed audit record must fail loud, never silently. If it prints `{"already_reviewed": true, ...}`, treat that as corroborating evidence for the `overseer.md` §1215 duplicate-comment precheck (which makes the authoritative skip/proceed call from the PR's own comments) — it does not by itself skip anything. If it prints `{"already_reviewed": false, ...}`, a full review has never been recorded for this exact head SHA and the §1215 precheck's skip condition cannot apply.
+Never suppress this command's stderr — a wrong root or a malformed audit record must fail loud, never silently. If it prints `{"already_reviewed": true, ...}`, treat that as corroborating evidence for the `overseer.md` §1215 duplicate-verdict precheck (which makes the authoritative skip/proceed call from the PR's own comments and reviews) — it does not by itself skip anything. If it prints `{"already_reviewed": false, ...}`, a full review has never been recorded for this exact head SHA and the §1215 precheck's skip condition cannot apply.
 
-For each PR number in the preamble list: run the full review chain (validators, size check, register completeness, merge-authority matrix), subject to the §1215 duplicate-comment precheck. Post findings as a PR comment. Auto-merge if within ceiling; escalate to human if above.
+For each PR number in the preamble list: run the full review chain (validators, size check, register completeness, merge-authority matrix), subject to the §1215 duplicate-verdict precheck. Post findings as a PR review verdict (`bootstrap/pr_review.sh submit-verdict`); see `overseer.md` § Verdict events. Auto-merge if within ceiling; escalate to human if above.
 
 **Step 2 — STOP.** One review cycle per cron invocation.
 
