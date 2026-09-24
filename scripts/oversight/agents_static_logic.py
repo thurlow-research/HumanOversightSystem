@@ -63,8 +63,7 @@ _PATH_REF_RE = re.compile(
 # (spec §R1, current script lines 181). The (?i:...) group makes ONLY the verb
 # alternation case-insensitive; the captured agent name stays lowercase-anchored.
 _ESCALATION_RE = re.compile(
-    r"(?i:escalat\w+\s+to|invok\w+|receives?\s+from|notif\w+)"
-    r"[^`]*`([a-z][a-z0-9_-]+)`"
+    r"(?i:escalat\w+\s+to|invok\w+|receives?\s+from|notif\w+)" r"[^`]*`([a-z][a-z0-9_-]+)`"
 )
 
 
@@ -256,10 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         non_agent, labels, short_agents, external = rest[2], rest[3], rest[4], rest[5]
         known_agents = _split_alternation(known_agents_pipe)
         sys.stdout.write(
-            classify_token(
-                token, known_agents, non_agent, labels, short_agents, external
-            )
-            + "\n"
+            classify_token(token, known_agents, non_agent, labels, short_agents, external) + "\n"
         )
         return 0
 

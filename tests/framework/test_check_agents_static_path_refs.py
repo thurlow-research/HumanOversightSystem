@@ -26,6 +26,7 @@ reference (`` `script.sh subcommand` ``), asserting both that a present script
 passes and that an absent script's FAIL line names the script path alone, not
 the two-word reference.
 """
+
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,9 +93,7 @@ def test_two_word_reference_to_missing_script_names_script_path_only(tmp_path):
         line for line in result.stdout.splitlines() if "referenced path not found" in line
     ]
     assert fail_lines, result.stdout + result.stderr
-    assert any(
-        line.endswith("scripts/framework/other_tool.sh") for line in fail_lines
-    ), fail_lines
+    assert any(line.endswith("scripts/framework/other_tool.sh") for line in fail_lines), fail_lines
     assert not any(
         "scripts/framework/other_tool.sh run-check" in line for line in fail_lines
     ), fail_lines

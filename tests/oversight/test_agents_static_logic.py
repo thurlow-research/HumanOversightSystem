@@ -13,13 +13,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "agents_static_logic.py"
-)
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "agents_static_logic.py"
 _spec = importlib.util.spec_from_file_location("agents_static_logic", _MOD_PATH)
+# spec_from_file_location returns ModuleSpec | None, and .loader is Loader | None;
+# both are None only if the module is missing or unloadable, which is a broken
+# checkout rather than a test failure — assert so mypy sees the narrowing and the
+# failure mode names itself instead of surfacing as an AttributeError.
+assert _spec is not None and _spec.loader is not None, f"cannot load {_MOD_PATH}"
 asl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(asl)
 
@@ -106,9 +106,9 @@ def test_classify_labels():
 
 def test_classify_hyphen_heuristic():
     # AC7
-    assert _classify("architect") == CHECK       # in known_short_agents
-    assert _classify("mylib") == SKIP            # no hyphen, not short agent
-    assert _classify("code-reviewer") == CHECK   # has hyphen
+    assert _classify("architect") == CHECK  # in known_short_agents
+    assert _classify("mylib") == SKIP  # no hyphen, not short agent
+    assert _classify("code-reviewer") == CHECK  # has hyphen
 
 
 def test_classify_external():
@@ -163,9 +163,7 @@ def test_filter_skip_project_scoped():
 
 
 def test_filter_skip_output_doc():
-    assert filter_path_ref(
-        "docs/pm/CONFIRMED-REQUIREMENTS.md", _OUTPUT_DOCS
-    ) == SKIP
+    assert filter_path_ref("docs/pm/CONFIRMED-REQUIREMENTS.md", _OUTPUT_DOCS) == SKIP
 
 
 def test_filter_skip_empty():
@@ -181,7 +179,7 @@ def test_filter_check_real_path():
 
 def test_filter_strips_backticks_quotes_and_anchor():
     # cleaning: backticks, double-quotes, #anchor all stripped before the cascade
-    assert filter_path_ref('`docs/x/y.md#section`', set()) == CHECK
+    assert filter_path_ref("`docs/x/y.md#section`", set()) == CHECK
     assert filter_path_ref('"docs/x/y.md"', set()) == CHECK
 
 
