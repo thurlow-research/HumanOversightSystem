@@ -339,6 +339,7 @@ T4.1 for the enforced, current exemption set.
 | Authenticated GitHub reads at the library level (retry/backoff/rate-limit handling, not a CLI wrapper) | `scripts/automation/lib/github.py` |
 | Branch creation for autonomous work | `bootstrap/create_branch.sh` |
 | Posting a resolvable PR review thread | `bootstrap/post_review_thread.sh` |
+| Posting an overseer PR verdict, or requesting the CODEOWNERS human reviewer | `bootstrap/pr_review.sh` |
 | Repo sync (fetch + fast-forward the default branch) | `bootstrap/hos_repo_sync.sh` |
 | Dependency/environment health check | `scripts/oversight/smoke_test.sh` |
 | Running the PR-required test suite | `scripts/framework/run_tests_inner_loop.sh` |

@@ -12,8 +12,8 @@ requirement without the overseer ever having looked at the PR (#621).
 
 Above-ceiling bypass (#1426): when the PR's computed tier exceeds
 OVERSEER_CEILING, the overseer correctly does NOT assert APPROVED authority
-(docs/FABERIX-ROLES.md §5: "MEDIUM and HIGH tier → recommend, do NOT
-approve") — but that left require-overseer-approval and require-tier-ceiling
+(docs/FABERIX-ROLES.md §5: "Above OVERSEER_CEILING → record a review, but
+never APPROVED") — but that left require-overseer-approval and require-tier-ceiling
 jointly unsatisfiable: an overseer APPROVED review is required here, while
 require-tier-ceiling FAILS any PR the overseer approved above its ceiling.
 This gate now also passes when ALL of the following hold: the overseer
@@ -52,6 +52,8 @@ def _load_sibling_module(name: str):
     """
     path = Path(__file__).with_name(name)
     spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not build a module spec for {path} — has it moved?")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -73,7 +75,7 @@ def load_env(path: Path) -> dict[str, str]:
             continue
         key, _, val = line.partition("=")
         key = key.strip()
-        val = re.sub(r'\s+#.*$', '', val.strip())
+        val = re.sub(r"\s+#.*$", "", val.strip())
         val = val.strip('"').strip("'")
         val = re.sub(r"\$\{?(\w+)\}?", lambda m: result.get(m.group(1), ""), val)
         result[key] = val
@@ -171,9 +173,7 @@ def main() -> int:
 
     reviews = get_reviews(repo, args.pr)
     if overseer_has_approved(reviews, overseer_login):
-        print(
-            f"✔ require-overseer-approval: {overseer_login} has approved — gate satisfied."
-        )
+        print(f"✔ require-overseer-approval: {overseer_login} has approved — gate satisfied.")
         return 0
 
     # Above-ceiling bypass (#1426): the overseer may have deliberately withheld
@@ -193,9 +193,9 @@ def main() -> int:
                     if humans:
                         print(
                             f"✔ require-overseer-approval: {overseer_login} reviewed this PR "
-                            f"(tier={tier} exceeds ceiling={ceiling}, so it did not assert "
-                            f"APPROVED authority above its ceiling — see docs/FABERIX-ROLES.md "
-                            f"§5) and a human ({', '.join(humans)}) approved instead — gate "
+                            f"(tier={tier} exceeds ceiling={ceiling}, so it recorded a review "
+                            f"but never APPROVED, per docs/FABERIX-ROLES.md §5) and a human "
+                            f"({', '.join(humans)}) approved instead — gate "
                             "satisfied."
                         )
                         return 0
