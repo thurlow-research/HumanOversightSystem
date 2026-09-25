@@ -1,0 +1,1 @@
+{"composite_score":0.1162,"decision":"PROPOSE_ONLY","event":"pr-review","expected_action":"DECIDE","head_sha":"df602f0dab439442dbb4f058955c10749a82a278","pr":1865,"review_id":5323408672,"tier":"HIGH","tier_floor":null,"verdict_event":"comment"}
