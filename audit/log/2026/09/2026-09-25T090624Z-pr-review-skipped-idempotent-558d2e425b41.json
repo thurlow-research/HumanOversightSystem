@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","head_sha":"7030983493cb5bc42cf1daec74fdb0cf3128b184","pr":1859,"prior_review_id":5315727394,"reason":"§1215: no new commits, comments, reviews, labels or check changes since overseer verdict 09:03Z on this head"}
