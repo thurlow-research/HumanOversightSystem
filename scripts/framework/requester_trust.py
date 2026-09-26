@@ -592,7 +592,18 @@ def requester_verdict(record: Mapping[str, Any], trusted_set: TrustedSet) -> Req
         return RequesterVerdict(
             True, f"trusted-app:{marker.marker_id}", "trusted-app", marker.marker_id
         )
-    return RequesterVerdict(True, reason, reason, None)
+    # Only three trusted, non-app reason shapes reach this point (§1.4):
+    # "codeowner", "roster", and "roster-tier:<tier>" — a tier match is a
+    # second entry form of the roster category (AD-1(c)), not its own
+    # category (§1.2/§1.4 "What step 3's third disjunct is NOT"). The
+    # `reason` token itself is left untouched (`roster-tier:<tier>` stays
+    # verbatim for the S6 audit); only `category` is normalised into the
+    # closed union.
+    if reason == "codeowner":
+        return RequesterVerdict(True, reason, "codeowner", None)
+    if reason == "roster" or reason.startswith("roster-tier:"):
+        return RequesterVerdict(True, reason, "roster", None)
+    raise AssertionError(f"requester_verdict: unmapped trusted reason {reason!r}")
 
 
 def verify_codeowner_actor(

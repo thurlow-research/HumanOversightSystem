@@ -838,6 +838,46 @@ class TestRequesterVerdict:
         verdict = requester_verdict(record, ts)
         assert verdict == RequesterVerdict(True, "codeowner", "codeowner", None)
 
+    def test_tier_admitted_author_gets_roster_category_with_tier_reason(self):
+        """A tier match is a second entry form of the roster category
+        (AD-1(c)) — the `reason` token stays `roster-tier:<tier>` verbatim
+        for the S6 audit, but `category` must fall inside the closed union,
+        not leak the parameterised reason string as its own category."""
+        ts = _trusted_set(tier_members=frozenset({"alice"}), tier_of={"alice": "write"})
+        record = {"user": {"login": "alice", "type": "User"}, "title": "anything"}
+        verdict = requester_verdict(record, ts)
+        assert verdict == RequesterVerdict(True, "roster-tier:write", "roster", None)
+
+    def test_every_trusted_verdicts_category_is_in_the_closed_union(self):
+        """Conformance: RequesterVerdict.category's documented type is the
+        closed union `"codeowner" | "roster" | "trusted-app" | None`
+        (§1.2). Every combination that yields `trusted=True` must land its
+        category inside that set — never the raw reason token."""
+        closed_union = {"codeowner", "roster", "trusted-app"}
+        codeowner_ts = _trusted_set(codeowners=frozenset({"alice"}))
+        roster_ts = _trusted_set(roster=frozenset({"alice"}))
+        tier_ts = _trusted_set(tier_members=frozenset({"alice"}), tier_of={"alice": "write"})
+        app_ts = _trusted_set(apps=frozenset({"hos-worker-hos[bot]"}))
+
+        cases = [
+            ({"user": {"login": "alice", "type": "User"}, "title": "x"}, codeowner_ts),
+            ({"user": {"login": "alice", "type": "User"}, "title": "x"}, roster_ts),
+            ({"user": {"login": "alice", "type": "User"}, "title": "x"}, tier_ts),
+            (
+                {
+                    "user": {"login": "hos-worker-hos[bot]", "type": "Bot"},
+                    "title": (
+                        "[BLOCKED] inner-loop tests failing on my-project — diagnose and fix"
+                    ),
+                },
+                app_ts,
+            ),
+        ]
+        for record, ts in cases:
+            verdict = requester_verdict(record, ts)
+            assert verdict.trusted is True
+            assert verdict.category in closed_union, verdict
+
 
 # ---------------------------------------------------------------------------
 # verify_codeowner_actor (pure) — ported from probe.py's shipped cases
