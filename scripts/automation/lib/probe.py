@@ -18,32 +18,27 @@ Probe strategies (#619):
   - STRATEGY_MILESTONE: HOS self-development — open issues in a GitHub milestone
     with needs-ai label. Actor verification (#1539): the needs-ai label must
     have been applied by a designated human CODEOWNER (see
-    scripts.framework.requester_trust.codeowners_humans), not a bot — a bot applying the label (including the worker or overseer
-    themselves) does not authorize the issue, and NEITHER does a milestone
-    assignment by anyone (AR-7 / AM-35, #1540 S1: there is exactly one
-    authorizing channel). Enables the orchestrator to serve as the coordinator
-    for HOS self-development, unblocking eventual LOOP retirement.
+    scripts.framework.requester_trust.codeowners_humans), not a bot — a bot
+    applying the label (including the worker or overseer themselves) does not
+    authorize the issue, and NEITHER does a milestone assignment by anyone
+    (AR-7 / AM-35, #1540 S1: there is exactly one authorizing channel).
+    Enables the orchestrator to serve as the coordinator for HOS
+    self-development, unblocking eventual LOOP retirement.
 """
 
 from __future__ import annotations
 
 import json
-import math
-import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
-from scripts.automation.lib.github import (
-    GitHubError,
-    list_issue_comments,
-    _run_gh,
-)
+from scripts.automation.lib.github import GitHubError, _run_gh
 from scripts.automation.lib.ledger import sum_window_blast_radius
+from scripts.framework.requester_trust import codeowners_humans as _codeowners_humans
+from scripts.framework.requester_trust import load_bot_accounts
 from scripts.framework.requester_trust import (
-    codeowners_humans as _codeowners_humans,
-    load_bot_accounts,
     verify_codeowner_actor as _shared_verify_codeowner_actor,
 )
 
@@ -83,6 +78,7 @@ class CadenceState:
 @dataclass
 class WorkCandidate:
     """A single probe-discovered work item."""
+
     owner: str
     repo: str
     issue_number: int
@@ -94,6 +90,7 @@ class WorkCandidate:
 # ---------------------------------------------------------------------------
 # API quota tracking (soft state)
 # ---------------------------------------------------------------------------
+
 
 def _load_api_budget(repo_id: str, repo_root: str = ".") -> dict:
     path = Path(repo_root) / _SOFT_STATE_DIR / _API_BUDGET_FILE
@@ -151,6 +148,7 @@ def _record_api_call(repo_id: str, count: int = 1, repo_root: str = ".") -> None
 # Cadence helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_cadence(repo_id: str, repo_root: str = ".") -> CadenceState:
     path = Path(repo_root) / _SOFT_STATE_DIR / _CADENCE_FILE
     if not path.is_file():
@@ -206,7 +204,7 @@ def _is_due(state: CadenceState) -> bool:
 
 def _compute_next_due(backoff_level: int, floor_minutes: int, ceiling_hours: int) -> str:
     interval_minutes = min(
-        floor_minutes * (2 ** backoff_level),
+        floor_minutes * (2**backoff_level),
         ceiling_hours * 60,
     )
     next_due = datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)
@@ -217,12 +215,13 @@ def _compute_next_due(backoff_level: int, floor_minutes: int, ceiling_hours: int
 # Coordination-label actor verification (R4.1.4)
 # ---------------------------------------------------------------------------
 
+
 def _verify_label_actor(
     owner: str,
     repo: str,
     issue_number: int,
     label_name: str,
-    requester_allowlist: list[str],
+    requester_allowlist: Sequence[str],
 ) -> Optional[str]:
     """
     Verify the actor who applied `label_name` is in the requester allowlist.
@@ -231,10 +230,7 @@ def _verify_label_actor(
     the actor is not in the allowlist or the event cannot be verified.
     """
     try:
-        events = _run_gh([
-            f"/repos/{owner}/{repo}/issues/{issue_number}/events"
-            f"?per_page=100"
-        ])
+        events = _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}/events" f"?per_page=100"])
     except GitHubError:
         return None
     if not isinstance(events, list):
@@ -288,10 +284,9 @@ def _fetch_events_paginated(owner: str, repo: str, issue_number: int) -> Optiona
     events: list = []
     for page in range(1, _EVENTS_PAGE_BOUND + 1):
         try:
-            batch = _run_gh([
-                f"/repos/{owner}/{repo}/issues/{issue_number}/events"
-                f"?per_page=100&page={page}"
-            ])
+            batch = _run_gh(
+                [f"/repos/{owner}/{repo}/issues/{issue_number}/events" f"?per_page=100&page={page}"]
+            )
         except GitHubError:
             return None
         if not isinstance(batch, list):
@@ -327,7 +322,10 @@ def _verify_codeowner_actor(
     if events is None:
         return None
     return _shared_verify_codeowner_actor(
-        events, codeowners_humans, bot_accounts, label_name,
+        events,
+        codeowners_humans,
+        bot_accounts,
+        label_name,
     )
 
 
@@ -335,11 +333,12 @@ def _verify_codeowner_actor(
 # Main probe function
 # ---------------------------------------------------------------------------
 
+
 def probe_repo(
     owner: str,
     repo: str,
     repo_id: str,
-    requester_allowlist: list[str] = (),
+    requester_allowlist: Sequence[str] = (),
     floor_minutes: int = 15,
     ceiling_hours: int = 24,
     api_budget: int = DEFAULT_API_BUDGET_PER_HOUR,
@@ -364,16 +363,16 @@ def probe_repo(
         strategy, which verifies against requester_allowlist instead.
     """
     if probe_strategy == STRATEGY_MILESTONE and milestone is None:
-        raise ValueError(
-            "milestone is required when probe_strategy=STRATEGY_MILESTONE"
-        )
+        raise ValueError("milestone is required when probe_strategy=STRATEGY_MILESTONE")
 
     # Blast-radius pre-check (R11.2) — read the rolling-24h ledger
     if customer:
         blast = sum_window_blast_radius(customer, window_hours=24.0, repo_root=repo_root)
-        if (blast["prs"] >= BLAST_CAPS["prs"]
-                or blast["issues"] >= BLAST_CAPS["issues"]
-                or blast["files"] >= BLAST_CAPS["files"]):
+        if (
+            blast["prs"] >= BLAST_CAPS["prs"]
+            or blast["issues"] >= BLAST_CAPS["issues"]
+            or blast["files"] >= BLAST_CAPS["files"]
+        ):
             return []  # Window cap reached; no new claims this cycle
 
     # API quota gate (R12.1, O15)
@@ -407,10 +406,7 @@ def probe_repo(
         # applied by the designated human CODEOWNER (AR-7 / AM-35: a
         # milestoned event never authorizes — there is one channel).
         codeowners_humans = _codeowners_humans(repo_root)
-        bots = (
-            set(bot_accounts) if bot_accounts is not None
-            else load_bot_accounts(repo_root)
-        )
+        bots = set(bot_accounts) if bot_accounts is not None else load_bot_accounts(repo_root)
         query = (
             f"/repos/{owner}/{repo}/issues"
             f"?state=open&milestone={milestone}&labels=needs-ai&per_page=50"
@@ -435,8 +431,12 @@ def probe_repo(
             # CODEOWNER, not a bot (#1539). No milestone title is passed —
             # there is no second arm (AR-7 / AM-35, #1540 S1).
             actor = _verify_codeowner_actor(
-                owner, repo, issue_number,
-                "needs-ai", codeowners_humans, bots,
+                owner,
+                repo,
+                issue_number,
+                "needs-ai",
+                codeowners_humans,
+                bots,
             )
             _record_api_call(repo_id, count=1, repo_root=repo_root)
 
@@ -444,21 +444,20 @@ def probe_repo(
                 continue  # No verified human-CODEOWNER authorization — skip
 
             labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
-            candidates.append(WorkCandidate(
-                owner=owner,
-                repo=repo,
-                issue_number=issue_number,
-                issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
-                labels=labels,
-                actor=actor,
-            ))
+            candidates.append(
+                WorkCandidate(
+                    owner=owner,
+                    repo=repo,
+                    issue_number=issue_number,
+                    issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
+                    labels=labels,
+                    actor=actor,
+                )
+            )
 
     else:
         # hos-coordination strategy (default): actor verification required (R4.1.4)
-        query = (
-            f"/repos/{owner}/{repo}/issues"
-            f"?state=open&labels=hos-coordination&per_page=50"
-        )
+        query = f"/repos/{owner}/{repo}/issues" f"?state=open&labels=hos-coordination&per_page=50"
         if since:
             query += f"&since={since}"
 
@@ -477,8 +476,11 @@ def probe_repo(
 
             # Verify the hos-coordination label was applied by an allowed actor (R4.1.4)
             actor = _verify_label_actor(
-                owner, repo, issue_number,
-                "hos-coordination", requester_allowlist,
+                owner,
+                repo,
+                issue_number,
+                "hos-coordination",
+                requester_allowlist,
             )
             _record_api_call(repo_id, count=1, repo_root=repo_root)
 
@@ -486,14 +488,16 @@ def probe_repo(
                 continue  # Label applied by non-allowlisted actor — skip
 
             labels = [lbl.get("name", "") for lbl in issue.get("labels", [])]
-            candidates.append(WorkCandidate(
-                owner=owner,
-                repo=repo,
-                issue_number=issue_number,
-                issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
-                labels=labels,
-                actor=actor,
-            ))
+            candidates.append(
+                WorkCandidate(
+                    owner=owner,
+                    repo=repo,
+                    issue_number=issue_number,
+                    issue_url=f"https://github.com/{owner}/{repo}/issues/{issue_number}",
+                    labels=labels,
+                    actor=actor,
+                )
+            )
 
     # Update cadence state
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

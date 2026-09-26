@@ -531,16 +531,18 @@ def fetch_collaborators(
 # ---------------------------------------------------------------------------
 
 
-def is_trusted_requester(
-    login: str, user_type: str, trusted_set: TrustedSet
-) -> tuple[bool, str]:
+def is_trusted_requester(login: str, user_type: str, trusted_set: TrustedSet) -> tuple[bool, str]:
     """The ADR-bound signature (AD-1). Pure: no network, no filesystem, no
     environment. Evaluation order is fixed and total (§1.4)."""
     if not login:
         return False, "no-login"
     low = login.lower()
-    if low in trusted_set.codeowners or low in trusted_set.roster or low in trusted_set.tier_members:
-        if is_bot_reviewer(login, user_type, trusted_set.bots):
+    if (
+        low in trusted_set.codeowners
+        or low in trusted_set.roster
+        or low in trusted_set.tier_members
+    ):
+        if is_bot_reviewer(login, user_type, set(trusted_set.bots)):
             return False, "bot-in-human-category"
         if low in trusted_set.codeowners:
             return True, "codeowner"

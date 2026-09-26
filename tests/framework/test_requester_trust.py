@@ -12,16 +12,16 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from scripts.framework import requester_trust as rt
 from scripts.framework.requester_trust import (
+    COLLABORATOR_PAGE_BOUND,
     MACHINE_FILING_MARKERS,
     PERMISSION_TIERS,
-    COLLABORATOR_PAGE_BOUND,
-    MachineFilingMarker,
     RequesterVerdict,
     RosterPolicy,
     TrustedSet,
@@ -96,7 +96,9 @@ class _TmpRepo:
 
 class TestCodeownersHumans(_TmpRepo):
     def test_parses_individual_owners(self):
-        self._write(".github/CODEOWNERS", "# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n")
+        self._write(
+            ".github/CODEOWNERS", "# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n"
+        )
         assert codeowners_humans(self.repo_root) == {"scottthurlow"}
 
     def test_skips_team_patterns(self):
@@ -138,8 +140,7 @@ class TestLoadTrustedApps(_TmpRepo):
         sentinel = Path(self.repo_root) / "sentinel"
         self._write(
             "scripts/framework/machine-accounts.env",
-            'BOT_WORKER_USERNAME="hos-worker-hos[bot]"\n'
-            'EVIL=$(touch sentinel)\n',
+            'BOT_WORKER_USERNAME="hos-worker-hos[bot]"\n' "EVIL=$(touch sentinel)\n",
         )
         load_trusted_apps(self.repo_root)
         assert not sentinel.exists()
@@ -215,9 +216,7 @@ class TestRoster(_TmpRepo):
         assert policy.tiers == frozenset()
 
     def test_rejects_bot_login_by_suffix(self):
-        self._write_roster(
-            "evil-bot[bot]   # added-by: ScottThurlow added: 2026-09-01 why: oops\n"
-        )
+        self._write_roster("evil-bot[bot]   # added-by: ScottThurlow added: 2026-09-01 why: oops\n")
         policy = load_trusted_requesters(self.repo_root)
         assert policy.logins == frozenset()
 
@@ -388,9 +387,7 @@ class TestFetchCollaborators:
         def record_request():
             calls["n"] += 1
 
-        with patch(
-            "scripts.framework.requester_trust._run_gh_get", side_effect=[full]
-        ) as mock_gh:
+        with patch("scripts.framework.requester_trust._run_gh_get", side_effect=[full]) as mock_gh:
             payload, spent = fetch_collaborators("o/r", stop_test, record_request)
         assert mock_gh.call_count == 1
         assert payload is None
@@ -458,8 +455,8 @@ class TestTierResolution(_TmpRepo):
 # ---------------------------------------------------------------------------
 
 
-def _trusted_set(**overrides) -> TrustedSet:
-    defaults = dict(
+def _trusted_set(**overrides: Any) -> TrustedSet:
+    defaults: dict[str, Any] = dict(
         codeowners=frozenset(),
         roster=frozenset(),
         tier_members=frozenset(),
@@ -486,9 +483,7 @@ class TestIsTrustedRequester:
         assert is_trusted_requester("hos-worker-hos[bot]", "Bot", ts) == (True, "trusted-app")
 
     def test_tier_member_is_trusted_with_the_tier_in_the_reason(self):
-        ts = _trusted_set(
-            tier_members=frozenset({"alice"}), tier_of={"alice": "write"}
-        )
+        ts = _trusted_set(tier_members=frozenset({"alice"}), tier_of={"alice": "write"})
         assert is_trusted_requester("alice", "User", ts) == (True, "roster-tier:write")
 
     def test_codeowner_wins_over_tier(self):
@@ -727,7 +722,11 @@ class TestRequesterVerdict:
 
 
 def _labeled_event(actor: str, label: str, actor_type: str = "User") -> dict:
-    return {"event": "labeled", "label": {"name": label}, "actor": {"login": actor, "type": actor_type}}
+    return {
+        "event": "labeled",
+        "label": {"name": label},
+        "actor": {"login": actor, "type": actor_type},
+    }
 
 
 def _milestoned_event(actor: str, actor_type: str = "User") -> dict:
@@ -752,14 +751,20 @@ class TestVerifyCodeownerActor:
     def test_bot_labeling_is_never_authorized_even_if_in_codeowners(self):
         events = [_labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="Bot")]
         result = verify_codeowner_actor(
-            events, {"hos-worker-hos[bot]"}, set(), "needs-ai",
+            events,
+            {"hos-worker-hos[bot]"},
+            set(),
+            "needs-ai",
         )
         assert result is None
 
     def test_bot_login_denylist_rejects_even_when_type_missing(self):
         events = [_labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="")]
         result = verify_codeowner_actor(
-            events, {"scottthurlow"}, {"hos-worker-hos[bot]"}, "needs-ai",
+            events,
+            {"scottthurlow"},
+            {"hos-worker-hos[bot]"},
+            "needs-ai",
         )
         assert result is None
 
