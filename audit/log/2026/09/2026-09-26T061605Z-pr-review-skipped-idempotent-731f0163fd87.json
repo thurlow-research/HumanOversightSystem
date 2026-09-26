@@ -1,0 +1,1 @@
+{"agent":"overseer","event":"pr-review-skipped-idempotent","head_sha":"a073148b2be68680fa94894117c3126d920e00d8","pr":1871,"reason":"§1215: verdict already posted on this head at 2026-09-26T06:07:46Z; needs-human applied; no new commits or human activity since"}
