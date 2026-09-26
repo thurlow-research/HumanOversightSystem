@@ -1,0 +1,56 @@
+# trusted-requesters.txt.example — format template for the AD-1(c) roster
+# (#1540 S1). Copy entries from here into the LIVE `trusted-requesters.txt`
+# (a protected surface); this file itself is documentation only and is
+# never read by the gate.
+#
+# Membership in the live roster confers REQUESTER trust only — it never
+# confers approver authority. A trusted requester's issue needs no live
+# human-authorization act to be selected as work; it says nothing about who
+# may APPROVE work.
+#
+# Bot logins are rejected by the parser: an entry ending in "[bot]", or one
+# matching BOT_ACCOUNTS, is skipped with a diagnostic. The roster is for
+# people.
+#
+# ── Form 1: an explicit login ────────────────────────────────────────────
+# Every entry requires per-entry provenance — who added it, when, and why —
+# so a reviewer can audit each grant on its own terms, not just the file as
+# a whole:
+#
+#   SomeTrustedContributor   # added-by: ScottThurlow added: 2026-09-01 why: frequent triager, vetted manually
+#
+# ── Form 2: a permission-tier delegation ─────────────────────────────────
+# The REQUIRED "tier:" prefix is the discriminator between a login and a
+# tier — a bare `write` on its own line is parsed as A LOGIN NAMED "write",
+# not as a tier. This is deliberate: GitHub logins and permission names
+# occupy the same string space (`admin` is itself a valid GitHub login), so
+# a format that distinguished them by VALUE would make the roster's meaning
+# depend on GitHub's account namespace. The prefix makes the distinction
+# lexical and local.
+#
+#   tier:write              # added-by: ScottThurlow added: 2026-09-01 why: all push-access collaborators are pre-vetted
+#
+# <name> is one of GitHub's own five permission levels, used directly —
+# read, triage, write, maintain, admin — with NO HOS mapping table. This is
+# a STANDING DELEGATION, not a one-time decision: membership is resolved
+# LIVE against GitHub's collaborator-permission API at every gate cycle,
+# so it tracks who currently holds that permission WITHOUT a new commit
+# here — a collaborator promoted or demoted takes effect on the next cycle.
+#
+# Matching is EXACT, not hierarchical: `tier:write` admits collaborators
+# whose permission is exactly `write` — it does NOT also admit `maintain`
+# or `admin`. If you want "write and above" trusted, list all three tiers
+# you intend, e.g.:
+#
+#   tier:write               # added-by: ScottThurlow added: 2026-09-01 why: see above
+#   tier:maintain             # added-by: ScottThurlow added: 2026-09-01 why: include maintainers too
+#   tier:admin                # added-by: ScottThurlow added: 2026-09-01 why: include admins too
+#
+# An unrecognised tier name (e.g. `tier:owner`, `tier:collaborator`) is
+# skipped with a diagnostic naming the five legal values — it is never
+# silently ignored and never passed through to the API to see what
+# happens.
+#
+# HOS ships ZERO trusted tiers, exactly as it ships zero trusted logins.
+# Which tiers (if any) a project trusts is the project owner's decision,
+# not an HOS default.

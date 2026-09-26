@@ -11,33 +11,32 @@ Covers:
 
 import json
 import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import patch
 
 import pytest
 
+from scripts.automation.lib.github import GitHubError
 from scripts.automation.lib.probe import (
     BLAST_CAPS,
     DEFAULT_API_BUDGET_PER_HOUR,
-    PIN_MAX_HOURS,
-    STRATEGY_HOS_COORDINATION,
     STRATEGY_MILESTONE,
     CadenceState,
-    WorkCandidate,
-    _compute_next_due,
-    _is_due,
-    _verify_label_actor,
     _codeowners_humans,
+    _compute_next_due,
+    _fetch_events_paginated,
+    _is_due,
     _verify_codeowner_actor,
+    _verify_label_actor,
     probe_repo,
 )
-from scripts.automation.lib.github import GitHubError
-
+from scripts.framework import requester_trust
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_issue(number: int, labels: list[str] | None = None) -> dict:
     return {
@@ -59,6 +58,7 @@ def _iso_past(minutes: int = 60) -> str:
 # ---------------------------------------------------------------------------
 # _is_due
 # ---------------------------------------------------------------------------
+
 
 class TestIsDue:
     def test_pinned_always_due(self):
@@ -85,6 +85,7 @@ class TestIsDue:
 # _compute_next_due
 # ---------------------------------------------------------------------------
 
+
 class TestComputeNextDue:
     def test_level_zero_uses_floor(self):
         result = _compute_next_due(0, floor_minutes=15, ceiling_hours=24)
@@ -109,6 +110,7 @@ class TestComputeNextDue:
 # ---------------------------------------------------------------------------
 # _verify_label_actor
 # ---------------------------------------------------------------------------
+
 
 class TestVerifyLabelActor:
     def _labeled_event(self, actor: str, label: str) -> dict:
@@ -153,6 +155,7 @@ class TestVerifyLabelActor:
 # probe_repo — shared gate fixtures
 # ---------------------------------------------------------------------------
 
+
 class _ProbeBase:
     """Common setup: temp repo_root with no soft state (clean cadence, no budget used)."""
 
@@ -184,6 +187,7 @@ class _ProbeBase:
 # probe_repo — STRATEGY_HOS_COORDINATION
 # ---------------------------------------------------------------------------
 
+
 class TestProbeRepoHosCoordination(_ProbeBase):
     def test_returns_candidates_with_actor(self):
         issues = [_make_issue(42, ["hos-coordination", "enhancement"])]
@@ -194,7 +198,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
                     return_value="alice",
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         requester_allowlist=["alice"],
                         repo_root=self.repo_root,
                     )
@@ -213,7 +219,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
                     return_value=None,
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         requester_allowlist=["alice"],
                         repo_root=self.repo_root,
                     )
@@ -223,7 +231,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]) as mock_gh:
                 probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     requester_allowlist=[],
                     repo_root=self.repo_root,
                 )
@@ -244,7 +254,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
                 side_effect=GitHubError("network"),
             ):
                 results = probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     requester_allowlist=[],
                     repo_root=self.repo_root,
                 )
@@ -253,7 +265,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
     def test_blast_radius_cap_returns_empty(self):
         with self._patch_blast(under_cap=False):
             results = probe_repo(
-                "owner", "repo", "rid",
+                "owner",
+                "repo",
+                "rid",
                 requester_allowlist=[],
                 customer="cust",
                 repo_root=self.repo_root,
@@ -280,7 +294,9 @@ class TestProbeRepoHosCoordination(_ProbeBase):
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]) as mock_gh:
                 probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     requester_allowlist=[],
                     repo_root=self.repo_root,
                 )
@@ -292,11 +308,14 @@ class TestProbeRepoHosCoordination(_ProbeBase):
 # probe_repo — STRATEGY_MILESTONE
 # ---------------------------------------------------------------------------
 
+
 class TestProbeRepoMilestone(_ProbeBase):
     def test_raises_without_milestone(self):
         with pytest.raises(ValueError, match="milestone is required"):
             probe_repo(
-                "owner", "repo", "rid",
+                "owner",
+                "repo",
+                "rid",
                 probe_strategy=STRATEGY_MILESTONE,
                 repo_root=self.repo_root,
             )
@@ -305,7 +324,9 @@ class TestProbeRepoMilestone(_ProbeBase):
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]) as mock_gh:
                 probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     probe_strategy=STRATEGY_MILESTONE,
                     milestone=8,
                     repo_root=self.repo_root,
@@ -327,7 +348,9 @@ class TestProbeRepoMilestone(_ProbeBase):
                     return_value=None,
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         probe_strategy=STRATEGY_MILESTONE,
                         milestone=8,
                         repo_root=self.repo_root,
@@ -343,7 +366,9 @@ class TestProbeRepoMilestone(_ProbeBase):
                     return_value="ScottThurlow",
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         probe_strategy=STRATEGY_MILESTONE,
                         milestone=8,
                         repo_root=self.repo_root,
@@ -358,15 +383,15 @@ class TestProbeRepoMilestone(_ProbeBase):
         issues = [_make_issue(5, ["needs-ai"])]
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
-                with patch(
-                    "scripts.automation.lib.probe._verify_label_actor"
-                ) as mock_verify_label:
+                with patch("scripts.automation.lib.probe._verify_label_actor") as mock_verify_label:
                     with patch(
                         "scripts.automation.lib.probe._verify_codeowner_actor",
                         return_value="ScottThurlow",
                     ) as mock_verify_codeowner:
                         probe_repo(
-                            "owner", "repo", "rid",
+                            "owner",
+                            "repo",
+                            "rid",
                             probe_strategy=STRATEGY_MILESTONE,
                             milestone=8,
                             repo_root=self.repo_root,
@@ -383,7 +408,9 @@ class TestProbeRepoMilestone(_ProbeBase):
                     return_value="ScottThurlow",
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         probe_strategy=STRATEGY_MILESTONE,
                         milestone=3,
                         repo_root=self.repo_root,
@@ -397,7 +424,9 @@ class TestProbeRepoMilestone(_ProbeBase):
                 side_effect=GitHubError("timeout"),
             ):
                 results = probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     probe_strategy=STRATEGY_MILESTONE,
                     milestone=8,
                     repo_root=self.repo_root,
@@ -409,7 +438,9 @@ class TestProbeRepoMilestone(_ProbeBase):
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]):
                 # Should not raise even without allowlist
                 probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     probe_strategy=STRATEGY_MILESTONE,
                     milestone=8,
                     repo_root=self.repo_root,
@@ -424,7 +455,9 @@ class TestProbeRepoMilestone(_ProbeBase):
                     return_value="ScottThurlow",
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         probe_strategy=STRATEGY_MILESTONE,
                         milestone=8,
                         repo_root=self.repo_root,
@@ -436,6 +469,7 @@ class TestProbeRepoMilestone(_ProbeBase):
 # _codeowners_humans / _verify_codeowner_actor (#1539)
 # ---------------------------------------------------------------------------
 
+
 class TestCodeownersActorVerification(_ProbeBase):
     def _write_codeowners(self, body: str) -> None:
         gh_dir = Path(self.repo_root) / ".github"
@@ -443,9 +477,7 @@ class TestCodeownersActorVerification(_ProbeBase):
         (gh_dir / "CODEOWNERS").write_text(body)
 
     def test_codeowners_humans_parses_individual_owners(self):
-        self._write_codeowners(
-            "# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n"
-        )
+        self._write_codeowners("# comment\n/AGENTS.md @ScottThurlow\n/docs/ @ScottThurlow\n")
         assert _codeowners_humans(self.repo_root) == {"scottthurlow"}
 
     def test_codeowners_humans_skips_team_patterns(self):
@@ -469,17 +501,32 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [self._labeled_event("ScottThurlow", "needs-ai")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
             )
         assert result == "ScottThurlow"
 
-    def test_verified_when_milestone_applied_by_codeowner_human(self):
+    def test_milestoned_event_never_authorizes(self):
+        """AR-7 / AM-35: the `milestoned` arm is DELETED. A milestoned event
+        by a verified individual human CODEOWNER authorizes NOTHING — this
+        is the mechanical statement that the channel is gone. If this test
+        is ever "fixed" to make a milestoned event authorize, the fix is
+        the re-introduction of FIND-1."""
         events = [self._milestoned_event("ScottThurlow")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
             )
-        assert result == "ScottThurlow"
+        assert result is None
 
     def test_bot_labeling_is_never_authorized_even_if_in_codeowners(self):
         """The worker/overseer applying needs-ai to its own issue must not
@@ -488,7 +535,12 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [self._labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="Bot")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"hos-worker-hos[bot]"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"hos-worker-hos[bot]"},
+                set(),
             )
         assert result is None
 
@@ -496,7 +548,12 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [self._labeled_event("hos-worker-hos[bot]", "needs-ai", actor_type="")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, {"hos-worker-hos[bot]"},
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                {"hos-worker-hos[bot]"},
             )
         assert result is None
 
@@ -504,7 +561,12 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [self._labeled_event("random-contributor", "needs-ai")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
             )
         assert result is None
 
@@ -512,7 +574,12 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [{"event": "assigned", "actor": {"login": "ScottThurlow", "type": "User"}}]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
             )
         assert result is None
 
@@ -522,7 +589,12 @@ class TestCodeownersActorVerification(_ProbeBase):
             side_effect=GitHubError("timeout"),
         ):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
             )
         assert result is None
 
@@ -532,14 +604,184 @@ class TestCodeownersActorVerification(_ProbeBase):
         events = [self._labeled_event("ScottThurlow", "needs-ai")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
-                "o", "r", 1, "needs-ai", set(), set(),
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                set(),
+                set(),
             )
         assert result is None
 
 
 # ---------------------------------------------------------------------------
+# probe.py's refactor onto requester_trust.py (#1540 S1, §6.4)
+# ---------------------------------------------------------------------------
+
+
+class TestProbeRefactoredOntoRequesterTrust(_ProbeBase):
+    def test_codeowners_humans_is_the_shared_function(self):
+        assert _codeowners_humans is requester_trust.codeowners_humans
+
+    def test_verify_codeowner_actor_delegates_to_shared_predicate(self):
+        events = [
+            {
+                "event": "labeled",
+                "label": {"name": "needs-ai"},
+                "actor": {"login": "ScottThurlow", "type": "User"},
+            }
+        ]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            with patch(
+                "scripts.automation.lib.probe._shared_verify_codeowner_actor",
+                return_value="ScottThurlow",
+            ) as mock_shared:
+                result = _verify_codeowner_actor(
+                    "o",
+                    "r",
+                    1,
+                    "needs-ai",
+                    {"scottthurlow"},
+                    set(),
+                )
+        mock_shared.assert_called_once_with(
+            events,
+            {"scottthurlow"},
+            set(),
+            "needs-ai",
+        )
+        assert result == "ScottThurlow"
+
+    def test_probe_call_site_passes_no_milestone_title(self):
+        """probe.py:428-431 calls the shared predicate with FOUR arguments
+        and no milestone title (§1.6): revision 4 was going to ADD an
+        argument here; this call site is not edited at all."""
+        issues = [_make_issue(100, ["needs-ai"])]
+        with self._patch_blast():
+            with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
+                with patch(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value="ScottThurlow",
+                ) as mock_verify:
+                    probe_repo(
+                        "owner",
+                        "repo",
+                        "rid",
+                        probe_strategy=STRATEGY_MILESTONE,
+                        milestone=8,
+                        repo_root=self.repo_root,
+                    )
+        args, kwargs = mock_verify.call_args
+        assert len(args) + len(kwargs) == 6  # owner, repo, n, label, codeowners, bots
+        assert "needs-ai" in args
+
+    def test_probe_milestoned_event_does_not_authorize_at_the_shipped_call_site(self):
+        """The gate-level twin of test_milestoned_event_never_authorizes:
+        this proves the shipped defect (#1539) is closed in the module
+        consumer deployments inherit, at the actual call site, not just
+        the pure function."""
+        events = [
+            {
+                "event": "milestoned",
+                "actor": {"login": "ScottThurlow", "type": "User"},
+            }
+        ]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                {"scottthurlow"},
+                set(),
+            )
+        assert result is None
+
+    def test_probe_events_fetch_is_bounded_paginated(self):
+        """One `_run_gh` call per page, `per_page=100&page=<k>`, NEVER
+        --paginate; stops at the first page shorter than 100; at most 10
+        calls when every page is full."""
+        full_page = [{"event": "assigned", "actor": {}} for _ in range(100)]
+        short_page = [{"event": "assigned", "actor": {}} for _ in range(5)]
+
+        # Case: 100 then 5 -> 2 calls, COMPLETE
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page, short_page],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 2
+        assert len(events) == 105
+        first_endpoint = mock_gh.call_args_list[0][0][0][0]
+        assert "per_page=100&page=1" in first_endpoint
+        for c in mock_gh.call_args_list:
+            assert "--paginate" not in c[0][0][0]
+
+        # Case: 5 alone -> 1 call
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[short_page],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 1
+
+        # Case: 100 then 0 -> 2 calls
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page, []],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 2
+        assert len(events) == 100
+
+        # Case: 10 full pages (the bound) -> at most 10 calls, no exception
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page] * 10,
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 10
+        assert len(events) == 1000
+
+    def test_probe_bound_hit_returns_none_without_stderr(self, capsys):
+        """RP6-4 / condition C4: rule 3's WARN belongs to the S2 gate's own
+        wrapper alone. probe.py's bound-hit path (10 full pages, no
+        qualifying actor found) returns None SILENTLY, as today's
+        single-page fetch does — it gains no output surface."""
+        full_page = [{"event": "assigned", "actor": {}} for _ in range(100)]
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page] * 10,
+        ) as mock_gh:
+            result = _verify_codeowner_actor(
+                "o",
+                "r",
+                1,
+                "needs-ai",
+                set(),
+                set(),
+            )
+        assert mock_gh.call_count == 10
+        assert result is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_probe_does_not_construct_a_trusted_set_or_resolve_tiers(self):
+        """H3's tier machinery is the S2 gate's. probe.py calls
+        codeowners_humans and load_bot_accounts directly, exactly as it
+        does today; it does NOT call load_trusted_set and does NOT call
+        fetch_collaborators."""
+        import scripts.automation.lib.probe as probe_module
+
+        assert not hasattr(probe_module, "load_trusted_set")
+        assert not hasattr(probe_module, "fetch_collaborators")
+
+
+# ---------------------------------------------------------------------------
 # probe_repo — cadence / backoff (strategy-agnostic)
 # ---------------------------------------------------------------------------
+
 
 class TestProbeRepoCadence(_ProbeBase):
     def test_not_due_returns_empty_without_api_call(self):
@@ -550,7 +792,9 @@ class TestProbeRepoCadence(_ProbeBase):
                     return_value=CadenceState(next_due=_iso_future(60)),
                 ):
                     results = probe_repo(
-                        "owner", "repo", "rid",
+                        "owner",
+                        "repo",
+                        "rid",
                         repo_root=self.repo_root,
                     )
         assert results == []
@@ -561,9 +805,7 @@ class TestProbeRepoCadence(_ProbeBase):
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]):
                 probe_repo("owner", "repo", "rid", repo_root=self.repo_root)
 
-        cadence_path = (
-            Path(self.repo_root) / ".ai-local" / "hos-automation" / "cadence-state.json"
-        )
+        cadence_path = Path(self.repo_root) / ".ai-local" / "hos-automation" / "cadence-state.json"
         data = json.loads(cadence_path.read_text())
         assert data["rid"]["backoff_level"] == 1
 
@@ -572,15 +814,15 @@ class TestProbeRepoCadence(_ProbeBase):
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
                 probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     probe_strategy=STRATEGY_MILESTONE,
                     milestone=8,
                     repo_root=self.repo_root,
                 )
 
-        cadence_path = (
-            Path(self.repo_root) / ".ai-local" / "hos-automation" / "cadence-state.json"
-        )
+        cadence_path = Path(self.repo_root) / ".ai-local" / "hos-automation" / "cadence-state.json"
         data = json.loads(cadence_path.read_text())
         assert data["rid"]["backoff_level"] == 0
 
@@ -600,7 +842,9 @@ class TestProbeRepoCadence(_ProbeBase):
         with self._patch_blast():
             with patch("scripts.automation.lib.probe._run_gh", return_value=[]) as mock_gh:
                 results = probe_repo(
-                    "owner", "repo", "rid",
+                    "owner",
+                    "repo",
+                    "rid",
                     repo_root=self.repo_root,
                 )
         assert results == []

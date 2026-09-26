@@ -73,3 +73,12 @@ scripts/framework/require_tier_ceiling.py
 # workflow runs in place on review submit/dismiss so a stale FAILURE check run
 # doesn't block merge after an approval lands. Not itself a required check.
 scripts/framework/rerun_gate_checks.py
+
+# ── scripts/framework/ — requester-trust primitive (#1540 S1, AM-26) ────────────
+# select_work_candidates.py (S2) joins this section too, once it exists.
+# trusted-requesters.txt deliberately does NOT join this list: hos_install.sh's
+# cp_framework_file() is an unconditional `cp` with no destination guard, so
+# listing a consumer-maintained trust roster here would mean every HOS upgrade
+# silently deletes every trusted contributor a consumer added.
+scripts/framework/requester_trust.py
+scripts/framework/trusted-requesters.txt.example

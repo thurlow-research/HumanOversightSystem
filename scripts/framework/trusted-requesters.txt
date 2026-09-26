@@ -1,0 +1,32 @@
+# trusted-requesters.txt — AD-1(c) roster (#1540 S1). PROTECTED SURFACE:
+# adding an entry requires human approval (a bot may not self-authorize by
+# widening its own trusted-author set).
+#
+# Membership here confers REQUESTER trust only — it never confers approver
+# authority. A trusted requester's issue needs no live human-authorization
+# act to be selected as work; it says nothing about who may APPROVE work.
+#
+# Bot logins are rejected by the parser: an entry ending in "[bot]", or one
+# matching BOT_ACCOUNTS, is skipped with a diagnostic. The roster is for
+# people.
+#
+# Two entry forms, both requiring per-entry provenance (who added it, when,
+# and why) so a reviewer can audit each grant on its own terms:
+#
+#   <login>          # added-by: <login> added: <YYYY-MM-DD> why: <free text>
+#   tier:<name>      # added-by: <login> added: <YYYY-MM-DD> why: <free text>
+#
+# The tier form is a STANDING DELEGATION, not a one-time decision: its
+# membership is resolved LIVE against GitHub's collaborator-permission API
+# at every gate cycle, so it changes as collaborators are added or removed
+# WITHOUT a new commit here. <name> is one of GitHub's own five permission
+# levels — read, triage, write, maintain, admin — used directly, with no
+# HOS mapping table. Matching is EXACT, not hierarchical: `tier:write`
+# admits exactly `write`, never `maintain` or `admin`. A policy that wants
+# "write and above" lists all three explicitly.
+#
+# HOS ships ZERO trusted tiers, exactly as it ships zero trusted logins.
+# Which tiers (if any) a project trusts is the project owner's decision,
+# not an HOS default — see trusted-requesters.txt.example for the format.
+#
+# This file ships with no entries. Adding one is a deliberate, reviewed act.
