@@ -116,6 +116,21 @@ class TestCodeownersHumans(_TmpRepo):
         self._write(".github/CODEOWNERS", "/a @ScottThurlow\n/b @scottthurlow\n")
         assert codeowners_humans(self.repo_root) == {"scottthurlow"}
 
+    def test_unreadable_raises(self):
+        """TD §1.3.1: file present but unreadable MUST propagate (never
+        collapse to the absent-file empty-set result). A bare
+        `except Exception: return set()` around the read would make this
+        pass with an empty set instead of raising — the assertion is on the
+        exception, not merely on non-emptiness, so that regression is
+        caught."""
+        path = self._write(".github/CODEOWNERS", "/x @ScottThurlow\n")
+        path.chmod(0o000)
+        try:
+            with pytest.raises(OSError):
+                codeowners_humans(self.repo_root)
+        finally:
+            path.chmod(0o644)
+
 
 # ---------------------------------------------------------------------------
 # load_trusted_apps (§1.3)
@@ -148,6 +163,23 @@ class TestLoadTrustedApps(_TmpRepo):
     def test_missing_file_is_empty(self):
         assert load_trusted_apps(self.repo_root) == set()
 
+    def test_unreadable_raises(self):
+        """TD §1.3.1: 'file present, read fails -> propagate -> gate exit 2
+        config-error'. An empty-set fallback here is the promote-nothing
+        case, but it is still a silent narrowing of an unreadable trust
+        input into the SAME value as absence — the two facts the TD
+        insists must never collapse into one another. Asserting the raise
+        (not just a return value) is what would catch a coder adding
+        `except Exception: return set()` around this loader's read."""
+        self._write_machine_accounts()
+        path = Path(self.repo_root) / "scripts" / "framework" / "machine-accounts.env"
+        path.chmod(0o000)
+        try:
+            with pytest.raises(OSError):
+                load_trusted_apps(self.repo_root)
+        finally:
+            path.chmod(0o644)
+
 
 # ---------------------------------------------------------------------------
 # load_bot_accounts (§1.3)
@@ -177,6 +209,24 @@ class TestLoadBotAccounts(_TmpRepo):
     def test_missing_file_env_still_unions(self, monkeypatch):
         monkeypatch.setenv("BOT_ACCOUNTS", "solo-bot[bot]")
         assert load_bot_accounts(self.repo_root) == {"solo-bot[bot]"}
+
+    def test_unreadable_raises(self, monkeypatch):
+        """TD §1.3.1: this is 'the most dangerous [row] to get wrong' —
+        `bots` is the EXCLUSION input, so a swallowed read error that
+        returned an empty baseline instead of raising would promote every
+        bot to 'human' on the very next `is_bot_reviewer` check. Asserting
+        the raise pins that a bare `except Exception: return set()`
+        cannot land here undetected, even with BOT_ACCOUNTS populated
+        (the env union must never mask a baseline-read failure either)."""
+        monkeypatch.setenv("BOT_ACCOUNTS", "extra-bot[bot]")
+        self._write_machine_accounts()
+        path = Path(self.repo_root) / "scripts" / "framework" / "machine-accounts.env"
+        path.chmod(0o000)
+        try:
+            with pytest.raises(OSError):
+                load_bot_accounts(self.repo_root)
+        finally:
+            path.chmod(0o644)
 
 
 # ---------------------------------------------------------------------------
