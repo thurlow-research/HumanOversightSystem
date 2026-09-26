@@ -443,6 +443,26 @@ class TestFetchCollaborators:
         assert payload is None
         assert spent == 1
 
+    def test_permission_error_from_the_real_subprocess_call_never_propagates(self, capsys):
+        """Reliability SHOULD_FIX: patches `subprocess.run` itself (not
+        `_run_gh_get`), so this actually exercises `_run_gh_get`'s own
+        exception handling rather than a mock that bypasses it entirely.
+        `PermissionError` (gh present but not executable) is not
+        `FileNotFoundError`/`TimeoutExpired`, but it IS an `OSError`, so it
+        must still resolve to `(None, requests_spent)` rather than
+        propagate — the module docstring's and TD §1.3.2's "NEVER
+        propagates" / "on ANY failure" contract."""
+        recorded = []
+        with patch("subprocess.run", side_effect=PermissionError("gh not executable")):
+            payload, spent = fetch_collaborators(
+                "o/r", stop_test=_never_stop, record_request=lambda: recorded.append(1)
+            )
+        assert payload is None
+        assert spent == 1
+        assert recorded == [1]
+        captured = capsys.readouterr()
+        assert captured.out == "" and captured.err == ""
+
 
 # ---------------------------------------------------------------------------
 # The permission-tier resolver, via load_trusted_set (H3, §1.3.2)
@@ -654,6 +674,59 @@ class TestConformance:
         text = (ROOT / "scripts" / "framework" / "requester_trust.py").read_text()
         assert "scripts.automation" not in text
         assert "scripts.oversight" not in text
+
+    def test_reason_tokens_conform_to_the_closed_vocabulary(self):
+        """§1.2: `_REASON_TOKENS` is the closed reason-token vocabulary S6
+        audit parses. Every literal reason string `is_trusted_requester`/
+        `requester_verdict` can produce must be a member; the two
+        parameterised forms (`roster-tier:<tier>`, `trusted-app:<marker_id>`)
+        match by prefix instead. This also catches an entry in
+        `_REASON_TOKENS` that no code path actually produces (exact-set
+        equality, not mere subset containment)."""
+        prefixes = ("roster-tier:", "trusted-app:")
+
+        codeowner_ts = _trusted_set(codeowners=frozenset({"alice"}))
+        roster_ts = _trusted_set(roster=frozenset({"alice"}))
+        tier_ts = _trusted_set(tier_members=frozenset({"alice"}), tier_of={"alice": "write"})
+        app_ts = _trusted_set(apps=frozenset({"hos-worker-hos[bot]"}))
+        bot_codeowner_ts = _trusted_set(codeowners=frozenset({"hos-worker-hos[bot]"}))
+        empty_ts = _trusted_set()
+
+        is_trusted_requester_cases = [
+            ("alice", "User", codeowner_ts),
+            ("alice", "User", roster_ts),
+            ("alice", "User", tier_ts),
+            ("hos-worker-hos[bot]", "Bot", app_ts),
+            ("hos-worker-hos[bot]", "Bot", bot_codeowner_ts),
+            ("random-person", "User", empty_ts),
+            ("", "User", empty_ts),
+        ]
+        requester_verdict_cases = [
+            ({"user": {"login": "hos-worker-hos[bot]", "type": "Bot"}, "title": "hello"}, app_ts),
+            (
+                {
+                    "user": {"login": "hos-worker-hos[bot]", "type": "Bot"},
+                    "title": (
+                        "[BLOCKED] inner-loop tests failing on my-project — diagnose and fix"
+                    ),
+                },
+                app_ts,
+            ),
+        ]
+
+        literal_reasons: set[str] = set()
+        for login, user_type, ts in is_trusted_requester_cases:
+            _, reason = is_trusted_requester(login, user_type, ts)
+            if reason.startswith(prefixes):
+                continue
+            literal_reasons.add(reason)
+        for record, ts in requester_verdict_cases:
+            reason = requester_verdict(record, ts).reason
+            if reason.startswith(prefixes):
+                continue
+            literal_reasons.add(reason)
+
+        assert literal_reasons == rt._REASON_TOKENS
 
 
 # ---------------------------------------------------------------------------

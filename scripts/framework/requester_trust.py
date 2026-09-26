@@ -460,7 +460,13 @@ def _run_gh_get(endpoint: str) -> Any:
             check=False,
             timeout=_GH_SUBPROCESS_TIMEOUT_SECONDS,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # OSError (not a bare `except Exception`, per §1.3.1) covers every
+        # documented `subprocess.run` failure mode this module's "never
+        # propagates" contract must hold against: FileNotFoundError (gh not
+        # on PATH), PermissionError (gh present but not executable), and
+        # fork/exec exhaustion under concurrent cron load (e.g. `OSError:
+        # [Errno 11] Resource temporarily unavailable`).
         raise _FetchFailure(str(exc)) from exc
     if result.returncode != 0:
         raise _FetchFailure(result.stderr.strip())
