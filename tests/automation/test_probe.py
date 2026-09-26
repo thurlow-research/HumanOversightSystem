@@ -26,13 +26,16 @@ from scripts.automation.lib.probe import (
     CadenceState,
     WorkCandidate,
     _compute_next_due,
+    _fetch_events_paginated,
     _is_due,
     _verify_label_actor,
     _codeowners_humans,
     _verify_codeowner_actor,
+    _shared_verify_codeowner_actor,
     probe_repo,
 )
 from scripts.automation.lib.github import GitHubError
+from scripts.framework import requester_trust
 
 
 # ---------------------------------------------------------------------------
@@ -473,13 +476,18 @@ class TestCodeownersActorVerification(_ProbeBase):
             )
         assert result == "ScottThurlow"
 
-    def test_verified_when_milestone_applied_by_codeowner_human(self):
+    def test_milestoned_event_never_authorizes(self):
+        """AR-7 / AM-35: the `milestoned` arm is DELETED. A milestoned event
+        by a verified individual human CODEOWNER authorizes NOTHING — this
+        is the mechanical statement that the channel is gone. If this test
+        is ever "fixed" to make a milestoned event authorize, the fix is
+        the re-introduction of FIND-1."""
         events = [self._milestoned_event("ScottThurlow")]
         with patch("scripts.automation.lib.probe._run_gh", return_value=events):
             result = _verify_codeowner_actor(
                 "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
             )
-        assert result == "ScottThurlow"
+        assert result is None
 
     def test_bot_labeling_is_never_authorized_even_if_in_codeowners(self):
         """The worker/overseer applying needs-ai to its own issue must not
@@ -535,6 +543,143 @@ class TestCodeownersActorVerification(_ProbeBase):
                 "o", "r", 1, "needs-ai", set(), set(),
             )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# probe.py's refactor onto requester_trust.py (#1540 S1, §6.4)
+# ---------------------------------------------------------------------------
+
+class TestProbeRefactoredOntoRequesterTrust(_ProbeBase):
+    def test_codeowners_humans_is_the_shared_function(self):
+        assert _codeowners_humans is requester_trust.codeowners_humans
+
+    def test_verify_codeowner_actor_delegates_to_shared_predicate(self):
+        events = [{
+            "event": "labeled",
+            "label": {"name": "needs-ai"},
+            "actor": {"login": "ScottThurlow", "type": "User"},
+        }]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            with patch(
+                "scripts.automation.lib.probe._shared_verify_codeowner_actor",
+                return_value="ScottThurlow",
+            ) as mock_shared:
+                result = _verify_codeowner_actor(
+                    "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+                )
+        mock_shared.assert_called_once_with(
+            events, {"scottthurlow"}, set(), "needs-ai",
+        )
+        assert result == "ScottThurlow"
+
+    def test_probe_call_site_passes_no_milestone_title(self):
+        """probe.py:428-431 calls the shared predicate with FOUR arguments
+        and no milestone title (§1.6): revision 4 was going to ADD an
+        argument here; this call site is not edited at all."""
+        issues = [_make_issue(100, ["needs-ai"])]
+        with self._patch_blast():
+            with patch("scripts.automation.lib.probe._run_gh", return_value=issues):
+                with patch(
+                    "scripts.automation.lib.probe._verify_codeowner_actor",
+                    return_value="ScottThurlow",
+                ) as mock_verify:
+                    probe_repo(
+                        "owner", "repo", "rid",
+                        probe_strategy=STRATEGY_MILESTONE,
+                        milestone=8,
+                        repo_root=self.repo_root,
+                    )
+        args, kwargs = mock_verify.call_args
+        assert len(args) + len(kwargs) == 6  # owner, repo, n, label, codeowners, bots
+        assert "needs-ai" in args
+
+    def test_probe_milestoned_event_does_not_authorize_at_the_shipped_call_site(self):
+        """The gate-level twin of test_milestoned_event_never_authorizes:
+        this proves the shipped defect (#1539) is closed in the module
+        consumer deployments inherit, at the actual call site, not just
+        the pure function."""
+        events = [{
+            "event": "milestoned",
+            "actor": {"login": "ScottThurlow", "type": "User"},
+        }]
+        with patch("scripts.automation.lib.probe._run_gh", return_value=events):
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", {"scottthurlow"}, set(),
+            )
+        assert result is None
+
+    def test_probe_events_fetch_is_bounded_paginated(self):
+        """One `_run_gh` call per page, `per_page=100&page=<k>`, NEVER
+        --paginate; stops at the first page shorter than 100; at most 10
+        calls when every page is full."""
+        full_page = [{"event": "assigned", "actor": {}} for _ in range(100)]
+        short_page = [{"event": "assigned", "actor": {}} for _ in range(5)]
+
+        # Case: 100 then 5 -> 2 calls, COMPLETE
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page, short_page],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 2
+        assert len(events) == 105
+        first_endpoint = mock_gh.call_args_list[0][0][0][0]
+        assert "per_page=100&page=1" in first_endpoint
+        for c in mock_gh.call_args_list:
+            assert "--paginate" not in c[0][0][0]
+
+        # Case: 5 alone -> 1 call
+        with patch(
+            "scripts.automation.lib.probe._run_gh", side_effect=[short_page],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 1
+
+        # Case: 100 then 0 -> 2 calls
+        with patch(
+            "scripts.automation.lib.probe._run_gh", side_effect=[full_page, []],
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 2
+        assert len(events) == 100
+
+        # Case: 10 full pages (the bound) -> at most 10 calls, no exception
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page] * 10,
+        ) as mock_gh:
+            events = _fetch_events_paginated("o", "r", 1)
+        assert mock_gh.call_count == 10
+        assert len(events) == 1000
+
+    def test_probe_bound_hit_returns_none_without_stderr(self, capsys):
+        """RP6-4 / condition C4: rule 3's WARN belongs to the S2 gate's own
+        wrapper alone. probe.py's bound-hit path (10 full pages, no
+        qualifying actor found) returns None SILENTLY, as today's
+        single-page fetch does — it gains no output surface."""
+        full_page = [{"event": "assigned", "actor": {}} for _ in range(100)]
+        with patch(
+            "scripts.automation.lib.probe._run_gh",
+            side_effect=[full_page] * 10,
+        ) as mock_gh:
+            result = _verify_codeowner_actor(
+                "o", "r", 1, "needs-ai", set(), set(),
+            )
+        assert mock_gh.call_count == 10
+        assert result is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_probe_does_not_construct_a_trusted_set_or_resolve_tiers(self):
+        """H3's tier machinery is the S2 gate's. probe.py calls
+        codeowners_humans and load_bot_accounts directly, exactly as it
+        does today; it does NOT call load_trusted_set and does NOT call
+        fetch_collaborators."""
+        import scripts.automation.lib.probe as probe_module
+
+        assert not hasattr(probe_module, "load_trusted_set")
+        assert not hasattr(probe_module, "fetch_collaborators")
 
 
 # ---------------------------------------------------------------------------
