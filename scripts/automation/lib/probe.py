@@ -16,19 +16,19 @@ Probe strategies (#619):
     hos-coordination, with actor verification (R4.1.4). Use for all customer
     deployments.
   - STRATEGY_MILESTONE: HOS self-development — open issues in a GitHub milestone
-    with needs-ai label. Actor verification (#1539): the needs-ai label and/or
-    the milestone assignment must have been applied by the designated human
-    CODEOWNER (.github/CODEOWNERS), not a bot — a bot applying the label
-    (including the worker or overseer themselves) does not authorize the issue.
-    Enables the orchestrator to serve as the coordinator for HOS self-development,
-    unblocking eventual LOOP retirement.
+    with needs-ai label. Actor verification (#1539): the needs-ai label must
+    have been applied by a designated human CODEOWNER (see
+    scripts.framework.requester_trust.codeowners_humans), not a bot — a bot applying the label (including the worker or overseer
+    themselves) does not authorize the issue, and NEITHER does a milestone
+    assignment by anyone (AR-7 / AM-35, #1540 S1: there is exactly one
+    authorizing channel). Enables the orchestrator to serve as the coordinator
+    for HOS self-development, unblocking eventual LOOP retirement.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -41,7 +41,11 @@ from scripts.automation.lib.github import (
     _run_gh,
 )
 from scripts.automation.lib.ledger import sum_window_blast_radius
-from scripts.framework.require_human_approval import is_bot_reviewer
+from scripts.framework.requester_trust import (
+    codeowners_humans as _codeowners_humans,
+    load_bot_accounts,
+    verify_codeowner_actor as _shared_verify_codeowner_actor,
+)
 
 # ---------------------------------------------------------------------------
 # Cadence state (soft state, layer 2b, .ai-local/hos-automation/)
@@ -251,30 +255,51 @@ def _verify_label_actor(
 
 
 # ---------------------------------------------------------------------------
-# CODEOWNERS actor verification for STRATEGY_MILESTONE (#1539)
+# CODEOWNER actor verification for STRATEGY_MILESTONE (#1539)
+#
+# `_codeowners_humans` is a re-export alias of the shared primitive (S1,
+# #1540) — zero logic lives here. `_verify_codeowner_actor` is now a thin
+# FETCH WRAPPER: it fetches this issue's events, paginated (below), and
+# delegates the entire decision to requester_trust.verify_codeowner_actor,
+# the shared PURE predicate (AD-1: no decision logic remains in this file).
 # ---------------------------------------------------------------------------
 
-def _codeowners_humans(repo_root: str = ".") -> set[str]:
+# 1000 events (AM-5). probe.py has no per-cycle request ceiling of its own
+# (unlike the S2 gate), so only this page bound applies here (§1.6).
+_EVENTS_PAGE_BOUND = 10
+
+
+def _fetch_events_paginated(owner: str, repo: str, issue_number: int) -> Optional[list]:
     """
-    Return the set of individual human logins (lowercased, no '@') listed as
-    owners anywhere in .github/CODEOWNERS. Team patterns (org/team) are not
-    individual humans and are skipped. Empty if the file is missing.
+    Fetch this issue's events, ONE `_run_gh` call PER PAGE
+    (`.../events?per_page=100&page=<k>`, never `--paginate`), per §1.4's
+    per-page fetch rule (revision 8, RP5-1). A page shorter than 100 raw
+    events ends the history. Bounded to _EVENTS_PAGE_BOUND (10) pages.
+
+    Returns the concatenated event list, or None on any transport failure
+    (GitHubError) or a non-list response — the same quarantine semantics
+    this module has always had (a page-bound-hit fetch that finds no
+    qualifying actor is a DETERMINATION, not a failure, and is handled
+    exactly like any other "no match": returned to the shared predicate,
+    which returns None silently, with no diagnostic of its own — rule 3's
+    WARN belongs to the S2 gate's own wrapper, never to probe.py; RP6-4 /
+    condition C4).
     """
-    path = Path(repo_root) / ".github" / "CODEOWNERS"
-    if not path.is_file():
-        return set()
-    humans: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        for owner in parts[1:]:
-            owner = owner.lstrip("@")
-            if "/" in owner:
-                continue  # team pattern, not an individual human
-            humans.add(owner.lower())
-    return humans
+    events: list = []
+    for page in range(1, _EVENTS_PAGE_BOUND + 1):
+        try:
+            batch = _run_gh([
+                f"/repos/{owner}/{repo}/issues/{issue_number}/events"
+                f"?per_page=100&page={page}"
+            ])
+        except GitHubError:
+            return None
+        if not isinstance(batch, list):
+            return None
+        events.extend(batch)
+        if len(batch) < 100:
+            break
+    return events
 
 
 def _verify_codeowner_actor(
@@ -286,42 +311,24 @@ def _verify_codeowner_actor(
     bot_accounts: set[str],
 ) -> Optional[str]:
     """
-    Verify that the needs-ai label and/or the milestone assignment on this
-    issue was applied by the designated human CODEOWNER, not a bot (#1539).
+    Verify that `label_name` was applied to this issue by a verified
+    individual human CODEOWNER, not a bot (#1539). There is exactly ONE
+    authorizing signal — a `labeled` event, for `label_name`, whose
+    GitHub-reported actor is a verified human CODEOWNER (AR-7 / AM-35): a
+    `milestoned` event never authorizes anything, and there is no second
+    arm.
 
-    Either signal alone authorizes the issue — checks the most recent 'labeled'
-    event for `label_name` and the most recent 'milestoned' event, and returns
-    the first verified-human actor found. Returns None if no event, no actor,
-    the actor is a bot (is_bot_reviewer), or the actor is not a listed
-    CODEOWNERS human.
+    Fetches the issue's events (paginated, above) and delegates the
+    decision entirely to the shared pure predicate. Returns None if the
+    fetch failed, if no qualifying event exists, if the actor is a bot, or
+    if the actor is not a listed CODEOWNER human.
     """
-    try:
-        events = _run_gh([
-            f"/repos/{owner}/{repo}/issues/{issue_number}/events?per_page=100"
-        ])
-    except GitHubError:
+    events = _fetch_events_paginated(owner, repo, issue_number)
+    if events is None:
         return None
-    if not isinstance(events, list):
-        return None
-
-    relevant_actors = []
-    for event in events:
-        ev = event.get("event")
-        if ev == "labeled" and event.get("label", {}).get("name") == label_name:
-            relevant_actors.append(event.get("actor") or {})
-        elif ev == "milestoned":
-            relevant_actors.append(event.get("actor") or {})
-
-    for actor in reversed(relevant_actors):
-        login = actor.get("login", "")
-        if not login:
-            continue
-        if is_bot_reviewer(login, actor.get("type", ""), bot_accounts):
-            continue
-        if login.lower() in codeowners_humans:
-            return login
-
-    return None
+    return _shared_verify_codeowner_actor(
+        events, codeowners_humans, bot_accounts, label_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -396,12 +403,13 @@ def probe_repo(
 
     if probe_strategy == STRATEGY_MILESTONE:
         # Milestone strategy: query by milestone number + needs-ai label.
-        # Actor verification (#1539): the needs-ai label and/or milestone
-        # assignment must have been applied by the designated human CODEOWNER.
+        # Actor verification (#1539): the needs-ai label must have been
+        # applied by the designated human CODEOWNER (AR-7 / AM-35: a
+        # milestoned event never authorizes — there is one channel).
         codeowners_humans = _codeowners_humans(repo_root)
         bots = (
             set(bot_accounts) if bot_accounts is not None
-            else {b for b in os.environ.get("BOT_ACCOUNTS", "").split() if b}
+            else load_bot_accounts(repo_root)
         )
         query = (
             f"/repos/{owner}/{repo}/issues"
@@ -423,8 +431,9 @@ def probe_repo(
             if not issue_number:
                 continue
 
-            # Verify the needs-ai label / milestone assignment was applied by
-            # the designated human CODEOWNER, not a bot (#1539)
+            # Verify the needs-ai label was applied by the designated human
+            # CODEOWNER, not a bot (#1539). No milestone title is passed —
+            # there is no second arm (AR-7 / AM-35, #1540 S1).
             actor = _verify_codeowner_actor(
                 owner, repo, issue_number,
                 "needs-ai", codeowners_humans, bots,
