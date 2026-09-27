@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from scripts.framework.requester_trust import (
+    COLLABORATOR_PAGE_BOUND,
     RequesterVerdict,
     codeowners_humans,
     fetch_collaborators,
@@ -136,6 +137,28 @@ def _repo_slug(value: str) -> str:
     return value
 
 
+# security SHOULD_FIX (b): `--label` is embedded unescaped into the `gh api`
+# querystring (`&labels={label}`) at both bounded-fetch call sites. Reject the
+# characters that would let a value inject additional query parameters or
+# otherwise corrupt the endpoint, for consistency with `--repo`/`--milestone`'s
+# strict validation above.
+_LABEL_FORBIDDEN_CHARS = frozenset("&?#=")
+
+
+def _label_name(value: str) -> str:
+    if value != value.strip() or not value:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a valid label (empty, or leading/trailing whitespace)"
+        )
+    if any(ch in _LABEL_FORBIDDEN_CHARS for ch in value) or any(ord(ch) < 0x20 for ch in value):
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a valid label ('&', '?', '#', '=' and control "
+            "characters are not allowed — they could inject additional query "
+            "parameters into the `gh api` endpoint string)"
+        )
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="select_work_candidates",
@@ -144,7 +167,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo", required=True, type=_repo_slug)
     parser.add_argument("--milestone", required=True, type=_positive_int)
-    parser.add_argument("--label", default="needs-ai")
+    parser.add_argument("--label", default="needs-ai", type=_label_name)
     parser.add_argument("--max-candidates", type=int, default=_DEFAULT_MAX_CANDIDATES)
     parser.add_argument("--max-api-requests", type=int, default=_DEFAULT_MAX_API_REQUESTS)
     return parser
@@ -405,6 +428,18 @@ def _rank(record: dict) -> int:
     return 3
 
 
+# security SHOULD_FIX (a): an issue's title is untrusted content (R-1 — CODEOWNER
+# authorization does not vet body/title content) that reaches stdout verbatim,
+# which bin/hos-cron feeds into worker-LLM prompt context. Collapse CR/LF and
+# other control characters to a single space at the point a candidate is built,
+# so a title cannot inject a fabricated `#N [priority] ...` candidate line.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _sanitize_title(title: str) -> str:
+    return _CONTROL_CHARS_RE.sub(" ", title).strip()
+
+
 @dataclass
 class _Candidate:
     number: int
@@ -455,18 +490,18 @@ def _walk(
             result.eligible.append(cand)
             i += 1
             continue
-        if budget.refuse():
-            result.unevaluated_cost_ceiling += n - i
-            result.stopped = True
-            return result
 
         def _events_endpoint(page: int, num: int = cand.number) -> str:
             return f"repos/{repo}/issues/{num}/events?per_page=100&page={page}"
 
+        # No pre-check of `budget.refuse()` here: `_fetch_pages`'s own rule
+        # 3(b) stop test runs before page 1 exactly as it runs before every
+        # later page, so calling it unconditionally is equivalent and costs
+        # no extra `gh` invocation when the ceiling is already exhausted
+        # (its internal stop test short-circuits before any request).
         outcome = _fetch_pages(_events_endpoint, EVENTS_PAGE_BOUND, budget)
         if outcome.state == "FAILED":
             result.query_failed_issues.append(cand.number)
-            result.warn_lines.append(f"WARN unevaluated:query-failed issue=#{cand.number}")
             i += 1
             continue
         actor = verify_codeowner_actor(outcome.records, codeowners, bots, label)
@@ -476,10 +511,20 @@ def _walk(
                 result.authorized[cand.number] = actor
                 i += 1
                 continue
-            # The clamp bit (§1.4 rule 4): a full last page, the next page
-            # refused, no match. This record and everything after it are
-            # unevaluated:cost-ceiling — the walk ends COMPLETELY here.
-            result.cost_ceiling_named_issue = cand.number
+            # The ceiling stop (§2.3 D5.1 / §1.4 rule 4). This record and
+            # everything after it are unevaluated:cost-ceiling, and the walk
+            # ends COMPLETELY here — but the record is named on its own line
+            # ONLY for a genuine bite: at least one full events page was
+            # already fetched for it (`outcome.records` non-empty) before
+            # the next page was refused with no match (§1.2 pt 7's "one
+            # exception to 'cost-ceiling is only a count'"). When `L = 0`
+            # (no events page was ever requested for this record — the
+            # ceiling was already exhausted at the candidate boundary),
+            # rule 4(a) is explicit: "the record is part of the unreached
+            # tail," and it is NOT named — it is counted like every other
+            # record in the tail, no differently.
+            if outcome.records:
+                result.cost_ceiling_named_issue = cand.number
             result.unevaluated_cost_ceiling += n - i
             result.stopped = True
             return result
@@ -534,11 +579,15 @@ def _report_and_exit(
     # (N=0 at --max-api-requests 0). This is forced independently of the
     # unevaluated/list-truncated/tier-degraded computation below, which
     # would otherwise read an empty, unreached set as trivially complete.
+    # F36 (ops MUST_FIX): a collaborator-page-bound-truncated tier resolution
+    # can only ever SHRINK the trusted set (AM-31), so it is completeness-
+    # affecting exactly like the other rows here, never security-affecting.
     complete = (
         unevaluated == 0
         and not list_truncated
         and not tier_degraded
         and not ceiling_refused_at_list
+        and not collaborator_bound_reached
     )
 
     for line in walk_warn_lines:
@@ -570,7 +619,7 @@ def _report_and_exit(
     if tier_degraded:
         _emit(f"WARN tier-resolution-failed tiers={tier_count}")
     if collaborator_bound_reached:
-        _emit("WARN collaborator-page-bound-reached pages=3")
+        _emit(f"WARN collaborator-page-bound-reached pages={COLLABORATOR_PAGE_BOUND}")
 
     if not eligible and gated_count > 0:
         _emit(
@@ -687,7 +736,7 @@ def main(argv: Optional[list] = None) -> int:
     candidate_states = [
         _Candidate(
             number=r.get("number"),
-            title=r.get("title") or "",
+            title=_sanitize_title(r.get("title") or ""),
             rank=_rank(r),
             verdict=requester_verdict(r, config.trusted_set),
             record=r,
