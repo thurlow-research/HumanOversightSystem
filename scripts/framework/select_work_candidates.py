@@ -72,6 +72,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -690,11 +691,16 @@ def main(argv: Optional[list] = None) -> int:
         _emit("config-error")
         return 2
 
-    # Step C — the paginated list query.
+    # Step C — the paginated list query. `--label` is URL-encoded before
+    # embedding: a space is a legal GitHub label character (e.g. "needs ai")
+    # that `_label_name` does not and must not reject, but an unencoded space
+    # produces a malformed querystring (cross-vendor second review, agy).
+    encoded_label = urllib.parse.quote(args.label, safe="")
+
     def list_endpoint(page: int) -> str:
         return (
             f"repos/{args.repo}/issues?state=open&milestone={args.milestone}"
-            f"&labels={args.label}&per_page=100&page={page}"
+            f"&labels={encoded_label}&per_page=100&page={page}"
         )
 
     outcome = _fetch_pages(list_endpoint, LIST_PAGE_BOUND, budget)

@@ -10,6 +10,7 @@ authorization lines, AM-13 visibility, and the anti-knob sweep.
 
 from __future__ import annotations
 
+import inspect
 import re
 
 import pytest
@@ -375,6 +376,25 @@ class TestTrustAndAuthorization:
         rc, out, _ = run_gate(capsys)
         assert out == []
 
+    def test_codeowner_applied_label_releases_an_issue_the_bot_later_relabelled(
+        self, gate_repo, stub, capsys
+    ):
+        """#1643's shape: a CODEOWNER applied `needs-ai` (the authorizing
+        act), and the worker bot LATER relabelled the same issue (e.g. after
+        a bounce). `verify_codeowner_actor` treats a bot actor as `continue`,
+        not `return None` -- a bot's later event does not erase an earlier
+        human CODEOWNER's authorizing act (residual R-3)."""
+        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.events_pages[1643] = {
+            1: [
+                _labeled_event("ScottThurlow"),
+                _labeled_event("hos-worker-hos[bot]", actor_type="Bot"),
+            ]
+        }
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [1643]
+        assert "AUTHORIZED issue=#1643 actor=ScottThurlow via=labeled" in " ".join(err)
+
 
 # ---------------------------------------------------------------------------
 # Prefix-correctness (core limbs; §2.3 D5.1)
@@ -443,6 +463,239 @@ class TestPrefixCorrectness:
         assert len(out) == 5
         assert any("unevaluated:sufficient=15" in ln for ln in err)
         assert not any("WARN" in ln and "sufficient" in ln for ln in err)
+
+    def test_ranking_reads_only_the_list_payload(self):
+        """limb (a) — the rank function is called with a record whose every
+        field except `labels` raises on access; ranking must still succeed.
+        A rank that reaches for anything the events call would supply can
+        change between D-rank and emit."""
+
+        class _Hostile(dict):
+            def get(self, key, default=None):
+                if key == "labels":
+                    return [{"name": "priority:high"}]
+                raise AssertionError(f"_rank touched {key!r}")
+
+        assert swc._rank(_Hostile()) == 1  # priority:high
+
+    def test_walk_key_is_a_total_order_on_the_candidate_set(self, gate_repo, stub, capsys):
+        """limb (b), re-aimed at the WALK key `(rank, number DESC)`: two
+        records never compare equal because issue numbers are unique within
+        a repository by construction, so the key is total on its own.
+        Assert the walk order is identical across repeated runs of a
+        shuffled input, and that it descends by number within the rank
+        band."""
+        numbers = [107, 103, 109, 101, 105]  # deliberately not sorted
+        stub.issue_pages[1] = [
+            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+        ]
+        for n in numbers:
+            stub.events_pages[n] = {1: []}  # all gated; only the walk ORDER matters here
+        run_gate(capsys)
+        order1 = [
+            int(m.group(1)) for c in stub.calls if (m := re.search(r"issues/(\d+)/events", c))
+        ]
+        stub.calls.clear()
+        run_gate(capsys)
+        order2 = [
+            int(m.group(1)) for c in stub.calls if (m := re.search(r"issues/(\d+)/events", c))
+        ]
+        assert order1 == order2 == sorted(numbers, reverse=True)
+
+    def test_free_filters_run_before_ranking(self, gate_repo, stub, capsys, monkeypatch):
+        """limb (c): a PR record and a `needs-human` record, both
+        `priority:critical`, must be absent from the ranked set entirely --
+        not merely absent from the output. Asserted via the rank function's
+        own call log, not the emitted list: a filter applied AFTER ranking
+        produces identical stdout and a different set of paid checks."""
+        seen_numbers = []
+        original_rank = swc._rank
+
+        def _spy(record):
+            seen_numbers.append(record.get("number"))
+            return original_rank(record)
+
+        monkeypatch.setattr(swc, "_rank", _spy)
+        pr = {
+            "number": 900,
+            "title": "a PR",
+            "labels": [{"name": "priority:critical"}],
+            "pull_request": {"url": "x"},
+            "user": {"login": "ScottThurlow", "type": "User"},
+        }
+        stub.issue_pages[1] = [
+            pr,
+            _issue(901, "priority:critical", "needs-human"),
+            _issue(902, "priority:critical"),
+        ]
+        run_gate(capsys)
+        assert 900 not in seen_numbers
+        assert 901 not in seen_numbers
+        assert 902 in seen_numbers
+
+    def test_emission_order_is_rank_number_even_when_the_walk_order_differs(
+        self, gate_repo, stub, capsys
+    ):
+        """NEW in revision 5 and BINDING (AM-29 point 2). Under the binding
+        walk key `(rank, number DESC)` and the emission key `(rank, number
+        ASC)`, any three same-rank records disagree between the two orders
+        by construction. Assert the walk visited them in DESCENDING issue
+        number (via the `gh` stub's call log) and that stdout emits them in
+        ASCENDING issue number."""
+        numbers = [10, 20, 30]
+        stub.issue_pages[1] = [
+            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+        ]
+        for n in numbers:
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        rc, out, err = run_gate(capsys)
+        visited = [
+            int(m.group(1))
+            for c in stub.calls
+            if "/events" in c and (m := re.search(r"issues/(\d+)/events", c))
+        ]
+        assert visited == [30, 20, 10]
+        assert _numbers(out) == [10, 20, 30]
+
+    def test_no_global_prefix_claim_is_made_when_the_list_bound_binds(
+        self, gate_repo, stub, capsys
+    ):
+        """limb (e), an ABSENCE test (AM-33 point 3). With Step C truncated,
+        assert the gate reports `complete=no` and that nothing in stdout or
+        stderr claims the emitted list is the head (a "prefix") of the
+        repository's answer. Step C truncates by `created desc` BEFORE
+        ranking, so an omitted record CAN outrank an emitted one -- the
+        gate must only ever claim what it has."""
+        for p in range(1, 7):
+            stub.issue_pages[p] = [_issue(1000 * p + i) for i in range(100)]
+        rc, out, err = run_gate(capsys, "--max-api-requests", "100")
+        joined = "\n".join(err)
+        assert "complete=no" in joined
+        assert "unevaluated:list-truncated=yes" in joined
+        assert not re.search(r"\bprefix\b", joined, re.IGNORECASE)
+        assert not any(re.search(r"\bprefix\b", ln, re.IGNORECASE) for ln in out)
+
+
+# ---------------------------------------------------------------------------
+# The composed differential test (AM-19/AM-29/AM-33), BINDING per the TD's
+# test-homes preamble: "test_admitted_set_is_a_prefix_of_the_complete_walk".
+# W = the records the complete walk DETERMINES eligible under the SAME
+# per-record query outcomes (§2.3 D5.1), never derived from the `gh` stub's
+# call log (which cannot see a trusted, zero-cost admission) and never from
+# a gate internal.
+# ---------------------------------------------------------------------------
+
+
+class TestAdmissionOverDeterminations:
+    def _fixture_i(self, stub):
+        """(i) the emission-order fixture: #10/#20/#30, same rank, all
+        authorized."""
+        nums = [10, 20, 30]
+        stub.issue_pages[1] = [_issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in nums]
+        for n in nums:
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        return {10, 20, 30}
+
+    def _fixture_ii(self, stub):
+        """(ii) a trusted-authored record among untrusted authorized ones --
+        the case that broke a log-derived W."""
+        stub.issue_pages[1] = [
+            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(20),  # trusted (codeowner-authored), admitted at zero cost
+            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+        ]
+        stub.events_pages[10] = {1: [_labeled_event("ScottThurlow")]}
+        stub.events_pages[30] = {1: [_labeled_event("ScottThurlow")]}
+        return {10, 20, 30}
+
+    def _fixture_iii(self, stub):
+        """(iii) RUN4's quarantine fixture: #30/#20/#10 same rank, all
+        authorized, #30's events query failing on every call, plus #5 (same
+        rank, authorized) to meet the minimum of 3. D = {#20, #10, #5};
+        #30 is not in D."""
+        nums = [5, 10, 20, 30]
+        stub.issue_pages[1] = [_issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in nums]
+        for n in (5, 10, 20):
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        stub.events_fail_pages[30] = {1}
+        return {5, 10, 20}
+
+    def _fixture_iv(self, stub):
+        """(iv) RUN4's clamp fixture: #30 untrusted with its authorizing
+        event on events page 2, its events page 1 FULL (100 events, none
+        qualifying -- revision 8, RP5-1); #20 trusted-authored; #10
+        untrusted and authorized on page 1. D = {#30, #20, #10}."""
+        stub.issue_pages[1] = [
+            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(20),
+            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+        ]
+        non_matching = {
+            "event": "labeled",
+            "label": {"name": "other"},
+            "actor": {"login": "x", "type": "User"},
+        }
+        stub.events_pages[30] = {
+            1: [non_matching] * 100,
+            2: [_labeled_event("ScottThurlow")],
+        }
+        stub.events_pages[10] = {1: [_labeled_event("ScottThurlow")]}
+        return {30, 20, 10}
+
+    @pytest.mark.parametrize("build", ["i", "ii", "iii", "iv"])
+    def test_admitted_set_is_a_prefix_of_the_complete_walk(self, gate_repo, stub, capsys, build):
+        builders = {
+            "i": self._fixture_i,
+            "ii": self._fixture_ii,
+            "iii": self._fixture_iii,
+            "iv": self._fixture_iv,
+        }
+        determined = builders[build](stub)
+        assert 3 <= len(determined) <= 4
+
+        # The unbounded run: the reference run is itself checked against the
+        # fixture's own declaration rather than trusted.
+        rc, out, err = run_gate(capsys)
+        assert set(_numbers(out)) == determined
+        assert rc == 0
+
+        # W, derived from the fixture's own records -- every record here
+        # shares one rank band, so `(rank, -number)` collapses to `-number`.
+        walk = sorted(determined, key=lambda n: -n)
+
+        for max_candidates in (1, 2):
+            stub.calls.clear()
+            rc_b, out_b, err_b = run_gate(capsys, "--max-candidates", str(max_candidates))
+            bounded = _numbers(out_b)
+            joined_b = " ".join(err_b)
+
+            # Cardinality anchor (revision 8, RP5-3), fixed from the BOUND,
+            # not from the output length -- an over-running gate fails it.
+            assert len(bounded) == min(max_candidates, len(walk))
+
+            # The bounded run actually stopped; a vacuous case fails.
+            assert "complete=no" in joined_b
+            suff = re.search(r"unevaluated:sufficient=(\d+)", joined_b)
+            ceil = re.search(r"unevaluated:cost-ceiling=(\d+)", joined_b)
+            assert (suff and int(suff.group(1)) > 0) or (ceil and int(ceil.group(1)) > 0)
+
+            # The admission property, over determinations.
+            assert set(bounded) == set(walk[: len(bounded)])
+
+            # The presentation property: Step E re-sorted the admitted set
+            # by (rank, number ASC) and did not reorder it by anything else.
+            assert bounded == sorted(bounded)
+
+        if build == "iv":
+            # The clamp-bite companion (revision 8): one list page, #30's
+            # events page 1 (full), then page 2 refused by the stop test.
+            stub.calls.clear()
+            rc_c, out_c, err_c = run_gate(capsys, "--max-api-requests", "2")
+            assert out_c == []
+            assert rc_c == 3
+            joined_c = " ".join(err_c)
+            assert "complete=no" in joined_c
+            assert "unevaluated:cost-ceiling issue=#30" in joined_c
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +804,42 @@ class TestBounds:
         rc2, out2, _ = run_gate(capsys)
         assert out1 == out2 == ["#700 [low] issue 700"]
 
+    def test_two_consecutive_runs_both_query_live(self, gate_repo, stub, capsys):
+        """No state file is written and the second run makes the SAME `gh`
+        calls the first did -- FR7/AD-4: every cycle re-derives from live
+        state."""
+        stub.issue_pages[1] = [_issue(801, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.events_pages[801] = {1: [_labeled_event("ScottThurlow")]}
+        rc1, out1, _ = run_gate(capsys)
+        calls_1 = list(stub.calls)
+        stub.calls.clear()
+        rc2, out2, _ = run_gate(capsys)
+        calls_2 = list(stub.calls)
+        assert calls_1 == calls_2 and calls_1  # sanity: calls actually happened
+        assert out1 == out2
+        # No cache/state/resume file is created anywhere under the repo root
+        # beyond the fixture's own CODEOWNERS/machine-accounts setup.
+        created = [
+            str(p.relative_to(gate_repo))
+            for p in gate_repo.rglob("*")
+            if p.is_file()
+            and not str(p).endswith("CODEOWNERS")
+            and not str(p).endswith("machine-accounts.env")
+        ]
+        assert created == []
+
+    def test_authorization_revoked_between_runs_is_not_carried_over(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(800, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.events_pages[800] = {1: [_labeled_event("ScottThurlow")]}
+        rc1, out1, _ = run_gate(capsys)
+        assert _numbers(out1) == [800]
+        # Simulate revoked live state: the events query no longer returns
+        # anything authorizing. The gate must re-derive from live state on
+        # the next cycle, not carry the prior determination forward.
+        stub.events_pages[800] = {1: []}
+        rc2, out2, _ = run_gate(capsys)
+        assert out2 == []
+
     def test_max_api_requests_can_only_lower(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [_issue(1)]
         rc, out, err = run_gate(capsys, "--max-api-requests", "10000")
@@ -561,6 +850,34 @@ class TestBounds:
         assert rc == 3
         assert out == []
         assert not stub.calls
+
+    def test_pagination_and_ceiling_interaction_is_ordered_not_arbitrary(
+        self, gate_repo, stub, capsys
+    ):
+        """The panel's §3(c) item 2, answered in code rather than in prose:
+        500 records across 5 pages, 3 `priority:critical` records among the
+        LAST page (the region a single-page fetch would have dropped).
+        Pagination widens the ranked set, the ceiling truncates the ranked
+        tail, and because ranking sits between them the widening can only
+        ever move a high-priority record INTO the evaluated region, never
+        out of it."""
+        for p in range(1, 5):
+            stub.issue_pages[p] = [_issue(1000 * p + i) for i in range(100)]
+        page5 = [
+            _issue(9001, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(9002, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(9003, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
+        ]
+        page5 += [_issue(5000 + i) for i in range(97)]
+        stub.issue_pages[5] = page5
+        for n in (9001, 9002, 9003):
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        rc, out, err = run_gate(capsys)
+        assert {9001, 9002, 9003} <= set(_numbers(out))
+        list_calls = [c for c in stub.calls if "/issues?" in c]
+        assert len(list_calls) == 5
+        events_calls = [c for c in stub.calls if "/events" in c]
+        assert len(events_calls) == 3  # only the three criticals cost anything
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +1051,23 @@ class TestCompleteInvariantAndClamp:
         assert "WARN unevaluated:query-failed issue=#1678" in joined
         assert "complete=no" in joined
         assert rc == 0
+
+    def test_admission_holds_over_determinations_under_quarantine(self, gate_repo, stub, capsys):
+        """RUN4's counterexample 2 (RP4-1(ii)): #30/#20/#10 same rank, all
+        authorized, #30's query failing, at `--max-candidates 1`. `{#20}`
+        is the correct admitted set -- it is `W[:1]` OVER DETERMINATIONS,
+        not a violation of prefix-correctness."""
+        stub.issue_pages[1] = [
+            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(20, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+        ]
+        stub.events_fail_pages[30] = {1}
+        stub.events_pages[20] = {1: [_labeled_event("ScottThurlow")]}
+        stub.events_pages[10] = {1: [_labeled_event("ScottThurlow")]}
+        rc, out, err = run_gate(capsys, "--max-candidates", "1")
+        assert _numbers(out) == [20]
+        assert "unevaluated:query-failed issue=#30" in " ".join(err)
 
     def test_query_failed_warn_line_is_emitted_exactly_once(self, gate_repo, stub, capsys):
         """ops MUST_FIX 1: `_walk` used to append the WARN line to
@@ -933,6 +1267,68 @@ class TestSummaryInvariants:
         assert evaluated == eligible + gated
         assert authorized <= eligible
 
+    def test_unevaluated_partition_sums_to_its_three_named_reasons(self, gate_repo, stub, capsys):
+        """Revision 7, TP-3: `unevaluated == sufficient + cost-ceiling +
+        query-failed` exactly. Checked on a fixture where the sufficiency
+        stop and a quarantined record are BOTH live in the same run --
+        query-failed is per-record and can co-occur with either stop (the
+        two stops cannot co-occur with each other, since the walk returns
+        as soon as one fires)."""
+        records = [
+            _issue(9100 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(1, 7)
+        ]
+        stub.issue_pages[1] = records
+        stub.events_fail_pages[9106] = {1}  # highest number -> walked FIRST
+        for n in range(9101, 9106):
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        rc, out, err = run_gate(capsys, "--max-candidates", "2")
+        joined = " ".join(err)
+        fields = dict(
+            tok.split("=") for tok in joined.split() if "=" in tok and not tok.startswith("issue")
+        )
+        unevaluated = int(fields["unevaluated"])
+        sufficient = int(fields["unevaluated:sufficient"])
+        cost_ceiling = int(fields["unevaluated:cost-ceiling"])
+        query_failed = int(fields["unevaluated:query-failed"])
+        assert unevaluated == sufficient + cost_ceiling + query_failed
+        assert sufficient > 0
+        assert query_failed == 1
+
+
+# ---------------------------------------------------------------------------
+# Structural invariants that do not depend on any one fixture
+# ---------------------------------------------------------------------------
+
+
+class TestStructuralInvariants:
+    def test_sufficiency_stop_and_all_gated_are_mutually_exclusive(self, gate_repo, stub, capsys):
+        """AM-21's structural claim, pinned: no fixture can produce both,
+        because the stop requires `eligible >= 1` and the block requires
+        `eligible == 0`."""
+        records = [_issue(9200 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(3)]
+        stub.issue_pages[1] = records
+        for i in range(3):
+            stub.events_pages[9200 + i] = {1: [_labeled_event("ScottThurlow")]}
+        rc, out, err = run_gate(capsys, "--max-candidates", "1")
+        joined = " ".join(err)
+        assert "unevaluated:sufficient=" in joined
+        assert "ALL-CANDIDATES-GATED" not in joined
+
+    def test_no_loader_catches_bare_exception(self):
+        """§1.3.1: a single `except Exception` or bare `except:` in
+        `requester_trust.py` would convert every propagating loader failure
+        into a silent empty result at a stroke -- and for `load_bot_accounts`
+        an empty result is an empty denylist, promoting every bot to
+        'human'. A source-level assertion is the only thing that catches
+        it, because the behavioural tests all pass on a READABLE file."""
+        source = inspect.getsource(rt)
+        # Anchored to actual `except` statements (leading whitespace only),
+        # so a comment merely discussing "a bare `except Exception`" (as
+        # this module's own docstring/comments do, to explain why it avoids
+        # one) is not a false positive.
+        assert not re.search(r"^\s*except\s+Exception\b", source, re.MULTILINE)
+        assert not re.search(r"^\s*except\s*:", source, re.MULTILINE)
+
 
 # ---------------------------------------------------------------------------
 # Fail-closed matrix (§3) — one test per live configuration row
@@ -1011,6 +1407,17 @@ class TestFailClosedConfiguration:
         assert rc == 2
         assert any("list-query-failed" in ln for ln in err)
 
+    def test_list_query_returns_a_non_list_payload_fails_closed(self, gate_repo, stub, capsys):
+        """F12's third named sub-case: `gh` exits 0 with valid, parseable
+        JSON that is not a list (e.g. an error object). Distinct code path
+        from the non-zero-exit / non-JSON cases `test_list_query_failed`
+        exercises -- `_fetch_pages`' own `isinstance(batch, list)` guard."""
+        stub.issue_pages[1] = {"message": "Not Found", "documentation_url": "x"}  # not a list
+        rc, out, err = run_gate(capsys)
+        assert rc == 2
+        assert out == []
+        assert any("list-query-failed" in ln for ln in err)
+
     def test_roster_unreadable_fails_closed(self, gate_repo, stub, capsys):
         """F7: `load_trusted_requesters` raising a non-`FileNotFoundError`
         `OSError` (here: the roster file exists but is unreadable, so
@@ -1086,6 +1493,66 @@ class TestAntiKnob:
         assert rc == 2
         assert out == []
         assert not stub.calls
+
+    def test_label_is_url_encoded_at_the_list_endpoint(self, gate_repo, stub, capsys):
+        """Cross-vendor second review (agy, MEDIUM): a space is a legal
+        GitHub label character (e.g. "needs ai") that `_label_name` does
+        not and must not reject, but embedding it unencoded produces a
+        malformed querystring. `--label` must be `urllib.parse.quote`d
+        before it is embedded in Step C's list endpoint."""
+        rc, out, err = run_gate(capsys, "--label", "needs ai")
+        list_calls = [c for c in stub.calls if "/issues?" in c]
+        assert list_calls
+        assert any("labels=needs%20ai" in c for c in list_calls)
+        assert not any("labels=needs ai" in c for c in list_calls)
+
+    def test_no_environment_variable_grants_trust(self, gate_repo, stub, capsys, monkeypatch):
+        """A sweep: none of these env vars may make an untrusted record
+        selectable. `HOS_TRUSTED_TIERS`/`TRUSTED_TIERS` are new in revision
+        5 (H3) -- the roster file is the only place a tier may be named."""
+        stub.issue_pages[1] = [_issue(1, user="random-stranger", user_type="User")]
+        stub.events_pages[1] = {1: []}
+        for var, value in (
+            ("TRUSTED_REQUESTERS", "random-stranger"),
+            ("HOS_TRUSTED_APPS", "random-stranger"),
+            ("HOS_SKIP_GATE", "1"),
+            ("BOT_ACCOUNTS", ""),
+            ("HOS_TRUSTED_TIERS", "write"),
+            ("TRUSTED_TIERS", "write"),
+        ):
+            monkeypatch.setenv(var, value)
+            rc, out, err = run_gate(capsys)
+            assert out == [], f"{var}={value!r} widened trust"
+            monkeypatch.delenv(var, raising=False)
+
+    def test_lowering_a_bound_cannot_change_which_records_are_evaluated_first(
+        self, gate_repo, stub, capsys
+    ):
+        """The anti-knob property specific to AM-19: for any legal
+        `--max-api-requests` and any legal `--max-candidates`, the set
+        REACHED (the events calls actually issued) is a PREFIX of the same
+        walk order. A flag that reordered the walk would be a widening knob
+        wearing a cost-control costume."""
+        numbers = list(range(301, 311))  # 10 same-rank records
+        stub.issue_pages[1] = [
+            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+        ]
+        for n in numbers:
+            stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
+        full_walk = sorted(numbers, reverse=True)
+        for flag, value in (
+            ("--max-candidates", "3"),
+            ("--max-candidates", "5"),
+            ("--max-api-requests", "5"),
+        ):
+            stub.calls.clear()
+            run_gate(capsys, flag, value)
+            reached = [
+                int(m.group(1))
+                for c in stub.calls
+                if "/events" in c and (m := re.search(r"issues/(\d+)/events", c))
+            ]
+            assert reached == full_walk[: len(reached)]
 
 
 # ---------------------------------------------------------------------------
