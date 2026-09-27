@@ -188,8 +188,8 @@ def _run_gh(endpoint: str) -> Any:
     already set in this directory by `require_human_approval.py`'s
     `reviews_from_gh` / `require_human_approval.py:_fetch_reviews` (§2.2's
     "GitHub access" note) — this module does NOT import
-    `scripts.automation.lib.github._run_gh`, which sits on an unprotected
-    surface (§1.1)."""
+    `scripts/automation/lib/github.py`'s `_run_gh`, which sits on an
+    unprotected surface (§1.1)."""
     try:
         result = subprocess.run(
             ["gh", "api", endpoint],
@@ -731,5 +731,5 @@ def main(argv: Optional[list] = None) -> int:
     )
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover - CLI entry, exercised via subprocess only
     sys.exit(main())

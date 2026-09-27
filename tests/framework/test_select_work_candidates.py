@@ -406,6 +406,10 @@ class TestPrefixCorrectness:
         rc, out, err = run_gate(capsys, "--max-candidates", "5")
         assert trusted_num not in _numbers(out)
         assert len(out) == 5
+        # All five admitted records share one rank band (no priority label),
+        # so Step E's emission order — (rank, number ASC), #901's
+        # FIFO-within-band — is the exact ascending sequence here.
+        assert _numbers(out) == [124, 125, 126, 127, 128]
         assert not any(f"/issues/{trusted_num}/events" in c for c in stub.calls)
 
     def test_early_exit_stops_at_max_candidates_and_admits_nothing_after(
@@ -481,6 +485,11 @@ class TestBounds:
         assert len(out) == 3
         assert any("unevaluated:sufficient=7" in ln for ln in err)
         assert not any("WARN" in ln for ln in err)
+        # Whole-suite assertion (code-reviewer finding): the literal
+        # `UNEVALUATED` breakdown line must actually be emitted whenever
+        # U > 0 — no test in this file previously asserted that string at
+        # all, only its individual `unevaluated:<reason>=<n>` fields.
+        assert any(ln.startswith("select_work_candidates: UNEVALUATED") for ln in err)
 
     def test_the_gate_keeps_no_resume_cursor(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [_issue(700)]
@@ -519,6 +528,11 @@ class TestF38StepCRefusedByCeiling:
         assert "evaluated=0" in joined
         assert "unevaluated:cost-ceiling=200" in joined
         assert not any(ln.startswith("select_work_candidates: AUTHORIZED") for ln in err)
+        # CL6-6: at N=200, U=200 (all cost-ceiling), the UNEVALUATED
+        # breakdown line MUST fire — U > 0 (TD §2.3 Step F: "when U > 0 OR
+        # list-truncated=yes").
+        assert any(ln.startswith("select_work_candidates: UNEVALUATED") for ln in err)
+        assert any("unevaluated:cost-ceiling=200" in ln for ln in err if "UNEVALUATED" in ln)
 
     def test_ceiling_zero_refuses_immediately(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [_issue(1)]
@@ -528,6 +542,15 @@ class TestF38StepCRefusedByCeiling:
         joined = " ".join(err)
         assert "complete=no" in joined
         assert rc == 3
+        # CL6-6: at N=0 the UNEVALUATED line is ABSENT — U=0 (nothing was
+        # fetched to be "not evaluated"; a refused Step C page forces
+        # complete=no directly, per §2.3 Step C's REFUSED state, and it is
+        # NOT summed into U per §1.2 consequence 6/TP-3). The exit-3 status
+        # plus the summary's own complete=no already carry the "the gate
+        # could not finish looking" signal at N=0; the UNEVALUATED line only
+        # ever enumerates records the walk reached-but-could-not-place, and
+        # there are none to enumerate here.
+        assert not any(ln.startswith("select_work_candidates: UNEVALUATED") for ln in err)
 
     def test_complete_sweep_includes_a_refused_step_c_page(self, gate_repo, stub, capsys):
         """The `complete` sweep must cover a refused Step C page, not only
@@ -826,6 +849,39 @@ class TestFailClosedConfiguration:
         rc, out, err = run_gate(capsys)
         assert rc == 2
         assert any("list-query-failed" in ln for ln in err)
+
+    def test_roster_unreadable_fails_closed(self, gate_repo, stub, capsys):
+        """F7: `load_trusted_requesters` raising a non-`FileNotFoundError`
+        `OSError` (here: the roster file exists but is unreadable, so
+        `Path.read_text()` raises `PermissionError`) must exit 2
+        `roster-unreadable` — never degrade to an empty, permissive roster."""
+        roster_path = gate_repo / "scripts" / "framework" / "trusted-requesters.txt"
+        roster_path.write_text("some-contributor  # added-by: x added: 2026-09-01 why: y\n")
+        roster_path.chmod(0o000)
+        stub.issue_pages[1] = [_issue(1)]
+        try:
+            rc, out, err = run_gate(capsys)
+        finally:
+            roster_path.chmod(0o644)  # restore so tmp_path cleanup can remove it
+        assert rc == 2
+        assert out == []
+        assert any("roster-unreadable" in ln for ln in err)
+
+    def test_config_error_on_an_unanticipated_exception(self, gate_repo, stub, capsys):
+        """Step B's own catch-all (§2.3 Step B item 7): an exception no
+        specific loader-failure branch anticipates — here, invalid UTF-8 in
+        `machine-accounts.env`, which `_parse_env_file`'s `read_text(encoding
+        ="utf-8")` raises as `UnicodeDecodeError`, NOT an `OSError` — must
+        still exit 2 `config-error` rather than propagate a traceback or
+        silently continue with a partial/incorrect trusted set."""
+        (gate_repo / "scripts" / "framework" / "machine-accounts.env").write_bytes(
+            b"BOT_WORKER_USERNAME=\xff\xfebad\n"
+        )
+        stub.issue_pages[1] = [_issue(1)]
+        rc, out, err = run_gate(capsys)
+        assert rc == 2
+        assert out == []
+        assert any("config-error" in ln for ln in err)
 
 
 # ---------------------------------------------------------------------------

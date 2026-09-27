@@ -87,9 +87,17 @@ tail -f /tmp/hos-overseer-<project>.log
    overseer escalation that has cycled before, or any issue a human is
    re-authorizing), GitHub's label writes are idempotent and re-applying it
    produces no new event: remove it first, then re-add it, both from your own
-   account. See `docs/LABELS.md` § "The `needs-ai` authorizing act" for the
-   full rule, including why `/approve` does not perform this act in the S2
-   era.
+   account.
+
+   **What the act does and does not do (FR29's meaning clause).** Applying
+   the dispatch label from your own account **starts autonomous work on that
+   issue** — including an issue you did not author and whose content you do
+   not control. It does **not** make the issue's author trusted, and it does
+   **not** make the issue's body trustworthy: the gate never reads an
+   issue's body or its labels as evidence of who filed it.
+
+   See `docs/LABELS.md` § "The `needs-ai` authorizing act" for the full
+   rule, including why `/approve` does not perform this act in the S2 era.
 
    **Exception — release-request issues (NG3b).** On an issue labeled
    `release-request`, `needs-human` does not mean "the overseer escalated this."

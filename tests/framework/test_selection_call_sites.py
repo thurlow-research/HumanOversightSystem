@@ -110,6 +110,15 @@ class TestTheCollapse:
         py_hits = [p for p in ROOT.rglob("select_work_candidates.py")]
         assert py_hits == [GATE_MODULE]
 
+    def test_gate_imports_nothing_from_automation_or_oversight(self):
+        """§1.1's import-boundary rule applies to the gate too, not only to
+        `requester_trust.py` (`test_requester_trust_imports_nothing_from_
+        automation_or_oversight` in test_requester_trust.py covers the
+        primitive; this is the gate's sibling assertion)."""
+        text = GATE_MODULE.read_text()
+        assert "scripts.automation" not in text
+        assert "scripts.oversight" not in text
+
 
 # ---------------------------------------------------------------------------
 # AM-6 point 3's shipping condition: /approve must stop claiming authorization
@@ -168,6 +177,16 @@ class TestRunbookRequirements:
     def test_runbook_intervention_covers_the_already_labelled_case(self):
         text = RUNBOOK_DOC.read_text()
         assert "remove it first, then re-add it" in text or "remove-then-re-add" in text
+
+    def test_runbook_inlines_fr29s_meaning_clause(self):
+        """TD §4.3's RUNBOOK row: FR29's meaning clause must be INLINED here
+        (the same substance docs/LABELS.md carries), not only cross-referenced."""
+        raw = RUNBOOK_DOC.read_text().lower().replace("**", "")
+        text = re.sub(r"\s+", " ", raw)
+        assert "starts autonomous work on that issue" in text
+        assert "did not author" in text and "do not control" in text
+        assert "does not make the issue's author trusted" in text
+        assert "does not make the issue's body trustworthy" in text
 
 
 # ---------------------------------------------------------------------------
