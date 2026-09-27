@@ -2040,7 +2040,7 @@ fi
 # the CRON-SETUP docs, or a session discussing usage limits. Documenting the
 # breaker can trip the breaker.
 #
-# The standalone /home/scott/.local/bin/check-usage.sh crontab entry was
+# The operator's standalone ~/.local/bin/check-usage.sh crontab entry was
 # already disabled; this block is the in-cron successor added by #1450 and
 # was still firing.
 #

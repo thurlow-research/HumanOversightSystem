@@ -246,8 +246,8 @@ def _fetch_pages(
 
 
 class _ConfigFailure(Exception):
-    def __init__(self, token: str, remediation: str = ""):
-        super().__init__(token)
+    def __init__(self, token: str, remediation: str):
+        super().__init__(token, remediation)
         self.token = token
         self.remediation = remediation
 
@@ -324,7 +324,7 @@ def _load_configuration(repo_root: str, repo: str, budget: _Budget) -> _Configur
     try:
         policy = load_trusted_requesters(repo_root)
     except OSError as exc:
-        raise _ConfigFailure("roster-unreadable") from exc
+        raise _ConfigFailure("roster-unreadable", "") from exc
 
     # B5 — LAZY, conditional collaborator fetch (H3). Zero cost when no tier
     # is listed. Any failure is completeness-affecting, never security
@@ -459,10 +459,11 @@ def _walk(
             result.unevaluated_cost_ceiling += n - i
             result.stopped = True
             return result
-        endpoint = lambda page, num=cand.number: (
-            f"repos/{repo}/issues/{num}/events?per_page=100&page={page}"
-        )
-        outcome = _fetch_pages(endpoint, EVENTS_PAGE_BOUND, budget)
+
+        def _events_endpoint(page: int, num: int = cand.number) -> str:
+            return f"repos/{repo}/issues/{num}/events?per_page=100&page={page}"
+
+        outcome = _fetch_pages(_events_endpoint, EVENTS_PAGE_BOUND, budget)
         if outcome.state == "FAILED":
             result.query_failed_issues.append(cand.number)
             result.warn_lines.append(f"WARN unevaluated:query-failed issue=#{cand.number}")

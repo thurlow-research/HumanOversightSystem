@@ -11,7 +11,6 @@ authorization lines, AM-13 visibility, and the anti-knob sweep.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
@@ -577,7 +576,7 @@ class TestCompleteInvariantAndClamp:
         assert "budget-clamped-events-fetch issue=#30" in joined
         assert not any("WARN" in ln for ln in err)
         assert not any("events-page-bound-reached" in ln for ln in err)
-        assert not any(f"issues/30/events?per_page=100&page=2" in c for c in stub.calls)
+        assert not any("issues/30/events?per_page=100&page=2" in c for c in stub.calls)
         assert out == []  # #20 not emitted although free; #10 not reached
         assert "gated=0" in joined
         assert "eligible=0" in joined

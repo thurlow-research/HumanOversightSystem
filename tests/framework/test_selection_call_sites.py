@@ -17,8 +17,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 HOS_CRON = ROOT / "bin" / "hos-cron"
 CRON_PROMPT = ROOT / "bootstrap" / "worker-cron-prompt.md"
