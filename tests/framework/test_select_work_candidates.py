@@ -1201,12 +1201,40 @@ class TestVisibilityAndAuthorizationLines:
     def test_unevaluated_tokens_never_appear_in_the_gated_reasons_breakdown(
         self, gate_repo, stub, capsys
     ):
-        records = [_issue(5000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(3)]
+        """AM-20: the ALL-CANDIDATES-GATED reasons breakdown enumerates
+        DETERMINATIONS only -- the four unevaluated:* tokens must never
+        appear in it, even when a query-failed record, a cost-ceiling
+        stop, AND a real gated determination all occur in the SAME run
+        (they are not mutually exclusive: the ALL-CANDIDATES-GATED
+        INCOMPLETE line exists precisely for this co-occurrence).
+
+        Walk order is (rank, number DESC), so of #5001/#5002/#5003
+        (same rank), #5003 is visited first (its events page is a short,
+        non-matching page -- a gated determination), #5002 second (its
+        events query transport-fails -- query-failed, and the walk
+        continues), and #5001 third: at --max-api-requests 3 the ceiling
+        is exhausted exactly there (list=1 + #5003's fetch=1 + #5002's
+        FAILED fetch=1 == 3, since a failed request still counts against
+        the budget), so #5001's events fetch is refused before any page
+        of it is requested -- a cost-ceiling record.
+
+        Non-vacuity: the reasons line is asserted non-empty (the gated
+        determination actually happened) and `unevaluated:query-failed=1`
+        / `unevaluated:cost-ceiling=1` are asserted present in the
+        summary (the other two preconditions actually happened). Remove
+        any one precondition (e.g. #5002 not failing, or a larger
+        ceiling) and this test fails rather than passing trivially."""
+        records = [_issue(5001 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(3)]
         stub.issue_pages[1] = records
-        stub.events_pages[5000] = {1: []}
-        stub.events_fail_pages[5001] = {1}
-        rc, out, err = run_gate(capsys, "--max-api-requests", "2")
+        stub.events_pages[5003] = {1: []}
+        stub.events_fail_pages[5002] = {1}
+        rc, out, err = run_gate(capsys, "--max-api-requests", "3")
+        joined = " ".join(err)
+        assert "unevaluated:query-failed=1" in joined
+        assert "unevaluated:cost-ceiling=1" in joined
         reasons_line = next((ln for ln in err if "ALL-CANDIDATES-GATED reasons:" in ln), "")
+        assert reasons_line  # non-empty: the gated-determination precondition happened
+        assert "no-codeowner-actor=1" in reasons_line
         for token in (
             "unevaluated:sufficient",
             "unevaluated:cost-ceiling",
@@ -1215,14 +1243,28 @@ class TestVisibilityAndAuthorizationLines:
             assert token not in reasons_line
 
     def test_unevaluated_records_are_not_counted_as_gated(self, gate_repo, stub, capsys):
+        """Walk order is (rank, number DESC): of 45 same-rank records
+        #6000..#6044, the walk visits the 5 HIGHEST numbers first
+        (#6044..#6040), not the 5 lowest. Mock events for the records
+        actually walked and assert exactly those 5 endpoints were called
+        -- mocking the wrong 5 (e.g. #6000..#6004, which the ceiling stop
+        below means are never reached at all) would still pass the
+        gated=5/unevaluated=40 counts, because the stub's default (an
+        empty, non-matching page) makes an unmocked walked record gated
+        anyway; only the exact-call-set assertion catches the mismatch."""
         records = [_issue(6000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(45)]
         stub.issue_pages[1] = records
-        for i in range(5):
-            stub.events_pages[6000 + i] = {1: []}
+        walked = [6044, 6043, 6042, 6041, 6040]
+        for n in walked:
+            stub.events_pages[n] = {1: []}
         rc, out, err = run_gate(capsys, "--max-api-requests", "6")
         joined = " ".join(err)
         assert "gated=5" in joined
         assert "unevaluated=40" in joined
+        events_calls = sorted(
+            int(m.group(1)) for c in stub.calls if (m := re.search(r"issues/(\d+)/events", c))
+        )
+        assert events_calls == sorted(walked)
 
     def test_title_control_characters_are_collapsed_before_stdout(self, gate_repo, stub, capsys):
         """security SHOULD_FIX (a): an attacker-authored title containing an

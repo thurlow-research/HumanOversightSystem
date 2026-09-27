@@ -170,6 +170,15 @@ class CronEnv:
             # it still passed — via the query-failure branch — silently vacuous.
             '  *"labels=needs-ai"*)\n'
             "    printf '%s' \"${HOS_TEST_ISSUE_CANDIDATES_JSON:-[]}\" ;;\n"
+            # #1540 S2: a SINGLE named candidate's events fetch fails, leaving
+            # every other candidate's events fetch to fall through to the
+            # generic case below (a real gated determination). Matched BEFORE
+            # the blanket case so a fixture can produce one quarantined
+            # (query-failed) record alongside one genuinely gated one in the
+            # SAME run — HOS_TEST_EVENTS_QUERY_FAIL (below) fails every
+            # candidate's events fetch identically and cannot do this alone.
+            # Defaults to "__none__", which never matches a real issue number.
+            '  *"issues/${HOS_TEST_EVENTS_FAIL_ISSUE:-__none__}/events?"*)\n' "    exit 1 ;;\n"
             # #1540 S2: an untrusted candidate's per-issue events fetch
             # (select_work_candidates.py's D5 authorization check). Defaults
             # to a well-formed empty list (a DETERMINATION: no qualifying
@@ -3383,21 +3392,35 @@ class TestSelectionGateCallerContract:
         forces complete=no. Both the ALL-CANDIDATES-GATED line and the
         WORK SELECTION INCOMPLETE line must fire, and the cycle must not
         take the #1395 skip even though the gate exits 3 with nothing to
-        show."""
+        show.
+
+        Two untrusted candidates are needed to exercise this genuinely:
+        #42's events query fails (quarantined -- `unevaluated:query-failed`,
+        forcing complete=no) and #43's succeeds with no qualifying actor (a
+        real gated determination). ALL-CANDIDATES-GATED additionally
+        requires `gated_count > 0` with nothing eligible (§5) -- a single
+        quarantined-only candidate (gated=0) cannot supply that, so with
+        only #42 present the block never fires and this test's own
+        assertion on it would be vacuously true rather than genuinely
+        checked."""
         r = cron.run(
             env_overrides={
                 "HOS_TEST_MILESTONELESS_ISSUES": "",
                 "HOS_TEST_OPEN_PR_NUMS": "",
                 "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
                     (42, "an untrusted issue", ["needs-ai"]),
+                    (43, "another untrusted issue, genuinely gated", ["needs-ai"]),
                 ).replace('"ScottThurlow"', '"some-stranger"'),
-                "HOS_TEST_EVENTS_QUERY_FAIL": "1",
+                # #42 is quarantined; #43 falls through to the generic events
+                # stub (a well-formed empty list) and is gated for real.
+                "HOS_TEST_EVENTS_FAIL_ISSUE": "42",
                 "HOS_TARGET_RELEASE": "v0.6.1",
                 "HOS_TARGET_MILESTONE_NUMBER": "7",
             }
         )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "WORK SELECTION INCOMPLETE" in r.stdout
+        assert "ALL WORK CANDIDATES GATED" in r.stdout
         assert "skipping before git sync (#1395)" not in r.stdout
         assert cron.claude_ran()
 
@@ -3413,8 +3436,11 @@ class TestSelectionGateCallerContract:
                 "HOS_TEST_OPEN_PR_NUMS": "",
                 "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
                     (42, "an untrusted issue", ["needs-ai"]),
+                    (43, "another untrusted issue, genuinely gated", ["needs-ai"]),
                 ).replace('"ScottThurlow"', '"some-stranger"'),
-                "HOS_TEST_EVENTS_QUERY_FAIL": "1",
+                # #42 is quarantined; #43 falls through to the generic events
+                # stub (a well-formed empty list) and is gated for real.
+                "HOS_TEST_EVENTS_FAIL_ISSUE": "42",
                 "HOS_TARGET_RELEASE": "v0.6.1",
                 "HOS_TARGET_MILESTONE_NUMBER": "7",
             }

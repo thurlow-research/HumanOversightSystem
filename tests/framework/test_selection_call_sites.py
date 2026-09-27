@@ -106,8 +106,18 @@ class TestTheCollapse:
                 assert rel.name in allowed_root_files, f"unexpected reference in {rel}"
                 continue
             assert rel.parts[0] in allowed_dirs, f"unexpected reference in {rel}"
-        # And there is exactly one production Python module by this name.
-        py_hits = [p for p in ROOT.rglob("select_work_candidates.py")]
+        # And there is exactly one production Python module by this name —
+        # excluding the same non-source directories the search above does,
+        # so a cached bytecode/build artifact under .venv, __pycache__,
+        # .git or .pytest_cache can't masquerade as a second implementation.
+        py_hits = [
+            p
+            for p in ROOT.rglob("select_work_candidates.py")
+            if not any(
+                part in (".git", ".venv", "__pycache__", ".claudetmp", ".pytest_cache")
+                for part in p.parts
+            )
+        ]
         assert py_hits == [GATE_MODULE]
 
     def test_gate_imports_nothing_from_automation_or_oversight(self):
@@ -317,15 +327,39 @@ class TestShipSetRequirements:
 
 
 class TestFR8SelectionPathsAgree:
-    def test_cron_prompt_fallback_is_character_identical_to_hos_crons_invocation(self):
+    def test_cron_prompt_fallback_flags_agree_with_hos_crons_invocation(self):
         """After next_candidates.jq's deletion, the worker's Step-2 fallback
-        IS the gate's CLI — assert the two invocations are character-identical
-        (module path, flags) rather than merely both existing."""
+        IS the gate's CLI. The two invocations are NOT character-identical:
+        bin/hos-cron passes shell variables (`"$_REPO_SLUG"`,
+        `"$HOS_TARGET_MILESTONE_NUMBER"`), while the prompt's fallback, run
+        by an LLM with no shell state, spells out a literal repo slug and
+        the `@@MILESTONE_NUMBER@@` placeholder — so this compares the SET
+        of flag NAMES passed on each side, not the literal invocation text.
+        Mutation-check: adding a flag to either side alone fails this."""
         prompt_text = CRON_PROMPT.read_text()
         cron_text = HOS_CRON.read_text()
+
         m = re.search(r"python3 -m scripts\.framework\.select_work_candidates[^\n`]*", prompt_text)
         assert m, "no invocation found in worker-cron-prompt.md"
-        prompt_invocation = m.group(0)
-        assert "--repo" in prompt_invocation
-        assert "--milestone" in prompt_invocation
-        assert "python3 -m scripts.framework.select_work_candidates" in cron_text
+        prompt_flags = set(re.findall(r"--[a-zA-Z][a-zA-Z0-9-]*", m.group(0)))
+
+        cron_start = cron_text.index("python3 -m scripts.framework.select_work_candidates")
+        # bin/hos-cron's invocation spans backslash line continuations with
+        # shell variables — join continued physical lines, then bound the
+        # argument list to the first ")" (the subshell's own closing paren),
+        # so nothing from the surrounding `$( ... ) && _gate_rc=0 ...` leaks
+        # into the flag extraction below.
+        cron_lines: list[str] = []
+        for line in cron_text[cron_start:].splitlines():
+            cron_lines.append(line)
+            if not line.rstrip().endswith("\\"):
+                break
+        cron_invocation = re.search(
+            r"select_work_candidates(.*?)\)", "\n".join(cron_lines), re.DOTALL
+        )
+        assert cron_invocation, "could not bound bin/hos-cron's invocation to its closing paren"
+        cron_flags = set(re.findall(r"--[a-zA-Z][a-zA-Z0-9-]*", cron_invocation.group(1)))
+
+        assert prompt_flags, "no flags parsed from the prompt's fallback invocation"
+        assert cron_flags, "no flags parsed from bin/hos-cron's invocation"
+        assert prompt_flags == cron_flags
