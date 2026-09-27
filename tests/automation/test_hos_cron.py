@@ -29,6 +29,7 @@ Individual tests then perturb exactly one input to drive a single branch.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -51,12 +52,16 @@ def _write_exec(path: Path, body: str) -> None:
 
 
 def _candidates_json(*issues: tuple) -> str:
-    """Build a GitHub list-issues response body for the needs-ai gh stub (#1809).
+    """Build a GitHub list-issues response body for the needs-ai gh stub.
 
-    Each issue is ``(number, title, [label, ...])``. The shape must match what
-    scripts/automation/lib/next_candidates.jq consumes — a JSON array of objects
-    with ``number``, ``title`` and ``labels: [{"name": ...}]`` — because
-    bin/hos-cron pipes this stub's output straight into that filter.
+    Each issue is ``(number, title, [label, ...])``. The shape must match
+    what `scripts.framework.select_work_candidates` consumes — a JSON array
+    of objects with ``number``, ``title``, ``labels: [{"name": ...}]`` and a
+    ``user``. The author defaults to the CODEOWNER this fixture's
+    `.github/CODEOWNERS` names (`ScottThurlow`), so a fixture built with this
+    helper is selectable at ZERO extra API cost (D4, free) without every
+    existing test also having to stub an events fetch — the trust dimension
+    is orthogonal to what these tests are about (#1540 S2).
     """
     return json.dumps(
         [
@@ -64,6 +69,7 @@ def _candidates_json(*issues: tuple) -> str:
                 "number": number,
                 "title": title,
                 "labels": [{"name": name} for name in labels],
+                "user": {"login": "ScottThurlow", "type": "User"},
             }
             for number, title, labels in issues
         ]
@@ -164,6 +170,14 @@ class CronEnv:
             # it still passed — via the query-failure branch — silently vacuous.
             '  *"labels=needs-ai"*)\n'
             "    printf '%s' \"${HOS_TEST_ISSUE_CANDIDATES_JSON:-[]}\" ;;\n"
+            # #1540 S2: an untrusted candidate's per-issue events fetch
+            # (select_work_candidates.py's D5 authorization check). Defaults
+            # to a well-formed empty list (a DETERMINATION: no qualifying
+            # actor found, gated) rather than empty stdout (a parse FAILURE,
+            # quarantined) — HOS_TEST_EVENTS_QUERY_FAIL selects the latter.
+            '  *"/events?"*)\n'
+            '    [[ -n "${HOS_TEST_EVENTS_QUERY_FAIL:-}" ]] && exit 1\n'
+            "    printf '%s' \"${HOS_TEST_EVENTS_JSON:-[]}\" ;;\n"
             # #1347 Amendment 1 (NG3b): open release-request issues. Quoted (unlike
             # the space-joined number lists above) so a fake issue line's embedded
             # spaces (title text) survive as one line instead of being word-split.
@@ -320,24 +334,47 @@ class CronEnv:
             self.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest",
             "#!/usr/bin/env bash\nexit 0\n",
         )
-        # #1809: the REAL next_candidates.jq, not a stub. bin/hos-cron's
-        # work-selection query inlines it via `$(cat "$REPO_ROOT"/...)`; absent
-        # from the fake repo, `cat` fails, the jq program degrades to a bare
-        # `add |`, jq exits non-zero, and _gate_candidates_ok is 0 on every run
-        # — so the candidate branch of the actionable-work gate was never
-        # reachable in this suite. Copying the shipped filter (same rationale as
-        # install_branch_ownership_lib) means these tests exercise the ordering
-        # the worker actually ships, not an approximation of it.
-        jq_dst = self.repo / "scripts" / "automation" / "lib" / "next_candidates.jq"
-        jq_dst.parent.mkdir(parents=True, exist_ok=True)
-        jq_dst.write_text(
-            (
-                Path(__file__).parent.parent.parent
-                / "scripts"
-                / "automation"
-                / "lib"
-                / "next_candidates.jq"
-            ).read_text()
+        # #1540 S2: bin/hos-cron's work-selection block now invokes the REAL
+        # `python3 -m scripts.framework.select_work_candidates` inside the
+        # fake repo (`cd "$REPO_ROOT" && ...`), so the module and its one
+        # framework import must exist there — same rationale #1809 gave for
+        # copying next_candidates.jq (now deleted): these tests must exercise
+        # the selection logic the worker actually ships, not an
+        # approximation of it. The gate derives its own repo root from
+        # `__file__`, so copying it into the fake tree is what makes it see
+        # the fake tree's CODEOWNERS/machine-accounts.env/roster below.
+        # Deliberately NO `scripts/__init__.py`: Python 3's implicit
+        # namespace packages make `-m` work without one, and adding one here
+        # once made the pre-existing `_audit()` helper's unrelated `python3
+        # -m scripts.automation.lib.cycle_log` (which fails closed today
+        # because that module isn't copied in) compile and cache a real
+        # `scripts/__pycache__/__init__...pyc` as a side effect of successfully
+        # importing the now-real `scripts` package — a leftover untracked
+        # file that destabilised TestBaselineRetryBackoff's git-status
+        # fingerprint across cycles, unrelated to this change's own subject.
+        _REAL_REPO_ROOT = Path(__file__).parent.parent.parent
+        for _rel in (
+            "scripts/framework/select_work_candidates.py",
+            "scripts/framework/requester_trust.py",
+            "scripts/framework/require_human_approval.py",
+        ):
+            _dst = self.repo / _rel
+            _dst.parent.mkdir(parents=True, exist_ok=True)
+            _dst.write_text((_REAL_REPO_ROOT / _rel).read_text())
+
+        # The gate's own required configuration (§3 F1/F4 of TD-1540): an
+        # individual human CODEOWNER and the four bot/App identities. Both
+        # match this fixture's own EXPECTED_BOT and the trusted-author
+        # default `_candidates_json` uses below, so the happy path stays
+        # selectable without every existing candidates-fixture test having
+        # to also stub an events fetch.
+        (self.repo / ".github").mkdir(parents=True, exist_ok=True)
+        (self.repo / ".github" / "CODEOWNERS").write_text("* @ScottThurlow\n")
+        (self.repo / "scripts" / "framework" / "machine-accounts.env").write_text(
+            'BOT_WORKER_USERNAME="hos-worker-hos[bot]"\n'
+            'BOT_OVERSEER_USERNAME="hos-overseer-hos[bot]"\n'
+            'BOT_HUMAN_USERNAME="scottthurlow-claude[bot]"\n'
+            'COPILOT_BOT_LOGIN="copilot[bot]"\n'
         )
 
         # ── HOME config: project registry + claude OAuth (#728) ──
@@ -3290,6 +3327,168 @@ class TestActionableWorkGate:
         assert "no actionable work" not in r.stdout
         assert "no open PRs" in r.stdout
         assert not cron.claude_ran()
+
+
+# ── select_work_candidates.py call-site contract (#1540 S2, AM-32) ───────────
+class TestSelectionGateCallerContract:
+    """`bin/hos-cron`'s explicit `case "$_gate_rc"` on the gate's exit status
+    (§2.4) — F25's launcher-side degradation, F30's `$LOG_PREFIX` cycle-log
+    lines (both exits), AM-12's bounced-draft-PR independence, and AM-32's
+    binding call-site test that exit 3 must NOT produce the #1395 skip."""
+
+    def test_gate_module_missing_degrades_like_a_query_failure(self, cron):
+        """F25: a broken/missing module (python3 exits non-zero on import,
+        not one of the gate's own 0/2/3 codes) must fall into the launcher's
+        existing "unknown, proceed" arm — same shape as today's query
+        failure — never a false empty-candidates skip."""
+        (cron.repo / "scripts" / "framework" / "select_work_candidates.py").unlink()
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_all_candidates_gated_complete_emits_prefixed_log_line(self, cron):
+        """F30, the complete=yes arm: exit 0 with the ALL-CANDIDATES-GATED
+        block still produces the launcher's own prefixed cycle-log line."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
+                    (42, "an untrusted issue", ["needs-ai"]),
+                ).replace('"ScottThurlow"', '"some-stranger"'),
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "ALL WORK CANDIDATES GATED" in r.stdout
+        assert "WORK SELECTION INCOMPLETE" not in r.stdout
+        # complete=yes + eligible=0 IS "behaviourally identical to an empty
+        # milestone, deliberately" (§2.4's semantics table) — with every
+        # other signal also empty, the #1395 skip legitimately fires here.
+        # AM-32's binding requirement is about the complete=NO arm below.
+        assert "skipping before git sync (#1395)" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_all_candidates_gated_incomplete_emits_both_log_lines_and_proceeds(self, cron):
+        """F30, the complete=no arm (AM-32/RP4-2): a quarantined events query
+        forces complete=no. Both the ALL-CANDIDATES-GATED line and the
+        WORK SELECTION INCOMPLETE line must fire, and the cycle must not
+        take the #1395 skip even though the gate exits 3 with nothing to
+        show."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
+                    (42, "an untrusted issue", ["needs-ai"]),
+                ).replace('"ScottThurlow"', '"some-stranger"'),
+                "HOS_TEST_EVENTS_QUERY_FAIL": "1",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WORK SELECTION INCOMPLETE" in r.stdout
+        assert "skipping before git sync (#1395)" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_exit_3_does_not_produce_the_no_actionable_work_skip(self, cron):
+        """AM-32's binding call-site test. Every OTHER actionable-work signal
+        is empty; the gate alone exits 3 (degraded, nothing to show). The
+        launcher must read this as "unknown", not "no candidates" — the
+        exact failure this test exists to catch is the #1395 skip firing on
+        a gate that could not finish looking."""
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_OPEN_PR_NUMS": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": _candidates_json(
+                    (42, "an untrusted issue", ["needs-ai"]),
+                ).replace('"ScottThurlow"', '"some-stranger"'),
+                "HOS_TEST_EVENTS_QUERY_FAIL": "1",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "skipping before git sync (#1395)" not in r.stdout
+        assert cron.claude_ran()
+
+    def test_bounced_draft_pr_still_reaches_the_worker_and_blocks_the_skip(self, cron):
+        """AM-12's binding condition on DEV-1. A bounced draft PR (surfaced
+        via the PULLS endpoint, entirely independent of the issues query the
+        gate replaces) must still reach the worker's context AND still
+        prevent the #1395 no-actionable-work skip, even with an EMPTY
+        candidate list. `_OPEN_PR_NUMS` gates the skip independently of
+        `_GATE_CANDIDATES` (bin/hos-cron's `-z "$_OPEN_PR_NUMS"` clause)."""
+        stdin_capture = cron.capture_claude_stdin()
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_MILESTONELESS_ISSUES": "",
+                "HOS_TEST_ISSUE_CANDIDATES_JSON": "[]",
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "0",
+                "HOS_TEST_PR_MS": "clean",
+                "HOS_TEST_PR_DRAFT": "true",
+                "HOS_TEST_PR_LABELS": "needs-ai",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no actionable work" not in r.stdout
+        assert cron.claude_ran()
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=needs-fix-bounce" in context
+
+
+# ── G11's acceptance mechanism (#1540 S2, AM-11: required, not optional) ─────
+class TestCronPromptFallbackIsSandboxAllowlistable:
+    """`bootstrap/worker-cron-prompt.md` Step 2's fallback command, AFTER
+    `_build_prompt`'s `@@MILESTONE_NUMBER@@` substitution, must contain no
+    command substitution, no variable expansion, no inline `jq`, and no
+    backslash continuation (G11's four conditions, AM-11). Asserted against
+    the BYTES the launcher actually pipes to the model — via the `claude`
+    stub's captured stdin — not against the template file, which would pass
+    while proving nothing about the rendered form (AM-28(a))."""
+
+    def test_rendered_fallback_has_no_substitution_expansion_jq_or_continuation(self, cron):
+        # The `cron` fixture ships a minimal stub prompt (#989's fail-closed
+        # guard only needs it to exist) — this test needs the REAL Step 2
+        # fallback text, or it would assert against nothing.
+        real_prompt = (
+            Path(__file__).parent.parent.parent / "bootstrap" / "worker-cron-prompt.md"
+        ).read_text()
+        cron.prompt_file("worker").write_text(real_prompt)
+        stdin_capture = cron.capture_claude_stdin()
+        r = cron.run(
+            env_overrides={
+                "HOS_TARGET_RELEASE": "v0.6.1",
+                "HOS_TARGET_MILESTONE_NUMBER": "7",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        prompt = stdin_capture.read_text()
+        m = re.search(r"python3 -m scripts\.framework\.select_work_candidates[^\n`]*", prompt)
+        assert m, "no rendered fallback invocation found in the piped prompt"
+        rendered = m.group(0)
+        assert "@@MILESTONE_NUMBER@@" not in rendered, "the placeholder was not substituted"
+        assert "$(" not in rendered and "`" not in rendered, "command substitution present"
+        assert "$" not in rendered, "variable expansion present"
+        for jq_marker in ("--jq", "jq -f", "jq '"):
+            assert jq_marker not in rendered, f"inline jq present ({jq_marker!r})"
+        assert not rendered.rstrip().endswith("\\"), "backslash continuation present"
 
 
 # ──────────────────── Overseer open-PR fetch failure (#915) ──────────────────

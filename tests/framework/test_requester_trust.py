@@ -661,14 +661,27 @@ class TestConformance:
         assert hits == [ROOT / "scripts" / "framework" / "requester_trust.py"]
 
     def test_no_second_codeowners_parser_in_framework(self):
+        """`requester_trust.codeowners_humans` is the only PARSER of
+        `.github/CODEOWNERS`'s content. `select_work_candidates.py` (#1540
+        S2) is allowed to reference the path — AM-34 requires it to
+        distinguish "absent" from "unreadable" from "present but empty of
+        individual humans" at the gate level, which needs a file-existence
+        check the primitive does not expose — but it must delegate every
+        byte of actual parsing to the shared function, never re-derive an
+        owner list itself."""
         hits = [
             path
             for path in _iter_source_files(ROOT / "scripts" / "framework", (".py",))
             if "CODEOWNERS" in path.read_text(encoding="utf-8")
         ]
-        assert hits == [ROOT / "scripts" / "framework" / "requester_trust.py"]
+        assert set(hits) == {
+            ROOT / "scripts" / "framework" / "requester_trust.py",
+            ROOT / "scripts" / "framework" / "select_work_candidates.py",
+        }
         probe_text = (ROOT / "scripts" / "automation" / "lib" / "probe.py").read_text()
         assert "CODEOWNERS" not in probe_text
+        gate_text = (ROOT / "scripts" / "framework" / "select_work_candidates.py").read_text()
+        assert "codeowners_humans(" in gate_text, "the gate must call the shared parser"
 
     def test_requester_trust_imports_nothing_from_automation_or_oversight(self):
         text = (ROOT / "scripts" / "framework" / "requester_trust.py").read_text()

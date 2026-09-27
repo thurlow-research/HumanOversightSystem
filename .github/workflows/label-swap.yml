@@ -2,7 +2,13 @@ name: Label-swap slash commands
 
 # Slash-command interface for the needs-human / needs-ai label workflow (#601).
 # Three commands:
-#   /approve [note]  CODEOWNERS only — needs-human → needs-ai
+#   /approve [note]  CODEOWNERS only — INERT as of #1540 S2 (AM-25): writes no
+#                    label, posts a comment naming the act that does
+#                    authorize (docs/LABELS.md § "The needs-ai authorizing
+#                    act"). This command's own `labeled` event would carry
+#                    actor github-actions[bot], which the work-selection gate
+#                    excludes unconditionally, so a label write here could
+#                    never have authorized anything.
 #   /decline         CODEOWNERS only — needs-human → wontfix + close
 #   /handoff         Bot accounts only — needs-ai → needs-human
 #
@@ -71,8 +77,15 @@ jobs:
               fi
 
               if [[ "$CMD" == "/approve" ]]; then
-                gh issue edit "$ISSUE_NUMBER" --remove-label "needs-human" --add-label "needs-ai" 2>/dev/null || true
-                BODY="✅ /approve — \`needs-human\` → \`needs-ai\` (authorized by @${COMMENTER})."
+                # #1540 S2 (AM-25): /approve no longer writes any label. This
+                # command's `labeled` event would be actor `github-actions[bot]`
+                # (GH_TOKEN above), which the work-selection gate excludes
+                # unconditionally, so the write below authorized nothing while
+                # LOOKING like it had (the false "authorized by @you" claim)
+                # and, on an issue not yet carrying the dispatch label,
+                # consumed the one genuinely additive act a human still had.
+                # Making the command inert removes both harms at the root.
+                BODY="ℹ️ \`/approve\` does not authorize autonomous work and has changed no label. To authorize this issue, apply \`needs-ai\` to it from your own GitHub account (web UI, mobile app, or a personal-access-token \`gh\` invocation) — if it already carries the label, remove it first, then re-add it. See docs/LABELS.md § \"The needs-ai authorizing act\"."
                 [[ -n "$NOTE" ]] && BODY="${BODY}  Note: ${NOTE}"
                 gh issue comment "$ISSUE_NUMBER" --body "$BODY"
               else

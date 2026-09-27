@@ -118,6 +118,7 @@ excluded.
 - `scripts/framework/run_tests.sh` — run unit tests and optionally mutation tests for HOS validators.
 - `scripts/framework/run_tests_inner_loop.sh` — Run the inner-loop test suite (required for PR approval).
 - `scripts/framework/run_tests_release.sh` — Run the full test suite (required for release).
+- `scripts/framework/select_work_candidates.py` — the deterministic, author-trust-gated work-selection entry point (S2 of #1540, fix path for #1539).
 - `scripts/framework/setup_branch_protection.sh` — Apply HOS §9 branch protection rules via gh api.
 - `scripts/framework/strip_internal_paths.sh` — strip HOS-internal-path lines from CORE regions of agent files before they are shipped to consumers.
 - `scripts/framework/validate_agents.sh` — AI-powered cross-vendor review of agent definitions and docs.

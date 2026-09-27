@@ -176,7 +176,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   3. Add the `needs-ai` label.
   ```
 - **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.5.0 — Governance, Accuracy & Usability`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
-- **Select by priority, then number.** Among eligible issues (`needs-ai`, not `needs-human`, in the active milestone), pick the **highest priority** first — `priority:critical` > `priority:high` > `priority:medium` > `priority:low`; an issue with no `priority:*` label is treated as `priority:low`. Break ties by **lowest issue number** (preserving FIFO within a band). Priority is a worker-side *selection* signal only — it confers no merge, risk, or gate privilege. The ordering is implemented once in `scripts/automation/lib/next_candidates.jq` and consumed by both the pre-computed candidates block (`bin/hos-cron`) and the cron-prompt Step-2 fallback. (#901)
+- **Select by priority, then number.** Among eligible issues (`needs-ai`, not `needs-human`, in the active milestone), pick the **highest priority** first — `priority:critical` > `priority:high` > `priority:medium` > `priority:low`; an issue with no `priority:*` label is treated as `priority:low`. Break ties by **lowest issue number** (preserving FIFO within a band). Priority is a worker-side *selection* signal only — it confers no merge, risk, or gate privilege. The ordering is implemented once in `scripts/framework/select_work_candidates.py` — the single entry point for work selection — and consumed by both the pre-computed candidates block (`bin/hos-cron`) and the cron-prompt Step-2 fallback. Eligibility is **author-trust-gated**, not merely label-filtered: an issue from an untrusted requester is eligible only if a CODEOWNER's own account applied the dispatch label (#1539, TD-1540 §2). (#901)
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
 - **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
 
@@ -268,7 +268,7 @@ the worker for a human. `bin/hos-cron` files (or reuses) a `[BLOCKED]
 inner-loop tests failing on <project> — worker halted` issue labeled
 `needs-ai` + `priority:critical` and lets the cycle continue. Because it is
 `priority:critical`, it sorts first among Step 2's "Next work candidates"
-automatically (`next_candidates.jq` ranks `priority:critical` at rank 0) — no
+automatically (`select_work_candidates.py` ranks `priority:critical` at rank 0) — no
 separate bypass logic is needed here; if Step 2 is reached this cycle, this
 issue **is** the next candidate. (If Step 1 above blocks new work on an
 existing PR fix, fix that PR first as usual — the baseline issue is not lost,

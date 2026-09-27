@@ -1127,39 +1127,48 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
     fi
   fi
 
-  # Next-candidate issues in the target milestone — cached for reuse by the
-  # "Next work candidates" section of _build_context below (same query, same
-  # jq filter — next_candidates.jq is the single source of truth, per its own
-  # header comment; querying it twice here would violate that).
+  # Next-candidate issues in the target milestone — the deterministic,
+  # author-trust-gated selection gate (#1540 S2, fix path for #1539). AD-3's
+  # single entry point: query + trust + authorization + ordering, all in one
+  # place. Never re-inline a query or a jq filter here — this call and the
+  # `bootstrap/worker-cron-prompt.md` Step 2 fallback are the ONLY two call
+  # sites, and both invoke this exact command.
   #
-  # #1805: MUST paginate, and MUST apply the filter ONCE to the combined set.
-  # The list-issues endpoint defaults to sort=created&direction=desc, so an
-  # unpaginated fetch silently drops the OLDEST issues — precisely the ones
-  # next_candidates.jq's ascending-number tie-break says to pick first. At the
-  # time of the fix v0.7.0 held 135 eligible issues; the 36 on page 2 (24 of
-  # them priority:high) were unselectable, and nothing surfaced the loss.
-  #
-  # Note the shape: `--paginate` WITHOUT `--jq`, piped to `jq -sr 'add | FILTER'`.
-  # `gh api --paginate --jq FILTER` would apply the filter once PER PAGE, so
-  # sort_by() would sort within each page and concatenate — still broken, but
-  # invisible, because _build_context only prints head -5 and page 1's head is
-  # unchanged. `gh --slurp` would be the clean fix but needs gh >= 2.47; this
-  # form works on the 2.45 baseline. `add` concatenates the page arrays into the
-  # single array the filter already expects, so the filter file is unchanged.
-  # Under the global `set -o pipefail` a gh failure fails the whole pipeline,
-  # which lands in the else branch below as "unknown" rather than "no work".
+  # Exit 0 = a determination the gate can state, with candidates emitted or
+  # with complete=yes. Exit 3 (AM-32) = DEGRADED: the gate could not finish
+  # looking and is saying so — NOT "no actionable work". Exit 2 = fail
+  # closed. Every non-zero exit clears _GATE_CANDIDATES and sets
+  # _gate_candidates_ok=0 (AM-32's caller contract, §2.4): an explicit `case`
+  # is used rather than `if _GATE_CANDIDATES=$(...)`, because AM-31 makes
+  # "exit 3 with usable candidates" impossible to distinguish from "exit 3,
+  # nothing to report" with a bare truthiness test on the captured output.
   _GATE_CANDIDATES=""
   _gate_candidates_ok=1
+  _gate_err="$(mktemp)"
   if [[ -n "${HOS_TARGET_MILESTONE_NUMBER:-}" ]]; then
-    if _GATE_CANDIDATES=$(gh api --paginate "repos/${_REPO_SLUG}/issues?state=open&milestone=${HOS_TARGET_MILESTONE_NUMBER}&labels=needs-ai&per_page=100" 2>/dev/null \
-        | jq -sr "add | $(cat "$REPO_ROOT/scripts/automation/lib/next_candidates.jq")" \
-        2>/dev/null); then
-      _gate_candidates_ok=1
-    else
-      _gate_candidates_ok=0
-      _GATE_CANDIDATES=""
+    # `cmd && rc=0 || rc=$?`, never a bare `x=$(cmd)`: under this script's
+    # `set -e`, an unprotected assignment from a failing command substitution
+    # aborts the launcher immediately (bash treats a failed command
+    # substitution used as a plain assignment's RHS as the assignment's own
+    # exit status, and `-e` checks it) — which would make every exit-2 and
+    # exit-3 gate run kill the whole cycle before the `case` below ever runs.
+    _GATE_CANDIDATES=$( (cd "$REPO_ROOT" && python3 -m scripts.framework.select_work_candidates \
+        --repo "$_REPO_SLUG" --milestone "$HOS_TARGET_MILESTONE_NUMBER") 2>"$_gate_err" ) \
+      && _gate_rc=0 || _gate_rc=$?
+    case "$_gate_rc" in
+      0) _gate_candidates_ok=1 ;;                       # a determination the gate can state
+      3) _gate_candidates_ok=0 ; _GATE_CANDIDATES="" ;; # AM-32: DEGRADED — "unknown", not "none"
+      *) _gate_candidates_ok=0 ; _GATE_CANDIDATES="" ;; # exit 2 and anything unexpected
+    esac
+    cat "$_gate_err" >&2   # DEV-2 (AM-13 point 1): nothing on this path is swallowed
+    if [[ "$_gate_rc" -eq 3 ]]; then
+      echo "$LOG_PREFIX WORK SELECTION INCOMPLETE — the gate could not determine the candidate set and emitted none; this is NOT 'no actionable work' (see the select_work_candidates lines above)"
+    fi
+    if grep -q 'ALL-CANDIDATES-GATED' "$_gate_err"; then   # AM-13 point 3
+      echo "$LOG_PREFIX ALL WORK CANDIDATES GATED — every in-milestone issue is held for human authorization; this is NOT an empty backlog (#1539/#1540, see the select_work_candidates lines above)"
     fi
   fi
+  rm -f "$_gate_err"
 
   # Skip only when every query that COULD reveal work actually succeeded AND
   # came back empty. A single query failure means "unknown" — proceed rather
@@ -1600,8 +1609,8 @@ if [[ "$ROLE" == "worker" ]]; then
         # #1496: diagnose-and-fix path. The [BLOCKED] issue is filed/reused as
         # needs-ai,priority:critical — NEVER needs-human on first failure —
         # so it flows through the completely normal Step 2 "next work
-        # candidate" selection (priority:critical already sorts it first
-        # there, see scripts/automation/lib/next_candidates.jq). Only
+        # candidate" selection (priority:critical already ranks it first
+        # there, see scripts/framework/select_work_candidates.py). Only
         # HOS_BASELINE_REPAIR_MAX_ATTEMPTS consecutive cycles without
         # reaching green escalates to needs-human.
         _bs_max="${HOS_BASELINE_REPAIR_MAX_ATTEMPTS:-3}"
@@ -1901,16 +1910,14 @@ _build_context() {
 
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
     printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"
-    # #901: order by (priority desc, number asc) via the canonical jq filter so
-    # this path and the worker-cron-prompt.md Step-2 fallback select identically.
-    # The priority sort must see the WHOLE backlog, else a high-priority issue on
-    # a later page is missed. That is no longer capped at one page: #1805 replaced
-    # the old "a milestone exceeding 100 open needs-ai issues is the documented
-    # ceiling" assumption with real pagination, after v0.7.0 crossed it unnoticed
-    # and made 36 issues unselectable. _GATE_CANDIDATES is already the fully
-    # paginated, globally sorted list — see the fetch above.
-    # Fail-open: a missing/broken filter yields no section. head -5 caps display
-    # only — the worker picks the first non-blocked candidate.
+    # #1540 S2: select_work_candidates.py is the single entry point (AD-3) —
+    # query + author-trust + live authorization + ordering, all in one
+    # place. It emits in (rank, number ASC) order (#901's FIFO-within-band)
+    # so this path and the worker-cron-prompt.md Step-2 fallback select
+    # identically. _GATE_CANDIDATES is already that emitted, ordered list —
+    # see the fetch above. head -5 caps DISPLAY only (the gate's own
+    # --max-candidates default, also 5, is the cost control; this cap is
+    # independent of it) — the worker picks the first non-blocked candidate.
     if [[ -n "${_GATE_CANDIDATES:-}" ]]; then
       printf '%s\n' "$_GATE_CANDIDATES" | head -5
     else

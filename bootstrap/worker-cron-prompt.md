@@ -95,12 +95,11 @@ For each open PR authored by this worker:
 **Step 2 — Pick next @@TARGET_RELEASE@@ needs-ai issue:**
 Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. The list is already ordered highest-priority first (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`), then lowest issue number within a band. **Pick the first non-blocked candidate** (#901).
 
-Fallback (if context block is absent) — run from `$REPO_ROOT` so it uses the same canonical ordering filter as the context block (single source of truth; do not re-inline the jq):
+Fallback (if context block is absent) — run from `$REPO_ROOT`:
 ```bash
-gh api --paginate "repos/thurlow-research/HumanOversightSystem/issues?state=open&milestone=@@MILESTONE_NUMBER@@&labels=needs-ai&per_page=100" \
-  | jq -sr "add | $(cat scripts/automation/lib/next_candidates.jq)"
+python3 -m scripts.framework.select_work_candidates --repo thurlow-research/HumanOversightSystem --milestone @@MILESTONE_NUMBER@@
 ```
-Run it exactly in that shape (#1805). `--paginate` is required: the endpoint sorts newest-first, so a single-page fetch silently drops the oldest issues — the ones the ascending-number tie-break says to pick first. The filter must then be applied **once** to the combined set, which is why it is piped to `jq -sr "add | ..."` rather than passed as `gh --jq`: `gh api --paginate --jq` runs the filter once **per page**, sorting within each page and concatenating, which leaves the list globally unordered while looking correct at the top.
+This command is the **only** sanctioned way to produce work candidates (#1540 S2, AD-3). **If it exits non-zero — 2 or 3 — there are no candidates for you this cycle.** Exit 2 means it failed closed. Exit 3 means it could not determine the full candidate set and is telling you so rather than pretending the queue is empty; **in neither case does "no output" mean "there is no work"**, and in neither case are you to go looking for some. Do NOT construct your own query, do NOT fall back to `gh api`, do NOT read the issue list by any other means, and do NOT pick an issue from the Step 0 triage list. STOP after Steps 0/0.5/1.
 
 **Batching:** May batch closely-related issues (same files, coherent unit, ≤15 files/10 commits).
 

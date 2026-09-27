@@ -74,6 +74,23 @@ tail -f /tmp/hos-overseer-<project>.log
    `needs-human`, adding `needs-ai`, and commenting your decision. Agents treat
    the `needs-ai` label (not a bare comment) as the resume signal.
 
+   **The act must be performed from your own GitHub account** (the web UI,
+   the mobile app, or a personal-access-token `gh` invocation under your own
+   login) — `scripts/framework/select_work_candidates.py` (#1540 S2) verifies
+   the account that applied the label from the GitHub Events API, not the
+   account that happened to be logged in when the label changed.
+   **`bootstrap/edit_issue.sh --app human` will NOT work as an authorization
+   act**: it writes as `scottthurlow-claude[bot]`, which the gate excludes
+   unconditionally, and no helper script can ever be written to fix this — any
+   such tool would run under an App identity and produce the same excluded
+   actor. **If the issue already carries `needs-ai`** (the common case for an
+   overseer escalation that has cycled before, or any issue a human is
+   re-authorizing), GitHub's label writes are idempotent and re-applying it
+   produces no new event: remove it first, then re-add it, both from your own
+   account. See `docs/LABELS.md` § "The `needs-ai` authorizing act" for the
+   full rule, including why `/approve` does not perform this act in the S2
+   era.
+
    **Exception — release-request issues (NG3b).** On an issue labeled
    `release-request`, `needs-human` does not mean "the overseer escalated this."
    The worker applies it *itself* (protocol step R4) as part of posting the
