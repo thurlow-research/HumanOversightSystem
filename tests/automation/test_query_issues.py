@@ -74,15 +74,23 @@ emit() {
 case "$PATH_ARG" in
     */milestones\?*)
         [[ "${GH_FAIL_MILESTONES:-}" == "1" ]] && exit 1
-        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support","state":"open"},{"number":11,"title":"v0.7.0 — Quality","state":"open"},{"number":12,"title":"v0.6.1 — patch","state":"closed"}]'
+        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support","state":"open"},'\
+'{"number":11,"title":"v0.7.0 — Quality","state":"open"},'\
+'{"number":12,"title":"v0.6.1 — patch","state":"closed"}]'
         ;;
     */issues/*/comments\?*)
         [[ "${GH_FAIL_COMMENTS:-}" == "1" ]] && exit 1
-        emit '[{"user":{"login":"octocat"},"created_at":"2026-08-01T00:00:00Z","body":"first comment"},{"user":{"login":"monalisa"},"created_at":"2026-08-02T00:00:00Z","body":"second comment"}]'
+        emit '[{"user":{"login":"octocat"},"created_at":"2026-08-01T00:00:00Z","body":"first comment"},'\
+'{"user":{"login":"monalisa"},"created_at":"2026-08-02T00:00:00Z","body":"second comment"}]'
         ;;
     */issues\?*)
         [[ "${GH_FAIL_LIST:-}" == "1" ]] && exit 1
-        emit '[{"number":201,"title":"Issue A","state":"open","milestone":{"title":"v0.6.0 — Astro & JS Support"},"labels":[{"name":"needs-ai"}],"pull_request":null,"body":"body has a WIDGET reference in it"},{"number":202,"title":"A PR not an issue","state":"open","milestone":null,"labels":[],"pull_request":{"url":"x"},"body":"widget also here but it is a PR"},{"number":203,"title":"Issue B no milestone","state":"open","milestone":null,"labels":[{"name":"needs-human"}],"pull_request":null,"body":"nothing relevant here"}]'
+        emit '[{"number":201,"title":"Issue A","state":"open","milestone":{"title":"v0.6.0 — Astro & JS Support"},'\
+'"labels":[{"name":"needs-ai"}],"pull_request":null,"body":"body has a WIDGET reference in it"},'\
+'{"number":202,"title":"A PR not an issue","state":"open","milestone":null,"labels":[],'\
+'"pull_request":{"url":"x"},"body":"widget also here but it is a PR"},'\
+'{"number":203,"title":"Issue B no milestone","state":"open","milestone":null,'\
+'"labels":[{"name":"needs-human"}],"pull_request":null,"body":"nothing relevant here"}]'
         ;;
     */issues/*)
         [[ "${GH_FAIL_GET_ISSUE:-}" == "1" ]] && exit 1
@@ -92,7 +100,8 @@ case "$PATH_ARG" in
         else
             MILESTONE_FIELD='{"title":"v0.6.0 — Astro & JS Support"}'
         fi
-        emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\",\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],\"body\":\"line one\\nDecision: ship it\"}"
+        emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\",\"milestone\":${MILESTONE_FIELD},\
+\"labels\":[{\"name\":\"needs-ai\"}],\"body\":\"line one\\nDecision: ship it\"}"
         ;;
     */assignees\?*)
         [[ "${GH_FAIL_ASSIGNABLE:-}" == "1" ]] && exit 1
@@ -140,7 +149,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
         )
 
     def capture(self) -> str:

@@ -396,6 +396,9 @@ else
     fi
 fi
 
+# Every no-write path above exits; reaching W without a decided write is a bug.
+[[ "$NEED_WRITE" -eq 1 ]] || die 1 "internal-no-write-decision" "$NUMBER" "$OTHER"
+
 # ── W: exactly one mutation, no retry ────────────────────────────────────────
 if [[ "$KIND" == "sub-issue" ]]; then
     W_JSON="$(jq -nc --argjson id "$ID_N" '{sub_issue_id: $id}')"
