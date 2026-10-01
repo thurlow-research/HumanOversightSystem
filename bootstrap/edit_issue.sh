@@ -18,6 +18,10 @@
 #
 # At least one edit flag is required.
 #
+# Sub-issue links and blocked_by edges are NOT edited here: use
+# bootstrap/edit_issue_edges.sh (one edge per call, read-back verified).
+# Their reads are query_issues.sh --parent-of/--sub-issues-of/--blockers-of/--dependents-of.
+#
 # --assignee adds to the existing assignee list (POST /assignees,
 # non-destructive). --set-assignee wholesale-REPLACES the assignee list via
 # the same PATCH request as title/state/milestone/body (GitHub's "Update an
@@ -82,6 +86,8 @@ while [[ $# -gt 0 ]]; do
         --assignee)     ASSIGNEES="$2"; shift 2 ;;
         --set-assignee) SET_ASSIGNEES="$2"; shift 2 ;;
         --body-file)    BODY_FILE="$2"; shift 2 ;;
+        --parent|--remove-parent|--add-parent|--add-blocked-by|--remove-blocked-by|--sub-issue|--sub-issues)
+            err "sub-issue links and blocked_by edges are edited with bootstrap/edit_issue_edges.sh --number <N> --app <role> (--add-parent|--remove-parent|--add-blocked-by|--remove-blocked-by) <M> — see its header" ;;
         --body)         err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
         *) err "Usage: $0 --number <N> --app <worker|overseer|human> [--add-label <a,b>] [--remove-label <a,b>] [--milestone <title-prefix>|none] [--title <text>] [--state open|closed] [--assignee <user,user>] [--set-assignee <user,user|none>] [--body-file <path>]" ;;
     esac

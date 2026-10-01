@@ -151,7 +151,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
         )
 
     def capture(self) -> str:
@@ -323,9 +327,7 @@ def test_set_assignee_none_clears_via_patch(h):
 
 
 def test_assignee_and_set_assignee_together_rejected(h):
-    result = h.run(
-        ["--number", "201", "--app", "worker", "--assignee", "x", "--set-assignee", "y"]
-    )
+    result = h.run(["--number", "201", "--app", "worker", "--assignee", "x", "--set-assignee", "y"])
     assert result.returncode != 0
     assert "mutually exclusive" in result.stderr
 
@@ -348,7 +350,16 @@ def test_body_file_combines_with_title_in_single_patch(h, tmp_path):
     body_file = tmp_path / "body.md"
     body_file.write_text("Updated scope.\n")
     result = h.run(
-        ["--number", "201", "--app", "worker", "--title", "New title", "--body-file", str(body_file)]
+        [
+            "--number",
+            "201",
+            "--app",
+            "worker",
+            "--title",
+            "New title",
+            "--body-file",
+            str(body_file),
+        ]
     )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
@@ -371,7 +382,9 @@ def test_body_file_only_edit_does_not_require_other_flags(h, tmp_path):
 
 
 def test_happy_path_verifies_and_prints_resulting_state(h):
-    result = h.run(["--number", "201", "--app", "worker", "--title", "New title", "--state", "closed"])
+    result = h.run(
+        ["--number", "201", "--app", "worker", "--title", "New title", "--state", "closed"]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == (
         "#201 milestone=v0.6.0 — Astro & JS Support state=open labels=needs-ai "
@@ -408,3 +421,15 @@ def test_gh_failure_still_revokes_token(h):
     assert result.returncode != 0
     cap = h.capture()
     assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--parent", "5"], ["--remove-parent"], ["--add-blocked-by", "5"]],
+)
+def test_edge_flags_redirect_to_edit_issue_edges(h, extra):
+    """T-ER1: edge flags are redirected to the sibling script, before any mint."""
+    result = h.run(["--number", "42", "--app", "worker", *extra])
+    assert result.returncode != 0
+    assert "bootstrap/edit_issue_edges.sh" in result.stderr
+    assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()

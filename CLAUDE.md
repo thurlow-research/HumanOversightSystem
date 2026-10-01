@@ -303,8 +303,9 @@ application to shell commands.
    milestone listings) go through `bootstrap/query_issues.sh --app <role>
    (--issue <n[,n,...]> [--full] | --list [--milestone <prefix>|--milestone-less]
    [--label ...] [--state ...] | --comments <n> | --assignable-users |
-   --list-milestones)` — never hand-rolled `gh api` reads (#1175, #1192,
-   #1204). `--full` (issue mode only) appends the raw issue body after the
+   --list-milestones | --parent-of <n> | --sub-issues-of <n> | --blockers-of <n> |
+   --dependents-of <n>)` — never hand-rolled `gh api` reads (#1175, #1192,
+   #1204); edge modes paginate and refuse to print a truncated list. `--full` (issue mode only) appends the raw issue body after the
    summary line, so callers can grep it for a `Decision:` block (#1277).
    `--list-milestones` prints every milestone's exact number/title/state, so
    a caller resolving a `--milestone` prefix can confirm the exact title
@@ -340,6 +341,7 @@ T4.1 for the enforced, current exemption set.
 | Branch creation for autonomous work | `bootstrap/create_branch.sh` |
 | Posting a resolvable PR review thread | `bootstrap/post_review_thread.sh` |
 | Recording a human wait (question comment, then needs-human, idempotent) | `bootstrap/escalate_to_human.sh` |
+| Adding or removing one sub-issue link or blocked_by dependency edge (numbers in, internal ids resolved, idempotent, read-back verified; removal can unblock work — until T3.3's edge check lands, remove an edge only on a human's instruction) | `bootstrap/edit_issue_edges.sh` |
 | Posting an overseer PR verdict, or requesting the CODEOWNERS human reviewer | `bootstrap/pr_review.sh` |
 | Repo sync (fetch + fast-forward the default branch) | `bootstrap/hos_repo_sync.sh` |
 | Dependency/environment health check | `scripts/oversight/smoke_test.sh` |

@@ -27,6 +27,7 @@ excluded.
 - `bootstrap/create_branch.sh` — the single sanctioned branch-creation seam for the autonomous worker (#967, ADR-037, SPEC-967 R1)
 - `bootstrap/create_issue.sh` — canonical wrapper for creating a GitHub issue under a HOS bot identity (#1085)
 - `bootstrap/edit_issue.sh` — canonical wrapper for editing an existing GitHub issue or PR's metadata under a HOS bot identity (#1175, consolidated by #1204)
+- `bootstrap/edit_issue_edges.sh` — canonical write path for sub-issue links and blocked_by dependency edges (#1352 slice, #1644 T3.3a, ADR-1644 AD-C14)
 - `bootstrap/escalate_to_human.sh` — record-first write path for a human wait (#1644 T3.0a, ADR-1644 AD-C6 H5 / AD-C10)
 - `bootstrap/get_app_token.sh` — generate a GitHub App installation token for HOS bot identities
 - `bootstrap/hos_bootstrap.sh` — Human Oversight System — MACHINE bootstrap.

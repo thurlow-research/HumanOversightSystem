@@ -16,6 +16,23 @@
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --comments-json <N>
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --assignable-users
 #   bash bootstrap/query_issues.sh --app <worker|overseer|human> --list-milestones
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --parent-of <N>
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --sub-issues-of <N>
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --blockers-of <N>
+#   bash bootstrap/query_issues.sh --app <worker|overseer|human> --dependents-of <N>
+#
+# Edge modes (#1352 slice, #1644 T3.3a; writes live in bootstrap/edit_issue_edges.sh,
+# NEVER here — this script is granted to read-only reviewer sessions):
+#   --parent-of <N>      N's parent (0 or 1 line)
+#   --sub-issues-of <N>  N's children, in GitHub's order (not re-sorted)
+#   --blockers-of <N>    issues that block N (N is blocked by them)
+#   --dependents-of <N>  issues that N blocks
+# One line per related issue, in the --list format; an issue from another repository
+# renders as <owner>/<repo>#<n> (unknown-repo#<n> when the repository is unknown) so a
+# parser anchored on ^#<n> fails visibly instead of misattributing it. Each takes exactly
+# one issue number, rejects repeats and --milestone/--milestone-less/--label/--state/--full,
+# paginates up to 1000 entries, and prints NOTHING (exit 1) rather than a truncated list.
+# Every usage check runs before the token mint.
 #
 # --list-milestones prints every milestone (open and closed) as
 # "#<number> <exact title> [<state>]", one per line — the same listing
@@ -80,6 +97,20 @@ COMMENTS_NUMBER=""
 COMMENTS_JSON_NUMBER=""
 ASSIGNABLE_USERS=0
 LIST_MILESTONES=0
+EDGE_FLAG=""
+EDGE_NUMBER=""
+EDGE_COUNT=0
+EDGE_SEEN=" "
+
+# set_edge_mode <flag> <value>: record one edge mode; a repeated flag is a usage error.
+set_edge_mode() {
+    [[ $# -ge 2 ]] || err "$1 requires a value"
+    [[ "$EDGE_SEEN" != *" $1 "* ]] || err "$1 given more than once"
+    EDGE_SEEN+="$1 "
+    EDGE_COUNT=$((EDGE_COUNT + 1))
+    EDGE_FLAG="$1"
+    EDGE_NUMBER="$2"
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -96,7 +127,9 @@ while [[ $# -gt 0 ]]; do
         --comments-json)    COMMENTS_JSON_NUMBER="$2"; shift 2 ;;
         --assignable-users) ASSIGNABLE_USERS=1; shift ;;
         --list-milestones)  LIST_MILESTONES=1; shift ;;
-        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --search <term> [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --comments-json <N> | --assignable-users | --list-milestones)" ;;
+        --parent-of|--sub-issues-of|--blockers-of|--dependents-of)
+            set_edge_mode "$@"; shift 2 ;;
+        *) err "Usage: $0 --app <worker|overseer|human> (--issue <N[,N,...]> [--full] | --list [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --search <term> [--milestone <prefix>|--milestone-less] [--label <l>] [--state <s>] | --comments <N> | --comments-json <N> | --assignable-users | --list-milestones | --parent-of <N> | --sub-issues-of <N> | --blockers-of <N> | --dependents-of <N>)" ;;
     esac
 done
 
@@ -114,7 +147,19 @@ MODE_COUNT=0
 [[ -n "$COMMENTS_JSON_NUMBER" ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$ASSIGNABLE_USERS" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
 [[ "$LIST_MILESTONES" -eq 1 ]] && MODE_COUNT=$((MODE_COUNT + 1))
-[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --search, --comments, --comments-json, --assignable-users, --list-milestones is required"
+MODE_COUNT=$((MODE_COUNT + EDGE_COUNT))
+[[ "$MODE_COUNT" -eq 1 ]] || err "exactly one of --issue, --list, --search, --comments, --comments-json, --assignable-users, --list-milestones, --parent-of, --sub-issues-of, --blockers-of, --dependents-of is required"
+
+# Edge modes: an edge list is always complete and unfiltered, and every check here
+# runs before the token mint.
+if [[ "$EDGE_COUNT" -eq 1 ]]; then
+    [[ "$EDGE_NUMBER" =~ ^[1-9][0-9]*$ ]] || err "${EDGE_FLAG} must be a single positive integer, got: $(printf '%s' "$EDGE_NUMBER" | LC_ALL=C tr -cd ' -~' | cut -c1-40)"
+    [[ -z "$MILESTONE_ARG" ]] || err "--milestone is not supported with edge modes — an edge list is always complete and unfiltered"
+    [[ "$MILESTONE_LESS" -eq 0 ]] || err "--milestone-less is not supported with edge modes — an edge list is always complete and unfiltered"
+    [[ -z "$LABEL_FILTER" ]] || err "--label is not supported with edge modes — an edge list is always complete and unfiltered"
+    [[ -z "$STATE_FILTER" ]] || err "--state is not supported with edge modes — an edge list is always complete and unfiltered"
+    [[ "$FULL_MODE" -eq 0 ]] || err "--full is not supported with edge modes — an edge list is always complete and unfiltered"
+fi
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
     err "--milestone and --milestone-less are mutually exclusive"
@@ -172,6 +217,15 @@ resolve_milestone_id() {
 }
 
 ISSUE_LINE_FILTER='"#\(.number) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) \(.title)"'
+# Edge-mode line filter: the --list line, with a cross-repo reference qualified. Kept
+# separate so ISSUE_LINE_FILTER (shared by --issue/--list/--search) stays frozen.
+# Applied with `jq -r --arg slug "$REPO_SLUG"` (gh api --jq has no --arg).
+EDGE_LINE_FILTER='((.repository_url // "") as $u
+  | if $u == "" then "unknown-repo#\(.number)"
+    else ($u | sub("^.*/repos/"; "")) as $r
+      | if ($r | ascii_downcase) == ($slug | ascii_downcase) then "#\(.number)" else "\($r)#\(.number)" end
+    end) as $ref
+  | "\($ref) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) \(.title)"'
 ISSUE_FULL_FILTER="${ISSUE_LINE_FILTER} + \"\n\n\" + (.body // \"\")"
 
 if [[ -n "$ISSUE_NUMBERS" ]]; then
@@ -238,6 +292,55 @@ elif [[ "$LIST_MILESTONES" -eq 1 ]]; then
     gh api "repos/${REPO_SLUG}/milestones?state=all&per_page=100" --jq \
         '.[] | "#\(.number) \(.title) [\(.state)]"' \
         || fail "failed to list milestones"
+
+elif [[ "$EDGE_COUNT" -eq 1 && "$EDGE_FLAG" == "--parent-of" ]]; then
+    # Existence comes from parent_issue_url on the issue record, never from /parent: that
+    # endpoint answers 404 both for "no parent" and for "no such issue".
+    ISSUE_REC="$(gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}")" \
+        || fail "failed to read issue #${EDGE_NUMBER}"
+    PARENT_KIND="$(jq -r '
+        if type != "object" then "bad"
+        elif ((has("parent_issue_url") | not) or .parent_issue_url == null) then "none"
+        elif (.parent_issue_url | type) == "string" and .parent_issue_url != "" then "url"
+        else "bad" end' <<<"$ISSUE_REC" 2>/dev/null)" || PARENT_KIND="bad"
+    case "$PARENT_KIND" in
+        none) ;;
+        url)
+            PARENT_REC="$(gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}/parent")" \
+                || fail "failed to read the parent of issue #${EDGE_NUMBER}"
+            PARENT_LINE="$(jq -r --arg slug "$REPO_SLUG" "$EDGE_LINE_FILTER" <<<"$PARENT_REC" 2>/dev/null)" \
+                || fail "the parent of issue #${EDGE_NUMBER} returned an unparseable record"
+            printf '%s\n' "$PARENT_LINE" ;;
+        *) fail "cannot determine the parent of issue #${EDGE_NUMBER}: parent_issue_url is malformed" ;;
+    esac
+
+elif [[ "$EDGE_COUNT" -eq 1 ]]; then
+    case "$EDGE_FLAG" in
+        --sub-issues-of)   EDGE_PATH="issues/${EDGE_NUMBER}/sub_issues" ;;
+        --blockers-of)     EDGE_PATH="issues/${EDGE_NUMBER}/dependencies/blocked_by" ;;
+        --dependents-of)   EDGE_PATH="issues/${EDGE_NUMBER}/dependencies/blocking" ;;
+    esac
+    EDGE_OUT=""
+    EDGE_PAGE=1
+    EDGE_DONE=0
+    # Output is buffered and printed only once the walk is complete: never a partial list.
+    while (( EDGE_PAGE <= 10 )); do
+        PAGE_JSON="$(gh api "repos/${REPO_SLUG}/${EDGE_PATH}?per_page=100&page=${EDGE_PAGE}")" \
+            || fail "failed to read ${EDGE_FLAG#--} #${EDGE_NUMBER} (page ${EDGE_PAGE})"
+        jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PAGE_JSON" \
+            || fail "${EDGE_FLAG#--} #${EDGE_NUMBER} page ${EDGE_PAGE} is not a JSON array"
+        PAGE_LINES="$(jq -r --arg slug "$REPO_SLUG" ".[] | ${EDGE_LINE_FILTER}" <<<"$PAGE_JSON")" \
+            || fail "${EDGE_FLAG#--} #${EDGE_NUMBER} page ${EDGE_PAGE} has unparseable records"
+        [[ -z "$PAGE_LINES" ]] || EDGE_OUT+="${PAGE_LINES}"$'\n'
+        if (( $(jq 'length' <<<"$PAGE_JSON") < 100 )); then
+            EDGE_DONE=1
+            break
+        fi
+        EDGE_PAGE=$((EDGE_PAGE + 1))
+    done
+    [[ "$EDGE_DONE" -eq 1 ]] \
+        || fail "edge list for #${EDGE_NUMBER} exceeds 1000 entries — refusing to print a truncated list"
+    printf '%s' "$EDGE_OUT"
 fi
 
 revoke_token
