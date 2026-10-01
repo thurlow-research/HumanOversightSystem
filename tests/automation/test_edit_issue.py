@@ -84,7 +84,8 @@ emit() {
 case "$PATH_ARG" in
     */milestones\?*)
         [[ "${GH_FAIL_MILESTONES:-}" == "1" ]] && exit 1
-        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support"},{"number":11,"title":"v0.7.0 — Quality"},{"number":12,"title":"v0.6.1 — patch"}]'
+        emit '[{"number":10,"title":"v0.6.0 — Astro & JS Support"},'\
+'{"number":11,"title":"v0.7.0 — Quality"},{"number":12,"title":"v0.6.1 — patch"}]'
         ;;
     */issues/*/labels/*)
         [[ "${GH_FAIL_REMOVE_LABEL:-}" == "1" ]] && exit 1
@@ -106,7 +107,9 @@ case "$PATH_ARG" in
             else
                 MILESTONE_FIELD='{"title":"v0.6.0 — Astro & JS Support"}'
             fi
-            emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\",\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],\"assignees\":[{\"login\":\"octocat\"}]}"
+            emit "{\"number\":${NUM},\"title\":\"Test issue ${NUM}\",\"state\":\"open\","\
+"\"milestone\":${MILESTONE_FIELD},\"labels\":[{\"name\":\"needs-ai\"}],"\
+"\"assignees\":[{\"login\":\"octocat\"}]}"
         fi
         ;;
     *)
