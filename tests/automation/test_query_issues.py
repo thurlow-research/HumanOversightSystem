@@ -417,4 +417,4 @@ def test_gh_failure_still_revokes_token(h):
     )
     assert result.returncode != 0
     cap = h.capture()
-    assert "CURL_CALLED_WITH:-sf -X DELETE" in cap
+    assert "CURL_CALLED_WITH:-sf --connect-timeout 10 --max-time 30 -X DELETE" in cap

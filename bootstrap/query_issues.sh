@@ -159,6 +159,18 @@ if [[ "$EDGE_COUNT" -eq 1 ]]; then
     [[ -z "$LABEL_FILTER" ]] || err "--label is not supported with edge modes — an edge list is always complete and unfiltered"
     [[ -z "$STATE_FILTER" ]] || err "--state is not supported with edge modes — an edge list is always complete and unfiltered"
     [[ "$FULL_MODE" -eq 0 ]] || err "--full is not supported with edge modes — an edge list is always complete and unfiltered"
+    # Edge-mode gh calls only are bounded (HOS_EDGE_GH_TIMEOUT seconds, default 30);
+    # timeout, else gtimeout (macOS coreutils), else unbounded with one warning.
+    EDGE_GH_SECONDS="${HOS_EDGE_GH_TIMEOUT:-30}"
+    [[ "$EDGE_GH_SECONDS" =~ ^[1-9][0-9]*$ ]] || err "HOS_EDGE_GH_TIMEOUT must be a positive integer"
+    EDGE_GH=()
+    if command -v timeout >/dev/null 2>&1; then
+        EDGE_GH=(timeout "$EDGE_GH_SECONDS")
+    elif command -v gtimeout >/dev/null 2>&1; then
+        EDGE_GH=(gtimeout "$EDGE_GH_SECONDS")
+    else
+        warn "no timeout/gtimeout found — edge-mode gh calls run unbounded (install coreutils)"
+    fi
 fi
 
 if [[ -n "$MILESTONE_ARG" && "$MILESTONE_LESS" -eq 1 ]]; then
@@ -191,7 +203,7 @@ source "$TOKEN_FILE"
 rm -f "$TOKEN_FILE"
 
 revoke_token() {
-    curl -sf -X DELETE -H "Authorization: token ${GH_TOKEN}" \
+    curl -sf --connect-timeout 10 --max-time 30 -X DELETE -H "Authorization: token ${GH_TOKEN}" \
         -H "Accept: application/vnd.github+json" \
         https://api.github.com/installation/token >/dev/null 2>&1 \
         || warn "failed to revoke installation token (it will expire naturally within 1 hour)"
@@ -296,7 +308,7 @@ elif [[ "$LIST_MILESTONES" -eq 1 ]]; then
 elif [[ "$EDGE_COUNT" -eq 1 && "$EDGE_FLAG" == "--parent-of" ]]; then
     # Existence comes from parent_issue_url on the issue record, never from /parent: that
     # endpoint answers 404 both for "no parent" and for "no such issue".
-    ISSUE_REC="$(gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}")" \
+    ISSUE_REC="$(${EDGE_GH[@]+"${EDGE_GH[@]}"} gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}")" \
         || fail "failed to read issue #${EDGE_NUMBER}"
     PARENT_KIND="$(jq -r '
         if type != "object" then "bad"
@@ -306,7 +318,7 @@ elif [[ "$EDGE_COUNT" -eq 1 && "$EDGE_FLAG" == "--parent-of" ]]; then
     case "$PARENT_KIND" in
         none) ;;
         url)
-            PARENT_REC="$(gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}/parent")" \
+            PARENT_REC="$(${EDGE_GH[@]+"${EDGE_GH[@]}"} gh api "repos/${REPO_SLUG}/issues/${EDGE_NUMBER}/parent")" \
                 || fail "failed to read the parent of issue #${EDGE_NUMBER}"
             PARENT_LINE="$(jq -r --arg slug "$REPO_SLUG" "$EDGE_LINE_FILTER" <<<"$PARENT_REC" 2>/dev/null)" \
                 || fail "the parent of issue #${EDGE_NUMBER} returned an unparseable record"
@@ -325,7 +337,7 @@ elif [[ "$EDGE_COUNT" -eq 1 ]]; then
     EDGE_DONE=0
     # Output is buffered and printed only once the walk is complete: never a partial list.
     while (( EDGE_PAGE <= 10 )); do
-        PAGE_JSON="$(gh api "repos/${REPO_SLUG}/${EDGE_PATH}?per_page=100&page=${EDGE_PAGE}")" \
+        PAGE_JSON="$(${EDGE_GH[@]+"${EDGE_GH[@]}"} gh api "repos/${REPO_SLUG}/${EDGE_PATH}?per_page=100&page=${EDGE_PAGE}")" \
             || fail "failed to read ${EDGE_FLAG#--} #${EDGE_NUMBER} (page ${EDGE_PAGE})"
         jq -e 'type == "array"' >/dev/null 2>&1 <<<"$PAGE_JSON" \
             || fail "${EDGE_FLAG#--} #${EDGE_NUMBER} page ${EDGE_PAGE} is not a JSON array"

@@ -890,3 +890,61 @@ def test_ew24_closed_issues_are_accepted(h, closed):
     r = h.edge("--add-blocked-by", 20)
     assert r.returncode == 0, r.stderr
     assert "outcome=added" in r.stdout
+
+
+# ── gh calls are bounded (reliability MUST_FIX) ──────────────────────────────
+
+SLEEPY_GH = """#!/usr/bin/env bash
+if [[ "$*" == *"$HANG_ON"* ]]; then sleep 8; exit 0; fi
+exec "$REAL_GH" "$@"
+"""
+
+
+def _make_sleepy(h, hang_on):
+    real = h.stub_bin / "gh_real"
+    shutil.move(h.stub_bin / "gh", real)
+    _write_exec(h.stub_bin / "gh", SLEEPY_GH)
+    return {"HANG_ON": hang_on, "REAL_GH": str(real), "HOS_EDGE_GH_TIMEOUT": "1"}
+
+
+def _run_with_env(h, extra_env, *args):
+    h.state_path.write_text(json.dumps(h.st))
+    env = {
+        "PATH": f"{h.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CAPTURE_FILE": str(h.capture),
+        "CALLS_FILE": str(h.calls),
+        "BODIES_FILE": str(h.bodies),
+        "AUDIT_FILE": str(h.audit),
+        "STATE_FILE": str(h.state_path),
+        "HOME": str(h.tmp / "home"),
+        **extra_env,
+    }
+    return subprocess.run(
+        [BASH, str(h.script), *[str(a) for a in args]],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+
+@pytest.mark.skipif(
+    not (shutil.which("timeout") or shutil.which("gtimeout")), reason="needs timeout"
+)
+def test_hung_read_is_transient_exit_1(h):
+    env = _make_sleepy(h, "issues/10")
+    r = _run_with_env(h, env, "--number", 10, "--app", "worker", "--add-parent", 20)
+    assert r.returncode == 1
+    assert "read-failed" in r.stderr and "http=none" in r.stderr
+    assert h.revoked()
+
+
+@pytest.mark.skipif(
+    not (shutil.which("timeout") or shutil.which("gtimeout")), reason="needs timeout"
+)
+def test_hung_write_is_exit_4_after_readback(h):
+    env = _make_sleepy(h, "POST")
+    r = _run_with_env(h, env, "--number", 10, "--app", "worker", "--add-parent", 20)
+    assert r.returncode == 4
+    assert "write-failed" in r.stderr and "http=none" in r.stderr
+    assert h.call_log()[-1] == "GET issues/10"  # read-back still ran

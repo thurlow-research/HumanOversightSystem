@@ -375,3 +375,32 @@ def test_eq11_behavioural_edge_modes_only_issue_gets(h):
         assert h.run([mode, "10"]).returncode == 0
     assert h.call_log()
     assert all(c.startswith("GET ") for c in h.call_log())
+
+
+@pytest.mark.skipif(
+    not (shutil.which("timeout") or shutil.which("gtimeout")), reason="needs timeout"
+)
+def test_edge_mode_gh_call_is_bounded(h):
+    real = h.stub_bin / "gh_real"
+    shutil.move(h.stub_bin / "gh", real)
+    _write_exec(h.stub_bin / "gh", "#!/usr/bin/env bash\nsleep 8\n")
+    h.cfg_path.write_text(json.dumps(h.cfg))
+    env = {
+        "PATH": f"{h.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CAPTURE_FILE": str(h.capture),
+        "CALLS_FILE": str(h.calls),
+        "GH_CFG": str(h.cfg_path),
+        "HOME": str(h.tmp / "home"),
+        "HOS_EDGE_GH_TIMEOUT": "1",
+    }
+    r = subprocess.run(
+        [BASH, str(h.script), "--app", "worker", "--sub-issues-of", "5"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert r.returncode == 1
+    assert r.stdout == ""
+    assert h.revoked()
+    assert "--connect-timeout 10 --max-time 30" in h.capture.read_text()

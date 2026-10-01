@@ -39,6 +39,12 @@
 #      parent-undeterminable, edges-undeterminable. Do not retry; a human or the
 #      tracking-block reconcile decides.
 #
+# Every gh call is bounded to 30s with `timeout` (or `gtimeout`, as on macOS with
+# coreutils); a timed-out call has no status line and so classifies as transient (exit 1
+# before the write, exit 4 after it, with the read-back still running). With neither
+# binary present gh runs unbounded and one warning is printed. HOS_EDGE_GH_TIMEOUT
+# (whole seconds, default 30) overrides the bound; it exists for tests.
+#
 # Requires: bootstrap/get_app_token.sh, gh, git, jq, curl.
 
 set -euo pipefail
@@ -131,6 +137,18 @@ REPO_SLUG="$(printf '%s' "$REPO_URL" | sed -E 's#^git@github\.com:##; s#^https:/
 [[ "$REPO_SLUG" == */* ]] || err "issue=#${NUMBER} Could not parse owner/repo from origin remote: $REPO_URL"
 SLUG_LC="$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')"
 
+# ── Bound every gh call (resolved once, before the mint) ─────────────────────
+GH_BOUND_SECONDS="${HOS_EDGE_GH_TIMEOUT:-30}"
+[[ "$GH_BOUND_SECONDS" =~ ^[1-9][0-9]*$ ]] || refuse "usage: HOS_EDGE_GH_TIMEOUT must be a positive integer"
+GH_BOUND=()
+if command -v timeout >/dev/null 2>&1; then
+    GH_BOUND=(timeout "$GH_BOUND_SECONDS")
+elif command -v gtimeout >/dev/null 2>&1; then
+    GH_BOUND=(gtimeout "$GH_BOUND_SECONDS")
+else
+    warn "no timeout/gtimeout found — gh calls run unbounded (install coreutils)"
+fi
+
 # ── Token: mint once, source, delete the file at once (#549); revoke in an EXIT trap ──
 TOKEN_FILE="$(mktemp)"
 MINTED=0
@@ -204,9 +222,9 @@ G_STATUS="none"; G_CLASS="transient"; G_BODY=""
 gh_req() {
     local method="$1" path="$2" json="${3:-}" raw hdr first lc
     if [[ -n "$json" ]]; then
-        raw="$(printf '%s' "$json" | gh api --include --method "$method" "$path" --input - 2>/dev/null)" || true
+        raw="$(printf '%s' "$json" | ${GH_BOUND[@]+"${GH_BOUND[@]}"} gh api --include --method "$method" "$path" --input - 2>/dev/null)" || true
     else
-        raw="$(gh api --include --method "$method" "$path" </dev/null 2>/dev/null)" || true
+        raw="$(${GH_BOUND[@]+"${GH_BOUND[@]}"} gh api --include --method "$method" "$path" </dev/null 2>/dev/null)" || true
     fi
     raw="${raw//$'\r'/}"
     if [[ "$raw" == *$'\n\n'* ]]; then
