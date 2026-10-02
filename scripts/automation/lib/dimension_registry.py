@@ -430,12 +430,10 @@ def _path_escapes(root: Path, rel: str) -> str | None:
         return "absolute path"
     if ".." in PurePosixPath(rel).parts:
         return "'..' path segment"
-    candidate = root / rel
-    if candidate.is_symlink() or candidate.exists():
-        try:
-            candidate.resolve().relative_to(root)
-        except ValueError:
-            return "resolves outside the repository"
+    try:
+        (root / rel).resolve().relative_to(root.resolve())
+    except ValueError:
+        return "resolves outside the repository"
     return None
 
 

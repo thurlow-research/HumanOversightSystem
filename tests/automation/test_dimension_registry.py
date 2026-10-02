@@ -892,6 +892,23 @@ def test_L28_suppress_binding_must_be_string(tmp_path):
     assert code_of(tmp_path) == "unknown_item_key"
 
 
+def test_L27_missing_leaf_under_symlinked_parent_is_path_escape(tmp_path):
+    repo = tmp_path / "repo"
+    write_repo(repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repo / "linkdir").symlink_to(outside, target_is_directory=True)
+    write_repo(
+        repo,
+        docs_with(
+            lambda d: binding(d, "core", "core:ui/markup").update(
+                prompt_template="linkdir/missing.md"
+            )
+        ),
+    )
+    assert code_of(repo) == "path_escape"
+
+
 def test_L27_dangling_symlink_outside_repo_is_path_escape(tmp_path):
     repo = tmp_path / "repo"
     write_repo(repo)
