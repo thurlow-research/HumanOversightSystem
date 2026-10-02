@@ -121,7 +121,7 @@ def registered_schemas() -> tuple[str, ...]:
 def _validate_pack_slugs(packs: Sequence[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     for slug in packs:
-        if not isinstance(slug, str) or not _SLUG_RE.match(slug):
+        if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
             raise RegistryError("bad_pack_set", f"invalid pack slug: {slug!r}")
         if slug in seen:
             raise RegistryError("bad_pack_set", f"duplicate pack slug: {slug!r}")
@@ -248,7 +248,7 @@ def load_registry(
         if name.startswith(".") or not child.is_file():
             continue
         pack_match = _PACK_FILE_RE.match(name)
-        if pack_match is not None and _SLUG_RE.match(pack_match.group(1)):
+        if pack_match is not None and _SLUG_RE.fullmatch(pack_match.group(1)):
             if pack_match.group(1) not in pack_set and stale is None:
                 stale = f"{spec.directory}/{name}"
             continue
@@ -400,7 +400,7 @@ def _check_item_grammar(docs: tuple[LayerDoc, ...]) -> None:
         for key, allowed, required, what in (
             ("entries", _ENTRY_KEYS, ("id", "kind", "title"), "entry"),
             ("bindings", _BINDING_KEYS, ("id", "entry", "kind"), "binding"),
-            ("suppress", _SUPPRESS_KEYS, (), "suppress item"),
+            ("suppress", _SUPPRESS_KEYS, ("binding",), "suppress item"),
         ):
             raw = doc.data.get(key)
             if raw is None:

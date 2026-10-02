@@ -873,3 +873,18 @@ def test_load_is_pure_of_framework_state(tmp_path):
     assert sys.modules["scripts.automation.lib.dimension_registry"] is before
     reg = dr.load(tmp_path)
     assert copy.deepcopy(dr.to_json(reg)) == dr.to_json(reg)
+
+
+def test_trailing_newline_pack_slug_rejected(tmp_path):
+    """`$` would accept "django\\n"; fullmatch must reject it."""
+    write_repo(tmp_path, default_docs())
+    assert code_of(tmp_path, packs=["django\n"]) == "bad_pack_set"
+
+
+def test_L28_suppress_binding_must_be_string(tmp_path):
+    """A non-string suppress binding is a grammar error, not kind_handler_failed."""
+    write_repo(
+        tmp_path,
+        docs_with(lambda d: d["project"].update(suppress=[{"binding": ["x"], "reason": "y"}])),
+    )
+    assert code_of(tmp_path) == "unknown_item_key"
