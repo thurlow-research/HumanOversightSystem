@@ -3460,3 +3460,588 @@ constrained to edit this one file only.
 
 **Not done here:** no application code, test code or script was written. No issue was filed and no
 label was created. No sign-off register entry was written (`technical-design` writes none).
+
+---
+
+## Amendment D (2026-10-02) — W5b: the registry data, the prompt-file contract, and T5.28
+
+**Status:** DRAFT. **Binding on W5b once the architect approves.** W5 was split for the 15-file limit.
+**W5a has merged** (PR #1933, `main` at `7330962bb`): the engine, `posture.py`, the CLI, and the tmp-tree
+tests T5.1–T5.27, T5.29, T5.32, T5.34–T5.43, T5.45, T5.46. **W5b** is the real registry *data* plus T5.28.
+**W5c** (the sweep rewrite, the installer, the ship-list, CLAUDE.md, T5.30/31/33/44/47/48; gated on
+#1930 and #1932) is **not designed here**. W5b changes **no** engine code. Where this amendment and §7 or
+Amendment C disagree, this amendment governs. Everything it does not name stands.
+
+**Numbering.** TD-VF-22…TD-VF-27, TD-D33…TD-D41, tests T5.28 (re-specified) and T5.49…T5.53.
+
+### D.1 Verification findings — TD-VF-22…TD-VF-27 (tree at `7330962bb`)
+
+**TD-VF-22 — CONTRADICTS §7.2: the HOS framework-validator predicate silently drops two `categorize()`
+paths.** `run_post_change_sweep.sh:68` routes `^docs/AGENTS\.md$` and `^docs/OVERSIGHT-RUNBOOK\.md$` to
+the framework track. §7.2's `project:code-review/framework-validator` omits both, and both files exist.
+AD-11's row says "(+ add `^bin/`, …)" (`ADR-1643:561`). That is additive, not a licence to narrow.
+**Corrected in §D.3.2.**
+
+**TD-VF-23 — CONTRADICTS §7.2: the PII predicates lost their case-insensitivity.** `categorize()`'s privacy
+grep runs over the lowercased file list (`run_post_change_sweep.sh:181-182`, `tr '[:upper:]' '[:lower:]'`).
+§7.2's `['erasure', 'pii']` and the template's `['accounts', 'booking']` are case-sensitive under
+`re.search` (§7.5). The effect is that `myapp/PII_Export.py` loses its privacy route. **Corrected** with
+`(?i)` prefixes in §D.3.3 and §D.3.4. A leading global flag is valid per pattern, and L14 compiles each
+pattern on its own (`dimension_registry.py`, the L14 block).
+
+**TD-VF-24 — No prompt contract exists, and §4.3 already leans on one.** L21 checks only that the file
+exists (`dimension_registry.py:605-613`, `(root / tmpl).is_file()`). The registry digest covers the
+prompt **path**, not its bytes (`:697` inside `_body`, digested at `:669`). W1's
+`--prompt-template-version` is a free-form string (`agent_invoke_cli.py:1227`), carried into
+`compute_input_digest` (`:740-771`). AD-6 says the digest covers "the prompt template version"
+(`ADR-1643:428`). §4.3 says "our own agent is instructed by our own prompt template" (TD `:1153`).
+Nothing in §7, §C, or the tree says what a template contains, how its version is named, or where the
+output contract comes from. **Closed by TD-D33…TD-D35.**
+
+**TD-VF-25 — Every deterministic `tool:` exists, is executable, and ships.** `git ls-files -s` shows
+mode `100755` for `lint_check`, `type_check`, `secret_scan`, `security_scan`, `bash_check`,
+`portability_check`, `template_refs_check`, `collection_integrity`, `django_check` and `astro_check`
+under `scripts/oversight/gates/`, and for `scripts/run_second_review.sh`. That satisfies L11
+(`dimension_registry.py:577-587`). Consumers receive `scripts/oversight/` wholesale
+(`framework_consumer_files.txt:8`) and `run_second_review.sh` at `hos_install.sh:1842`. Two gate files are
+deliberately **unbound**:
+- `check_suspension.sh` (`100644`) is a sourced library. `run_gates.sh:158` excludes it.
+- `expensive_gates_stub.sh` is a stub.
+
+`run_gates.sh:158` runs every other gate, including `django_check` and `astro_check`, in every project.
+The registry moves those two to their packs. That is **not** a narrowing in W5b, because `run_gates.sh` is
+unchanged and the registry gates nothing until W8.
+
+**TD-VF-26 — `packs/**` is not a protected surface.** `protected_surfaces.txt:16-33` lists `contract/**`
+(`:17`) and `scripts/oversight/gates/**` (`:29`), but has no `packs/` entry. In the HOS source,
+`packs/<n>/dimensions.yaml` has no CODEOWNERS gate. It becomes gated only when the installer writes it to
+a consumer's `contract/dimensions/pack-<n>.yaml`. The same is already true of every `packs/<n>/<agent>.md`
+region body. **Routed (§D.8 Q5), not changed here.**
+
+**TD-VF-27 — Both #1933 carry-overs reproduce on the merged engine (probed).**
+- An empty core loads green. A `core.yaml` with only `schema`/`schema_version`/`owner` returns 0 entries
+  and 0 bindings. L19 (`:633-639`) iterates over entries, so zero entries means zero failures.
+- PyYAML 6.0.3 `safe_load("a: 1\na: 2\n")` returns `{'a': 2}`, and the engine calls `safe_load` at
+  `:179`.
+
+**Probe of this amendment's data.** The YAML in §D.3 was staged into tmp trees with the real postures,
+the real `.claude/agents/`, the real gates (`copy2`), and stub prompts. It was then loaded through the
+merged `load()`, and loads green for:
+- zero packs plus HOS `project.yaml`: 17 entries, 18 bindings;
+- `{django}`: 24;
+- `{node, astro}` (no `pack-node.yaml`): 23;
+- `{django, node, astro}`: 29.
+
+The T5.28 table in §D.5 is that probe's output.
+
+### D.2 The prompt-file contract (TD-D33, TD-D34, TD-D35)
+
+**TD-D33 — a prompt scopes a dimension and nothing else. Its shape is fixed and testable.** Each of
+`contract/dimensions/prompts/<entry-id>.md`, for `<entry-id>` ∈ {code-review, security, privacy,
+reliability, ops, ui, a11y, infra}:
+1. UTF-8, LF line endings, a final newline, **≤ 20 lines**.
+2. Line 1 is exactly `# Review dimension: <entry-id>`, where `<entry-id>` equals the filename stem and a
+   `judgment` entry id in `core.yaml`.
+3. There are exactly two `##` sections, in this order: `## Scope`, then `## Boundaries`. Nothing else at
+   `##` or deeper.
+4. **`## Scope`** says that the review covers the changed files this dimension selected, and contains
+   that entry's `core.yaml` `title` **verbatim** (single source, cross-checked by T5.51). It may also say
+   that other repository files may be read only to understand the selected ones. It says nothing else.
+5. **`## Boundaries`** contains this exact sentence: `This prompt does not add to, remove from, or override
+   your agent definition.` It also says that other dimensions run separately and that their findings
+   are not to be reported here.
+6. **Forbidden content:**
+   - any agent name from `scripts/framework/consumer_agents.txt`, or `framework-validator`, because one
+     prompt serves several agents (HOS's framework-validator binding uses `code-review.md`);
+   - any lens checklist (ADR non-goal 1, `ADR-1643:893-894`: "No lens is widened, narrowed, or
+     rewritten");
+   - the substrings `{{`, `}}`, `{%`, `${` and triple backticks;
+   - the words `verdict` and `applicability`.
+
+**Binding rule (test-pinned, not a loader rule).** Every shipped or HOS binding's `prompt_template` is
+`contract/dimensions/prompts/<binding.entry>.md`. W5b adds no loader rule for prompt structure. A
+consumer PROJECT binding may point anywhere that passes L21 and L27. Whether W7 needs a structural load
+rule is W7's call.
+
+**TD-D34 — a template's version is its content hash, never a hand-maintained string.** The
+`prompt_template_version` for a binding is `sha256:<64 lowercase hex>` over the template file's exact
+bytes. The caller computes it when it invokes the agent (W7) and passes it through W1's existing
+`--prompt-template-version`. No W1 change is needed, because the flag is free-form. Templates carry **no**
+in-file version field. *Reason:* AD-13 reuses a record when `input_digest` is unchanged. A hand-bumped
+version that someone forgot to bump would reuse a verdict produced under different instructions. That is
+a fail-open, and a content hash cannot have it. §4.1's `"security/v1"` is illustrative only and does not
+override this decision.
+
+**TD-D35 — no placeholder grammar in W5b. Rendering and the output contract are W7's.** Nothing renders a
+template before W7. Fixing a grammar now would bind W7 to a format that no caller has exercised. Templates
+are therefore plain Markdown with no substitution, and rule 6 reserves the obvious delimiters so that W7
+can choose one without escaping legacy text. **W7 obligations, recorded here so they are not lost:**
+- (a) W7 decides how the template body reaches the agent.
+- (b) W7 owns the §4.3 payload instruction (one JSON object; `verdict`/`findings`/`summary`; no
+  `applicability`/`outcome`/`input`/`invocation`) as **one** block from one source, never eight copies.
+- (c) If W7 renders anything beyond the raw file, TD-D34's hash covers the rendered instruction bytes,
+  including (b)'s block, not just the file.
+
+What each prompt says (the entry title is quoted from `core.yaml`; no other per-dimension text):
+
+| File | `## Scope` names (verbatim title) |
+|---|---|
+| `code-review.md` | General code quality, design conformance, and idioms |
+| `security.md` | Security lens |
+| `privacy.md` | Privacy and data-handling lens |
+| `reliability.md` | Resilience to external-dependency failure |
+| `ops.md` | Telemetry-spec conformance |
+| `ui.md` | UI/UX conformance |
+| `a11y.md` | Accessibility |
+| `infra.md` | Infrastructure and deployment |
+
+### D.3 The data files, literal
+
+#### D.3.1 `contract/dimensions/core.yaml` (TD-D36) — supersedes §7.2's `…` and folds in §7.8
+
+The header comment, the 17 `entries`, and the six judgment bindings from `core:code-review/code` through
+`core:infra/deploy` are **§7.2 verbatim**. §7.2's `ui`/`a11y` comment block (`:1693-1696`) is replaced
+by §7.8's two bindings, verbatim, placed after `core:infra/deploy`. The deterministic section is
+**exactly** these nine bindings, in this order:
+
+```yaml
+  # ── deterministic bindings ────────────────────────────────────────────────
+  # Tool invocation arguments are W7's. W5b binds existence and applicability only.
+  - id: core:lint/all
+    entry: lint
+    kind: deterministic
+    tool: scripts/oversight/gates/lint_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:type-check/all
+    entry: type-check
+    kind: deterministic
+    tool: scripts/oversight/gates/type_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:secret-scan/all
+    entry: secret-scan
+    kind: deterministic
+    tool: scripts/oversight/gates/secret_scan.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:security-scan/all
+    entry: security-scan
+    kind: deterministic
+    tool: scripts/oversight/gates/security_scan.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:bash-check/all
+    entry: bash-check
+    kind: deterministic
+    tool: scripts/oversight/gates/bash_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:portability/all
+    entry: portability
+    kind: deterministic
+    tool: scripts/oversight/gates/portability_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:template-refs/all
+    entry: template-refs
+    kind: deterministic
+    tool: scripts/oversight/gates/template_refs_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:collection-integrity/all
+    entry: collection-integrity
+    kind: deterministic
+    tool: scripts/oversight/gates/collection_integrity.sh
+    timeout_seconds: 300
+    predicate: { include: ['.*'] }
+  - id: core:cross-vendor-review/all
+    entry: cross-vendor-review
+    kind: deterministic
+    tool: scripts/run_second_review.sh
+    timeout_seconds: 1800
+    predicate: { include: ['.*'] }
+```
+
+**TD-D36:**
+- Every gate keeps §7.2's "same shape": `.*`, with a 300 s timeout.
+- The gates filter their own inputs today (`run_gates.sh` passes them the change set), so a narrower
+  predicate here would be a second, drifting copy of each gate's file filter. W6 measures cost.
+- Core totals: 17 entries and 17 bindings (8 judgment, 9 deterministic).
+
+#### D.3.2 `contract/dimensions/project.yaml` (HOS-own, not shipped)
+
+§7.2's file verbatim, **except** that `include` gains two patterns (TD-VF-22):
+```yaml
+    predicate:
+      include: ['^\.claude/agents/', '^scripts/framework/', '^bin/', '^bootstrap/',
+                '^contract/', '^AGENTS\.md$', '^CLAUDE\.md$',
+                '^docs/AGENTS\.md$', '^docs/OVERSIGHT-RUNBOOK\.md$']
+```
+
+#### D.3.3 `packs/django/dimensions.yaml`
+
+§7.2's file verbatim, **except** for `pack-django:privacy/pii-words` (TD-VF-23):
+```yaml
+    predicate: { include: ['(?i)erasure', '(?i)pii'] }
+```
+
+#### D.3.4 `contract/dimensions/project.yaml.template`
+
+The template keeps §7.2's live header (`schema`, `schema_version`, `owner`) and its prose. The commented
+example is changed in two ways:
+- The example is delimited by the exact marker lines `# --- example: begin ---` and
+  `# --- example: end ---`. Every line between them is either `#` alone or `# ` followed by YAML, so
+  stripping `^# ?` yields a YAML fragment with `bindings:` and `suppress:` as top-level keys. The
+  explanatory prose ("This file is YOURS…", "You may suppress…") sits **outside** the markers.
+- `project:privacy/app-modules` reads `predicate: { include: ['(?i)accounts', '(?i)booking'] }`
+  (TD-VF-23).
+
+T5.53 makes the example executable, so it cannot rot.
+
+#### D.3.5 `packs/astro/dimensions.yaml` (TD-D37) — replaces §7.2's one sentence
+
+```yaml
+schema: hos.dimension-registry
+schema_version: 1
+owner: pack
+pack: astro
+
+bindings:
+  - id: pack-astro:code-review/astro
+    entry: code-review
+    kind: judgment
+    agent: code-reviewer
+    posture: review-read-only
+    timeout_seconds: 300
+    prompt_template: contract/dimensions/prompts/code-review.md
+    predicate: { include: ['\.astro$', '^src/pages/', 'astro\.config\.[^/]*$'] }
+
+  - id: pack-astro:security/astro
+    entry: security
+    kind: judgment
+    agent: security-reviewer
+    posture: review-read-only
+    timeout_seconds: 300
+    prompt_template: contract/dimensions/prompts/security.md
+    predicate: { include: ['\.astro$', 'astro\.config\.[^/]*$'] }
+
+  - id: pack-astro:ui/astro
+    entry: ui
+    kind: judgment
+    agent: ui-reviewer
+    posture: review-read-only
+    timeout_seconds: 300
+    prompt_template: contract/dimensions/prompts/ui.md
+    predicate: { include: ['\.astro$'] }
+
+  - id: pack-astro:a11y/astro
+    entry: a11y
+    kind: judgment
+    agent: a11y-reviewer
+    posture: review-read-only
+    timeout_seconds: 300
+    prompt_template: contract/dimensions/prompts/a11y.md
+    predicate: { include: ['\.astro$'] }
+
+  - id: pack-astro:deterministic/astro-check
+    entry: lint
+    kind: deterministic
+    tool: scripts/oversight/gates/astro_check.sh
+    timeout_seconds: 300
+    predicate: { include: ['\.astro$', 'astro\.config\.[^/]*$', '^src/pages/', '^src/content/'] }
+```
+
+**TD-D37:**
+- **`pack-astro:security/astro` is mine.** §7.2's sentence does not include it. CORE's security
+  predicate matches no `.astro` file, yet `.astro` frontmatter is server code, and the astro pack's own
+  security depth treats it as a surface (`packs/astro/security-reviewer.md:15`, `:34-35`). Without this
+  binding, the pack's security depth would never be invoked on the files it describes. The same holds
+  for `astro.config.mjs`, which CORE's `\.js$`/`\.ts$` does not match. It is flagged as challengeable,
+  like TD-D12.
+- **`^src/content/` on astro-check:** `astro_check.sh:4-6` runs `astro sync` because content-collection
+  types depend on it.
+- **No `packs/node/dimensions.yaml`.** Astro requires node (`packs/astro/pack.toml:4`). The reasons for
+  adding no node file:
+  - `categorize()` has no JS rule (`:63-114`), so there is nothing to migrate.
+  - CORE's four code predicates already match `.js`/`.ts`, which are node's generic surface.
+  - A resolved pack with no `pack-<n>.yaml` is "not an error" (§C.2.6). The probe shows that
+    `{node, astro}` loads green.
+  - The W5b budget is full (§D.7).
+- **Residual gap, recorded and not a regression** (nothing routes these today): `.mjs`, `.cjs`, `.jsx`
+  and `.tsx` reach no code-review, security, reliability or ops binding (`.jsx`/`.tsx` reach only
+  `core:ui/markup`/`core:a11y/markup`), and `package.json` reaches no security binding. Routed as §D.8 Q4.
+
+#### D.3.6 `contract/resolved-packs.txt` (HOS-own) (TD-D38)
+
+Two comment lines and **zero** slug lines:
+```
+# HOS source repository: HOS is not installed into itself, so no pack resolves here (ADR-1643 TD-D27).
+# Hand-maintained and intentionally empty. Consumer copies are generated by bootstrap/hos_install.sh.
+```
+**TD-D38:** §C.2.5's verbatim installer header would be false here, because no installer wrote this
+file. §C.2.5's format allows any `#` line. T5.49 asserts `read_resolved_packs(REPO) == ()`.
+
+### D.4 New tests — one new file, `tests/automation/test_dimension_registry_data.py` (TD-D39)
+
+**TD-D39:** the data tests live in their own file. W5a's file declares itself tmp-tree-only (its
+docstring), and these tests deliberately read the real tree. **No test shells out to
+`run_post_change_sweep.sh`** (W5c rewrites it).
+
+**Staging helper (used by T5.28, T5.50, T5.53).** `stage(tmp, packs, project_text|None)` builds a
+consumer-shaped tree. It copies:
+- the real `contract/dimensions/core.yaml`, `prompts/` and `postures/`;
+- the real `.claude/agents/`;
+- `scripts/oversight/gates/` and `scripts/run_second_review.sh`, with `shutil.copy2`, which keeps the
+  mode bits L11 needs.
+
+It then writes `contract/dimensions/pack-<n>.yaml` as a **byte copy** of `packs/<n>/dimensions.yaml` for
+each `<n>` that has one, writes `resolved-packs.txt` from `packs`, and writes `project.yaml` only when
+given. **No symlinks:** L27 resolves them and would report `path_escape`.
+
+- **T5.49 — HOS's own committed registry loads green.** It calls `dr.load(REPO_ROOT)`, with no staging
+  and with `packs=None`, so it reads the real `resolved-packs.txt`. It asserts:
+  - `read_resolved_packs(REPO_ROOT) == ()`;
+  - the entry-id set is **exactly** §7.2's 17;
+  - the binding-id set is **exactly** the 17 `core:` ids plus `project:code-review/framework-validator`;
+  - `source_files == ("contract/dimensions/core.yaml", "contract/dimensions/project.yaml")`.
+
+  This test also closes TD-VF-27's empty-core case **for the shipped file**. It exercises L10 against the
+  real `.claude/agents/framework-validator.md`, L11 against the real modes, L12 against the real postures,
+  and L25 against the real directory listing.
+- **T5.50 — the real pack files load when staged.** For `{django}`, `{node, astro}` and
+  `{django, node, astro}`, with no `project.yaml`, it asserts that `load()` is green and the binding-id
+  set is exactly core's 17 plus that set's pack ids (6 django, 5 astro). In the three-pack case,
+  `lint` resolves `core:lint/all`, `pack-django:deterministic/django-check` and
+  `pack-astro:deterministic/astro-check`. That is T5.23 on real data.
+- **T5.51 — the prompt contract (TD-D33).** For each of the eight files it checks rules 1–6. It also
+  checks the binding rule over every binding in `core.yaml`, both pack files and HOS `project.yaml`.
+- **T5.52 — shipped YAML has no duplicate keys.** A test-local `yaml.SafeLoader` subclass raises on a
+  repeated mapping key. It parses `core.yaml`, `project.yaml`, both pack files, and the template's
+  extracted example. This closes TD-VF-27's duplicate-key case **for the shipped data**. The engine rule
+  is §D.6.
+- **T5.53 — the template example is valid and does what it says.** It extracts the marker block, strips
+  `^# ?`, and prepends the template's live header. It stages that as `project.yaml` with `{django}` and
+  asserts that `load()` is green. It then asserts that `pack-django:privacy/pii-words` is **absent** from
+  `bindings` and present in `suppressions` with the template's reason, and that `privacy` still resolves
+  through `core:privacy/governance` and `project:privacy/app-modules`. That is T5.25 on real data.
+
+### D.5 T5.28 — the characterization test, made explicit (TD-D40)
+
+**TD-D40 — the old output is a frozen table committed in the test, captured once from the pre-W5c
+script.** Shelling out would break at W5c, and a skip-if-rewritten guard would be a silent skip. The
+docstring records the capture command and commit:
+`bash scripts/framework/run_post_change_sweep.sh <the 42 corpus paths>` at `7330962bb`, parsing the
+`Domain routing:` block (`:147-155`). After W5c the table is history, which is exactly what a
+characterization test is.
+
+**§9.5's "minus the three rows … and the two rows …" is replaced by this.** Re-layered rows are
+**compared, not excluded**: the fixture loads the layers they moved to. The fixture is
+`stage(tmp, ["django"], P)`, where `P` is HOS's real `project.yaml` bindings plus T5.53's extracted
+template-example **bindings**, with its `suppress:` dropped so that pii-words stays live. The three
+AD-11 re-layered rows (`ADR-1643:563-566`) are therefore all exercised:
+- **R1:** the django idioms (`\.py$` app code, `/migrations/`, `/templates/`, `manage.py`) and
+  `erasure|pii` → PACK:django.
+- **R2:** `accounts|booking` → PROJECT.
+- **R3:** `docker-compose.yml`/`Caddyfile`/`scripts/backup.sh` → PROJECT (its `Specs/` half is TD-D13's).
+
+The two deliberate drops are the **only** expected narrowings:
+- **X1:** `framework-validator` leaves the *consumer* registry (`ADR-1643:567`, `:172` of the script).
+  It is still compared here through HOS's PROJECT layer.
+- **X2:** the discretionary `privacy-reviewer (check if PII-relevant)` line (`:184`, AF-6.3).
+
+**Comparison.**
+- `OLD_DOMAINS[p]` is the frozen domain set.
+- `DOMAIN_AGENTS` = {framework: {framework-validator}, application-code: {code-reviewer,
+  security-reviewer}, migrations: {code-reviewer, security-reviewer}, templates: {ui-reviewer,
+  a11y-reviewer}, infrastructure: {infra-reviewer}, tests: ∅, design-pack: ∅, spec: ∅}.
+  - `privacy-reviewer` is absent from application-code and migrations by X2.
+  - tests, design-pack and spec are ∅ by TD-D13 (unit-test, ux-designer, pm-agent are build-side).
+  - templates and infrastructure map per path. The old Track-2 coupling (`:185-187`, which printed them
+    only alongside code) is a dropped quirk.
+- `NEW(p) = {i.binding.agent for i in resolve_for_diff(reg, [p]) if i.applicable and
+  i.binding.kind == "judgment"}`.
+- **(a) No unlisted narrowing:** `⋃ DOMAIN_AGENTS[d] for d in OLD_DOMAINS[p] ⊆ NEW(p)` for every `p`.
+- **(b) Exact pin:** `NEW(p) == NEW_EXPECTED[p]` for every `p`, so every widening is a reviewed literal.
+- **(c) Coverage:** every one of the 8 domains appears in `OLD_DOMAINS`, and every judgment binding in
+  the fixture matches at least one corpus path.
+
+Abbreviations: cr = code-reviewer, sec = security-reviewer, priv = privacy-reviewer,
+rel = reliability-reviewer, ops = ops-reviewer, fv = framework-validator, a11y = a11y-reviewer.
+`ui` and `infra` are `ui-reviewer` and `infra-reviewer`.
+
+| # | Path | `OLD_DOMAINS` | `NEW_EXPECTED` |
+|---|---|---|---|
+| 1 | `.claude/agents/coder.md` | framework | fv |
+| 2 | `scripts/framework/run_post_change_sweep.sh` | framework | cr fv ops rel sec |
+| 3 | `docs/AGENTS.md` | framework | fv |
+| 4 | `docs/OVERSIGHT-RUNBOOK.md` | framework | fv |
+| 5 | `AGENTS.md` | — | fv |
+| 6 | `CLAUDE.md` | — | fv |
+| 7 | `bin/hos-cron` | — | fv infra |
+| 8 | `bootstrap/hos_install.sh` | — | cr fv ops rel sec |
+| 9 | `contract/OVERSIGHT-CONTRACT.md` | — | fv |
+| 10 | `myapp/views.py` | application-code | cr ops rel sec |
+| 11 | `accounts/models.py` | application-code | cr ops priv rel sec |
+| 12 | `booking/services.py` | application-code | cr ops priv rel sec |
+| 13 | `manage.py` | application-code | cr ops rel sec |
+| 14 | `myapp/pii_export.py` | application-code | cr ops priv rel sec |
+| 15 | `myapp/PII_Export.py` | application-code | cr ops priv rel sec |
+| 16 | `myapp/erasure.py` | application-code | cr ops priv rel sec |
+| 17 | `scripts/oversight/validators/schema.py` | — | cr ops rel sec |
+| 18 | `scripts/automation/lib/github.py` | — | cr ops priv rel sec |
+| 19 | `myapp/migrations/0001_initial.py` | migrations | cr ops rel sec |
+| 20 | `accounts/migrations/0002_erasure.py` | migrations | cr ops priv rel sec |
+| 21 | `myapp/templates/myapp/index.html` | templates | a11y ui |
+| 22 | `templates/base.html` | — | a11y ui |
+| 23 | `static/site.css` | — | ui |
+| 24 | `tests/test_views.py` | tests | sec |
+| 25 | `myapp/tests/test_models.py` | tests | ops rel sec |
+| 26 | `conftest.py` | tests | ops rel sec |
+| 27 | `myapp/test_utils.py` | tests | ops rel sec |
+| 28 | `docker-compose.yml` | infrastructure | infra |
+| 29 | `Caddyfile` | infrastructure | infra |
+| 30 | `.env.example` | infrastructure | infra |
+| 31 | `deploy/.env.example` | infrastructure | infra |
+| 32 | `scripts/backup.sh` | infrastructure | cr infra ops rel sec |
+| 33 | `.github/workflows/ci.yml` | — | infra sec |
+| 34 | `Specs/v1/design.pack/tokens.json` | design-pack | — |
+| 35 | `Specs/v1/design-pack/notes.md` | design-pack | — |
+| 36 | `Specs/v1/requirements.md` | spec | — |
+| 37 | `README.md` | — | — |
+| 38 | `docs/v0.7.0/ADR-1643-deterministic-agent-invocation.md` | — | — |
+| 39 | `audit/oversight-log.jsonl` | — | priv |
+| 40 | `frontend/src/app.ts` | — | cr ops rel sec |
+| 41 | `src/pages/index.astro` | — | — |
+| 42 | `astro.config.mjs` | — | — |
+
+Rows 15 and 3–4 are the regression tests for TD-VF-23 and TD-VF-22. Rows 41–42 pin that an uninstalled
+pack routes nothing. Row 35 pins the old `design.pack` regex's `.` wildcard. Rows 24–27 show the
+TD-D12/§7.2 widening onto test files, which is accepted as more review rather than less.
+
+### D.6 #1933 security carry-overs (TD-D41)
+
+**TD-D41 — W5b closes both carry-overs for the data it ships, by test. The engine rules are a follow-up
+issue, not W5b.**
+- **Empty core:** T5.49 pins HOS's exact 17-entry set.
+- **Duplicate keys:** T5.52 rejects duplicates in every shipped file.
+
+**Why not the engine rules now:**
+- Each one adds a rule code and a slot in TD-D28's fixed order, plus its tests, to the merged
+  `dimension_registry.py`.
+- A duplicate-key loader is a **generic** rule, so it binds #1644 T3.1's kind as well.
+- That is a contract change to §C.2.6 with its own review set (security-reviewer on the engine), and
+  W5b's budget is full.
+
+The residual exposure is a consumer's hand-edited `contract/dimensions/*.yaml`. That is a CODEOWNERS-gated
+edit (`protected_surfaces.txt:17`), and nothing is gated on the registry until W8.
+
+**Follow-up:**
+- **Owner:** the orchestrating session files the issue. `technical-design` specifies it, and the
+  architect approves.
+- **Proposed rules:** `L29 duplicate_key` (generic, engine step 2 before L3a, via a `SafeLoader` subclass
+  that rejects a repeated key) and `L30 core_empty` (dimension-specific: `core.yaml` declares zero
+  entries, first in handler step 3).
+- **Must land before W8.**
+
+### D.7 File budget and protected surfaces (W5b)
+
+| # | Path | New/Mod | Protected? |
+|---|---|---|---|
+| 1 | `contract/dimensions/core.yaml` | new | yes (`contract/**`, `protected_surfaces.txt:17`) |
+| 2 | `contract/dimensions/project.yaml` | new | yes |
+| 3 | `contract/dimensions/project.yaml.template` | new | yes |
+| 4–11 | `contract/dimensions/prompts/{code-review,security,privacy,reliability,ops,ui,a11y,infra}.md` | new | yes |
+| 12 | `packs/django/dimensions.yaml` | new | **no** (TD-VF-26) |
+| 13 | `packs/astro/dimensions.yaml` | new | **no** |
+| 14 | `contract/resolved-packs.txt` | new | yes |
+| 15 | `tests/automation/test_dimension_registry_data.py` | new | no |
+
+That is **15 files, at the limit.**
+- **Not touched:** `dimension_registry.py`, the CLI, `posture.py`, the W5a tests,
+  `framework_consumer_files.txt`, the installer, the sweep and `CLAUDE.md`. No `SCRIPTS-INDEX.md` regen is
+  needed, because no script is added.
+- If the orchestrator commits **this TD amendment** in the same PR, the count is 16. Land it as its own
+  commit on a separate design PR first, or rule that design docs do not count (§D.8 Q6).
+- The PR is CODEOWNERS-gated through `contract/**` in any case.
+
+**Review set:**
+- `code-reviewer`;
+- `security-reviewer` (the data decides which security lens runs, and TD-D34 is a reuse-safety rule);
+- `privacy-reviewer` (TD-VF-23's PII predicates);
+- `infra-reviewer` (gate bindings).
+
+### D.8 Open questions — to `architect` (none blocks W5b's coder except Q6)
+
+- **Q1 (confirm TD-D34):** the content-hash version, and §4.1's `"security/v1"` demoted to illustrative.
+- **Q2 (confirm TD-D35):** W5b prompts carry no output contract. §4.3's "instructed by our own prompt
+  template" is met at W7 by one W7-owned block that TD-D34's hash covers.
+- **Q3 (confirm TD-D37):** `pack-astro:security/astro`, which goes beyond §7.2's sentence.
+- **Q4 (follow-up scope):** should `.mjs`/`.cjs`/`.jsx`/`.tsx` (and `package.json` for security) join
+  CORE's language-generic code predicates, or go into a future `packs/node/dimensions.yaml`? No route
+  exists today, so W5b does not regress anything. My recommendation is CORE extensions, because they are
+  language-generic as `.js`/`.ts` already are. It is a separate PR either way, since T5.28's table would
+  move.
+- **Q5 (→ human via the architect):** should `packs/**` (or `packs/*/dimensions.yaml`) join
+  `protected_surfaces.txt`? Today a HOS-source edit that drops a pack binding is not human-gated
+  (TD-VF-26). This is pre-existing for agent region bodies, and it is new for routing data.
+- **Q6 (BLOCKING only for packaging):** does a design-doc commit count toward the 15-file limit (§D.7)?
+- **Q7 (confirm TD-D41):** the engine rules L29/L30 go to a follow-up issue that must land before W8.
+
+### D.9 Startup-gap analysis and affected sign-offs
+
+*Should this have been settled in the initial technical design?*
+- **TD-VF-22 and TD-VF-23: yes.** `categorize()` was in the tree when §7.2 was written.
+- **TD-VF-24 (no prompt contract): yes.** §7.2 made the files required (L21) and §10 budgeted them,
+  with no content contract.
+
+These are a `startup-artifact-gap`. The orchestrating session should annotate the issue opened under
+§C.3. I file nothing (task constraint).
+
+**Affected sign-offs:**
+- **W5a (#1933):** these **stand**. No engine behaviour changes, and the TD-VF-27 rules are deferred,
+  not retrofitted.
+- **W5b:** unbuilt, so no orphaned approvals.
+- **W1:** TD-D34 uses W1's existing free-form flag unchanged, so its sign-offs stand.
+- **W5c/W7:** inherit TD-D35's obligations. Neither has an approved design yet.
+
+---
+
+## Human Review Required — Amendment D (2026-10-02, W5b registry data)
+
+**RISK: MEDIUM.**
+- This data decides which review dimensions are applicable to a diff, once W7/W8 consume it. A missing
+  predicate is a silent narrowing, so T5.28's exact pin exists to make every narrowing and widening a
+  reviewed literal.
+- TD-D34 decides reuse safety for AD-13.
+- Nothing is gated on the registry before W8.
+
+**CONFIDENCE:**
+- **HIGH** on TD-VF-22…TD-VF-27. Each was re-read in the tree at the cited lines, and TD-VF-27 was probed
+  against the merged engine.
+- **HIGH** that §D.3's data loads green under the merged `load()` for all four pack sets. This was
+  probed with stub prompts. T5.51 is what pins the real prompts.
+- **HIGH** on the T5.28 table: it is the probe's output, not a derivation.
+- **MEDIUM** on TD-D37's astro predicates. `^src/pages/` and `^src/content/` follow Astro's documented
+  layout, not a consumer's tree.
+- **MEDIUM** on TD-D33 rule 6's agent-name ban. It is strict, and it is chosen so that one prompt can
+  serve several agents.
+
+**BLAST RADIUS:**
+- **This document:** Amendment D only. The top-of-document amendment index is **not** updated, because
+  this dispatch was constrained to appending. The orchestrator or the next round should add a pointer.
+- **Downstream:** the 15 W5b files in §D.7.
+- **Forward obligations:** W7 (TD-D35 a–c) and the follow-up issue (TD-D41).
+- **Not touched:** the W5a engine, W1–W4, and W5c's scope.
+
+**Change classification: ADDITIVE.** It fills elided data, adds a content contract to files that had
+none, and makes two clarifying corrections (TD-VF-22, -23) to unbuilt data. No built contract is
+reversed. TD-D34 constrains an unbuilt W7 caller and leaves W1's flag as it is.
+
+**Architect review is requested.** This amendment is not handed to the coder until the architect
+approves. Iteration: Amendment D round 1. No temp-state file was written, because this dispatch was
+constrained to edit this one file only.
+
+**Not done here:** no data file, prompt, test or script was written into the repository. The §D.1 probe
+ran in `/tmp/claude/w5b/` only. No issue was filed, no label was created, and no register entry was
+written.
