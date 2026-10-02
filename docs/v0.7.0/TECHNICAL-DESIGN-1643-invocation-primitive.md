@@ -46,6 +46,8 @@ below is designed to be implementable without further design questions.
 > contradicts (TD-VF-15…TD-VF-21) and re-confirms two that still hold (TD-VF-13, TD-VF-14). §7.3, §7.4,
 > §7.7 and §7.9 carry pointer notes.
 
+> **AMENDED 2026-10-02 — Amendment D (W5b: registry data, prompt-file contract, T5.28). Binding on W5b; architect-approved with edits, round 1 (§D.10). Where it and §4.1/§7/§9.5 or Amendment C disagree, Amendment D governs.**
+
 **Date:** 2026-09-14 (original), amended 2026-09-16 (Amendment A), 2026-09-18 (Amendment B), 2026-10-02 (Amendment C)
 **Iteration:** 1 of 5
 **Author:** technical-design
@@ -3465,7 +3467,7 @@ label was created. No sign-off register entry was written (`technical-design` wr
 
 ## Amendment D (2026-10-02) — W5b: the registry data, the prompt-file contract, and T5.28
 
-**Status:** DRAFT. **Binding on W5b once the architect approves.** W5 was split for the 15-file limit.
+**Status:** **APPROVED_WITH_EDITS (architect, round 1, 2026-10-02 — §D.10). Binding on W5b.** W5 was split for the 15-file limit.
 **W5a has merged** (PR #1933, `main` at `7330962bb`): the engine, `posture.py`, the CLI, and the tmp-tree
 tests T5.1–T5.27, T5.29, T5.32, T5.34–T5.43, T5.45, T5.46. **W5b** is the real registry *data* plus T5.28.
 **W5c** (the sweep rewrite, the installer, the ship-list, CLAUDE.md, T5.30/31/33/44/47/48; gated on
@@ -3558,6 +3560,35 @@ reliability, ops, ui, a11y, infra}:
    - the substrings `{{`, `}}`, `{%`, `${` and triple backticks;
    - the words `verdict` and `applicability`.
 
+   *(architect, round 1 — matching semantics, so T5.51 is deterministic.)* Agent names are matched
+   case-insensitively as whole hyphen-aware tokens, `(?i)(?<![a-z0-9-])<name>(?![a-z0-9-])`, so
+   `code-review` does not trip on `code-reviewer` and the reverse also holds. The two words are matched as
+   `(?i)\bverdict` and `(?i)\bapplicab`, which also catches plurals and `applicable`.
+7. *(architect, round 1 — added. Rules 4 and 5's "says nothing else" is not testable as written, and an
+   untestable rule in a prompt contract is exactly where a lens checklist creeps back in, against ADR
+   non-goal 1.)* **Each file's bytes equal this canonical text**, without this document's three-space list
+   indentation and without the fence, with `<entry-id>` and `<title>` substituted from `core.yaml`. Every line ends in LF, and there is a final newline:
+
+   ```
+   # Review dimension: <entry-id>
+
+   ## Scope
+
+   Dimension title: <title>
+
+   Review only the changed files that this dimension selected.
+   You may read other repository files only to understand the selected files.
+
+   ## Boundaries
+
+   This prompt does not add to, remove from, or override your agent definition.
+   Other review dimensions run separately. Do not report their findings here.
+   ```
+
+   T5.51 asserts byte equality for each of the eight files, **in addition to** rules 1–6. Rules 1–6 stay,
+   because they guard the canonical text itself if it is ever amended. Any per-dimension divergence from
+   this text is a W7 design decision, not a W5b coder's.
+
 **Binding rule (test-pinned, not a loader rule).** Every shipped or HOS binding's `prompt_template` is
 `contract/dimensions/prompts/<binding.entry>.md`. W5b adds no loader rule for prompt structure. A
 consumer PROJECT binding may point anywhere that passes L21 and L27. Whether W7 needs a structural load
@@ -3572,6 +3603,23 @@ version that someone forgot to bump would reuse a verdict produced under differe
 a fail-open, and a content hash cannot have it. §4.1's `"security/v1"` is illustrative only and does not
 override this decision.
 
+*(architect, round 1 — decision confirmed, reason corrected.)* The *Reason* above overstates the hole.
+- W1 already digests `input_file_sha256` (§4.4; `agent_invoke_cli.py:740-771`). L2 refuses every
+  unrecognised flag (§3.2), so `--input-file` is the only channel for instructions other than the agent
+  file, and the agent file is digested too.
+- Whatever bytes W7 sends are therefore already in `input_digest`. A forgotten hand bump could not cause
+  reuse across different sent bytes.
+- What a hand-maintained string actually breaks is **provenance**. A record's `prompt_template_version`
+  must identify, checkably, which shipped template file produced it, and `"security/v1"` can be checked
+  against nothing. The content hash is that identity, and it is defence in depth if W1 ever gains a second
+  instruction channel.
+
+**Rule:** the value is always `sha256:` over the template **file's** bytes as read from disk. W7 reads
+the file once and renders from those same bytes. The value is never computed over rendered output; that
+is `input_file_sha256`'s job (see TD-D35 (c), as superseded). No conflict with AD-6 or W1: AD-6's
+"prompt template version" component now has a defined value, and W1's free-form flag carries it
+unchanged.
+
 **TD-D35 — no placeholder grammar in W5b. Rendering and the output contract are W7's.** Nothing renders a
 template before W7. Fixing a grammar now would bind W7 to a format that no caller has exercised. Templates
 are therefore plain Markdown with no substitution, and rule 6 reserves the obvious delimiters so that W7
@@ -3579,8 +3627,16 @@ can choose one without escaping legacy text. **W7 obligations, recorded here so 
 - (a) W7 decides how the template body reaches the agent.
 - (b) W7 owns the §4.3 payload instruction (one JSON object; `verdict`/`findings`/`summary`; no
   `applicability`/`outcome`/`input`/`invocation`) as **one** block from one source, never eight copies.
-- (c) If W7 renders anything beyond the raw file, TD-D34's hash covers the rendered instruction bytes,
-  including (b)'s block, not just the file.
+- ~~(c) If W7 renders anything beyond the raw file, TD-D34's hash covers the rendered instruction bytes,
+  including (b)'s block, not just the file.~~ *(architect, round 1 — superseded. It would make
+  `prompt_template_version` mean two different things depending on whether W7 renders, and it duplicates
+  `input_file_sha256`.)* It is replaced by:
+  - **(c1)** Every instruction byte, including (b)'s block, reaches the agent **only** through
+    `--input-file`, so `input_file_sha256` covers the rendered whole. W7 adds no other instruction channel
+    to W1 without an ADR-1643 amendment.
+  - **(c2)** Rendering is deterministic for identical inputs: no timestamps, nonces, run ids or absolute
+    paths in the input file. A non-deterministic render does not fail open, but it silently defeats
+    AD-13 reuse on every cycle and so falsifies W6/W7's cost numbers.
 
 What each prompt says (the entry title is quoted from `core.yaml`; no other per-dimension text):
 
@@ -3814,7 +3870,8 @@ given. **No symlinks:** L27 resolves them and would report `path_escape`.
   set is exactly core's 17 plus that set's pack ids (6 django, 5 astro). In the three-pack case,
   `lint` resolves `core:lint/all`, `pack-django:deterministic/django-check` and
   `pack-astro:deterministic/astro-check`. That is T5.23 on real data.
-- **T5.51 — the prompt contract (TD-D33).** For each of the eight files it checks rules 1–6. It also
+- **T5.51 — the prompt contract (TD-D33).** For each of the eight files it checks rules 1–7 (rule 7's
+  byte equality was added by the architect in round 1). It also
   checks the binding rule over every binding in `core.yaml`, both pack files and HOS `project.yaml`.
 - **T5.52 — shipped YAML has no duplicate keys.** A test-local `yaml.SafeLoader` subclass raises on a
   repeated mapping key. It parses `core.yaml`, `project.yaml`, both pack files, and the template's
@@ -3845,10 +3902,22 @@ AD-11 re-layered rows (`ADR-1643:563-566`) are therefore all exercised:
 - **R2:** `accounts|booking` → PROJECT.
 - **R3:** `docker-compose.yml`/`Caddyfile`/`scripts/backup.sh` → PROJECT (its `Specs/` half is TD-D13's).
 
-The two deliberate drops are the **only** expected narrowings:
+The deliberate drops are the **only** expected narrowings. There are three; X3 was added by the architect in round 1:
 - **X1:** `framework-validator` leaves the *consumer* registry (`ADR-1643:567`, `:172` of the script).
   It is still compared here through HOS's PROJECT layer.
 - **X2:** the discretionary `privacy-reviewer (check if PII-relevant)` line (`:184`, AF-6.3).
+- **X3 (architect, round 1; omitted from §9.5 and from this amendment's draft):** TD-D13's exclusion of
+  Tracks 3–5 (`:190-192`).
+  - What drops: rows 24–27 lose `unit-test`, rows 34–35 lose `ux-designer → ui-reviewer`, and row 36
+    loses `pm-agent`.
+  - Track 4's `ui-reviewer` **is a reviewer**, so this is a real narrowing of review routing, not just
+    the removal of build-side roles. It is the narrowing TD-D13 decided (§7.6), and the ∅ entries in
+    `DOMAIN_AGENTS` encode it.
+  - The T5.28 docstring names X1–X3, so that "only expected narrowings" is true.
+
+*(architect, round 1 — verified.)* The `OLD_DOMAINS` column below was re-derived independently. The
+current `run_post_change_sweep.sh` was run over all 42 paths at this branch's HEAD, and its
+`Domain routing:` block matches the column row for row.
 
 **Comparison.**
 - `OLD_DOMAINS[p]` is the frozen domain set.
@@ -3942,7 +4011,18 @@ edit (`protected_surfaces.txt:17`), and nothing is gated on the registry until W
 - **Proposed rules:** `L29 duplicate_key` (generic, engine step 2 before L3a, via a `SafeLoader` subclass
   that rejects a repeated key) and `L30 core_empty` (dimension-specific: `core.yaml` declares zero
   entries, first in handler step 3).
-- **Must land before W8.**
+- ~~**Must land before W8.**~~ *(architect, round 1 — tightened.)* **Must land before the earliest of:**
+  - W7 merging (the first slice that invokes reviewers from a loaded registry, and whose records W8
+    later gates on);
+  - W8;
+  - #1644 T3.1's first shipped data file. L29 is generic and binds T3.1's kind, unless T3.1 carries its
+    own T5.52-equivalent duplicate-key test over its shipped data.
+- *(architect, round 1 — scope note for the follow-up TD.)* `core_empty` (zero entries) is a weak check.
+  A `core.yaml` trimmed to a single entry passes it. Consumer `core.yaml` integrity actually rests on
+  three things: HOS owns the file, the installer overwrites it on upgrade, and it is CODEOWNERS-gated.
+  The follow-up TD must assess drift detection of the installed `core.yaml` against the installed
+  release, through `.hos-manifest` if it carries content hashes (if not, it must say so), as a
+  replacement for L30 or alongside it. It must not ship L30 alone as if it closed the empty-core class.
 
 ### D.7 File budget and protected surfaces (W5b)
 
@@ -3963,6 +4043,11 @@ That is **15 files, at the limit.**
   needed, because no script is added.
 - If the orchestrator commits **this TD amendment** in the same PR, the count is 16. Land it as its own
   commit on a separate design PR first, or rule that design docs do not count (§D.8 Q6).
+  - *(architect, round 1 — Q6 ruled.)* This amendment ships in its **own TD PR**, following the
+    #1916/#1919/#1926/#1929 pattern, and does not count toward the W5b code PR. The code PR is exactly
+    the 15 files above, at the limit with **zero headroom**. Any 16th file (a fixture file, an index
+    regen, a CLAUDE.md touch) means a split, not an exception.
+  - "Design docs do not count" is **not** adopted as a general rule.
 - The PR is CODEOWNERS-gated through `contract/**` in any case.
 
 **Review set:**
@@ -3972,6 +4057,8 @@ That is **15 files, at the limit.**
 - `infra-reviewer` (gate bindings).
 
 ### D.8 Open questions — to `architect` (none blocks W5b's coder except Q6)
+
+*(architect, round 1: all seven are ruled in §D.10. Q5 is routed to the human, and it does not block W5b.)*
 
 - **Q1 (confirm TD-D34):** the content-hash version, and §4.1's `"security/v1"` demoted to illustrative.
 - **Q2 (confirm TD-D35):** W5b prompts carry no output contract. §4.3's "instructed by our own prompt
@@ -4005,6 +4092,127 @@ These are a `startup-artifact-gap`. The orchestrating session should annotate th
 - **W1:** TD-D34 uses W1's existing free-form flag unchanged, so its sign-offs stand.
 - **W5c/W7:** inherit TD-D35's obligations. Neither has an approved design yet.
 
+### D.10 Architect rulings — Amendment D round 1 (2026-10-02)
+
+**Verdict: APPROVED_WITH_EDITS.** The round-1 edits are applied in place and marked "architect, round 1":
+- TD-D33 rule 6 (matching semantics) and new rule 7 (canonical text);
+- TD-D34 (reason corrected, rule made explicit);
+- TD-D35 (c), superseded by (c1) and (c2);
+- T5.51;
+- §D.5 X3, plus the `OLD_DOMAINS` verification note;
+- TD-D41 (deadline tightened, plus a scope note for the follow-up);
+- §D.7 (Q6);
+- the top-of-document amendment pointer.
+
+The coder may start W5b once this amendment's TD PR merges.
+
+**Verified against the tree (not taken from the draft):**
+- **TD-VF-22 holds.** `run_post_change_sweep.sh:68` routes both docs to the framework track. Both files
+  exist, and `docs/AGENTS.md` is itself a protected surface (`protected_surfaces.txt:21`). Dropping them
+  from HOS's own framework-validator binding would have narrowed HOS's governance review.
+- **TD-VF-23 holds.** The privacy grep runs over `tr '[:upper:]' '[:lower:]'` output (`:181-182`). The
+  engine compiles each pattern on its own (`dimension_registry.py:541`, `:724-725`), so a leading `(?i)`
+  is legal under Python 3.11+'s global-flag rule.
+  - One widening, accepted: the old grep ran only over application-code and migrations paths, and only
+    when application code was present. `(?i)erasure`/`(?i)pii` now match **any** path, for example a
+    `docs/pii_policy.md`, which is exactly the false positive the template's suppression example
+    anticipates. That is more review, not less.
+- **TD-VF-26 holds** at the cited lines (`:16-33`, `:17`, `:29`).
+- **`OLD_DOMAINS` holds:** the live script was re-run over all 42 paths, and every row matches.
+  `NEW_EXPECTED` was hand-checked against §D.3's predicates for every row with a privacy, test-exclusion
+  or markup subtlety (rows 11–16, 19–27, 33, 39–42), and all of them match.
+- **`contract/` ships per file** (`hos_install.sh:245-246`, `:2112-2119`), not wholesale. HOS's own
+  `contract/dimensions/project.yaml` and `contract/resolved-packs.txt` therefore cannot leak to consumers
+  in W5b. **W5c obligation:** both stay off the ship-list, and the W5c installer test asserts that
+  neither is copied. A leaked `project.yaml` would fail a consumer's load with L10 `agent_missing`
+  (`framework-validator` is not shipped). That fails closed, but it is a broken install.
+
+**Rulings on §D.8:**
+- **Q1 — TD-D34 confirmed, with a corrected reason.**
+  - The content hash is right, but the draft's fail-open argument was wrong: `input_file_sha256` already
+    covers every sent byte. The hash is required for provenance, and as defence in depth.
+  - The value is over the template **file** bytes, never over rendered output.
+  - §4.1's `"security/v1"` is illustrative. When technical-design next touches §4.1 (W7 at the latest),
+    it adds a one-line pointer there; this round did not edit outside Amendment D.
+  - **No conflict with AD-6's `input_digest`,** which now has a defined component value, and **none with
+    W1's `--prompt-template-version`,** which is unchanged and free-form. W1's sign-offs stand.
+- **Q2 — TD-D35 confirmed, with (c) superseded by (c1)/(c2).**
+  - Deferring the placeholder grammar and the output-contract block to W7 is correct. Binding a grammar
+    no caller exercises would pre-empt W7, and the reserved delimiters (rule 6) keep W7's choice free.
+  - §4.3's "instructed by our own prompt template" is satisfied at W7 by one W7-owned block delivered
+    through `--input-file` (c1). Until W7, no agent is invoked from these files, so no output contract
+    is missing at runtime.
+- **Q3 — TD-D37 approved: `pack-astro:security/astro` stands.**
+  - A pack may only add bindings. Adding one is the narrow-only direction AD-9 permits.
+  - The rationale is correct against `packs/astro/security-reviewer.md`. `set:html`, `is:inline`
+    scripts, frontmatter and `astro.config.mjs` are named as security surfaces there, and neither CORE's
+    security predicate nor any other binding reaches `.astro` or `.mjs`.
+  - **No `packs/node/dimensions.yaml`: confirmed.** "Resolved pack with no file" is a designed
+    non-error, and node has nothing to migrate.
+- **Q4 — ruled: CORE extensions, in a follow-up PR, landing before W7.**
+  - **Extensions:** `\.mjs$`, `\.cjs$`, `\.jsx$` and `\.tsx$` join the `include` lists of
+    `core:code-review/code`, `core:security/code`, `core:reliability/code` and `core:ops/code`. They are
+    language-generic in exactly the sense `.js`/`.ts` already are, and putting them in a node pack would
+    leave non-node JSX projects unreviewed.
+  - **`package.json` is not a node question.** It is the dependency-manifest question for the security
+    lens across ecosystems (`package.json` and lockfiles, `requirements*.txt`, `pyproject.toml`, and
+    others). The same follow-up TD scopes it; the architect leans towards one CORE security binding
+    over manifests.
+  - **Cost:** that PR re-pins T5.28's affected rows. Its review-cost widening is covered by W6/W7's cost
+    clearance and needs no separate product gate, because nothing invokes reviewers from the registry
+    before W7.
+- **Q5 — the human's call. Routed, not ruled.**
+  - **How to route it:** the orchestrating session files an issue (`bootstrap/create_issue.sh`) with the
+    bounded question below, then records the wait with `bootstrap/escalate_to_human.sh`.
+  - **Timing:** it does **not** block W5b, because the W5b PR is CODEOWNERS-gated through `contract/**`
+    anyway, so both pack YAMLs get human eyes on first landing. It must be decided **before W8**, the
+    first point at which routing data gates a merge.
+  - **The change is itself gated:** `protected_surfaces.txt` sits under `scripts/framework/**`.
+  - **Architect's technical recommendation:** add `packs/**`. The HOS source is the single upstream of
+    both protected consumer surfaces: `.claude/agents/**` for region bodies and `contract/**` for pack
+    dimension data. It is therefore the cheapest point at which to slip in a loosening.
+  - **Why it is the human's decision:** it adds a standing human-review burden to every pack edit, which
+    is an operational obligation.
+- **Q6 — confirmed: separate TD PR, not counted.** The W5b code PR is exactly 15 files, with zero
+  headroom (§D.7).
+- **Q7 — TD-D41 confirmed, with a tightened deadline.**
+  - W5b closes both carry-overs for the data it ships, through T5.49 and T5.52. The engine rules go to a
+    follow-up issue that must land before the earliest of W7, W8, or T3.1's first data file.
+  - The follow-up TD must also assess `core.yaml` drift detection, because a zero-entry `core_empty`
+    check alone does not close the empty-core class (TD-D41 scope note).
+
+**Also confirmed without edit:**
+- TD-D36: the `.*` gate predicates. A narrower predicate would be a second, drifting copy of each gate's
+  own file filter.
+- TD-D38: a comment-only `resolved-packs.txt`. `read_resolved_packs` skips `#` lines and returns `()`.
+- TD-D39: the separate data-test file.
+- The TD-D40 frozen-table design, as amended with X3. It honours and strengthens §9.5's intent:
+  re-layered rows R1–R3 are compared through the layers they moved to, not excluded. The capture is
+  pinned by command and commit, and a skip-if-rewritten guard would have been a silent skip.
+
+**Startup-gap:** this concurs with §D.9. TD-VF-22, -23 and -24 are a `startup-artifact-gap`. So is
+X3's omission from §9.5, a §9.5 drafting gap the original review should have caught. The orchestrating
+session annotates the §C.3 issue.
+
+**Affected sign-offs:**
+- **W1 (#1720 lineage) stands.** TD-D34 as corrected relies only on W1's existing `input_file_sha256`
+  and free-form flag.
+- **W5a (#1933) stands.** No engine behaviour changes.
+- W5b, W5c and W7 are unbuilt, so they have no orphaned approvals. They inherit TD-D35 (a), (b), (c1)
+  and (c2), and the TD-D41 deadline.
+
+**Human escalation (route via an issue plus `escalate_to_human.sh`; non-blocking for W5b, must resolve
+before W8):**
+> Should `packs/**` (minimum: `packs/*/dimensions.yaml`) be added to
+> `scripts/framework/protected_surfaces.txt`, making every HOS-source pack edit human-gated? Today, in the
+> HOS repo, a change that drops a pack's review binding or edits a pack's agent region body merges
+> without a human, even though the same content is human-gated once installed in a consumer. The
+> architect recommends **yes, `packs/**`**. The cost is a standing human-review requirement on every
+> pack edit.
+
+**Loop state:** approved in round 1. Per CORE, the round temp file is deleted on approval, so none is
+left.
+
 ---
 
 ## Human Review Required — Amendment D (2026-10-02, W5b registry data)
@@ -4030,6 +4238,7 @@ These are a `startup-artifact-gap`. The orchestrating session should annotate th
 **BLAST RADIUS:**
 - **This document:** Amendment D only. The top-of-document amendment index is **not** updated, because
   this dispatch was constrained to appending. The orchestrator or the next round should add a pointer.
+  *(architect, round 1: the pointer has been added to the top-of-document amendment list.)*
 - **Downstream:** the 15 W5b files in §D.7.
 - **Forward obligations:** W7 (TD-D35 a–c) and the follow-up issue (TD-D41).
 - **Not touched:** the W5a engine, W1–W4, and W5c's scope.
