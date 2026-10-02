@@ -101,6 +101,15 @@ def test_plan_with_changed_files(tmp_path, capsys):
     assert all(p["reason"] for p in doc["plan"])
 
 
+def test_plan_repeated_changed_file_is_deduplicated(tmp_path, capsys):
+    write_repo(tmp_path)
+    rc, out, err = run(
+        capsys, tmp_path, "plan", "--changed-file", "app/x.py", "--changed-file", "app/x.py"
+    )
+    assert rc == 0 and err == ""
+    assert json.loads(out)["changed_files"] == ["app/x.py"]
+
+
 def test_plan_with_base_unions_git_diff_and_explicit_files(tmp_path, capsys):
     """plan --base: changed files are `git diff --name-only <base>...HEAD` plus --changed-file."""
     write_repo(tmp_path)

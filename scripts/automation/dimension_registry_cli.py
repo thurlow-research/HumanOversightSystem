@@ -104,7 +104,7 @@ def _cmd_resolve(args: argparse.Namespace, root: Path) -> None:
 def _cmd_plan(args: argparse.Namespace, root: Path) -> None:
     if args.base is None and not args.changed_file:
         raise _UsageError("plan requires --base and/or at least one --changed-file")
-    changed = list(args.changed_file)
+    changed = sorted(set(args.changed_file))
     if args.base is not None:
         changed = sorted(set(changed) | set(_git_changed_files(root, args.base)))
     reg = dr.load(root)

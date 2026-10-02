@@ -431,7 +431,7 @@ def _path_escapes(root: Path, rel: str) -> str | None:
     if ".." in PurePosixPath(rel).parts:
         return "'..' path segment"
     candidate = root / rel
-    if candidate.exists():
+    if candidate.is_symlink() or candidate.exists():
         try:
             candidate.resolve().relative_to(root)
         except ValueError:

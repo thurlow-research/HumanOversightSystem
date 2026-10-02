@@ -890,3 +890,16 @@ def test_L28_suppress_binding_must_be_string(tmp_path):
         docs_with(lambda d: d["project"].update(suppress=[{"binding": ["x"], "reason": "y"}])),
     )
     assert code_of(tmp_path) == "unknown_item_key"
+
+
+def test_L27_dangling_symlink_outside_repo_is_path_escape(tmp_path):
+    repo = tmp_path / "repo"
+    write_repo(repo)
+    (repo / "dangling.md").symlink_to(tmp_path / "outside" / "missing.md")
+    write_repo(
+        repo,
+        docs_with(
+            lambda d: binding(d, "core", "core:ui/markup").update(prompt_template="dangling.md")
+        ),
+    )
+    assert code_of(repo) == "path_escape"
