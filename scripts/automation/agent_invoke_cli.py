@@ -76,6 +76,9 @@ except ImportError as exc:  # pragma: no cover — exercised via a rung-3 overri
     yaml = None  # type: ignore[assignment]
     _YAML_IMPORT_ERROR = exc
 
+from scripts.automation.lib import posture as _posture_lib  # noqa: E402
+from scripts.automation.lib.posture import KNOWN_POSTURES, Posture  # noqa: E402,F401
+
 # ---------------------------------------------------------------------------
 # Module constants (TD §3.1 member 6)
 # ---------------------------------------------------------------------------
@@ -151,15 +154,6 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset({"applicability", "outcome", "input", "invoc
 AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 POSTURE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
-# V14 (ADR-1643 Amendment 5 §10.7) — matches the command token of a
-# `Bash(<command> ...)` permissions.allow entry, e.g. captures
-# "bootstrap/query_issues.sh" from "Bash(bootstrap/query_issues.sh *)" and
-# "git" from "Bash(git diff *)". Only entries whose captured token contains
-# a path separator are treated as script paths (see load_posture V14).
-_BASH_SCRIPT_ALLOW_RE = re.compile(r"^Bash\(([^\s)]+)")
-
-KNOWN_POSTURES = frozenset({"review-read-only", "review-read-only-gh-read"})
-
 # Severities that count toward the audit record's blocking_findings_count
 # (§5.2). Not imported: mirrors SEVERITIES above — copied here as a literal
 # from scripts/oversight/validation_logic.py's own BLOCKING_SEVERITIES and
@@ -224,19 +218,6 @@ class AgentRef:
 
 
 @dataclass
-class Posture:
-    id: str
-    settings_path: Path
-    sidecar_path: Path
-    settings_bytes: bytes
-    sidecar_bytes: bytes
-    permission_mode: str
-    allowed_tools: list[str]
-    disallowed_tools: list[str]
-    sha256: str
-
-
-@dataclass
 class ProcResult:
     rc: int | None
     timed_out: bool
@@ -295,135 +276,23 @@ def resolve_agent(repo_root: Path, name: str) -> AgentRef:
 
 
 # ---------------------------------------------------------------------------
-# AD-7 — posture loading and validation (§3.6 V1-V11)
+# AD-7 — posture loading and validation (§3.6 V1-V14)
 # ---------------------------------------------------------------------------
 
 
 def load_posture(repo_root: Path, name: str) -> Posture:
-    """AD-7's posture load and validation. `name` not in KNOWN_POSTURES is a
-    caller programming error (exit 2, via `_UsageError`); every other miss
-    (V2-V11) is a `_PreflightFailure("posture_invalid")` record, because a
-    malformed or tampered posture file is an environment state, not a typo.
+    """Adapter over `scripts.automation.lib.posture.load_posture` (TD-D26),
+    which owns V1-V14. An unknown posture name (V1) is a caller programming
+    error (exit 2, via `_UsageError`); every other failure (V2-V14) is a
+    `_PreflightFailure("posture_invalid")` record, because a malformed or
+    tampered posture file is an environment state, not a typo.
     """
-    if name not in KNOWN_POSTURES:
-        raise _UsageError(f"unknown --posture: {name!r}")
-
-    postures_dir = repo_root / "contract" / "dimensions" / "postures"
-    settings_path = postures_dir / f"{name}.settings.json"
-    sidecar_path = postures_dir / f"{name}.hos.json"
-
-    if not settings_path.is_file() or not sidecar_path.is_file():  # V2
-        raise _PreflightFailure("posture_invalid")
-
-    settings_bytes = settings_path.read_bytes()
-    sidecar_bytes = sidecar_path.read_bytes()
-
-    try:  # V3
-        settings = json.loads(settings_bytes)
-        sidecar = json.loads(sidecar_bytes)
-    except json.JSONDecodeError:
-        raise _PreflightFailure("posture_invalid")
-    if not isinstance(settings, dict) or not isinstance(sidecar, dict):
-        raise _PreflightFailure("posture_invalid")
-
-    if sidecar.get("schema") != "hos.invocation-posture" or sidecar.get("schema_version") != 1:
-        raise _PreflightFailure("posture_invalid")  # V4
-    if sidecar.get("id") != name or settings_path.stem.split(".")[0] != name:
-        raise _PreflightFailure("posture_invalid")  # V5
-
-    permission_mode = sidecar.get("permission_mode")
-    if permission_mode not in ("manual", "dontAsk"):
-        raise _PreflightFailure("posture_invalid")  # V6
-
-    permissions = settings.get("permissions")
-    if (
-        not isinstance(permissions, dict)
-        or permissions.get("disableBypassPermissionsMode") != "disable"
-    ):
-        raise _PreflightFailure("posture_invalid")  # V7
-
-    allow = permissions.get("allow")
-    deny = permissions.get("deny")
-    if not isinstance(allow, list) or not all(isinstance(x, str) for x in allow):
-        raise _PreflightFailure("posture_invalid")  # V8
-    if not isinstance(deny, list) or not all(isinstance(x, str) for x in deny):
-        raise _PreflightFailure("posture_invalid")  # V8
-
-    allowed_tools = sidecar.get("allowed_tools")
-    disallowed_tools = sidecar.get("disallowed_tools")
-    if not isinstance(allowed_tools, list) or not all(isinstance(x, str) for x in allowed_tools):
-        raise _PreflightFailure("posture_invalid")
-    if not isinstance(disallowed_tools, list) or not all(
-        isinstance(x, str) for x in disallowed_tools
-    ):
-        raise _PreflightFailure("posture_invalid")
-
-    if set(allowed_tools) & set(disallowed_tools):
-        raise _PreflightFailure("posture_invalid")  # V9
-    if not set(disallowed_tools) <= set(deny):
-        raise _PreflightFailure("posture_invalid")  # V10
-
-    if permissions.get("defaultMode") == "bypassPermissions":
-        raise _PreflightFailure("posture_invalid")  # V11
-    if b"dangerously" in settings_bytes.lower():
-        raise _PreflightFailure("posture_invalid")  # V11
-
-    # V12/V13 (ADR-1643 Amendment 5, AD-7.1 — #1678) — a bare tool name in
-    # `allowed_tools` is passed through `--allowed-tools` as an UNCONDITIONAL
-    # grant of that tool, which supersedes every rule-scoped entry for it in
-    # `permissions.allow` (probe arms K/L/M/N; live CLI 2.1.272). V12 catches
-    # the specific shape this amendment's probe found broken — a bare grant
-    # sitting alongside a rule-scoped entry for the same tool, which makes
-    # the rule-scoped entry's narrowness meaningless. V13 is unconditional
-    # (not contingent on a matching rule-scoped entry existing today) so a
-    # future edit that deletes the last `Bash(...)` allow entry cannot
-    # reintroduce the blanket grant without tripping anything.
-    for tool in allowed_tools:
-        rule_prefix = f"{tool}("
-        if any(entry.startswith(rule_prefix) for entry in allow):
-            raise _PreflightFailure("posture_invalid")  # V12
-    if "Bash" in allowed_tools:
-        raise _PreflightFailure("posture_invalid")  # V13
-
-    # V14 (ADR-1643 Amendment 5 §10.7) — a `Bash(<script-path> *)` allow
-    # entry delegates the boundary to the script's own argument handling
-    # (AD-7.2), which is void if the executable bit was lost on install
-    # (a differently-laid-out consumer project, a packaging step that
-    # strips permissions, ...). That must fail loudly as `posture_invalid`,
-    # not degrade silently to "capability not available". Only entries
-    # whose command token contains a path separator are script-path
-    # entries; a bare command name (`git`, `cat`, `sed -n`, ...) is not a
-    # script this repo ships and is not checked here. An absolute token is
-    # rejected outright rather than resolved: `Path(repo_root) / "/abs"`
-    # discards `repo_root` entirely (`PurePath.__truediv__`'s documented
-    # absolute-operand behaviour), which would validate the entry against
-    # the HOST filesystem instead of the repo — every shipped script path
-    # is and must stay repo-relative (code-reviewer finding).
-    for entry in allow:
-        match = _BASH_SCRIPT_ALLOW_RE.match(entry)
-        if match is None:
-            continue
-        command_token = match.group(1)
-        if "/" not in command_token:
-            continue
-        if command_token.startswith("/"):
-            raise _PreflightFailure("posture_invalid")  # V14
-        script_path = repo_root / command_token
-        if not script_path.is_file() or not os.access(script_path, os.X_OK):
-            raise _PreflightFailure("posture_invalid")  # V14
-
-    posture_sha256 = hashlib.sha256(settings_bytes + b"\0" + sidecar_bytes).hexdigest()
-    return Posture(
-        id=name,
-        settings_path=settings_path,
-        sidecar_path=sidecar_path,
-        settings_bytes=settings_bytes,
-        sidecar_bytes=sidecar_bytes,
-        permission_mode=permission_mode,
-        allowed_tools=list(allowed_tools),
-        disallowed_tools=list(disallowed_tools),
-        sha256=posture_sha256,
-    )
+    try:
+        return _posture_lib.load_posture(repo_root, name)
+    except _posture_lib.PostureError as exc:
+        if exc.rule == "V1":
+            raise _UsageError(f"unknown --posture: {name!r}") from None
+        raise _PreflightFailure("posture_invalid") from None
 
 
 # ---------------------------------------------------------------------------
