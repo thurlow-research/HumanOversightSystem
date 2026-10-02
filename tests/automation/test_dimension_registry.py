@@ -20,7 +20,9 @@ import json
 import os
 import sys
 import types
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -117,16 +119,16 @@ def default_docs() -> dict[str, dict]:
 
 def write_repo(
     root: Path,
-    docs: dict[str, dict | str | None] | None = None,
+    docs: Mapping[str, Any] | None = None,
     *,
-    packs: list[str] | None = ("django",),  # type: ignore[assignment]
+    packs: Sequence[str] | None = ("django",),
 ) -> Path:
     """Write a fixture registry. A docs value of None skips the file; a str is
     written verbatim. `packs=None` writes no resolved-packs.txt."""
-    docs = default_docs() if docs is None else docs
+    doc_map: Mapping[str, Any] = default_docs() if docs is None else docs
     d = root / "contract" / "dimensions"
     d.mkdir(parents=True, exist_ok=True)
-    for stem, data in docs.items():
+    for stem, data in doc_map.items():
         if data is None:
             continue
         text = data if isinstance(data, str) else yaml.safe_dump(data)

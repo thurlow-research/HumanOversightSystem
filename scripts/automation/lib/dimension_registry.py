@@ -53,10 +53,13 @@ class RegistryError(Exception):
     """A registry load failure. `code` is machine-stable (§C.2.6)."""
 
     def __init__(self, code: str, message: str, path: str | None = None):
-        super().__init__(message)
+        super().__init__(code, message, path)
         self.code = code
         self.message = message
         self.path = path
+
+    def __str__(self) -> str:
+        return self.message
 
 
 @dataclass(frozen=True)

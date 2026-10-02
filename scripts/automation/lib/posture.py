@@ -33,8 +33,12 @@ class PostureError(Exception):
     """A posture failed validation. `rule` is the failing rule, "V1".."V14"."""
 
     def __init__(self, rule: str, message: str = ""):
-        super().__init__(f"{rule}: {message}" if message else rule)
+        super().__init__(rule, message)
         self.rule = rule
+        self._text = f"{rule}: {message}" if message else rule
+
+    def __str__(self) -> str:
+        return self._text
 
 
 @dataclass

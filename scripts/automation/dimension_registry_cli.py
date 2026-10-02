@@ -46,9 +46,12 @@ class _UsageError(Exception):
 
 class _OperationalError(Exception):
     def __init__(self, code: str, message: str):
-        super().__init__(message)
+        super().__init__(code, message)
         self.code = code
         self.message = message
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class _Parser(argparse.ArgumentParser):
