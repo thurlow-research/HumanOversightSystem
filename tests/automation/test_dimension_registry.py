@@ -920,3 +920,15 @@ def test_L27_dangling_symlink_outside_repo_is_path_escape(tmp_path):
         ),
     )
     assert code_of(repo) == "path_escape"
+
+
+@pytest.mark.parametrize("template", ["loop/x.md", "loop"])
+def test_L27_symlink_loop_is_path_escape(tmp_path, template):
+    repo = tmp_path / "repo"
+    write_repo(repo)
+    (repo / "loop").symlink_to(repo / "loop")
+    write_repo(
+        repo,
+        docs_with(lambda d: binding(d, "core", "core:ui/markup").update(prompt_template=template)),
+    )
+    assert code_of(repo) == "path_escape"

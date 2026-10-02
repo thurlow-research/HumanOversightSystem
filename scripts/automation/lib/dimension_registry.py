@@ -430,8 +430,20 @@ def _path_escapes(root: Path, rel: str) -> str | None:
         return "absolute path"
     if ".." in PurePosixPath(rel).parts:
         return "'..' path segment"
+    target = root / rel
     try:
-        (root / rel).resolve().relative_to(root.resolve())
+        resolved = target.resolve()
+        root_resolved = root.resolve()
+        # Non-strict resolve() silently tolerates symlink loops on newer
+        # Pythons; stat surfaces ELOOP. A merely-missing leaf is not an escape.
+        try:
+            target.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+    except (OSError, RuntimeError) as exc:
+        return f"cannot be resolved ({type(exc).__name__})"
+    try:
+        resolved.relative_to(root_resolved)
     except ValueError:
         return "resolves outside the repository"
     return None
