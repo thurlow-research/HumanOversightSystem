@@ -65,6 +65,7 @@ excluded.
 ## scripts/automation/
 
 - `scripts/automation/agent_invoke_cli.py` — L2 deterministic agent-invocation primitive (#1643 W1).
+- `scripts/automation/dimension_registry_cli.py` — L2 CLI over lib/dimension_registry.py (ADR-1643 TD §7.10 as amended by Amendment C §C.2.7).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
 - `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
@@ -78,6 +79,7 @@ excluded.
 - `scripts/automation/lib/config_resolver.py` — 4-layer config resolver for the HOS automation loop (T2, R13.1–R13.3).
 - `scripts/automation/lib/correlation.py` — Correlation-id derivation, artifact naming, idempotency precheck, and cold-start recovery state machine for the HOS automation loop.
 - `scripts/automation/lib/cycle_log.py` — write structured cycle events as per-entry audit records.
+- `scripts/automation/lib/dimension_registry.py` — the schema-parametric registry loader (ADR-1643 AD-9, TD §7 as amended by Amendment C; ADR-1644 SEAM-1).
 - `scripts/automation/lib/envelope.py` — Machine-readable HOS coordination envelope — parse, emit, threading, idempotency.
 - `scripts/automation/lib/gate_compliance.py` — deterministic gate non-override invariant helpers (SPEC-375).
 - `scripts/automation/lib/github.py` — Shared GitHub REST-by-id wrapper for the HOS automation loop.
@@ -87,6 +89,7 @@ excluded.
 - `scripts/automation/lib/multi_customer.py` — Multi-customer fairness wiring (B14, R12.1–R12.3, O15).
 - `scripts/automation/lib/observability.py` — Observability — JSONL-first run ledger consumers and derived Markdown log (T14, R11.8).
 - `scripts/automation/lib/overseer_state.py` — Deterministic state helpers for the HOS oversight loop.
+- `scripts/automation/lib/posture.py` — shared posture validation, rules V1-V14 (ADR-1643 AD-7, TD-D26).
 - `scripts/automation/lib/pr_readiness.py` — worker pre-PR deterministic self-assessment gate (#317, #1131).
 - `scripts/automation/lib/probe.py` — Token-free "is there work?" probe across customer repos (T4, §10, R10.1b).
 - `scripts/automation/lib/self_review_source.py` — Scheduled self-review work source (T12, §3.2, O6, O9).
