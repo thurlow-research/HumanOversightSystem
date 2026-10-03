@@ -61,7 +61,7 @@ Requirements Amendments 1–3 and ADR-1944 with Amendments 1 and 2 bind. In part
 - **TD-VF-10 (node_exporter on faberix).** Stands: 1.10.2, `--collector.textfile.directory` repeatable, `User=prometheus`, `ARGS=""`. Symlink-follow still needs the root probe (§5.1).
 - **TD-VF-11 (D-1 regexes).** Stands for the D-1 text (§1.9.1). TD-VF-15 adds capture 2.
 - **TD-VF-12 (paused cycle consumed the wakeup file).** **Resolved by Revision 2 (ADR A2-4):** the gate now runs before the wakeup consume (`:808`), so a paused cycle leaves wakeup markers for the next running cycle.
-- **TD-VF-13 (T4.1 matches deliberately).** Stands: the literal `claude -p /usage` lives only in the first line of `bin/lib/usage_pause.py`'s module docstring.
+- **TD-VF-13 (T4.1 matches deliberately).** **Superseded by S1 code-review round 1 (S5), §11.5 C-10:** `bin/lib/usage_pause.py` contains no `claude -p` / `claude --print` text anywhere (docstring included) and is **not** in the T4.1 exemption set; T4.1b pins the single `/usage` read line instead.
 
 ### New in Revision 2 (ADR A2)
 
@@ -409,7 +409,7 @@ Each must classify `empty_session`, and AC-4's "cost 0 is not success" is assert
 | C | `bin/hos-cron` | changed | §4 gate block (sentinel included) + one header paragraph | S2 | yes |
 | D | `scripts/framework/framework_consumer_files.txt` | changed | add `bin/hos-usage-poll`, `bin/lib/usage_pause.py` under the `bin/` heading (`:19-22`) | S1 | yes |
 | E | `bootstrap/hos_install.sh` | changed | post-install summary prints one §2a pointer line (provisions nothing, FR-47) | S1 | yes |
-| F | `tests/framework/test_agent_invocation_migration.py` | changed | T4.1 exemption reason (A2-9) + T4.1b; T4.2 unchanged | S1 | no |
+| F | `tests/framework/test_agent_invocation_migration.py` | changed | T4.1b (A2-9); T4.1 exemption set unchanged (S1 code-review round 1 (S5), §11.5 C-10); T4.2 unchanged | S1 | no |
 | G | `tests/automation/fixtures/usage/` | new | §1.9 fixtures + `README.md` provenance (S3 adds golden `.prom` and history fixtures) | S1, S3 | no |
 | H | `tests/automation/test_usage_pause_{envelope,parse,settings,reading,decision}.py` | new | units | S1 | no |
 | I | `tests/automation/test_hos_usage_poll.py` | new | poller integration (stub ssh/crontab) | S1, S3 | no |
@@ -587,7 +587,7 @@ hos-usage-poll export --from T --to T [--label NAME=VALUE]...   # S3, §5.5
 hos-usage-poll --help                            # first description line, verbatim:
   "Reads Claude subscription usage (/usage) over SSH loopback (ADR-1944); the read itself is bin/lib/usage_pause.py read-usage."
 ```
-`bin/hos-usage-poll` must not contain the literal `claude -p` or `-p /usage` (T4.1/T4.1b).
+`bin/hos-usage-poll` must not contain the literal `claude -p` or `-p /usage` (T4.1/T4.1b). Neither may `bin/lib/usage_pause.py` contain `claude -p` / `claude --print` (S1 code-review round 1 (S5), §11.5 C-10).
 
 **Exit codes.** Poll: `0` = reading written or lock held; `1` = no reading could be written (crash path attempted); `64` = usage error. `--check`: `0` all PASS/SKIP/INFO, `1` any FAIL, `64` usage error (incl. `--capture-fixture` target already exists). `--print-setup`: `0`, or `1` with a `MISSING:` line when the `.pub` is absent. `remote-cmd`: `0`, or `1` when no `claude_bin` resolves. `export`: §5.5.
 
@@ -660,8 +660,8 @@ Prints, in order, with headings:
 ### 3.12 Shipping and T4.1 / T4.1b / T4.2 — Revision 2 (ADR A2-9)
 
 - **Shipping (unchanged):** S1 adds `bin/hos-usage-poll` and `bin/lib/usage_pause.py` to `framework_consumer_files.txt`; `hos_install.sh` copies and `chmod +x`'s them. `contrib/` is never listed (S4 test).
-- **T4.1:** `_T4_1_EXPECTED_EXEMPTIONS` gains `"bin/lib/usage_pause.py",  # EXEMPT (permanent, ADR-1944 AD-5/A2-9): non-agent /usage forced-command template; executed by sshd, not HOS.` Matched through the module docstring's first line (literal `claude -p /usage`). `bin/hos-usage-poll` must not match.
-- **`test_T4_1b_usage_read_has_one_call_site`:** over code lines of `scripts/`, `bootstrap/`, `bin/`, `(?:-p|--print)\s+["']?/usage\b` matches only in `bin/lib/usage_pause.py`.
+- **T4.1 (S1 code-review round 1 (S5), §11.5 C-10 — supersedes the earlier file-level exemption):** `_T4_1_EXPECTED_EXEMPTIONS` is **unchanged**; `bin/lib/usage_pause.py` is **not** exempt. Neither `bin/lib/usage_pause.py` (docstring included) nor `bin/hos-usage-poll` may contain `claude -p` / `claude --print`, so a raw call added anywhere in either file fails T4.1. The template line (`{claude_bin} -p ...`) does not match T4.1's pattern.
+- **`test_T4_1b_usage_read_has_one_call_site`:** over code lines of `scripts/`, `bootstrap/`, `bin/`, `(?:-p|--print)\s+["']?/usage\b` matches only in `bin/lib/usage_pause.py`, and there on **exactly one** code line, which starts with `REMOTE_CMD_TEMPLATE` (the C-9 line). No code line of `bin/lib/usage_pause.py` or `bin/hos-usage-poll` matches `claude\s+(-p|--print)` (S1 code-review round 1 (S5), §11.5 C-10).
 - **`test_T4_1b_remote_command_template_is_exact`:** exactly one code line matches `^REMOTE_CMD_TEMPLATE\s*=`; stripped of its trailing comment it equals `REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"`. Neither file has a code line matching `--model|--json-schema|--agent|env -u`.
 - **`test_T4_1b_ssh_argv_ends_at_host`:** the `read_usage` argv (built with a stub `Popen`) ends with `"127.0.0.1"`.
 - **T4.2: no change.**
@@ -1375,7 +1375,7 @@ Tests:
 - `S1-ST11 test_no_git_or_clone_assumption` — no `git ` / `.git` / `rev-parse` in the poller or the module (A2-16, FR-66).
 - `S1-ST12 test_no_github_or_network` — no `gh `, `curl`, `github`, `urllib`, `http.client`, `socket` in the poller or module (FR-57).
 
-**`test_agent_invocation_migration.py`:** T4.1 (exemption), `test_T4_1b_usage_read_has_one_call_site`, `test_T4_1b_remote_command_template_is_exact`, `test_T4_1b_ssh_argv_ends_at_host`; T4.2 unchanged (AC-26).
+**`test_agent_invocation_migration.py`:** T4.1 (exemption set unchanged; `usage_pause.py` not exempt — S1 code-review round 1 (S5), §11.5 C-10), `test_T4_1b_usage_read_has_one_call_site` (exactly one matching line, no `claude\s+(-p|--print)`), `test_T4_1b_remote_command_template_is_exact`, `test_T4_1b_ssh_argv_ends_at_host`; T4.2 unchanged (AC-26).
 **`test_consumer_framework_files.py`:** `test_usage_pause_files_shipped`.
 
 ### 9.2 S2 tests
@@ -1745,6 +1745,7 @@ Classification: **clarifying**, except C-6 (**additive**: one more case in the `
 - **C-7 (§3.2 step 6).** `cost_usd` is rendered with `repr(float)`, exponent form included (`1e-30`, `1e+16`), so a nonzero cost is never shown as `0`. Any later consumer (S2 `check` if it ever reads cost, S3 `.prom`/history) must accept `[0-9.e+-]` forms. The Prometheus text format already does.
 - **C-8 (§9.1).** `test_poll_spawn_failed` is asserted at the library/CLI level (`read_usage` with an absent binary, and `read-usage` printing `read=spawn_failed rc=-`). The poller's pinned `PATH` always reaches `/usr/bin/ssh`, and execvp skips non-executable stubs. The poller's `rc=-` branch is exercised through the poller by the timeout test.
 - **C-9 (§3.1, T4.1b).** The `REMOTE_CMD_TEMPLATE` line is 149 characters and exceeds flake8 E501. The line is exactly `REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)`. The `noqa` goes **before** the mandated comment. The line therefore still **ends with** the mandated comment byte for byte. `split("  # ")[0]` still gives the template, so T4.1b passes unchanged. Verified under flake8 at 100 and 120 and under black at 100. No per-file ignore (the gate passes CLI flags and does not read `pyproject.toml`), and no rewording of the comment.
+- **C-10 (§3.12, TD-VF-13, §9.1; S1 code-review round 1 (S5)).** **Clarifying, stricter.** The file-level T4.1 exemption for `bin/lib/usage_pause.py` was broader than needed: its only `claude -p` text was the module docstring, so a second raw call anywhere in the file would have passed T4.1. The docstring is reworded to contain no `claude -p`, and `bin/lib/usage_pause.py` is **removed** from `_T4_1_EXPECTED_EXEMPTIONS` (the set is unchanged from pre-#1944). T4.1b now asserts exactly one code line of the file (the C-9 `REMOTE_CMD_TEMPLATE` line) matches the usage-read pattern, and no code line of `bin/lib/usage_pause.py` or `bin/hos-usage-poll` matches `claude\s+(-p|--print)`. Supersedes §3.12's and TD-VF-13's docstring-exemption wording. Startup-gap check: the initial TD should have specified this; the change only tightens a test and was made within the S1 review loop, so no prior sign-off is orphaned beyond the in-flight S1 review, which already covers it.
 
 ## 12. Escalations — Revision 2
 
@@ -1803,6 +1804,6 @@ Classification: **clarifying**, except C-6 (**additive**: one more case in the `
 
 **CONFIDENCE: HIGH** on §0–§4 (anchors re-read at `0603100b9`; regexes executed against both real captures; envelope fields taken only from capture 2). **MEDIUM-HIGH** on §5 (symlink probe pending; fallback verified available). **MEDIUM** on §6–§7 until the §6.9 Grafana gaps are checked on monitrix; two A2-13 details were unimplementable as worded and carry interims (TD-O-12, TD-O-13).
 
-**BLAST RADIUS:** `bin/hos-cron` cycle start (both roles, every project, every consumer on upgrade); new `bin/hos-usage-poll` and `bin/lib/usage_pause.py`; `framework_consumer_files.txt`; `hos_install.sh` summary text; T4.1 ledger; the shared `CronEnv` fixture; `~/.ssh/authorized_keys`; the user crontab; `~/.hos/usage-pause/` (incl. `history/`, `last-raw`); `~/.config/hos/usage-pause.conf`; `/var/lib/hos-usage` + one symlink; monitrix `/opt/hos-monitoring`, a `hos-sync` user, `/usr/local/bin/hos-monitoring-sync`, Grafana provisioning and env file, two systemd units, `/usr/local/sbin/hos-grafana-alerting-reload`, `/var/lib/hos-grafana-reload`; `docs/releases/v0.7.0.md`. (`protected_surfaces.txt`, AGENT-IDENTITY §9.0 and CODEOWNERS are no longer touched: H-2.)
+**BLAST RADIUS:** `bin/hos-cron` cycle start (both roles, every project, every consumer on upgrade); new `bin/hos-usage-poll` and `bin/lib/usage_pause.py`; `framework_consumer_files.txt`; `hos_install.sh` summary text; T4.1b tests (T4.1 ledger untouched: §11.5 C-10); the shared `CronEnv` fixture; `~/.ssh/authorized_keys`; the user crontab; `~/.hos/usage-pause/` (incl. `history/`, `last-raw`); `~/.config/hos/usage-pause.conf`; `/var/lib/hos-usage` + one symlink; monitrix `/opt/hos-monitoring`, a `hos-sync` user, `/usr/local/bin/hos-monitoring-sync`, Grafana provisioning and env file, two systemd units, `/usr/local/sbin/hos-grafana-alerting-reload`, `/var/lib/hos-grafana-reload`; `docs/releases/v0.7.0.md`. (`protected_surfaces.txt`, AGENT-IDENTITY §9.0 and CODEOWNERS are no longer touched: H-2.)
 
 **Change classification: STRUCTURAL.** The structure was set by the human's rulings (D1–D19), which pre-authorize it. The design-level additions here are `additive` or `clarifying` (TD-O-14 to TD-O-22) or unimplementable-as-worded interims (TD-O-12, TD-O-13), all listed for the architect. **Human rulings H-1..H-4, H-7:** no human ruling is outstanding. S2 waits on the S1 trip-test record (H-7); S4 and S5 wait only on their predecessor slices and the S5 human steps.
