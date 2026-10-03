@@ -112,3 +112,9 @@ def test_installer_reads_list_on_both_sides():
         "hos_install.sh must reference framework_consumer_files.txt in BOTH the "
         "copy-loop and enumerate_framework_files (the manifest enumerator)"
     )
+
+
+def test_usage_pause_files_shipped():
+    """#1944: the poller and its library ship to consumer installs."""
+    files = set(_consumer_files())
+    assert {"bin/hos-usage-poll", "bin/lib/usage_pause.py"} <= files

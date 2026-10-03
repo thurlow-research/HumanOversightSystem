@@ -1,0 +1,10 @@
+{
+  "result": "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 4% used · resets Oct 3, 2:40am (UTC)\nCurrent week (all models): 29% used · resets Oct 3, 12am (UTC)\nCurrent week (Fable): 6% used · resets Oct 3, 12am (UTC)",
+  "total_cost_usd": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

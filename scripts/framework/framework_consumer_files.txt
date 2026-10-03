@@ -19,7 +19,9 @@
 # ── bin/ — cron launcher and its dependencies (#715, #717, #769) ─────────────────
 bin/hos-cron
 bin/hos-trim-logs
+bin/hos-usage-poll
 bin/lib/git-credentials.sh
+bin/lib/usage_pause.py
 
 # ── bootstrap/ — branch-ownership mechanism (#967, ADR-037, P1) ──────────────────
 # create_branch.sh is the R1 branch-creation seam bin/hos-cron's worker prose

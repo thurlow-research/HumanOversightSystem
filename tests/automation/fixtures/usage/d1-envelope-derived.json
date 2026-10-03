@@ -1,0 +1,10 @@
+{
+  "result": "You are currently using your subscription to power your Claude Code usage\n\nCurrent session: 6% used · resets Oct 3, 2:40am (UTC)\nCurrent week (all models): 48% used · resets Oct 3, 12am (UTC)\nCurrent week (Fable): 3% used · resets Oct 3, 12am (UTC)\n\nWhat's contributing to your limits usage?\nApproximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.\n\nLast 24h · 2049 requests · 181 sessions\n  61% of your usage came from subagent-heavy sessions\n  36% of your usage was at >150k context\n  34% of your usage came from sessions active for 8+ hours\n  Top subagents: technical-design 6%, architect 3%, pm-agent 2%, coder 1%\n\nLast 7d · 13242 requests · 1442 sessions\n  48% of your usage came from subagent-heavy sessions\n  28% of your usage was at >150k context\n  10% of your usage came from sessions active for 8+ hours\n  Top subagents: coder 14%, technical-design 3%, architect 2%, code-reviewer 2%, unit-test 1%, general-purpose 1%, oversight-evaluator 1%, risk-assessor 1%, +2 more",
+  "total_cost_usd": 0,
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}

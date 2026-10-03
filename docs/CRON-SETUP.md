@@ -71,6 +71,104 @@ logs a clear "refresh the token" hint; re-run `claude setup-token`.
 
 ---
 
+## 2a. Usage-pause poller (SSH loopback)
+
+Setup for the proactive usage pause (#1944). One poller per host. The cycle-start
+gate that consumes its reading ships in a later step; until it is installed, this
+poller only records readings.
+
+### 2a.1 What it is
+
+One poller per host runs every 5 minutes. It reads `/usage` under your **personal
+login** over SSH loopback and never touches `claude-auth.env`. Every worker and
+overseer cycle on the host (all projects, both roles) pauses at cycle start when
+**session, weekly (all models), or any weekly per-model** usage is `>=` its
+threshold (default 90 each), or when the reading is missing, stale or failed
+(fail-closed). It resumes on its own. Interactive sessions are never paused. This
+is separate from `hos-suspend`.
+
+### 2a.2 Key
+
+Generate the loopback key (block 2 of `bin/hos-usage-poll --print-setup`):
+
+```bash
+ssh-keygen -t ed25519 -N '' -C hos-loopback -f ~/.ssh/hos_loopback
+```
+
+### 2a.3 authorized_keys
+
+Append the one line printed by `bin/hos-usage-poll --print-setup` (block 3) to
+`~/.ssh/authorized_keys`. It has exactly two options, `from=` and `command=`:
+
+```text
+from="127.0.0.1,::1",command="<abs claude> -p /usage --output-format json" ssh-ed25519 <blob> hos-loopback
+```
+
+The line is **not final until a real `--check` read returns real percentages**.
+If `claude` moves, regenerate the line (`bin/hos-usage-poll remote-cmd`); `--check`
+item 2 detects the drift. Do not add `restrict` and do not add environment
+unsetting: both were ruled fragile.
+
+### 2a.4 known_hosts
+
+Seed it from the on-disk host key (block 4 of `--print-setup`). Do not use
+`ssh-keyscan` and do not accept-new.
+
+### 2a.5 Settings (optional)
+
+`~/.config/hos/usage-pause.conf`, one `key=value` per line, `#` comment lines
+allowed. The file is parsed, never sourced. Missing = defaults; any invalid value,
+unknown key or duplicate key (including the history keys) pauses every cycle
+until fixed, regardless of `fail_mode`; the cron log line names the key.
+
+| Key | Default | Valid |
+|---|---|---|
+| `session_threshold` | 90 | integer 1-100 |
+| `weekly_threshold` | 90 | integer 1-100 |
+| `weekly_model_threshold` | 90 | integer 1-100 |
+| `fail_mode` | `closed` | exactly `closed` or `open` |
+| `poll_interval_seconds` | 300 | integer multiple of 60, 60-3600 |
+| `staleness_seconds` | 900 | integer greater than `poll_interval_seconds + read_timeout_seconds`, at most 7200 |
+| `read_timeout_seconds` | 60 | integer 5 to `poll_interval_seconds - 30` |
+| `history_days` | 90 | integer 1-3650 |
+| `history_max_mb` | 100 | integer 1-10240 |
+| `claude_bin` | resolved from `PATH` | absolute path, no `.` or `..` segment, not ending in `/` |
+
+### 2a.6 Crontab: the one install-path line
+
+```cron
+*/5 * * * *  $HOME/<path-to>/bin/hos-usage-poll > $HOME/.hos/usage-pause/poll.last.log 2>&1
+```
+
+This line is the single place the poller's install path is defined. When the path
+changes (for example, #1276), change this line. Use `>`, not `>>`. One entry per
+host. `--print-setup` prints it with your paths filled in.
+
+### 2a.7 Verify
+
+First run `bin/hos-usage-poll --check --capture-fixture ~/hos-usage-envelope-<YYYYMMDD>.json`
+(keep the file and attach it to #1944), then `bin/hos-usage-poll --check`, which
+must end `RESULT: PASS`. `--check` item 8 checks every scheduled `hos-cron` copy
+for the gate: **item 8 must be green after every upgrade of any project on the
+host.** Item 10 is informational: it shows whether the current read would pause
+under the current settings.
+
+### 2a.9 Fail-open
+
+`fail_mode=open` is safe **only once alerting is live** (`contrib/monitoring/`,
+AC-43 and AC-44 recorded). On faberix it is forbidden until the live-delivery
+record exists. fail_mode=open without a running poller means no quota protection.
+
+### 2a.10 Reading the state
+
+- `cat ~/.hos/usage-pause/reading`: raw values; `poll_*` keys are the poller's own view.
+- `cat ~/.hos/usage-pause/last-raw`: the latest raw output, for parse-failure debugging.
+- `cat ~/.hos/usage-pause/poll.last.log`: the last poll's output.
+
+No GitHub issue is ever filed by this feature.
+
+---
+
 ## 3. Project registry
 
 `bin/hos-cron` resolves each project's repo paths and config dir from a

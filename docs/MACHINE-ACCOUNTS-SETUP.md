@@ -240,6 +240,8 @@ every governance gate and was retired (#990).
 
 **Replace `/path/to/project/`** with the actual project parent path (e.g. `/Users/you/Code/CPS`), and `<name>` with this project's key in `~/.config/hos/projects.conf` (e.g. `cps`) — see `docs/CRON-SETUP.md` §3. `bin/hos-cron` handles preflight, auth, and jitter automatically.
 
+Claude usage-pause poller (SSH loopback): see `docs/CRON-SETUP.md` §2a.
+
 **Verify setup before adding to crontab:**
 ```bash
 cd /path/to/project/Worker

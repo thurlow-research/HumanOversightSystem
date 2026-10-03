@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# bin/hos-usage-poll — Claude subscription usage poller (#1944, ADR-1944)
+#
+# Reads Claude subscription usage over SSH loopback under the operator's personal
+# login, parses it, and overwrites one reading file. Nothing else decides anything
+# from this script: the reading file is its only decision-path output.
+#
+# Usage:
+#   hos-usage-poll                                   one poll (crontab, every N minutes)
+#   hos-usage-poll --check [--capture-fixture PATH]  read-only preflight
+#   hos-usage-poll --print-setup                     print the setup commands; mutates nothing
+#   hos-usage-poll remote-cmd                        print the forced-command text
+#   hos-usage-poll --help
+#
+# Setup and runbook: docs/CRON-SETUP.md section 2a. The crontab line printed by
+# --print-setup is the single definition of this script's install path.
+#
+# Exit codes: poll 0 = reading written (or another poll holds the lock), 1 = no
+# reading could be written, 64 = usage error. --check: 0 all PASS/SKIP/INFO,
+# 1 any FAIL, 64 usage error.
+
+set -uo pipefail
+
+# P1. Environment: pinned PATH exactly as bin/hos-cron pins it; nothing is removed.
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(eval echo "~$(id -un)")"; export HOME
+fi
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+_log() { echo "[hos-usage-poll] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
+
+# P2. Self-location: the resolved path of this file; the library sits beside it.
+_resolve_self() {
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$0"
+  else
+    local _d
+    _d="$(cd -P "$(dirname "$0")" && pwd -P)" || return 1
+    echo "$_d/$(basename "$0")"
+  fi
+}
+_SELF="$(_resolve_self)" || { echo "hos-usage-poll: cannot resolve its own path" >&2; exit 1; }
+_LIB="$(dirname "$_SELF")/lib/usage_pause.py"
+
+_usage() {
+  cat <<'EOF'
+Reads Claude subscription usage (/usage) over SSH loopback (ADR-1944); the read itself is bin/lib/usage_pause.py read-usage.
+
+Usage:
+  hos-usage-poll                                   one poll (crontab)
+  hos-usage-poll --check [--capture-fixture PATH]  read-only preflight
+  hos-usage-poll --print-setup                     print the setup; never mutates
+  hos-usage-poll remote-cmd                        print the forced-command text
+  hos-usage-poll --help
+
+Runbook: docs/CRON-SETUP.md section 2a.
+EOF
+}
+
+# Mode dispatch: every mode except the poll hands off to the library.
+case "${1:-}" in
+  "") ;;
+  --help|-h) _usage; exit 0 ;;
+  --print-setup)
+    [[ $# -eq 1 ]] || { _usage >&2; exit 64; }
+    exec python3 "$_LIB" print-setup --self-path "$_SELF" ;;
+  remote-cmd)
+    [[ $# -eq 1 ]] || { _usage >&2; exit 64; }
+    exec python3 "$_LIB" remote-cmd ;;
+  --check)
+    shift
+    if [[ $# -eq 0 ]]; then
+      exec python3 "$_LIB" check-setup --self-path "$_SELF"
+    elif [[ $# -eq 2 && "$1" == "--capture-fixture" ]]; then
+      exec python3 "$_LIB" check-setup --self-path "$_SELF" --capture-fixture "$2"
+    fi
+    _usage >&2; exit 64 ;;
+  *) _usage >&2; exit 64 ;;
+esac
+
+_STATE="${HOS_STATE_DIR:-$HOME/.hos}"
+_DIR="$_STATE/usage-pause"
+_LOCK="$_STATE/locks/usage-poll.lock"
+_STDOUT_TMP="$_DIR/poll.stdout.tmp"
+_STDERR_TMP="$_DIR/poll.stderr.tmp"
+_KEY="${HOS_USAGE_KEY_PATH:-$HOME/.ssh/hos_loopback}"
+_LOCK_CEILING_SECONDS=600
+
+mkdir -p "$_DIR" "$_STATE/locks" && chmod 700 "$_DIR" || {
+  echo "hos-usage-poll: cannot create $_DIR" >&2; exit 1; }
+
+# P3. Overlap lock: non-blocking mkdir, reclaimed after the age ceiling.
+_DIAG=""
+_lock_age() {
+  local _m
+  _m="$(stat -c %Y "$_LOCK" 2>/dev/null || stat -f %m "$_LOCK" 2>/dev/null || echo 0)"
+  echo $(( $(date +%s) - _m ))
+}
+if ! mkdir "$_LOCK" 2>/dev/null; then
+  if [[ "$(_lock_age)" -lt "$_LOCK_CEILING_SECONDS" ]]; then
+    _log "another poll holds the lock — exiting"
+    exit 0
+  fi
+  rm -rf "$_LOCK"
+  mkdir "$_LOCK" 2>/dev/null || { _log "cannot reclaim the poll lock"; exit 0; }
+  _DIAG="lock_stale_reclaimed"
+fi
+
+_WROTE=0
+_STEP="P3"
+
+# P12. Exit trap: clean temp files and the lock; if no reading was written, record a crash.
+_write_crash_file() {
+  local _now _tmp="$_DIR/reading.tmp"
+  _now="$(date +%s)"
+  printf 'schema=1\nkind=reading\nrun_at=%s\nrun_epoch=%s\noutcome=crashed\nreason=crashed\ndetail=%s\nend=1\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_now" "$1" > "$_tmp" 2>/dev/null \
+    && mv -f "$_tmp" "$_DIR/reading" 2>/dev/null
+}
+_on_exit() {
+  local _code=$?
+  trap - EXIT
+  rm -f "$_STDOUT_TMP" "$_STDERR_TMP"
+  rm -rf "$_LOCK"
+  if [[ "$_WROTE" != 1 ]]; then
+    local _detail="exit=$_code at $_STEP"
+    python3 "$_LIB" poll-record --state-dir "$_STATE" --transport-reason crashed --detail "$_detail" 2>/dev/null \
+      || _write_crash_file "$_detail"
+  fi
+  exit "$_code"
+}
+trap _on_exit EXIT
+
+_TRANSPORT_REASON=""
+_TRANSPORT_DETAIL=""
+_READ_KIND=""
+_READ_RC=""
+_READ_RAN=0
+_READ_TIMEOUT=""
+
+# P4. Parameters, read from the library (never sourced or evaluated).
+_STEP="P4"
+_params="$(python3 "$_LIB" poll-params 2>/dev/null)"
+_params_rc=$?
+_params_ok=1
+_seen=0
+if [[ $_params_rc -eq 0 ]]; then
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+      read_timeout_seconds) [[ "$_v" =~ ^[0-9]+$ ]] && _READ_TIMEOUT="$_v" || _params_ok=0; _seen=$(( _seen + 1 )) ;;
+      settings_status) _seen=$(( _seen + 1 )) ;;
+      *) _params_ok=0 ;;
+    esac
+  done <<< "$_params"
+fi
+if [[ $_params_rc -ne 0 || $_params_ok -ne 1 || $_seen -ne 2 ]]; then
+  _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="poll-params failed"
+fi
+
+# P5. Key.
+if [[ -z "$_TRANSPORT_REASON" && ! ( -f "$_KEY" && -r "$_KEY" ) ]]; then
+  _TRANSPORT_REASON="ssh_failed"; _TRANSPORT_DETAIL="loopback key missing"
+fi
+
+# P6. The read. The library sends no remote command; sshd runs the forced command.
+if [[ -z "$_TRANSPORT_REASON" ]]; then
+  _STEP="P6"
+  _out="$(python3 "$_LIB" read-usage --timeout "$_READ_TIMEOUT" --key "$_KEY" \
+    --stdout "$_STDOUT_TMP" --stderr "$_STDERR_TMP" 2>/dev/null)"
+  if [[ $? -eq 0 && "$_out" =~ ^read=(exited|timeout|spawn_failed)\ rc=([0-9]+|-)$ ]]; then
+    _READ_KIND="${BASH_REMATCH[1]}"; _READ_RC="${BASH_REMATCH[2]}"; _READ_RAN=1
+  else
+    _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="read-usage failed"
+  fi
+fi
+
+# P7. Step 1 of the write order: the reading.
+_STEP="P7"
+_args=(poll-record --state-dir "$_STATE")
+if [[ $_READ_RAN -eq 1 ]]; then
+  _args+=(--read "$_READ_KIND" --stdout "$_STDOUT_TMP" --stderr "$_STDERR_TMP")
+  [[ "$_READ_RC" != "-" ]] && _args+=(--rc "$_READ_RC")
+else
+  _args+=(--transport-reason "$_TRANSPORT_REASON" --detail "$_TRANSPORT_DETAIL")
+fi
+[[ -n "$_DIAG" ]] && _args+=(--diagnostics "$_DIAG")
+if python3 "$_LIB" "${_args[@]}"; then
+  _WROTE=1
+fi
+
+# P11. Step 4: last-raw (overwritten every poll that reached P7).
+_STEP="P11"
+if [[ $_WROTE -eq 1 ]]; then
+  _epoch="$(sed -n 's/^run_epoch=\([0-9][0-9]*\)$/\1/p' "$_DIR/reading" 2>/dev/null | head -n 1)"
+  [[ -n "$_epoch" ]] || _epoch="$(date +%s)"
+  _raw_args=(last-raw --state-dir "$_STATE" --run-epoch "$_epoch")
+  if [[ $_READ_RAN -eq 1 ]]; then
+    _raw_args+=(--read "$_READ_KIND" --stdout "$_STDOUT_TMP" --stderr "$_STDERR_TMP")
+    [[ "$_READ_RC" != "-" ]] && _raw_args+=(--rc "$_READ_RC")
+  else
+    _raw_args+=(--read none)
+  fi
+  python3 "$_LIB" "${_raw_args[@]}" || _log "WARN: last-raw failed (ignored; never affects the pause)"
+fi
+
+_STEP="done"
+if [[ $_WROTE -eq 1 ]]; then exit 0; fi
+exit 1

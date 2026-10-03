@@ -1,0 +1,26 @@
+{
+  "result": "\u001b]0;title\u0007You are currently using your subscription to power your Claude Code usage\r\n\r\n\u001b[1mCurrent session\u001b[0m: 11% used · resets Oct 3, 2:40am (UTC)\r\nCurrent week (all models): 1% used · resets Oct 10, 12am (UTC)\r\nCurrent week (Fable): 0% used · resets Oct 10, 12am (UTC)\r\n\r\nWhat's contributing to your limits usage?\r\nApproximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.\r\n\r\nLast 24h · 2290 requests · 175 sessions\r\n  67% of your usage came from subagent-heavy sessions\r\n  41% of your usage was at >150k context\r\n  30% of your usage came from sessions active for 8+ hours\r\n  Top subagents: technical-design 10%, architect 6%, pm-agent 2%, coder 1%\r\n\r\nLast 7d · 13401 requests · 1433 sessions\r\n  49% of your usage came from subagent-heavy sessions\r\n  29% of your usage was at >150k context\r\n  Top subagents: coder 13%, technical-design 4%, architect 3%, code-reviewer 2%, unit-test 1%, oversight-evaluator 1%, risk-assessor 1%, pm-agent 1%, +1 more",
+  "total_cost_usd": 0,
+  "usage": {
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 0,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [],
+    "speed": "standard",
+    "fallback_credit": null
+  }
+}

@@ -2531,6 +2531,7 @@ echo ""
     fi
     echo "            # Weekly log trim:"
     echo "            0 2 * * 0  $TARGET_REPO/bin/hos-trim-logs"
+    echo "       d. Claude usage-pause poller (required before cycles run): see docs/CRON-SETUP.md §2a"
     echo ""
     _next_step=$(( _next_step + 1 ))
   fi

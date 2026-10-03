@@ -20,6 +20,7 @@ excluded.
 - `bin/hos-overseer` — interactive HOS overseer session launcher
 - `bin/hos-suspend` — pause/resume a HOS project cron cycle without touching the crontab
 - `bin/hos-trim-logs` — trim HOS cron agent logs to prevent unbounded growth
+- `bin/hos-usage-poll` — Claude subscription usage poller (#1944, ADR-1944)
 - `bin/hos-worker` — interactive HOS worker session launcher
 
 ## bootstrap/

@@ -52,6 +52,7 @@ import importlib.util
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,6 +116,9 @@ _T4_1_EXPECTED_EXEMPTIONS = {
     "scripts/run_panel.sh",  # EXEMPT until W4b (TD §6.4) migrates the panel's Claude seats.
     # EXEMPT until W4c (#1756, ADR-1643 Amendment 6) ships a scripts-reviewer agent.
     "scripts/framework/validate_scripts.sh",
+    # EXEMPT (permanent, ADR-1944 AD-5/A2-9): non-agent /usage forced-command
+    # template; executed by sshd, not HOS.
+    "bin/lib/usage_pause.py",
 }
 
 
@@ -130,6 +134,64 @@ def test_T4_1_no_raw_claude_cli_outside_named_exemptions():
         f"expected exactly {sorted(_T4_1_EXPECTED_EXEMPTIONS)}. Every other "
         "caller must go through bootstrap/invoke_agent.sh (ADR-1643 AD-16)."
     )
+
+
+# ── T4.1b — the /usage read has one call site (ADR-1944 A2-9, TD §3.12) ────────
+_USAGE_READ_PATTERN = re.compile(r"(?:-p|--print)\s+[\"']?/usage\b")
+_USAGE_LIB = "bin/lib/usage_pause.py"
+_USAGE_FILES = (_USAGE_LIB, "bin/hos-usage-poll")
+
+
+def test_T4_1b_usage_read_has_one_call_site():
+    hits = set()
+    for path in _iter_files("scripts", "bootstrap", "bin"):
+        for _lineno, line in _code_lines(path):
+            if _USAGE_READ_PATTERN.search(line):
+                hits.add(str(path.relative_to(ROOT)))
+                break
+    assert hits == {_USAGE_LIB}, f"/usage read call sites: {sorted(hits)}"
+
+
+def test_T4_1b_remote_command_template_is_exact():
+    lines = [
+        line
+        for _n, line in _code_lines(ROOT / _USAGE_LIB)
+        if re.match(r"^REMOTE_CMD_TEMPLATE\s*=", line)
+    ]
+    assert len(lines) == 1
+    code = lines[0].split("  # ")[0].rstrip()
+    assert code == 'REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"'
+    assert lines[0].endswith(
+        "# ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)"
+    )
+    for name in _USAGE_FILES:
+        for _n, line in _code_lines(ROOT / name):
+            assert not re.search(r"--model|--json-schema|--agent|env -u", line), (name, line)
+
+
+def test_T4_1b_ssh_argv_ends_at_host(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("usage_pause_t41b", ROOT / _USAGE_LIB)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    seen = []
+
+    class _Proc:
+        pid = 1
+
+        def wait(self, timeout=None):
+            return 0
+
+    def _popen(argv, **_kwargs):
+        seen.append(list(argv))
+        return _Proc()
+
+    monkeypatch.setattr(module.subprocess, "Popen", _popen)
+    module.read_usage(
+        key_path=tmp_path / "k", timeout_s=5, stdout_path=tmp_path / "o", stderr_path=tmp_path / "e"
+    )
+    assert seen and seen[0][-1] == "127.0.0.1"
 
 
 # ── T4.2 — the private _TIMEOUT_BIN/run_capped copy ledger, per AD-16.6 ────────
