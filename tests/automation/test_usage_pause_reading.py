@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from tests.automation.usage_support import fx, settings, up
 
 
@@ -249,3 +251,28 @@ def test_open_private_replaces_symlink(tmp_path):
     assert victim.read_text() == "precious"
     assert (tmp_path / "out").read_bytes() == b"data"
     assert (tmp_path / "out").stat().st_mode & 0o777 == 0o600
+
+
+def test_write_atomic_removes_tmp_on_failure(tmp_path, monkeypatch):
+    def boom(*_a):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(up.os, "fsync", boom)
+    with pytest.raises(OSError):
+        up.write_atomic(tmp_path / "reading", b"x", 0o600)
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.undo()
+    (tmp_path / "reading").mkdir()
+    with pytest.raises(OSError):
+        up.write_atomic(tmp_path / "reading", b"x", 0o600)
+    assert not (tmp_path / "reading.tmp").exists()
+
+
+def test_stderr_detail_keeps_the_tail():
+    cls = up.classify_read(
+        up.ReadOutcome("exited", 255, None),
+        b"",
+        ("head-marker " + "x" * 500 + " tail-marker").encode(),
+    )
+    assert cls.detail.endswith("tail-marker") and "head-marker" not in cls.detail
+    assert len(cls.detail) <= up.VALUE_CAP_CHARS

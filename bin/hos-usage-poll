@@ -83,65 +83,37 @@ _DIR="$_STATE/usage-pause"
 _LOCK="$_STATE/locks/usage-poll.lock"
 _STDOUT_TMP="$_DIR/poll.stdout.tmp"
 _STDERR_TMP="$_DIR/poll.stderr.tmp"
+_PYERR_TMP="$_DIR/poll.pyerr.$$.tmp"
 _KEY="${HOS_USAGE_KEY_PATH:-$HOME/.ssh/hos_loopback}"
-_LOCK_CEILING_SECONDS=600
+_LOCK_BACKSTOP_MARGIN_SECONDS=60
+_LOCK_BACKSTOP_DEFAULT_SECONDS=120
 
 mkdir -p "$_DIR" "$_STATE/locks" && chmod 700 "$_DIR" || {
   echo "hos-usage-poll: cannot create $_DIR" >&2; exit 1; }
 
-# P3. Overlap lock: non-blocking mkdir, reclaimed after the age ceiling.
-_DIAG=""
-_lock_age() {
-  local _m
-  _m="$(stat -c %Y "$_LOCK" 2>/dev/null || stat -f %m "$_LOCK" 2>/dev/null || echo 0)"
-  echo $(( $(date +%s) - _m ))
+# Run one library step; its stderr goes to the cron log (poll.last.log) and its first line
+# is kept in _PYERR_FIRST so a failure can fold it into the reading's detail.
+_PYERR_FIRST=""
+_pyerr_first() { _PYERR_FIRST="$(head -n 1 "$_PYERR_TMP" 2>/dev/null)"; }
+_py() {
+  local _rc
+  python3 "$_LIB" "$@" 2> "$_PYERR_TMP"
+  _rc=$?
+  cat "$_PYERR_TMP" >&2 2>/dev/null
+  return $_rc
 }
-if ! mkdir "$_LOCK" 2>/dev/null; then
-  if [[ "$(_lock_age)" -lt "$_LOCK_CEILING_SECONDS" ]]; then
-    _log "another poll holds the lock — exiting"
-    exit 0
-  fi
-  rm -rf "$_LOCK"
-  mkdir "$_LOCK" 2>/dev/null || { _log "cannot reclaim the poll lock"; exit 0; }
-  _DIAG="lock_stale_reclaimed"
-fi
 
-_WROTE=0
-_STEP="P3"
-
-# P12. Exit trap: clean temp files and the lock; if no reading was written, record a crash.
-_write_crash_file() {
-  local _now _tmp="$_DIR/reading.tmp"
-  _now="$(date +%s)"
-  printf 'schema=1\nkind=reading\nrun_at=%s\nrun_epoch=%s\noutcome=crashed\nreason=crashed\ndetail=%s\nend=1\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_now" "$1" > "$_tmp" 2>/dev/null \
-    && mv -f "$_tmp" "$_DIR/reading" 2>/dev/null
-}
-_on_exit() {
-  local _code=$?
-  trap - EXIT
-  rm -f "$_STDOUT_TMP" "$_STDERR_TMP"
-  rm -rf "$_LOCK"
-  if [[ "$_WROTE" != 1 ]]; then
-    local _detail="exit=$_code at $_STEP"
-    python3 "$_LIB" poll-record --state-dir "$_STATE" --transport-reason crashed --detail "$_detail" 2>/dev/null \
-      || _write_crash_file "$_detail"
-  fi
-  exit "$_code"
-}
-trap _on_exit EXIT
-
+# P4 (first, so the lock backstop can follow the configured read limit). Parameters come
+# from the library and are never sourced or evaluated.
 _TRANSPORT_REASON=""
 _TRANSPORT_DETAIL=""
 _READ_KIND=""
 _READ_RC=""
 _READ_RAN=0
 _READ_TIMEOUT=""
-
-# P4. Parameters, read from the library (never sourced or evaluated).
-_STEP="P4"
-_params="$(python3 "$_LIB" poll-params 2>/dev/null)"
+_params="$(_py poll-params)"
 _params_rc=$?
+_pyerr_first
 _params_ok=1
 _seen=0
 if [[ $_params_rc -eq 0 ]]; then
@@ -153,9 +125,77 @@ if [[ $_params_rc -eq 0 ]]; then
     esac
   done <<< "$_params"
 fi
+_LOCK_BACKSTOP_SECONDS="$_LOCK_BACKSTOP_DEFAULT_SECONDS"
 if [[ $_params_rc -ne 0 || $_params_ok -ne 1 || $_seen -ne 2 ]]; then
-  _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="poll-params failed"
+  _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="poll-params failed${_PYERR_FIRST:+: $_PYERR_FIRST}"
+else
+  _LOCK_BACKSTOP_SECONDS=$(( _READ_TIMEOUT + _LOCK_BACKSTOP_MARGIN_SECONDS ))
 fi
+
+# P3. Overlap lock: non-blocking mkdir. The holder's PID is written into the lock. A lock is
+# stale when that PID is dead, or (backstop) when it is older than the read limit + margin or
+# has no PID. A stale lock is reclaimed by an atomic rename, so only one poller wins.
+_DIAG=""
+_lock_age() {
+  local _m
+  _m="$(stat -c %Y "$_LOCK" 2>/dev/null || stat -f %m "$_LOCK" 2>/dev/null || echo 0)"
+  echo $(( $(date +%s) - _m ))
+}
+_lock_is_stale() {
+  local _pid _age
+  _pid="$(cat "$_LOCK/pid" 2>/dev/null)"
+  _age="$(_lock_age)"
+  if [[ "$_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$_pid" 2>/dev/null; then
+    return 0
+  fi
+  [[ "$_age" -ge "$_LOCK_BACKSTOP_SECONDS" ]]
+}
+if ! mkdir "$_LOCK" 2>/dev/null; then
+  _holder="$(cat "$_LOCK/pid" 2>/dev/null)"
+  if ! _lock_is_stale; then
+    _log "another poll holds the lock (pid ${_holder:-unknown}, age $(_lock_age)s) — exiting; the reading is unchanged" >&2
+    rm -f "$_PYERR_TMP"
+    exit 0
+  fi
+  if mv "$_LOCK" "$_LOCK.stale.$$" 2>/dev/null; then
+    rm -rf "$_LOCK.stale.$$"
+  else
+    _log "another poll reclaimed the stale lock first — exiting; the reading is unchanged" >&2
+    rm -f "$_PYERR_TMP"
+    exit 0
+  fi
+  mkdir "$_LOCK" 2>/dev/null || { _log "cannot take the poll lock after reclaim — exiting; the reading is unchanged" >&2; rm -f "$_PYERR_TMP"; exit 0; }
+  _DIAG="lock_stale_reclaimed"
+fi
+echo "$$" > "$_LOCK/pid"
+
+_WROTE=0
+_STEP="P3"
+
+# P12. Exit trap: clean temp files, free the lock only if it is still ours, and if no
+# reading was written, record a crash.
+_write_crash_file() {
+  local _now _tmp="$_DIR/reading.tmp"
+  _now="$(date +%s)"
+  printf 'schema=1\nkind=reading\nrun_at=%s\nrun_epoch=%s\noutcome=crashed\nreason=crashed\ndetail=%s\nend=1\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_now" "$1" > "$_tmp" 2>/dev/null \
+    && mv -f "$_tmp" "$_DIR/reading" 2>/dev/null
+}
+_on_exit() {
+  local _code=$?
+  trap - EXIT
+  rm -f "$_STDOUT_TMP" "$_STDERR_TMP" "$_PYERR_TMP"
+  if [[ "$(cat "$_LOCK/pid" 2>/dev/null)" == "$$" ]]; then
+    rm -rf "$_LOCK"
+  fi
+  if [[ "$_WROTE" != 1 ]]; then
+    local _detail="exit=$_code at $_STEP"
+    python3 "$_LIB" poll-record --state-dir "$_STATE" --transport-reason crashed --detail "$_detail" \
+      || _write_crash_file "$_detail"
+  fi
+  exit "$_code"
+}
+trap _on_exit EXIT
 
 # P5. Key.
 if [[ -z "$_TRANSPORT_REASON" && ! ( -f "$_KEY" && -r "$_KEY" ) ]]; then
@@ -165,12 +205,14 @@ fi
 # P6. The read. The library sends no remote command; sshd runs the forced command.
 if [[ -z "$_TRANSPORT_REASON" ]]; then
   _STEP="P6"
-  _out="$(python3 "$_LIB" read-usage --timeout "$_READ_TIMEOUT" --key "$_KEY" \
-    --stdout "$_STDOUT_TMP" --stderr "$_STDERR_TMP" 2>/dev/null)"
-  if [[ $? -eq 0 && "$_out" =~ ^read=(exited|timeout|spawn_failed)\ rc=([0-9]+|-)$ ]]; then
+  _out="$(_py read-usage --timeout "$_READ_TIMEOUT" --key "$_KEY" \
+    --stdout "$_STDOUT_TMP" --stderr "$_STDERR_TMP")"
+  _rc=$?
+  _pyerr_first
+  if [[ $_rc -eq 0 && "$_out" =~ ^read=(exited|timeout|spawn_failed)\ rc=([0-9]+|-)$ ]]; then
     _READ_KIND="${BASH_REMATCH[1]}"; _READ_RC="${BASH_REMATCH[2]}"; _READ_RAN=1
   else
-    _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="read-usage failed"
+    _TRANSPORT_REASON="crashed"; _TRANSPORT_DETAIL="read-usage failed${_PYERR_FIRST:+: $_PYERR_FIRST}"
   fi
 fi
 
@@ -184,7 +226,7 @@ else
   _args+=(--transport-reason "$_TRANSPORT_REASON" --detail "$_TRANSPORT_DETAIL")
 fi
 [[ -n "$_DIAG" ]] && _args+=(--diagnostics "$_DIAG")
-if python3 "$_LIB" "${_args[@]}"; then
+if _py "${_args[@]}"; then
   _WROTE=1
 fi
 
@@ -200,7 +242,7 @@ if [[ $_WROTE -eq 1 ]]; then
   else
     _raw_args+=(--read none)
   fi
-  python3 "$_LIB" "${_raw_args[@]}" || _log "WARN: last-raw failed (ignored; never affects the pause)"
+  _py "${_raw_args[@]}" || _log "WARN: last-raw failed (ignored; never affects the pause)"
 fi
 
 _STEP="done"

@@ -115,8 +115,19 @@ SSH_OPTIONS: Tuple[str, ...] = (
     "StrictHostKeyChecking=yes",
     "-o",
     "LogLevel=ERROR",
+    "-o",
+    "ClearAllForwardings=yes",
+    "-o",
+    "ForwardAgent=no",
+    "-o",
+    "ForwardX11=no",
+    "-o",
+    "IdentityAgent=none",
 )
 KILL_GRACE_SECONDS = 5
+STALENESS_KILL_MARGIN = 2 * KILL_GRACE_SECONDS
+STDERR_TAIL_CHARS = 190
+GROUP_WORLD_WRITE_BITS = 0o022
 INPUT_CAP_BYTES = 65536
 HISTORY_LINE_CAP_BYTES = 16384
 MAX_WINDOWS = 8
@@ -671,7 +682,9 @@ def classify_read(
     if outcome is None:
         return Classification("failure", "crashed", "no read outcome", None, None, None)
     remote_exit = outcome.rc if outcome.kind == "exited" else None
-    stderr_detail = "stderr:" + _flatten(stderr.decode("utf-8", errors="replace"))
+    stderr_detail = (
+        "stderr:" + _flatten(stderr.decode("utf-8", errors="replace"))[-STDERR_TAIL_CHARS:]
+    )
     reason = classify_transport(outcome)
     if reason is not None:
         return Classification(
@@ -779,7 +792,7 @@ def _parse_settings_text(text: str) -> SettingsResult:
         return _defaults_result(
             "invalid:read_timeout_seconds", "read_timeout_seconds", str(timeout)
         )
-    if staleness <= interval + timeout:
+    if staleness <= interval + timeout + STALENESS_KILL_MARGIN:
         return _defaults_result("invalid:staleness_seconds", "staleness_seconds", str(staleness))
     return SettingsResult(values, "valid" if seen else "defaults", None, None)
 
@@ -872,17 +885,27 @@ def render_reading(fields: Sequence[Tuple[str, str]]) -> str:
 
 
 def write_atomic(path: Path, data: bytes, mode: int) -> None:
-    """Section 1.5: render in memory, write <file>.tmp, fsync, rename, best-effort dir fsync."""
+    """Section 1.5: render in memory, write <file>.tmp, fsync, rename, best-effort dir fsync.
+
+    On any failure the tmp file is removed, so no *.tmp survives a failed write.
+    """
     tmp = path.with_name(path.name + ".tmp")
-    fd = _create_fresh(tmp, mode)
     try:
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view) :]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(str(tmp), str(path))
+        fd = _create_fresh(tmp, mode)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
     try:
         dir_fd = os.open(str(path.parent), os.O_RDONLY)
         try:
@@ -1411,6 +1434,73 @@ def _success_summary(cls: Classification) -> str:
     return text
 
 
+def _capture_target_problem(target: str) -> Optional[str]:
+    """The parent directory must be ours and not group/world-writable (the file holds a session id)."""
+    parent = os.path.dirname(os.path.abspath(target))
+    try:
+        info = os.stat(parent)
+    except OSError:
+        return None  # a missing parent is reported by the write itself
+    if info.st_uid != os.getuid():
+        return "%s is not owned by the current user" % parent
+    if info.st_mode & GROUP_WORLD_WRITE_BITS:
+        return "%s is group- or world-writable" % parent
+    return None
+
+
+def _state_dir() -> Path:
+    return Path(os.environ.get("HOS_STATE_DIR") or Path(_home()) / ".hos")
+
+
+def _check_state_dir(report: "_Report") -> None:
+    """Item 12: the crontab redirect needs this directory before the poller can start."""
+    path = _state_dir() / "usage-pause"
+    remedy = "run --print-setup block 1"
+    try:
+        info = os.stat(path)
+    except OSError:
+        report.add("FAIL", 12, "%s is absent" % path, remedy)
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        report.add("FAIL", 12, "%s is not a directory" % path, remedy)
+    elif not os.access(path, os.W_OK | os.X_OK):
+        report.add("FAIL", 12, "%s is not writable" % path, remedy)
+    elif stat.S_IMODE(info.st_mode) != STATE_DIR_MODE:
+        report.add(
+            "FAIL", 12, "%s mode is %04o, not 0700" % (path, stat.S_IMODE(info.st_mode)), remedy
+        )
+    else:
+        report.add("PASS", 12, "%s exists, mode 0700, writable" % path)
+
+
+def _check_reading(report: "_Report", settings: SettingsResult, cron_ok: bool) -> None:
+    """Item 11: what the poller has actually written, and how old it is."""
+    current = read_reading(_state_dir() / "usage-pause" / READING_NAME)
+    run_epoch = current.fields.get("run_epoch")
+    if current.state != "ok" or not _is_uint(run_epoch):
+        report.add(
+            "FAIL" if cron_ok else "INFO",
+            11,
+            "no usable reading (%s)" % current.state,
+            "wait one poll interval, then check poll.last.log" if cron_ok else None,
+        )
+        return
+    age = int(time.time()) - int(run_epoch or "0")
+    fields = current.fields
+    text = "reading age=%ds outcome=%s reason=%s consecutive_failures=%s" % (
+        age,
+        fields.get("outcome", "-"),
+        fields.get("reason", "-"),
+        fields.get("consecutive_failures", "-"),
+    )
+    if age > int(str(settings.values["staleness_seconds"])):
+        report.add(
+            "FAIL", 11, text, "the poller is not running: check crontab -l and poll.last.log"
+        )
+    else:
+        report.add("INFO", 11, text)
+
+
 def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
     """--check: read-only preflight (section 3.10). Writes only the optional capture file."""
     if capture_fixture is not None and os.path.lexists(capture_fixture):
@@ -1419,6 +1509,11 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    if capture_fixture is not None:
+        problem = _capture_target_problem(capture_fixture)
+        if problem is not None:
+            print("hos-usage-poll: --capture-fixture refused: %s" % problem, file=sys.stderr)
+            return EXIT_USAGE
     home = _home()
     report = _Report()
     settings = load_settings(default_conf_path())
@@ -1467,6 +1562,7 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
     cron = _run_text(["crontab", "-l"])
     cron_lines = _crontab_lines(cron.stdout) if cron is not None and cron.returncode == 0 else None
     interval = int(str(settings.values["poll_interval_seconds"]))
+    cron_ok = False
     if cron_lines is None:
         report.add(
             "FAIL",
@@ -1476,6 +1572,7 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
         )
     else:
         ok, text = check_crontab_poller(cron_lines, interval, self_path, home)
+        cron_ok = ok
         report.add("PASS" if ok else "FAIL", 5, text)
 
     # 6. claude
@@ -1514,6 +1611,9 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
         )
     else:
         report.add("SKIP", 10, "no successful read")
+
+    _check_reading(report, settings, cron_ok)
+    _check_state_dir(report)
 
     if report.failures:
         print("RESULT: FAIL (%d failed)" % report.failures)
@@ -1567,7 +1667,9 @@ def _check_read(
         report.add("INFO", 7, "stderr non-empty (%d bytes)" % len(raw_err))
     if capture_error is not None:
         report.add("FAIL", 7, "capture failed: %s" % capture_error)
-    elif capture_fixture is not None and outcome.kind == "exited":
+    elif capture_fixture is not None and outcome.kind != "exited":
+        report.add("INFO", 7, "capture skipped: read did not exit")
+    elif capture_fixture is not None:
         report.add("INFO", 7, "captured %d bytes to %s" % (len(raw_out), capture_fixture))
     return cls
 

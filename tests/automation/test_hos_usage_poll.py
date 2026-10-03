@@ -44,6 +44,8 @@ class Rig:
         self.key.write_text("PRIVATE\n")
         self.key.chmod(0o600)
         (self.home / ".ssh" / "hos_loopback.pub").write_text(PUB + "\n")
+        self.dir.mkdir(parents=True)
+        self.dir.chmod(0o700)
         self.set_forced(True)
         self.write_authorized()
         self.write_crontab()
@@ -192,7 +194,7 @@ def test_poll_spawn_failed(rig, tmp_path):
         text=True,
     )
     assert out.stdout.strip() == "read=spawn_failed rc=-"
-    (rig.dir).mkdir(parents=True)
+    rig.dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [*lib, "poll-record", "--state-dir", str(rig.state), "--read", "spawn_failed"],
         env=env,
@@ -261,7 +263,8 @@ def test_poll_runs_while_project_suspended(rig):
 def test_poll_lock_held_exits_without_write(rig):
     (rig.state / "locks" / "usage-poll.lock").mkdir(parents=True)
     r = rig.run()
-    assert r.returncode == 0 and "another poll holds the lock" in r.stdout
+    assert r.returncode == 0 and "another poll holds the lock" in r.stderr
+    assert "reading is unchanged" in r.stderr
     assert not (rig.dir / "reading").exists()
     assert (rig.state / "locks" / "usage-poll.lock").is_dir()
 
@@ -370,6 +373,7 @@ def status(items, n):
 def good_rig(rig):
     rig.write_crontab(extra=["0 2 * * 0 %s/a/bin/hos-cron --role worker" % rig.home])
     rig.cron_copy("a")
+    assert rig.run().returncode == 0  # a poll has run, so a fresh reading exists
 
 
 def test_check_all_pass(rig):
@@ -521,6 +525,7 @@ def test_check_capture_fixture_writes_unfiltered_stdout(rig, tmp_path):
     rig.out.write_bytes(full)
     target = tmp_path / "cap" / "env.json"
     target.parent.mkdir()
+    target.parent.chmod(0o700)
     before = tree(rig)
     r, items = check(rig, "--capture-fixture", str(target))
     assert target.read_bytes() == full and (target.stat().st_mode & 0o777) == 0o600
@@ -781,3 +786,140 @@ def test_print_setup_quotes_paths(tmp_path):
 def _mk(path):
     path.mkdir()
     return path
+
+
+def test_check_state_dir_item12(rig):
+    good_rig(rig)
+    assert check(rig)[1][12][0][0] == "PASS"
+    rig.dir.chmod(0o755)
+    _r, items = check(rig)
+    assert items[12][0][0] == "FAIL" and "run --print-setup block 1" in items[12][0][1]
+    rig.dir.chmod(0o700)
+    (rig.dir / "last-raw").unlink(missing_ok=True)
+    (rig.dir / "reading").unlink()
+    rig.dir.rmdir()
+    assert check(rig)[1][12][0][0] == "FAIL"
+    rig.dir.write_text("a file")
+    assert "not a directory" in check(rig)[1][12][0][1]
+
+
+def test_check_state_dir_honours_hos_state_dir(rig, tmp_path):
+    other = tmp_path / "elsewhere"
+    r, items = check(rig, HOS_STATE_DIR=str(other))
+    assert items[12][0][0] == "FAIL" and str(other) in items[12][0][1]
+
+
+def test_check_item11_reading_age_and_failures(rig):
+    good_rig(rig)
+    _r, items = check(rig)
+    assert items[11][0][0] == "INFO"
+    assert "outcome=success reason=- consecutive_failures=0" in items[11][0][1]
+
+
+def test_check_item11_missing_reading_fails_only_when_cron_passed(rig):
+    good_rig(rig)
+    (rig.dir / "reading").unlink()
+    r, items = check(rig)
+    assert items[11][0][0] == "FAIL" and r.returncode == 1
+    rig.write_crontab(poll_line="*/10 * * * * %s > /tmp/x 2>&1" % POLLER)
+    assert check(rig)[1][11][0][0] == "INFO"
+
+
+def test_check_item11_stale_reading_fails(rig):
+    good_rig(rig)
+    rig.conf("staleness_seconds=900\n")
+    text = (rig.dir / "reading").read_text()
+    old = int(time.time()) - 5000
+    text = re.sub(r"run_epoch=\d+", "run_epoch=%d" % old, text)
+    (rig.dir / "reading").write_text(text)
+    _r, items = check(rig)
+    assert items[11][0][0] == "FAIL" and "age=" in items[11][0][1]
+
+
+def test_ssh_argv_has_hardening_options(rig):
+    rig.run()
+    argv = (rig.home / "ssh.argv").read_text().split("\n")
+    for opt in (
+        "ClearAllForwardings=yes",
+        "ForwardAgent=no",
+        "ForwardX11=no",
+        "IdentityAgent=none",
+    ):
+        assert opt in argv
+    assert argv[-2] == "127.0.0.1"
+
+
+def test_check_capture_refuses_group_writable_parent(rig, tmp_path):
+    bad = tmp_path / "shared"
+    bad.mkdir()
+    bad.chmod(0o770)
+    r, items = check(rig, "--capture-fixture", str(bad / "env.json"))
+    assert r.returncode == 64 and items == {} and "refused" in r.stderr
+    assert not (bad / "env.json").exists()
+
+
+def test_check_capture_skipped_when_read_did_not_exit(rig, tmp_path):
+    good_rig(rig)
+    rig.conf("read_timeout_seconds=5\n")
+    target = tmp_path / "cap.json"
+    _r, items = check(rig, "--capture-fixture", str(target), HOS_TEST_CLAUDE_SLEEP="30")
+    assert ("INFO", "capture skipped: read did not exit") in items[7]
+    assert not target.exists()
+
+
+def test_lock_dead_pid_reclaimed(rig):
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text("999999\n")
+    rig.run()
+    assert rig.reading().fields["diagnostics"] == "lock_stale_reclaimed"
+    assert not lock.exists()
+
+
+def test_lock_live_pid_holds_and_is_diagnosable(rig):
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    (lock / "pid").write_text("%d\n" % os.getpid())
+    r = rig.run()
+    assert r.returncode == 0 and ("pid %d" % os.getpid()) in r.stderr
+    assert not (rig.dir / "reading").exists() and lock.is_dir()
+
+
+def test_lock_not_removed_when_no_longer_ours(rig):
+    lock = rig.state / "locks" / "usage-poll.lock"
+    rig.stub(
+        "claude",
+        'echo 4242 > "%s/pid"\ncat "$HOME/claude.out"\n' % lock,
+    )
+    rig.run()
+    assert lock.is_dir() and (lock / "pid").read_text().strip() == "4242"
+    assert sorted(p.name for p in rig.dir.iterdir()) == ["last-raw", "reading"]
+
+
+def test_lock_stale_by_age_without_pid_uses_backstop(rig):
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    fresh = rig.run()
+    assert "holds the lock" in fresh.stderr
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    rig.run()
+    assert rig.reading().fields["diagnostics"] == "lock_stale_reclaimed"
+
+
+def test_helper_stderr_reaches_log_and_detail(rig, tmp_path):
+    copy = tmp_path / "copy" / "bin"
+    (copy / "lib").mkdir(parents=True)
+    (copy / "hos-usage-poll").write_text(POLLER.read_text())
+    (copy / "lib" / "usage_pause.py").write_text(
+        "import sys\nsys.stderr.write('boom from helper\\n')\nsys.exit(3)\n"
+    )
+    r = subprocess.run(
+        ["bash", str(copy / "hos-usage-poll")],
+        env=rig.env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert "boom from helper" in r.stderr
+    assert r.returncode != 0

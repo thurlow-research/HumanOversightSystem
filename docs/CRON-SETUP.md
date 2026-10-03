@@ -75,7 +75,10 @@ logs a clear "refresh the token" hint; re-run `claude setup-token`.
 
 Setup for the proactive usage pause (#1944). One poller per host. The cycle-start
 gate that consumes its reading ships in a later step; until it is installed, this
-poller only records readings.
+poller only records readings. Later steps add sections 2a.0, 2a.8 and 2a.11 and
+`--check` item 9; they are absent here, so the numbering has gaps. Work through
+2a.1a to 2a.7 in order: `--check` ends `RESULT: FAIL` until every step is done, and
+that is expected part-way through.
 
 ### 2a.1 What it is
 
@@ -86,6 +89,22 @@ overseer cycle on the host (all projects, both roles) pauses at cycle start when
 threshold (default 90 each), or when the reading is missing, stale or failed
 (fail-closed). It resumes on its own. Interactive sessions are never paused. This
 is separate from `hos-suspend`.
+
+### 2a.1a State directory (do this before anything else)
+
+The crontab redirect in 2a.6 writes `poll.last.log` into this directory, and the
+shell fails before the poller starts if it does not exist. Create it first
+(block 1 of `--print-setup`):
+
+```bash
+mkdir -p ~/.hos/usage-pause && chmod 700 ~/.hos/usage-pause
+```
+
+Leave `HOS_STATE_DIR` unset in the crontab environment. If you must set it, the
+redirect's parent directory has to be the same `$HOS_STATE_DIR/usage-pause`, and the
+`hos-cron` crontab lines must carry the same value; otherwise the gate looks in a
+different place from the poller. `--check` item 12 verifies the directory (and
+honours `HOS_STATE_DIR` when it is set in your shell).
 
 ### 2a.2 Key
 
@@ -128,7 +147,7 @@ until fixed, regardless of `fail_mode`; the cron log line names the key.
 | `weekly_model_threshold` | 90 | integer 1-100 |
 | `fail_mode` | `closed` | exactly `closed` or `open` |
 | `poll_interval_seconds` | 300 | integer multiple of 60, 60-3600 |
-| `staleness_seconds` | 900 | integer greater than `poll_interval_seconds + read_timeout_seconds`, at most 7200 |
+| `staleness_seconds` | 900 | integer greater than `poll_interval_seconds + read_timeout_seconds + 10`, at most 7200 |
 | `read_timeout_seconds` | 60 | integer 5 to `poll_interval_seconds - 30` |
 | `history_days` | 90 | integer 1-3650 |
 | `history_max_mb` | 100 | integer 1-10240 |
@@ -151,7 +170,12 @@ First run `bin/hos-usage-poll --check --capture-fixture ~/hos-usage-envelope-<YY
 must end `RESULT: PASS`. `--check` item 8 checks every scheduled `hos-cron` copy
 for the gate: **item 8 must be green after every upgrade of any project on the
 host.** Item 10 is informational: it shows whether the current read would pause
-under the current settings.
+under the current settings. Item 11 shows the reading the cron-fired poller has
+actually written (age, outcome, reason, `consecutive_failures`) and FAILs when the
+crontab check passed but there is no reading, or the reading is older than
+`staleness_seconds`. Item 12 checks the state directory exists, is writable and is
+mode 0700. `--capture-fixture` refuses a target whose parent directory is not yours
+or is group- or world-writable.
 
 ### 2a.9 Fail-open
 
@@ -166,6 +190,25 @@ record exists. fail_mode=open without a running poller means no quota protection
 - `cat ~/.hos/usage-pause/poll.last.log`: the last poll's output.
 
 No GitHub issue is ever filed by this feature.
+
+**Reading the keys.**
+- `consecutive_failures`: failed polls in a row; `0` after a success.
+- `last_success_epoch`: Unix time of the last successful poll; absent means it has never succeeded.
+- `--check` item 11 prints the reading's age, outcome, reason and `consecutive_failures`.
+- If a poll finds another poll holding the lock it exits without changing the reading and writes `another poll holds the lock (pid N, age Ns)` to `poll.last.log`. A lock whose PID is dead, or that is older than the read limit plus 60 s, is reclaimed (`diagnostics=lock_stale_reclaimed`).
+
+**Reason to action.** `reason=` in the reading, and `FAILED reason=` in `--check` item 7:
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `ssh_failed` | ssh exited 255, or the key file is missing | `--check` items 1 to 3; `cat ~/.hos/usage-pause/last-raw` for the ssh error (host key, key mode, `authorized_keys`) |
+| `timeout` | the read did not finish within `read_timeout_seconds` | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds |
+| `spawn_failed` | `ssh` could not be started | check `ssh` is installed and on the poller's `PATH` |
+| `envelope_invalid` | stdout was not the expected JSON envelope | `cat last-raw`; usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
+| `empty_session` | the read succeeded but showed no usage | the forced command may be running under an API-key or expired login: re-run `claude` login as the key's user |
+| `missing_session` / `missing_weekly` | one of the two required limits was absent | `cat last-raw`: the `/usage` text changed shape |
+| `unparseable` | no recognisable usage text | `cat last-raw`: the `/usage` text changed shape |
+| `crashed` | the poller itself failed; `detail` names the step | read `poll.last.log`; run `python3 bin/lib/usage_pause.py poll-params` by hand |
 
 ---
 

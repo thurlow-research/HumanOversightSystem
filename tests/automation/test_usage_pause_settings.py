@@ -165,3 +165,9 @@ def test_conf_path_never_from_hos_config_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HOS_CONFIG_DIR", "/elsewhere")
     assert up.default_conf_path() == tmp_path / ".config" / "hos" / "usage-pause.conf"
+
+
+def test_staleness_must_clear_interval_timeout_and_kill_grace(tmp_path):
+    floor = 300 + 60 + up.STALENESS_KILL_MARGIN
+    assert load(tmp_path, "staleness_seconds=%d\n" % floor).status == "invalid:staleness_seconds"
+    assert load(tmp_path, "staleness_seconds=%d\n" % (floor + 1)).status == "valid"
