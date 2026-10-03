@@ -423,3 +423,26 @@ def test_remote_cmd_template_rendering():
         "/t/timeout -k 5 50 /c/claude -p /usage --output-format json"
     )
     assert "-k 5 20 " in up.remote_cmd("/c/claude", "/t/timeout", 30)
+
+
+def test_timeout_side_remote_and_local():
+    local = up.classify_read(up.ReadOutcome("timeout", None, None), b"", b"")
+    remote = up.classify_read(up.ReadOutcome("exited", 137, None), b"", b"")
+    ok = up.classify_read(
+        up.ReadOutcome("exited", 124, None), fx("capture2-envelope-2026-10-03.json"), b""
+    )
+    assert (local.timeout_side, remote.timeout_side, ok.timeout_side) == ("local", "remote", None)
+    settings = up.load_settings(up.Path("/nonexistent"))
+
+    def keys(cls):
+        return dict(
+            up.build_reading(
+                run_epoch=1, classification=cls, diagnostics=None, previous=None, settings=settings
+            )
+        )
+
+    assert keys(local)["timeout_side"] == "local" and "remote_exit" not in keys(local)
+    assert keys(remote)["timeout_side"] == "remote" and keys(remote)["remote_exit"] == "137"
+    assert "timeout_side" not in keys(ok)
+    other = up.classify_read(up.ReadOutcome("exited", 255, None), b"", b"x")
+    assert "timeout_side" not in keys(other)

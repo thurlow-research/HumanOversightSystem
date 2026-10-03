@@ -213,3 +213,9 @@ def test_no_github_or_network():
         assert not re.search(
             r"(^|[^A-Za-z])gh\s|curl|github|urllib|http\.client|socket", line, re.I
         ), (name, line)
+
+
+def test_nothing_parses_detail():
+    for name, line in all_code():
+        assert not re.search(r"detail\.(startswith|split|find|index)", line), (name, line)
+        assert not re.search(r"(startswith|re\.\w+)\(.*\bdetail\b", line), (name, line)

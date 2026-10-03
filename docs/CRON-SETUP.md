@@ -144,7 +144,16 @@ Seed it from the on-disk host key (block 4 of `--print-setup`). Do not use
 ### 2a.5 Settings (optional)
 
 `~/.config/hos/usage-pause.conf`, one `key=value` per line, `#` comment lines
-allowed. The file is parsed, never sourced. Missing = defaults; any invalid value,
+allowed. Pin the binaries explicitly so the `authorized_keys` command cannot change
+with `PATH`:
+
+```text
+timeout_bin=/usr/bin/timeout
+claude_bin=/absolute/path/to/claude
+```
+
+`--print-setup` and `remote-cmd` render whatever is resolved at that moment (the
+setting, else the first match on `PATH`), so check the printed line before installing it. The file is parsed, never sourced. Missing = defaults; any invalid value,
 unknown key or duplicate key (including the history keys) pauses every cycle
 until fixed, regardless of `fail_mode`; the cron log line names the key.
 
@@ -179,10 +188,10 @@ First run `bin/hos-usage-poll --check --capture-fixture ~/hos-usage-envelope-<YY
 must end `RESULT: PASS`. `--check` item 8 checks every scheduled `hos-cron` copy
 for the gate: **item 8 must be green after every upgrade of any project on the
 host.** Item 10 is informational: it shows whether the current read would pause
-under the current settings. Item 11 shows the reading the cron-fired poller has
+under the current settings. A failing item 7 with `ssh_failed` names the earlier item (1 to 3) that likely caused it. Item 11 shows the reading the cron-fired poller has
 actually written (age, outcome, reason, `consecutive_failures`) and FAILs when the
 crontab check passed but there is no reading, or the reading is older than
-`staleness_seconds`. Item 6 also checks that `timeout` is executable. Item 12 checks the state directory exists, is writable and is
+`staleness_seconds`. Items 6a and 6b check that `claude` and `timeout` are executable. Item 12 prints first and checks the state directory exists, is writable and is
 mode 0700. `--capture-fixture` refuses a target whose parent directory is not yours
 or is group- or world-writable.
 
@@ -211,7 +220,7 @@ No GitHub issue is ever filed by this feature.
 | Reason | Meaning | What to do |
 |---|---|---|
 | `ssh_failed` | ssh exited 255, or the key file is missing | `--check` items 1 to 3; `cat ~/.hos/usage-pause/last-raw` for the ssh error (host key, key mode, `authorized_keys`) |
-| `timeout` | the read did not finish. `detail=remote_timeout rc=124` (or `137`): the remote `timeout` fired; `detail=local_timeout`: the poller's own kill fired. The poll log shows `ABORT read timed out ...`; the next poll retries, nothing retries within a poll | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds (then regenerate the `authorized_keys` line) |
+| `timeout` | the read did not finish. `timeout_side=remote` (`remote_exit=124`): the remote `timeout` fired; `remote_exit=137`: the remote `timeout` had to KILL, **or** something else sent SIGKILL (for example the OOM killer), which is ambiguous. `timeout_side=local`: the poller's own kill fired (ssh hung, a slow connect, or the remote wrapper missing; check `--check` item 2). `detail` is free text for humans. The poll log shows `ABORT read timed out ...`; the next poll retries, nothing retries within a poll | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds (then regenerate the `authorized_keys` line) |
 | `spawn_failed` | `ssh` could not be started | check `ssh` is installed and on the poller's `PATH` |
 | `envelope_invalid` | stdout was not the expected JSON envelope | `cat last-raw`; usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
 | `empty_session` | the read succeeded but showed no usage | the forced command may be running under an API-key or expired login: re-run `claude` login as the key's user |

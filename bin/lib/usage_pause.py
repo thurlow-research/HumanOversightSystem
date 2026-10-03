@@ -29,7 +29,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Mapping, NoReturn, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, List, Mapping, NoReturn, Optional, Sequence, Tuple, Union
 
 # ── BEGIN SETTINGS DEFAULTS AND BOUNDS (ADR-1944 A2-10; the only place these numbers appear) ──
 DEFAULT_SESSION_THRESHOLD = 90
@@ -299,6 +299,7 @@ class Classification:
     remote_exit: Optional[int]
     envelope: Optional[EnvelopeResult]
     parsed: Optional[ParseResult]
+    timeout_side: Optional[str] = None  # remote | local, set only with reason=timeout
 
 
 # ───────────────────────────── small helpers ─────────────────────────────
@@ -703,7 +704,7 @@ def classify_read(
     reason = classify_transport(outcome)
     if reason == "timeout":
         detail = "local_timeout" + ("; " + outcome.detail if outcome.detail else "")
-        return Classification("failure", reason, detail, None, None, None)
+        return Classification("failure", reason, detail, None, None, None, "local")
     if reason is not None:
         return Classification(
             "failure", reason, outcome.detail or stderr_detail, remote_exit, None, None
@@ -711,7 +712,7 @@ def classify_read(
     envelope = parse_envelope(stdout)
     if not envelope.ok and remote_exit in REMOTE_TIMEOUT_RCS:
         detail = "remote_timeout rc=%d" % remote_exit
-        return Classification("failure", "timeout", detail, remote_exit, None, None)
+        return Classification("failure", "timeout", detail, remote_exit, None, None, "remote")
     if not envelope.ok:
         return Classification("failure", "envelope_invalid", stderr_detail, remote_exit, None, None)
     parsed = parse_usage(envelope.result_text or "")
@@ -1122,6 +1123,8 @@ def build_reading(
         out.append(("diagnostics", diagnostics))
     if cls.remote_exit is not None:
         out.append(("remote_exit", str(cls.remote_exit)))
+    if cls.reason == "timeout" and cls.timeout_side:
+        out.append(("timeout_side", cls.timeout_side))
     parsed = cls.parsed
     if success:
         out.append(("parsed_via", "grep"))
@@ -1443,12 +1446,16 @@ def check_gate_copies(lines: Sequence[str], home: str) -> List[Tuple[str, str]]:
 class _Report:
     def __init__(self) -> None:
         self.failures = 0
+        self.failed_items: List[Union[int, str]] = []
 
-    def add(self, status: str, number: int, text: str, remedy: Optional[str] = None) -> None:
+    def add(
+        self, status: str, number: Union[int, str], text: str, remedy: Optional[str] = None
+    ) -> None:
         if status == "FAIL":
             self.failures += 1
+            self.failed_items.append(number)
         suffix = " — " + remedy if remedy else ""
-        print("%s  %d  %s%s" % (status, number, text, suffix))
+        print("%s  %s  %s%s" % (status, number, text, suffix))
 
 
 def _run_text(argv: Sequence[str]) -> Optional["subprocess.CompletedProcess[str]"]:
@@ -1567,6 +1574,9 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
     pub = Path(str(key) + ".pub")
     claude_bin = resolve_claude_bin(settings)
 
+    # 12 runs first: the crontab redirect needs this directory before anything else works.
+    _check_state_dir(report)
+
     # 1. key
     try:
         mode = stat.S_IMODE(os.stat(key).st_mode)
@@ -1622,21 +1632,21 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
 
     # 6. claude
     if claude_bin and os.access(claude_bin, os.X_OK):
-        report.add("PASS", 6, "claude_bin %s is executable" % claude_bin)
+        report.add("PASS", "6a", "claude_bin %s is executable" % claude_bin)
     else:
         report.add(
             "FAIL",
-            6,
+            "6a",
             "claude_not_executable: %s" % (claude_bin or "claude not found"),
             "set claude_bin or fix PATH, then regenerate the authorized_keys line",
         )
     timeout_bin = resolve_timeout_bin(settings)
     if timeout_bin and os.access(timeout_bin, os.X_OK):
-        report.add("PASS", 6, "timeout_bin %s is executable" % timeout_bin)
+        report.add("PASS", "6b", "timeout_bin %s is executable" % timeout_bin)
     else:
         report.add(
             "FAIL",
-            6,
+            "6b",
             "timeout_not_executable: %s" % (timeout_bin or "timeout not found"),
             "set timeout_bin or fix PATH, then regenerate the authorized_keys line",
         )
@@ -1668,7 +1678,6 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
         report.add("SKIP", 10, "no successful read")
 
     _check_reading(report, settings, cron_ok)
-    _check_state_dir(report)
 
     if report.failures:
         print("RESULT: FAIL (%d failed)" % report.failures)
@@ -1677,11 +1686,29 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
     return 0
 
 
+_SSH_CAUSES = {1: "loopback key", 2: "authorized_keys line", 3: "known_hosts"}
+
+
+def _ssh_failed_hint(report: _Report) -> Optional[str]:
+    """Point an item-7 ssh_failed at the earlier setup item(s) that already FAILed."""
+    causes = [
+        "item %d (%s)" % (number, what)
+        for number, what in _SSH_CAUSES.items()
+        if number in report.failed_items
+    ]
+    return "likely caused by " + "; ".join(causes) if causes else None
+
+
 def _check_read(
     report: _Report, key: Path, settings: SettingsResult, capture_fixture: Optional[str]
 ) -> Optional[Classification]:
     if not key.is_file():
-        report.add("FAIL", 7, "FAILED reason=ssh_failed detail=loopback key missing")
+        report.add(
+            "FAIL",
+            7,
+            "FAILED reason=ssh_failed detail=loopback key missing",
+            _ssh_failed_hint(report),
+        )
         return None
     capture_error: Optional[str] = None
     work = Path(os.environ.get("TMPDIR") or "/tmp") / (
@@ -1709,7 +1736,12 @@ def _check_read(
     finally:
         shutil.rmtree(str(work), ignore_errors=True)
     if cls.outcome != "success":
-        report.add("FAIL", 7, "FAILED reason=%s detail=%s" % (cls.reason, cls.detail or "-"))
+        report.add(
+            "FAIL",
+            7,
+            "FAILED reason=%s detail=%s" % (cls.reason, cls.detail or "-"),
+            _ssh_failed_hint(report) if cls.reason == "ssh_failed" else None,
+        )
     else:
         envelope = cls.envelope
         assert envelope is not None
@@ -1854,10 +1886,11 @@ def _cmd_poll_record(args: argparse.Namespace) -> int:
         return EXIT_FAIL
     view = dict(fields)
     if view.get("reason") == "timeout":
-        detail = view.get("detail", "")
-        where = "remote rc=%s" % view["remote_exit"] if "remote_exit" in view else "local kill"
-        if not detail.startswith(("remote_timeout", "local_timeout")):
-            where = "unknown"
+        side = view.get("timeout_side")
+        where = {
+            "remote": "remote rc=%s" % view.get("remote_exit", "?"),
+            "local": "local kill",
+        }.get(side or "", "unknown")
         print(
             "[hos-usage-poll] %s ABORT read timed out (%s); retry next poll"
             % (view["run_at"], where)

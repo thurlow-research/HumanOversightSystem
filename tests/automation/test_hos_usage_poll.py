@@ -369,9 +369,10 @@ def check(rig, *args, **env):
     r = rig.run("--check", *args, **env)
     items = {}
     for line in r.stdout.splitlines():
-        m = re.match(r"(PASS|FAIL|SKIP|INFO)  (\d+)  (.*)", line)
+        m = re.match(r"(PASS|FAIL|SKIP|INFO)  (\d+[ab]?)  (.*)", line)
         if m:
-            items.setdefault(int(m.group(2)), []).append((m.group(1), m.group(3)))
+            key = int(m.group(2)) if m.group(2).isdigit() else m.group(2)
+            items.setdefault(key, []).append((m.group(1), m.group(3)))
     return r, items
 
 
@@ -390,7 +391,7 @@ def test_check_all_pass(rig):
     r, items = check(rig)
     assert r.returncode == 0, r.stdout
     assert r.stdout.rstrip().endswith("RESULT: PASS")
-    for n in (1, 2, 3, 4, 5, 6, 7, 8):
+    for n in (1, 2, 3, 4, 5, "6a", "6b", 7, 8):
         assert "FAIL" not in status(items, n), (n, items[n])
     assert any(
         "SUCCESS session=11 weekly_all=1 fable=0 cost_usd=0 read_tokens=0" in t
@@ -498,7 +499,8 @@ def test_check_claude_not_executable_item6(rig):
     rig.conf("claude_bin=/nonexistent/claude\n")
     _r, items = check(rig)
     assert (
-        items[6][0][0] == "FAIL" and "claude_not_executable: /nonexistent/claude" in items[6][0][1]
+        items["6a"][0][0] == "FAIL"
+        and "claude_not_executable: /nonexistent/claude" in items["6a"][0][1]
     )
 
 
@@ -982,9 +984,9 @@ def test_check_changed_read_timeout_needs_regenerated_line(rig):
 
 def test_check_timeout_bin_missing_or_not_executable(rig):
     good_rig(rig)
-    assert ("PASS", "timeout_bin %s is executable" % rig.timeout) in check(rig)[1][6]
+    assert ("PASS", "timeout_bin %s is executable" % rig.timeout) in check(rig)[1]["6b"]
     rig.conf("timeout_bin=/nonexistent/timeout\n")
-    fails = [t for s, t in check(rig)[1][6] if s == "FAIL"]
+    fails = [t for s, t in check(rig)[1]["6b"] if s == "FAIL"]
     assert fails and fails[0].startswith("timeout_not_executable: /nonexistent/timeout")
 
 
@@ -1030,3 +1032,62 @@ def test_remote_timeout_is_not_retried_in_the_same_poll(rig):
     rig.stub("ssh", 'echo x >> "%s"\nexit 124\n' % calls)
     rig.run()
     assert calls.read_text().count("x") == 1
+
+
+def test_check_state_dir_item_prints_first(rig):
+    good_rig(rig)
+    lines = rig.run("--check").stdout.splitlines()
+    first = [ln for ln in lines if ln[:4] in ("PASS", "FAIL", "INFO", "SKIP")][0]
+    assert first.startswith("PASS  12  ")
+
+
+def test_check_item6_rows_are_6a_and_6b(rig):
+    good_rig(rig)
+    _r, items = check(rig)
+    assert 6 not in items and items["6a"][0][1].startswith("claude_bin ")
+    assert items["6b"][0][1].startswith("timeout_bin ")
+
+
+def test_check_ssh_failed_cross_references_setup_items(rig):
+    good_rig(rig)
+    rig.write_authorized(options='from="127.0.0.1,::1",command="x"')
+    rig.set_forced(False)
+    _r, items = check(rig, HOS_TEST_SSH_EXIT="255")
+    assert items[2][0][0] == "FAIL"
+    text = items[7][0][1]
+    assert "FAILED reason=ssh_failed" in text
+    assert "likely caused by item 2 (authorized_keys line)" in text
+
+
+def test_check_ssh_failed_cross_reference_multiple_and_key_missing(rig):
+    good_rig(rig)
+    rig.key.unlink()
+    _r, items = check(rig, HOS_TEST_KNOWN_HOSTS_RC="1")
+    assert "likely caused by item 1 (loopback key); item 3 (known_hosts)" in items[7][0][1]
+
+
+def test_check_no_cross_reference_when_setup_items_pass(rig):
+    good_rig(rig)
+    rig.set_forced(False)
+    _r, items = check(rig, HOS_TEST_SSH_EXIT="255")
+    assert "likely caused by" not in items[7][0][1]
+
+
+def test_timeout_side_remote_in_reading_after_remote_exit(rig):
+    r = _no_envelope(rig, 137)
+    f = rig.reading().fields
+    assert f["timeout_side"] == "remote" and f["remote_exit"] == "137"
+    names = [ln.split("=")[0] for ln in (rig.dir / "reading").read_text().splitlines()]
+    assert names.index("timeout_side") == names.index("remote_exit") + 1
+    assert "remote rc=137" in r.stdout
+
+
+def test_timeout_side_absent_unless_timeout(rig):
+    rig.run()
+    assert "timeout_side" not in rig.reading().fields
+    rig.set_forced(False)
+    rig.run(HOS_TEST_SSH_EXIT="255")
+    assert "timeout_side" not in rig.reading().fields
+    rig.run(HOS_TEST_SSH_EXIT="2")
+    assert rig.reading().fields["reason"] == "envelope_invalid"
+    assert "timeout_side" not in rig.reading().fields
