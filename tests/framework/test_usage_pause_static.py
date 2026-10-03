@@ -138,6 +138,12 @@ def test_one_ssh_call_site():
         if isinstance(n, ast.Call) and getattr(n.func, "attr", getattr(n.func, "id", "")) == "Popen"
     ]
     assert len(popen) == 1
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            first = node.elts[0]
+            assert not (
+                isinstance(first, ast.Constant) and first.value in ("timeout", "gtimeout")
+            ), node.lineno
     for name, line in all_code():
         assert "_TIMEOUT_BIN" not in line and "gtimeout" not in line, (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+-", line), (name, line)

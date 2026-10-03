@@ -95,7 +95,7 @@ UNUSABLE_REASONS: FrozenSet[str] = frozenset(
     }
 )
 GATE_SENTINEL = "# HOS-USAGE-PAUSE-GATE schema=1"
-REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)
+REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)
 SSH_OPTIONS: Tuple[str, ...] = (
     "-o",
     "BatchMode=yes",
@@ -1001,14 +1001,15 @@ def _evaluate(
 # ───────────────────────────── building the reading ─────────────────────────────
 
 
-def _bounded_top(items: Tuple[Tuple[str, int], ...]) -> Optional[str]:
+def _bounded_top(items: Tuple[Tuple[str, int], ...]) -> Optional[Tuple[str, int]]:
+    """The joined list within the value cap and the number of trailing items dropped."""
     parts: List[str] = []
     for name, pct in items:
         candidate = ",".join(parts + ["%s=%d" % (name, pct)])
         if len(candidate) > VALUE_CAP_CHARS:
             break
         parts.append("%s=%d" % (name, pct))
-    return ",".join(parts) if parts else None
+    return (",".join(parts), len(items) - len(parts)) if parts else None
 
 
 def build_reading(
@@ -1094,8 +1095,9 @@ def _success_fields(parsed: ParseResult) -> List[Tuple[str, str]]:
         if win.top_subagents is not None and win.top_subagents_more is not None:
             bounded = _bounded_top(win.top_subagents)
             if bounded is not None:
-                out.append(("top_subagents_" + slug, bounded))
-                out.append(("top_subagents_more_" + slug, str(win.top_subagents_more)))
+                joined, dropped = bounded
+                out.append(("top_subagents_" + slug, joined))
+                out.append(("top_subagents_more_" + slug, str(win.top_subagents_more + dropped)))
     return out
 
 
@@ -1488,6 +1490,7 @@ def _check_read(
     if not key.is_file():
         report.add("FAIL", 7, "FAILED reason=ssh_failed detail=loopback key missing")
         return None
+    capture_error: Optional[str] = None
     work = Path(os.environ.get("TMPDIR") or "/tmp") / (
         "hos-usage-check-%d-%s" % (os.getpid(), os.urandom(6).hex())
     )
@@ -1502,7 +1505,10 @@ def _check_read(
         raw_err = err_path.read_bytes() if err_path.exists() else b""
         cls = classify_read(outcome, raw_out, raw_err)
         if capture_fixture is not None and outcome.kind == "exited":
-            write_atomic(Path(capture_fixture), raw_out, FILE_MODE)
+            try:
+                write_atomic(Path(capture_fixture), raw_out, FILE_MODE)
+            except OSError as exc:
+                capture_error = _flatten(str(exc))
     finally:
         shutil.rmtree(str(work), ignore_errors=True)
     if cls.outcome != "success":
@@ -1517,7 +1523,9 @@ def _check_read(
             report.add("FAIL", 7, summary, "read cost not zero/unknown — FR-9")
     if raw_err:
         report.add("INFO", 7, "stderr non-empty (%d bytes)" % len(raw_err))
-    if capture_fixture is not None and outcome.kind == "exited":
+    if capture_error is not None:
+        report.add("FAIL", 7, "capture failed: %s" % capture_error)
+    elif capture_fixture is not None and outcome.kind == "exited":
         report.add("INFO", 7, "captured %d bytes to %s" % (len(raw_out), capture_fixture))
     return cls
 
@@ -1573,7 +1581,7 @@ def run_print_setup(self_path: str) -> int:
     print("%s --check" % self_path)
     for line in missing:
         print(line)
-    return EXIT_FAIL if missing and pub_match is None else 0
+    return EXIT_FAIL if missing else 0
 
 
 # ───────────────────────────── CLI ─────────────────────────────

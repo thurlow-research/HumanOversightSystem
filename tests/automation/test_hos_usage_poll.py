@@ -690,3 +690,25 @@ def test_help_first_description_line():
 
 def test_usage_error_exit_64():
     assert subprocess.run(["bash", str(POLLER), "--bogus"], capture_output=True).returncode == 64
+
+
+def test_print_setup_claude_not_found_exits_1(rig):
+    rig.claude.unlink()
+    env = rig.env(PATH="/usr/bin:/bin")
+    r = subprocess.run(
+        ["bash", str(POLLER), "--print-setup"], env=env, capture_output=True, text=True, timeout=60
+    )
+    if "claude" in r.stdout and "MISSING" not in r.stdout:
+        pytest.skip("a system claude exists on the pinned PATH")
+    assert r.returncode == 1 and "MISSING: claude not found" in r.stdout
+    assert not any(ln.startswith("from=") for ln in r.stdout.splitlines())
+
+
+def test_check_capture_write_failure_reports_and_continues(rig, tmp_path):
+    good_rig(rig)
+    target = tmp_path / "no-such-dir" / "env.json"
+    r, items = check(rig, "--capture-fixture", str(target))
+    assert "Traceback" not in r.stderr and "Traceback" not in r.stdout
+    assert any(s == "FAIL" and t.startswith("capture failed:") for s, t in items[7])
+    assert r.stdout.rstrip().splitlines()[-1].startswith("RESULT: FAIL")
+    assert 8 in items and 10 in items and r.returncode == 1

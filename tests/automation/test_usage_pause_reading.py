@@ -180,7 +180,7 @@ def test_poll_view_pause_reason_exact():
 
 def test_top_subagents_value_bounded():
     items = tuple(("name%03d" % i, 1) for i in range(100))
-    assert len(up._bounded_top(items)) <= up.VALUE_CAP_CHARS
+    assert len(up._bounded_top(items)[0]) <= up.VALUE_CAP_CHARS
 
 
 def test_cost_format():
@@ -188,3 +188,35 @@ def test_cost_format():
         up.format_cost(0) == "0" and up.format_cost(0.0123) == "0.0123" and up.format_cost(2) == "2"
     )
     assert "e" in up.format_cost(1e-30)
+
+
+def _win(items, more):
+    return up.ParseResult(
+        True,
+        None,
+        1,
+        None,
+        2,
+        None,
+        (),
+        (up.WindowBreakdown("24h", "24h", 1, 1, None, None, None, items, more),),
+        False,
+    )
+
+
+def test_top_subagents_cap_adds_dropped_to_more():
+    items = tuple(("n%02d" % i, 1) for i in range(60))
+    fields = dict(up._success_fields(_win(items, 3)))
+    kept = fields["top_subagents_24h"].count("=")
+    assert kept < 60 and len(fields["top_subagents_24h"]) <= up.VALUE_CAP_CHARS
+    assert fields["top_subagents_more_24h"] == str(3 + 60 - kept)
+
+
+def test_top_subagents_nothing_dropped_keeps_more():
+    fields = dict(up._success_fields(_win((("a", 1), ("b", 2)), 4)))
+    assert fields["top_subagents_24h"] == "a=1,b=2" and fields["top_subagents_more_24h"] == "4"
+
+
+def test_top_subagents_first_item_too_long_both_absent():
+    fields = dict(up._success_fields(_win((("x" * 300, 1),), 0)))
+    assert "top_subagents_24h" not in fields and "top_subagents_more_24h" not in fields
