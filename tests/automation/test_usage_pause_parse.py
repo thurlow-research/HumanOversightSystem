@@ -324,3 +324,83 @@ def test_read_usage_inherits_env_unchanged(tmp_path, monkeypatch):
     )
     assert out.kind == "exited" and out.rc == 0
     assert (tmp_path / "o").read_text() == "kept"
+
+
+HUGE = "9" * 5000
+
+
+def test_overlong_percent_is_unparseable_not_a_crash():
+    text = "Current session: %s%% used\nCurrent week (all models): 3%% used" % HUGE
+    assert up.parse_usage(text).reason == "missing_session"
+    text = "Current session: 1%% used\nCurrent week (all models): %s%% used" % HUGE
+    assert up.parse_usage(text).reason == "missing_weekly"
+    both = "Current session: %s%% used\nCurrent week (all models): %s%% used" % (HUGE, HUGE)
+    assert up.parse_usage(both).reason == "unparseable"
+    assert up.parse_usage(
+        "Current session: 1000% used\nCurrent week (all models): 1% used"
+    ).reason == ("missing_session")
+
+
+def test_overlong_counters_and_model_percent_never_raise():
+    base = "Current session: 1% used\nCurrent week (all models): 3% used\n"
+    p = up.parse_usage(
+        base
+        + "Current week (Fable): %s%% used\n\nLast 24h · %s requests · 1 sessions\n" % (HUGE, HUGE)
+    )
+    assert p.ok and p.models == () and p.windows == ()
+    top = base + "\nLast 24h · 1 requests · 1 sessions\n  Top subagents: a %s%%, +%s more\n" % (
+        HUGE,
+        HUGE,
+    )
+    assert up.parse_usage(top).windows[0].top_subagents is None
+    big_more = (
+        base + "\nLast 24h · 1 requests · 1 sessions\n  Top subagents: a 5%, +" + HUGE + " more\n"
+    )
+    assert up.parse_usage(big_more).windows[0].top_subagents is None
+
+
+def test_kill_group_second_timeout_returns_without_raising(monkeypatch):
+    calls = []
+
+    class Stuck:
+        pid = 123456789
+
+        def wait(self, timeout=None):
+            calls.append(timeout)
+            raise up.subprocess.TimeoutExpired("x", timeout)
+
+    monkeypatch.setattr(up.os, "killpg", lambda *_a: None)
+    assert up._kill_group(Stuck()) is None
+    assert calls == [up.KILL_GRACE_SECONDS, up.KILL_GRACE_SECONDS]
+
+
+def test_kill_group_permission_error_recorded_in_detail(monkeypatch):
+    class Stuck:
+        pid = 1
+
+        def wait(self, timeout=None):
+            return 0
+
+    def refuse(*_a):
+        raise PermissionError("nope")
+
+    monkeypatch.setattr(up.os, "killpg", refuse)
+    detail = up._kill_group(Stuck())
+    assert detail and "refused" in detail and "nope" in detail
+
+
+def test_read_usage_timeout_carries_kill_problem(tmp_path, monkeypatch):
+    class P:
+        pid = 1
+
+        def wait(self, timeout=None):
+            raise up.subprocess.TimeoutExpired("x", timeout)
+
+    monkeypatch.setattr(up.subprocess, "Popen", lambda *a, **k: P())
+    monkeypatch.setattr(up, "_kill_group", lambda _p: "kill SIGTERM refused: x")
+    out = up.read_usage(
+        key_path=tmp_path / "k", timeout_s=1, stdout_path=tmp_path / "o", stderr_path=tmp_path / "e"
+    )
+    assert out.kind == "timeout" and out.detail == "kill SIGTERM refused: x"
+    cls = up.classify_read(out, b"", b"")
+    assert cls.reason == "timeout" and cls.detail == "kill SIGTERM refused: x"

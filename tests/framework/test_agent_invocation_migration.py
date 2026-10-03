@@ -116,9 +116,6 @@ _T4_1_EXPECTED_EXEMPTIONS = {
     "scripts/run_panel.sh",  # EXEMPT until W4b (TD §6.4) migrates the panel's Claude seats.
     # EXEMPT until W4c (#1756, ADR-1643 Amendment 6) ships a scripts-reviewer agent.
     "scripts/framework/validate_scripts.sh",
-    # EXEMPT (permanent, ADR-1944 AD-5/A2-9): non-agent /usage forced-command
-    # template; executed by sshd, not HOS.
-    "bin/lib/usage_pause.py",
 }
 
 
@@ -150,6 +147,13 @@ def test_T4_1b_usage_read_has_one_call_site():
                 hits.add(str(path.relative_to(ROOT)))
                 break
     assert hits == {_USAGE_LIB}, f"/usage read call sites: {sorted(hits)}"
+    in_lib = [
+        line for _n, line in _code_lines(ROOT / _USAGE_LIB) if _USAGE_READ_PATTERN.search(line)
+    ]
+    assert len(in_lib) == 1 and in_lib[0].startswith("REMOTE_CMD_TEMPLATE"), in_lib
+    for name in _USAGE_FILES:
+        for _n, line in _code_lines(ROOT / name):
+            assert not re.search(r"claude\s+(-p|--print)", line), (name, line)
 
 
 def test_T4_1b_remote_command_template_is_exact():
@@ -173,7 +177,7 @@ def test_T4_1b_ssh_argv_ends_at_host(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("usage_pause_t41b", ROOT / _USAGE_LIB)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     seen = []
 

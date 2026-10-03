@@ -220,3 +220,32 @@ def test_top_subagents_nothing_dropped_keeps_more():
 def test_top_subagents_first_item_too_long_both_absent():
     fields = dict(up._success_fields(_win((("x" * 300, 1),), 0)))
     assert "top_subagents_24h" not in fields and "top_subagents_more_24h" not in fields
+
+
+def test_write_atomic_does_not_follow_planted_symlink(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("precious")
+    (tmp_path / "reading.tmp").symlink_to(victim)
+    up.write_atomic(tmp_path / "reading", b"new", 0o600)
+    assert victim.read_text() == "precious"
+    assert (tmp_path / "reading").read_bytes() == b"new"
+    assert not (tmp_path / "reading.tmp").exists()
+
+
+def test_write_atomic_mode_correct_over_existing_loose_file(tmp_path):
+    stale = tmp_path / "reading.tmp"
+    stale.write_text("old")
+    stale.chmod(0o666)
+    up.write_atomic(tmp_path / "reading", b"x", 0o600)
+    assert (tmp_path / "reading").stat().st_mode & 0o777 == 0o600
+
+
+def test_open_private_replaces_symlink(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("precious")
+    (tmp_path / "out").symlink_to(victim)
+    with up._open_private(tmp_path / "out") as fh:
+        fh.write(b"data")
+    assert victim.read_text() == "precious"
+    assert (tmp_path / "out").read_bytes() == b"data"
+    assert (tmp_path / "out").stat().st_mode & 0o777 == 0o600

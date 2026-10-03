@@ -125,3 +125,23 @@ def test_cost_recorded_on_failed_read():
             )
         )
         assert fields["cost_usd"] == "0" and fields["read_tokens"] == "0"
+
+
+def _with_cost(literal):
+    doc = fx("capture2-envelope-2026-10-03.json").decode()
+    return doc.replace('"total_cost_usd": 0', '"total_cost_usd": %s' % literal, 1).encode()
+
+
+def test_huge_cost_is_absent_and_read_still_succeeds():
+    for literal in ("1" + "0" * 400, "1e999", "-1" + "0" * 400):
+        env = up.parse_envelope(_with_cost(literal))
+        assert env.ok and env.cost_usd is None, literal
+        assert up.parse_usage(env.result_text).ok
+
+
+def test_unbounded_int_literal_is_envelope_invalid_not_a_crash():
+    assert up.parse_envelope(_with_cost("1" + "0" * 6000)).reason == "envelope_invalid"
+
+
+def test_deeply_nested_envelope_is_envelope_invalid():
+    assert up.parse_envelope(b"[" * 50000 + b"]" * 50000).reason == "envelope_invalid"

@@ -712,3 +712,72 @@ def test_check_capture_write_failure_reports_and_continues(rig, tmp_path):
     assert any(s == "FAIL" and t.startswith("capture failed:") for s, t in items[7])
     assert r.stdout.rstrip().splitlines()[-1].startswith("RESULT: FAIL")
     assert 8 in items and 10 in items and r.returncode == 1
+
+
+def test_check_duplicate_from_option_fails(rig):
+    good_rig(rig)
+    cmd = "%s -p /usage --output-format json" % rig.claude
+    rig.write_authorized(options='from="0.0.0.0/0",from="127.0.0.1,::1",command="%s"' % cmd)
+    item = check(rig)[1][2][0]
+    assert item == ("FAIL", "duplicate option: from= — regenerate the line with --print-setup")
+
+
+def test_check_duplicate_command_option_fails(rig):
+    good_rig(rig)
+    cmd = "%s -p /usage --output-format json" % rig.claude
+    rig.write_authorized(options='from="127.0.0.1,::1",command="/bin/sh",command="%s"' % cmd)
+    assert "duplicate option: command=" in check(rig)[1][2][0][1]
+
+
+def test_check_unquoted_option_value_fails(rig):
+    good_rig(rig)
+    rig.write_authorized(options="from=127.0.0.1,command=x")
+    item = check(rig)[1][2][0]
+    assert item[0] == "FAIL" and "must be double-quoted" in item[1]
+
+
+def test_check_unquoted_from_value_names_quoting(rig):
+    ok, text = up.check_authorized_keys(
+        rig.home / ".ssh" / "hos_loopback.pub",
+        _write(rig, 'from=127.0.0.1 command="x" ' + PUB),
+        "x",
+    )
+    assert not ok and "must be double-quoted" in text
+
+
+def _write(rig, line):
+    path = rig.home / ".ssh" / "ak2"
+    path.write_text(line + "\n")
+    return path
+
+
+def test_check_temp_dir_failure_is_a_fail_line(rig):
+    good_rig(rig)
+    r, items = check(rig, TMPDIR=str(rig.home / "does-not-exist"))
+    assert "Traceback" not in r.stderr
+    assert items[7][0][0] == "FAIL" and "cannot create a temp directory" in items[7][0][1]
+    assert r.returncode == 1 and 8 in items
+
+
+def test_run_text_has_timeout(monkeypatch):
+    seen = {}
+
+    def fake(argv, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(up.subprocess, "run", fake)
+    assert up._run_text(["crontab", "-l"]) is None
+    assert seen["timeout"] == up.SUBPROCESS_TIMEOUT_SECONDS
+
+
+def test_print_setup_quotes_paths(tmp_path):
+    spaced = Rig(_mk(tmp_path / "a b"))
+    out = spaced.run("--print-setup").stdout
+    assert "'%s/.hos/usage-pause/poll.last.log' 2>&1" % spaced.home in out
+    assert "--capture-fixture '%s/hos-usage-envelope-" % spaced.home in out
+
+
+def _mk(path):
+    path.mkdir()
+    return path

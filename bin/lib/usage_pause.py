@@ -1,4 +1,4 @@
-"""Forced-command template and read path for claude -p /usage (ADR-1944, S1 part).
+"""Forced-command template and read path for the /usage read (ADR-1944, S1 part).
 
 Library behind bin/hos-usage-poll: the loopback read, the strict JSON envelope
 parser, the settings parser, the reading file and the one decision rule
@@ -47,8 +47,10 @@ THRESHOLD_MAX = 100
 POLL_INTERVAL_MIN = 60
 POLL_INTERVAL_MAX = 3600
 POLL_INTERVAL_STEP = 60
+STALENESS_MIN = 1
 STALENESS_MAX = 7200
 READ_TIMEOUT_MIN = 5
+READ_TIMEOUT_MAX = 3600
 READ_TIMEOUT_MARGIN = 30
 HISTORY_DAYS_MIN = 1
 HISTORY_DAYS_MAX = 3650
@@ -133,6 +135,7 @@ MODEL_SLUG_CAP_CHARS = 32
 WINDOW_SLUG_CAP_CHARS = 16
 SETTINGS_FILE_CAP_BYTES = 65536
 SSH_FAILURE_RC = 255
+SUBPROCESS_TIMEOUT_SECONDS = 30
 EXIT_USAGE = 64
 EXIT_FAIL = 1
 EXPECTED_KEY_MODE = 0o600
@@ -154,13 +157,13 @@ _CLAUDE_BIN_RE = re.compile(r"/[A-Za-z0-9._+/-]{1,254}", re.ASCII)
 _ANSI_OSC_RE = re.compile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
 _ANSI_CSI_RE = re.compile("\x1b\\[[0-?]*[ -/]*[@-~]")
 
-_SESSION_PCT_RE = re.compile(r"Current session: ([0-9]+)% used", re.ASCII)
-_SESSION_RESETS_RE = re.compile(r"Current session: [0-9]+% used · resets (.*)", re.ASCII)
-_WEEKLY_ALL_PCT_RE = re.compile(r"Current week \(all models\): ([0-9]+)% used", re.ASCII)
+_SESSION_PCT_RE = re.compile(r"Current session: ([0-9]{1,3})% used", re.ASCII)
+_SESSION_RESETS_RE = re.compile(r"Current session: [0-9]{1,3}% used · resets (.*)", re.ASCII)
+_WEEKLY_ALL_PCT_RE = re.compile(r"Current week \(all models\): ([0-9]{1,3})% used", re.ASCII)
 _WEEKLY_ALL_RESETS_RE = re.compile(
-    r"Current week \(all models\): [0-9]+% used · resets (.*)", re.ASCII
+    r"Current week \(all models\): [0-9]{1,3}% used · resets (.*)", re.ASCII
 )
-_MODEL_RE = re.compile(r"Current week \(([^)]+)\): ([0-9]+)% used(?: · resets (.*))?", re.ASCII)
+_MODEL_RE = re.compile(r"Current week \(([^)]+)\): ([0-9]{1,3})% used(?: · resets (.*))?", re.ASCII)
 _MARKER_RE = re.compile(
     r"^You are currently using your subscription to power your Claude Code usage\s*$",
     re.ASCII | re.MULTILINE,
@@ -169,18 +172,18 @@ _ANY_USED_RE = re.compile(r"[0-9]+% used", re.ASCII)
 _EMPTY_USAGE_RE = re.compile(r"Usage:\s+0 input", re.ASCII)
 _EMPTY_COST_MARKER = "Total cost:"
 _WINDOW_HEADER_RE = re.compile(
-    r"^\s*Last (\S+) · ([0-9]+) requests · ([0-9]+) sessions\s*$", re.ASCII
+    r"^\s*Last (\S+) · ([0-9]{1,12}) requests · ([0-9]{1,12}) sessions\s*$", re.ASCII
 )
 _HEAVY_RE = re.compile(
-    r"^\s*([0-9]+)% of your usage came from subagent-heavy sessions\s*$", re.ASCII
+    r"^\s*([0-9]{1,3})% of your usage came from subagent-heavy sessions\s*$", re.ASCII
 )
-_CONTEXT_RE = re.compile(r"^\s*([0-9]+)% of your usage was at >150k context\s*$", re.ASCII)
+_CONTEXT_RE = re.compile(r"^\s*([0-9]{1,3})% of your usage was at >150k context\s*$", re.ASCII)
 _LONG_SESSION_RE = re.compile(
-    r"^\s*([0-9]+)% of your usage came from sessions active for 8\+ hours\s*$", re.ASCII
+    r"^\s*([0-9]{1,3})% of your usage came from sessions active for 8\+ hours\s*$", re.ASCII
 )
 _TOP_RE = re.compile(r"^\s*Top subagents: (.+?)\s*$", re.ASCII)
-_TOP_MORE_RE = re.compile(r"\+([0-9]+) more", re.ASCII)
-_TOP_ITEM_RE = re.compile(r"(\S(?:.*\S)?) ([0-9]+)%", re.ASCII)
+_TOP_MORE_RE = re.compile(r"\+([0-9]{1,12}) more", re.ASCII)
+_TOP_ITEM_RE = re.compile(r"(\S(?:.*\S)?) ([0-9]{1,3})%", re.ASCII)
 _PUB_RE = re.compile(r"(\S+) (\S+)(?: .*)?")
 _KEY_TYPE_PREFIXES = ("ssh-", "ecdsa-", "sk-")
 _ENV_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
@@ -350,8 +353,19 @@ def decode_result_text(text: str) -> str:
 # ───────────────────────────── the read ─────────────────────────────
 
 
+def _create_fresh(path: Path, mode: int) -> int:
+    """Create `path` anew: a stale file or symlink there is removed, never followed or reused."""
+    try:
+        os.unlink(str(path))
+    except FileNotFoundError:
+        pass
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    os.fchmod(fd, mode)
+    return fd
+
+
 def _open_private(path: Path):
-    return os.fdopen(os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE), "wb")
+    return os.fdopen(_create_fresh(path, FILE_MODE), "wb")
 
 
 def read_usage(
@@ -374,24 +388,30 @@ def read_usage(
             try:
                 rc = proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
-                _kill_group(proc)
-                return ReadOutcome("timeout", None, None)
+                return ReadOutcome("timeout", None, _kill_group(proc))
     except OSError as exc:
         return ReadOutcome("spawn_failed", None, _flatten(str(exc)))
+    # A negative rc is death by signal: it maps to rc=None, and the strict parse of whatever
+    # stdout holds still decides success.
     return ReadOutcome("exited", rc if rc >= 0 else None, None)
 
 
-def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
-    for sig, grace in ((signal.SIGTERM, KILL_GRACE_SECONDS), (signal.SIGKILL, None)):
+def _kill_group(proc: "subprocess.Popen[bytes]") -> Optional[str]:
+    """TERM then KILL the process group, each wait bounded. Returns a detail when a kill was refused."""
+    problem: Optional[str] = None
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(proc.pid, sig)
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError:
             pass
+        except PermissionError as exc:
+            problem = "kill %s refused: %s" % (sig.name, _flatten(str(exc)))
         try:
-            proc.wait(timeout=grace)
-            return
+            proc.wait(timeout=KILL_GRACE_SECONDS)
+            return problem
         except subprocess.TimeoutExpired:
             continue
+    return problem
 
 
 def classify_transport(outcome: ReadOutcome) -> Optional[str]:
@@ -443,6 +463,17 @@ def _envelope_invalid() -> EnvelopeResult:
     return EnvelopeResult(False, "envelope_invalid", None, None, {}, None)
 
 
+def _valid_cost(raw_cost: object) -> Optional[float]:
+    """A finite, non-negative number as float; anything else (including overflow) is absent."""
+    if not isinstance(raw_cost, (int, float)) or isinstance(raw_cost, bool):
+        return None
+    try:
+        value = float(raw_cost)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
 def parse_envelope(raw: bytes) -> EnvelopeResult:
     """Strict parse of the --output-format json envelope. Reads six fields and nothing else."""
     try:
@@ -453,15 +484,7 @@ def parse_envelope(raw: bytes) -> EnvelopeResult:
         result = doc.get("result")
         if not isinstance(result, str):
             return _envelope_invalid()
-        cost: Optional[float] = None
-        raw_cost = doc.get("total_cost_usd")
-        if (
-            isinstance(raw_cost, (int, float))
-            and not isinstance(raw_cost, bool)
-            and math.isfinite(raw_cost)
-            and raw_cost >= 0
-        ):
-            cost = float(raw_cost)
+        cost = _valid_cost(doc.get("total_cost_usd"))
         tokens: Dict[str, int] = {}
         usage = doc.get("usage")
         if isinstance(usage, dict):
@@ -471,7 +494,7 @@ def parse_envelope(raw: bytes) -> EnvelopeResult:
                     tokens[key] = val
         read_tokens = sum(tokens.values()) if len(tokens) == len(_TOKEN_KEYS) else None
         return EnvelopeResult(True, None, decode_result_text(result), cost, tokens, read_tokens)
-    except Exception:  # noqa: BLE001 - every parse failure is the same value
+    except (ValueError, RecursionError):  # JSON syntax, duplicate keys, int limits, nesting
         return _envelope_invalid()
 
 
@@ -651,8 +674,9 @@ def classify_read(
     stderr_detail = "stderr:" + _flatten(stderr.decode("utf-8", errors="replace"))
     reason = classify_transport(outcome)
     if reason is not None:
-        detail = outcome.detail if outcome.kind == "spawn_failed" and outcome.detail else None
-        return Classification("failure", reason, detail or stderr_detail, remote_exit, None, None)
+        return Classification(
+            "failure", reason, outcome.detail or stderr_detail, remote_exit, None, None
+        )
     envelope = parse_envelope(stdout)
     if not envelope.ok:
         return Classification("failure", "envelope_invalid", stderr_detail, remote_exit, None, None)
@@ -694,9 +718,9 @@ def _parse_setting(key: str, value: str) -> Optional[object]:
         number = _int_in(value, POLL_INTERVAL_MIN, POLL_INTERVAL_MAX)
         return number if number is not None and number % POLL_INTERVAL_STEP == 0 else None
     if key == "staleness_seconds":
-        return _int_in(value, THRESHOLD_MIN, STALENESS_MAX)
+        return _int_in(value, STALENESS_MIN, STALENESS_MAX)
     if key == "read_timeout_seconds":
-        return _int_in(value, READ_TIMEOUT_MIN, POLL_INTERVAL_MAX)
+        return _int_in(value, READ_TIMEOUT_MIN, READ_TIMEOUT_MAX)
     if key == "history_days":
         return _int_in(value, HISTORY_DAYS_MIN, HISTORY_DAYS_MAX)
     if key == "history_max_mb":
@@ -850,9 +874,8 @@ def render_reading(fields: Sequence[Tuple[str, str]]) -> str:
 def write_atomic(path: Path, data: bytes, mode: int) -> None:
     """Section 1.5: render in memory, write <file>.tmp, fsync, rename, best-effort dir fsync."""
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    fd = _create_fresh(tmp, mode)
     try:
-        os.fchmod(fd, mode)
         view = memoryview(data)
         while view:
             view = view[os.write(fd, view) :]
@@ -1180,9 +1203,11 @@ def _line_options(line: str) -> Optional[str]:
     return stripped
 
 
-def _unquote_option(value: str) -> str:
-    inner = value[1:-1] if value.startswith('"') and value.endswith('"') else value
-    return inner.replace('\\"', '"')
+def _unquote_option(value: str) -> Optional[str]:
+    """The value of a double-quoted option, or None when it is not double-quoted."""
+    if value == '"' or not (value.startswith('"') and value.endswith('"')):
+        return None
+    return value[1:-1].replace('\\"', '"')
 
 
 def check_authorized_keys(
@@ -1212,10 +1237,17 @@ def check_authorized_keys(
     seen_from = None
     seen_cmd = None
     for part in parts:
-        if part.startswith("from="):
-            seen_from = _unquote_option(part[len("from=") :])
-        elif part.startswith("command="):
-            seen_cmd = _unquote_option(part[len("command=") :])
+        if part.startswith("from=") or part.startswith("command="):
+            name = part.split("=", 1)[0]
+            if (seen_from if name == "from" else seen_cmd) is not None:
+                return False, "duplicate option: %s=" % name
+            value = _unquote_option(part[len(name) + 1 :])
+            if value is None:
+                return False, "option %s= value must be double-quoted" % name
+            if name == "from":
+                seen_from = value
+            else:
+                seen_cmd = value
         else:
             return False, "extra option: %s" % part
     if seen_from is None:
@@ -1352,8 +1384,14 @@ class _Report:
 
 def _run_text(argv: Sequence[str]) -> Optional["subprocess.CompletedProcess[str]"]:
     try:
-        return subprocess.run(list(argv), capture_output=True, text=True, check=False)
-    except OSError:
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
 
 
@@ -1494,7 +1532,11 @@ def _check_read(
     work = Path(os.environ.get("TMPDIR") or "/tmp") / (
         "hos-usage-check-%d-%s" % (os.getpid(), os.urandom(6).hex())
     )
-    os.mkdir(str(work), STATE_DIR_MODE)
+    try:
+        os.mkdir(str(work), STATE_DIR_MODE)
+    except OSError as exc:
+        report.add("FAIL", 7, "cannot create a temp directory: %s" % _flatten(str(exc)))
+        return None
     try:
         out_path, err_path = work / "stdout", work / "stderr"
         timeout = int(str(settings.values["read_timeout_seconds"]))
@@ -1569,16 +1611,23 @@ def run_print_setup(self_path: str) -> int:
     print()
     print("# 5. Crontab line — the single install-path definition (crontab -e)")
     print(
-        "%s  %s > %s/.hos/usage-pause/poll.last.log 2>&1"
-        % (_cron_schedule(interval), self_path, home)
+        "%s  %s > %s 2>&1"
+        % (
+            _cron_schedule(interval),
+            shlex.quote(self_path),
+            shlex.quote(home + "/.hos/usage-pause/poll.last.log"),
+        )
     )
     print()
     print("# 6. Verify: first run captures the unfiltered envelope, then a plain check")
     print(
-        "%s --check --capture-fixture %s/hos-usage-envelope-%s.json"
-        % (self_path, home, time.strftime("%Y%m%d"))
+        "%s --check --capture-fixture %s"
+        % (
+            shlex.quote(self_path),
+            shlex.quote("%s/hos-usage-envelope-%s.json" % (home, time.strftime("%Y%m%d"))),
+        )
     )
-    print("%s --check" % self_path)
+    print("%s --check" % shlex.quote(self_path))
     for line in missing:
         print(line)
     return EXIT_FAIL if missing else 0
