@@ -49,7 +49,7 @@ POLL_INTERVAL_MAX = 3600
 POLL_INTERVAL_STEP = 60
 STALENESS_MIN = 1
 STALENESS_MAX = 7200
-READ_TIMEOUT_MIN = 5
+READ_TIMEOUT_MIN = 20
 READ_TIMEOUT_MAX = 3600
 READ_TIMEOUT_MARGIN = 30
 HISTORY_DAYS_MIN = 1
@@ -68,6 +68,7 @@ DEFAULTS: Mapping[str, object] = {
     "history_days": DEFAULT_HISTORY_DAYS,
     "history_max_mb": DEFAULT_HISTORY_MAX_MB,
     "claude_bin": None,
+    "timeout_bin": None,
 }
 # ── END SETTINGS DEFAULTS AND BOUNDS ──
 
@@ -97,7 +98,7 @@ UNUSABLE_REASONS: FrozenSet[str] = frozenset(
     }
 )
 GATE_SENTINEL = "# HOS-USAGE-PAUSE-GATE schema=1"
-REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)
+REMOTE_CMD_TEMPLATE = "{timeout_bin} -k 5 {remote_seconds} {claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)
 SSH_OPTIONS: Tuple[str, ...] = (
     "-o",
     "BatchMode=yes",
@@ -127,6 +128,15 @@ SSH_OPTIONS: Tuple[str, ...] = (
 KILL_GRACE_SECONDS = 5
 STALENESS_KILL_MARGIN = 2 * KILL_GRACE_SECONDS
 STDERR_TAIL_CHARS = 190
+REMOTE_TIMEOUT_MARGIN_SECONDS = 10
+REMOTE_TIMEOUT_RCS = (124, 137)
+AUTHORIZED_KEY_FLAGS = (
+    "no-port-forwarding",
+    "no-agent-forwarding",
+    "no-X11-forwarding",
+    "no-pty",
+    "no-user-rc",
+)
 GROUP_WORLD_WRITE_BITS = 0o022
 INPUT_CAP_BYTES = 65536
 HISTORY_LINE_CAP_BYTES = 16384
@@ -351,8 +361,13 @@ def format_cost(value: float) -> str:
     return text
 
 
-def remote_cmd(claude_bin: str) -> str:
-    return REMOTE_CMD_TEMPLATE.format(claude_bin=claude_bin)
+def remote_cmd(claude_bin: str, timeout_bin: str, read_timeout_seconds: int) -> str:
+    """The forced-command text. The remote side dies before the local kill at the read limit."""
+    return REMOTE_CMD_TEMPLATE.format(
+        timeout_bin=timeout_bin,
+        remote_seconds=read_timeout_seconds - REMOTE_TIMEOUT_MARGIN_SECONDS,
+        claude_bin=claude_bin,
+    )
 
 
 def decode_result_text(text: str) -> str:
@@ -686,11 +701,17 @@ def classify_read(
         "stderr:" + _flatten(stderr.decode("utf-8", errors="replace"))[-STDERR_TAIL_CHARS:]
     )
     reason = classify_transport(outcome)
+    if reason == "timeout":
+        detail = "local_timeout" + ("; " + outcome.detail if outcome.detail else "")
+        return Classification("failure", reason, detail, None, None, None)
     if reason is not None:
         return Classification(
             "failure", reason, outcome.detail or stderr_detail, remote_exit, None, None
         )
     envelope = parse_envelope(stdout)
+    if not envelope.ok and remote_exit in REMOTE_TIMEOUT_RCS:
+        detail = "remote_timeout rc=%d" % remote_exit
+        return Classification("failure", "timeout", detail, remote_exit, None, None)
     if not envelope.ok:
         return Classification("failure", "envelope_invalid", stderr_detail, remote_exit, None, None)
     parsed = parse_usage(envelope.result_text or "")
@@ -716,7 +737,7 @@ def _int_in(value: str, low: int, high: int) -> Optional[int]:
     return number if low <= number <= high else None
 
 
-def _valid_claude_bin(value: str) -> bool:
+def _valid_abs_path(value: str) -> bool:
     if _CLAUDE_BIN_RE.fullmatch(value) is None or value.endswith("/"):
         return False
     return not any(part in (".", "..") for part in value.split("/"))
@@ -738,8 +759,8 @@ def _parse_setting(key: str, value: str) -> Optional[object]:
         return _int_in(value, HISTORY_DAYS_MIN, HISTORY_DAYS_MAX)
     if key == "history_max_mb":
         return _int_in(value, HISTORY_MAX_MB_MIN, HISTORY_MAX_MB_MAX)
-    if key == "claude_bin":
-        return value if _valid_claude_bin(value) else None
+    if key in ("claude_bin", "timeout_bin"):
+        return value if _valid_abs_path(value) else None
     return None
 
 
@@ -815,15 +836,32 @@ def default_key_path() -> Path:
     return Path(_home()) / ".ssh" / "hos_loopback"
 
 
-def resolve_claude_bin(settings: SettingsResult) -> Optional[str]:
-    configured = settings.values.get("claude_bin")
+def _resolve_bin(settings: SettingsResult, key: str, name: str) -> Optional[str]:
+    configured = settings.values.get(key)
     if isinstance(configured, str):
         return configured
-    found = shutil.which("claude")
+    found = shutil.which(name)
     if found is None:
         return None
     found = os.path.abspath(found)
-    return found if _valid_claude_bin(found) else None
+    return found if _valid_abs_path(found) else None
+
+
+def resolve_claude_bin(settings: SettingsResult) -> Optional[str]:
+    return _resolve_bin(settings, "claude_bin", "claude")
+
+
+def resolve_timeout_bin(settings: SettingsResult) -> Optional[str]:
+    return _resolve_bin(settings, "timeout_bin", "timeout")
+
+
+def expected_remote_cmd(settings: SettingsResult) -> Optional[str]:
+    """The forced command rendered from the CURRENT settings, or None when a binary is missing."""
+    claude_bin = resolve_claude_bin(settings)
+    timeout_bin = resolve_timeout_bin(settings)
+    if claude_bin is None or timeout_bin is None:
+        return None
+    return remote_cmd(claude_bin, timeout_bin, int(str(settings.values["read_timeout_seconds"])))
 
 
 # ───────────────────────────── reading file ─────────────────────────────
@@ -1236,7 +1274,7 @@ def _unquote_option(value: str) -> Optional[str]:
 def check_authorized_keys(
     pub_path: Path, keys_path: Path, expected_cmd: Optional[str]
 ) -> Tuple[bool, str]:
-    """Item 2: the one authorized_keys line has exactly from= and command=, byte-equal."""
+    """Item 2: the one authorized_keys line has exactly from=, command= and the five flags, once each."""
     try:
         pub = _PUB_RE.fullmatch(pub_path.read_text(encoding="utf-8").strip().split("\n")[0])
     except (OSError, UnicodeDecodeError, IndexError):
@@ -1259,6 +1297,7 @@ def check_authorized_keys(
     parts = _split_options(options) if options else []
     seen_from = None
     seen_cmd = None
+    seen_flags: set = set()
     for part in parts:
         if part.startswith("from=") or part.startswith("command="):
             name = part.split("=", 1)[0]
@@ -1271,6 +1310,10 @@ def check_authorized_keys(
                 seen_from = value
             else:
                 seen_cmd = value
+        elif part in AUTHORIZED_KEY_FLAGS:
+            if part in seen_flags:
+                return False, "duplicate option: %s" % part
+            seen_flags.add(part)
         else:
             return False, "extra option: %s" % part
     if seen_from is None:
@@ -1279,11 +1322,14 @@ def check_authorized_keys(
         return False, "from= mismatch: expected '127.0.0.1,::1' got '%s'" % seen_from
     if seen_cmd is None:
         return False, "missing command="
+    for flag in AUTHORIZED_KEY_FLAGS:
+        if flag not in seen_flags:
+            return False, "missing option: %s" % flag
     if expected_cmd is None:
-        return False, "cannot compute the expected command: claude not found"
+        return False, "cannot compute the expected command: claude or timeout not found"
     if seen_cmd != expected_cmd:
         return False, "command mismatch: expected '%s' got '%s'" % (expected_cmd, seen_cmd)
-    return True, "one line, from= and command= only"
+    return True, "one line, from=, command= and the five hardening flags"
 
 
 def _expand_home(token: str, home: str) -> str:
@@ -1532,11 +1578,10 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
         report.add("FAIL", 1, "%s is missing" % key, "run: hos-usage-poll --print-setup")
 
     # 2. authorized_keys
-    expected = remote_cmd(claude_bin) if claude_bin else None
-    ok, text = check_authorized_keys(pub, Path(home) / ".ssh" / "authorized_keys", expected)
-    report.add(
-        "PASS" if ok else "FAIL", 2, text, None if ok else "regenerate the line with --print-setup"
+    ok, text = check_authorized_keys(
+        pub, Path(home) / ".ssh" / "authorized_keys", expected_remote_cmd(settings)
     )
+    report.add("PASS" if ok else "FAIL", 2, text, None if ok else "re-run --print-setup block 3")
 
     # 3. known_hosts
     kh = _run_text(
@@ -1584,6 +1629,16 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
             6,
             "claude_not_executable: %s" % (claude_bin or "claude not found"),
             "set claude_bin or fix PATH, then regenerate the authorized_keys line",
+        )
+    timeout_bin = resolve_timeout_bin(settings)
+    if timeout_bin and os.access(timeout_bin, os.X_OK):
+        report.add("PASS", 6, "timeout_bin %s is executable" % timeout_bin)
+    else:
+        report.add(
+            "FAIL",
+            6,
+            "timeout_not_executable: %s" % (timeout_bin or "timeout not found"),
+            "set timeout_bin or fix PATH, then regenerate the authorized_keys line",
         )
 
     # 7. one real read, then 10
@@ -1679,7 +1734,7 @@ def run_print_setup(self_path: str) -> int:
     home = _home()
     settings = load_settings(default_conf_path())
     interval = int(str(settings.values["poll_interval_seconds"]))
-    claude_bin = resolve_claude_bin(settings)
+    command = expected_remote_cmd(settings)
     key = "~/.ssh/hos_loopback"
     pub = Path(home) / ".ssh" / "hos_loopback.pub"
     print("# 1. State directory")
@@ -1696,14 +1751,15 @@ def run_print_setup(self_path: str) -> int:
         pub_match = None
     if pub_match is None:
         missing.append("MISSING: %s — run block 2 first, then re-run --print-setup" % pub)
-    elif claude_bin is None:
+    elif command is None:
         missing.append(
-            "MISSING: claude not found — set claude_bin in the settings file or fix PATH"
+            "MISSING: claude or timeout not found — set claude_bin / timeout_bin in the "
+            "settings file or fix PATH"
         )
     else:
         print(
-            'from="127.0.0.1,::1",command="%s" %s %s hos-loopback'
-            % (remote_cmd(claude_bin), pub_match.group(1), pub_match.group(2))
+            'from="127.0.0.1,::1",%s,command="%s" %s %s hos-loopback'
+            % (",".join(AUTHORIZED_KEY_FLAGS), command, pub_match.group(1), pub_match.group(2))
         )
     print()
     print("# 4. known_hosts: seed from the on-disk host key (no network trust)")
@@ -1797,6 +1853,15 @@ def _cmd_poll_record(args: argparse.Namespace) -> int:
         print("hos-usage-poll: cannot write reading: %s" % _flatten(str(exc)), file=sys.stderr)
         return EXIT_FAIL
     view = dict(fields)
+    if view.get("reason") == "timeout":
+        detail = view.get("detail", "")
+        where = "remote rc=%s" % view["remote_exit"] if "remote_exit" in view else "local kill"
+        if not detail.startswith(("remote_timeout", "local_timeout")):
+            where = "unknown"
+        print(
+            "[hos-usage-poll] %s ABORT read timed out (%s); retry next poll"
+            % (view["run_at"], where)
+        )
     parts = ["[hos-usage-poll] %s outcome=%s" % (view["run_at"], view["outcome"])]
     if "reason" in view:
         parts.append("reason=%s" % view["reason"])
@@ -1843,11 +1908,15 @@ def _cmd_last_raw(args: argparse.Namespace) -> int:
 
 
 def _cmd_remote_cmd(_args: argparse.Namespace) -> int:
-    claude_bin = resolve_claude_bin(load_settings(default_conf_path()))
-    if claude_bin is None:
-        print("hos-usage-poll: no claude_bin resolves; set claude_bin or fix PATH", file=sys.stderr)
+    command = expected_remote_cmd(load_settings(default_conf_path()))
+    if command is None:
+        print(
+            "hos-usage-poll: claude or timeout does not resolve; set claude_bin / timeout_bin "
+            "or fix PATH",
+            file=sys.stderr,
+        )
         return EXIT_FAIL
-    print(remote_cmd(claude_bin))
+    print(command)
     return 0
 
 

@@ -117,15 +117,23 @@ ssh-keygen -t ed25519 -N '' -C hos-loopback -f ~/.ssh/hos_loopback
 ### 2a.3 authorized_keys
 
 Append the one line printed by `bin/hos-usage-poll --print-setup` (block 3) to
-`~/.ssh/authorized_keys`. It has exactly two options, `from=` and `command=`:
+`~/.ssh/authorized_keys`. It has exactly seven options: `from=`, `command=` and the
+five flags `no-port-forwarding`, `no-agent-forwarding`, `no-X11-forwarding`, `no-pty`
+and `no-user-rc`, each once, in any order:
 
 ```text
-from="127.0.0.1,::1",command="<abs claude> -p /usage --output-format json" ssh-ed25519 <blob> hos-loopback
+from="127.0.0.1,::1",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,command="<abs timeout> -k 5 <R> <abs claude> -p /usage --output-format json" ssh-ed25519 <blob> hos-loopback
 ```
 
+`<R>` is `read_timeout_seconds - 10`, so the remote side stops before the poller's own
+kill at `read_timeout_seconds`. `<abs timeout>` is the absolute path of `timeout`
+(resolved from `PATH`, or the `timeout_bin` setting). The command text depends on
+`read_timeout_seconds`, `claude_bin` and `timeout_bin`: after changing any of them,
+re-run `--print-setup` block 3 and replace the line (`--check` item 2 FAILs until you do).
+
 The line is **not final until a real `--check` read returns real percentages**.
-If `claude` moves, regenerate the line (`bin/hos-usage-poll remote-cmd`); `--check`
-item 2 detects the drift. Do not add `restrict` and do not add environment
+If `claude` or `timeout` moves, regenerate the line (`bin/hos-usage-poll remote-cmd`);
+`--check` item 2 detects the drift. Do not add `restrict` and do not add environment
 unsetting: both were ruled fragile.
 
 ### 2a.4 known_hosts
@@ -148,10 +156,11 @@ until fixed, regardless of `fail_mode`; the cron log line names the key.
 | `fail_mode` | `closed` | exactly `closed` or `open` |
 | `poll_interval_seconds` | 300 | integer multiple of 60, 60-3600 |
 | `staleness_seconds` | 900 | integer greater than `poll_interval_seconds + read_timeout_seconds + 10`, at most 7200 |
-| `read_timeout_seconds` | 60 | integer 5 to `poll_interval_seconds - 30` |
+| `read_timeout_seconds` | 60 | integer 20 to `poll_interval_seconds - 30` |
 | `history_days` | 90 | integer 1-3650 |
 | `history_max_mb` | 100 | integer 1-10240 |
 | `claude_bin` | resolved from `PATH` | absolute path, no `.` or `..` segment, not ending in `/` |
+| `timeout_bin` | resolved from `PATH` | same rules as `claude_bin` |
 
 ### 2a.6 Crontab: the one install-path line
 
@@ -173,7 +182,7 @@ host.** Item 10 is informational: it shows whether the current read would pause
 under the current settings. Item 11 shows the reading the cron-fired poller has
 actually written (age, outcome, reason, `consecutive_failures`) and FAILs when the
 crontab check passed but there is no reading, or the reading is older than
-`staleness_seconds`. Item 12 checks the state directory exists, is writable and is
+`staleness_seconds`. Item 6 also checks that `timeout` is executable. Item 12 checks the state directory exists, is writable and is
 mode 0700. `--capture-fixture` refuses a target whose parent directory is not yours
 or is group- or world-writable.
 
@@ -202,7 +211,7 @@ No GitHub issue is ever filed by this feature.
 | Reason | Meaning | What to do |
 |---|---|---|
 | `ssh_failed` | ssh exited 255, or the key file is missing | `--check` items 1 to 3; `cat ~/.hos/usage-pause/last-raw` for the ssh error (host key, key mode, `authorized_keys`) |
-| `timeout` | the read did not finish within `read_timeout_seconds` | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds |
+| `timeout` | the read did not finish. `detail=remote_timeout rc=124` (or `137`): the remote `timeout` fired; `detail=local_timeout`: the poller's own kill fired. The poll log shows `ABORT read timed out ...`; the next poll retries, nothing retries within a poll | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds (then regenerate the `authorized_keys` line) |
 | `spawn_failed` | `ssh` could not be started | check `ssh` is installed and on the poller's `PATH` |
 | `envelope_invalid` | stdout was not the expected JSON envelope | `cat last-raw`; usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
 | `empty_session` | the read succeeded but showed no usage | the forced command may be running under an API-key or expired login: re-run `claude` login as the key's user |

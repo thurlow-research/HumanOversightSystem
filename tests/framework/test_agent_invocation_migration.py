@@ -164,7 +164,10 @@ def test_T4_1b_remote_command_template_is_exact():
     ]
     assert len(lines) == 1
     code = lines[0].split("  # ")[0].rstrip()
-    assert code == 'REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"'
+    assert code == (
+        'REMOTE_CMD_TEMPLATE = "{timeout_bin} -k 5 {remote_seconds} {claude_bin} '
+        '-p /usage --output-format json"'
+    )
     assert lines[0].endswith(
         "# ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)"
     )

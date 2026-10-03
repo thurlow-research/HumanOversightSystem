@@ -43,10 +43,10 @@ def test_missing_file_defaults(tmp_path):
         "weekly_model_threshold=100",
         "fail_mode=open",
         "fail_mode=closed",
-        "poll_interval_seconds=60\nread_timeout_seconds=5\nstaleness_seconds=100",
+        "poll_interval_seconds=60\nread_timeout_seconds=20\nstaleness_seconds=100",
         "poll_interval_seconds=3600\nstaleness_seconds=7200",
         "staleness_seconds=7200",
-        "read_timeout_seconds=5",
+        "read_timeout_seconds=20",
         "read_timeout_seconds=270",
         "history_days=1",
         "history_days=3650",
@@ -76,7 +76,7 @@ def test_each_key_valid_bounds(tmp_path, line):
         ("poll_interval_seconds=3660", "poll_interval_seconds"),
         ("staleness_seconds=360", "staleness_seconds"),
         ("staleness_seconds=7201", "staleness_seconds"),
-        ("read_timeout_seconds=4", "read_timeout_seconds"),
+        ("read_timeout_seconds=19", "read_timeout_seconds"),
         ("read_timeout_seconds=271", "read_timeout_seconds"),
         ("history_days=0", "history_days"),
         ("history_days=3651", "history_days"),
@@ -171,3 +171,15 @@ def test_staleness_must_clear_interval_timeout_and_kill_grace(tmp_path):
     floor = 300 + 60 + up.STALENESS_KILL_MARGIN
     assert load(tmp_path, "staleness_seconds=%d\n" % floor).status == "invalid:staleness_seconds"
     assert load(tmp_path, "staleness_seconds=%d\n" % (floor + 1)).status == "valid"
+
+
+def test_read_timeout_minimum_is_20(tmp_path):
+    assert up.READ_TIMEOUT_MIN == 20
+    assert load(tmp_path, "read_timeout_seconds=19\n").status == "invalid:read_timeout_seconds"
+
+
+def test_timeout_bin_validated_like_claude_bin(tmp_path):
+    assert load(tmp_path, "timeout_bin=/usr/bin/timeout\n").status == "valid"
+    for bad in ("timeout", "/usr/../bin/timeout", "/usr/bin/"):
+        assert load(tmp_path, "timeout_bin=%s\n" % bad).status == "invalid:timeout_bin"
+    assert up.DEFAULTS["timeout_bin"] is None

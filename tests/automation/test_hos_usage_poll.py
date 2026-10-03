@@ -12,6 +12,7 @@ import pytest
 from tests.automation.usage_support import POLLER, fx, up
 
 SENTINEL = up.GATE_SENTINEL
+FLAGS = up.AUTHORIZED_KEY_FLAGS
 PUB = "ssh-ed25519 AAAAC3NzaBLOB hos-loopback"
 
 
@@ -38,6 +39,7 @@ class Rig:
             'if [ -n "${HOS_TEST_FORCED_COMMAND:-}" ]; then $HOS_TEST_FORCED_COMMAND; fi\n'
             'exit "${HOS_TEST_SSH_EXIT:-0}"\n',
         )
+        self.timeout = self.stub("timeout", 'shift 3\nexec "$@"\n')
         self.stub("ssh-keygen", 'exit "${HOS_TEST_KNOWN_HOSTS_RC:-0}"\n')
         self.stub("crontab", 'cat "$HOME/crontab.txt" 2>/dev/null || exit 1\n')
         self.key = self.home / ".ssh" / "hos_loopback"
@@ -56,18 +58,23 @@ class Rig:
         p.chmod(p.stat().st_mode | stat.S_IXUSR)
         return p
 
+    def forced(self, read_timeout=60):
+        return "%s -k 5 %d %s -p /usage --output-format json" % (
+            self.timeout,
+            read_timeout - 10,
+            self.claude,
+        )
+
     def set_forced(self, on):
         if on:
-            self.extra_env["HOS_TEST_FORCED_COMMAND"] = (
-                "%s -p /usage --output-format json" % self.claude
-            )
+            self.extra_env["HOS_TEST_FORCED_COMMAND"] = self.forced()
         else:
             self.extra_env.pop("HOS_TEST_FORCED_COMMAND", None)
 
     def write_authorized(self, options=None, cmd=None):
-        cmd = cmd or "%s -p /usage --output-format json" % self.claude
+        cmd = cmd or self.forced()
         if options is None:
-            options = 'from="127.0.0.1,::1",command="%s"' % cmd
+            options = 'from="127.0.0.1,::1",%s,command="%s"' % (",".join(FLAGS), cmd)
         (self.home / ".ssh" / "authorized_keys").write_text("%s %s\n" % (options, PUB))
 
     def cron_copy(self, name="a", sentinel=True, lib=True):
@@ -212,11 +219,13 @@ def test_poll_needs_no_timeout_binary(rig):
 
 @pytest.mark.slow
 def test_poll_timeout(rig):
-    rig.conf("read_timeout_seconds=5\n")
+    rig.conf("read_timeout_seconds=20\n")
     rig.set_forced(True)
     start = time.time()
-    rig.run(HOS_TEST_CLAUDE_SLEEP="60")
+    r = rig.run(HOS_TEST_CLAUDE_SLEEP="60")
     assert rig.reading().fields["reason"] == "timeout"
+    assert rig.reading().fields["detail"] == "local_timeout"
+    assert "ABORT read timed out (local kill); retry next poll" in r.stdout
     assert time.time() - start < 40
 
 
@@ -427,8 +436,7 @@ def test_check_authorized_keys_exact_pass(rig):
 def test_check_restrict_option_fails(rig):
     good_rig(rig)
     rig.write_authorized(
-        options='restrict,from="127.0.0.1,::1",command="%s -p /usage --output-format json"'
-        % rig.claude
+        options='restrict,from="127.0.0.1,::1",%s,command="%s"' % (",".join(FLAGS), rig.forced())
     )
     _r, items = check(rig)
     assert items[2][0][0] == "FAIL" and "extra option: restrict" in items[2][0][1]
@@ -653,7 +661,7 @@ def test_print_setup_one_authorized_keys_line_no_restrict(rig):
     out = rig.run("--print-setup").stdout
     lines = [ln for ln in out.splitlines() if ln.startswith("from=")]
     assert lines == [
-        'from="127.0.0.1,::1",command="%s -p /usage --output-format json" %s' % (rig.claude, PUB)
+        'from="127.0.0.1,::1",%s,command="%s" %s' % (",".join(FLAGS), rig.forced(), PUB)
     ]
     assert "restrict" not in out and "env -u" not in out
 
@@ -674,9 +682,9 @@ def test_print_setup_missing_pub(rig):
 
 def test_remote_cmd_output(rig):
     r = rig.run("remote-cmd")
-    assert (
-        r.stdout.strip() == "%s -p /usage --output-format json" % rig.claude and r.returncode == 0
-    )
+    assert r.stdout.strip() == rig.forced() and r.returncode == 0
+    rig.conf("read_timeout_seconds=30\npoll_interval_seconds=300\n")
+    assert rig.run("remote-cmd").stdout.strip() == rig.forced(30)
 
 
 def test_remote_cmd_without_claude_exits_1(monkeypatch, tmp_path):
@@ -705,7 +713,7 @@ def test_print_setup_claude_not_found_exits_1(rig):
     )
     if "claude" in r.stdout and "MISSING" not in r.stdout:
         pytest.skip("a system claude exists on the pinned PATH")
-    assert r.returncode == 1 and "MISSING: claude not found" in r.stdout
+    assert r.returncode == 1 and "MISSING: claude or timeout not found" in r.stdout
     assert not any(ln.startswith("from=") for ln in r.stdout.splitlines())
 
 
@@ -721,15 +729,15 @@ def test_check_capture_write_failure_reports_and_continues(rig, tmp_path):
 
 def test_check_duplicate_from_option_fails(rig):
     good_rig(rig)
-    cmd = "%s -p /usage --output-format json" % rig.claude
+    cmd = rig.forced()
     rig.write_authorized(options='from="0.0.0.0/0",from="127.0.0.1,::1",command="%s"' % cmd)
     item = check(rig)[1][2][0]
-    assert item == ("FAIL", "duplicate option: from= — regenerate the line with --print-setup")
+    assert item == ("FAIL", "duplicate option: from= — re-run --print-setup block 3")
 
 
 def test_check_duplicate_command_option_fails(rig):
     good_rig(rig)
-    cmd = "%s -p /usage --output-format json" % rig.claude
+    cmd = rig.forced()
     rig.write_authorized(options='from="127.0.0.1,::1",command="/bin/sh",command="%s"' % cmd)
     assert "duplicate option: command=" in check(rig)[1][2][0][1]
 
@@ -858,9 +866,10 @@ def test_check_capture_refuses_group_writable_parent(rig, tmp_path):
     assert not (bad / "env.json").exists()
 
 
+@pytest.mark.slow
 def test_check_capture_skipped_when_read_did_not_exit(rig, tmp_path):
     good_rig(rig)
-    rig.conf("read_timeout_seconds=5\n")
+    rig.conf("read_timeout_seconds=20\n")
     target = tmp_path / "cap.json"
     _r, items = check(rig, "--capture-fixture", str(target), HOS_TEST_CLAUDE_SLEEP="30")
     assert ("INFO", "capture skipped: read did not exit") in items[7]
@@ -923,3 +932,101 @@ def test_helper_stderr_reaches_log_and_detail(rig, tmp_path):
     )
     assert "boom from helper" in r.stderr
     assert r.returncode != 0
+
+
+def test_check_each_missing_flag_fails(rig):
+    good_rig(rig)
+    for flag in FLAGS:
+        rest = [f for f in FLAGS if f != flag]
+        rig.write_authorized(
+            options='from="127.0.0.1,::1",%s,command="%s"' % (",".join(rest), rig.forced())
+        )
+        item = check(rig)[1][2][0]
+        assert item[0] == "FAIL" and ("missing option: %s" % flag) in item[1]
+
+
+def test_check_duplicate_flag_fails(rig):
+    good_rig(rig)
+    rig.write_authorized(
+        options='from="127.0.0.1,::1",%s,no-pty,command="%s"' % (",".join(FLAGS), rig.forced())
+    )
+    assert "duplicate option: no-pty" in check(rig)[1][2][0][1]
+
+
+def test_check_flag_order_is_free(rig):
+    good_rig(rig)
+    rig.write_authorized(
+        options='command="%s",%s,from="127.0.0.1,::1"' % (rig.forced(), ",".join(reversed(FLAGS)))
+    )
+    assert check(rig)[1][2][0][0] == "PASS"
+
+
+def test_check_unknown_extra_option_still_fails(rig):
+    good_rig(rig)
+    rig.write_authorized(
+        options='from="127.0.0.1,::1",%s,no-touch-required,command="%s"'
+        % (",".join(FLAGS), rig.forced())
+    )
+    assert "extra option: no-touch-required" in check(rig)[1][2][0][1]
+
+
+def test_check_changed_read_timeout_needs_regenerated_line(rig):
+    good_rig(rig)
+    rig.conf("read_timeout_seconds=30\n")
+    item = check(rig)[1][2][0]
+    assert item[0] == "FAIL" and "command mismatch" in item[1]
+    assert item[1].endswith("re-run --print-setup block 3")
+    rig.write_authorized(cmd=rig.forced(30))
+    assert check(rig)[1][2][0][0] == "PASS"
+
+
+def test_check_timeout_bin_missing_or_not_executable(rig):
+    good_rig(rig)
+    assert ("PASS", "timeout_bin %s is executable" % rig.timeout) in check(rig)[1][6]
+    rig.conf("timeout_bin=/nonexistent/timeout\n")
+    fails = [t for s, t in check(rig)[1][6] if s == "FAIL"]
+    assert fails and fails[0].startswith("timeout_not_executable: /nonexistent/timeout")
+
+
+def test_timeout_bin_setting_used_in_command(rig):
+    rig.conf("timeout_bin=/opt/bin/timeout\n")
+    assert rig.run("remote-cmd").stdout.startswith("/opt/bin/timeout -k 5 50 ")
+
+
+def test_remote_cmd_needs_timeout_binary(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HOS_USAGE_PAUSE_CONF", str(tmp_path / "none.conf"))
+    monkeypatch.setattr(
+        up.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None
+    )
+    assert up.main(["remote-cmd"]) == 1
+    assert "timeout" in capsys.readouterr().err
+
+
+def _no_envelope(rig, rc):
+    rig.set_forced(False)
+    return rig.run(HOS_TEST_SSH_EXIT=str(rc))
+
+
+def test_remote_timeout_124_and_137_classified_timeout(rig):
+    for rc in (124, 137):
+        r = _no_envelope(rig, rc)
+        f = rig.reading().fields
+        assert f["reason"] == "timeout" and f["detail"] == "remote_timeout rc=%d" % rc
+        assert f["remote_exit"] == str(rc) and f["outcome"] == "failure"
+        assert "ABORT read timed out (remote rc=%d); retry next poll" % rc in r.stdout, r.stdout
+    assert rig.reading().fields["consecutive_failures"] == "2"
+
+
+def test_remote_124_with_valid_envelope_is_not_a_timeout(rig):
+    rig.run(HOS_TEST_SSH_EXIT="124")
+    assert rig.reading().fields["outcome"] == "success"
+
+
+def test_remote_timeout_is_not_retried_in_the_same_poll(rig):
+    rig.set_forced(False)
+    rig.run(HOS_TEST_SSH_EXIT="124")
+    assert (rig.home / "ssh.argv").exists()
+    calls = rig.home / "ssh.count"
+    rig.stub("ssh", 'echo x >> "%s"\nexit 124\n' % calls)
+    rig.run()
+    assert calls.read_text().count("x") == 1

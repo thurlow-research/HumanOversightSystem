@@ -403,4 +403,23 @@ def test_read_usage_timeout_carries_kill_problem(tmp_path, monkeypatch):
     )
     assert out.kind == "timeout" and out.detail == "kill SIGTERM refused: x"
     cls = up.classify_read(out, b"", b"")
-    assert cls.reason == "timeout" and cls.detail == "kill SIGTERM refused: x"
+    assert cls.reason == "timeout"
+    assert cls.detail == "local_timeout; kill SIGTERM refused: x"
+
+
+def test_local_timeout_detail_is_distinct_from_remote():
+    local = up.classify_read(up.ReadOutcome("timeout", None, None), b"", b"")
+    assert (local.reason, local.detail, local.remote_exit) == ("timeout", "local_timeout", None)
+    remote = up.classify_read(up.ReadOutcome("exited", 124, None), b"", b"")
+    assert (remote.reason, remote.detail, remote.remote_exit) == (
+        "timeout",
+        "remote_timeout rc=124",
+        124,
+    )
+
+
+def test_remote_cmd_template_rendering():
+    assert up.remote_cmd("/c/claude", "/t/timeout", 60) == (
+        "/t/timeout -k 5 50 /c/claude -p /usage --output-format json"
+    )
+    assert "-k 5 20 " in up.remote_cmd("/c/claude", "/t/timeout", 30)
