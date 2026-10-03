@@ -8,7 +8,8 @@ Unlike test_dimension_registry.py (tmp-tree-only, W5a), these tests deliberately
 read the real tree. Nothing here shells out to run_post_change_sweep.sh (W5c
 rewrites it).
 
-Covers T5.28 (characterization, TD-D40), T5.49, T5.50, T5.51, T5.52, T5.53.
+Covers T5.28 (characterization, TD-D40), T5.49, T5.50, T5.51, T5.52, T5.53, and
+T5.63 (the CORE `tools:` allowlist, Amendment E).
 
 T5.28 — the old output is a FROZEN TABLE captured once from the pre-W5c script:
     bash scripts/framework/run_post_change_sweep.sh <the 42 corpus paths>
@@ -24,6 +25,7 @@ narrowings versus the old script are:
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
 from pathlib import Path
@@ -499,3 +501,40 @@ def test_t5_28_coverage(t528_registry):
         if b.kind != "judgment":
             continue
         assert plan[b.id].applicable, f"judgment binding {b.id} matches no corpus path"
+
+
+# ---------------------------------------------------------------------------
+# T5.63 — the CORE `tools:` allowlist (TD-D42, #1932)
+# ---------------------------------------------------------------------------
+
+_RHA_SPEC = importlib.util.spec_from_file_location(
+    "require_human_approval",
+    REPO_ROOT / "scripts" / "framework" / "require_human_approval.py",
+)
+assert _RHA_SPEC is not None and _RHA_SPEC.loader is not None
+rha = importlib.util.module_from_spec(_RHA_SPEC)
+_RHA_SPEC.loader.exec_module(rha)
+
+
+def _core_tools() -> list[str]:
+    return yaml.safe_load((DIM / "core.yaml").read_text(encoding="utf-8"))["tools"]
+
+
+def test_t5_63_tools_sorted_and_exactly_the_shipped_deterministic_tools():
+    tools = _core_tools()
+    assert tools == sorted(tools)
+    shipped = {b["tool"] for b in _all_shipped_bindings() if b["kind"] == "deterministic"}
+    assert len(shipped) == 11
+    assert set(tools) == shipped
+    assert len(tools) == len(set(tools))
+
+
+def test_t5_63_gate_tools_are_protected_and_only_run_second_review_is_not():
+    globs = rha.load_globs(REPO_ROOT / "scripts" / "framework" / "protected_surfaces.txt")
+    tools = _core_tools()
+    protected = {f for f, _ in rha.matched_surfaces(tools, globs)}
+    gates = {t for t in tools if t.startswith("scripts/oversight/gates/")}
+    assert gates <= protected
+    # Ratchet (TD-D42): fails once #1935 protects run_second_review.sh. Then delete
+    # the exemption; do not weaken this to a subset check.
+    assert set(tools) - protected == {"scripts/run_second_review.sh"}
