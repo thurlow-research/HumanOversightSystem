@@ -58,6 +58,21 @@ entries:
     kind: deterministic
     title: Cross-vendor second review
 
+# Trusted control entry points (ADR-1643 TD-D42). A deterministic binding in ANY layer may
+# name only a path listed here. Listing a path is a CORE (contract/**) change.
+tools:
+  - scripts/oversight/gates/astro_check.sh
+  - scripts/oversight/gates/bash_check.sh
+  - scripts/oversight/gates/collection_integrity.sh
+  - scripts/oversight/gates/django_check.sh
+  - scripts/oversight/gates/lint_check.sh
+  - scripts/oversight/gates/portability_check.sh
+  - scripts/oversight/gates/secret_scan.sh
+  - scripts/oversight/gates/security_scan.sh
+  - scripts/oversight/gates/template_refs_check.sh
+  - scripts/oversight/gates/type_check.sh
+  - scripts/run_second_review.sh
+
 bindings:
   # ── judgment bindings ─────────────────────────────────────────────────────
   - id: core:code-review/code

@@ -89,6 +89,7 @@ def default_docs() -> dict[str, dict]:
                 {"id": "lint", "kind": "deterministic", "title": "Lint"},
                 {"id": "ui", "kind": "judgment", "title": "UI"},
             ],
+            "tools": ["scripts/gates/lint.sh"],
             "bindings": [
                 judgment(
                     "core:code-review/code",

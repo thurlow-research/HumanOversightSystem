@@ -25,6 +25,7 @@ import importlib
 import json
 import os
 import re
+import string
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -42,6 +43,12 @@ _PACK_FILE_RE = re.compile(r"^pack-([^/]+)\.yaml$")
 _BINDING_KINDS = frozenset({"judgment", "deterministic"})
 _MIN_TIMEOUT_S = 30
 _MAX_TIMEOUT_S = 1800
+_RELEASE_MARKER = ".hos-release"
+_MANIFEST = ".hos-manifest"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_MAX_PATTERN_CHARS = 256  # L33 (TD-D44)
+_MAX_TAIL_PIECES = 16  # L33 (TD-D44)
+_MAX_CHANGED_FILE_BYTES = 1024  # PL1 (TD-D45)
 
 
 # ---------------------------------------------------------------------------
@@ -101,11 +108,13 @@ KINDS: Mapping[str, KindSpec] = MappingProxyType(
             pack_source="dimensions.yaml",
             handler_module="scripts.automation.lib.dimension_registry",
             top_level_keys={
-                "core": frozenset({"schema", "schema_version", "owner", "entries", "bindings"}),
+                "core": frozenset(
+                    {"schema", "schema_version", "owner", "entries", "tools", "bindings"}
+                ),
                 "pack": frozenset({"schema", "schema_version", "owner", "pack", "bindings"}),
                 "project": frozenset({"schema", "schema_version", "owner", "bindings", "suppress"}),
             },
-            core_only_keys=frozenset({"entries"}),
+            core_only_keys=frozenset({"entries", "tools"}),
             project_only_keys=frozenset({"suppress"}),
         ),
     }
@@ -171,12 +180,116 @@ def _import_handler(spec: KindSpec):
     return module
 
 
-def _parse_layer(
-    yaml_mod, root: Path, rel: str, owner: str, pack: str | None, spec: KindSpec
-) -> LayerDoc:
-    """Per-file rules L3a, L3b, L4, L5, L18, L23, in that order."""
+class _DuplicateKey(Exception):
+    """Raised by the strict loader. Deliberately NOT a `yaml.YAMLError`, so
+    `_parse_layer` can tell L29 from L3a."""
+
+
+def _strict_loader(yaml_mod):
+    """L29's loader: SafeLoader that rejects a repeated mapping key at any depth,
+    including one supplied both by a `<<:` merge and explicitly (TD-D46)."""
+
+    class StrictLoader(yaml_mod.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            if isinstance(node, yaml_mod.MappingNode):
+                self.flatten_mapping(node)
+                seen: set = set()
+                for key_node, _ in node.value:
+                    key = self.construct_object(key_node, deep=True)
+                    try:
+                        hash(key)
+                    except TypeError:
+                        continue  # the delegate raises its own ConstructorError (L3a)
+                    if key in seen:
+                        raise _DuplicateKey(
+                            f"duplicate key {key!r} at line {key_node.start_mark.line + 1}"
+                        )
+                    seen.add(key)
+            return super().construct_mapping(node, deep)
+
+    return StrictLoader
+
+
+def _manifest_rows(root: Path) -> list[str] | None:
+    """The `.hos-manifest` lines that can carry a row, or None if unreadable.
+    Blank, whitespace-only and `#` lines are skipped, as `regions.parse_manifest_line`
+    does (that module is not importable from L1; T5.57 pins the parity)."""
     try:
-        data = yaml_mod.safe_load((root / rel).read_bytes().decode("utf-8"))
+        text = (root / _MANIFEST).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return [ln for ln in text.split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def _drift_reason(root: Path, rel: str, rows: Sequence[str]) -> str | None:
+    """Why `rel` disagrees with its `.hos-manifest` row, or None if it matches."""
+    mine = [ln.split("\t") for ln in rows if ln.split("\t")[0] == rel]
+    if not mine:
+        return "has no row in .hos-manifest"
+    if len(mine) > 1:
+        return "has more than one row in .hos-manifest"
+    fields = mine[0]
+    if len(fields) not in (2, 3):
+        return "has a malformed row in .hos-manifest"
+    if len(fields) == 3 and fields[1] != "WHOLE":
+        return "has a row in .hos-manifest that is not WHOLE"
+    sha = fields[-1]
+    if not _SHA256_RE.fullmatch(sha):
+        return "has a row in .hos-manifest with a malformed sha256"
+    try:
+        actual = hashlib.sha256((root / rel).read_bytes()).hexdigest()
+    except OSError:
+        if os.path.lexists(root / rel):
+            return "is listed in .hos-manifest but cannot be read"
+        return "is listed in .hos-manifest but absent"
+    if actual != sha:
+        return "differs from its .hos-manifest sha256"
+    return None
+
+
+def _check_installed_drift(
+    root: Path, spec: KindSpec, pack_set: tuple[str, ...], packs_explicit: bool
+) -> None:
+    """L31 — in an installed tree (anything at `.hos-release`), every HOS-owned
+    registry input must match its `.hos-manifest` row. An integrity control, not a
+    tamper control (TD-D48). `project.yaml` is consumer-owned and never checked."""
+    if not os.path.lexists(root / _RELEASE_MARKER):
+        return
+    rows = _manifest_rows(root)
+    checked = [] if packs_explicit else [RESOLVED_PACKS_PATH]
+    checked.append(f"{spec.directory}/core.yaml")
+    for slug in pack_set:
+        rel = f"{spec.directory}/pack-{slug}.yaml"
+        if os.path.lexists(root / rel) or (
+            rows is not None and any(ln.split("\t")[0] == rel for ln in rows)
+        ):
+            checked.append(rel)
+    for rel in checked:
+        reason = f"cannot read {_MANIFEST}" if rows is None else _drift_reason(root, rel, rows)
+        if reason is not None:
+            raise RegistryError(
+                "installed_drift",
+                f"{rel} {reason}; re-run bootstrap/hos_install.sh and put local changes "
+                f"in {spec.directory}/project.yaml",
+                rel,
+            )
+
+
+def _parse_layer(
+    yaml_mod,
+    loader_cls,
+    root: Path,
+    rel: str,
+    owner: str,
+    pack: str | None,
+    spec: KindSpec,
+) -> LayerDoc:
+    """Per-file rules L3a (syntax), L29, L3a (shape), L3b, L4, L5, L18, L23, in that order."""
+    try:
+        text = (root / rel).read_bytes().decode("utf-8")
+        data = yaml_mod.load(text, Loader=loader_cls)  # noqa: S506 - SafeLoader subclass
+    except _DuplicateKey as exc:
+        raise RegistryError("duplicate_key", str(exc), rel) from None
     except (OSError, UnicodeDecodeError, yaml_mod.YAMLError) as exc:
         raise RegistryError("bad_schema", f"cannot parse YAML: {exc}", rel) from None
     if not isinstance(data, dict):
@@ -224,7 +337,7 @@ def load_registry(
     packs=None reads contract/resolved-packs.txt (L24 on absent/malformed);
     an explicit sequence is used verbatim after the slug/duplicate check. The
     pack set is never read from config.sh's PACK= (TD-VF-16)."""
-    # Step 1 — engine, before any file is parsed: L22, L2, L26, L24, L1, L25, L20.
+    # Step 1 — engine, before any file is parsed: L22, L2, L26, L24, L1, L25, L31, L20.
     spec = KINDS.get(schema)
     if spec is None:
         raise RegistryError("unknown_kind", f"unregistered schema {schema!r}")
@@ -259,20 +372,24 @@ def load_registry(
             raise RegistryError(
                 "unexpected_file", f"unexpected file {name!r}", f"{spec.directory}/{name}"
             )
+    # L31 runs before L20 so that drift is reported as drift, not as the defect
+    # the drift introduced (TD-D48).
+    _check_installed_drift(root, spec, pack_set, packs is not None)
     if stale is not None:
         raise RegistryError(
             "stale_pack_file", "pack file whose pack is not in the resolved pack set", stale
         )
 
     # Step 2 — per file, merge order core -> pack-* (closure order) -> project.
-    docs = [_parse_layer(yaml_mod, root, core_rel, "core", None, spec)]
+    loader_cls = _strict_loader(yaml_mod)
+    docs = [_parse_layer(yaml_mod, loader_cls, root, core_rel, "core", None, spec)]
     for slug in pack_set:
         rel = f"{spec.directory}/pack-{slug}.yaml"
         if (root / rel).is_file():
-            docs.append(_parse_layer(yaml_mod, root, rel, "pack", slug, spec))
+            docs.append(_parse_layer(yaml_mod, loader_cls, root, rel, "pack", slug, spec))
     project_rel = f"{spec.directory}/project.yaml"
     if (root / project_rel).is_file():
-        docs.append(_parse_layer(yaml_mod, root, project_rel, "project", None, spec))
+        docs.append(_parse_layer(yaml_mod, loader_cls, root, project_rel, "project", None, spec))
 
     # Steps 3/4 — the handler, with any non-RegistryError made fail-closed (L26).
     ctx = LoadContext(
@@ -345,6 +462,7 @@ class ResolvedRegistry:
     entries: Mapping[str, Entry]
     bindings: Mapping[str, Binding]  # suppressed bindings are ABSENT
     suppressions: Mapping[str, str]
+    tools: tuple[str, ...]  # CORE's trusted control entry points (TD-D42), sorted
     source_files: tuple[str, ...]
     digest: str
 
@@ -375,7 +493,7 @@ _PREDICATE_KEYS = frozenset({"include", "exclude"})
 _SUPPRESS_KEYS = frozenset({"binding", "reason"})
 
 
-def _items(doc: LayerDoc, key: str) -> list[dict[str, Any]]:
+def _items(doc: LayerDoc, key: str) -> list[Any]:
     """The items of a top-level list. Shape errors belong to L28 and are raised
     by `_check_item_grammar` before this is reached."""
     return list(doc.data.get(key) or [])  # type: ignore[call-overload]
@@ -400,6 +518,22 @@ def _check_item_grammar(docs: tuple[LayerDoc, ...]) -> None:
                 )
 
     for doc in docs:
+        tools = doc.data.get("tools")
+        if tools is not None:
+            if not isinstance(tools, list):
+                raise RegistryError("unknown_item_key", "'tools' must be a list", doc.path)
+            for tool in tools:
+                if (
+                    not isinstance(tool, str)
+                    or not tool
+                    or PurePosixPath(tool).as_posix() != tool
+                    or "." in tool.split("/")
+                ):
+                    raise RegistryError(
+                        "unknown_item_key",
+                        f"tools entry {tool!r} is not a non-empty normal-form path",
+                        doc.path,
+                    )
         for key, allowed, required, what in (
             ("entries", _ENTRY_KEYS, ("id", "kind", "title"), "entry"),
             ("bindings", _BINDING_KEYS, ("id", "entry", "kind"), "binding"),
@@ -449,11 +583,115 @@ def _path_escapes(root: Path, rel: str) -> str | None:
     return None
 
 
+def _check_core_not_empty(docs: tuple[LayerDoc, ...]) -> None:
+    """L30 — a floor, not the closure (TD-D47). A non-list value is L28's."""
+    core = next(d for d in docs if d.owner == "core")
+    entries = core.data.get("entries")
+    if entries is None or (isinstance(entries, list) and not entries):
+        raise RegistryError("core_empty", "core.yaml has no entries", core.path)
+
+
+_ASCII_PUNCT = frozenset(string.punctuation)
+# Characters that are neither literals nor handled elsewhere ("." is an atom).
+_LITERAL_EXCLUDED = frozenset("^*+?{}]|()")
+_QUANTIFIERS = frozenset("*+?")
+
+
+def _unsafe_pattern(pattern: str) -> str | None:
+    """L33 — why `pattern` is outside TD-D44's closed subset, or None if it is in.
+
+    pattern := ["(?i)"] ["^"] piece* ["$"]; piece := "\\b" | atom [quant]. At most
+    one quantifier, at most 16 pieces after the quantified atom, at most 256
+    characters. Hand-written on purpose: `re._parser`/`sre_parse` are private and
+    version-sensitive."""
+    if len(pattern) > _MAX_PATTERN_CHARS:
+        return f"longer than {_MAX_PATTERN_CHARS} characters"
+    i, n = 0, len(pattern)
+    if pattern.startswith("(?i)"):
+        i = 4
+    if pattern.startswith("^", i):
+        i += 1
+    quantified = False
+    tail = 0
+    while i < n:
+        c = pattern[i]
+        if c == "$":
+            if i != n - 1:
+                return "'$' is only allowed at the end"
+            return None
+        if c == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt == "b":
+                i += 2
+                if quantified:
+                    tail += 1
+                if i < n and pattern[i] in _QUANTIFIERS:
+                    return "'\\b' cannot be quantified"
+                if tail > _MAX_TAIL_PIECES:
+                    return f"more than {_MAX_TAIL_PIECES} pieces after the quantifier"
+                continue
+            if nxt not in _ASCII_PUNCT and nxt not in ("d", "w", "s"):
+                return f"unsupported escape '\\{nxt}'"
+            i += 2
+        elif c == "[":
+            i += 1
+            if pattern.startswith("^", i):
+                i += 1
+            start = i
+            while i < n and pattern[i] != "]":
+                if pattern[i] == "[":
+                    return "nested '[' in a character class"
+                if pattern[i] == "\\":
+                    if i + 1 >= n or pattern[i + 1] not in _ASCII_PUNCT:
+                        return "unsupported escape in a character class"
+                    i += 1
+                i += 1
+            if i >= n or i == start:
+                return "empty or unterminated character class"
+            i += 1
+        elif c in _LITERAL_EXCLUDED:
+            return f"unsupported construct {c!r}"
+        else:
+            i += 1
+        # An atom was consumed; a quantifier may follow it.
+        if quantified:
+            tail += 1
+        if i < n and pattern[i] in _QUANTIFIERS:
+            if quantified:
+                return "more than one quantifier"
+            quantified = True
+            i += 1
+            if i < n and pattern[i] in _QUANTIFIERS:
+                return "more than one quantifier"
+        if tail > _MAX_TAIL_PIECES:
+            return f"more than {_MAX_TAIL_PIECES} pieces after the quantifier"
+    return None
+
+
+def _check_changed_file(path: object) -> None:
+    """PL1 (TD-D45)."""
+    bad: str | None = None
+    if not isinstance(path, str) or not path:
+        bad = "is empty or not a string"
+    elif "\n" in path or "\x00" in path:
+        bad = "contains a newline or NUL"
+    else:
+        try:
+            if len(path.encode("utf-8")) > _MAX_CHANGED_FILE_BYTES:
+                bad = f"is longer than {_MAX_CHANGED_FILE_BYTES} bytes"
+        except UnicodeEncodeError:
+            bad = "is not valid UTF-8"
+    if bad is not None:
+        raise RegistryError("bad_changed_file", f"changed file path {repr(path)[:80]} {bad}")
+
+
 def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
-    """The dimensions-kind handler: rules L28, L6-L9, L13, L14, L27, L10-L12,
-    L21, L15-L17, L19, in TD-D28 step 3's order."""
+    """The dimensions-kind handler: rules L30, L28, L6-L9, L13, L14, L33, L27, L10-L12,
+    L32, L21, L15-L17, L19, in TD-D28 step 3's order as amended by §E.5."""
     root = ctx.repo_root
+    _check_core_not_empty(docs)
     _check_item_grammar(docs)
+    tools_raw = [(t, d) for d in docs for t in _items(d, "tools")]
 
     entries_raw = [(e, d) for d in docs for e in _items(d, "entries")]
     bindings_raw = [(b, d) for d in docs for b in _items(d, "bindings")]
@@ -470,6 +708,11 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
         if b["id"] in seen_bindings:
             raise RegistryError("duplicate_id", f"duplicate binding id {b['id']!r}", d.path)
         seen_bindings.add(b["id"])
+    seen_tools: set[str] = set()
+    for t, d in tools_raw:
+        if t in seen_tools:
+            raise RegistryError("duplicate_id", f"duplicate tools entry {t!r}", d.path)
+        seen_tools.add(t)
 
     # L7 — binding id namespace must equal the owner.
     for b, d in bindings_raw:
@@ -544,6 +787,15 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
                     "bad_predicate", f"binding {b['id']!r} has a bad pattern: {exc}", d.path
                 ) from None
 
+    # L33 — predicate patterns inside the closed, single-quantifier subset.
+    for b, d in bindings_raw:
+        for pattern in (*b["predicate"]["include"], *b["predicate"].get("exclude", [])):
+            problem = _unsafe_pattern(pattern)
+            if problem is not None:
+                raise RegistryError(
+                    "unsafe_pattern", f"binding {b['id']!r} pattern {pattern!r}: {problem}", d.path
+                )
+
     # L27 — path escape, before any filesystem existence check.
     for b, d in bindings_raw:
         candidates = [
@@ -561,6 +813,10 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
                     raise RegistryError(
                         "path_escape", f"binding {b['id']!r} {field_name}: {reason}", d.path
                     )
+    for t, d in tools_raw:
+        reason = _path_escapes(root, t)
+        if reason is not None:
+            raise RegistryError("path_escape", f"tools entry {t!r}: {reason}", d.path)
 
     # L10 — judgment agent file.
     for b, d in bindings_raw:
@@ -584,6 +840,20 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
                 raise RegistryError(
                     "tool_missing", f"binding {b['id']!r} tool is absent or not executable", d.path
                 )
+    for t, d in tools_raw:
+        if not ((root / t).is_file() and os.access(root / t, os.X_OK)):
+            raise RegistryError(
+                "tool_missing", f"tools entry {t!r} is absent or not executable", d.path
+            )
+
+    # L32 — a deterministic binding may name only a tool CORE lists (exact string equality).
+    for b, d in bindings_raw:
+        if b["kind"] == "deterministic" and b["tool"] not in seen_tools:
+            raise RegistryError(
+                "tool_untrusted",
+                f"binding {b['id']!r} tool {b['tool']!r} is not in core.yaml tools",
+                d.path,
+            )
 
     # L12 — posture (V1-V14 via the shared L1 module).
     for b, d in bindings_raw:
@@ -663,6 +933,7 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
         entries=MappingProxyType(entries),
         bindings=MappingProxyType(bindings),
         suppressions=MappingProxyType(suppressions),
+        tools=tuple(sorted(seen_tools)),
         source_files=tuple(d.path for d in docs),
         digest="",
     )
@@ -678,6 +949,7 @@ def _body(reg: ResolvedRegistry) -> dict:
     return {
         "schema": reg.schema,
         "packs": list(reg.packs),
+        "tools": list(reg.tools),
         "source_files": list(reg.source_files),
         "entries": [
             {"id": e.id, "kind": e.kind, "title": e.title, "source": e.source}
@@ -718,7 +990,13 @@ def load(repo_root: str | Path, *, packs: Sequence[str] | None = None) -> Resolv
 
 def resolve_for_diff(reg: ResolvedRegistry, changed_files: Sequence[str]) -> list[PlanItem]:
     """§7.5 — the only producer of applicability. `re.search`, not `re.match`
-    (the migrated patterns are `grep -E` semantics). `reason` is never empty."""
+    (the migrated patterns are `grep -E` semantics). `reason` is never empty.
+
+    PL1: a changed path that is empty, over 1024 UTF-8 bytes, or holds `\\n`/`\\x00`
+    raises `bad_changed_file` (first bad path in input order), which bounds the
+    per-pair regex cost that L33 alone cannot (TD-D45)."""
+    for f in changed_files:
+        _check_changed_file(f)
     plan: list[PlanItem] = []
     for binding in reg.bindings.values():
         include = [re.compile(p) for p in binding.predicate.include]
