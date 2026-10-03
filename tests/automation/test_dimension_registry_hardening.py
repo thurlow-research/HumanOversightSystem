@@ -139,6 +139,15 @@ def test_t5_54_unhashable_complex_key_is_bad_schema_not_handler_failure(tmp_path
     assert code_of(tmp_path) == "bad_schema"
 
 
+def test_t5_54_deeply_nested_yaml_is_bad_schema(tmp_path):
+    """L3a: a RecursionError from nesting depth maps to bad_schema, not a traceback."""
+    docs = default_docs()
+    docs["pack-django"] = PACK_HEADER + "x: " + "[" * 3000 + "]" * 3000 + "\n"
+    write_repo(tmp_path, docs)
+    assert code_of(tmp_path) == "bad_schema"
+    assert "too deep" in message_of(tmp_path)
+
+
 # --- T5.55 — L30 core_empty ------------------------------------------------
 
 
@@ -361,6 +370,28 @@ def test_t5_57_whitespace_only_line_between_rows_is_skipped(tmp_path):
     assert dr.load(tmp_path).packs == ("django",)
 
 
+def test_t5_57_crlf_manifest_row_is_drift_naming_crlf(tmp_path):
+    """T5.56/T5.57: a CRLF row is not rewritten before hashing; it fails closed as
+    installed_drift and the message says why."""
+    install(tmp_path)
+    rows = [
+        f"{RESOLVED}\tWHOLE\t{sha(tmp_path, RESOLVED)}\n",
+        f"{CORE}\tWHOLE\t{sha(tmp_path, CORE)}\r\n",
+        f"{PACK}\tWHOLE\t{sha(tmp_path, PACK)}\n",
+    ]
+    (tmp_path / ".hos-manifest").write_bytes("".join(rows).encode())
+    assert code_of(tmp_path) == "installed_drift"
+    assert "CRLF" in message_of(tmp_path)
+
+
+def test_t5_57_crlf_comment_line_is_skipped(tmp_path):
+    """T5.57: a CRLF `#` comment line is skipped like any comment."""
+    install(tmp_path)
+    data = (tmp_path / ".hos-manifest").read_bytes()
+    (tmp_path / ".hos-manifest").write_bytes(b"# a comment\r\n" + data)
+    assert dr.load(tmp_path).packs == ("django",)
+
+
 # --- T5.58 — L32 and the `tools:` extensions --------------------------------
 
 
@@ -408,6 +439,14 @@ def test_t5_58_bad_tools_shape_is_unknown_item_key(tmp_path, bad):
     """T5.58 (L28): non-list, non-string, empty and non-normal-form entries."""
     write_repo(tmp_path, docs_with(lambda d: d["core"].update(tools=bad)))
     assert code_of(tmp_path) == "unknown_item_key"
+
+
+def test_t5_58_large_tools_entry_gives_a_short_message(tmp_path):
+    """L28: a huge non-string tools entry is bounded in the error message."""
+    big = {"a": "x" * 5000, "b": ["y" * 5000]}
+    write_repo(tmp_path, docs_with(lambda d: d["core"].update(tools=[big])))
+    assert code_of(tmp_path) == "unknown_item_key"
+    assert len(message_of(tmp_path)) < 250
 
 
 def test_t5_58_duplicate_tools_entry(tmp_path):
@@ -472,6 +511,13 @@ UNSAFE = [
     "a" * 257,
     ".*" + "a" * 17,
     "(?i).*" + "a" * 249 + "b",
+    "[]a]",  # empty class (a leading `]` is a literal to re, an empty class to the scanner)
+    r"[\d]",  # `\` + non-punctuation inside a class
+    r"\B",
+    r"\Z",
+    r"\x41",
+    "a+$b",  # a `$` that is not terminal, after a quantifier
+    ".*" + r"\b" * 17,
 ]
 SAFE = [
     r"\bsecret",
@@ -480,6 +526,7 @@ SAFE = [
     ".*",
     r"\d+",
     ".*" + "a" * 16,
+    ".*" + r"\b" * 16,
     "",
     "^docs/",
     r"^src/.*\.ts$",
@@ -501,6 +548,36 @@ def test_t5_60_outside_the_subset_but_uncompilable_is_caught_by_l14_first(tmp_pa
     assert dr._unsafe_pattern(pattern) is not None
     write_repo(tmp_path, with_pattern(pattern))
     assert code_of(tmp_path) == "bad_predicate"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "fragment"),
+    [
+        ("a" * 257, "longer than 256 characters"),
+        ("a|b", "unsupported construct '|'"),
+        ("a+$b", "'$' is only allowed at the end"),
+        (r"\B", "unsupported escape '\\B'"),
+        (r"\x41", "unsupported escape '\\x'"),
+        ("[a[b]", "nested '[' in a character class"),
+        ("[]a]", "empty or unterminated character class"),
+        ("[ab", "empty or unterminated character class"),
+        (r"[\d]", "unsupported escape in a character class"),
+        (r"\b*", "'\\b' cannot be quantified"),
+        (".*" + r"\b" * 17, "more than 16 pieces after the quantifier"),
+        ("a**", "more than one quantifier"),
+        ("a*b*", "more than one quantifier"),
+        (".*" + "a" * 17, "more than 16 pieces after the quantifier"),
+    ],
+)
+def test_t5_60_scanner_branch_messages(pattern, fragment):
+    """T5.60: one representative per scanner branch names its reason."""
+    assert fragment in (dr._unsafe_pattern(pattern) or "")
+
+
+def test_t5_60_unsafe_pattern_message_is_bounded(tmp_path):
+    """L33 messages interpolate the pattern through _short()."""
+    write_repo(tmp_path, with_pattern("a" * 257))
+    assert len(message_of(tmp_path)) < 250
 
 
 def test_t5_60_the_256_character_one_quantifier_shape_is_rejected():

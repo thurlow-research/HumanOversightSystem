@@ -180,6 +180,16 @@ def _import_handler(spec: KindSpec):
     return module
 
 
+_MAX_REPR_CHARS = 80
+
+
+def _short(value: object) -> str:
+    """repr(value) bounded for error messages, so a YAML alias bomb in a value
+    this slice interpolates cannot yield a huge message."""
+    text = repr(value)
+    return text if len(text) <= _MAX_REPR_CHARS else text[: _MAX_REPR_CHARS - 3] + "..."
+
+
 class _DuplicateKey(Exception):
     """Raised by the strict loader. Deliberately NOT a `yaml.YAMLError`, so
     `_parse_layer` can tell L29 from L3a."""
@@ -202,7 +212,7 @@ def _strict_loader(yaml_mod):
                         continue  # the delegate raises its own ConstructorError (L3a)
                     if key in seen:
                         raise _DuplicateKey(
-                            f"duplicate key {key!r} at line {key_node.start_mark.line + 1}"
+                            f"duplicate key {_short(key)} at line {key_node.start_mark.line + 1}"
                         )
                     seen.add(key)
             return super().construct_mapping(node, deep)
@@ -234,6 +244,8 @@ def _drift_reason(root: Path, rel: str, rows: Sequence[str]) -> str | None:
     if len(fields) == 3 and fields[1] != "WHOLE":
         return "has a row in .hos-manifest that is not WHOLE"
     sha = fields[-1]
+    if sha.endswith("\r"):
+        return "has a .hos-manifest row with CRLF line endings (the manifest must use LF)"
     if not _SHA256_RE.fullmatch(sha):
         return "has a row in .hos-manifest with a malformed sha256"
     try:
@@ -290,6 +302,8 @@ def _parse_layer(
         data = yaml_mod.load(text, Loader=loader_cls)  # noqa: S506 - SafeLoader subclass
     except _DuplicateKey as exc:
         raise RegistryError("duplicate_key", str(exc), rel) from None
+    except RecursionError:
+        raise RegistryError("bad_schema", "cannot parse YAML: nesting is too deep", rel) from None
     except (OSError, UnicodeDecodeError, yaml_mod.YAMLError) as exc:
         raise RegistryError("bad_schema", f"cannot parse YAML: {exc}", rel) from None
     if not isinstance(data, dict):
@@ -531,7 +545,7 @@ def _check_item_grammar(docs: tuple[LayerDoc, ...]) -> None:
                 ):
                     raise RegistryError(
                         "unknown_item_key",
-                        f"tools entry {tool!r} is not a non-empty normal-form path",
+                        f"tools entry {_short(tool)} is not a non-empty normal-form path",
                         doc.path,
                     )
         for key, allowed, required, what in (
@@ -625,6 +639,8 @@ def _unsafe_pattern(pattern: str) -> str | None:
                 i += 2
                 if quantified:
                     tail += 1
+                # Defensive: unreachable via load() (L14 rejects `\b*` first); the
+                # direct-call test covers it.
                 if i < n and pattern[i] in _QUANTIFIERS:
                     return "'\\b' cannot be quantified"
                 if tail > _MAX_TAIL_PIECES:
@@ -711,7 +727,7 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
     seen_tools: set[str] = set()
     for t, d in tools_raw:
         if t in seen_tools:
-            raise RegistryError("duplicate_id", f"duplicate tools entry {t!r}", d.path)
+            raise RegistryError("duplicate_id", f"duplicate tools entry {_short(t)}", d.path)
         seen_tools.add(t)
 
     # L7 — binding id namespace must equal the owner.
@@ -793,7 +809,9 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
             problem = _unsafe_pattern(pattern)
             if problem is not None:
                 raise RegistryError(
-                    "unsafe_pattern", f"binding {b['id']!r} pattern {pattern!r}: {problem}", d.path
+                    "unsafe_pattern",
+                    f"binding {b['id']!r} pattern {_short(pattern)}: {problem}",
+                    d.path,
                 )
 
     # L27 — path escape, before any filesystem existence check.
@@ -816,7 +834,7 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
     for t, d in tools_raw:
         reason = _path_escapes(root, t)
         if reason is not None:
-            raise RegistryError("path_escape", f"tools entry {t!r}: {reason}", d.path)
+            raise RegistryError("path_escape", f"tools entry {_short(t)}: {reason}", d.path)
 
     # L10 — judgment agent file.
     for b, d in bindings_raw:
@@ -843,7 +861,7 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
     for t, d in tools_raw:
         if not ((root / t).is_file() and os.access(root / t, os.X_OK)):
             raise RegistryError(
-                "tool_missing", f"tools entry {t!r} is absent or not executable", d.path
+                "tool_missing", f"tools entry {_short(t)} is absent or not executable", d.path
             )
 
     # L32 — a deterministic binding may name only a tool CORE lists (exact string equality).
@@ -851,7 +869,7 @@ def resolve(docs: tuple[LayerDoc, ...], ctx: LoadContext) -> ResolvedRegistry:
         if b["kind"] == "deterministic" and b["tool"] not in seen_tools:
             raise RegistryError(
                 "tool_untrusted",
-                f"binding {b['id']!r} tool {b['tool']!r} is not in core.yaml tools",
+                f"binding {b['id']!r} tool {_short(b['tool'])} is not in core.yaml tools",
                 d.path,
             )
 
