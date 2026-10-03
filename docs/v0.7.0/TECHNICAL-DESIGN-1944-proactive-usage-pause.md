@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — ADR-1944: proactive Claude usage-threshold pause. A loopback poller writes one reading, `hos-cron` gates every cycle on it, and the monitoring path can never touch the decision
 
-**Status:** **Revision 2 (ADR A2) + Architect round 2 (2026-10-03): APPROVED WITH CHANGES.** The round-2 changes are applied inline, each tagged **"Architect round 2"**, and listed in §11.3. ADR Amendment 3 records the four ADR-level refinements (A3-1 to A3-5). **Human rulings H-1..H-4, H-7 (interactive session 2026-10-03; ADR Amendment 4) are applied inline, tagged "Human rulings H-1..H-4, H-7".** No human ruling is outstanding (§13).
+**Status:** **Revision 2 (ADR A2) + Architect round 2 (2026-10-03): APPROVED WITH CHANGES.** The round-2 changes are applied inline, each tagged **"Architect round 2"**, and listed in §11.3. ADR Amendment 3 records the four ADR-level refinements (A3-1 to A3-5). **Human rulings H-1..H-4, H-7 (interactive session 2026-10-03; ADR Amendment 4) are applied inline, tagged "Human rulings H-1..H-4, H-7".** No human ruling is outstanding (§13). **Human rulings D5a-D5c (interactive session 2026-10-03, during S1 review; ADR Amendment 5) are applied inline, tagged "Human rulings D5a-D5c":** five `no-*` flags on the key line (D5a), a remote `timeout` wrapper (D5b), and logged aborts with a `timeout_side` field and a dedicated alert (D5c). S1 must add `timeout_side` (§1.3), and its code is re-reviewed against these sections (ADR A5-9).
 
 **Coding gates (§8):**
 - S1 may start.
@@ -36,6 +36,7 @@
 | monitrix | Prometheus rules file, Alertmanager | Grafana alerting (12 rules; 13 after H-3), contact point `hos` (email webhook + SMS placeholder), sparse anonymous clone, sync job, reload | A2-13, A2-14 |
 | Slices | S1–S4 | S1–S4 + S5 (live delivery, AC-44 = definition of done) | A2-18 |
 | **Human rulings H-1..H-4, H-7** | — | `cycle-usage-unchecked` per fail-open cycle plus exact release-note sentence (H-1); **no** protected-surface entry, and a required-alert guard test instead (H-2); systemd path unit + reload script with rollback, and rule 13 (H-3); AC-44 procedure confirmed (H-4); S1 trip test gates S2, plus a `--check` INFO 10 line (H-7) | A4-1 to A4-7 |
+| **Human rulings D5a-D5c** | key line `from=`+`command=` only; local kill only | five `no-*` flags, each once, checked by `--check` (D5a); forced command wrapped in `timeout -k 5 <R−10>`, `timeout_bin`, `read_timeout_seconds` ≥ 20 (D5b); ABORT log line, `timeout_side=remote\|local`, three new gauges, rule 14 `HosClaudeUsageReadTimeout` with a tunable count (D5c) | A5-1 to A5-7 |
 
 ---
 
@@ -161,6 +162,7 @@ Everything the gate needs is defined before `:366`: `ROLE`, `PROJECT`, `_HOS_CRO
 `ssh_failed`, `timeout`, `spawn_failed`, `envelope_invalid`, `empty_session`, `missing_session`, `missing_weekly`, `unparseable`, `crashed`.
 - `claude_not_executable` is **not** a poll-time reason; it is `--check` item 6 only (A2-7).
 - `lock_stale_reclaimed` stays a `diagnostics` value, never a reason (TD-O-11, unchanged).
+- **Human rulings D5a-D5c** (D5b/D5c, ADR A5-4, A5-6): `timeout` has two sources, recorded in the stable key `timeout_side=remote|local` (§1.3). **`detail` is free text and is never a parse contract.** No S2/S3/S4 code, rule or panel may parse `detail`.
 
 **Reading-unusable reasons** (gate side, AD-7 step 2). Exactly seven:
 `poller_not_installed`, `reading_missing`, `reading_truncated`, `schema_unknown`, `reading_unreadable`, `reading_stale`, `reading_future`.
@@ -200,6 +202,7 @@ reason=<read-failure reason>                  # outcome≠success only
 detail=<sanitized, ≤200>                      # outcome≠success only
 diagnostics=lock_stale_reclaimed              # only when it happened
 remote_exit=<int>                             # only when ssh exited (any code)
+timeout_side=remote|local                     # reason=timeout only (Human rulings D5a-D5c, D5c)
 parsed_via=grep                               # success only
 subscription_marker=present|absent            # envelope parsed only
 session_pct=<int>                             # success only
@@ -240,6 +243,12 @@ end=1
 - **Per-model, breakdown and `parsed_via` keys are written only on `outcome=success`** (AC-4: no artifact records 0% for a failed read). Cost and token keys are written whenever the envelope parsed, **including on failure** (A2-8).
 - **`poll_*` keys are the poller's informational view (A2-3). `usage_pause.py check` never reads any `poll_*` key** (static test S2-ST8, behavior test `test_check_ignores_poll_view`).
 - ~~`settings_status`, `machine_decision`, `machine_decision_reason`~~ **Removed by Revision 2:** replaced by `poll_settings_status`, `poll_pause_condition`, `poll_pause_reason` (A2-3).
+
+**`timeout_side` — Human rulings D5a-D5c (D5c, ADR A5-6).** It is written iff `reason=timeout`, and set by the same `classify_read` branch that sets `detail`:
+- `local`: the poller's own wait expired (`kind=timeout`). `detail` starts with `local_timeout`. `remote_exit` is absent.
+- `remote`: ssh exited 124 or 137 **and** the envelope is invalid. `detail=remote_timeout rc=<n>`, and `remote_exit=<n>`.
+
+The value says only *where* the bound was observed. `remote_exit=137` is ambiguous: either `timeout -k` escalated to KILL, or something else SIGKILLed the remote command (for example, the OOM killer). Every human-facing text that shows 137 says so. S1 adds this key. The current code (`50f4b3af1`) does not yet write it. Test: `test_timeout_side_remote_and_local`.
 
 **Carry-over (unchanged).** "Previous" is the existing `reading` when `read_reading()` returns `ok`.
 - `consecutive_failures`: success → `0`; failure or crash → previous + 1, or `1` when the previous file is not `ok` or lacks the key.
@@ -294,21 +303,23 @@ The bash crash fallback follows the same steps with `printf … > <file>.tmp; mv
 | `weekly_model_threshold` | 90 | integer 1–100 (new, D1) |
 | `fail_mode` | `closed` | exactly `closed` \| `open` |
 | `poll_interval_seconds` | 300 | integer multiple of 60, 60–3600 |
-| `staleness_seconds` | 900 | integer `> poll_interval_seconds + read_timeout_seconds` and `≤ 7200` (A1-4) |
-| `read_timeout_seconds` | 60 | integer 5 to `poll_interval_seconds − 30` |
+| `staleness_seconds` | 900 | integer `> poll_interval_seconds + read_timeout_seconds + 10` and `≤ 7200` (A1-4; `+10` = `STALENESS_KILL_MARGIN`, **Human rulings D5a-D5c**, ADR A5-5) |
+| `read_timeout_seconds` | 60 | integer **20** to `poll_interval_seconds − 30` (**Human rulings D5a-D5c**, D5b: was 5; `R − 10` must leave the remote `claude` at least 10 s) |
 | `history_days` | 90 | integer 1–3650 (new, D18) |
 | `history_max_mb` | 100 | integer 1–10240 (new, D18); 1 MB = 1,048,576 bytes |
 | `claude_bin` | unset → resolved | `^/[A-Za-z0-9._+/-]{1,254}$`, no `/./` or `/../` segment, not ending in `/`; used only by `remote-cmd`, `--print-setup`, `--check` |
+| `timeout_bin` | unset → resolved | same rule as `claude_bin`; used only by `remote-cmd`, `--print-setup`, `--check` (**Human rulings D5a-D5c**, D5b, ADR A5-5) |
 
 - **Removed:** `failopen_issue_after`. A conf still carrying it pauses with `settings_invalid:failopen_issue_after` (A2-10).
 - **Cross-field checks** run after the per-key checks, using in-file values or defaults: `read_timeout_seconds`, then `staleness_seconds`. The failing key is named. Report the **first** violation only, in file-line order, cross-field violations last.
 - **Under invalid settings** the gate pauses with `settings_invalid:<key>` regardless of `fail_mode` (D4). That includes the history keys (H-5). The poller keeps polling with **defaults for its operational keys only** (`read_timeout_seconds`, `history_days`, `history_max_mb`), writes `poll_settings_status=invalid:<key>`, `poll_pause_condition=1`, `poll_staleness_seconds=<default>`, and no `poll_*_threshold` keys.
-- `claude_bin` resolution when unset: `shutil.which("claude")` against the poller's pinned PATH.
+- `claude_bin` resolution when unset: `shutil.which("claude")` against the poller's pinned PATH. **Human rulings D5a-D5c**: `timeout_bin` resolves the same way with `shutil.which("timeout")`. macOS without GNU `timeout` on PATH must set `timeout_bin` (e.g. Homebrew `gtimeout`).
+- **Human rulings D5a-D5c** (D5b): `read_timeout_seconds`, `claude_bin` and `timeout_bin` together determine the expected forced command (§3.8). Changing any of them makes `--check` item 2 FAIL until the `authorized_keys` line is regenerated.
 
 **The single defaults constant block (binding, A2-10/D19).** At the top of `bin/lib/usage_pause.py`, between the exact comment lines `# ── BEGIN SETTINGS DEFAULTS AND BOUNDS (ADR-1944 A2-10; the only place these numbers appear) ──` and `# ── END SETTINGS DEFAULTS AND BOUNDS ──`, the module defines, and nowhere else spells:
 - `DEFAULT_SESSION_THRESHOLD = 90`, `DEFAULT_WEEKLY_THRESHOLD = 90`, `DEFAULT_WEEKLY_MODEL_THRESHOLD = 90`, `DEFAULT_FAIL_MODE = "closed"`, `DEFAULT_POLL_INTERVAL_SECONDS = 300`, `DEFAULT_STALENESS_SECONDS = 900`, `DEFAULT_READ_TIMEOUT_SECONDS = 60`, `DEFAULT_HISTORY_DAYS = 90`, `DEFAULT_HISTORY_MAX_MB = 100`;
-- the bounds: `THRESHOLD_MIN = 1`, `THRESHOLD_MAX = 100`, `POLL_INTERVAL_MIN = 60`, `POLL_INTERVAL_MAX = 3600`, `POLL_INTERVAL_STEP = 60`, `STALENESS_MAX = 7200`, `READ_TIMEOUT_MIN = 5`, `READ_TIMEOUT_MARGIN = 30`, `HISTORY_DAYS_MIN = 1`, `HISTORY_DAYS_MAX = 3650`, `HISTORY_MAX_MB_MIN = 1`, `HISTORY_MAX_MB_MAX = 10240`;
-- `DEFAULTS: Mapping[str, int|str|None]`, built from the names above (`claude_bin: None`).
+- the bounds: `THRESHOLD_MIN = 1`, `THRESHOLD_MAX = 100`, `POLL_INTERVAL_MIN = 60`, `POLL_INTERVAL_MAX = 3600`, `POLL_INTERVAL_STEP = 60`, `STALENESS_MAX = 7200`, `READ_TIMEOUT_MIN = 20` (**Human rulings D5a-D5c**), `READ_TIMEOUT_MAX = 3600`, `READ_TIMEOUT_MARGIN = 30`, `HISTORY_DAYS_MIN = 1`, `HISTORY_DAYS_MAX = 3650`, `HISTORY_MAX_MB_MIN = 1`, `HISTORY_MAX_MB_MAX = 10240`;
+- `DEFAULTS: Mapping[str, int|str|None]`, built from the names above (`claude_bin: None`, `timeout_bin: None`).
 
 Static test S1-ST10 (AC-45 for code): (a) the block markers appear exactly once each; (b) **no `ast.Compare` node anywhere in the module has a numeric `Constant` operand other than `0` or `1`** — every other number used in a comparison must be a named module-level constant; (c) **(Architect round 2, replaces the Revision 2 wording)** inside any function or class body, no numeric `Constant` equals `90`, `300`, `900`, `60` or `100`. Outside the block, those values may appear only as the whole right-hand side of a module-level `UPPER_CASE = <int>` assignment whose name does not start with `DEFAULT_` (e.g. `RESETS_CAP_CHARS = 100`, which §1.3's `*_resets ≤ 100` cap needs). *Reason:* the Revision 2 wording banned every `100` outside the block, so the §1.3 format caps could not be named at all; the test would have pushed format caps into the settings block. D19 targets thresholds, and (b) already enforces it for comparisons.
 
@@ -542,7 +553,9 @@ Uncapped integers (`150` accepted); `48.5%` does not match, so the read fails (A
 3. **Envelope:** `parse_envelope(stdout)`; not ok → `envelope_invalid`.
 4. **Content** over `result_text` (A1-3/D12, unchanged): session **and** weekly-all → success; no `[0-9]+% used` anywhere **and** (`result_text.strip() == ""` or an empty marker matches) → `empty_session`; session only → `missing_weekly`; weekly only → `missing_session`; otherwise → `unparseable`.
 
-`remote_exit` is recorded whenever ssh exited; any code other than 255 never fails the read by itself. `detail` on failure: the first 200 sanitized characters of stderr (transport, envelope) or of `result_text` (content), prefixed `stderr:`/`result:`. A missing forced command yields a login shell on `/dev/null` stdin, so no JSON → `envelope_invalid` (A2-9).
+**Human rulings D5a-D5c (D5b, ADR A5-4).** Between steps 3 and 4: an invalid envelope with `remote_exit ∈ {124, 137}` (`REMOTE_TIMEOUT_RCS`) is `timeout` with `timeout_side=remote` and `detail=remote_timeout rc=<n>`, not `envelope_invalid`. A valid envelope with 124 or 137 goes on to step 4: content decides. A step-2 local timeout gets `timeout_side=local` and `detail=local_timeout[; <kill problem>]`. **One read per poll. A timeout aborts the poll, and the next cron-fired poll is the retry.** `poll-record` prints `[hos-usage-poll] <iso> ABORT read timed out (remote rc=<n>|local kill); retry next poll` before its normal line (§3.7 P7).
+
+`remote_exit` is recorded whenever ssh exited; any code other than 255 never fails the read by itself (except 124/137 with no valid envelope, above). `detail` on failure: the first 200 sanitized characters of stderr (transport, envelope) or of `result_text` (content), prefixed `stderr:`/`result:`. A missing forced command yields a login shell on `/dev/null` stdin, so no JSON → `envelope_invalid` (A2-9).
 
 ### 3.5 Settings
 
@@ -603,6 +616,7 @@ hos-usage-poll --help                            # first description line, verba
   - classifies (§3.4), parses (§3.2–3.3), builds the reading with carry-over (§1.3);
   - loads the current conf and computes the **poll view** by calling `evaluate_cycle(<the reading being built>, settings, now=run_epoch, poller_artifacts_present=True)`: `poll_pause_condition = 1` iff decision is pause, `poll_pause_reason` = its reason; plus `poll_settings_status`, `poll_fail_mode`, `poll_*_threshold` (valid/defaults only), `poll_staleness_seconds`;
   - writes `reading` atomically (§1.5);
+  - on `reason=timeout`, first prints `[hos-usage-poll] <iso> ABORT read timed out (remote rc=<n>|local kill); retry next poll` (**Human rulings D5a-D5c**, D5c);
   - prints `[hos-usage-poll] <iso> outcome=<o> [reason=<r>] [session=<n> weekly_all=<n>] [cost=<c> tokens=<t>] pause_condition=<0|1> (<reason>)`;
   - exit 0 on a successful write (`_WROTE=1`), else 1.
 - **P8. (S3) Step 2 — the `.prom`.** If `_WROTE=1`: `python3 "$_LIB" write-prom --state-dir "$_STATE" || echo "… WARN: prom export failed (ignored; never affects the pause)"`. The first render omits `history_write_ok` (A2-11).
@@ -617,11 +631,16 @@ Steps P8–P11 are each independently best-effort: a failure is logged to `poll.
 
 ### 3.8 SSH, credential hygiene, time bound — Revision 2 (ADR A2-9)
 
-- **argv:** `ssh -n -i <key> <SSH_OPTIONS> 127.0.0.1`, a Python list, no local shell, **no element after the host**. `SSH_OPTIONS` are AD-6's: `BatchMode=yes`, `IdentitiesOnly=yes`, `RequestTTY=no`, `ConnectTimeout=10`, `ServerAliveInterval=10`, `ServerAliveCountMax=3`, `StrictHostKeyChecking=yes`, `LogLevel=ERROR`.
-- **Forced command** (human-installed, §3.11): `from="127.0.0.1,::1",command="<abs claude_bin> -p /usage --output-format json" <type> <blob> hos-loopback`. **Exactly those two options**; no `restrict`, `no-pty`, `no-port-forwarding`, `no-agent-forwarding`, `no-X11-forwarding`, `no-user-rc`.
+- **argv:** `ssh -n -i <key> <SSH_OPTIONS> 127.0.0.1`, a Python list, no local shell, **no element after the host**. `SSH_OPTIONS` are AD-6's: `BatchMode=yes`, `IdentitiesOnly=yes`, `RequestTTY=no`, `ConnectTimeout=10`, `ServerAliveInterval=10`, `ServerAliveCountMax=3`, `StrictHostKeyChecking=yes`, `LogLevel=ERROR`. S1 round 1 added `ClearAllForwardings=yes`, `ForwardAgent=no`, `ForwardX11=no`, `IdentityAgent=none`, ratified by ADR A5-1 as client-side defence in depth.
+- **Forced command — Human rulings D5a-D5c (D5a, D5b; ADR A5-1, A5-3).** Human-installed (§3.11):
+  `from="127.0.0.1,::1",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,command="<abs timeout_bin> -k 5 <read_timeout_seconds − 10> <abs claude_bin> -p /usage --output-format json" <type> <blob> hos-loopback`
+  - **Exactly seven options, each once** (`AUTHORIZED_KEY_FLAGS` holds the five flags, in this order). Still **no `restrict`** (D5).
+  - *Why the flags (D5a):* `command=` binds only session channels, so without them the key permitted `-L`/`-R`/`-D` tunnels. This was demonstrated from a sandboxed session. The human's live test with the flags installed: the real read succeeded with cost 0, and `-N -L` was refused (`administratively prohibited`).
+  - *Why the wrapper (D5b):* the local kill does not end the remote `claude`. `timeout -k 5 <R−10>` ends it before the local kill at `R` (TERM at R−10, KILL at R−5). On faberix it is `/usr/bin/timeout -k 5 50`, uutils, verified to return 124 on TERM and 137 on KILL. HOS never executes the wrapper; sshd does. It is not a T4.2 entry, and S1-ST8 still holds.
+  - `remote_cmd(claude_bin, timeout_bin, read_timeout_seconds)` renders it, using `REMOTE_TIMEOUT_MARGIN_SECONDS = 10`. `expected_remote_cmd(settings)` is `None` when either binary does not resolve.
 - **No environment unsetting anywhere** (D5): no `env -u`, no `unset`, no `os.environ.pop`/`del`/`os.unsetenv`, and no `env=` argument to `Popen` (S1-ST1). The `claude` process runs in sshd's plain login environment, which never sources `claude-auth.env`.
-- **Time bound** (A1-2, unchanged): `read_timeout_seconds` + SIGTERM + 5 s + SIGKILL on the process group; worst case ≈ 75 s.
-- **Residual risk accepted (A2-9):** server-side environment is not scrubbed (detector: a leaked OAuth token yields `empty_session` → fail-closed pause + `ReadFailing` alert); no `restrict` (the key holder is already scott on faberix). security-reviewer reviews this residual in S1.
+- **Time bound.** The local bound (A1-2) is the outer one: `read_timeout_seconds` + SIGTERM + 5 s + SIGKILL on the process group, worst case `R + 10` s. **Human rulings D5a-D5c**: the remote wrapper is the inner one. A slow connect (up to `ConnectTimeout=10`) can push the remote deadline past `R`, and then the local bound fires first (`timeout_side=local`).
+- **Residual risk accepted (A2-9, amended by A5-1):** server-side environment is not scrubbed (detector: a leaked OAuth token yields `empty_session` → fail-closed pause + `ReadFailing` alert). No `restrict`: **Human rulings D5a-D5c** — forwarding, agent, X11, pty and user-rc are now closed by the five flags. The remaining residual is only that future OpenSSH restrictions are not picked up automatically.
 
 ### 3.9 ~~Revision 1 §3.7 remote `env -u` line~~ — Removed by Revision 2 (ADR A2-9, D5)
 
@@ -630,11 +649,11 @@ Steps P8–P11 are each independently best-effort: a failure is logged to `poll.
 Read-only and idempotent. Takes no lock and writes nothing under `$STATE` or `/var/lib/hos-usage`. Its one real read goes to a `mktemp -d` under `${TMPDIR:-/tmp}`, removed on exit. **The only exception (A2-7):** `--capture-fixture PATH` writes the real read's **unfiltered stdout bytes** to `PATH` (mode 0600, via `PATH.tmp` + rename) and nowhere else; an existing `PATH` is refused before any check runs (exit 64). Output: one line per item, `PASS|FAIL|SKIP|INFO  <n>  <text>[ — <remedy>]`, then `RESULT: PASS` or `RESULT: FAIL (<k> failed)`.
 
 1. `~/.ssh/hos_loopback` exists, mode exactly `0600` (`python3 "$_LIB" stat-mode <path>`).
-2. **`authorized_keys` line (A2-9).** `~/.ssh/hos_loopback.pub` exists; exactly one line of `~/.ssh/authorized_keys` contains its base64 blob; that line's option list, parsed with OpenSSH quoting rules, is **exactly** `from="127.0.0.1,::1"` and `command="<remote-cmd output>"` and nothing else, byte-equal. A difference FAILs and names it (`extra option: restrict`, `command mismatch: expected '…' got '…'`, `missing from=`). Two lines with the blob → FAIL.
+2. **`authorized_keys` line (A2-9; Human rulings D5a-D5c, ADR A5-2).** `~/.ssh/hos_loopback.pub` exists, and exactly one line of `~/.ssh/authorized_keys` contains its base64 blob. That line's option list, parsed with OpenSSH quoting rules, must contain **each exactly once, in any order**: `from="127.0.0.1,::1"`, `command="<expected>"`, `no-port-forwarding`, `no-agent-forwarding`, `no-X11-forwarding`, `no-pty`, `no-user-rc`. Nothing else is allowed. `<expected>` is the forced command rendered from the **current** settings (`claude_bin`, `timeout_bin`, `read_timeout_seconds`), byte-equal. A difference FAILs and names it: `extra option: restrict`, `duplicate option: no-pty`, `missing option: no-user-rc`, `option from= value must be double-quoted`, `command mismatch: expected '…' got '…'`, `missing from=`, or `cannot compute the expected command: claude or timeout not found`. Two lines with the blob → FAIL. PASS text: `one line, from=, command= and the five hardening flags`.
 3. `ssh-keygen -F 127.0.0.1 -f ~/.ssh/known_hosts` exits 0.
 4. `python3 "$_LIB" check-settings` → `valid`/`defaults` PASS; invalid → FAIL naming key and value.
 5. Crontab: exactly one non-comment `crontab -l` line contains `hos-usage-poll`; schedule `*/N * * * *` with `N*60 == poll_interval_seconds` (or `0 * * * *` for 3600); no `>>`; the invoked path (after `$HOME`/`${HOME}`/`~/` expansion) resolves to `_SELF`. `crontab` absent or failing → FAIL.
-6. `claude_bin` resolves and is executable (`-x`) — the only home of `claude_not_executable` (A2-7). FAIL text: `claude_not_executable: <path> — set claude_bin or fix PATH, then regenerate the authorized_keys line`.
+6. `claude_bin` resolves and is executable (`-x`) — the only home of `claude_not_executable` (A2-7). FAIL text: `claude_not_executable: <path> — set claude_bin or fix PATH, then regenerate the authorized_keys line`. **Human rulings D5a-D5c** (D5b): a second item-6 line checks `timeout_bin` the same way. Its FAIL text is `timeout_not_executable: <path|timeout not found> — set timeout_bin or fix PATH, then regenerate the authorized_keys line`.
 7. **One real loopback read** (`read-usage` into the temp dir, then `python3 "$_LIB" classify …`), printing `SUCCESS session=<n> weekly_all=<n>[ <model>=<n>…] cost_usd=<c|absent> read_tokens=<t|absent>` or `FAILED reason=<r> detail=<…>`. PASS iff `SUCCESS` **and** `cost_usd=0` **and** `read_tokens=0` (TD-O-20: non-zero or absent → FAIL `read cost not zero/unknown — FR-9`). INFO `stderr non-empty (<k> bytes)`. With `--capture-fixture`, INFO `captured <bytes> bytes to <PATH>`.
 8. **Every scheduled `hos-cron` copy carries the gate (A2-4, D7b).** For each non-comment crontab line, tokenize with POSIX shell rules (`shlex.split`, after splitting off the five schedule fields; `@reboot`-style lines have one). Every token whose basename is exactly `hos-cron` is an invoked copy. Expand a leading `$HOME`/`${HOME}`/`~/`. Then per distinct resolved file:
    - relative path → FAIL `cannot resolve relative hos-cron path '<tok>' — use an absolute path`;
@@ -651,7 +670,7 @@ Read-only and idempotent. Takes no lock and writes nothing under `$STATE` or `/v
 Prints, in order, with headings:
 1. `mkdir -p ~/.hos/usage-pause && chmod 700 ~/.hos/usage-pause`
 2. `ssh-keygen -t ed25519 -N '' -C hos-loopback -f ~/.ssh/hos_loopback`
-3. The **one** `authorized_keys` line: `from="127.0.0.1,::1",command="<remote-cmd output>" <type> <blob> hos-loopback`. ~~Recommended `restrict,…` / ruled-minimum `from=`-only alternatives~~ **removed** (D5).
+3. The **one** `authorized_keys` line (**Human rulings D5a-D5c**, ADR A5-1): `from="127.0.0.1,::1",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,command="<remote-cmd output>" <type> <blob> hos-loopback`. If `claude` or `timeout` does not resolve, it prints `MISSING: claude or timeout not found — set claude_bin / timeout_bin …` instead and exits 1 (C-1 a). ~~Recommended `restrict,…` / ruled-minimum `from=`-only alternatives~~ **removed** (D5).
 4. `known_hosts` seeding from the on-disk host key (unchanged).
 5. **The crontab line — the single install-path definition (A2-16):** `*/N * * * *  <_SELF> > <abs $HOME>/.hos/usage-pause/poll.last.log 2>&1` (or `0 * * * *` for 3600).
 6. (S3) The two root commands of §5.1.
@@ -662,7 +681,7 @@ Prints, in order, with headings:
 - **Shipping (unchanged):** S1 adds `bin/hos-usage-poll` and `bin/lib/usage_pause.py` to `framework_consumer_files.txt`; `hos_install.sh` copies and `chmod +x`'s them. `contrib/` is never listed (S4 test).
 - **T4.1 (S1 code-review round 1 (S5), §11.5 C-10 — supersedes the earlier file-level exemption):** `_T4_1_EXPECTED_EXEMPTIONS` is **unchanged**; `bin/lib/usage_pause.py` is **not** exempt. Neither `bin/lib/usage_pause.py` (docstring included) nor `bin/hos-usage-poll` may contain `claude -p` / `claude --print`, so a raw call added anywhere in either file fails T4.1. The template line (`{claude_bin} -p ...`) does not match T4.1's pattern.
 - **`test_T4_1b_usage_read_has_one_call_site`:** over code lines of `scripts/`, `bootstrap/`, `bin/`, `(?:-p|--print)\s+["']?/usage\b` matches only in `bin/lib/usage_pause.py`, and there on **exactly one** code line, which starts with `REMOTE_CMD_TEMPLATE` (the C-9 line). No code line of `bin/lib/usage_pause.py` or `bin/hos-usage-poll` matches `claude\s+(-p|--print)` (S1 code-review round 1 (S5), §11.5 C-10).
-- **`test_T4_1b_remote_command_template_is_exact`:** exactly one code line matches `^REMOTE_CMD_TEMPLATE\s*=`; stripped of its trailing comment it equals `REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"`. Neither file has a code line matching `--model|--json-schema|--agent|env -u`.
+- **`test_T4_1b_remote_command_template_is_exact`:** exactly one code line matches `^REMOTE_CMD_TEMPLATE\s*=`. Stripped of its trailing comment, it equals `REMOTE_CMD_TEMPLATE = "{timeout_bin} -k 5 {remote_seconds} {claude_bin} -p /usage --output-format json"` (**Human rulings D5a-D5c**, D5b, ADR A5-3; was `"{claude_bin} -p /usage --output-format json"`). Neither file has a code line matching `--model|--json-schema|--agent|env -u`.
 - **`test_T4_1b_ssh_argv_ends_at_host`:** the `read_usage` argv (built with a stub `Popen`) ends with `"127.0.0.1"`.
 - **T4.2: no change.**
 
@@ -672,14 +691,14 @@ Outline (S1 writes all except 2a.8, which S3 adds; S2 adds 2a.0 and the §7 rows
 - **2a.0 Upgrade note (S2).** "A release containing the usage-pause gate pauses every worker/overseer cycle on this host (fail-closed, `[PAUSED-USAGE] reading_missing` or `poller_not_installed`) until the poller below is set up and `--check` is green, or `fail_mode=open` is set. **fail_mode=open without a running poller means no quota protection**" (exact sentence, **Human rulings H-1..H-4, H-7**: H-1, ADR A4-1). Also: "each such cycle writes one `cycle-usage-unchecked` audit event". Plus API-key-billed consumers: `fail_mode=open` is their only route (A2-15).
 - **2a.1 What it is.** One poller per host, every 5 min. Reads `/usage` under your personal login over SSH loopback, never `claude-auth.env`. Every worker/overseer cycle on the host — all projects, both roles — pauses at cycle start when **session, weekly (all models), or any weekly per-model** usage is `>=` its threshold (default 90 each), or the reading is missing, stale or failed (fail-closed). Auto-resumes. Interactive sessions are never paused. Separate from `hos-suspend`.
 - **2a.2 Key.** As printed by `--print-setup` block 2.
-- **2a.3 authorized_keys.** Append the one printed line. It is **not final until a real `--check` read returns real percentages** (AC-48). If `claude` moves, regenerate (`remote-cmd`); `--check` item 2 detects drift. No `restrict`, no env unsetting (D5; the human ruled both fragile).
+- **2a.3 authorized_keys.** Append the one printed line. It is **not final until a real `--check` read returns real percentages** (AC-48). If `claude` moves, regenerate (`remote-cmd`); `--check` item 2 detects drift. No `restrict`, no env unsetting (D5; the human ruled both fragile). **Human rulings D5a-D5c**: the line has exactly seven options (`from=`, `command=`, and the five `no-*` flags, each once, any order). The command is `<abs timeout> -k 5 <R> <abs claude> -p /usage --output-format json`, where `R = read_timeout_seconds − 10`. After changing `read_timeout_seconds`, `claude_bin` or `timeout_bin`, or after `claude`/`timeout` moves, regenerate the line. Item 2 FAILs until you do.
 - **2a.4 known_hosts.** The printed on-disk seeding command.
-- **2a.5 Settings (optional).** The §1.8 table verbatim plus: "missing = defaults; any invalid value, unknown key or duplicate key (including the history keys) pauses every cycle until fixed, regardless of `fail_mode`; the cron log line names the key".
+- **2a.5 Settings (optional).** The §1.8 table verbatim (**Human rulings D5a-D5c**: incl. `timeout_bin`, `read_timeout_seconds` minimum 20, staleness `+10`) plus: "missing = defaults; any invalid value, unknown key or duplicate key (including the history keys) pauses every cycle until fixed, regardless of `fail_mode`; the cron log line names the key".
 - **2a.6 Crontab — the one install-path line (A2-16, AC-51).** "This line is the single place the poller's install path is defined. When the path changes (e.g. #1276), change this line." Use `>`, not `>>`. One entry per host.
 - **2a.7 Verify.** First run `--check --capture-fixture …` (keep the file; attach it to #1944), then `--check` → `RESULT: PASS`. **Item 8 must be green after every upgrade of any project on the host** — it checks every scheduled `hos-cron` copy for the gate (AC-51).
 - **2a.8 (S3) Metrics export on faberix.** Root step (§5.1), symlink verification, fallback, ESM-purge note.
 - **2a.9 Fail-open (FR-67, AC-51).** "`fail_mode=open` is safe **only once alerting is live** (`contrib/monitoring/`, AC-43 and AC-44 recorded). On faberix it is forbidden until S5 is recorded (A2-18). fail_mode=open without a running poller means no quota protection." (exact sentence, H-1)
-- **2a.10 Reading the state.** `cat ~/.hos/usage-pause/reading` (raw values, `poll_*` = the poller's view); `cat ~/.hos/usage-pause/last-raw` (parse-failure debugging); `[PAUSED-USAGE]` / `[USAGE-OK]` / `[USAGE-UNCHECKED]` lines in `/tmp/hos-<role>-<project>.log`; `cycle-usage-paused` and (fail-open, H-1) `cycle-usage-unchecked` audit records. No GitHub issue is ever filed (D7). **Architect round 2 (TD-O-18):** "A paused cycle never pushes audit records. They stay in the clone's `audit/log/` and are pushed by the first running cycle after the pause ends. During a long pause (e.g. waiting for the weekly reset) the cron log is the up-to-date record; the audit branch catches up on resume."
+- **2a.10 Reading the state.** `cat ~/.hos/usage-pause/reading` (raw values, `poll_*` = the poller's view); `cat ~/.hos/usage-pause/last-raw` (parse-failure debugging); `[PAUSED-USAGE]` / `[USAGE-OK]` / `[USAGE-UNCHECKED]` lines in `/tmp/hos-<role>-<project>.log`; `cycle-usage-paused` and (fail-open, H-1) `cycle-usage-unchecked` audit records. No GitHub issue is ever filed (D7). **Human rulings D5a-D5c**: the reason-to-action table's `timeout` row names both sides. `timeout_side=remote` (`remote_exit=124`: claude slow or hung; `137`: the remote `timeout` had to KILL, **or** an external SIGKILL such as the OOM killer, which is ambiguous). `timeout_side=local` (ssh/sshd hung, a slow connect, or the remote wrapper missing or not firing; check `--check` item 2). The poll log shows `ABORT read timed out …; retry next poll`. Nothing retries within a poll. **Architect round 2 (TD-O-18):** "A paused cycle never pushes audit records. They stay in the clone's `audit/log/` and are pushed by the first running cycle after the pause ends. During a long pause (e.g. waiting for the weekly reset) the cron log is the up-to-date record; the audit branch catches up on resume."
 - **2a.11 (S3) History and backfill (AC-51).** Daily JSONL under `~/.hos/usage-pause/history/`, pruned every poll to `history_days`/`history_max_mb`. Backfill: §5.5 procedure, verbatim.
 - **§7 rows (S2):** `reason=poller_not_installed|reading_missing|reading_stale` → `--check`, `crontab -l`, `cat poll.last.log`; `settings_invalid:<key>` → fix the conf; `check_error` → run `python3 <bin>/lib/usage_pause.py check --state-dir ~/.hos` by hand; `read_failed:envelope_invalid` → `cat last-raw`, check the forced command (item 2).
 
@@ -840,11 +859,15 @@ Format (textfile): Prometheus text 0.0.4, LF, final newline; families in table o
 | 20 | `hos_claude_usage_poll_timestamp_seconds` | — | always (`run_epoch`) | Unix time of the last poll |
 | 21 | `hos_claude_usage_last_success_timestamp_seconds` | — | always; **0 = none on record** (D8) | Unix time of the last successful read |
 | 22 | `hos_claude_usage_history_write_ok` | — | only on the P10 re-render (never in the first render, never in export) | 1 if this poll's history append and prune succeeded |
+| 23 | `hos_claude_usage_read_timeout` | `side` (`remote`\|`local`) | `timeout_side` present, value 1 (**Human rulings D5a-D5c**, D5c) | The last poll's read timed out; side = where the bound was observed (remote rc 137 may be an external SIGKILL) |
+| 24 | `hos_claude_usage_remote_exit` | — | `remote_exit` present (**Human rulings D5a-D5c**, D5c) | Exit code ssh reported for the remote command (124 = remote timeout TERM; 137 = KILL, ambiguous) |
+| 25 | `hos_claude_usage_consecutive_failures` | — | always (`consecutive_failures`; 0 after a success) (**Human rulings D5a-D5c**, D5c) | Failed polls in a row |
 
 - `pause_condition` is rendered from `poll_pause_condition`; when the key is absent it renders `1` (conservative). `settings_valid` = 1 iff `poll_settings_status ∈ {valid, defaults}` (absent → 0). `fail_mode_closed` from `poll_fail_mode` (absent → 1).
 - ~~`threshold_percent{window}`~~ **Revision 2:** `{limit}`.
 - The module exports `METRIC_NAMES` (this table, in order); S4 tests import it.
-- **Raw values only** (FR-43, AC-19); absent, never 0 (FR-44), except #21.
+- **Raw values only** (FR-43, AC-19); absent, never 0 (FR-44), except #21 and #25 (a count, where 0 is a real value).
+- **Human rulings D5a-D5c** (ADR A5-6): the remote/local split **is** a label (`side` on #23). It is a separate family so that `read_failure{reason}` keeps one label set. `remote_exit` is a value, never a label (cardinality). Nothing parses `detail`. All three render from reading keys, so `export` backfills them unchanged (A2-11).
 
 ### 5.3 `write-prom` (S3)
 
@@ -931,7 +954,7 @@ providers:
 
 `path` points into the sparse clone (A2-14); `/opt/hos-monitoring` is the worked-example location, documented in the README.
 
-### 6.3 `grafana/provisioning/alerting/hos-rules.yaml` — the 13 rules (A2-13, D17, D19; rule 13 per Human rulings H-1..H-4, H-7 / ADR A4-5)
+### 6.3 `grafana/provisioning/alerting/hos-rules.yaml` — the 14 rules (A2-13, D17, D19; rule 13 per Human rulings H-1..H-4, H-7 / ADR A4-5; rule 14 per Human rulings D5a-D5c / ADR A5-7)
 
 **File structure (top to bottom):**
 1. **Named-values header** (comment table; TD-O-13). Every duration and every PromQL range/horizon literal in the file is listed here with its meaning:
@@ -939,7 +962,7 @@ providers:
    | Name | Value | Used by |
    |---|---|---|
    | `hos_eval_interval` | `1m` | group `interval` |
-   | `hos_for_immediate` | `0s` | PauseCondition, SettingsInvalid, ReadCostNonzero, ReadTokensNonzero, AlertingReloadFailed |
+   | `hos_for_immediate` | `0s` | PauseCondition, SettingsInvalid, ReadCostNonzero, ReadTokensNonzero, AlertingReloadFailed, ReadTimeout |
    | `hos_for_default` | `15m` | ReadFailing, MetricsAbsent, ReadCostUnknown, HistoryWriteFailing, TextfileError |
    | `hos_for_stale` | `5m` | PollStale |
    | `hos_for_sync` | `10m` | MonitoringSyncStale |
@@ -947,6 +970,7 @@ providers:
    | `hos_forecast_range` | `6h` | WeeklyTimeToThreshold PromQL range |
    | `hos_forecast_horizon_s` | `86400` | WeeklyTimeToThreshold PromQL horizon |
    | `hos_query_range_s` | `600` | every query's `relativeTimeRange.from` |
+   | `hos_read_timeout_alert_after` | `1` | ReadTimeout PromQL count (1 = first abort; N = N consecutive failed polls ending in a timeout). Human-tunable on monitrix (**Human rulings D5a-D5c**, D5c) |
 
 2. **Anchors block** (primary mechanism, pending A2-21 verification): a top-level mapping `x-hos-named-values:` defining `&hos_eval_interval 1m`, `&hos_for_immediate 0s`, `&hos_for_default 15m`, `&hos_for_stale 5m`, `&hos_for_sync 10m`, `&hos_for_forecast 30m`, `&hos_query_range_s 600`. Every `for:`, `interval:` and `relativeTimeRange.from` is an alias (`*hos_for_default`, …). **PromQL strings cannot use anchors** (a YAML alias is a whole scalar), so `6h`/`86400` stay literal inside the forecast expression and are covered by the header table. Fallback if Grafana rejects anchors: inline values plus the header table, and the static test then checks every duration against the table (AC-45).
 3. `apiVersion: 1`, then `groups:` with **one** group: `orgId: 1`, `name: hos-claude-usage`, `folder: HOS`, `interval: *hos_eval_interval`, `rules:`.
@@ -981,10 +1005,13 @@ providers:
 | # | uid / title | PromQL `A` (exact) | for | noData / execErr | sev |
 |---|---|---|---|---|---|
 | 13 | `hos-monitoring-alerting-reload-failed` / `HosMonitoringAlertingReloadFailed` | `hos_monitoring_alerting_reload_ok == bool 0` | `*hos_for_immediate` | OK / KeepLast | critical |
+| 14 | `hos-read-timeout` / `HosClaudeUsageReadTimeout` | `hos_claude_usage_read_timeout * on(instance) group_left() (hos_claude_usage_consecutive_failures >= bool 1)` (the `1` is `hos_read_timeout_alert_after`) | `*hos_for_immediate` | OK / KeepLast | warning |
+
+**Human rulings D5a-D5c (D5c, ADR A5-7).** Rule 14 is the dedicated "usage read timed out" alert. The series keeps the `side` label. Its annotation says `usage read timed out on {{ $$labels.instance }} (side={{ $$labels.side }}); poll aborted, next poll retries`, and adds: "remote_exit 137 may be an external SIGKILL (e.g. OOM), not only the timeout's KILL". The count literal is the one PromQL threshold literal allowed outside {0, 1}, and only in rule 14 (`test_no_literal_threshold_in_rules`). The streak counts all failures, not only timeouts (ADR A5-7 precision note). Because the split lives in the label, one rule covers both sides. There is no separate remote and local rule, since their routing and severity are the same.
 
 **Human rulings H-1..H-4, H-7 (H-3, ADR A4-5).** Rule 13 fires when the last reload attempt failed and was rolled back (§6.6a). Without it, a pushed alerting change that Grafana rejected would leave `deployed_commit` advancing while monitrix runs the old rules, and nothing would signal it.
 
-**Required set (H-2 replacement control, ADR A4-3).** Rules 1–9, 11 and 13 are each the human's only signal for their failure mode, and `tests/framework/test_monitoring_required_alerts.py` asserts them by UID (§9.4a). Two rules are not required:
+**Required set (H-2 replacement control, ADR A4-3; Human rulings D5a-D5c, ADR A5-7 adds rule 14).** Rules 1–9, 11, 13 and 14 are each the human's only signal for their failure mode, and `tests/framework/test_monitoring_required_alerts.py` asserts them by UID (§9.4a). Two rules are not required:
 - rule 10 (TextfileError) is redundant for HOS: a malformed HOS `.prom` drops its series, so rule 4 fires;
 - rule 12 is an optional early warning, and rule 1 is the signal.
 
@@ -1297,7 +1324,7 @@ Every test runs in the PR suite (`not slow and not integration`) unless marked. 
 **`test_usage_pause_settings.py`**
 - `test_missing_file_defaults` (90/90/90, closed, 300, 900, 60, 90, 100; FR-18, FR-29, AC-33).
 - `test_each_key_valid_bounds` (both edges, all ten keys).
-- `test_each_key_invalid` — 0, 101, `8O`, `090`, `+90`, `90 # c`, empty, Unicode digit, `fail_mode=Closed`, interval 90/3660, staleness 360/7201, timeout 4/271, `history_days=0`/`3651`, `history_max_mb=0`/`10241`, relative or `/../` `claude_bin` (FR-30, AC-33).
+- `test_each_key_invalid` — 0, 101, `8O`, `090`, `+90`, `90 # c`, empty, Unicode digit, `fail_mode=Closed`, interval 90/3660, staleness 360/7201, timeout 19/271 (**Human rulings D5a-D5c**: was 4), `timeout_bin` relative/`/../`/trailing `/`, `history_days=0`/`3651`, `history_max_mb=0`/`10241`, relative or `/../` `claude_bin` (FR-30, AC-33).
 - `test_failopen_issue_after_now_unknown_key` (A2-10).
 - `test_unknown_key_invalid`, `test_duplicate_key_invalid`, `test_malformed_line_invalid_line_n`, `test_unreadable_file`, `test_directory_path`, `test_non_utf8_file`, `test_first_violation_reported`, `test_never_raises`, `test_conf_path_never_from_hos_config_dir`.
 
@@ -1338,6 +1365,7 @@ Tests:
 - `test_poll_ssh_255_ssh_failed`, `test_poll_key_missing_ssh_failed` (AC-6); `test_poll_spawn_failed` (ssh absent).
 - `test_poll_needs_no_timeout_binary`; `test_poll_timeout` (**slow**, AC-7).
 - `test_poll_remote_124_is_not_timeout`; `test_poll_nonzero_remote_exit_content_decides` (FR-11, FR-13, D12).
+- **Human rulings D5a-D5c** (D5b/D5c, built in `50f4b3af1` unless marked): `test_remote_timeout_124_and_137_classified_timeout` (invalid envelope + 124/137 → `timeout`, `detail=remote_timeout rc=<n>`, `remote_exit`, ABORT line); `test_remote_124_with_valid_envelope_is_not_a_timeout`; `test_remote_timeout_is_not_retried_in_the_same_poll` (exactly one read per poll); `test_local_timeout_detail_is_distinct_from_remote`; `test_poll_timeout` now also asserts `ABORT read timed out (local kill); retry next poll`; `test_remote_cmd_template_rendering`; `test_remote_cmd_needs_timeout_binary`; `test_timeout_bin_setting_used_in_command`. **To add in S1:** `test_timeout_side_remote_and_local` — `timeout_side=remote` on 124 and 137, `timeout_side=local` on a local kill, absent on every non-timeout outcome, placed right after `remote_exit` in key order (§1.3).
 - `test_poll_failure_overwrites_success` (FR-32, AC-13).
 - `test_poll_dir_bounded` — mixed outcomes; `$STATE/usage-pause` holds only §1.1's set (AC-13, FR-34).
 - `test_poll_runs_while_project_suspended` (AC-12, AC-27, FR-24).
@@ -1351,6 +1379,7 @@ Tests:
 - `test_last_raw_unwritable_reading_identical` (isolation, FR-54).
 - `test_check_all_pass` (FR-48); `test_check_idempotent_writes_nothing` (AC-22); `test_check_missing_key_fails_nonzero` (AC-22); `test_check_key_mode_0644_fails`.
 - `test_check_authorized_keys_exact_pass`; `test_check_restrict_option_fails` (AC-15 c); `test_check_command_mismatch_fails`; `test_check_two_lines_fail`.
+- **Human rulings D5a-D5c** (D5a/D5b): `test_check_each_missing_flag_fails`; `test_check_duplicate_flag_fails`; `test_check_flag_order_is_free`; `test_check_unknown_extra_option_still_fails`; `test_check_changed_read_timeout_needs_regenerated_line`; `test_check_timeout_bin_missing_or_not_executable`.
 - `test_check_crontab_append_fails`, `test_check_crontab_interval_mismatch_fails`, `test_check_crontab_path_not_self_fails` (FR-8, FR-34, FR-66).
 - `test_check_claude_not_executable_item6`.
 - `test_check_read_failure_fails`; `test_check_nonzero_cost_fails`; `test_check_absent_tokens_fails` (TD-O-20).
@@ -1358,7 +1387,7 @@ Tests:
 - `test_check_gate_sentinel_all_copies` — two copies with sentinel + lib → PASS each; `test_check_gate_missing_in_one_copy_fails_naming_path`; `test_check_gate_lib_missing_fails`; `test_check_gate_home_expansion`; `test_check_gate_relative_path_fails`; `test_check_no_hos_cron_info` (A2-4, FR-51, AC-51).
 - **Human rulings H-1..H-4, H-7 (H-7, §3.10 item 10):** `test_check_item10_over_threshold_info_pause_1` — the stub read is `session 7%`, the conf has `session_threshold=5`, and the output has `INFO 10 pause_condition=1 reason=session 7% >= 5` with `RESULT: PASS`. `test_check_item10_under_threshold_info_pause_0`. `test_check_item10_reason_equals_poll_view` — for the same read and conf, item 10's reason is byte-equal to the `poll_pause_reason` a real poll writes. `test_check_item10_invalid_settings` — `pause_condition=1 reason=settings_invalid:<key>`. `test_check_item10_skip_on_failed_read`. `test_check_item10_never_fails_result`.
 - **Trip test (H-7) is a manual record, not a pytest** (§3.15). It is the gate on starting S2.
-- `test_print_setup_never_mutates`; `test_print_setup_one_authorized_keys_line_no_restrict`; `test_print_setup_crontab_matches_interval_and_self` (FR-8, FR-66).
+- `test_print_setup_never_mutates`; `test_print_setup_one_authorized_keys_line_no_restrict` (**Human rulings D5a-D5c**: asserts the five flags, in `AUTHORIZED_KEY_FLAGS` order, and no `restrict`); `test_print_setup_crontab_matches_interval_and_self` (FR-8, FR-66).
 - `test_remote_cmd_output` (A2-9, P8).
 
 **`tests/framework/test_usage_pause_static.py` (S1)**
@@ -1370,7 +1399,7 @@ Tests:
 - `S1-ST6 test_consumer_files_list_both`.
 - `S1-ST7 test_test_only_overrides_absent_from_runbook`.
 - `S1-ST8 test_one_ssh_call_site` — no `ssh` invocation in `bin/hos-usage-poll`; one `Popen` call in the module; no `_TIMEOUT_BIN`, `timeout`, `gtimeout` in either.
-- `S1-ST9 test_staleness_range_nonempty_for_every_interval`.
+- `S1-ST9 test_staleness_range_nonempty_for_every_interval`. **Human rulings D5a-D5c**: `test_read_timeout_minimum_is_20`; `test_timeout_bin_validated_like_claude_bin` (`tests/automation/test_usage_pause_settings.py`).
 - `S1-ST10 test_defaults_block_single_and_no_threshold_literals` (§1.8; A2-10, D19).
 - `S1-ST11 test_no_git_or_clone_assumption` — no `git ` / `.git` / `rev-parse` in the poller or the module (A2-16, FR-66).
 - `S1-ST12 test_no_github_or_network` — no `gh `, `curl`, `github`, `urllib`, `http.client`, `socket` in the poller or module (FR-57).
@@ -1437,6 +1466,7 @@ Tests:
 - `test_failure_render_absent_values` — no usage families; `read_ok 0`; `read_failure{reason="empty_session"} 1`; cost/tokens present (AC-4, AC-9, FR-44, A2-8).
 - `test_no_breakdown_absent_not_zero`; `test_7d_long_session_absent` (AC-18).
 - `test_never_succeeded_last_success_zero` (AC-52, D8).
+- **Human rulings D5a-D5c** (D5c): `test_timeout_families` — a remote-timeout reading renders `read_timeout{side="remote"} 1` and `remote_exit 137`; a local one renders `read_timeout{side="local"} 1` and no `remote_exit`; a success renders neither, plus `consecutive_failures 0`; `read_failure{reason="timeout"}` carries no `side` label; `test_export_backfills_timeout_side` (history line → same three families).
 - `test_threshold_limit_label_three_series`; `test_invalid_settings_no_threshold_settings_valid_0_staleness_default` (A2-12, AC-33).
 - `test_pause_condition_from_poll_view` — closed failure 1, open failure 0, limit 1, invalid settings 1 (AC-52).
 - `test_history_write_ok_only_on_rerender`.
@@ -1464,11 +1494,12 @@ Tests:
 
 ### 9.4 S4 tests — `tests/framework/test_contrib_monitoring.py`, `tests/framework/test_monitoring_sync.py`
 
-- `test_rules_yaml_parses_one_group_thirteen_rules` — exact uids and titles, rule 13 included (FR-62, AC-47; H-3).
+- `test_rules_yaml_parses_one_group_fourteen_rules` — exact uids and titles, rules 13 and 14 included (FR-62, AC-47; H-3; **Human rulings D5a-D5c**, D5c).
 - `test_every_rule_receiver_hos_no_policy_tree` (AC-47, A2-13).
 - `test_every_rule_condition_c_gt_0_and_bool_expr` (§6.3).
 - `test_rule_exprs_exact` — each `expr` equals §6.3.
-- `test_no_literal_threshold_in_rules` — in every `expr`, a comparison operator's literal operand ∈ {0, 1}; no `90` anywhere; `threshold` nodes only `gt 0` (AC-45, FR-64).
+- `test_no_literal_threshold_in_rules` — in every `expr`, a comparison operator's literal operand ∈ {0, 1}; no `90` anywhere; `threshold` nodes only `gt 0` (AC-45, FR-64). **Human rulings D5a-D5c**: the single exception is rule 14's `consecutive_failures >= bool <n>`, where `<n>` must equal the header's `hos_read_timeout_alert_after`.
+- **Human rulings D5a-D5c**: `test_read_timeout_rule_keeps_side_label_and_states_137_ambiguity` — rule 14's expr uses `group_left()` on `hos_claude_usage_read_timeout`, and its annotation contains `side=` and the 137 ambiguity sentence.
 - `test_named_values_header_covers_every_duration` — every `for`, `interval`, `relativeTimeRange.from`, and every PromQL range/horizon literal appears in the header table (AC-45, TD-O-13).
 - `test_nodata_error_states` — per §6.3 (A2-13).
 - `test_dollar_escaping` — every `$` in the alerting YAML is `$$` or a `${HOS_[A-Z0-9_]+}` reference from the allowed set (TD-VF-17).
@@ -1497,7 +1528,7 @@ Tests:
 This file is in the PR-required suite (`scripts/framework/run_tests_inner_loop.sh`, run by `.github/workflows/tests.yml`).
 - **No markers.** It has no `slow`, `integration`, `skip` or `xfail` marker. A missing rules or contact-point file **fails**; it does not skip. PyYAML is a pinned requirement, so an import failure is an error.
 - **Docstring.** It cites H-2, says that removing or weakening an entry changes the human's alerting coverage, and says the PR must say so.
-- **`REQUIRED_ALERTS`** is a literal dict in this file, never imported from `contrib/`. It maps each UID to its metric anchor (§6.3 required set; ADR A4-3 table): `hos-pause-condition`, `hos-read-failing`, `hos-poll-stale`, `hos-metrics-absent`, `hos-settings-invalid`, `hos-read-cost-nonzero`, `hos-read-tokens-nonzero`, `hos-read-cost-unknown`, `hos-history-write-failing`, `hos-monitoring-sync-stale`, `hos-monitoring-alerting-reload-failed`.
+- **`REQUIRED_ALERTS`** is a literal dict in this file, never imported from `contrib/`. It maps each UID to its metric anchor (§6.3 required set; ADR A4-3 table): `hos-pause-condition`, `hos-read-failing`, `hos-poll-stale`, `hos-metrics-absent`, `hos-settings-invalid`, `hos-read-cost-nonzero`, `hos-read-tokens-nonzero`, `hos-read-cost-unknown`, `hos-history-write-failing`, `hos-monitoring-sync-stale`, `hos-monitoring-alerting-reload-failed`, and (**Human rulings D5a-D5c**, D5c, ADR A5-7) `hos-read-timeout` → `hos_claude_usage_read_timeout`.
 
 Tests:
 - `test_required_alert_rules_present_by_uid` — each required UID appears exactly once in `hos-rules.yaml`.
@@ -1746,6 +1777,10 @@ Classification: **clarifying**, except C-6 (**additive**: one more case in the `
 - **C-8 (§9.1).** `test_poll_spawn_failed` is asserted at the library/CLI level (`read_usage` with an absent binary, and `read-usage` printing `read=spawn_failed rc=-`). The poller's pinned `PATH` always reaches `/usr/bin/ssh`, and execvp skips non-executable stubs. The poller's `rc=-` branch is exercised through the poller by the timeout test.
 - **C-9 (§3.1, T4.1b).** The `REMOTE_CMD_TEMPLATE` line is 149 characters and exceeds flake8 E501. The line is exactly `REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)`. The `noqa` goes **before** the mandated comment. The line therefore still **ends with** the mandated comment byte for byte. `split("  # ")[0]` still gives the template, so T4.1b passes unchanged. Verified under flake8 at 100 and 120 and under black at 100. No per-file ignore (the gate passes CLI flags and does not read `pyproject.toml`), and no rewording of the comment.
 - **C-10 (§3.12, TD-VF-13, §9.1; S1 code-review round 1 (S5)).** **Clarifying, stricter.** The file-level T4.1 exemption for `bin/lib/usage_pause.py` was broader than needed: its only `claude -p` text was the module docstring, so a second raw call anywhere in the file would have passed T4.1. The docstring is reworded to contain no `claude -p`, and `bin/lib/usage_pause.py` is **removed** from `_T4_1_EXPECTED_EXEMPTIONS` (the set is unchanged from pre-#1944). T4.1b now asserts exactly one code line of the file (the C-9 `REMOTE_CMD_TEMPLATE` line) matches the usage-read pattern, and no code line of `bin/lib/usage_pause.py` or `bin/hos-usage-poll` matches `claude\s+(-p|--print)`. Supersedes §3.12's and TD-VF-13's docstring-exemption wording. Startup-gap check: the initial TD should have specified this; the change only tightens a test and was made within the S1 review loop, so no prior sign-off is orphaned beyond the in-flight S1 review, which already covers it.
+
+- **C-11 — Human rulings D5a-D5c (D5a; §3.8, §3.10 item 2, §3.11).** The key line carries seven options, and `--check` requires each exactly once, in any order. Built in `50f4b3af1`. Classification: **structural (human-ruled)**. It supersedes A2-9's "two options only".
+- **C-12 — Human rulings D5a-D5c (D5b; §1.8, §3.4, §3.8, §3.12).** The remote `timeout -k 5 <R−10>` wrapper, `timeout_bin`, `READ_TIMEOUT_MIN = 20`, `STALENESS_KILL_MARGIN`, and 124/137 + invalid envelope → `timeout`. One read per poll. Built in `50f4b3af1`. Classification: **structural (human-ruled)**.
+- **C-13 — Human rulings D5a-D5c (D5c; §1.2, §1.3, §3.7, §5.2, §6.3, §9.4a).** ABORT log line and `detail` (built). **Not yet built: `timeout_side=remote|local` in the reading (§1.3), required in S1 before merge** (ADR A5-6, A5-9). S3 adds families #23–#25, and S4 adds rule 14 and its named value. Classification: **additive**. Startup-gap check: C-11 to C-13 change behavior that S1 reviewers had already reviewed, so those sign-offs are re-run against the D5 commit (ADR A5-9). No S2–S4 code exists, so nothing else is orphaned.
 
 ## 12. Escalations — Revision 2
 

@@ -1,6 +1,7 @@
 # ADR-1944: Proactive Claude usage-threshold pause. A standalone loopback poller writes one machine reading, `hos-cron` gates every worker/overseer cycle on it without touching `hos-suspend`, and Prometheus/Grafana get the raw values by a side path that can never affect the decision
 
 **Status:** ACCEPTED FOR DESIGN. Binds `technical-design`. The proactive percentage check is the **core** of this ADR (AD-1 to AD-9). Nothing below defers it, softens it, or puts it behind a flag. Items that need the human are listed in §5 ("Human confirmation required") and §4 (escalations). **None of them blocks the proactive check from being designed or built.** Each one changes a default, a label, or an operator procedure. None changes whether the check exists.
+**Status update (Amendment 5, 2026-10-03):** human rulings D5a–D5c (made during S1 review) are applied: five `no-*` flags on the key line, a remote `timeout` wrapper, and logged aborts with a `timeout_side` field and a dedicated alert (A5-1 to A5-9). S1 must add `timeout_side` and be re-reviewed (A5-9).
 **Status update (Amendment 4, 2026-10-03):** human rulings H-1 to H-4 and H-7 are applied. No human ruling is outstanding (A4-8). **Build mode:** #1944 is built in the human's interactive worker session, not by autonomous pickup. `needs-ai` is deliberately left off. The slice order and gates are in A4-7.
 **Date:** 2026-10-02
 **Author:** architect
@@ -175,6 +176,7 @@ How the exemption is recorded, so it cannot be silently widened:
 ### AD-6: The SSH read: options, time bound, credential hygiene, and the forced-command recommendation. (BINDING except the `authorized_keys` options, which are a §5 recommendation; FR-3-FR-7, FR-47, FR-48, Q2, Q9, Q12, Q14.)
 
 > Superseded in part by Amendment 2 A2-9 (forced command exactly `from=` + `command=`, no `restrict`, no env unsetting, client sends no remote command) and A2-16 (crontab line is the single install-path definition).
+> Further amended by Amendment 5: A5-1 (the line carries five `no-*` flags; client `SSH_OPTIONS` gain four forwarding-off options), A5-3 (remote `timeout` wrapper in the forced command), A5-5 (`read_timeout_seconds` ≥ 20, `timeout_bin`).
 
 **Invocation** (from `bin/hos-usage-poll`, no shell `eval`, argv array):
 
@@ -601,6 +603,7 @@ These revisions come out of reviewing `TECHNICAL-DESIGN-1944-proactive-usage-pau
   - T4.1b pins the template line and the sole call site.
   - AD-5.1's exact remote command is unchanged.
 - **A1-2 (AD-6, time bound; AD-4 enum).** The `<timeout_bin> --kill-after=5 <t>` prefix is replaced by an in-process bound in Python: `Popen(start_new_session=True)`, `wait(read_timeout_seconds)`, then process-group SIGTERM, a 5 s grace, then SIGKILL.
+  > Amended by Amendment 5 A5-3/A5-4 (D5b): the local bound stays as the outer bound, and a remote `timeout -k 5 <R−10>` in the forced command now bounds the remote `claude`. "Timeout is observed directly, not inferred from exit code 124/137" is narrowed: remote 124/137 **with an invalid envelope** is a `timeout` (`timeout_side=remote`).
   - The ssh argv and options are otherwise exactly as AD-6.
   - `no_timeout_binary` is removed from the failure enum, which now has eight reasons.
   - Timeout is observed directly, not inferred from exit code 124/137.
@@ -718,6 +721,8 @@ Items 1–11 of §5 are unchanged and unresolved.
 
 ### A2-7: `--output-format json`; parse `result`; revised failure classification (amends AD-4; D13, D12)
 
+> Amended by Amendment 5 A5-4 (D5b): `timeout` has a local and a remote source. The enum is unchanged.
+
 - **The read returns a JSON envelope.** The poller parses **all of stdout** as one JSON object, using strict `json.loads` on the decoded, 64 KiB-capped bytes. It never scans for a JSON fragment inside other text.
 - The threshold text is the envelope's `result` field, which must be a string. AD-4's regexes, last-match-wins rule, no-clamping rule, integer-only rule, ANSI stripping, and U+00B7 handling all apply to `result`.
 - **No unseen field is depended on (D13, FR-2).** The parser reads exactly three fields: `result`, `total_cost_usd`, and `usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}`. Every other field is ignored, and adding or removing other fields changes nothing (AC-49).
@@ -747,6 +752,8 @@ Items 1–11 of §5 are unchanged and unresolved.
 
 ### A2-9: The forced command; the call site; credential hygiene (supersedes AD-5's command text and AD-6's `authorized_keys` recommendation and client-side unsets; amends A1-1; D5, P4, P8)
 
+> Superseded in part by Amendment 5 (human rulings D5a, D5b): the first bullet ("those two options and **no others**") is replaced by A5-1, which requires seven options. The "No `restrict`" residual's forwarding clause is withdrawn, because the forwarding exposure is closed. The template becomes A5-3's `timeout`-wrapped form, and `--check` line 2 becomes A5-2. "No `restrict`" and "no environment unsetting" stand.
+
 - **The `authorized_keys` line is exactly** `from="127.0.0.1,::1",command="<abs claude_bin> -p /usage --output-format json" ssh-ed25519 AAAA… hos-loopback`. It has those two options and **no others**: no `restrict`, and no `no-pty`/`no-port-forwarding`/`no-agent-forwarding`/`no-X11-forwarding`/`no-user-rc` (P4; the human ruled against `restrict` as fragile, and the individual options carry the same risk).
 - **No environment unsetting anywhere.** There is no `env -u`, no `unset`, no `os.environ.pop`/`del`, and no curated `env=` for the ssh subprocess. The poller passes its inherited cron environment through, apart from AD-6's pinned `PATH`, which sets a variable and removes none.
 - The AD-6 "the poller `unset`s the three variables in its own process" sentence is superseded. AC-15's static test now asserts the **absence** of every unsetting form on both sides, as well as the absence of `claude-auth.env` sourcing.
@@ -765,6 +772,8 @@ Items 1–11 of §5 are unchanged and unresolved.
 - **AD-12/AC-48:** the swapped-in line is not final until a real `--check` read returns real percentages. That run is an S1 exit criterion.
 
 ### A2-10: Settings (supersedes AD-9's table and its issue clause; D1, D4, D18, D19, P3)
+
+> Amended by Amendment 5 A5-5 (D5b): `read_timeout_seconds` minimum 20, `staleness_seconds` margin `+10`, and a new `timeout_bin` key.
 
 | Key | Default | Valid |
 |---|---|---|
@@ -806,6 +815,8 @@ Items 1–11 of §5 are unchanged and unresolved.
 
 ### A2-12: Metrics contract (amends AD-10's table and A1-5; D8, D13, D19)
 
+> Amended by Amendment 5 A5-6 (D5c): adds `read_timeout{side}`, `remote_exit` (as a value), and `consecutive_failures`.
+
 The table changes are:
 - **`hos_claude_usage_threshold_percent{limit}`**: `limit` is `session` \| `weekly_all` \| `weekly_model` (replaces the `window` label). It is present only when settings are valid (A1-5).
 - **New: `hos_claude_usage_staleness_seconds`.** The staleness window the poller is using. It is **always present**, and under invalid settings it is the default value, so the poll-stale alert can still fire while `settings_valid=0`. It exists so the poll-stale alert compares against config, not a literal (D19).
@@ -821,6 +832,7 @@ Everything else in AD-10 stands: absent-not-zero, raw values only, label hygiene
 ### A2-13: Grafana alerting, contact point, worked example (supersedes AD-11 (2) and its Alertmanager routing; amends AD-11 (3); D17, D17b, D19)
 
 > Amended by Amendment 4 A4-3 (a required-alert guard test pins the rules that are the human's only signal, plus the contact point's two integrations) and A4-5 (a 13th rule, `HosMonitoringAlertingReloadFailed`).
+> Amended by Amendment 5 A5-7 (D5c): a 14th rule, `HosClaudeUsageReadTimeout`, with a tunable count named value.
 
 - **Grafana alerting, not Prometheus rules or Alertmanager.** `prometheus.yml` is untouched: `rule_files` stays commented and the `alertmanager` stanza is left alone. AD-11's `hos-claude-usage.rules.yml` is not shipped. Scrape config: AD-11 (1) stands.
 - **Provisioned files** are all under `contrib/monitoring/grafana/provisioning/`:
@@ -950,7 +962,7 @@ Restated for the TD as a single binding line: **this feature adds no in-flight b
 - P1: `hos-cron` decides. The reading file holds the raw reading plus an informational `poll_*` view, which is a deliberate partial departure from the default (A2-3).
 - P2: **overridden.** There is one audit event per paused cycle, not per transition, because a stateless gate cannot detect transitions (A2-5).
 - P3: confirmed (A2-10).
-- P4: exactly `from=` + `command=`. The residual is accepted, and the detector is the real read (A2-9).
+- P4: exactly `from=` + `command=`. The residual is accepted, and the detector is the real read (A2-9). *(Superseded by Amendment 5 A5-1, D5a: five `no-*` flags added.)*
 - P5 (A2-8).
 - P6 (A2-11).
 - P8: host-specific path from `remote-cmd` (A2-9).
@@ -1046,6 +1058,8 @@ Each is a human ruling, so the boundary is cleared. A4-3, A4-5 and A4-9 implemen
 - **S4 tier and merge:** MEDIUM, with an infra-reviewer pass and no human-merge requirement. The one exception: if S4's diff touches `bin/` or any other path already in `protected_surfaces.txt`, the existing CODEOWNERS rule applies unchanged. The decision-path code under `bin/` keeps its existing protection (AF-2, FR-49).
 
 ### A4-3: Required-alert guard test in the PR-required suite (human ruling, interactive session 2026-10-03, H-2 replacement control; amends A2-13)
+
+> Amended by Amendment 5 A5-7 (D5c): `hos-read-timeout` joins the required set (anchor `hos_claude_usage_read_timeout`), giving 14 rules and 12 required.
 
 - **File:** `tests/framework/test_monitoring_required_alerts.py`.
   - It is collected by `scripts/framework/run_tests_inner_loop.sh`, which `.github/workflows/tests.yml` runs, so it is PR-required.
@@ -1215,3 +1229,117 @@ Items 1–4 and 9 should land before the S2 PR is reviewed. Items 5–8 should l
 - **No code, test, or review sign-off exists for #1944.** Nothing is orphaned. The #1450 breaker and its sign-offs remain untouched.
 
 **Self-flag.** RISK: HIGH, unchanged overall. A4-2 lowers S4's merge gate by human ruling and puts a test guard in its place. A4-4 adds root automation on monitrix, which is constrained to data copies read as `hos-sync`, has health-checked rollback, and runs no repo code as root. CONFIDENCE: HIGH on A4-1, A4-2, A4-3, A4-6, A4-7 and A4-9. MEDIUM-HIGH on A4-4 until V-R1/V-R2 are verified on monitrix. BLAST RADIUS: same as A2, minus `protected_surfaces.txt`, AGENT-IDENTITY and CODEOWNERS; plus `/usr/local/sbin/hos-grafana-alerting-reload`, two systemd units, `/var/lib/hos-grafana-reload`, and one textfile symlink on monitrix. Change classification: STRUCTURAL (human-ruled).
+
+---
+
+## Amendment 5 (2026-10-03, human rulings D5a, D5b, D5c, made during S1 review)
+
+**Source.** Human rulings from the interactive session of 2026-10-03, cited "human ruling, interactive session 2026-10-03, D5a / D5b / D5c". They were made while S1 was in review, on the security-reviewer's (D5a) and reliability-reviewer's (D5b) S1 findings, and on the ops-reviewer's round-2 input (D5c). The rulings are authoritative. Where this amendment conflicts with earlier text, **it governs**. Each superseded section carries an inline pointer, and earlier text is not rewritten. S1 code implementing D5a–D5c is committed (`50f4b3af1`, branch `interactive-1944-s1-poller`). This amendment records what was built, and adds one architect decision (A5-6) that S1 must still implement.
+
+**Startup-gap check.** Yes: D5a and D5b should have been settled in the initial review. Both correct a premise the original analysis got wrong. A2-9 assumed `command=` confines the key, but it binds only session channels. A1-2 assumed a local kill ends the read, but it does not end the remote `claude`. Code and TD sign-offs exist against the superseded text, so the affected-sign-offs analysis is in A5-9. The orchestrating session should open or annotate a `startup-artifact-gap` issue for #1944 citing A5-1 and A5-3. The architect does not file it, per the scope of this task.
+
+**Product-boundary check.** D5a, D5b and D5c are human rulings, so their boundary is cleared. A5-6 (the `timeout_side` field and the split as a label) adds no product consequence. A5-7 adds one alert rule, which the human asked for in D5c. Its default count (A5-7) is the only new user-visible choice. It sets how soon an email arrives, and it is a named value the human can change on monitrix. No new credential, service, retention surface or human gate is added.
+
+### A5-1: The `authorized_keys` line carries five hardening flags (human ruling, interactive session 2026-10-03, D5a; partially reopens D5; supersedes A2-9's first bullet and its "No `restrict`" residual; amends AD-6's `authorized_keys` recommendation)
+
+- **The line is exactly** `from="127.0.0.1,::1",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,command="<A5-3 forced command>" ssh-ed25519 AAAA… hos-loopback`. That is seven options, each exactly once. `--print-setup` emits them in that order. `--check` accepts any order.
+- **Still no `restrict`, and still no environment unsetting** (D5 stands on both).
+- **Why.** `command=` binds only *session* channels. A `direct-tcpip` channel (`-L`/`-D`) and a `tcpip-forward` global request (`-R`) never reach the forced command. The passphrase-less key therefore permitted loopback tunnels as scott. This was demonstrated from a sandboxed session. The tunnels would let a sandboxed process reach loopback-bound services the sandbox otherwise denies. A2-9's "no escalation" residual was wrong on that point.
+- **Live verification (human, faberix).** The change was reversible. With the five flags installed, the real read succeeded with cost 0, and `ssh -N -L …` was refused with `administratively prohibited`.
+- **Residual, accepted.** The five flags are today's full `restrict` set, except that `restrict` would also cover future OpenSSH restrictions automatically. That loss of future-proofing is the cost of D5's "no `restrict`". A2-9's environment residual (nothing scrubs the server-side environment; the detector is `empty_session`) stands unchanged.
+- **Client side, ratified.** S1 round 1 added `ClearAllForwardings=yes`, `ForwardAgent=no`, `ForwardX11=no`, `IdentityAgent=none` to `SSH_OPTIONS`. These are defence in depth on the poller's own connection. They do not replace the server-side flags, because the threat is a different client holding the key. They are ratified as an amendment to AD-6's option list.
+
+### A5-2: `--check` item 2 requires exactly the seven options (D5a; amends A2-9's `--check` line 2)
+
+Item 2 PASSes only when exactly one `authorized_keys` line carries the key's blob, and its options are, each exactly once, `from="127.0.0.1,::1"`, `command="<expected>"`, and the five A5-1 flags. The order is free. It FAILs and names the problem on:
+- any other option (`extra option: restrict`);
+- a duplicate (`duplicate option: no-pty`);
+- a missing flag (`missing option: no-user-rc`);
+- an unquoted `from=`/`command=` value;
+- a `command=` not byte-equal to the forced command rendered from the **current** settings (A5-3).
+
+### A5-3: The forced command is wrapped in a remote `timeout` (human ruling, interactive session 2026-10-03, D5b; resolves reliability S1 "remote orphan"; amends A1-2 and A2-9's template)
+
+- **Forced command:** `<abs timeout_bin> -k 5 <read_timeout_seconds − 10> <abs claude_bin> -p /usage --output-format json`. With the defaults on faberix it is `/usr/bin/timeout -k 5 50 <claude>`.
+- **Template constant** (sole `/usage` string under `bin/`, `scripts/`, `bootstrap/`; never executed by HOS): `REMOTE_CMD_TEMPLATE = "{timeout_bin} -k 5 {remote_seconds} {claude_bin} -p /usage --output-format json"`. `remote_seconds = read_timeout_seconds − REMOTE_TIMEOUT_MARGIN_SECONDS` (10). T4.1b pins this exact text. It still forbids `--model`, a prompt, and `env -u`.
+- **Why.** A1-2's local kill ends the local `ssh` process group. It does not end the remote `claude` that sshd started. A hung remote read could therefore survive every poll and accumulate. The remote `timeout` bounds the remote side itself. It sends TERM at `R−10`, then KILL 5 s later, which is before the poller's own kill at `R`.
+- **Verified.** On faberix, `/usr/bin/timeout` is uutils coreutils. It returns 124 when TERM ends the child, and 137 when it had to escalate to KILL.
+- **A1-2 stands as the outer bound.** The local `Popen` wait, group TERM, 5 s and KILL remain in place. They still bound a hung `ssh`/sshd, a slow connect, or a remote `timeout` that never fired. A1-2's sentence "cannot mistake a remote exit code for a timeout" is **amended** by A5-4, which reads remote 124/137 as a timeout only when the envelope is invalid.
+- **Not a T4.2 entry.** A1-2 rejected a *bash* `_TIMEOUT_BIN` because it would join ADR-1643 AD-16.6's T4.2 ledger. The remote `timeout` is text in `authorized_keys`, executed by sshd, so HOS invokes no `timeout` command. S1-ST8 ("no `timeout`/`gtimeout` invocation") still holds.
+- **Host-specific path (P8 extended).** `timeout_bin` is resolved like `claude_bin` (A5-5). macOS without GNU `timeout` on `PATH` must set `timeout_bin` (e.g. Homebrew `gtimeout`). If neither binary resolves, `remote-cmd` exits 1, `--print-setup` prints `MISSING:` and exits 1, and `--check` FAILs item 2 and item 6. If `timeout_bin` disappears after setup, the forced command fails to exec and produces no JSON (`envelope_invalid`). That is fail-closed and loud.
+
+### A5-4: Timeout classification and abort; no in-poll retry (D5b; amends A2-7's classification, keeps its enum)
+
+- The enum is unchanged (nine reasons). `timeout` now has two sources:
+  - **local:** the poller's own wait expired (`kind=timeout`). `detail` starts with `local_timeout`. There is no `remote_exit`.
+  - **remote:** ssh exited with 124 or 137 **and** the envelope is invalid. `detail` is `remote_timeout rc=<n>`, and `remote_exit=<n>`.
+- **Remote 124/137 with a valid envelope is not a timeout.** Content decides (A1-3/D12). `test_poll_remote_124_is_not_timeout` stands.
+- **On timeout the poll aborts.** The failure is recorded through the normal write order. `consecutive_failures` increments, and the next cron-fired poll is the retry. There is **no in-poll retry**: one read per poll, which keeps the poll inside A1-4's staleness arithmetic.
+
+### A5-5: Settings: `timeout_bin`; `read_timeout_seconds ≥ 20`; staleness margin (D5b; amends A2-10's table and A1-4)
+
+| Key | Default | Valid |
+|---|---|---|
+| `read_timeout_seconds` | `60` | integer **20** to `poll_interval_seconds − 30` (was 5) |
+| `staleness_seconds` | `900` | integer `> poll_interval_seconds + read_timeout_seconds + 10` and ≤ 7200 (the `+10` is `STALENESS_KILL_MARGIN` = 2 × the 5 s kill grace) |
+| `timeout_bin` (new) | unset → `shutil.which("timeout")` on the pinned PATH | absolute path, same rule as `claude_bin` (A1-4); used only by `remote-cmd`, `--print-setup`, `--check` |
+
+- **Why 20.** `R − 10` must leave the remote `claude` a real budget of at least 10 s. Below that, a normal read (several seconds on faberix) would time out on load spikes.
+- **The forced command depends on settings.** Changing `read_timeout_seconds`, `claude_bin` or `timeout_bin` changes the expected `command=`. `--check` item 2 FAILs until the line is regenerated (`--print-setup` block 3). The poll itself does not compare the line, because it holds no copy. A stale line keeps its old remote budget, which is safe as long as that budget stays below the new local bound. The runbook says to regenerate after any of the three changes.
+- Under D4, an invalid `timeout_bin` pauses everything (`settings_invalid:timeout_bin`), like any key.
+
+### A5-6: Abort logging and the remote/local split as a stable field (human ruling, interactive session 2026-10-03, D5c; architect decision on the label; amends AD-3/§1.3 reading content and A2-12)
+
+**Built (S1, D5c).** The reading records `reason=timeout`, `detail` (`remote_timeout rc=<n>` or `local_timeout[; …]`), `remote_exit` (remote only) and `consecutive_failures`. `poll.last.log` gets an explicit line `[hos-usage-poll] <iso> ABORT read timed out (<remote rc=N|local kill>); retry next poll` before the normal outcome line.
+
+**Decision: yes, the split is a label. It comes from a new stable reading field, not from `detail`.** (ops-reviewer round 2 recommendation, adopted, with reliability's honesty caveat.)
+- **New reading key `timeout_side=remote|local`.** It is written **iff** `reason=timeout`, placed immediately after `remote_exit` in §1.3 order, and derived from the same branch that sets `detail`. **S1 adds it now**, before S3 pins the export.
+- **`detail` is free text and not a parse contract.** No S3/S4 code, rule or panel may parse it. The local path already carries a free-text suffix (`; kill … refused`).
+- **Why a label and not detail-only.** The two sides mean different things and have different remedies:
+  - **remote:** `claude` was slow or hung under a working transport. Check load or Claude-side latency.
+  - **local:** the transport or sshd hung, the connect was slow, or the remote `timeout` never fired. Check ssh/sshd and whether the A5-3 wrapper is installed.
+  
+  An alert that cannot say which one happened sends the operator to the wrong place.
+- **`remote_exit` stays a separate value, never folded into the label.** On the remote side, 137 is worse than 124. It is also **ambiguous**: it means either `timeout -k` had to escalate to KILL, or something else SIGKILLed the remote command (for example, the OOM killer). The label therefore says only *where* the bound was observed (`remote`). It never claims *why*. The 124/137 distinction is carried by `remote_exit`, and the runbook, the metric HELP text and the alert annotation must state the 137 ambiguity in those words. No value is named `remote_timeout_or_kill`, because the field is about the side, and the ambiguity belongs to `remote_exit`.
+- **S3 export (amends A2-12; additive):**
+  - `hos_claude_usage_read_timeout{side="remote"|"local"} 1`: present only when `timeout_side` is present, otherwise absent (never 0). It is a separate family, so the `read_failure{reason}` label set stays homogeneous.
+  - `hos_claude_usage_remote_exit`: the integer exit code as the **value**, present iff `remote_exit` is present. It is never a label, to bound cardinality.
+  - `hos_claude_usage_consecutive_failures`: always present (`0` after a success). This is the count A5-7 needs.
+  - History lines carry `timeout_side` automatically (A2-11: every reading key), so `export` backfills all three.
+
+### A5-7: Dedicated "usage read timed out" alert with a tunable count (D5c; amends A2-13 and A4-3; additive)
+
+- **Rule 14** `hos-read-timeout` / `HosClaudeUsageReadTimeout`, severity warning, `for` immediate, noData OK / execErr KeepLast. **PromQL `A`:** `hos_claude_usage_read_timeout * on(instance) group_left() (hos_claude_usage_consecutive_failures >= bool <hos_read_timeout_alert_after>)`. It fires when the latest poll timed out **and** reads have failed at least N times in a row. The result keeps the `side` label, so one rule covers both sides and the annotation names the side.
+- **Named value `hos_read_timeout_alert_after`, default `1`** (alert on the first abort). It lives in the rules file's named-values header (TD-O-13 mechanism). It is a PromQL literal, so it cannot be a YAML anchor. **The human tunes it on monitrix:** `1` = first abort; `N` = N consecutive failed polls ending in a timeout. Why default 1: D5c asks that an abort can trigger alerting, and `HosClaudeUsageReadFailing` already covers sustained failure after 15 m. A first-abort warning is the only way to see an isolated timeout at all.
+- **Precision note, recorded.** The streak counts *failures*, not only timeouts. With N > 1, a run of `ssh_failed, ssh_failed, timeout` fires at N = 3. A dedicated `consecutive_timeouts` counter would add poller state for a nuance the human did not ask for. If the human later wants timeouts-only streaks, that is a one-key S1 addition.
+- **No literal-threshold exception beyond this one.** AC-45's test permits this single named literal, and only in rule 14's expression, equal to its header value.
+- **The required set gains `hos-read-timeout`** (anchor `hos_claude_usage_read_timeout`). The human asked for it explicitly in D5c, so removing it is a change to the human's alerting coverage, which is exactly what A4-3 guards. There are now 14 rules and 12 required.
+
+### A5-8: Requirements changes for pm-agent (architect does not edit REQUIREMENTS)
+
+1. **FR-3 (D5a, D5b):** replace the entry text with: `from="127.0.0.1,::1",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,no-user-rc,command="<abs timeout> -k 5 <read_timeout_seconds − 10> <abs claude> -p /usage --output-format json"`. Keep "no `restrict` option" and add "and no environment unsetting". Add: "The five `no-*` flags are required because `command=` binds only session channels; without them the key permits port forwarding (D5a)." Both absolute paths are host-specific and generated by `remote-cmd`.
+2. **FR-7 (D5b):** replace "The timeout value is open (Q9)" with: "The bound is `read_timeout_seconds` (default 60, minimum 20), enforced locally by the poller and remotely by a `timeout` wrapper in the forced command that fires 10 s earlier, so no remote `claude` outlives the poll. On timeout the poll aborts and records the failure; the next poll retries; there is no retry within a poll."
+3. **Q9:** mark RESOLVED (A1-2, A5-3, A5-5).
+4. **FR-30 / settings table (D5b):** add `timeout_bin`, and change `read_timeout_seconds` to "20 to `poll_interval_seconds − 30`" and `staleness_seconds` to "`> poll_interval_seconds + read_timeout_seconds + 10`, ≤ 7200".
+5. **FR-33 (D5c):** add to the reading-file minimum: "on a timeout, `timeout_side` (`remote` or `local`), `remote_exit` when the remote side reported one, and `consecutive_failures`".
+6. **FR-34 (D5c):** add: "A timed-out read writes an explicit `ABORT read timed out … retry next poll` line to the poll log."
+7. **FR-48 (D5a, D5b):** add: "`--check` fails unless the `authorized_keys` line carries exactly `from=`, `command=` and the five `no-*` flags, each once, and the `command=` matches the one rendered from current settings; it also fails when `timeout` is not executable."
+8. **FR-62 (D5c):** append to the minimum list "usage read timed out (count threshold tunable: first abort or N consecutive failures)".
+9. **AC-7 (D5b, D5c):** append: "Both sides are distinguished: a remote `timeout` exit (124 or 137) with no valid envelope records `reason=timeout`, `timeout_side=remote` and `remote_exit`; a local kill records `timeout_side=local`. The poll log shows the ABORT line, and the poll makes exactly one read attempt."
+10. **AC-15 (c) (D5a):** replace "matches FR-3 and has no `restrict` option" with "matches FR-3: exactly `from=`, `command=` and the five `no-*` flags, each once, and no `restrict`".
+11. **New AC (D5a; pm-agent numbers it, next after AC-53):** "With the FR-3 line installed, `ssh -i ~/.ssh/hos_loopback -N -L <port>:127.0.0.1:<port> 127.0.0.1` is refused (`administratively prohibited`), and a real read still succeeds with cost 0. Recorded on #1944 (the human's 2026-10-03 run satisfies it)."
+12. **AC-47 (D5c):** the required-alert set includes the read-timeout alert.
+13. **Q12:** amend the RESOLVED note to "forced `command=` with `from=` and five `no-*` flags, no `restrict` (D5, D5a)".
+14. **Traceability:** FR-3, FR-7, FR-33, FR-34, FR-48, FR-62, AC-7, AC-15 and the new AC cite "human ruling, interactive session 2026-10-03, D5a/D5b/D5c" as applicable.
+
+Items 1, 2, 5–7, 9–11 and 13 should land before the S1 PR is merged, because S1 already implements them. Items 3, 4, 8, 12 and 14 should land before S3/S4 review.
+
+### A5-9: Affected sign-offs
+
+- **S1 code review sign-offs** (code-reviewer round 1, security/reliability/ops round 1) were given against A2-9's two-option line and the local-only bound. **They are orphaned for the D5 commit (`50f4b3af1`)** and must re-review it against A5-1 to A5-6. Earlier S1 findings that the commit did not touch stand.
+- **A5-6's `timeout_side` key is not yet in the S1 code.** S1 adds it, and the re-review covers it. Until then, S1 is not mergeable.
+- **TD-1944:** §1.2, §1.3, §1.8, §3.4, §3.8, §3.10, §3.11, §3.12, §3.13, §5.2, §6.3, §9.1, §9.3, §9.4, §9.4a and §11.5 are amended in the same change and tagged "Human rulings D5a-D5c". These were authored by the architect from the rulings. **`technical-design` does one consistency pass over the tagged sections** before the S1 re-review, to keep author and critic separate. The round count is unchanged.
+- **ADR text:** AD-6, A1-2, A2-7, A2-9, A2-10, A2-12, A2-13 and A4-3 carry inline pointers. A2-20's P4 ("exactly `from=` + `command=`") is superseded by A5-1.
+- **The H-7 trip test and the S1 exit records** have not been posted, so they are unaffected and must be taken on the D5 line. The human's D5a live test is an extra record, not a substitute.
+
+**Self-flag.** RISK: HIGH, unchanged. A5-1 closes a real tunnel exposure. A5-3 adds a remote kill path whose failure mode, a missing `timeout`, is fail-closed. A5-6 and A5-7 are additive observability. CONFIDENCE: HIGH on A5-1 to A5-5 (live-verified on faberix, implemented and tested). MEDIUM-HIGH on A5-7's PromQL until it passes `promtool` (S4 integration test). BLAST RADIUS: `~/.ssh/authorized_keys` on every host (the line must be regenerated), `usage-pause.conf` (new key, tighter bounds; a conf with `read_timeout_seconds` < 20 now pauses under D4), the reading file (+1 key), the metrics contract (+3 families, schema unchanged, additive), and one new alert rule. Change classification: STRUCTURAL (human-ruled), plus one ADDITIVE architect decision (A5-6/A5-7).
