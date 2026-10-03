@@ -451,6 +451,7 @@ REMOTE_CMD_TEMPLATE: str = "{claude_bin} -p /usage --output-format json"
     # One code line, trailing comment exactly
     # "# ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)".
     # The single source for remote-cmd, --print-setup, and --check item 2. Never executed by HOS.
+    # The exact line, with "# noqa: E501" placed before that comment: §11.5 C-9.
 SSH_OPTIONS: tuple[str, ...]               # AD-6's -o list, verbatim, in AD-6 order
 KILL_GRACE_SECONDS: int = 5
 INPUT_CAP_BYTES: int = 65536
@@ -1730,6 +1731,20 @@ Runs the real script with `HOS_RELOAD_*` overrides into a temp dir. `runuser`, `
 | H-7 new | S1 trip test (§3.15) gates S2 build. New `--check` item 10 (INFO, never FAIL). | §3.10, §3.15, §8, §9.1, §10 |
 
 **For `technical-design` (ADR A4-10):** do one consistency pass over the sections tagged "Human rulings H-1..H-4, H-7", before the S1 PR (item 10) and before S4 coding (§6.6a, §9.4a/b). This is not a new critique round. The round count stays at 2 of 5.
+
+### 11.5 S1 coder clarifications (2026-10-03, technical-design rulings on the S1 implementation)
+
+Classification: **clarifying**, except C-6 (**additive**: one more case in the `top_subagents_more_<w>` value) and C-9 (the §3.1 comment rule restated). No architecture changes. Startup-gap check: C-2, C-6 and C-9 were contract gaps that the initial TD should have closed. No code had been approved against the old wording, so no sign-off is orphaned. The architect's round-2 TD approval stands, and the S1 reviewers review against this section.
+
+- **C-1 (§3.7, §3.10, §3.11) `--check` and `--print-setup` live in Python.** `bin/hos-usage-poll` checks its arguments and then `exec`s `usage_pause.py check-setup --self-path <_SELF> [--capture-fixture P]` or `print-setup --self-path <_SELF>`. This replaces the bash orchestration (`mktemp -d`, `stat-mode`, `classify` helpers). The temp read directory is `os.mkdir(<${TMPDIR:-/tmp}>/hos-usage-check-<pid>-<12 hex>, 0700)`, removed in `finally`. It counts as the §3.10 "`mktemp -d`" because S1-ST4 bars `tempfile`. Output grammar, item numbering, exit codes and the read-only rule are unchanged. **Two further requirements:** (a) `--print-setup` exits `1` whenever it prints **any** `MISSING:` line, including "claude not found", because block 3 is then not printed. (b) In `--check`, an `OSError` while writing the `--capture-fixture` target prints `FAIL  7  capture failed: <error>` and the run continues to `RESULT:`. It must not raise a traceback.
+- **C-2 (§9.1 S1-ST8).** "No `timeout`" means no `timeout`/`gtimeout` **command invocation**. The reason string `timeout`, `read_timeout_seconds` and `--timeout` stay mandatory. The test must also reject, in the module AST, any list or tuple literal whose first element is the string constant `"timeout"` or `"gtimeout"`. Without that check, an argv passed to `subprocess.run` would get past the bash-form regexes.
+- **C-3 (§1.2, TD-O-14).** The reading's `poll_pause_reason` and `weekly_model_<slug>_name` keep the raw name. `ascii_fold()` is public, and S2's `check` folds once, before the 200-character cap. The poll log line folds as well. `--check` item 10 prints the raw `poll_pause_reason` text, which is human-facing and not parsed.
+- **C-4 (§1.8).** Only blank lines and lines whose first non-whitespace character is `#` are ignored. Matching uses the line with its trailing whitespace stripped. A line with leading whitespace before `key=` is `invalid:line_<n>`. `--check` item 4 names the line, and the decision is the normal `settings_invalid` pause.
+- **C-5 (§1.3).** The breakdown keys are grouped **per window**, windows in source order. Within each window the order is `requests_`, `sessions_`, `subagent_heavy_pct_`, `long_context_pct_`, `long_session_pct_`, `top_subagents_`, `top_subagents_more_`.
+- **C-6 (§1.3, §3.3).** The 200-character cap on `top_subagents_<w>` drops whole trailing items, never part of an item. **Change required:** `top_subagents_more_<w>` = K (the source's "+K more", else 0) **plus the number of items dropped**. Otherwise a truncated list would read as "0 = none omitted". If not even the first item fits, both keys are absent, as before.
+- **C-7 (§3.2 step 6).** `cost_usd` is rendered with `repr(float)`, exponent form included (`1e-30`, `1e+16`), so a nonzero cost is never shown as `0`. Any later consumer (S2 `check` if it ever reads cost, S3 `.prom`/history) must accept `[0-9.e+-]` forms. The Prometheus text format already does.
+- **C-8 (§9.1).** `test_poll_spawn_failed` is asserted at the library/CLI level (`read_usage` with an absent binary, and `read-usage` printing `read=spawn_failed rc=-`). The poller's pinned `PATH` always reaches `/usr/bin/ssh`, and execvp skips non-executable stubs. The poller's `rc=-` branch is exercised through the poller by the timeout test.
+- **C-9 (§3.1, T4.1b).** The `REMOTE_CMD_TEMPLATE` line is 149 characters and exceeds flake8 E501. The line is exactly `REMOTE_CMD_TEMPLATE = "{claude_bin} -p /usage --output-format json"  # noqa: E501  # ADR-1944 A2-9: forced-command template; executed by sshd, never by HOS (T4.1b)`. The `noqa` goes **before** the mandated comment. The line therefore still **ends with** the mandated comment byte for byte. `split("  # ")[0]` still gives the template, so T4.1b passes unchanged. Verified under flake8 at 100 and 120 and under black at 100. No per-file ignore (the gate passes CLI flags and does not read `pyproject.toml`), and no rewording of the comment.
 
 ## 12. Escalations — Revision 2
 
