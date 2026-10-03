@@ -238,7 +238,7 @@ every governance gate and was retired (#990).
 
 **Why the 7-minute offset:** The worker opens PRs; the overseer needs time to see them. A 7-minute gap gives the worker a window to complete its cycle before the overseer's next check, reducing empty overseer cycles.
 
-**Replace `/path/to/project/`** with the actual project parent path (e.g. `/Users/you/Code/CPS`), and `<name>` with this project's key in `~/.config/hos/projects.conf` (e.g. `cps`) — see `docs/CRON-SETUP.md` §3. `bin/hos-cron` handles preflight, auth, and jitter automatically.
+**Replace `/path/to/project/`** with the actual project parent path (e.g. `$HOME/Code/CPS`), and `<name>` with this project's key in `~/.config/hos/projects.conf` (e.g. `cps`) — see `docs/CRON-SETUP.md` §3. `bin/hos-cron` handles preflight, auth, and jitter automatically.
 
 Claude usage-pause poller (SSH loopback): see `docs/CRON-SETUP.md` §2a.
 

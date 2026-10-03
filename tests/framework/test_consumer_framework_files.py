@@ -8,6 +8,7 @@ declare a file the install didn't ship. These tests fail if:
   - the installer stops reading the list on either side (copy OR manifest)
   - HOS-dev-only tools leak into the consumer set
 """
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,9 +47,9 @@ def test_list_exists_and_nonempty():
 
 def test_every_listed_file_exists_in_source():
     for f in _consumer_files():
-        assert (ROOT / f).is_file(), (
-            f"framework_consumer_files.txt lists {f} but {ROOT / f} is missing from source"
-        )
+        assert (
+            ROOT / f
+        ).is_file(), f"framework_consumer_files.txt lists {f} but {ROOT / f} is missing from source"
 
 
 def test_bin_lib_git_credentials_present():

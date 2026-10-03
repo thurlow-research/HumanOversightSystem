@@ -237,14 +237,14 @@ machine-local registry. Create `~/.config/hos/projects.conf`:
 
 ```ini
 # <project>_<key>=<value>   — keys: config_dir, worker_root, overseer_root, target_release, max_seconds
-hos_config_dir=/home/scott/Code/HumanOversightSystem/.config/hos
-hos_worker_root=/home/scott/Code/HumanOversightSystem/Worker
-hos_overseer_root=/home/scott/Code/HumanOversightSystem/Overseer
+hos_config_dir=$HOME/Code/<project>/.config/hos
+hos_worker_root=$HOME/Code/<project>/Worker
+hos_overseer_root=$HOME/Code/<project>/Overseer
 hos_target_release=v0.4.2
 
-cps_config_dir=/home/scott/Code/CondoParkShare/.config/hos
-cps_worker_root=/home/scott/Code/CondoParkShare/Worker
-cps_overseer_root=/home/scott/Code/CondoParkShare/Overseer
+cps_config_dir=$HOME/Code/<other-project>/.config/hos
+cps_worker_root=$HOME/Code/<other-project>/Worker
+cps_overseer_root=$HOME/Code/<other-project>/Overseer
 cps_target_release=v1.0.0
 ```
 
