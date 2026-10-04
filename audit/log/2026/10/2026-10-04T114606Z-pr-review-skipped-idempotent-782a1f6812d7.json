@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","head_sha":"033df4efbb92086d118d29cf3a0707991e25fca6","pr":1984,"reason":"1215 precheck: HUMAN_REQUIRED verdict already posted at this head SHA; needs-human label present; no new commits or human input since"}
