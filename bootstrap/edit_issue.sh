@@ -78,8 +78,8 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --number)       NUMBER="$2"; shift 2 ;;
         --app)          APP_ROLE="$2"; shift 2 ;;
-        --add-label)    ADD_LABELS="$2"; shift 2 ;;
-        --remove-label) REMOVE_LABELS="$2"; shift 2 ;;
+        --add-label)    ADD_LABELS="${ADD_LABELS:+$ADD_LABELS,}$2"; shift 2 ;;
+        --remove-label) REMOVE_LABELS="${REMOVE_LABELS:+$REMOVE_LABELS,}$2"; shift 2 ;;
         --milestone)    MILESTONE_ARG="$2"; shift 2 ;;
         --title)        TITLE="$2"; shift 2 ;;
         --state)        STATE="$2"; shift 2 ;;
