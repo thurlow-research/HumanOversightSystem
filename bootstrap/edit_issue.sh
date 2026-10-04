@@ -74,12 +74,16 @@ ASSIGNEES=""
 SET_ASSIGNEES=""
 BODY_FILE=""
 
+append_val() {
+    if [ -z "$1" ]; then echo "$2"; else echo "$1,$2"; fi
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --number)       NUMBER="$2"; shift 2 ;;
         --app)          APP_ROLE="$2"; shift 2 ;;
-        --add-label)    ADD_LABELS="${ADD_LABELS:+$ADD_LABELS,}$2"; shift 2 ;;
-        --remove-label) REMOVE_LABELS="${REMOVE_LABELS:+$REMOVE_LABELS,}$2"; shift 2 ;;
+        --add-label)    ADD_LABELS=$(append_val "$ADD_LABELS" "$2"); shift 2 ;;
+        --remove-label) REMOVE_LABELS=$(append_val "$REMOVE_LABELS" "$2"); shift 2 ;;
         --milestone)    MILESTONE_ARG="$2"; shift 2 ;;
         --title)        TITLE="$2"; shift 2 ;;
         --state)        STATE="$2"; shift 2 ;;

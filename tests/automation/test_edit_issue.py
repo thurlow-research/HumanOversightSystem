@@ -436,3 +436,20 @@ def test_edge_flags_redirect_to_edit_issue_edges(h, extra):
     assert result.returncode != 0
     assert "bootstrap/edit_issue_edges.sh" in result.stderr
     assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()
+
+def test_repeated_add_label_accumulates(h):
+    """T-XX: repeated --add-label flags accumulate labels."""
+    result = h.run(["--number", "201", "--app", "worker", "--add-label", "foo", "--add-label", "bar"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert '"labels":["foo","bar"]' in cap
+
+
+def test_repeated_remove_label_accumulates(h):
+    """T-XX: repeated --remove-label flags accumulate labels to remove."""
+    result = h.run(["--number", "201", "--app", "worker", "--remove-label", "foo", "--remove-label", "bar"])
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    # Expect two separate DELETE calls for each label
+    assert "labels/foo" in cap and "DELETE" in cap
+    assert "labels/bar" in cap and "DELETE" in cap
