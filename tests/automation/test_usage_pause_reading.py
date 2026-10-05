@@ -276,3 +276,35 @@ def test_stderr_detail_keeps_the_tail():
     )
     assert cls.detail.endswith("tail-marker") and "head-marker" not in cls.detail
     assert len(cls.detail) <= up.VALUE_CAP_CHARS
+
+
+# ── every _create_fresh caller treats OSError as a failure value (#1944 S2 review note) ──
+
+
+def test_read_usage_unwritable_target_is_spawn_failed_not_a_raise(tmp_path):
+    (tmp_path / "out").mkdir()  # a directory where the capture file belongs: IsADirectoryError
+    outcome = up.read_usage(
+        key_path=tmp_path / "key",
+        timeout_s=5,
+        stdout_path=tmp_path / "out",
+        stderr_path=tmp_path / "err",
+    )
+    assert outcome.kind == "spawn_failed" and outcome.rc is None
+
+
+def test_poll_record_unwritable_reading_is_exit_1_without_traceback(tmp_path, capsys):
+    state = tmp_path / "state"
+    (state / "usage-pause" / "reading.tmp").mkdir(parents=True)
+    rc = up.main(["poll-record", "--state-dir", str(state), "--transport-reason", "crashed"])
+    captured = capsys.readouterr()
+    assert rc == up.EXIT_FAIL and "cannot write reading" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_last_raw_unwritable_target_is_exit_1_without_traceback(tmp_path, capsys):
+    state = tmp_path / "state"
+    (state / "usage-pause" / "last-raw.tmp").mkdir(parents=True)
+    rc = up.main(["last-raw", "--state-dir", str(state), "--read", "none", "--run-epoch", "1"])
+    captured = capsys.readouterr()
+    assert rc == up.EXIT_FAIL and "cannot write last-raw" in captured.err
+    assert "Traceback" not in captured.err

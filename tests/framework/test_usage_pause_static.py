@@ -1,6 +1,7 @@
 """#1944 S1 static guards over bin/hos-usage-poll and bin/lib/usage_pause.py (TD section 9.1)."""
 
 import ast
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -219,3 +220,177 @@ def test_nothing_parses_detail():
     for name, line in all_code():
         assert not re.search(r"detail\.(startswith|split|find|index)", line), (name, line)
         assert not re.search(r"(startswith|re\.\w+)\(.*\bdetail\b", line), (name, line)
+
+
+# ───────────────────────── #1944 S2: the hos-cron gate (TD 9.2, S2-ST1..ST10) ─────────────────────────
+
+HOS_CRON = ROOT / "bin" / "hos-cron"
+GATE_BEGIN = "# ── Usage-threshold pause gate (#1944, ADR-1944 AD-7/A2-4) ──────────"
+GATE_SENTINEL_LINE = "# HOS-USAGE-PAUSE-GATE schema=1"
+GATE_END = "# ── end usage-threshold pause gate (#1944) ──"
+BREAKER_BLOCK_SHA256 = (
+    "aacabf73001af2eb01231ae786e08a9819cd15651c8f4e98fbbc09ffd130044e"  # pragma: allowlist secret
+)
+
+
+def gate_block() -> str:
+    text = HOS_CRON.read_text(encoding="utf-8")
+    start = text.index(GATE_BEGIN)
+    return text[start : text.index(GATE_END) + len(GATE_END)]
+
+
+def gate_code_lines() -> list:
+    return [ln for ln in gate_block().splitlines() if not ln.strip().startswith("#")]
+
+
+def section(path: Path, heading: str, stop: str = "") -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(heading)
+    return text[start : text.index(stop, start + len(heading))] if stop else text[start:]
+
+
+def test_s2_st1_gate_block_clean():
+    """No state, network, suspend, metrics or file-write token anywhere in the block."""
+    block = gate_block()
+    for plain in ("poll_", ".prom", "last-claude-output", "HOS_CRON_MAX_SECONDS"):
+        assert plain not in block, plain
+    # the /usage command itself; the library path `lib/usage_pause.py` legitimately contains it
+    assert not re.search(r"/usage(?![A-Za-z0-9_])", block)
+    for word in (
+        "suspend",
+        "node_exporter",
+        "ssh",
+        "gh",
+        "curl",
+        "github",
+        "mkdir",
+        "touch",
+        "rm",
+        "mv",
+        "cp",
+    ):
+        assert not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(word), block), word
+    assert ">" not in block, "the block redirects nothing into a file"
+
+
+def test_s2_st2_gate_placement():
+    text = HOS_CRON.read_text(encoding="utf-8")
+    begin = text.index(GATE_BEGIN)
+    audit_def = text.index("_audit() {")
+    assert text.index("\n}\n", audit_def) < begin
+    for later in (
+        "# ── Audit log sync",
+        'get_app_token.sh" --app',
+        "_CLAUDE_AUTH_ENV=",
+        "\n_pre_jitter_deps_check\n",
+        "wakeup signal received",
+    ):
+        assert text.index(later) > begin, later
+    for earlier in ('trap \'rm -rf "$_LOCK_DIR"', "HOS_CYCLE_ID=", "_HOS_DIR="):
+        assert text.index(earlier) < begin, earlier
+
+
+def test_s2_st3_reactive_breaker_code_unchanged():
+    text = HOS_CRON.read_text(encoding="utf-8")
+    start = text.index("# ── DISABLED 2026-09-01")
+    block = text[start : text.index("# ── Post-cycle bookkeeping")]
+    assert all(ln.startswith("#") or not ln.strip() for ln in block.splitlines())
+    assert hashlib.sha256(block.encode("utf-8")).hexdigest() == BREAKER_BLOCK_SHA256
+    cron_tests = (ROOT / "tests" / "automation" / "test_hos_cron.py").read_text(encoding="utf-8")
+    klass = cron_tests.index("class TestUsageLimitBreaker")
+    between = cron_tests[cron_tests.rindex("@pytest.mark.skip(", 0, klass) : klass]
+    assert between.count("@pytest.mark") == 1, "TestUsageLimitBreaker stays skipped"
+
+
+def test_s2_st4_check_invoked_once():
+    block = gate_block()
+    assert len(re.findall(r'usage_pause\.py" check ', block)) == 1
+    assert HOS_CRON.read_text(encoding="utf-8").count("usage_pause.py") == 1
+
+
+def test_s2_st5_up_bound_expansions_set_u_safe_and_named_values():
+    block = gate_block()
+    safe = '${_UP_BOUND[@]+"${_UP_BOUND[@]}"}'
+    assert block.count(safe) == 1
+    assert "_UP_BOUND[@]" not in block.replace(safe, "")
+    assert "_UP_BOUND[*]" not in block
+    code = gate_code_lines()
+    assert code[0].startswith("_UP_CHECK_TIMEOUT_S=") and code[1].startswith(
+        "_UP_CHECK_KILL_AFTER_S="
+    )
+    assert block.count("_UP_CHECK_TIMEOUT_S=") == 1 and block.count("_UP_CHECK_KILL_AFTER_S=") == 1
+    # no other numeric literal: drop the two named values, the regex line, comments and strings
+    for line in code[2:]:
+        if line.startswith("_UP_VERDICT_RE="):
+            continue
+        bare = re.sub(r'"[^"]*"', '""', line.split(" # ")[0])
+        for number in re.findall(r"(?<![A-Za-z_$0-9])[0-9]+(?![A-Za-z_0-9])", bare):
+            assert number in ("0", "1"), (number, line)
+
+
+def test_s2_st6_gate_never_reads_max_seconds():
+    assert "HOS_CRON_MAX_SECONDS" not in gate_block()
+    assert "HOS_CRON_MAX_SECONDS" not in LIB.read_text(encoding="utf-8")
+
+
+def test_s2_st7_sentinel_unique_and_second_line():
+    block = gate_block().splitlines()
+    assert block[0] == GATE_BEGIN and block[1] == GATE_SENTINEL_LINE
+    text = HOS_CRON.read_text(encoding="utf-8")
+    for anchor in (GATE_BEGIN, GATE_END):
+        assert text.count(anchor) == 1, anchor
+    hits = []
+    for path in sorted((ROOT / "bin").rglob("*")):
+        if path.is_file() and not path.name.endswith(".pyc"):
+            body = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            hits += [path.name for ln in body if ln.rstrip() == GATE_SENTINEL_LINE]
+    assert hits == ["hos-cron"]
+    ns = {}
+    exec(compile(LIB.read_text(), str(LIB), "exec"), ns)
+    assert ns["GATE_SENTINEL"] == GATE_SENTINEL_LINE
+
+
+def test_s2_st8_check_never_reads_poll_keys():
+    ns = {}
+    exec(compile(LIB.read_text(), str(LIB), "exec"), ns)
+    assert not any(key.startswith("poll_") for key in ns["CHECK_READ_KEYS"])
+    tree = ast.parse(LIB.read_text())
+    wanted = {"evaluate_cycle", "_evaluate", "_model_entries", "gate_verdict", "_cmd_check"}
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            found.add(node.name)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    assert not sub.value.startswith("poll_"), (node.name, sub.value)
+    assert found == wanted
+
+
+H1_SENTENCE = "fail_mode=open without a running poller means no quota protection"
+
+
+def test_s2_st9_upgrade_checklist_and_release_note_present():
+    checklist = section(
+        ROOT / "docs" / "UPGRADE-PR-REVIEW-CHECKLIST.md", "## H. Usage-pause gate (#1944)", "\n---"
+    )
+    notes = section(ROOT / "docs" / "releases" / "v0.7.0.md", "## Upgrade notes")
+    for text in (checklist, notes):
+        assert H1_SENTENCE in text
+        assert "cycle-usage-unchecked" in text
+        assert "docs/CRON-SETUP.md" in text and "--check" in text
+        assert "API" in text
+        assert re.search(r"stops? (all )?autonomous work", text)
+    assert checklist.count("- [ ]") == 4 and "item 8" in checklist and "item 8" in notes
+
+
+def test_s2_st10_runbook_content():
+    runbook = ROOT / "docs" / "CRON-SETUP.md"
+    note = section(runbook, "### 2a.0 ", "### 2a.1 ")
+    failopen = section(runbook, "### 2a.9 ", "### 2a.10 ")
+    for text in (note, failopen):
+        assert H1_SENTENCE in text and "cycle-usage-unchecked" in text
+    assert "safe **only once alerting is live**" in failopen
+    whole = runbook.read_text(encoding="utf-8")
+    assert "item 8 must be green after every upgrade" in whole
+    assert "single place the poller's install path is defined" in whole
+    assert "A paused cycle never pushes audit records" in " ".join(whole.split())

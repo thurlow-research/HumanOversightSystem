@@ -73,12 +73,24 @@ logs a clear "refresh the token" hint; re-run `claude setup-token`.
 
 ## 2a. Usage-pause poller (SSH loopback)
 
-Setup for the proactive usage pause (#1944). One poller per host. The cycle-start
-gate that consumes its reading ships in a later step; until it is installed, this
-poller only records readings. Later steps add sections 2a.0, 2a.8 and 2a.11 and
-`--check` item 9; they are absent here, so the numbering has gaps. Work through
-2a.1a to 2a.7 in order: `--check` ends `RESULT: FAIL` until every step is done, and
-that is expected part-way through.
+Setup for the proactive usage pause (#1944). One poller per host, plus the
+cycle-start gate in `bin/hos-cron` that consumes its reading. A later step adds
+sections 2a.8 and 2a.11 and `--check` item 9; they are absent here, so the
+numbering has gaps. Read 2a.0 first. Then work through 2a.1a to 2a.7 in order:
+`--check` ends `RESULT: FAIL` until every step is done, and that is expected
+part-way through.
+
+### 2a.0 Upgrade note (read this before upgrading any host)
+
+A release containing the usage-pause gate pauses every worker and overseer cycle
+on this host (fail-closed, `[PAUSED-USAGE] reading_missing`, or
+`poller_not_installed` when there is no reading, no settings file and no key) until
+the poller below is set up and `--check` is green, or `fail_mode=open` is set. No
+issue is filed and there is no other off switch.
+
+**fail_mode=open without a running poller means no quota protection**, and each such
+cycle writes one `cycle-usage-unchecked` audit event. A consumer billed by API key has
+no subscription `/usage` to read, so `fail_mode=open` is its only route.
 
 ### 2a.1 What it is
 
@@ -191,7 +203,7 @@ host.** Item 10 is informational: it shows whether the current read would pause
 under the current settings. A failing item 7 with `ssh_failed` names the earlier item (1 to 3) that likely caused it. Item 11 shows the reading the cron-fired poller has
 actually written (age, outcome, reason, `consecutive_failures`) and FAILs when the
 crontab check passed but there is no reading, or the reading is older than
-`staleness_seconds`. Items 6a and 6b check that `claude` and `timeout` are executable. Item 12 prints first and checks the state directory exists, is writable and is
+`staleness_seconds`. Items 6a and 6b check that `claude` and `timeout` are executable, and that the `timeout_bin` file is named `timeout`. Item 12 prints first and checks the state directory exists, is writable and is
 mode 0700. `--capture-fixture` refuses a target whose parent directory is not yours
 or is group- or world-writable.
 
@@ -200,6 +212,8 @@ or is group- or world-writable.
 `fail_mode=open` is safe **only once alerting is live** (`contrib/monitoring/`,
 AC-43 and AC-44 recorded). On faberix it is forbidden until the live-delivery
 record exists. fail_mode=open without a running poller means no quota protection.
+Every cycle that runs this way writes one `cycle-usage-unchecked` audit event, so the
+gap is visible in the audit trail.
 
 ### 2a.10 Reading the state
 
@@ -207,7 +221,17 @@ record exists. fail_mode=open without a running poller means no quota protection
 - `cat ~/.hos/usage-pause/last-raw`: the latest raw output, for parse-failure debugging.
 - `cat ~/.hos/usage-pause/poll.last.log`: the last poll's output.
 
-No GitHub issue is ever filed by this feature.
+- `grep -E 'PAUSED-USAGE|USAGE-OK|USAGE-UNCHECKED' /tmp/hos-<role>-<project>.log`: exactly one
+  such line per gated cycle (`[PAUSED-USAGE] <reason>`, `[USAGE-OK] <summary>` or
+  `[USAGE-UNCHECKED] fail_mode=open <reason>`).
+- The audit trail holds one `cycle-usage-paused` record per paused cycle and, under
+  `fail_mode=open`, one `cycle-usage-unchecked` record per cycle that ran without a
+  usable reading.
+
+No GitHub issue is ever filed by this feature. A paused cycle never pushes audit
+records: they stay in the clone's `audit/log/` and are pushed by the first running
+cycle after the pause ends. During a long pause (for example, waiting for the weekly
+reset) the cron log is the up-to-date record; the audit branch catches up on resume.
 
 **Reading the keys.**
 - `consecutive_failures`: failed polls in a row; `0` after a success.
@@ -418,6 +442,10 @@ Every one of these is a failure we have actually hit:
 | `IDENTITY GUARD FAILED` | GitHub App auth env not propagating | Confirm `<config_dir>/apps.env` exists and `HOS_CONFIG_DIR` resolves (registry step 3). |
 | `claude TIMED OUT after Ns` | session exceeded the wall-clock cap | Expected safety bound. Raise `HOS_CRON_MAX_SECONDS` if legitimate work needs longer. |
 | `FATAL: missing …/claude-auth.env` | token file absent | Step 2. |
+| `[PAUSED-USAGE] poller_not_installed`, `reading_missing` or `reading_stale` | no reading, or the poller stopped | `bin/hos-usage-poll --check`, `crontab -l`, `cat ~/.hos/usage-pause/poll.last.log` (section 2a). |
+| `[PAUSED-USAGE] settings_invalid:<key>` | `~/.config/hos/usage-pause.conf` is invalid | Fix the named key; every cycle pauses until you do, whatever `fail_mode` says. |
+| `[PAUSED-USAGE] check_error (rc=N; fail_mode ignored)` | the gate's helper failed or is missing | Run `python3 <bin>/lib/usage_pause.py check --state-dir ~/.hos` by hand; check that `lib/usage_pause.py` sits beside the scheduled `hos-cron`. |
+| `[PAUSED-USAGE] read_failed:envelope_invalid` | the poller's read returned no JSON envelope | `cat ~/.hos/usage-pause/last-raw`; check the forced command (`--check` item 2). |
 
 **Debugging cron-only failures** ("works in terminal, not in cron"): it is almost
 always the thin environment. Temporarily add a one-shot cron line to capture cron's

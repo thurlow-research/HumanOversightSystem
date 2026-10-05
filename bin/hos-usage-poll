@@ -20,6 +20,8 @@
 # 1 any FAIL, 64 usage error.
 
 set -uo pipefail
+# Everything this script creates (state directories, temp files) is private to the operator.
+umask 077
 
 # P1. Environment: pinned PATH exactly as bin/hos-cron pins it; nothing is removed.
 if [[ -z "${HOME:-}" ]]; then
@@ -137,14 +139,14 @@ fi
 # has no PID. A stale lock is reclaimed by an atomic rename, so only one poller wins.
 _DIAG=""
 _lock_age() {
-  local _m
-  _m="$(stat -c %Y "$_LOCK" 2>/dev/null || stat -f %m "$_LOCK" 2>/dev/null || echo 0)"
+  local _d="${1:-$_LOCK}" _m
+  _m="$(stat -c %Y "$_d" 2>/dev/null || stat -f %m "$_d" 2>/dev/null || echo 0)"
   echo $(( $(date +%s) - _m ))
 }
 _lock_is_stale() {
-  local _pid _age
-  _pid="$(cat "$_LOCK/pid" 2>/dev/null)"
-  _age="$(_lock_age)"
+  local _d="${1:-$_LOCK}" _pid _age
+  _pid="$(cat "$_d/pid" 2>/dev/null)"
+  _age="$(_lock_age "$_d")"
   if [[ "$_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$_pid" 2>/dev/null; then
     return 0
   fi
@@ -158,6 +160,15 @@ if ! mkdir "$_LOCK" 2>/dev/null; then
     exit 0
   fi
   if mv "$_LOCK" "$_LOCK.stale.$$" 2>/dev/null; then
+    # The staleness test above and the rename are not atomic: another poller may have reclaimed
+    # the lock and taken a fresh one in between, and the rename then moved a live lock. Test the
+    # moved directory itself before treating the reclaim as won; if it is live, put it back.
+    if ! _lock_is_stale "$_LOCK.stale.$$"; then
+      _log "the lock moved aside is live (pid $(cat "$_LOCK.stale.$$/pid" 2>/dev/null), age $(_lock_age "$_LOCK.stale.$$")s) — restoring it and exiting; the reading is unchanged" >&2
+      if [[ -e "$_LOCK" ]]; then rm -rf "$_LOCK.stale.$$"; else mv "$_LOCK.stale.$$" "$_LOCK" 2>/dev/null || rm -rf "$_LOCK.stale.$$"; fi
+      rm -f "$_PYERR_TMP"
+      exit 0
+    fi
     rm -rf "$_LOCK.stale.$$"
   else
     _log "another poll reclaimed the stale lock first — exiting; the reading is unchanged" >&2

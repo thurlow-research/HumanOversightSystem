@@ -8,12 +8,13 @@
 #   hos-cron --role worker|overseer --project <name> [--max-seconds <N>]
 #
 # Project registry: ~/.config/hos/projects.conf
-#   hos_config_dir=$HOME/Code/HOS/.config/hos
-#   hos_worker_root=$HOME/Code/HOS/Worker
-#   hos_overseer_root=$HOME/Code/HOS/Overseer
-#   cps_config_dir=$HOME/Code/CPS/.config/hos
-#   cps_worker_root=$HOME/Code/CPS/Main
-#   cps_overseer_root=$HOME/Code/CPS/Main
+# Values are read literally (no $HOME or ~ expansion); use absolute paths.
+#   hos_config_dir=/path/to/hos/.config/hos
+#   hos_worker_root=/path/to/hos/Worker
+#   hos_overseer_root=/path/to/hos/Overseer
+#   cps_config_dir=/path/to/cps/.config/hos
+#   cps_worker_root=/path/to/cps/Main
+#   cps_overseer_root=/path/to/cps/Main
 #   cps_baseline_on_red=halt     # optional (#1496); default "repair" — see below
 #   cps_max_seconds=3600         # optional (#1434); default 1800 — see below
 #   cps_worktree_hygiene=preserve  # optional (#1415); default "off" — see below
@@ -112,6 +113,11 @@
 # Crontab example (the wrapper pins its own PATH, so no PATH= prefix is needed):
 #   1,6,11,...  * * * *  /path/to/hos-cron --role worker  --project hos >> /tmp/hos-worker-hos.log 2>&1
 #   4,9,14,...  * * * *  /path/to/hos-cron --role overseer --project hos >> /tmp/hos-overseer-hos.log 2>&1
+#
+# Usage-pause gate (#1944): at cycle start, before any network call, every cycle (both
+# roles, all projects) pauses when the reading written by bin/hos-usage-poll is at or over
+# a threshold, missing, stale or failed. It keeps no state and fails closed; the poller
+# must be set up first: docs/CRON-SETUP.md section 2a.
 
 set -euo pipefail
 
@@ -363,6 +369,73 @@ _audit() {
   local event="$1"; shift
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
+
+# ── Usage-threshold pause gate (#1944, ADR-1944 AD-7/A2-4) ──────────
+# HOS-USAGE-PAUSE-GATE schema=1
+_UP_CHECK_TIMEOUT_S=60      # wall-clock cap on the verdict helper (a time bound, not a usage threshold)
+_UP_CHECK_KILL_AFTER_S=5    # grace after that cap before the helper is killed outright
+# One global pause: both roles, every project. The gate keeps no state. It decides only from
+# the reading file and the current settings, through the library's check command. It makes no
+# network call and starts no Claude process, so a paused cycle costs milliseconds and leaves
+# the wakeup markers for the next running cycle. Unsure, or the helper failed: pause.
+_UP_VERDICT_RE='^USAGE_PAUSE v=2 decision=(run|pause) class=(ok|limit|read_failed|reading_unusable|settings_invalid|failopen) fail_mode=(closed|open) settings=(valid|defaults|invalid:[a-z0-9_]{1,40}) session_pct=([0-9]+|-) weekly_all_pct=([0-9]+|-) reading_age_s=(-?[0-9]+|-) reason=([ -~]{1,200})$'
+_UP_BOUND=()
+if [[ -n "$(command -v timeout)" ]]; then
+  _UP_BOUND=(timeout --kill-after="$_UP_CHECK_KILL_AFTER_S" "$_UP_CHECK_TIMEOUT_S")
+elif [[ -n "$(command -v gtimeout)" ]]; then
+  _UP_BOUND=(gtimeout --kill-after="$_UP_CHECK_KILL_AFTER_S" "$_UP_CHECK_TIMEOUT_S")
+fi
+
+# Match the verdict under the C locale, split it into _UP_* fields, and reject a decision and
+# class that contradict each other. Returns nonzero when the text is not a usable verdict.
+_up_parse_verdict() {
+  local LC_ALL=C
+  local _up_line="$1"
+  [[ "$_up_line" =~ $_UP_VERDICT_RE ]] || return 1
+  IFS=' ' read -r _UP_SKIP_NAME _UP_SKIP_VERSION _UP_DECISION _UP_CLASS _UP_FAIL_MODE _UP_SETTINGS _UP_SESSION _UP_WEEKLY _UP_AGE _UP_REASON <<< "$_up_line"
+  _UP_DECISION="${_UP_DECISION#decision=}"
+  _UP_CLASS="${_UP_CLASS#class=}"
+  _UP_FAIL_MODE="${_UP_FAIL_MODE#fail_mode=}"
+  _UP_SETTINGS="${_UP_SETTINGS#settings=}"
+  _UP_SESSION="${_UP_SESSION#session_pct=}"
+  _UP_WEEKLY="${_UP_WEEKLY#weekly_all_pct=}"
+  _UP_AGE="${_UP_AGE#reading_age_s=}"
+  _UP_REASON="${_UP_REASON#reason=}"
+  case "$_UP_DECISION/$_UP_CLASS" in
+    run/ok|run/failopen|pause/limit|pause/read_failed|pause/reading_unusable|pause/settings_invalid) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_UP_LINE=""
+if _UP_LINE="$(${_UP_BOUND[@]+"${_UP_BOUND[@]}"} python3 "$_HOS_CRON_DIR/lib/usage_pause.py" check --state-dir "$_HOS_DIR")"; then
+  _UP_RC=0
+else
+  _UP_RC=$?
+fi
+if [[ $_UP_RC -ne 0 ]] || ! _up_parse_verdict "$_UP_LINE"; then
+  # A missing interpreter or library, a crash, a timeout or garbled output all land here.
+  # The pause stands whatever fail_mode says.
+  _UP_DECISION="pause"; _UP_CLASS="check_error"; _UP_REASON="check_error"
+  _UP_FAIL_MODE="-"; _UP_SETTINGS="-"; _UP_SESSION="-"; _UP_WEEKLY="-"; _UP_AGE="-"
+fi
+
+# Exactly one log line per gated cycle.
+case "$_UP_DECISION/$_UP_CLASS" in
+  pause/check_error)      echo "$LOG_PREFIX [PAUSED-USAGE] check_error (rc=$_UP_RC; fail_mode ignored)" ;;
+  pause/settings_invalid) echo "$LOG_PREFIX [PAUSED-USAGE] $_UP_REASON (fail_mode ignored)" ;;
+  pause/*)                echo "$LOG_PREFIX [PAUSED-USAGE] $_UP_REASON" ;;
+  run/failopen)           echo "$LOG_PREFIX [USAGE-UNCHECKED] fail_mode=open $_UP_REASON" ;;
+  *)                      echo "$LOG_PREFIX [USAGE-OK] $_UP_REASON" ;;
+esac
+
+if [[ "$_UP_DECISION" == "pause" ]]; then
+  _audit cycle-usage-paused "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" "reason=$_UP_REASON" "session_pct=$_UP_SESSION" "weekly_all_pct=$_UP_WEEKLY" "reading_age_s=$_UP_AGE" "fail_mode=$_UP_FAIL_MODE" "settings=$_UP_SETTINGS"
+  exit 0   # the EXIT trap frees the overlap lock; no last-run stamp, no wakeup consume, no audit sync
+elif [[ "$_UP_CLASS" == "failopen" ]]; then
+  _audit cycle-usage-unchecked "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" "reason=$_UP_REASON" "session_pct=$_UP_SESSION" "weekly_all_pct=$_UP_WEEKLY" "reading_age_s=$_UP_AGE" "fail_mode=$_UP_FAIL_MODE" "settings=$_UP_SETTINGS"
+fi
+# ── end usage-threshold pause gate (#1944) ──
 
 # ── Audit log sync (#861, updated #1303) ──────────────────────────────────────
 # Push per-entry audit records under audit/log/**/*.json (write-once,
