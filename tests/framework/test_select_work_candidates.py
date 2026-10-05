@@ -284,7 +284,7 @@ class TestTrustAndAuthorization:
     ):
         """The core #1539 fix (VF-3's exact shape)."""
         stub.issue_pages[1] = [
-            _issue(1539, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot")
+            _issue(1539, "priority:critical", user="outside-contributor", user_type="User")
         ]
         stub.events_pages[1539] = {1: [_labeled_event("hos-worker-hos[bot]", actor_type="Bot")]}
         rc, out, err = run_gate(capsys)
@@ -294,7 +294,7 @@ class TestTrustAndAuthorization:
     def test_untrusted_author_with_codeowner_applied_label_is_a_candidate(
         self, gate_repo, stub, capsys
     ):
-        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1643, user="outside-contributor", user_type="User")]
         stub.events_pages[1643] = {1: [_labeled_event("ScottThurlow")]}
         rc, out, err = run_gate(capsys)
         assert _numbers(out) == [1643]
@@ -305,7 +305,7 @@ class TestTrustAndAuthorization:
     ):
         """AR-7: a `milestoned` event, even by a verified CODEOWNER, never
         authorizes. The gate-level twin of test_milestoned_event_never_authorizes."""
-        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1643, user="outside-contributor", user_type="User")]
         stub.events_pages[1643] = {
             1: [{"event": "milestoned", "actor": {"login": "ScottThurlow", "type": "User"}}]
         }
@@ -313,16 +313,23 @@ class TestTrustAndAuthorization:
         assert out == []
 
     def test_no_fixture_produces_via_milestoned(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1643, user="outside-contributor", user_type="User")]
         stub.events_pages[1643] = {1: [_labeled_event("ScottThurlow")]}
         rc, out, err = run_gate(capsys)
         assert not any("via=milestoned" in ln for ln in err)
 
-    def test_human_proxy_bot_authored_issue_is_gated_without_marker(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1539, user="scottthurlow-claude[bot]", user_type="Bot")]
-        stub.events_pages[1539] = {1: []}
+    @pytest.mark.parametrize(
+        "app", ["hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"]
+    )
+    def test_hos_app_authored_issue_is_selectable_without_marker(
+        self, gate_repo, stub, capsys, app
+    ):
+        """AMENDMENT-5 AM-39: App authorship alone is trust; no marker and no
+        events query needed."""
+        stub.issue_pages[1] = [_issue(1539, user=app, user_type="Bot")]
         rc, out, _ = run_gate(capsys)
-        assert out == []
+        assert _numbers(out) == [1539]
+        assert not any("/events" in c for c in stub.calls)
 
     def test_human_proxy_bot_labelling_does_not_authorize(self, gate_repo, stub, capsys):
         """AD-6's named asymmetry: the human-proxy App applied needs-ai on an
@@ -334,10 +341,13 @@ class TestTrustAndAuthorization:
         rc, out, _ = run_gate(capsys)
         assert out == []
 
-    def test_worker_self_labelled_worker_authored_issue_is_rejected(self, gate_repo, stub, capsys):
-        """#1678's shape."""
+    def test_worker_self_labelled_outsider_authored_issue_is_rejected(
+        self, gate_repo, stub, capsys
+    ):
+        """#1678's shape, with an author outside the trusted set (a
+        worker-authored issue is trusted by identity since AMENDMENT-5)."""
         stub.issue_pages[1] = [
-            _issue(1678, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot")
+            _issue(1678, "priority:critical", user="outside-contributor", user_type="User")
         ]
         stub.events_pages[1678] = {1: [_labeled_event("hos-worker-hos[bot]", actor_type="Bot")]}
         rc, out, _ = run_gate(capsys)
@@ -374,11 +384,16 @@ class TestTrustAndAuthorization:
         assert _numbers(out) == [2]
         assert not any("/events" in c for c in stub.calls)
 
-    def test_copilot_bot_authored_issue_is_gated(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(3, user="copilot[bot]", user_type="Bot")]
+    @pytest.mark.parametrize("login", ["copilot[bot]", "foo[bot]"])
+    def test_non_hos_bot_authored_issue_is_gated(self, gate_repo, stub, capsys, login):
+        """Trust is keyed on the three HOS App logins, never on type == "Bot":
+        a Bot-typed author outside those logins, with no CODEOWNER-applied
+        label, is gated."""
+        stub.issue_pages[1] = [_issue(3, user=login, user_type="Bot")]
         stub.events_pages[3] = {1: []}
-        rc, out, _ = run_gate(capsys)
+        rc, out, err = run_gate(capsys)
         assert out == []
+        assert "gated=1" in " ".join(err)
 
     def test_issue_body_claiming_codeowner_identity_is_gated(self, gate_repo, stub, capsys):
         record = _issue(4, user="random-stranger", user_type="User")
@@ -408,7 +423,7 @@ class TestTrustAndAuthorization:
         a bounce). `verify_codeowner_actor` treats a bot actor as `continue`,
         not `return None` -- a bot's later event does not erase an earlier
         human CODEOWNER's authorizing act (residual R-3)."""
-        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1643, user="outside-contributor", user_type="User")]
         stub.events_pages[1643] = {
             1: [
                 _labeled_event("ScottThurlow"),
@@ -435,7 +450,7 @@ class TestPrefixCorrectness:
             num = 100 + i
             if i == 37:
                 records.append(
-                    _issue(num, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot")
+                    _issue(num, "priority:critical", user="outside-contributor", user_type="User")
                 )
             else:
                 records.append(_issue(num))
@@ -459,7 +474,7 @@ class TestPrefixCorrectness:
         CODEOWNER-authorized records get the highest numbers (walked first,
         reaching the default --max-candidates 5 stop before the walk gets
         anywhere near the trusted record)."""
-        records = [_issue(100 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(29)]
+        records = [_issue(100 + i, user="outside-contributor", user_type="User") for i in range(29)]
         for i in range(24, 29):  # numbers 124..128 — walked FIRST (highest)
             stub.events_pages[100 + i] = {1: [_labeled_event("ScottThurlow")]}
         for i in range(0, 24):  # numbers 100..123 — walked after the stop
@@ -479,7 +494,7 @@ class TestPrefixCorrectness:
     def test_early_exit_stops_at_max_candidates_and_admits_nothing_after(
         self, gate_repo, stub, capsys
     ):
-        records = [_issue(300 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(20)]
+        records = [_issue(300 + i, user="outside-contributor", user_type="User") for i in range(20)]
         for i in range(20):
             stub.events_pages[300 + i] = {1: [_labeled_event("ScottThurlow")]}
         stub.issue_pages[1] = records
@@ -511,7 +526,7 @@ class TestPrefixCorrectness:
         band."""
         numbers = [107, 103, 109, 101, 105]  # deliberately not sorted
         stub.issue_pages[1] = [
-            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+            _issue(n, user="outside-contributor", user_type="User") for n in numbers
         ]
         for n in numbers:
             stub.events_pages[n] = {1: []}  # all gated; only the walk ORDER matters here
@@ -568,7 +583,7 @@ class TestPrefixCorrectness:
         ASCENDING issue number."""
         numbers = [10, 20, 30]
         stub.issue_pages[1] = [
-            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+            _issue(n, user="outside-contributor", user_type="User") for n in numbers
         ]
         for n in numbers:
             stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
@@ -615,7 +630,9 @@ class TestAdmissionOverDeterminations:
         """(i) the emission-order fixture: #10/#20/#30, same rank, all
         authorized."""
         nums = [10, 20, 30]
-        stub.issue_pages[1] = [_issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in nums]
+        stub.issue_pages[1] = [
+            _issue(n, user="outside-contributor", user_type="User") for n in nums
+        ]
         for n in nums:
             stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
         return {10, 20, 30}
@@ -624,9 +641,9 @@ class TestAdmissionOverDeterminations:
         """(ii) a trusted-authored record among untrusted authorized ones --
         the case that broke a log-derived W."""
         stub.issue_pages[1] = [
-            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(10, user="outside-contributor", user_type="User"),
             _issue(20),  # trusted (codeowner-authored), admitted at zero cost
-            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(30, user="outside-contributor", user_type="User"),
         ]
         stub.events_pages[10] = {1: [_labeled_event("ScottThurlow")]}
         stub.events_pages[30] = {1: [_labeled_event("ScottThurlow")]}
@@ -638,7 +655,9 @@ class TestAdmissionOverDeterminations:
         rank, authorized) to meet the minimum of 3. D = {#20, #10, #5};
         #30 is not in D."""
         nums = [5, 10, 20, 30]
-        stub.issue_pages[1] = [_issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in nums]
+        stub.issue_pages[1] = [
+            _issue(n, user="outside-contributor", user_type="User") for n in nums
+        ]
         for n in (5, 10, 20):
             stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
         stub.events_fail_pages[30] = {1}
@@ -650,9 +669,9 @@ class TestAdmissionOverDeterminations:
         qualifying -- revision 8, RP5-1); #20 trusted-authored; #10
         untrusted and authorized on page 1. D = {#30, #20, #10}."""
         stub.issue_pages[1] = [
-            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(30, user="outside-contributor", user_type="User"),
             _issue(20),
-            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(10, user="outside-contributor", user_type="User"),
         ]
         non_matching = {
             "event": "labeled",
@@ -779,7 +798,7 @@ class TestBounds:
         for a genuine bite (see
         `test_budget_clamp_that_bites_is_unevaluated_not_gated_and_stops_the_walk`
         below, which pins the PRESENT case)."""
-        records = [_issue(400 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(5)]
+        records = [_issue(400 + i, user="outside-contributor", user_type="User") for i in range(5)]
         for i in range(5):
             stub.events_pages[400 + i] = {1: []}
         stub.issue_pages[1] = records
@@ -801,7 +820,7 @@ class TestBounds:
         assert rc == 3
 
     def test_api_requests_never_exceeds_the_ceiling(self, gate_repo, stub, capsys):
-        records = [_issue(500 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(10)]
+        records = [_issue(500 + i, user="outside-contributor", user_type="User") for i in range(10)]
         for i in range(10):
             stub.events_pages[500 + i] = {1: []}
         stub.issue_pages[1] = records
@@ -832,7 +851,7 @@ class TestBounds:
         """No state file is written and the second run makes the SAME `gh`
         calls the first did -- FR7/AD-4: every cycle re-derives from live
         state."""
-        stub.issue_pages[1] = [_issue(801, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(801, user="outside-contributor", user_type="User")]
         stub.events_pages[801] = {1: [_labeled_event("ScottThurlow")]}
         rc1, out1, _ = run_gate(capsys)
         calls_1 = list(stub.calls)
@@ -853,7 +872,7 @@ class TestBounds:
         assert created == []
 
     def test_authorization_revoked_between_runs_is_not_carried_over(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(800, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(800, user="outside-contributor", user_type="User")]
         stub.events_pages[800] = {1: [_labeled_event("ScottThurlow")]}
         rc1, out1, _ = run_gate(capsys)
         assert _numbers(out1) == [800]
@@ -888,9 +907,9 @@ class TestBounds:
         for p in range(1, 5):
             stub.issue_pages[p] = [_issue(1000 * p + i) for i in range(100)]
         page5 = [
-            _issue(9001, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
-            _issue(9002, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
-            _issue(9003, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(9001, "priority:critical", user="outside-contributor", user_type="User"),
+            _issue(9002, "priority:critical", user="outside-contributor", user_type="User"),
+            _issue(9003, "priority:critical", user="outside-contributor", user_type="User"),
         ]
         page5 += [_issue(5000 + i) for i in range(97)]
         stub.issue_pages[5] = page5
@@ -972,9 +991,9 @@ class TestCompleteInvariantAndClamp:
         (rank, number DESC) = [#30, #20, #10]. A short list page 1 (3
         records) costs 1 request, leaving exactly 1 for the walk."""
         stub.issue_pages[1] = [
-            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(30, user="outside-contributor", user_type="User"),
             _issue(20),
-            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(10, user="outside-contributor", user_type="User"),
         ]
         stub.events_pages[30] = {
             1: [
@@ -1010,7 +1029,7 @@ class TestCompleteInvariantAndClamp:
         found nothing), not a budget clamp (F14b) — gated, not
         unevaluated, and complete=yes, with the WARN this row requires and
         F14b's does not."""
-        stub.issue_pages[1] = [_issue(41, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(41, user="outside-contributor", user_type="User")]
         non_matching = {
             "event": "labeled",
             "label": {"name": "needs-ai"},
@@ -1039,7 +1058,7 @@ class TestCompleteInvariantAndClamp:
         be admitted: `outcome.state == 'REFUSED'` with `actor is not
         None`, distinct from the clamp-BITES case above (no match found
         before the refusal)."""
-        stub.issue_pages[1] = [_issue(40, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(40, user="outside-contributor", user_type="User")]
         events = [
             {
                 "event": "labeled",
@@ -1064,8 +1083,8 @@ class TestCompleteInvariantAndClamp:
         self, gate_repo, stub, capsys
     ):
         stub.issue_pages[1] = [
-            _issue(1678, "priority:critical", user="hos-worker-hos[bot]", user_type="Bot"),
-            _issue(1600, "priority:medium", user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(1678, "priority:critical", user="outside-contributor", user_type="User"),
+            _issue(1600, "priority:medium", user="outside-contributor", user_type="User"),
         ]
         stub.events_fail_pages[1678] = {1}
         stub.events_pages[1600] = {1: [_labeled_event("ScottThurlow")]}
@@ -1082,9 +1101,9 @@ class TestCompleteInvariantAndClamp:
         is the correct admitted set -- it is `W[:1]` OVER DETERMINATIONS,
         not a violation of prefix-correctness."""
         stub.issue_pages[1] = [
-            _issue(30, user="hos-worker-hos[bot]", user_type="Bot"),
-            _issue(20, user="hos-worker-hos[bot]", user_type="Bot"),
-            _issue(10, user="hos-worker-hos[bot]", user_type="Bot"),
+            _issue(30, user="outside-contributor", user_type="User"),
+            _issue(20, user="outside-contributor", user_type="User"),
+            _issue(10, user="outside-contributor", user_type="User"),
         ]
         stub.events_fail_pages[30] = {1}
         stub.events_pages[20] = {1: [_labeled_event("ScottThurlow")]}
@@ -1099,7 +1118,7 @@ class TestCompleteInvariantAndClamp:
         `query_failed_issues` -- every query-failed issue's WARN line
         printed TWICE per run. Assert a COUNT, not a substring: a single
         quarantined candidate must produce the line exactly once."""
-        stub.issue_pages[1] = [_issue(1678, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1678, user="outside-contributor", user_type="User")]
         stub.events_fail_pages[1678] = {1}
         rc, out, err = run_gate(capsys)
         matches = [
@@ -1115,7 +1134,7 @@ class TestCompleteInvariantAndClamp:
         # --max-candidates clamps to 5 (may only lower): 6 same-rank records,
         # #2003 quarantined, the other 5 all authorized — the walk must reach
         # and admit all 5 despite the failure in the middle.
-        records = [_issue(2000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(6)]
+        records = [_issue(2000 + i, user="outside-contributor", user_type="User") for i in range(6)]
         stub.issue_pages[1] = records
         stub.events_fail_pages[2003] = {1}
         for i in range(6):
@@ -1127,7 +1146,7 @@ class TestCompleteInvariantAndClamp:
         assert rc == 0
 
     def test_every_events_query_failing_yields_exit_3_not_exit_2(self, gate_repo, stub, capsys):
-        records = [_issue(2100 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(5)]
+        records = [_issue(2100 + i, user="outside-contributor", user_type="User") for i in range(5)]
         stub.issue_pages[1] = records
         for i in range(5):
             stub.events_fail_pages[2100 + i] = {1}
@@ -1159,7 +1178,7 @@ class TestCompleteInvariantAndClamp:
 
 class TestVisibilityAndAuthorizationLines:
     def test_all_gated_emits_the_distinct_held_line(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1539, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1539, user="outside-contributor", user_type="User")]
         stub.events_pages[1539] = {1: []}
         rc, out, err = run_gate(capsys)
         joined = " ".join(err)
@@ -1173,7 +1192,9 @@ class TestVisibilityAndAuthorizationLines:
         assert not any("ALL-CANDIDATES-GATED" in ln for ln in err)
 
     def test_held_line_issue_list_is_bounded(self, gate_repo, stub, capsys):
-        records = [_issue(3000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(25)]
+        records = [
+            _issue(3000 + i, user="outside-contributor", user_type="User") for i in range(25)
+        ]
         stub.issue_pages[1] = records
         for i in range(25):
             stub.events_pages[3000 + i] = {1: []}
@@ -1183,7 +1204,7 @@ class TestVisibilityAndAuthorizationLines:
 
     def test_all_gated_exit_follows_the_exit_3_rule(self, gate_repo, stub, capsys):
         # complete=yes case
-        stub.issue_pages[1] = [_issue(1, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1, user="outside-contributor", user_type="User")]
         stub.events_pages[1] = {1: []}
         rc, out, err = run_gate(capsys)
         assert rc == 0
@@ -1191,7 +1212,7 @@ class TestVisibilityAndAuthorizationLines:
         assert not any("INCOMPLETE" in ln for ln in err)
 
         # complete=no case: a fully-gated walk stopped by the ceiling
-        records = [_issue(4000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(5)]
+        records = [_issue(4000 + i, user="outside-contributor", user_type="User") for i in range(5)]
         stub.issue_pages[1] = records
         for i in range(5):
             stub.events_pages[4000 + i] = {1: []}
@@ -1207,7 +1228,7 @@ class TestVisibilityAndAuthorizationLines:
         assert not any("POST" in c for c in stub.calls)
 
     def test_authorized_count_distinguishes_d5_from_d4(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1), _issue(2, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1), _issue(2, user="outside-contributor", user_type="User")]
         stub.events_pages[2] = {1: [_labeled_event("ScottThurlow")]}
         rc, out, err = run_gate(capsys)
         joined = " ".join(err)
@@ -1215,7 +1236,7 @@ class TestVisibilityAndAuthorizationLines:
         assert "authorized=1" in joined
 
     def test_each_d5_authorized_candidate_emits_its_actor(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1643, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1643, user="outside-contributor", user_type="User")]
         stub.events_pages[1643] = {1: [_labeled_event("ScottThurlow")]}
         rc, out, err = run_gate(capsys)
         assert (
@@ -1248,7 +1269,7 @@ class TestVisibilityAndAuthorizationLines:
         summary (the other two preconditions actually happened). Remove
         any one precondition (e.g. #5002 not failing, or a larger
         ceiling) and this test fails rather than passing trivially."""
-        records = [_issue(5001 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(3)]
+        records = [_issue(5001 + i, user="outside-contributor", user_type="User") for i in range(3)]
         stub.issue_pages[1] = records
         stub.events_pages[5003] = {1: []}
         stub.events_fail_pages[5002] = {1}
@@ -1277,7 +1298,9 @@ class TestVisibilityAndAuthorizationLines:
         gated=5/unevaluated=40 counts, because the stub's default (an
         empty, non-matching page) makes an unmocked walked record gated
         anyway; only the exact-call-set assertion catches the mismatch."""
-        records = [_issue(6000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(45)]
+        records = [
+            _issue(6000 + i, user="outside-contributor", user_type="User") for i in range(45)
+        ]
         stub.issue_pages[1] = records
         walked = [6044, 6043, 6042, 6041, 6040]
         for n in walked:
@@ -1311,7 +1334,7 @@ class TestVisibilityAndAuthorizationLines:
 
 class TestSummaryInvariants:
     def test_summary_counts_are_internally_consistent(self, gate_repo, stub, capsys):
-        records = [_issue(7000 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(6)]
+        records = [_issue(7000 + i, user="outside-contributor", user_type="User") for i in range(6)]
         stub.issue_pages[1] = records
         stub.events_pages[7000] = {1: [_labeled_event("ScottThurlow")]}
         stub.events_pages[7001] = {1: []}
@@ -1343,7 +1366,7 @@ class TestSummaryInvariants:
         two stops cannot co-occur with each other, since the walk returns
         as soon as one fires)."""
         records = [
-            _issue(9100 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(1, 7)
+            _issue(9100 + i, user="outside-contributor", user_type="User") for i in range(1, 7)
         ]
         stub.issue_pages[1] = records
         stub.events_fail_pages[9106] = {1}  # highest number -> walked FIRST
@@ -1374,7 +1397,7 @@ class TestStructuralInvariants:
         """AM-21's structural claim, pinned: no fixture can produce both,
         because the stop requires `eligible >= 1` and the block requires
         `eligible == 0`."""
-        records = [_issue(9200 + i, user="hos-worker-hos[bot]", user_type="Bot") for i in range(3)]
+        records = [_issue(9200 + i, user="outside-contributor", user_type="User") for i in range(3)]
         stub.issue_pages[1] = records
         for i in range(3):
             stub.events_pages[9200 + i] = {1: [_labeled_event("ScottThurlow")]}
@@ -1547,7 +1570,7 @@ class TestAntiKnob:
         assert len(out) == 1  # clamps to 1, never 0
 
     def test_label_flag_cannot_widen_trust(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(1, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1, user="outside-contributor", user_type="User")]
         stub.events_pages[1] = {1: []}
         rc, out, err = run_gate(capsys, "--label", "anything")
         assert out == []
@@ -1604,7 +1627,7 @@ class TestAntiKnob:
         wearing a cost-control costume."""
         numbers = list(range(301, 311))  # 10 same-rank records
         stub.issue_pages[1] = [
-            _issue(n, user="hos-worker-hos[bot]", user_type="Bot") for n in numbers
+            _issue(n, user="outside-contributor", user_type="User") for n in numbers
         ]
         for n in numbers:
             stub.events_pages[n] = {1: [_labeled_event("ScottThurlow")]}
@@ -1713,7 +1736,7 @@ class TestC4EveryFetchPinsPerPageLiterally:
             "tier:write  # added-by: ScottThurlow added: 2026-09-01 why: write access implies trust\n"
         )
         stub.collaborator_pages[1] = [{"login": "collab-1", "type": "User", "role_name": "write"}]
-        stub.issue_pages[1] = [_issue(1, user="hos-worker-hos[bot]", user_type="Bot")]
+        stub.issue_pages[1] = [_issue(1, user="outside-contributor", user_type="User")]
         stub.events_pages[1] = {1: [_labeled_event("ScottThurlow")]}
         run_gate(capsys)
         assert stub.calls  # sanity: fetches actually happened
