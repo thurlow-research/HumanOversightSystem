@@ -859,6 +859,25 @@ class TestRequesterVerdict:
         assert verdict.trusted is True
         assert verdict.reason == "trusted-app:hos-cron/baseline-red"
 
+    @pytest.mark.parametrize(
+        "login",
+        ["hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"],
+    )
+    def test_each_hos_app_with_marker_is_trusted_and_enriches_reason(self, login):
+        """AM-39: the marker branch holds for every App, not just the worker."""
+        ts = _trusted_set(
+            apps=frozenset(
+                {"hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"}
+            )
+        )
+        record = {
+            "user": {"login": login, "type": "Bot"},
+            "title": "[BLOCKED] inner-loop tests failing on my-project — diagnose and fix",
+        }
+        assert requester_verdict(record, ts) == RequesterVerdict(
+            True, "trusted-app:hos-cron/baseline-red", "trusted-app", "hos-cron/baseline-red"
+        )
+
     def test_stranger_with_forged_marker_title_is_untrusted(self):
         ts = _trusted_set()
         record = {
