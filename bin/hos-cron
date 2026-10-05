@@ -408,7 +408,7 @@ _up_parse_verdict() {
 }
 
 _UP_LINE=""
-if _UP_LINE="$(${_UP_BOUND[@]+"${_UP_BOUND[@]}"} python3 "$_HOS_CRON_DIR/lib/usage_pause.py" check --state-dir "$_HOS_DIR")"; then
+if _UP_LINE="$(${_UP_BOUND[@]+"${_UP_BOUND[@]}"} python3 -I "$_HOS_CRON_DIR/lib/usage_pause.py" check --state-dir "$_HOS_DIR")"; then
   _UP_RC=0
 else
   _UP_RC=$?

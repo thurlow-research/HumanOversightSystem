@@ -2020,9 +2020,11 @@ def _cmd_check(args: argparse.Namespace) -> int:
     try:
         line = gate_verdict(args.state_dir, time.time())
     except Exception as exc:  # noqa: BLE001 - the gate pauses on any failure here
-        print(
-            "usage_pause check: %s: %s" % (type(exc).__name__, _flatten(str(exc))), file=sys.stderr
+        text = _cap(
+            ascii_fold("usage_pause check: %s: %s" % (type(exc).__name__, _flatten(str(exc)))),
+            REASON_CAP_CHARS,
         )
+        print(text, file=sys.stderr)
         return EXIT_CHECK_ERROR
     print(line)
     return 0

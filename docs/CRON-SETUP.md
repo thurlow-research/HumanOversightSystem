@@ -85,8 +85,13 @@ part-way through.
 A release containing the usage-pause gate pauses every worker and overseer cycle
 on this host (fail-closed, `[PAUSED-USAGE] reading_missing`, or
 `poller_not_installed` when there is no reading, no settings file and no key) until
-the poller below is set up and `--check` is green, or `fail_mode=open` is set. No
-issue is filed and there is no other off switch.
+the poller below is set up and working, or `fail_mode=open` is set. No issue is filed
+and there is no other off switch.
+
+Before the upgrade merges, every `--check` item should pass except item 8, which is
+expected to FAIL ("no usage-pause gate ... upgrade it") while the scheduled `hos-cron`
+is still the old, ungated copy. After the merge and deploy, re-run `--check` and expect
+`RESULT: PASS` with item 8 green.
 
 **fail_mode=open without a running poller means no quota protection**, and each such
 cycle writes one `cycle-usage-unchecked` audit event. A consumer billed by API key has

@@ -129,6 +129,9 @@ def test_test_only_overrides_absent_from_runbook():
         assert name not in text
 
 
+BASENAMES_DECL = 'TIMEOUT_BIN_BASENAMES: FrozenSet[str] = frozenset({"timeout", "gtimeout"})'
+
+
 def test_one_ssh_call_site():
     for line in code_lines(POLLER):
         assert not re.search(r"(^|[\s;&|(])ssh\s", line), line
@@ -150,20 +153,22 @@ def test_one_ssh_call_site():
         '"set timeout_bin to GNU timeout (or gtimeout)",',
     }
     seen_exempt = set()
-    seen_constant = False
+    seen_constant = 0
     for name, line in all_code():
         assert "_TIMEOUT_BIN" not in line, (name, line)
         # C-2: command invocations are banned; only the item-6b basename constant and its two
         # exact FAIL/hint literals (in the library) may name gtimeout.
-        if name == LIB.name and line.startswith("TIMEOUT_BIN_BASENAMES"):
-            seen_constant = True
+        if name == LIB.name and line.strip() == BASENAMES_DECL:
+            seen_constant += 1
         elif name == LIB.name and line.strip() in exempt_lines:
             seen_exempt.add(line.strip())
         else:
             assert "gtimeout" not in line, (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+-", line), (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+[\"$0-9]", line), (name, line)
-    assert seen_constant and seen_exempt == exempt_lines, "an exempted line was removed or changed"
+    assert (
+        seen_constant == 1 and seen_exempt == exempt_lines
+    ), "an exempted line was removed or changed"
 
 
 def test_staleness_range_nonempty_for_every_interval():

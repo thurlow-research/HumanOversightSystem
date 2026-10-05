@@ -5215,6 +5215,31 @@ class TestUsagePauseGate:
         assert "usage_pause check: boom" in r.stderr
         assert not cron.claude_ran() and cron.network_calls() == []
 
+    @pytest.mark.parametrize(
+        "body,rc",
+        [
+            ("print('this is not a verdict')", 0),
+            (
+                "print('USAGE_PAUSE v=2 decision=run class=limit fail_mode=open settings=defaults "
+                "session_pct=1 weekly_all_pct=1 reading_age_s=1 reason=x')",
+                0,
+            ),
+            ("import sys; sys.exit(124)", 124),
+        ],
+        ids=["garbled_stdout", "contradictory_verdict", "exit_124"],
+    )
+    def test_bad_helper_output_pauses_with_check_error(self, cron, role, body, rc):
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading()
+        launcher = cron.copy_launcher(with_lib=False)
+        (launcher.parent / "lib" / "usage_pause.py").write_text(body + "\n")
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and lines[0].endswith(
+            f"[PAUSED-USAGE] check_error (rc={rc}; fail_mode ignored)"
+        ), r.stdout
+        assert not cron.claude_ran() and cron.network_calls() == []
+
     def test_real_launcher_runs_without_timeout_or_gtimeout(self, cron, role, tmp_path):
         """The whole launcher on a PATH with neither timeout nor gtimeout (empty-array path)."""
         pathdir = tmp_path / "notimeout"

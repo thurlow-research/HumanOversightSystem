@@ -265,3 +265,13 @@ def test_comparison_is_greater_or_equal_for_every_limit(world):
         assert fields_of(verdict(world))["reason"] == limit
     write_reading(world.state, session_pct=89, weekly_all_pct=89, weekly_model_fable_pct=89)
     assert fields_of(verdict(world))["decision"] == "run"
+
+
+def test_check_crash_stderr_is_ascii_and_capped(world, monkeypatch, capsys):
+    def boom(*_a, **_k):
+        raise RuntimeError("caf\u00e9 " + "x" * 500)
+
+    monkeypatch.setattr(up, "read_reading", boom)
+    assert up.main(["check", "--state-dir", str(world.state)]) == 70
+    err = capsys.readouterr().err.rstrip("\n")
+    assert err.isascii() and len(err) <= 200 and "caf?" in err
