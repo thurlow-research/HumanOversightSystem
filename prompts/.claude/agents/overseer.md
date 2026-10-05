@@ -51,9 +51,14 @@ edits (HOS source repo only)") — not delegated to `coder`.
    that have not created check runs yet).
 4. **Stall guard** — the issue's "let the next cycle re-check" could defer
    forever if a check never finishes or never reports. After 2 hours the
-   overseer escalates once via `bootstrap/escalate_to_human.sh --reason
-   ci-stalled` (idempotent per identical body), instead of deferring silently.
-5. **Reads** — `gh api` with `{owner}/{repo}` placeholders (static,
+   overseer stops deferring and reviews normally, naming the stalled checks in
+   the executive summary; branch protection still blocks merge until they
+   complete. (Iteration 1 escalated via `escalate_to_human.sh`, but that
+   script refuses PR numbers — code-review MUST_FIX.)
+5. **Already-red carve-out** — if a terminal required check has already
+   failed, proceed so step 4c can bounce immediately rather than after the
+   remaining checks finish.
+6. **Reads** — `gh api` with `{owner}/{repo}` placeholders (static,
    allowlistable). No wrapper exists for check-run reads
    (`bootstrap/query_issues.sh` has no check-runs mode;
    `merge_authority_cli.py` has no required-checks subcommand) — searched
@@ -62,3 +67,6 @@ edits (HOS source repo only)") — not delegated to `coder`.
 ## Refinement iterations
 
 1 — initial authoring.
+2 — code-review round 1: stall guard reworked (above); null `started_at`
+    fallback; protection 404/403 → skip; backslash-free `@tsv` jq; note that
+    deferral cannot cost a human-approval merge.
