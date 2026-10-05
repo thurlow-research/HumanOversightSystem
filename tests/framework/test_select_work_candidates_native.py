@@ -33,7 +33,7 @@ _BLOCKED = {"blocked_by": 1, "blocking": 0, "total_blocked_by": 1, "total_blocki
 _CLOSED_BLOCKER = {"blocked_by": 0, "blocking": 0, "total_blocked_by": 1, "total_blocking": 0}
 _OMIT = object()  # sentinel: drop the summary key entirely
 
-_BOT = {"user": "outside-contributor", "user_type": "User"}
+_OUTSIDER = {"user": "outside-contributor", "user_type": "User"}
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +401,7 @@ class TestContractPreserved:
 
     def test_ex2_excluded_records_are_not_counted_as_gated(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [
-            _issue(90, user=_BOT["user"], user_type=_BOT["user_type"]),
+            _issue(90, user=_OUTSIDER["user"], user_type=_OUTSIDER["user_type"]),
             _issue(91, deps=_BLOCKED),
         ]
         stub.events_pages[90] = {1: []}
@@ -435,8 +435,8 @@ class TestContractPreserved:
         """506 query-failed, 505 gated, 504/503 eligible, then the sufficiency
         stop leaves 502/501 unevaluated; 600 is unreadable, 601 excluded."""
         stub.issue_pages[1] = [
-            _issue(506, user=_BOT["user"], user_type=_BOT["user_type"]),
-            _issue(505, user=_BOT["user"], user_type=_BOT["user_type"]),
+            _issue(506, user=_OUTSIDER["user"], user_type=_OUTSIDER["user_type"]),
+            _issue(505, user=_OUTSIDER["user"], user_type=_OUTSIDER["user_type"]),
             _issue(504),
             _issue(503),
             _issue(502),
@@ -579,8 +579,8 @@ class TestNoIdleSelection:
                     200 + i,
                     "priority:critical",
                     "needs-human",
-                    user=_BOT["user"],
-                    user_type=_BOT["user_type"],
+                    user=_OUTSIDER["user"],
+                    user_type=_OUTSIDER["user_type"],
                 )
                 for i in range(3)
             ],
@@ -589,8 +589,8 @@ class TestNoIdleSelection:
                     210 + i,
                     "priority:critical",
                     deps=_BLOCKED,
-                    user=_BOT["user"],
-                    user_type=_BOT["user_type"],
+                    user=_OUTSIDER["user"],
+                    user_type=_OUTSIDER["user_type"],
                 )
                 for i in range(3)
             ],
@@ -657,14 +657,14 @@ def _f0(stub, *, blocked_5: bool = False, parent_4: bool = False) -> None:
         _issue(
             4,
             subs={"total": 1} if parent_4 else _ZERO_SUBS,
-            user=_BOT["user"],
-            user_type=_BOT["user_type"],
+            user=_OUTSIDER["user"],
+            user_type=_OUTSIDER["user_type"],
         ),
         _issue(
             5,
             deps=_BLOCKED if blocked_5 else _ZERO_DEPS,
-            user=_BOT["user"],
-            user_type=_BOT["user_type"],
+            user=_OUTSIDER["user"],
+            user_type=_OUTSIDER["user_type"],
         ),
     ]
     stub.events_pages[4] = {1: [_labeled_event("ScottThurlow")]}

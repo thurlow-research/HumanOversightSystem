@@ -384,11 +384,16 @@ class TestTrustAndAuthorization:
         assert _numbers(out) == [2]
         assert not any("/events" in c for c in stub.calls)
 
-    def test_copilot_bot_authored_issue_is_gated(self, gate_repo, stub, capsys):
-        stub.issue_pages[1] = [_issue(3, user="copilot[bot]", user_type="Bot")]
+    @pytest.mark.parametrize("login", ["copilot[bot]", "foo[bot]"])
+    def test_non_hos_bot_authored_issue_is_gated(self, gate_repo, stub, capsys, login):
+        """Trust is keyed on the three HOS App logins, never on type == "Bot":
+        a Bot-typed author outside those logins, with no CODEOWNER-applied
+        label, is gated."""
+        stub.issue_pages[1] = [_issue(3, user=login, user_type="Bot")]
         stub.events_pages[3] = {1: []}
-        rc, out, _ = run_gate(capsys)
+        rc, out, err = run_gate(capsys)
         assert out == []
+        assert "gated=1" in " ".join(err)
 
     def test_issue_body_claiming_codeowner_identity_is_gated(self, gate_repo, stub, capsys):
         record = _issue(4, user="random-stranger", user_type="User")
