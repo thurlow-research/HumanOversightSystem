@@ -1701,7 +1701,7 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
             "FAIL",
             "6b",
             "timeout_bin %s: basename is not 'timeout' or 'gtimeout'" % timeout_bin,
-            "point timeout_bin at the GNU timeout binary, then regenerate the authorized_keys line",
+            "set timeout_bin to GNU timeout (or gtimeout)",
         )
     elif timeout_bin and os.access(timeout_bin, os.X_OK):
         report.add("PASS", "6b", "timeout_bin %s is executable" % timeout_bin)

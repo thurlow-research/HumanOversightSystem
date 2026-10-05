@@ -203,7 +203,7 @@ host.** Item 10 is informational: it shows whether the current read would pause
 under the current settings. A failing item 7 with `ssh_failed` names the earlier item (1 to 3) that likely caused it. Item 11 shows the reading the cron-fired poller has
 actually written (age, outcome, reason, `consecutive_failures`) and FAILs when the
 crontab check passed but there is no reading, or the reading is older than
-`staleness_seconds`. Items 6a and 6b check that `claude` and `timeout` are executable, and that the `timeout_bin` file is named `timeout`. Item 12 prints first and checks the state directory exists, is writable and is
+`staleness_seconds`. Items 6a and 6b check that `claude` and `timeout` are executable, and that the `timeout_bin` file's basename is `timeout` or `gtimeout` (otherwise item 6b FAILs). Item 12 prints first and checks the state directory exists, is writable and is
 mode 0700. `--capture-fixture` refuses a target whose parent directory is not yours
 or is group- or world-writable.
 

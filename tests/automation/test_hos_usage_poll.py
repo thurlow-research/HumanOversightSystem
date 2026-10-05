@@ -1174,7 +1174,11 @@ def _swap_mv(rig, live_pid):
         '&& -n "${HOS_TEST_MV_SWAP:-}" ]]; then\n'
         '  rm -rf "$1"; mkdir "$1"; echo "$HOS_TEST_MV_SWAP" > "$1/pid"\n'
         "fi\n"
-        'exec "%s" "$@"\n' % real,
+        '"%s" "$@" || exit $?\n'
+        # the interleaving: a third poller takes the lock right after the rename
+        'if [[ -n "${HOS_TEST_MV_AFTER:-}" && "$2" == *usage-poll.lock.stale.* ]]; then\n'
+        '  mkdir "$1"; echo "$HOS_TEST_MV_AFTER" > "$1/pid"\n'
+        "fi\n" % real,
     )
     return {"HOS_TEST_MV_SWAP": str(live_pid)}
 
@@ -1216,3 +1220,19 @@ def test_poller_creates_state_dirs_private_under_a_loose_umask(rig):
     finally:
         os.umask(previous)
     assert (rig.state / "locks").stat().st_mode & 0o777 == 0o700
+
+
+def test_poll_restore_does_not_nest_when_a_third_poller_takes_the_lock(rig):
+    """The reviewer's interleaving: the lock appears between the rename and the restore."""
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    env = _swap_mv(rig, os.getpid())
+    env["HOS_TEST_MV_AFTER"] = str(os.getppid())
+    r = rig.run(**env)
+    assert r.returncode == 0 and "restoring it and exiting" in r.stderr, r.stderr
+    assert (lock / "pid").read_text().strip() == str(os.getppid()), "the third poller's lock stays"
+    assert sorted(p.name for p in lock.iterdir()) == ["pid"], "nothing nested inside the lock"
+    assert [p.name for p in lock.parent.iterdir()] == ["usage-poll.lock"]
+    assert not (rig.dir / "reading").exists()

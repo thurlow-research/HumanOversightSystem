@@ -165,7 +165,12 @@ if ! mkdir "$_LOCK" 2>/dev/null; then
     # moved directory itself before treating the reclaim as won; if it is live, put it back.
     if ! _lock_is_stale "$_LOCK.stale.$$"; then
       _log "the lock moved aside is live (pid $(cat "$_LOCK.stale.$$/pid" 2>/dev/null), age $(_lock_age "$_LOCK.stale.$$")s) — restoring it and exiting; the reading is unchanged" >&2
-      if [[ -e "$_LOCK" ]]; then rm -rf "$_LOCK.stale.$$"; else mv "$_LOCK.stale.$$" "$_LOCK" 2>/dev/null || rm -rf "$_LOCK.stale.$$"; fi
+      # Put it back with the one atomic primitive: mkdir. If it fails, a third poller holds the
+      # lock now, and a rename would nest the stale copy inside it, so just drop the copy.
+      if mkdir "$_LOCK" 2>/dev/null; then
+        cp "$_LOCK.stale.$$/pid" "$_LOCK/pid" 2>/dev/null
+      fi
+      rm -rf "$_LOCK.stale.$$"
       rm -f "$_PYERR_TMP"
       exit 0
     fi

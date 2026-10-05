@@ -570,12 +570,17 @@ class CronEnv:
         files = sorted((self.repo / "audit" / "log").rglob(f"*-{event}-*.json"))
         return [json.loads(f.read_text()) for f in files]
 
-    def copy_launcher(self, with_lib: bool) -> Path:
+    def copy_launcher(self, with_lib: bool, path_pin: Optional[str] = None) -> Path:
         """A copy of bin/hos-cron (plus git-credentials.sh) in its own dir; the usage library only
         when `with_lib`, so a missing library can be exercised (check_error)."""
         dst = self.repo.parent / "launcher" / "bin"
         (dst / "lib").mkdir(parents=True, exist_ok=True)
-        shutil.copy(HOS_CRON, dst / "hos-cron")
+        text = HOS_CRON.read_text()
+        if path_pin is not None:
+            pin = re.search(r'^export PATH="\$HOME/\.local/bin:.*$', text, re.M)
+            assert pin, "the launcher's PATH pin moved"
+            text = text.replace(pin.group(0), f'export PATH="$HOME/.local/bin:{path_pin}"', 1)
+        (dst / "hos-cron").write_text(text)
         shutil.copy(HOS_CRON.parent / "lib" / "git-credentials.sh", dst / "lib")
         if with_lib:
             shutil.copy(HOS_USAGE_PAUSE_LIB, dst / "lib" / "usage_pause.py")
@@ -5193,3 +5198,33 @@ class TestUsagePauseGate:
         self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
         assert seen.exists(), "the cycle must reach its audit sync"
         assert "cycle-usage-unchecked" in seen.read_text()
+
+    def test_check_helper_exit_70_pauses_with_check_error(self, cron, role):
+        """The real launcher with a helper that exits 70 (the library's own crash code)."""
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading()
+        launcher = cron.copy_launcher(with_lib=False)
+        (launcher.parent / "lib" / "usage_pause.py").write_text(
+            "import sys\nprint('usage_pause check: boom', file=sys.stderr)\nsys.exit(70)\n"
+        )
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and lines[0].endswith(
+            "[PAUSED-USAGE] check_error (rc=70; fail_mode ignored)"
+        ), r.stdout
+        assert "usage_pause check: boom" in r.stderr
+        assert not cron.claude_ran() and cron.network_calls() == []
+
+    def test_real_launcher_runs_without_timeout_or_gtimeout(self, cron, role, tmp_path):
+        """The whole launcher on a PATH with neither timeout nor gtimeout (empty-array path)."""
+        pathdir = tmp_path / "notimeout"
+        pathdir.mkdir()
+        for entry in Path("/usr/bin").iterdir():
+            if entry.name not in ("timeout", "gtimeout"):
+                (pathdir / entry.name).symlink_to(entry)
+        launcher = cron.copy_launcher(with_lib=True, path_pin=str(pathdir))
+        assert shutil.which("timeout", path=f"{cron.bindir}:{pathdir}") is None
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and "[USAGE-OK]" in lines[0], r.stdout + r.stderr
+        assert cron.claude_ran()

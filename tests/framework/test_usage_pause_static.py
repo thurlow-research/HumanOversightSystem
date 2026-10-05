@@ -145,13 +145,25 @@ def test_one_ssh_call_site():
             assert not (
                 isinstance(first, ast.Constant) and first.value in ("timeout", "gtimeout")
             ), node.lineno
+    exempt_lines = {
+        "\"timeout_bin %s: basename is not 'timeout' or 'gtimeout'\" % timeout_bin,",
+        '"set timeout_bin to GNU timeout (or gtimeout)",',
+    }
+    seen_exempt = set()
+    seen_constant = False
     for name, line in all_code():
         assert "_TIMEOUT_BIN" not in line, (name, line)
-        # C-2: command invocations are banned; the item-6b basename set literal and its FAIL text are data, not a call
-        if not (line.startswith("TIMEOUT_BIN_BASENAMES") or "basename is not" in line):
+        # C-2: command invocations are banned; only the item-6b basename constant and its two
+        # exact FAIL/hint literals (in the library) may name gtimeout.
+        if name == LIB.name and line.startswith("TIMEOUT_BIN_BASENAMES"):
+            seen_constant = True
+        elif name == LIB.name and line.strip() in exempt_lines:
+            seen_exempt.add(line.strip())
+        else:
             assert "gtimeout" not in line, (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+-", line), (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+[\"$0-9]", line), (name, line)
+    assert seen_constant and seen_exempt == exempt_lines, "an exempted line was removed or changed"
 
 
 def test_staleness_range_nonempty_for_every_interval():

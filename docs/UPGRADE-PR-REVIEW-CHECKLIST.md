@@ -107,7 +107,7 @@ additions, are the real review surface.
 - [ ] **The poller is set up and `--check` is green before this upgrade PR merges.** Follow `docs/CRON-SETUP.md` section 2a, then run `bin/hos-usage-poll --check` (expect `RESULT: PASS`). Without a reading, every cycle pauses fail-closed (`[PAUSED-USAGE] reading_missing`, or `poller_not_installed` when no reading, settings file or key exists). No issue is filed and there is no other off switch.
 - [ ] **After merge, `--check` item 8 is green for every scheduled `hos-cron` copy.** The gate is per copy: the Worker clone's `bin/hos-cron` and the Overseer clone's are different files, and a copy without the gate keeps running unpaused. Item 8 also confirms `lib/usage_pause.py` sits beside each copy.
 - [ ] **API-key-billed consumers: `fail_mode=open` is the only route, and it means no usage protection.** fail_mode=open without a running poller means no quota protection. Every cycle that runs this way writes one `cycle-usage-unchecked` audit event.
-- [ ] **`~/.config/hos/usage-pause.conf` is valid, or absent.** An invalid value, unknown key or duplicate key pauses every cycle (`[PAUSED-USAGE] settings_invalid:<key>`) whatever `fail_mode` says.
+- [ ] **`~/.config/hos/usage-pause.conf` is valid, or absent.** An invalid value, unknown key or duplicate key pauses every cycle (`[PAUSED-USAGE] settings_invalid:<key>`) whatever `fail_mode` says. If `timeout_bin` is set, its basename must be `timeout` or `gtimeout`, otherwise `--check` item 6b FAILs.
 
 ---
 
