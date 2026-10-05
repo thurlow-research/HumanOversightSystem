@@ -167,7 +167,7 @@ STATE_DIR_MODE = 0o700
 FILE_MODE = 0o600
 CRON_SCHEDULE_FIELDS = 5
 KEY_FIELD_COUNT = 2
-TIMEOUT_BIN_BASENAME = "timeout"
+TIMEOUT_BIN_BASENAMES: FrozenSet[str] = frozenset({"timeout", "gtimeout"})
 
 STDOUT_TMP = "poll.stdout.tmp"
 STDERR_TMP = "poll.stderr.tmp"
@@ -1696,12 +1696,12 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
             "set claude_bin or fix PATH, then regenerate the authorized_keys line",
         )
     timeout_bin = resolve_timeout_bin(settings)
-    if timeout_bin and os.path.basename(timeout_bin) != TIMEOUT_BIN_BASENAME:
+    if timeout_bin and os.path.basename(timeout_bin) not in TIMEOUT_BIN_BASENAMES:
         report.add(
             "FAIL",
             "6b",
-            "timeout_bin %s: basename is not '%s'" % (timeout_bin, TIMEOUT_BIN_BASENAME),
-            "set timeout_bin to a binary named timeout, then regenerate the authorized_keys line",
+            "timeout_bin %s: basename is not 'timeout' or 'gtimeout'" % timeout_bin,
+            "point timeout_bin at the GNU timeout binary, then regenerate the authorized_keys line",
         )
     elif timeout_bin and os.access(timeout_bin, os.X_OK):
         report.add("PASS", "6b", "timeout_bin %s is executable" % timeout_bin)

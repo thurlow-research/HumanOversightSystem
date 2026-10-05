@@ -146,7 +146,10 @@ def test_one_ssh_call_site():
                 isinstance(first, ast.Constant) and first.value in ("timeout", "gtimeout")
             ), node.lineno
     for name, line in all_code():
-        assert "_TIMEOUT_BIN" not in line and "gtimeout" not in line, (name, line)
+        assert "_TIMEOUT_BIN" not in line, (name, line)
+        # C-2: command invocations are banned; the item-6b basename set literal and its FAIL text are data, not a call
+        if not (line.startswith("TIMEOUT_BIN_BASENAMES") or "basename is not" in line):
+            assert "gtimeout" not in line, (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+-", line), (name, line)
         assert not re.search(r"(^|[\s;&|(])timeout\s+[\"$0-9]", line), (name, line)
 
@@ -323,7 +326,7 @@ def test_s2_st5_up_bound_expansions_set_u_safe_and_named_values():
     for line in code[2:]:
         if line.startswith("_UP_VERDICT_RE="):
             continue
-        bare = re.sub(r'"[^"]*"', '""', line.split(" # ")[0])
+        bare = line.split(" # ")[0]
         for number in re.findall(r"(?<![A-Za-z_$0-9])[0-9]+(?![A-Za-z_0-9])", bare):
             assert number in ("0", "1"), (number, line)
 

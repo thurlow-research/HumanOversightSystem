@@ -1096,16 +1096,26 @@ def test_timeout_side_absent_unless_timeout(rig):
 # ── carried-forward review items (#1944 S2) ────────────────────────────────
 
 
-def test_check_item6b_timeout_bin_basename_must_be_timeout(rig):
-    """Security L2: a configured timeout_bin whose basename is not `timeout` FAILs 6b."""
+def _item6b(rig, name):
     good_rig(rig)
-    other = rig.stub("gtimeout", 'shift 3\nexec "$@"\n')
+    other = rig.stub(name, 'shift 3\nexec "$@"\n')
     rig.conf("timeout_bin=%s\n" % other)
     rig.write_authorized(cmd=rig.forced().replace(str(rig.timeout), str(other)))
-    _r, items = check(rig)
-    assert items["6b"][0][0] == "FAIL" and "basename is not 'timeout'" in items["6b"][0][1]
-    rig.conf("timeout_bin=%s\n" % rig.timeout)
-    rig.write_authorized()
+    return check(rig)[1]["6b"][0]
+
+
+def test_check_item6b_gtimeout_passes(rig):
+    assert _item6b(rig, "gtimeout")[0] == "PASS"
+
+
+def test_check_item6b_sh_fails(rig):
+    """Security L2: a timeout_bin whose basename is neither timeout nor gtimeout FAILs 6b."""
+    status_, text = _item6b(rig, "sh")
+    assert status_ == "FAIL" and "basename is not 'timeout' or 'gtimeout'" in text
+
+
+def test_check_item6b_timeout_passes(rig):
+    good_rig(rig)
     assert check(rig)[1]["6b"][0][0] == "PASS"
 
 
