@@ -226,6 +226,20 @@ For each PR found:
 
 1. **Activation + halt recheck** — read `~/.hos/<repo-id>/ACTIVE` and check for `hos-halt`. Self-terminate if either fails.
 2. **Failure cap check** (`breakers.py:is_poisoned` on the cid) — skip poisoned items.
+2a. **CI terminal-state precheck (#1971)** — before **any** review work on this PR (risk recompute, gate/validator re-run, merits spot-check, executive summary, verdict), confirm that every required CI check on the PR's current head SHA has *finished*. "Green so far" is not "finished": a check that is still running can still go red, and a full review posted against it is wasted effort at best and a misleading merge signal at worst (#1970, #1956/#1957). Run on **every cycle** — never carry a prior cycle's CI state forward.
+
+   Read the required contexts and the head's check runs (one command per Bash call; `{owner}`/`{repo}` are literal — `gh` fills them in):
+   ```bash
+   gh api repos/{owner}/{repo}/branches/<default_branch>/protection --jq '.required_status_checks.contexts[]'
+   gh api --paginate "repos/{owner}/{repo}/commits/<head_sha>/check-runs?per_page=100" --jq '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)\t\(.started_at)"'
+   ```
+   Consider every required context **except** `require-human-approval`, `require-overseer-approval`, and `require-tier-ceiling` — those encode *who* must approve and are moved by this review itself, so waiting on them would deadlock (same exclusion as step 4c's `_META_GATE_CHECKS`). For each remaining context take its most recent run (GitHub lists newest first). The check is **terminal** only when that run's `status` is `completed` — judge on `status`, never on `conclusion` alone (a running check has `conclusion: null`, which is not a failure and not a pass).
+
+   - **All terminal** → proceed to step 3. Failing conclusions are step 4c's job, not this step's.
+   - **Any non-terminal** (`queued`, `in_progress`, `waiting`, `requested`, `pending`) **or absent** (no run yet for that context on this head) → **defer this PR to the next cycle**: post no review, no verdict, no executive summary, no comment, and change no labels; log one stdout line `CI-PENDING: PR #<n> head <sha8> — deferred (<context>=<status>, ...)` and move to the next PR. This is not a disposition and is not recorded as a review of this head SHA, so the next cycle's idempotency/§1215 prechecks still see it as unreviewed.
+   - **Stall guard** — a deferral must not repeat forever silently. If a required check has been non-terminal or absent for **more than 2 hours** (measured from that run's `started_at`, or for an absent check from the head commit's committer date: `gh api repos/{owner}/{repo}/commits/<head_sha> --jq .commit.committer.date`), stop deferring and escalate once: write a short body naming the PR, the head SHA, and each stalled check with its status, then `bash bootstrap/escalate_to_human.sh --number <n> --body-file <path> --reason ci-stalled --app overseer` (idempotent per identical body, so a repeat cycle on the same head and checks posts nothing new). Do not review the PR in that cycle either.
+
+   This is an instruction-level stopgap; the deterministic code-level check that replaces it is tracked as a child of #1643.
 3. **Read PR state** — title, author, changed files, oversight-evaluator verdict from `.claudetmp/signoffs/`.
 3a. **PR size check** — count the changed files and commits before proceeding. Apply the limits from `docs/PR-SIZE-POLICY.md` (#450):
 3b. **Validator artifact check (#555, updated #880)** — read `signoffs/validators/step{N}/summary.json` from the PR branch (where N is the step number from the cid or step manifest). Verify using an ancestry-based algorithm rather than exact HEAD equality (the exact-equality check was broken by non-code tail commits such as audit-log syncs):
