@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -42,6 +43,40 @@ BASH = shutil.which("bash") or "/bin/bash"
 HOS_CRON = Path(__file__).parent.parent.parent / "bin" / "hos-cron"
 
 EXPECTED_BOT = "hos-worker-hos[bot]"
+
+HOS_USAGE_PAUSE_LIB = HOS_CRON.parent / "lib" / "usage_pause.py"
+
+# The default reading every cycle sees unless a test opts out (#1944 S2): the usage-pause gate
+# precedes every other stage, so a fixture without a fresh reading would pause every cycle.
+USAGE_READING_DEFAULTS = {
+    "outcome": "success",
+    "session_pct": 6,
+    "weekly_all_pct": 48,
+    "weekly_model_fable_name": "Fable",
+    "weekly_model_fable_pct": 3,
+    "consecutive_failures": 0,
+    "poll_settings_status": "defaults",
+}
+
+
+def write_usage_reading_file(state: Path, raw: Optional[bytes] = None, **overrides) -> Path:
+    """Write `<state>/usage-pause/reading` (section 1.3). None omits a key; `raw` writes bytes."""
+    path = state / "usage-pause" / "reading"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if raw is not None:
+        path.write_bytes(raw)
+        return path
+    run_epoch = overrides.pop("run_epoch", int(time.time()))
+    fields = {
+        "kind": "reading",
+        "run_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(run_epoch))),
+        "run_epoch": run_epoch,
+        **USAGE_READING_DEFAULTS,
+    }
+    fields.update(overrides)
+    lines = ["schema=1"] + [f"{k}={v}" for k, v in fields.items() if v is not None] + ["end=1"]
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -127,6 +162,12 @@ class CronEnv:
         # want the positive (accepted) path can't just point at an arbitrary
         # tmp_path fixture file.
         self._real_tmp_logs: list[str] = []
+        # #1944 S2: every network-boundary invocation is recorded so AC-35 can assert that a
+        # paused cycle makes none (gh argv lines, token mints, curl calls).
+        self.gh_log = tmp_path / "gh_calls.log"
+        self.token_log = tmp_path / "token_calls.log"
+        self.curl_log = tmp_path / "curl_calls.log"
+        self._usage_reading_managed = False
 
         # ── claude stub: records how it was invoked, never spawns the real CLI ──
         # $0 proves thin-env resolved it by absolute path off the pinned PATH;
@@ -160,13 +201,26 @@ class CronEnv:
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
 
+        # curl stub (#1944 S2): records the call, then hands off to the real curl when one exists,
+        # so recording the network boundary changes no existing behaviour.
+        _real_curl = shutil.which("curl", path="/usr/bin:/bin:/usr/local/bin") or "/bin/true"
+        _write_exec(
+            self.bindir / "curl",
+            "#!/usr/bin/env bash\n"
+            f'echo "$*" >> "{self.curl_log}"\n'
+            f'exec "{_real_curl}" "$@"\n',
+        )
+
         # gh stub — configurable via HOS_TEST_* env vars so individual tests can
         # exercise halt-check, agent-availability, and PR-routing paths without
         # needing a real GitHub API.  Matches on argument substrings; unknown calls
         # fall through to exit 0 (safe default for non-targeted invocations).
         _write_exec(
             self.bindir / "gh",
-            "#!/usr/bin/env bash\n" 'ARGS="$*"\n' 'case "$ARGS" in\n'
+            "#!/usr/bin/env bash\n"
+            'ARGS="$*"\n'
+            f'echo "$ARGS" >> "{self.gh_log}"\n'
+            'case "$ARGS" in\n'
             # Halt check: issues?labels=hos-halt.
             # HOS_TEST_HALT_QUERY_FAIL simulates a gh API failure (non-zero exit)
             # so the #912 fail-closed halt path can be exercised.
@@ -322,6 +376,7 @@ class CronEnv:
         _write_exec(
             self.repo / "bootstrap" / "get_app_token.sh",
             "#!/usr/bin/env bash\n"
+            f'echo "$*" >> "{self.token_log}"\n'
             f'cat "$HOS_STATE_DIR/locks/hos-cron-worker-hos.lock/pid" > "{self.token_capture}" 2>/dev/null || true\n'
             f'echo "$PPID" > "{self.ppid_capture}"\n'
             # `-` (not `:-`) so a test can deliver an explicitly-empty value to
@@ -461,10 +516,88 @@ class CronEnv:
         """The role prompt file the launcher requires (#989)."""
         return self.repo / "bootstrap" / f"{role}-cron-prompt.md"
 
+    # ── #1944 S2: usage-pause reading, settings and network-boundary helpers ──────────────
+    def write_usage_reading(self, raw: Optional[bytes] = None, **overrides) -> Path:
+        """Write the reading file; any explicit write opts this test out of the default one."""
+        self._usage_reading_managed = True
+        return write_usage_reading_file(self.state, raw, **overrides)
+
+    def remove_usage_reading(self) -> None:
+        self._usage_reading_managed = True
+        (self.state / "usage-pause" / "reading").unlink(missing_ok=True)
+
+    def set_usage_reading_managed(self) -> None:
+        """The test owns the reading: `run()` no longer writes the default one."""
+        self._usage_reading_managed = True
+
+    @property
+    def usage_conf(self) -> Path:
+        return self.home / ".config" / "hos" / "usage-pause.conf"
+
+    def write_usage_conf(self, text: str) -> Path:
+        self.usage_conf.write_text(text)
+        return self.usage_conf
+
+    def network_calls(self) -> list[str]:
+        """Every recorded gh argv line, token mint and curl call, in a stable order."""
+        out: list[str] = []
+        for tag, log in (("gh", self.gh_log), ("token", self.token_log), ("curl", self.curl_log)):
+            if log.exists():
+                out += [f"{tag} {ln}" for ln in log.read_text().splitlines()]
+        # Timestamps (a since-cutoff in a query) legitimately differ run to run.
+        return [re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", "<ts>", call) for call in out]
+
+    def add_project(self, name: str) -> None:
+        """Register a second project (AC-34) sharing this fixture's repo."""
+        with (self.home / ".config" / "hos" / "projects.conf").open("a") as fh:
+            fh.write(
+                f"{name}_config_dir={self.home}/.config/hos\n"
+                f"{name}_worker_root={self.repo}\n"
+                f"{name}_overseer_root={self.repo}\n"
+            )
+
+    def install_cycle_log(self) -> None:
+        """Make the launcher's `_audit` real: copy cycle_log and audit_log into the fake repo."""
+        root = Path(__file__).parent.parent.parent
+        for rel in ("scripts/automation/lib/cycle_log.py", "scripts/oversight/lib/audit_log.py"):
+            dst = self.repo / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text((root / rel).read_text())
+        (self.repo / "audit").mkdir(exist_ok=True)
+
+    def audit_records(self, event: str) -> list[dict]:
+        """The parsed audit/log records for `event`, oldest first."""
+        files = sorted((self.repo / "audit" / "log").rglob(f"*-{event}-*.json"))
+        return [json.loads(f.read_text()) for f in files]
+
+    def copy_launcher(self, with_lib: bool, path_pin: Optional[str] = None) -> Path:
+        """A copy of bin/hos-cron (plus git-credentials.sh) in its own dir; the usage library only
+        when `with_lib`, so a missing library can be exercised (check_error)."""
+        dst = self.repo.parent / "launcher" / "bin"
+        (dst / "lib").mkdir(parents=True, exist_ok=True)
+        text = HOS_CRON.read_text()
+        if path_pin is not None:
+            pin = re.search(r'^export PATH="\$HOME/\.local/bin:.*$', text, re.M)
+            assert pin, "the launcher's PATH pin moved"
+            text = text.replace(pin.group(0), f'export PATH="$HOME/.local/bin:{path_pin}"', 1)
+        (dst / "hos-cron").write_text(text)
+        shutil.copy(HOS_CRON.parent / "lib" / "git-credentials.sh", dst / "lib")
+        if with_lib:
+            shutil.copy(HOS_USAGE_PAUSE_LIB, dst / "lib" / "usage_pause.py")
+        return dst / "hos-cron"
+
     def run(
-        self, *args, env_overrides=None, role="worker", project="hos", timeout=30
+        self,
+        *args,
+        env_overrides=None,
+        role="worker",
+        project="hos",
+        timeout=30,
+        launcher: Optional[Path] = None,
     ) -> subprocess.CompletedProcess:
         """Invoke the real bin/hos-cron with the stubbed world."""
+        if not self._usage_reading_managed:
+            write_usage_reading_file(self.state)
         env = {
             "HOME": str(self.home),
             # Minimal incoming PATH — the launcher pins its own on top. The claude
@@ -487,7 +620,7 @@ class CronEnv:
         }
         if env_overrides:
             env.update(env_overrides)
-        argv = [BASH, str(HOS_CRON)]
+        argv = [BASH, str(launcher or HOS_CRON)]
         if args:
             argv += list(args)
         else:
@@ -1236,6 +1369,7 @@ class TestOverlapLock:
             "HOS_REPO_SLUG": "test-org/test-repo",
             "HOS_TEST_MILESTONELESS_ISSUES": "9001",
         }
+        cron.write_usage_reading()
         proc_a = subprocess.Popen(
             [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"],
             cwd=str(cron.repo),
@@ -1316,6 +1450,7 @@ class TestOverlapLock:
             "HOS_REPO_SLUG": "test-org/test-repo",
             "HOS_TEST_MILESTONELESS_ISSUES": "9001",
         }
+        cron.write_usage_reading()
         proc = subprocess.Popen(
             argv,
             cwd=str(cron.repo),
@@ -1786,11 +1921,12 @@ class TestGitCredentialsGuard:
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         git = ["git", "-C", str(repo)]
         subprocess.run(git + ["symbolic-ref", "HEAD", "refs/heads/main"], check=True)
-        (repo / "bin").mkdir(parents=True)
+        (repo / "bin" / "lib").mkdir(parents=True)
         shutil.copy(HOS_CRON, repo / "bin" / "hos-cron")
         (repo / "bin" / "hos-cron").chmod(0o755)
+        # #1944 S2: a copied launcher carries the gate, so it needs the library beside it.
+        shutil.copy(HOS_USAGE_PAUSE_LIB, repo / "bin" / "lib" / "usage_pause.py")
         if include_git_creds_lib:
-            (repo / "bin" / "lib").mkdir(parents=True)
             shutil.copy(self.REAL_GIT_CREDS_LIB, repo / "bin" / "lib" / "git-credentials.sh")
         subprocess.run(git + ["add", "-A"], check=True)
         subprocess.run(git + self.IDENT + ["commit", "-q", "-m", "init"], check=True)
@@ -1801,6 +1937,8 @@ class TestGitCredentialsGuard:
     def _run(self, repo: Path, tmp_path: Path) -> subprocess.CompletedProcess:
         home = tmp_path / "home"
         self._write_claude_stub(home)
+        # #1944 S2: a fresh reading under this test's state dir, so the gate would let it run.
+        write_usage_reading_file(home / ".hos")
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "HOS_CRON_JITTER_MAX": "0"}
         return subprocess.run(
             [BASH, str(repo / "bin" / "hos-cron")],
@@ -1835,7 +1973,7 @@ class TestGitCredentialsGuard:
         origin, repo = self._init_repo(tmp_path, include_git_creds_lib=False)
         other = tmp_path / "other_clone"
         subprocess.run(["git", "clone", "-q", str(origin), str(other)], check=True)
-        (other / "bin" / "lib").mkdir(parents=True)
+        (other / "bin" / "lib").mkdir(parents=True, exist_ok=True)
         shutil.copy(self.REAL_GIT_CREDS_LIB, other / "bin" / "lib" / "git-credentials.sh")
         gito = ["git", "-C", str(other)]
         subprocess.run(gito + ["add", "-A"], check=True)
@@ -4605,3 +4743,513 @@ class TestSyncAuditLogs:
         assert (
             "secret_feature.py" not in tree
         ), f"feature change leaked onto audit-log branch: {tree}"
+
+
+# ───────────────── #1944 S2: the cycle-start usage-pause gate ─────────────────
+USAGE_TAGS = ("[PAUSED-USAGE]", "[USAGE-OK]", "[USAGE-UNCHECKED]")
+# The overseer's own pre-filter needs an actionable open PR to reach the Claude launch at all.
+ROLE_ENV = {"worker": {}, "overseer": {"HOS_TEST_OPEN_PR_NUMS": "856"}}
+
+
+def _tree_hash(root: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        digest.update(str(path.relative_to(root)).encode())
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _usage_lines(r: subprocess.CompletedProcess) -> list[str]:
+    return [ln for ln in r.stdout.splitlines() if any(tag in ln for tag in USAGE_TAGS)]
+
+
+@pytest.fixture(params=["worker", "overseer"])
+def role(request):
+    return request.param
+
+
+class TestUsagePauseGate:
+    """The real launcher against the §4.7 harness. Worker and overseer are both parametrized."""
+
+    def go(self, cron, role, project="hos", env=None, **kw):
+        overrides = dict(ROLE_ENV[role])
+        overrides.update(env or {})
+        return cron.run(role=role, project=project, env_overrides=overrides, **kw)
+
+    def reset_run_marks(self, cron):
+        for log in (cron.claude_log, cron.gh_log, cron.token_log, cron.curl_log):
+            log.unlink(missing_ok=True)
+
+    def assert_paused(self, cron, r, reason):
+        assert r.returncode == 0, r.stdout + r.stderr
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and "[PAUSED-USAGE]" in lines[0], r.stdout
+        assert lines[0].split("[PAUSED-USAGE] ", 1)[1] == reason, lines[0]
+        assert not cron.claude_ran()
+
+    def test_under_threshold_runs_usage_ok_line(self, cron, role):
+        r = self.go(cron, role)
+        assert r.returncode == 0, r.stdout + r.stderr
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and "[USAGE-OK] session 6% < 90" in lines[0], r.stdout
+        assert cron.claude_ran()
+
+    def test_session_90_pauses_before_anything(self, cron, role):
+        cron.write_usage_reading(session_pct=90)
+        r = self.go(cron, role)
+        self.assert_paused(cron, r, "session 90% >= 90")
+        assert not cron.baseline_ran()
+        assert cron.network_calls() == []
+
+    def test_89_89_runs(self, cron, role):
+        cron.write_usage_reading(session_pct=89, weekly_all_pct=89)
+        r = self.go(cron, role)
+        assert cron.claude_ran() and "[USAGE-OK]" in r.stdout
+
+    def test_weekly_90_reason_names_weekly_all(self, cron, role):
+        cron.write_usage_reading(weekly_all_pct=90)
+        self.assert_paused(cron, self.go(cron, role), "weekly_all 90% >= 90")
+
+    def test_model_90_pauses_reason_names_model(self, cron, role):
+        cron.write_usage_reading(weekly_model_fable_pct=90)
+        self.assert_paused(cron, self.go(cron, role), "weekly_model:Fable 90% >= 90")
+
+    def test_no_model_line_runs(self, cron, role):
+        cron.write_usage_reading(weekly_model_fable_name=None, weekly_model_fable_pct=None)
+        r = self.go(cron, role)
+        assert cron.claude_ran()
+        assert "weekly_model" not in _usage_lines(r)[0]
+
+    def test_empty_session_reading_pauses_closed(self, cron, role):
+        cron.write_usage_reading(
+            outcome="failure",
+            reason="empty_session",
+            session_pct=None,
+            weekly_all_pct=None,
+            weekly_model_fable_name=None,
+            weekly_model_fable_pct=None,
+        )
+        self.assert_paused(cron, self.go(cron, role), "read_failed:empty_session")
+
+    def test_failopen_failure_runs_unchecked_line(self, cron, role):
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading(outcome="failure", reason="timeout", session_pct=None)
+        r = self.go(cron, role)
+        assert cron.claude_ran()
+        lines = _usage_lines(r)
+        assert lines and lines[0].endswith("[USAGE-UNCHECKED] fail_mode=open read_failed:timeout")
+        assert len(lines) == 1
+
+    @pytest.mark.parametrize(
+        "reading,reason",
+        [
+            ({"run_epoch": 1}, "reading_stale"),
+            ({"run_epoch": int(time.time()) + 3600}, "reading_future"),
+            ({"raw": b"schema=1\nkind=reading\n"}, "reading_truncated"),
+            ({"raw": b"garbage\nend=1\n"}, "reading_unreadable"),
+            ({"raw": b"schema=2\nkind=reading\nend=1\n"}, "schema_unknown"),
+            (
+                {"raw": b"schema=1\nkind=reading\nrun_epoch=abc\noutcome=success\nend=1\n"},
+                "reading_unreadable",
+            ),
+        ],
+    )
+    def test_unusable_reasons_distinct(self, cron, role, reading, reason):
+        cron.write_usage_reading(**reading)
+        self.assert_paused(cron, self.go(cron, role), reason)
+
+    def test_missing_reading_reasons_distinct(self, cron, role):
+        cron.remove_usage_reading()
+        self.assert_paused(cron, self.go(cron, role), "poller_not_installed")
+        cron.write_usage_conf("session_threshold=90\n")
+        self.assert_paused(cron, self.go(cron, role), "reading_missing")
+
+    def test_auto_resume_next_cycle(self, cron, role):
+        cron.write_usage_reading(session_pct=92)
+        self.assert_paused(cron, self.go(cron, role), "session 92% >= 90")
+        cron.write_usage_reading(session_pct=40, weekly_all_pct=30, weekly_model_fable_pct=10)
+        r = self.go(cron, role)
+        assert cron.claude_ran() and "[USAGE-OK]" in r.stdout
+        assert "[PAUSED-USAGE]" not in r.stdout
+
+    def test_human_suspend_marker_untouched(self, cron, role):
+        cron.write_usage_reading(session_pct=99)
+        marker = cron.suspend_file()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
+        before = marker.read_bytes()
+        r = self.go(cron, role)
+        assert "[SUSPENDED]" in r.stdout and "[PAUSED-USAGE]" not in r.stdout
+        assert marker.read_bytes() == before
+        marker.unlink()
+        suspend_tree = _tree_hash(cron.state / "suspend")
+        self.assert_paused(cron, self.go(cron, role), "session 99% >= 90")
+        assert _tree_hash(cron.state / "suspend") == suspend_tree
+        assert list((cron.state / "suspend").iterdir()) == []
+
+    def test_global_pause_all_projects_both_roles(self, cron):
+        cron.add_project("hos2")
+        cron.write_usage_reading(weekly_all_pct=95)
+        (cron.state / "suspend").mkdir(parents=True, exist_ok=True)
+        suspend_tree = _tree_hash(cron.state / "suspend")
+        combos = [(r_, p_) for r_ in ("worker", "overseer") for p_ in ("hos", "hos2")]
+        for role_, project in combos:
+            r = self.go(cron, role_, project=project)
+            self.assert_paused(cron, r, "weekly_all 95% >= 90")
+        assert _tree_hash(cron.state / "suspend") == suspend_tree
+        cron.write_usage_reading()
+        for role_, project in combos:
+            self.reset_run_marks(cron)
+            r = self.go(cron, role_, project=project)
+            assert cron.claude_ran(), (role_, project, r.stdout)
+            assert "[USAGE-OK]" in r.stdout
+
+    @pytest.mark.parametrize("scenario", ["over", "read_failed", "invalid_settings", "check_error"])
+    def test_paused_cycles_make_zero_network_calls(self, cron, role, scenario):
+        launcher = None
+        if scenario == "over":
+            cron.write_usage_reading(session_pct=97)
+        elif scenario == "read_failed":
+            cron.write_usage_reading(outcome="failure", reason="ssh_failed")
+        elif scenario == "invalid_settings":
+            cron.write_usage_reading()
+            cron.write_usage_conf("nope=1\n")
+        else:
+            cron.write_usage_reading()
+            launcher = cron.copy_launcher(with_lib=False)
+        r = self.go(cron, role, launcher=launcher)
+        assert r.returncode == 0 and "[PAUSED-USAGE]" in r.stdout, r.stdout + r.stderr
+        assert not cron.claude_ran()
+        assert cron.network_calls() == []
+
+    def test_running_cycles_gate_adds_no_github_calls(self, cron, role):
+        self.go(cron, role)
+        baseline = cron.network_calls()
+        assert baseline, "a plain running cycle makes calls; the comparison needs a baseline"
+        # fail-open failure runs, and makes exactly the baseline's calls
+        self.reset_run_marks(cron)
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading(outcome="failure", reason="timeout")
+        self.go(cron, role)
+        assert cron.network_calls() == baseline
+        # resume after a pause makes exactly the baseline's calls
+        self.reset_run_marks(cron)
+        cron.usage_conf.unlink()
+        cron.write_usage_reading(session_pct=95)
+        self.go(cron, role)
+        assert cron.network_calls() == []
+        cron.write_usage_reading()
+        self.go(cron, role)
+        assert cron.network_calls() == baseline
+        for call in baseline:
+            assert not re.search(
+                r"gh issue (create|comment|edit)|--add-label|\[PAUSED\]|\[DEGRADED\]", call
+            )
+
+    def test_threshold_80_applies_without_new_poll_all_projects(self, cron):
+        cron.add_project("hos2")
+        cron.write_usage_reading(session_pct=85, poll_session_threshold=90, poll_pause_condition=0)
+        cron.write_usage_conf("session_threshold=80\n")
+        for role_ in ("worker", "overseer"):
+            for project in ("hos", "hos2"):
+                r = self.go(cron, role_, project=project)
+                self.assert_paused(cron, r, "session 85% >= 80")
+
+    def test_transcript_wording_never_pauses(self, cron, role):
+        phrase = "You've hit your usage limit. Your limit will reset at 3am"
+        r = self.go(cron, role, env={"HOS_TEST_CLAUDE_STDOUT": phrase})
+        assert cron.claude_ran() and "[PAUSED-USAGE]" not in r.stdout
+        self.reset_run_marks(cron)
+        r = self.go(cron, role)
+        assert cron.claude_ran() and "[USAGE-OK]" in r.stdout
+
+    def test_running_cycle_not_killed(self, cron, role):
+        cron.write_usage_reading()
+        now_expr = "$(date +%s)"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n"
+            "cat > /dev/null 2>&1 || true\n"
+            f'printf "schema=1\\nkind=reading\\nrun_epoch={now_expr}\\noutcome=success\\n'
+            'session_pct=95\\nweekly_all_pct=48\\nend=1\\n" '
+            '> "$HOS_STATE_DIR/usage-pause/reading"\n'
+            f'echo ran > "{cron.claude_log}"\n'
+            "exit 0\n",
+        )
+        r = self.go(cron, role)
+        assert r.returncode == 0 and cron.claude_ran(), r.stdout + r.stderr
+        self.reset_run_marks(cron)
+        r = self.go(cron, role)
+        self.assert_paused(cron, r, "session 95% >= 90")
+
+    def test_gate_precedes_token_mint_and_claude_auth(self, cron, role):
+        cron.auth_env.unlink()
+        _write_exec(
+            cron.repo / "bootstrap" / "get_app_token.sh",
+            f'#!/usr/bin/env bash\necho "$*" >> "{cron.token_log}"\nexit 1\n',
+        )
+        cron.write_usage_reading(session_pct=96)
+        r = self.go(cron, role)
+        self.assert_paused(cron, r, "session 96% >= 90")
+        assert not cron.token_log.exists(), "a paused cycle must not mint a token"
+
+    def test_gate_precedes_deps_jitter_wakeup(self, cron, role):
+        marker = cron.state.parent / "ensure_venv_called"
+        _write_exec(
+            cron.repo / "scripts" / "oversight" / "ensure_venv.sh",
+            f'#!/usr/bin/env bash\necho called >> "{marker}"\nexit 0\n',
+        )
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "pytest").unlink()
+        wakeup = cron.state / "wakeup" / f"{role}-hos"
+        wakeup.parent.mkdir(parents=True, exist_ok=True)
+        wakeup.write_text('{"reason":"signal"}')
+        cron.write_usage_reading(session_pct=96)
+        self.assert_paused(cron, self.go(cron, role), "session 96% >= 90")
+        assert wakeup.exists(), "a paused cycle leaves the wakeup marker for the next running cycle"
+        assert not marker.exists(), "the deps check must not run on a paused cycle"
+        cron.write_usage_reading()
+        self.go(cron, role)
+        assert marker.exists(), "premise: the deps check does run on a running cycle"
+        assert not wakeup.exists()
+
+    def test_check_error_pauses_even_failopen(self, cron, role):
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading()
+        r = self.go(cron, role, launcher=cron.copy_launcher(with_lib=False))
+        lines = _usage_lines(r)
+        assert len(lines) == 1, r.stdout
+        assert re.search(r"\[PAUSED-USAGE\] check_error \(rc=\d+; fail_mode ignored\)$", lines[0])
+        assert not cron.claude_ran()
+
+    def test_invalid_settings_pause_even_failopen_log_names_key(self, cron, role):
+        cron.write_usage_conf("fail_mode=open\nbogus=1\n")
+        cron.write_usage_reading()
+        self.assert_paused(cron, self.go(cron, role), "settings_invalid:bogus (fail_mode ignored)")
+
+    def test_one_log_line_per_cycle(self, cron, role):
+        r = self.go(cron, role)
+        assert len(_usage_lines(r)) == 1
+        cron.write_usage_reading(session_pct=99)
+        assert len(_usage_lines(self.go(cron, role))) == 1
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading(outcome="failure", reason="timeout")
+        assert len(_usage_lines(self.go(cron, role))) == 1
+
+    def test_paused_cycle_audit_event_fields(self, cron, role):
+        cron.install_cycle_log()
+        cron.write_usage_reading(session_pct=92)
+        r = self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        self.assert_paused(cron, r, "session 92% >= 90")
+        records = cron.audit_records("cycle-usage-paused")
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["role"] == role and rec["project"] == "hos"
+        assert re.fullmatch(rf"{role}-hos-\d{{12}}-\d+", rec["cycle_id"]), rec["cycle_id"]
+        assert rec["reason"] == "session 92% >= 90"
+        assert (rec["session_pct"], rec["weekly_all_pct"]) == (92, 48)
+        assert isinstance(rec["reading_age_s"], int) and rec["reading_age_s"] >= 0
+        assert (rec["fail_mode"], rec["settings"]) == ("closed", "defaults")
+
+    def test_running_cycle_no_usage_audit_event(self, cron, role):
+        cron.install_cycle_log()
+        self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        assert cron.claude_ran()
+        assert cron.audit_records("cycle-usage-paused") == []
+        assert cron.audit_records("cycle-usage-unchecked") == []
+
+    def test_gate_writes_nothing_under_usage_pause(self, cron, role):
+        cron.write_usage_reading(session_pct=96)
+        before = _tree_hash(cron.state / "usage-pause")
+        self.assert_paused(cron, self.go(cron, role), "session 96% >= 90")
+        assert _tree_hash(cron.state / "usage-pause") == before
+        cron.write_usage_reading()
+        before = _tree_hash(cron.state / "usage-pause")
+        self.go(cron, role)
+        assert cron.claude_ran()
+        assert _tree_hash(cron.state / "usage-pause") == before
+
+    def test_consumer_no_poller_pauses_reading_missing(self, cron, role):
+        cron.remove_usage_reading()
+        r = self.go(cron, role)
+        self.assert_paused(cron, r, "poller_not_installed")
+        key = cron.home / ".ssh" / "hos_loopback"
+        key.parent.mkdir()
+        key.write_text("k")
+        self.assert_paused(cron, self.go(cron, role), "reading_missing")
+
+    def test_consumer_no_poller_failopen_runs(self, cron, role):
+        cron.remove_usage_reading()
+        cron.write_usage_conf("fail_mode=open\n")
+        r = self.go(cron, role)
+        assert cron.claude_ran()
+        assert _usage_lines(r)[0].endswith("[USAGE-UNCHECKED] fail_mode=open reading_missing")
+
+    def test_gate_runs_on_bash_without_timeout(self, cron, tmp_path):
+        """The block alone, under set -euo pipefail, with no timeout or gtimeout on PATH."""
+        text = HOS_CRON.read_text()
+        begin = text.index("# ── Usage-threshold pause gate")
+        end_anchor = "# ── end usage-threshold pause gate (#1944) ──"
+        block = text[begin : text.index(end_anchor) + len(end_anchor)]
+        bindir = tmp_path / "pathonly"
+        bindir.mkdir()
+        python = shutil.which("python3", path="/usr/bin:/bin:/usr/local/bin")
+        assert python, "premise: a system python3"
+        (bindir / "python3").symlink_to(python)
+        assert shutil.which("timeout", path=str(bindir)) is None
+        assert shutil.which("gtimeout", path=str(bindir)) is None
+        cron_dir = HOS_CRON.parent
+        state = tmp_path / "gate_state"
+        write_usage_reading_file(state)
+        script = (
+            "set -euo pipefail\n"
+            f'ROLE=worker PROJECT=hos HOS_CYCLE_ID=t LOG_PREFIX="[t]" _HOS_DIR="{state}"\n'
+            f'_HOS_CRON_DIR="{cron_dir}"\n'
+            "_audit() { :; }\n" + block + '\necho "THROUGH"\n'
+        )
+        r = subprocess.run(
+            [BASH, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": str(bindir), "HOME": str(tmp_path / "nohome")},
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "[USAGE-OK]" in r.stdout and "THROUGH" in r.stdout
+
+    @pytest.mark.parametrize("reason", ["read_failed", "reading_missing", "reading_stale"])
+    def test_failopen_unchecked_audit_event(self, cron, role, reason):
+        cron.install_cycle_log()
+        cron.write_usage_conf("fail_mode=open\n")
+        if reason == "read_failed":
+            cron.write_usage_reading(outcome="failure", reason="timeout", session_pct=None)
+            text = "read_failed:timeout"
+        elif reason == "reading_missing":
+            cron.remove_usage_reading()
+            text = "reading_missing"
+        else:
+            cron.write_usage_reading(run_epoch=1)
+            text = "reading_stale"
+        r = self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        assert cron.claude_ran(), "fail-open still runs the cycle"
+        records = cron.audit_records("cycle-usage-unchecked")
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["role"] == role and rec["project"] == "hos" and rec["reason"] == text
+        assert re.fullmatch(rf"{role}-hos-\d{{12}}-\d+", rec["cycle_id"])
+        assert rec["fail_mode"] == "open" and rec["settings"] == "valid"
+        assert cron.audit_records("cycle-usage-paused") == []
+        assert len(_usage_lines(r)) == 1
+        # one key per argument (the record is stored with sorted keys, so no order is checked)
+        assert {k for k in rec} - {"event", "timestamp"} == {
+            "role",
+            "project",
+            "cycle_id",
+            "reason",
+            "session_pct",
+            "weekly_all_pct",
+            "reading_age_s",
+            "fail_mode",
+            "settings",
+        }
+
+    def test_failopen_unchecked_per_cycle(self, cron, role):
+        cron.install_cycle_log()
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.remove_usage_reading()
+        self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        time.sleep(1.1)  # record filenames carry a one-second timestamp plus a content hash
+        self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        assert len(cron.audit_records("cycle-usage-unchecked")) == 2
+
+    def test_poller_not_installed_is_never_failopen(self, cron, role):
+        """fail_mode=open can only come from the conf, and a conf is itself a poller artifact."""
+        cron.install_cycle_log()
+        cron.remove_usage_reading()
+        r = self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        self.assert_paused(cron, r, "poller_not_installed")
+        assert cron.audit_records("cycle-usage-unchecked") == []
+
+    def test_ok_run_emits_no_unchecked_event(self, cron, role):
+        cron.install_cycle_log()
+        self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        assert cron.claude_ran()
+        assert cron.audit_records("cycle-usage-unchecked") == []
+
+    def test_unchecked_event_synced_same_cycle(self, cron, role, tmp_path):
+        """The record exists when the same cycle's audit sync starts (it is pushed that cycle)."""
+        cron.install_cycle_log()
+        cron.git_init_repo()
+        seen = tmp_path / "sync_saw_records"
+        real_git = shutil.which("git", path="/usr/bin:/bin:/usr/local/bin")
+        _write_exec(
+            cron.bindir / "git",
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "fetch" && "$*" == *audit-log* ]]; then\n'
+            f'  ls -R "{cron.repo}/audit/log" >> "{seen}" 2>/dev/null\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec "{real_git}" "$@"\n',
+        )
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.remove_usage_reading()
+        self.go(cron, role, env={"PYTHONDONTWRITEBYTECODE": "1"})
+        assert seen.exists(), "the cycle must reach its audit sync"
+        assert "cycle-usage-unchecked" in seen.read_text()
+
+    def test_check_helper_exit_70_pauses_with_check_error(self, cron, role):
+        """The real launcher with a helper that exits 70 (the library's own crash code)."""
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading()
+        launcher = cron.copy_launcher(with_lib=False)
+        (launcher.parent / "lib" / "usage_pause.py").write_text(
+            "import sys\nprint('usage_pause check: boom', file=sys.stderr)\nsys.exit(70)\n"
+        )
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and lines[0].endswith(
+            "[PAUSED-USAGE] check_error (rc=70; fail_mode ignored)"
+        ), r.stdout
+        assert "usage_pause check: boom" in r.stderr
+        assert not cron.claude_ran() and cron.network_calls() == []
+
+    @pytest.mark.parametrize(
+        "body,rc",
+        [
+            ("print('this is not a verdict')", 0),
+            (
+                "print('USAGE_PAUSE v=2 decision=run class=limit fail_mode=open settings=defaults "
+                "session_pct=1 weekly_all_pct=1 reading_age_s=1 reason=x')",
+                0,
+            ),
+            ("import sys; sys.exit(124)", 124),
+        ],
+        ids=["garbled_stdout", "contradictory_verdict", "exit_124"],
+    )
+    def test_bad_helper_output_pauses_with_check_error(self, cron, role, body, rc):
+        cron.write_usage_conf("fail_mode=open\n")
+        cron.write_usage_reading()
+        launcher = cron.copy_launcher(with_lib=False)
+        (launcher.parent / "lib" / "usage_pause.py").write_text(body + "\n")
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and lines[0].endswith(
+            f"[PAUSED-USAGE] check_error (rc={rc}; fail_mode ignored)"
+        ), r.stdout
+        assert not cron.claude_ran() and cron.network_calls() == []
+
+    def test_real_launcher_runs_without_timeout_or_gtimeout(self, cron, role, tmp_path):
+        """The whole launcher on a PATH with neither timeout nor gtimeout (empty-array path)."""
+        pathdir = tmp_path / "notimeout"
+        pathdir.mkdir()
+        for entry in Path("/usr/bin").iterdir():
+            if entry.name not in ("timeout", "gtimeout"):
+                (pathdir / entry.name).symlink_to(entry)
+        launcher = cron.copy_launcher(with_lib=True, path_pin=str(pathdir))
+        assert shutil.which("timeout", path=f"{cron.bindir}:{pathdir}") is None
+        r = self.go(cron, role, launcher=launcher)
+        lines = _usage_lines(r)
+        assert len(lines) == 1 and "[USAGE-OK]" in lines[0], r.stdout + r.stderr
+        assert cron.claude_ran()

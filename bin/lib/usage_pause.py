@@ -153,16 +153,21 @@ VALUE_CAP_CHARS = 200
 REASON_CAP_CHARS = 200
 UNKNOWN_KEY_CAP_CHARS = 40
 MODEL_SLUG_CAP_CHARS = 32
+MODEL_RESETS_GROUP = 3
 WINDOW_SLUG_CAP_CHARS = 16
 SETTINGS_FILE_CAP_BYTES = 65536
 SSH_FAILURE_RC = 255
 SUBPROCESS_TIMEOUT_SECONDS = 30
 EXIT_USAGE = 64
 EXIT_FAIL = 1
+EXIT_CHECK_ERROR = 70
+VERDICT_VERSION = 2
 EXPECTED_KEY_MODE = 0o600
 STATE_DIR_MODE = 0o700
 FILE_MODE = 0o600
 CRON_SCHEDULE_FIELDS = 5
+KEY_FIELD_COUNT = 2
+TIMEOUT_BIN_BASENAMES: FrozenSet[str] = frozenset({"timeout", "gtimeout"})
 
 STDOUT_TMP = "poll.stdout.tmp"
 STDERR_TMP = "poll.stderr.tmp"
@@ -533,10 +538,11 @@ def _last_match(pattern: "re.Pattern[str]", text: str) -> Optional["re.Match[str
     return matches[-1] if matches else None
 
 
-def _resets(match: Optional["re.Match[str]"]) -> Optional[str]:
+def _resets(match: Optional["re.Match[str]"], group: int = 1) -> Optional[str]:
+    """The reset text in `group` (the model line carries the model name in group 1, reset in 3)."""
     if match is None:
         return None
-    value = _strip_control(match.group(1)).strip()
+    value = _strip_control(match.group(group)).strip()
     return _cap(value, RESETS_CAP_CHARS) or None
 
 
@@ -552,7 +558,10 @@ def _extract_models(text: str) -> Tuple[ModelWeekly, ...]:
         resets = match.group(3)
         models.pop(slug, None)
         models[slug] = ModelWeekly(
-            name, slug, int(match.group(2)), _resets(match) if resets is not None else None
+            name,
+            slug,
+            int(match.group(2)),
+            _resets(match, MODEL_RESETS_GROUP) if resets is not None else None,
         )
     return tuple(models.values())
 
@@ -1214,6 +1223,41 @@ def _poll_view(
     return out
 
 
+# ───────────────────────────── the cycle-start gate verdict ─────────────────────────────
+
+
+def _verdict_field(value: Optional[int]) -> str:
+    return "-" if value is None else str(value)
+
+
+def gate_verdict(state_dir: str, now: float) -> str:
+    """The one verdict line bin/hos-cron's gate matches (section 4.3). Reads, writes nothing.
+
+    The decision is evaluate_cycle over the reading file and the CURRENT settings. Folding the
+    reason to printable ASCII is character for character, so it cannot change the 200-char cap
+    evaluate_cycle already applied (TD-O-14).
+    """
+    settings = load_settings(default_conf_path())
+    _base, reading_path = _state_paths(state_dir)
+    artifacts = os.path.exists(default_conf_path()) or os.path.exists(default_key_path())
+    decision = evaluate_cycle(
+        read_reading(reading_path), settings, now, poller_artifacts_present=artifacts
+    )
+    reason = re.sub(r"[^ -~]", "?", ascii_fold(decision.reason))
+    return "USAGE_PAUSE v=%d decision=%s class=%s fail_mode=%s settings=%s" % (
+        VERDICT_VERSION,
+        decision.decision,
+        decision.klass,
+        decision.fail_mode,
+        decision.settings,
+    ) + " session_pct=%s weekly_all_pct=%s reading_age_s=%s reason=%s" % (
+        _verdict_field(decision.session_pct),
+        _verdict_field(decision.weekly_all_pct),
+        _verdict_field(decision.reading_age_s),
+        reason,
+    )
+
+
 # ───────────────────────────── remote command, setup, check ─────────────────────────────
 
 
@@ -1267,6 +1311,15 @@ def _line_options(line: str) -> Optional[str]:
     return stripped
 
 
+def _key_fields(line: str) -> Optional[Tuple[str, str]]:
+    """(key type, base64 blob) of an authorized_keys line: the two fields after the options."""
+    stripped = line.strip()
+    options = _line_options(stripped)
+    rest = stripped[len(options) :] if options is not None else stripped
+    fields = rest.split()
+    return (fields[0], fields[1]) if len(fields) >= KEY_FIELD_COUNT else None
+
+
 def _unquote_option(value: str) -> Optional[str]:
     """The value of a double-quoted option, or None when it is not double-quoted."""
     if value == '"' or not (value.startswith('"') and value.endswith('"')):
@@ -1284,13 +1337,15 @@ def check_authorized_keys(
         pub = None
     if pub is None:
         return False, "cannot read %s" % pub_path
-    blob = pub.group(2)
+    key_type, blob = pub.group(1), pub.group(2)
     try:
         lines = keys_path.read_text(encoding="utf-8").split("\n")
     except (OSError, UnicodeDecodeError):
         return False, "cannot read %s" % keys_path
     hits = [
-        ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#") and blob in ln.split()
+        ln
+        for ln in lines
+        if ln.strip() and not ln.lstrip().startswith("#") and _key_fields(ln) == (key_type, blob)
     ]
     if not hits:
         return False, "no authorized_keys line carries the key in %s" % pub_path
@@ -1641,7 +1696,14 @@ def run_check(self_path: str, capture_fixture: Optional[str]) -> int:
             "set claude_bin or fix PATH, then regenerate the authorized_keys line",
         )
     timeout_bin = resolve_timeout_bin(settings)
-    if timeout_bin and os.access(timeout_bin, os.X_OK):
+    if timeout_bin and os.path.basename(timeout_bin) not in TIMEOUT_BIN_BASENAMES:
+        report.add(
+            "FAIL",
+            "6b",
+            "timeout_bin %s: basename is not 'timeout' or 'gtimeout'" % timeout_bin,
+            "set timeout_bin to GNU timeout (or gtimeout)",
+        )
+    elif timeout_bin and os.access(timeout_bin, os.X_OK):
         report.add("PASS", "6b", "timeout_bin %s is executable" % timeout_bin)
     else:
         report.add(
@@ -1953,6 +2015,21 @@ def _cmd_remote_cmd(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_check(args: argparse.Namespace) -> int:
+    """The gate's question: print the verdict line, or print nothing and exit 70."""
+    try:
+        line = gate_verdict(args.state_dir, time.time())
+    except Exception as exc:  # noqa: BLE001 - the gate pauses on any failure here
+        text = _cap(
+            ascii_fold("usage_pause check: %s: %s" % (type(exc).__name__, _flatten(str(exc)))),
+            REASON_CAP_CHARS,
+        )
+        print(text, file=sys.stderr)
+        return EXIT_CHECK_ERROR
+    print(line)
+    return 0
+
+
 def _cmd_check_setup(args: argparse.Namespace) -> int:
     return run_check(args.self_path, args.capture_fixture)
 
@@ -1990,6 +2067,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-epoch", type=int, required=True)
     p.set_defaults(func=_cmd_last_raw)
     sub.add_parser("remote-cmd").set_defaults(func=_cmd_remote_cmd)
+    p = sub.add_parser("check")
+    p.add_argument("--state-dir", required=True)
+    p.set_defaults(func=_cmd_check)
     p = sub.add_parser("check-setup")
     p.add_argument("--self-path", required=True)
     p.add_argument("--capture-fixture")

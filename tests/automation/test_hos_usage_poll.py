@@ -754,7 +754,7 @@ def test_check_unquoted_option_value_fails(rig):
 def test_check_unquoted_from_value_names_quoting(rig):
     ok, text = up.check_authorized_keys(
         rig.home / ".ssh" / "hos_loopback.pub",
-        _write(rig, 'from=127.0.0.1 command="x" ' + PUB),
+        _write(rig, 'from=127.0.0.1,command="x" ' + PUB),
         "x",
     )
     assert not ok and "must be double-quoted" in text
@@ -1091,3 +1091,148 @@ def test_timeout_side_absent_unless_timeout(rig):
     rig.run(HOS_TEST_SSH_EXIT="2")
     assert rig.reading().fields["reason"] == "envelope_invalid"
     assert "timeout_side" not in rig.reading().fields
+
+
+# ── carried-forward review items (#1944 S2) ────────────────────────────────
+
+
+def _item6b(rig, name):
+    good_rig(rig)
+    other = rig.stub(name, 'shift 3\nexec "$@"\n')
+    rig.conf("timeout_bin=%s\n" % other)
+    rig.write_authorized(cmd=rig.forced().replace(str(rig.timeout), str(other)))
+    return check(rig)[1]["6b"][0]
+
+
+def test_check_item6b_gtimeout_passes(rig):
+    assert _item6b(rig, "gtimeout")[0] == "PASS"
+
+
+def test_check_item6b_sh_fails(rig):
+    """Security L2: a timeout_bin whose basename is neither timeout nor gtimeout FAILs 6b."""
+    status_, text = _item6b(rig, "sh")
+    assert status_ == "FAIL" and "basename is not 'timeout' or 'gtimeout'" in text
+
+
+def test_check_item6b_timeout_passes(rig):
+    good_rig(rig)
+    assert check(rig)[1]["6b"][0][0] == "PASS"
+
+
+def _pub_and_keys(rig, *lines):
+    keys = rig.home / ".ssh" / "ak3"
+    keys.write_text("\n".join(lines) + "\n")
+    return rig.home / ".ssh" / "hos_loopback.pub", keys
+
+
+def _good_line(rig):
+    return 'from="127.0.0.1,::1",%s,command="%s" %s' % (",".join(FLAGS), rig.forced(), PUB)
+
+
+def test_authorized_keys_blob_in_comment_is_not_the_key(rig):
+    """Security L3: the blob counts only as the key field, never as a comment word."""
+    pub, keys = _pub_and_keys(rig, "ssh-ed25519 OTHERKEY see-AAAAC3NzaBLOB AAAAC3NzaBLOB")
+    ok, text = up.check_authorized_keys(pub, keys, rig.forced())
+    assert not ok and "no authorized_keys line carries the key" in text
+
+
+def test_authorized_keys_decoy_line_does_not_count_as_second_line(rig):
+    decoy = "ssh-ed25519 OTHERKEY AAAAC3NzaBLOB"
+    pub, keys = _pub_and_keys(rig, _good_line(rig), decoy)
+    ok, text = up.check_authorized_keys(pub, keys, rig.forced())
+    assert ok, text
+
+
+def test_authorized_keys_blob_inside_command_value_is_not_the_key(rig):
+    line = 'command="echo AAAAC3NzaBLOB",no-pty ssh-ed25519 OTHERKEY hos-loopback'
+    pub, keys = _pub_and_keys(rig, line)
+    ok, text = up.check_authorized_keys(pub, keys, rig.forced())
+    assert not ok and "no authorized_keys line carries the key" in text
+
+
+def test_authorized_keys_key_type_must_match_the_pub(rig):
+    wrong = _good_line(rig).replace("ssh-ed25519", "ssh-rsa")
+    pub, keys = _pub_and_keys(rig, wrong)
+    ok, text = up.check_authorized_keys(pub, keys, rig.forced())
+    assert not ok and "no authorized_keys line carries the key" in text
+
+
+def test_authorized_keys_optionless_line_still_matches_key_fields(rig):
+    pub, keys = _pub_and_keys(rig, PUB)
+    ok, text = up.check_authorized_keys(pub, keys, rig.forced())
+    assert not ok and "missing from=" in text  # found as the key, then rejected for its options
+
+
+def _swap_mv(rig, live_pid):
+    """A `mv` stub that, once, swaps a fresh live lock in just before the real rename."""
+    import shutil
+
+    real = shutil.which("mv", path="/usr/bin:/bin")
+    rig.stub(
+        "mv",
+        'if [[ "$1" == *usage-poll.lock && "$2" == *usage-poll.lock.stale.* '
+        '&& -n "${HOS_TEST_MV_SWAP:-}" ]]; then\n'
+        '  rm -rf "$1"; mkdir "$1"; echo "$HOS_TEST_MV_SWAP" > "$1/pid"\n'
+        "fi\n"
+        '"%s" "$@" || exit $?\n'
+        # the interleaving: a third poller takes the lock right after the rename
+        'if [[ -n "${HOS_TEST_MV_AFTER:-}" && "$2" == *usage-poll.lock.stale.* ]]; then\n'
+        '  mkdir "$1"; echo "$HOS_TEST_MV_AFTER" > "$1/pid"\n'
+        "fi\n" % real,
+    )
+    return {"HOS_TEST_MV_SWAP": str(live_pid)}
+
+
+def test_poll_reclaim_rechecks_the_moved_lock(rig):
+    """Reliability N-B: a live lock swapped in before the rename is restored, not reclaimed."""
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    r = rig.run(**_swap_mv(rig, os.getpid()))
+    assert r.returncode == 0 and "restoring it and exiting" in r.stderr, r.stderr
+    assert (lock / "pid").read_text().strip() == str(os.getpid())
+    assert [p.name for p in lock.parent.iterdir()] == ["usage-poll.lock"]
+    assert not (rig.dir / "reading").exists(), "no poll ran, so the reading is unchanged"
+
+
+def test_poll_reclaim_of_a_genuinely_stale_lock_still_wins(rig):
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    _swap_mv(rig, os.getpid())  # stub present but inert: HOS_TEST_MV_SWAP is not set
+    assert rig.run().returncode == 0
+    assert rig.reading().fields["diagnostics"] == "lock_stale_reclaimed"
+    assert not list(lock.parent.glob("usage-poll.lock.stale.*"))
+
+
+def test_poller_sets_umask_077_before_creating_anything():
+    code = [ln for ln in POLLER.read_text().splitlines() if not ln.strip().startswith("#")]
+    first_mkdir = next(i for i, ln in enumerate(code) if "mkdir" in ln)
+    assert code.index("umask 077") < first_mkdir
+
+
+def test_poller_creates_state_dirs_private_under_a_loose_umask(rig):
+    previous = os.umask(0o022)
+    try:
+        assert rig.run().returncode == 0
+    finally:
+        os.umask(previous)
+    assert (rig.state / "locks").stat().st_mode & 0o777 == 0o700
+
+
+def test_poll_restore_does_not_nest_when_a_third_poller_takes_the_lock(rig):
+    """The reviewer's interleaving: the lock appears between the rename and the restore."""
+    lock = rig.state / "locks" / "usage-poll.lock"
+    lock.mkdir(parents=True)
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    env = _swap_mv(rig, os.getpid())
+    env["HOS_TEST_MV_AFTER"] = str(os.getppid())
+    r = rig.run(**env)
+    assert r.returncode == 0 and "restoring it and exiting" in r.stderr, r.stderr
+    assert (lock / "pid").read_text().strip() == str(os.getppid()), "the third poller's lock stays"
+    assert sorted(p.name for p in lock.iterdir()) == ["pid"], "nothing nested inside the lock"
+    assert [p.name for p in lock.parent.iterdir()] == ["usage-poll.lock"]
+    assert not (rig.dir / "reading").exists()

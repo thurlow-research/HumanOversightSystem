@@ -446,3 +446,72 @@ def test_timeout_side_remote_and_local():
     assert "timeout_side" not in keys(ok)
     other = up.classify_read(up.ReadOutcome("exited", 255, None), b"", b"x")
     assert "timeout_side" not in keys(other)
+
+
+# ── per-model reset text (carried-forward bug: _resets read the model NAME) ──
+
+
+def _model_reset_from_text(text, name):
+    """The reset text on `Current week (<name>): N% used · resets <text>`, read independently."""
+    import re
+
+    pattern = r"Current week \(" + re.escape(name) + r"\): [0-9]+% used · resets (.*)"
+    match = re.search(pattern, text)
+    return match.group(1).strip() if match else None
+
+
+def _fixtures_with_models():
+    found = []
+    for path in sorted(FIXTURES.glob("*.json")):
+        env = up.parse_envelope(path.read_bytes())
+        if not env.ok:
+            continue
+        parsed = up.parse_usage(env.result_text)
+        if parsed.ok and parsed.models:
+            found.append(path.name)
+    return found
+
+
+def test_fixtures_with_models_exist():
+    assert len(_fixtures_with_models()) >= 5
+
+
+@pytest.mark.parametrize("name", _fixtures_with_models())
+def test_model_resets_is_the_reset_text_for_every_fixture(name):
+    env, parsed = parse_fixture(name)
+    for model in parsed.models:
+        expected = _model_reset_from_text(env.result_text, model.name)
+        assert model.resets == expected, (name, model)
+        assert model.resets != model.name, (name, model)
+
+
+@pytest.mark.parametrize("name", _fixtures_with_models())
+def test_reading_weekly_model_resets_is_the_reset_text_for_every_fixture(name):
+    env, parsed = parse_fixture(name)
+    cls = up.classify_read(up.ReadOutcome("exited", 0, None), fx(name), b"")
+    fields = dict(
+        up.build_reading(
+            run_epoch=1_000_000,
+            classification=cls,
+            diagnostics=None,
+            previous=None,
+            settings=up.SettingsResult(dict(up.DEFAULTS), "defaults", None, None),
+        )
+    )
+    for model in parsed.models:
+        key = "weekly_model_%s_resets" % model.slug
+        assert fields.get(key) == _model_reset_from_text(env.result_text, model.name), (name, key)
+        assert fields[key] != model.name
+
+
+def test_model_resets_pinned_values():
+    _env, d1 = parse_fixture("d1-envelope-derived.json")
+    assert [(m.name, m.resets) for m in d1.models] == [("Fable", "Oct 3, 12am (UTC)")]
+    _env, two = parse_fixture("envelope-two-models.json")
+    assert {m.name: m.resets for m in two.models}["Opus"] == "Oct 10, 12am (UTC)"
+
+
+def test_model_line_without_resets_has_none():
+    text = "Current session: 5% used\nCurrent week (all models): 6% used\nCurrent week (Fable): 7% used\n"
+    parsed = up.parse_usage(text)
+    assert parsed.ok and [(m.name, m.resets) for m in parsed.models] == [("Fable", None)]
