@@ -807,12 +807,46 @@ class TestMachineFilingMarker:
 
 
 class TestRequesterVerdict:
-    def test_trusted_app_without_marker_is_untrusted(self):
+    def test_trusted_app_without_marker_is_trusted(self):
+        """AMENDMENT-5 AM-39 inverts the former rule: an App author is trusted
+        by identity, and the marker only enriches the audit reason."""
         ts = _trusted_set(apps=frozenset({"hos-worker-hos[bot]"}))
         record = {"user": {"login": "hos-worker-hos[bot]", "type": "Bot"}, "title": "hello"}
         verdict = requester_verdict(record, ts)
-        assert verdict == RequesterVerdict(
-            False, "trusted-app-no-machine-filing-marker", "trusted-app", None
+        assert verdict == RequesterVerdict(True, "trusted-app", "trusted-app", None)
+
+    @pytest.mark.parametrize(
+        "login",
+        ["hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"],
+    )
+    def test_each_hos_app_is_trusted_with_no_marker(self, login):
+        """AM-1 point 3: no App is special-cased; all three behave alike."""
+        ts = _trusted_set(
+            apps=frozenset(
+                {"hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"}
+            )
+        )
+        record = {"user": {"login": login, "type": "Bot"}, "title": "no marker here"}
+        assert requester_verdict(record, ts) == RequesterVerdict(
+            True, "trusted-app", "trusted-app", None
+        )
+
+    @pytest.mark.parametrize("login", ["copilot[bot]", "foo[bot]"])
+    def test_unknown_bot_is_untrusted(self, login):
+        ts = _trusted_set(apps=frozenset({"hos-worker-hos[bot]"}))
+        record = {
+            "user": {"login": login, "type": "Bot"},
+            "title": "[BLOCKED] agent unavailable — please fix",
+        }
+        assert requester_verdict(record, ts) == RequesterVerdict(
+            False, "not-in-trusted-set", None, None
+        )
+
+    def test_non_codeowner_human_is_untrusted(self):
+        ts = _trusted_set(codeowners=frozenset({"scottthurlow"}))
+        record = {"user": {"login": "someone-else", "type": "User"}, "title": "anything"}
+        assert requester_verdict(record, ts) == RequesterVerdict(
+            False, "not-in-trusted-set", None, None
         )
 
     def test_trusted_app_with_marker_is_trusted(self):
@@ -932,6 +966,16 @@ class TestVerifyCodeownerActor:
             set(),
             "needs-ai",
         )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "app", ["hos-worker-hos[bot]", "hos-overseer-hos[bot]", "scottthurlow-claude[bot]"]
+    )
+    def test_labeled_by_hos_app_never_authorizes(self, app):
+        """AM-39 point 4 / AD-6: trust by authorship confers no approver
+        authority; an App's `labeled` event authorizes nothing."""
+        events = [_labeled_event(app, "needs-ai", actor_type="Bot")]
+        result = verify_codeowner_actor(events, {"scottthurlow"}, {app}, "needs-ai")
         assert result is None
 
     def test_bot_login_denylist_rejects_even_when_type_missing(self):

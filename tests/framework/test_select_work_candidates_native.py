@@ -33,7 +33,7 @@ _BLOCKED = {"blocked_by": 1, "blocking": 0, "total_blocked_by": 1, "total_blocki
 _CLOSED_BLOCKER = {"blocked_by": 0, "blocking": 0, "total_blocked_by": 1, "total_blocking": 0}
 _OMIT = object()  # sentinel: drop the summary key entirely
 
-_BOT = {"user": "hos-worker-hos[bot]", "user_type": "Bot"}
+_BOT = {"user": "outside-contributor", "user_type": "User"}
 
 
 # ---------------------------------------------------------------------------

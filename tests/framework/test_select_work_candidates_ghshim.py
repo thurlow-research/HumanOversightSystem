@@ -46,7 +46,7 @@ if len(args) != 2 or args[0] != "api":
 endpoint = args[1]
 if re.match(r"^repos/owner/repo/issues\\?state=open&milestone=5&", endpoint):
     records = [issue(n) for n in (1, 2, 3)]
-    records += [issue(n, "hos-worker-hos[bot]", "Bot") for n in (4, 5)]
+    records += [issue(n, "outside-contributor", "User") for n in (4, 5)]
     print(json.dumps(records))
 elif re.match(r"^repos/owner/repo/issues/4/events\\?", endpoint):
     print(json.dumps([{{
