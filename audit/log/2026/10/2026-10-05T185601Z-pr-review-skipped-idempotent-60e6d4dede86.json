@@ -1,0 +1,1 @@
+{"agent":"overseer","event":"pr-review-skipped-idempotent","head_sha":"7cf5675a8bdfc6aa738f474103b733fa5ffc63a1","pr":1987,"reason":"1215 precheck: HUMAN_REQUIRED verdict (review 5419128652) already posted at this head SHA; needs-human label present; no new commits or human input since"}
