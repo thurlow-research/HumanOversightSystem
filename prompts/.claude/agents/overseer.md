@@ -70,3 +70,13 @@ edits (HOS source repo only)") — not delegated to `coder`.
 2 — code-review round 1: stall guard reworked (above); null `started_at`
     fallback; protection 404/403 → skip; backslash-free `@tsv` jq; note that
     deferral cannot cost a human-approval merge.
+3 — overseer review of PR #1987 (MUST_FIX, human instruction "Worker: Address
+    the comments from Overseer"): the overseer App gets 403 on the classic
+    branch-protection endpoint in this repo (required checks come from
+    rulesets), so the 404/403 → skip branch always fired. Step 2a now reads
+    `rules/branches/<default_branch>` (`required_status_checks` rules) as well
+    and takes the union; it skips only when both reads give no contexts. The
+    cron-prompt pointer matches. Non-blocking finding also applied: the most
+    recent run per context is the highest `id`, not list position. The
+    `Validation stamps current` failure was an uncommitted stamp; the stamp
+    for the final agent content is now committed.
