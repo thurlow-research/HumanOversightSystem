@@ -1068,29 +1068,41 @@ def check_required_content_checks(
     so it stays in sync with whatever is actually promoted to required at call
     time. Rulesets matter because this repo's required checks live there, and
     the overseer App gets 403 on the classic endpoint (#1731, #1588). Each
-    read degrades independently; if BOTH fail the gate fails open (no bounce)
-    — the protected-surface/CODEOWNERS gates that run next still fail closed
-    to HUMAN_REQUIRED, so merge safety is unaffected.
+    read degrades independently, and a single failure is logged at warning.
+    The gate fails open (no bounce, warning logged, diagnostic summary) when
+    both reads fail, or when the ruleset read fails and classic yields no
+    contexts: rulesets are the primary source, so an empty classic set says
+    nothing about what is required. The protected-surface/CODEOWNERS gates
+    that run next still fail closed to HUMAN_REQUIRED, so merge safety is
+    unaffected. Malformed payload elements are ignored, never raised.
     """
     required_contexts: list[str] = []
     errors: list[str] = []
+    ruleset_failed = False
 
     try:
         protection = get_branch_protection(owner, repo, default_branch, retries=0)
-        classic = ((protection or {}).get("required_status_checks") or {}).get("contexts") or []
-        required_contexts.extend(classic)
+        rsc = protection.get("required_status_checks") if isinstance(protection, dict) else None
+        classic = rsc.get("contexts") if isinstance(rsc, dict) else None
+        if isinstance(classic, list):
+            required_contexts.extend(c for c in classic if isinstance(c, str))
     except GitHubError as exc:
         errors.append(f"classic protection read failed: {exc}")
-        logger.info("required-checks gate: classic protection read failed: %s", exc)
+        logger.warning("required-checks gate: classic protection read failed: %s", exc)
+
+    classic_count = len(required_contexts)
 
     try:
         required_contexts.extend(get_ruleset_required_checks(owner, repo, default_branch))
     except GitHubError as exc:
+        ruleset_failed = True
         errors.append(f"ruleset read failed: {exc}")
-        logger.info("required-checks gate: ruleset read failed: %s", exc)
+        logger.warning("required-checks gate: ruleset read failed: %s", exc)
 
-    if len(errors) == 2:
-        summary = "required-checks gate skipped, both reads failed: " + "; ".join(errors)
+    if len(errors) == 2 or (ruleset_failed and classic_count == 0):
+        summary = "required-checks gate skipped, no usable required-check source: " + "; ".join(
+            errors
+        )
         logger.warning(summary)
         return RequiredChecksResult(bounce_required=False, summary=summary)
 
@@ -1100,17 +1112,21 @@ def check_required_content_checks(
 
     runs = list_check_runs_for_ref(owner, repo, head_sha)
     latest_by_name: dict[str, dict] = {}
+
+    def _run_id(r: dict) -> int:
+        rid = r.get("id")
+        return rid if isinstance(rid, int) and not isinstance(rid, bool) else -1
+
     for run in runs:
+        if not isinstance(run, dict):
+            continue
         name = run.get("name")
-        if not name:
+        if not isinstance(name, str) or not name:
             continue
         # List order is not guaranteed; the highest id is the latest run. A
-        # run with a missing id loses to any run that has one.
-        run_id = run.get("id")
+        # run with a missing or non-int id loses to any run that has one.
         current = latest_by_name.get(name)
-        if current is None or (run_id if run_id is not None else -1) > (
-            current["id"] if current.get("id") is not None else -1
-        ):
+        if current is None or _run_id(run) > _run_id(current):
             latest_by_name[name] = run
 
     failing = []

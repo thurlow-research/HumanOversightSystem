@@ -255,6 +255,36 @@ class TestGetRulesetRequiredChecks:
             with pytest.raises(GitHubError):
                 get_ruleset_required_checks("o", "r", "main")
 
+    def test_non_string_context_is_skipped(self):
+        rules = [
+            _rule("tests"),
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [
+                        {"context": {"a": 1}},
+                        {"context": ""},
+                        {"context": 5},
+                    ]
+                },
+            },
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
+
+    def test_page_cap_raises_github_error(self):
+        full = [_rule(f"c{i}") for i in range(100)]
+        with _patch_run([_make_result(200, full)] * 10) as run:
+            with pytest.raises(GitHubError, match="exceeded 10 pages"):
+                get_ruleset_required_checks("o", "r", "main")
+        assert run.call_count == 10
+
+    def test_tenth_partial_page_is_accepted(self):
+        full = [_rule(f"c{i}") for i in range(100)]
+        pages = [_make_result(200, full)] * 9 + [_make_result(200, [_rule("last")])]
+        with _patch_run(pages):
+            assert get_ruleset_required_checks("o", "r", "main")[-1] == "last"
+
     def test_malformed_elements_are_skipped(self):
         rules = [
             "garbage",

@@ -276,3 +276,62 @@ class TestRulesetsAndDegradedReads:
         with _patch_protection(None), _patch_rulesets(["oversight-gate-lint"]), _patch_runs(runs):
             result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
         assert result.bounce_required is True
+
+    def test_ruleset_failure_with_empty_classic_fails_open_with_summary(self):
+        runs = [_run("oversight-gate-lint", "failure")]
+        for classic in (None, _protection([])):
+            with (
+                _patch_protection(classic),
+                _patch_rulesets(raises=GitHubError("ruleset boom")),
+                _patch_runs(runs),
+            ):
+                result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
+            assert result.bounce_required is False
+            assert result.summary
+            assert "ruleset boom" in result.summary
+
+    def test_ruleset_failure_with_failing_classic_context_bounces(self):
+        runs = [_run("oversight-gate-lint", "failure")]
+        with (
+            _patch_protection(_protection(["oversight-gate-lint"])),
+            _patch_rulesets(raises=GitHubError("ruleset boom")),
+            _patch_runs(runs),
+        ):
+            result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
+        assert result.bounce_required is True
+
+    def test_non_dict_run_and_str_id_are_tolerated(self):
+        runs = [
+            "garbage",
+            None,
+            {"name": "oversight-gate-lint", "conclusion": "success", "id": "7"},
+            _run("oversight-gate-lint", "failure", run_id=3),
+            {"name": {"x": 1}, "id": 1},
+        ]
+        with _patch_protection(None), _patch_rulesets(["oversight-gate-lint"]), _patch_runs(runs):
+            result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
+        assert result.bounce_required is True
+
+    def test_classic_with_non_dict_required_status_checks_is_tolerated(self):
+        runs = [_run("oversight-gate-lint", "failure")]
+        with (
+            _patch_protection({"required_status_checks": ["bad"]}),
+            _patch_rulesets(["oversight-gate-lint"]),
+            _patch_runs(runs),
+        ):
+            result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
+        assert result.bounce_required is True
+
+    def test_classic_non_list_contexts_and_non_str_entries_ignored(self):
+        with (
+            _patch_protection({"required_status_checks": {"contexts": "tests"}}),
+            _patch_rulesets([]),
+            _patch_runs([_run("tests", "failure")]),
+        ):
+            assert check_required_content_checks(OWNER, REPO, HEAD_SHA).bounce_required is False
+        with (
+            _patch_protection(_protection([{"a": 1}, "tests"])),
+            _patch_rulesets([]),
+            _patch_runs([_run("tests", "failure")]),
+        ):
+            assert check_required_content_checks(OWNER, REPO, HEAD_SHA).bounce_required is True

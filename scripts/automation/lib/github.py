@@ -284,6 +284,9 @@ def get_branch_protection(
     return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"], retries=retries)
 
 
+_RULES_MAX_PAGES = 10
+
+
 def get_ruleset_required_checks(
     owner: str,
     repo: str,
@@ -297,11 +300,11 @@ def get_ruleset_required_checks(
     branch, or [] if none / not found. Repository rulesets are where this
     repo's required checks live, and the overseer App gets 403 on the classic
     protection endpoint (#1731, #1588). Used by merge_authority.py
-    check_required_content_checks. GitHubError propagates to the caller.
+    check_required_content_checks. GitHubError propagates to the caller,
+    including when more than _RULES_MAX_PAGES full pages come back.
     """
     contexts: list[str] = []
-    page = 1
-    while True:
+    for page in range(1, _RULES_MAX_PAGES + 1):
         batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
         rules = [] if batch is None else batch
         if not isinstance(rules, list):
@@ -317,12 +320,11 @@ def get_ruleset_required_checks(
                 continue
             for check in checks:
                 context = check.get("context") if isinstance(check, dict) else None
-                if context and context not in contexts:
+                if isinstance(context, str) and context and context not in contexts:
                     contexts.append(context)
         if len(rules) < 100:
-            break
-        page += 1
-    return contexts
+            return contexts
+    raise GitHubError(f"rules for {owner}/{repo}@{branch} exceeded {_RULES_MAX_PAGES} pages")
 
 
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
