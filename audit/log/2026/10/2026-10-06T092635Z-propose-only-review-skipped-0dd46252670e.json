@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","disposition":"PROPOSE_ONLY","event":"propose-only-review-skipped","head_sha":"dd9b78a1716c0f48e584fd46149ca06576032600","pr":1998,"reason":"unchanged head, no new comments, live matrix re-derived identical; verdict re-submit suppressed by pr_review.sh G4 (identical_comment_verdict_on_head)"}
