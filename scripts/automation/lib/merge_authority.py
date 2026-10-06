@@ -1076,7 +1076,7 @@ def check_required_content_checks(
     errors: list[str] = []
 
     try:
-        protection = get_branch_protection(owner, repo, default_branch)
+        protection = get_branch_protection(owner, repo, default_branch, retries=0)
         classic = ((protection or {}).get("required_status_checks") or {}).get("contexts") or []
         required_contexts.extend(classic)
     except GitHubError as exc:

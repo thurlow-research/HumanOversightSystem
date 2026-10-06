@@ -70,7 +70,8 @@ def _patch_runs(runs):
 
 class TestCheckRequiredContentChecks:
     def test_no_protection_does_not_bounce(self):
-        with _patch_protection(None), _patch_rulesets(), _patch_runs([]):
+        runs = [_run("oversight-gate-lint", "failure")]
+        with _patch_protection(None), _patch_rulesets(), _patch_runs(runs):
             result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
         assert result.bounce_required is False
 
@@ -180,10 +181,25 @@ class TestRulesetsAndDegradedReads:
         with (
             _patch_protection(raises=GitHubError("boom")),
             _patch_rulesets([]),
-            _patch_runs([]),
+            _patch_runs([_run("oversight-gate-lint", "failure")]),
         ):
             result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
         assert result.bounce_required is False
+
+    def test_classic_read_uses_zero_retries(self):
+        with _patch_protection(None) as classic, _patch_rulesets(), _patch_runs([]):
+            check_required_content_checks(OWNER, REPO, HEAD_SHA)
+        assert classic.call_args.kwargs == {"retries": 0}
+
+    def test_ruleset_bad_shape_error_falls_back_to_classic(self):
+        runs = [_run("tests", "failure")]
+        with (
+            _patch_protection(_protection(["tests"])),
+            _patch_rulesets(raises=GitHubError("unexpected rules payload")),
+            _patch_runs(runs),
+        ):
+            result = check_required_content_checks(OWNER, REPO, HEAD_SHA)
+        assert result.bounce_required is True
 
     def test_ruleset_error_falls_back_to_classic(self):
         runs = [_run("tests", "failure")]

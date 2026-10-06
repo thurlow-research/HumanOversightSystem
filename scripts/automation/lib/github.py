@@ -270,14 +270,18 @@ def get_branch_protection(
     owner: str,
     repo: str,
     branch: str,
+    *,
+    retries: int = 3,
 ) -> Optional[dict[str, Any]]:
     """
     GET /repos/{owner}/{repo}/branches/{branch}/protection
 
     Returns the protection object or None if unprotected / not found.
-    Used by merge_authority.py detect_server_side_gate (O3).
+    Used by merge_authority.py detect_server_side_gate (O3). ``retries`` is
+    passed to _run_gh; callers that treat a failed read as a soft degrade
+    (check_required_content_checks, #1731) pass 0 to skip 403 backoff.
     """
-    return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"])
+    return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"], retries=retries)
 
 
 def get_ruleset_required_checks(
@@ -299,13 +303,20 @@ def get_ruleset_required_checks(
     page = 1
     while True:
         batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
-        rules = batch or []
+        rules = [] if batch is None else batch
+        if not isinstance(rules, list):
+            raise GitHubError(
+                f"unexpected rules payload for {owner}/{repo}@{branch}: "
+                f"expected list, got {type(rules).__name__}"
+            )
         for rule in rules:
-            if rule.get("type") != "required_status_checks":
+            if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
                 continue
             checks = (rule.get("parameters") or {}).get("required_status_checks") or []
+            if not isinstance(checks, list):
+                continue
             for check in checks:
-                context = (check or {}).get("context")
+                context = check.get("context") if isinstance(check, dict) else None
                 if context and context not in contexts:
                     contexts.append(context)
         if len(rules) < 100:

@@ -243,9 +243,30 @@ class TestGetRulesetRequiredChecks:
         assert result[-1] == "c-last"
 
     def test_github_error_propagates(self):
-        with _patch_run([_make_result(403, {"message": "forbidden"})] * 5):
+        with (
+            _patch_run([_make_result(403, {"message": "forbidden"})] * 5),
+            patch("scripts.automation.lib.github.time.sleep"),
+        ):
             with pytest.raises(GitHubError):
                 get_ruleset_required_checks("o", "r", "main")
+
+    def test_dict_payload_raises_github_error(self):
+        with _patch_run([_make_result(200, {"message": "unexpected"})]):
+            with pytest.raises(GitHubError):
+                get_ruleset_required_checks("o", "r", "main")
+
+    def test_malformed_elements_are_skipped(self):
+        rules = [
+            "garbage",
+            None,
+            {"type": "required_status_checks", "parameters": {"required_status_checks": "x"}},
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": [None, "s", {"context": "tests"}]},
+            },
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
 
 
 class TestNoSearchApi:
