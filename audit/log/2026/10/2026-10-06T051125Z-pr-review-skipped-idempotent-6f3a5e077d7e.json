@@ -1,0 +1,1 @@
+{"event":"pr-review-skipped-idempotent","head_sha":"0c8c86aeaa08fb9a4d5f0f6b2ed0c3cc6541aa91","pr":1995,"reason":"1215 precheck: PROPOSE_ONLY NO ACTION verdict already posted at this head SHA (review 5423555447); no new commits, comments, or reviews since"}
