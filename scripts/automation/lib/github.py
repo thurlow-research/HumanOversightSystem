@@ -315,7 +315,8 @@ def get_ruleset_required_checks(
         for rule in rules:
             if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
                 continue
-            checks = (rule.get("parameters") or {}).get("required_status_checks") or []
+            params = rule.get("parameters")
+            checks = params.get("required_status_checks") if isinstance(params, dict) else None
             if not isinstance(checks, list):
                 continue
             for check in checks:

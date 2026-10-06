@@ -272,6 +272,15 @@ class TestGetRulesetRequiredChecks:
         with _patch_run([_make_result(200, rules)]):
             assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
 
+    def test_non_dict_parameters_are_skipped(self):
+        rules = [
+            {"type": "required_status_checks", "parameters": ["x"]},
+            {"type": "required_status_checks", "parameters": "x"},
+            _rule("tests"),
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
+
     def test_page_cap_raises_github_error(self):
         full = [_rule(f"c{i}") for i in range(100)]
         with _patch_run([_make_result(200, full)] * 10) as run:
