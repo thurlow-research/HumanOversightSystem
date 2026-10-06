@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","decision":"HUMAN_REQUIRED","event":"human-required","head_sha":"7c88e048cc506d9a21ba421caf84e4edb1f60015","pr":1987,"reason":"protected surface / CODEOWNERS-human-owned paths; prior MUST_FIX (rulesets) verified resolved","tier":"MEDIUM","verdict_review_id":5422853655}
