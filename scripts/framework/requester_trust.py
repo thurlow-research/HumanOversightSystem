@@ -124,8 +124,10 @@ PERMISSION_TIERS = ("read", "triage", "write", "maintain", "admin")
 COLLABORATOR_PAGE_BOUND = 3  # 300 collaborators. NOT a flag (§1.3.2).
 
 # The real enumeration of deterministic-code issue-filing sites (§1.5.1/1.5.2).
-# Closed against sub-issue filing (AM-10/D-7): entries are REMOVED, never
-# relaxed, the moment an emitting site becomes LLM-composed (D-6 trigger 2).
+# AUDIT ENRICHMENT ONLY (AMENDMENT-5 AM-42): this table labels deterministic
+# filing sites for the audit reason. It never affects eligibility; trusted
+# Apps are trusted by identity (AM-39). An entry whose emitting site becomes
+# LLM-composed is still REMOVED, because its label would then be false.
 MACHINE_FILING_MARKERS: tuple[MachineFilingMarker, ...] = (
     MachineFilingMarker(
         "hos-cron/agent-unavailable",
@@ -188,7 +190,6 @@ _REASON_TOKENS = frozenset(
         "not-in-trusted-set",
         "no-login",
         "bot-in-human-category",
-        "trusted-app-no-machine-filing-marker",
     }
 )
 
@@ -576,7 +577,13 @@ def machine_filing_marker(title: str) -> Optional[MachineFilingMarker]:
 def requester_verdict(record: Mapping[str, Any], trusted_set: TrustedSet) -> RequesterVerdict:
     """The ONLY composition any consumer may use to decide eligibility.
     Reads only record["user"]["login"], record["user"]["type"] and
-    record["title"] (FR5) — never the body, never a label."""
+    record["title"] (FR5) — never the body, never a label.
+
+    A trusted-App author (worker, overseer or human-proxy) is trusted by
+    identity alone (AMENDMENT-5 AM-39). The title is read only to enrich the
+    audit reason: a matched machine-filing marker yields `trusted-app:<id>`
+    with `marker_id` set; otherwise the reason is plain `trusted-app` and
+    `marker_id` is None. Eligibility never depends on the title."""
     user = record.get("user") or {}
     login = user.get("login", "")
     user_type = user.get("type", "")
@@ -586,9 +593,7 @@ def requester_verdict(record: Mapping[str, Any], trusted_set: TrustedSet) -> Req
     if reason == "trusted-app":
         marker = machine_filing_marker(record.get("title") or "")
         if marker is None:
-            return RequesterVerdict(
-                False, "trusted-app-no-machine-filing-marker", "trusted-app", None
-            )
+            return RequesterVerdict(True, "trusted-app", "trusted-app", None)
         return RequesterVerdict(
             True, f"trusted-app:{marker.marker_id}", "trusted-app", marker.marker_id
         )
