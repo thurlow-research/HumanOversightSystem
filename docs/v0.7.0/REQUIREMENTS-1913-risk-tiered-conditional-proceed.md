@@ -120,6 +120,8 @@ Whether the channel is the PR body or a committed artifact (the `signoffs/valida
 - If the block's `head_sha` does not match the PR head, the block counts as **absent**. A later push makes the evaluation stale (the #741 discipline).
 - `overseer.md:245`'s `.claudetmp/signoffs/` instruction is replaced by this channel.
 
+> **Architect ruling (ADR-1913 AF-3, AD-5):** the head-equality rule above cannot be satisfied. Committing an artifact moves the head, and so does `submit_pr.sh`'s merge-from-base (#1162). It is replaced by ADR-1913 AD-5: head-binding to the artifact commit's parent, ancestry, net-diff equivalence by patch-id, and a ratchet across artifact versions.
+
 **FR-6. A missing or stale block on a worker-authored PR is a procedural gap. It bounces, it does not escalate.**
 - The overseer handles it through the existing `record_pr_bounce()` path with `reason_category: REGISTER_GAP` or `COMPLIANCE_FAILURE`, under the same `< 2` budget (`overseer.md:288-290`). There is no new bounce mechanism. See ESC-6.
 - PRs not authored by the worker App (human or human-proxy) are exempt. For those, the overseer's executive summary states "evaluator verdict: not available" under *Not verified this run*.
@@ -165,7 +167,7 @@ Whether the channel is the PR body or a committed artifact (the `signoffs/valida
 
 ## 4. Acceptance criteria
 
-- **AC-1:** Every conditional item in a produced evaluation carries a class and a trigger name, and the class matches the FR-1 table unless the evaluator states a reason for moving it up. A fixture evaluation that tries to classify an authorship WARN or a CRITICAL tier below JUDGMENT is rejected (FR-1).
+- **AC-1:** Every conditional item in a produced evaluation carries a class and a trigger name, and the class matches the FR-1 table unless the evaluator states a reason for moving it up. A fixture evaluation that tries to classify an authorship WARN or a CRITICAL tier below JUDGMENT is rejected (FR-1). *(Architect ruling, ADR-1913 AD-2: such an item is raised to its floor and recorded in `raised_from`. It is not rejected.)*
 - **AC-2:** Fixtures, one per FR-2 rule:
   - ESCALATE condition → ESCALATE.
   - One DEFECT plus one JUDGMENT, budget remaining → BOUNCE.
@@ -205,6 +207,7 @@ Whether the channel is the PR body or a committed artifact (the `signoffs/valida
 - **ESC-3: Should a JUDGMENT item be a qualifying trigger for `pr_review.sh request-reviewer`?** Today #1657 scoping refuses requests for PRs at or below the ceiling and not on a protected surface. Routing the orchestrator through the wrapper (FR-7) therefore *drops* the reviewer request it sends today for those PRs. That notification is lost, although #757 still requires the approval.
   - **Recommended: yes. Add a `conditional_judgment` trigger to `evaluate_reviewer_trigger` (`pr_review_cli.py:899-916`), set only when the evaluation block (FR-4) lists at least one JUDGMENT item for the current head.** It can only add requests and never remove one, so it is not a weakening.
   - Alternative (b): no new trigger, relying on `needs-human` plus #757. This is a minor notification weakening.
+  - > **Architect ruling (ADR-1913 AF-2, §6 ESC-3):** the recommended default above would reverse ADR-1657 AD-3, which the human CONFIRMED as "do not widen". The orchestrator request it would preserve has never fired (F-4). ADR-1913 recommends (b).
 - **ESC-4: Retire per-item threads in favor of the required-reviewer mechanism (#1913 item 3, full form)?** Threads are the only thing that forces a per-item disposition (`required_conversation_resolution`). A reviewer request forces only a whole-PR approval.
   - **Recommended: no. Keep threads for JUDGMENT items (FR-8) until #1936 rules on the native-gate model.** Dropping them now removes per-item enforcement with nothing to replace it.
 - **ESC-5: May an `unparseable` second review be auto-retried once (DEFECT) before it becomes JUDGMENT?**
