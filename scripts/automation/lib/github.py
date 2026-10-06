@@ -280,6 +280,40 @@ def get_branch_protection(
     return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"])
 
 
+def get_ruleset_required_checks(
+    owner: str,
+    repo: str,
+    branch: str,
+) -> list[str]:
+    """
+    GET /repos/{owner}/{repo}/rules/branches/{branch} (all pages).
+
+    Returns the de-duplicated required status-check contexts (first-seen
+    order) from every ``required_status_checks`` rule that applies to the
+    branch, or [] if none / not found. Repository rulesets are where this
+    repo's required checks live, and the overseer App gets 403 on the classic
+    protection endpoint (#1731, #1588). Used by merge_authority.py
+    check_required_content_checks. GitHubError propagates to the caller.
+    """
+    contexts: list[str] = []
+    page = 1
+    while True:
+        batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
+        rules = batch or []
+        for rule in rules:
+            if rule.get("type") != "required_status_checks":
+                continue
+            checks = (rule.get("parameters") or {}).get("required_status_checks") or []
+            for check in checks:
+                context = (check or {}).get("context")
+                if context and context not in contexts:
+                    contexts.append(context)
+        if len(rules) < 100:
+            break
+        page += 1
+    return contexts
+
+
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
     """GET /repos/{owner}/{repo} — basic repo metadata."""
     return _run_gh([f"/repos/{owner}/{repo}"])

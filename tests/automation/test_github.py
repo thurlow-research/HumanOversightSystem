@@ -16,6 +16,7 @@ from scripts.automation.lib.github import (
     RateLimitError,
     _run_gh,
     get_branch,
+    get_ruleset_required_checks,
     list_check_runs_for_ref,
     list_issue_comments,
     list_pulls,
@@ -202,6 +203,49 @@ class TestListCheckRunsForRef:
             result = list_check_runs_for_ref("o", "r", "abc123")
         assert len(result) == 101
         assert result[-1]["name"] == "check-100"
+
+
+def _rule(*contexts: str) -> dict:
+    return {
+        "type": "required_status_checks",
+        "parameters": {"required_status_checks": [{"context": c} for c in contexts]},
+    }
+
+
+class TestGetRulesetRequiredChecks:
+    def test_returns_empty_on_404(self):
+        with _patch_run([_make_result(404)]):
+            assert get_ruleset_required_checks("o", "r", "main") == []
+
+    def test_only_required_status_checks_rules_contribute(self):
+        rules = [
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+            _rule("tests", "oversight-gate-lint"),
+            {"type": "required_status_checks"},
+            {"type": "deletion"},
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert result == ["tests", "oversight-gate-lint"]
+
+    def test_deduplicates_across_rulesets_preserving_order(self):
+        rules = [_rule("tests", "a"), _rule("a", "b", "tests")]
+        with _patch_run([_make_result(200, rules)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert result == ["tests", "a", "b"]
+
+    def test_paginates(self):
+        page1 = [_rule(f"c{i}") for i in range(100)]
+        page2 = [_rule("c-last")]
+        with _patch_run([_make_result(200, page1), _make_result(200, page2)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert len(result) == 101
+        assert result[-1] == "c-last"
+
+    def test_github_error_propagates(self):
+        with _patch_run([_make_result(403, {"message": "forbidden"})] * 5):
+            with pytest.raises(GitHubError):
+                get_ruleset_required_checks("o", "r", "main")
 
 
 class TestNoSearchApi:

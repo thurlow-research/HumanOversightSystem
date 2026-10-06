@@ -33,6 +33,7 @@ from scripts.automation.lib.github import (
     GitHubError,
     _run_gh,
     get_branch_protection,
+    get_ruleset_required_checks,
     list_check_runs_for_ref,
     post_comment,
 )
@@ -1062,16 +1063,38 @@ def check_required_content_checks(
     adds a bounce opportunity, it never removes the human-approval
     requirement for the final merge.
 
-    Reads the live branch-protection required_status_checks.contexts (not a
-    hardcoded list) so it stays in sync with whatever is actually promoted
-    to required at call time.
+    Reads the union of repository-ruleset required checks and classic
+    branch-protection required_status_checks.contexts (not a hardcoded list)
+    so it stays in sync with whatever is actually promoted to required at call
+    time. Rulesets matter because this repo's required checks live there, and
+    the overseer App gets 403 on the classic endpoint (#1731, #1588). Each
+    read degrades independently; if BOTH fail the gate fails open (no bounce)
+    — the protected-surface/CODEOWNERS gates that run next still fail closed
+    to HUMAN_REQUIRED, so merge safety is unaffected.
     """
-    protection = get_branch_protection(owner, repo, default_branch)
-    if not protection:
-        return RequiredChecksResult(bounce_required=False)
+    required_contexts: list[str] = []
+    errors: list[str] = []
 
-    required_contexts = (protection.get("required_status_checks") or {}).get("contexts") or []
-    content_contexts = [c for c in required_contexts if c not in _META_GATE_CHECKS]
+    try:
+        protection = get_branch_protection(owner, repo, default_branch)
+        classic = ((protection or {}).get("required_status_checks") or {}).get("contexts") or []
+        required_contexts.extend(classic)
+    except GitHubError as exc:
+        errors.append(f"classic protection read failed: {exc}")
+        logger.info("required-checks gate: classic protection read failed: %s", exc)
+
+    try:
+        required_contexts.extend(get_ruleset_required_checks(owner, repo, default_branch))
+    except GitHubError as exc:
+        errors.append(f"ruleset read failed: {exc}")
+        logger.info("required-checks gate: ruleset read failed: %s", exc)
+
+    if len(errors) == 2:
+        summary = "required-checks gate skipped, both reads failed: " + "; ".join(errors)
+        logger.warning(summary)
+        return RequiredChecksResult(bounce_required=False, summary=summary)
+
+    content_contexts = [c for c in dict.fromkeys(required_contexts) if c not in _META_GATE_CHECKS]
     if not content_contexts:
         return RequiredChecksResult(bounce_required=False)
 
@@ -1079,9 +1102,15 @@ def check_required_content_checks(
     latest_by_name: dict[str, dict] = {}
     for run in runs:
         name = run.get("name")
-        # GitHub returns check runs most-recently-created first; keep the
-        # first (i.e. latest) occurrence of each name.
-        if name and name not in latest_by_name:
+        if not name:
+            continue
+        # List order is not guaranteed; the highest id is the latest run. A
+        # run with a missing id loses to any run that has one.
+        run_id = run.get("id")
+        current = latest_by_name.get(name)
+        if current is None or (run_id if run_id is not None else -1) > (
+            current["id"] if current.get("id") is not None else -1
+        ):
             latest_by_name[name] = run
 
     failing = []
@@ -1135,8 +1164,8 @@ def bounce_count(cid: str, *, repo_root: str = ".") -> int:
     The audit trail (audit/log/) is append-only and already the source of
     truth for every other per-cid counter in this codebase (contract §6a);
     this derives the count from it rather than maintaining separate state.
-    Shared by step 4a (register-completeness) and step 4b (out-of-scope
-    commits) — "the existing bounce_count(cid) counter" both cite.
+    Shared by step 4a (register-completeness) and step 4c (required
+    content checks) — "the existing bounce_count(cid) counter" both cite.
     """
     count = 0
     for raw in _AUDIT_LOG.read_stream(repo_root):
