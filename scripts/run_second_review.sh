@@ -553,13 +553,16 @@ log_context_advisory() {
 # Delegates JSON construction to python3 so stderr_tail (arbitrary vendor
 # text) is correctly escaped — hand-composing this string in bash is exactly
 # the class of defect this ADR exists to remove (#1683).
+# Optional 3rd arg: path to the `consumption` result (#1718) — embedded in the
+# record for a prompt_not_consumed failure so the numbers are in the artifact.
 second_review_failure_json() {
     local reviewer="$1" record_lens="$2"
     local rc="${VENDOR_INVOKE_RC:-}"
     [[ -z "$rc" ]] && rc=0
     VI_REVIEWER="$reviewer" VI_LENS="$record_lens" VI_CLASS="$VENDOR_INVOKE_CLASS" \
     VI_DETAIL="$VENDOR_INVOKE_DETAIL" VI_RC="$rc" VI_BYTES="${VENDOR_INVOKE_BYTES:-0}" \
-    VI_STDERR="$VENDOR_INVOKE_STDERR" python3 -c '
+    VI_STDERR="$VENDOR_INVOKE_STDERR" VI_CEILING="${VENDOR_INVOKE_MAX_BYTES:-}" \
+    VI_CONSUMPTION_FILE="${3:-}" python3 -c '
 import json, os
 
 reviewer = os.environ["VI_REVIEWER"]
@@ -574,7 +577,23 @@ else:
     error = f"{reviewer} ran and failed ({detail}, rc={rc}) — no independent judgment was produced"
     summary = "Vendor-side failure: resolve the vendor condition and re-run."
 
-print(json.dumps({
+# #1718 — detail-specific summaries for the two input-size failures.
+if detail == "prompt_too_large":
+    summary = (
+        "Prompt exceeds the per-vendor ceiling (#1718). Re-running unchanged will fail "
+        "again. Do NOT narrow with --files or a sub-range --diff to get a pass. The "
+        "evaluator requires reviewed_range to equal the step\x27s register range, and a "
+        "narrowed review is a compliance failure. Escalate to a human, who may "
+        "restructure the step."
+    )
+elif detail == "prompt_not_consumed":
+    summary = (
+        "Vendor reported consuming materially less input than was sent (silent "
+        "truncation, #1718). Escalate to a human. Do not trust a re-run of the same input."
+    )
+
+ceiling = os.environ.get("VI_CEILING", "")
+record = {
     "reviewer": reviewer,
     "lens": os.environ["VI_LENS"],
     "verdict": "error",
@@ -587,7 +606,15 @@ print(json.dumps({
     "stderr_tail": os.environ["VI_STDERR"],
     "error": error,
     "summary": summary,
-}))
+    "prompt_ceiling_bytes": int(ceiling) if ceiling.isdigit() else None,
+}
+if detail == "prompt_not_consumed":
+    try:
+        with open(os.environ.get("VI_CONSUMPTION_FILE", ""), encoding="utf-8") as fh:
+            record["consumption"] = json.load(fh)
+    except Exception:
+        record["consumption"] = None
+print(json.dumps(record))
 '
 }
 
@@ -600,6 +627,9 @@ run_agy_review() {
     # of trying to recover it from the returned review text, which no longer
     # carries the envelope wrapper after #1737's fix.
     local metadata_file="${3:-}"
+    # #1718: optional path to receive the consumption-check result (written here
+    # in the reviewer subshell; read back by the main scope for the advisory).
+    local consumption_file="${4:-}"
 
     local prompt="You are an independent code reviewer. Your lens is CORRECTNESS and SPEC ADHERENCE.
 
@@ -709,6 +739,25 @@ CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object a
         # Overwrites metadata_file with the retry's envelope (#1718) — correct,
         # since $clean (used below) is now the retry's salvage result too.
         clean=$(salvage_review_json "$raw" "$metadata_file") || clean=""
+    fi
+
+    # #1718: agy launched and answered on the last attempt — check from its own
+    # envelope usage that it actually consumed what was sent. The decision logic
+    # is in second_review_logic.py (exit 0 verified/unverified, non-zero fails
+    # closed). A not_consumed result REPLACES the salvaged review: a review of a
+    # truncated prompt must never surface as approve/request_changes/unparseable.
+    # No retry — truncation is deterministic and a re-send only spends quota.
+    if [[ -n "$raw" ]]; then
+        local consumption_out="${consumption_file:-}"
+        [[ -z "$consumption_out" ]] && consumption_out=$(vendor_invoke_tmpfile)
+        if ! python3 "$(dirname "$0")/oversight/second_review_logic.py" consumption \
+            --prompt-bytes "$VENDOR_INVOKE_BYTES" --metadata-file "${metadata_file:-/dev/null}" \
+            --max-bytes-per-token "${SECOND_REVIEW_MAX_BYTES_PER_TOKEN:-}" > "$consumption_out"; then
+            VENDOR_INVOKE_CLASS="vendor"
+            VENDOR_INVOKE_DETAIL="prompt_not_consumed"
+            second_review_failure_json "agy" "$lens" "$consumption_out"
+            return
+        fi
     fi
 
     if [[ -n "$clean" ]]; then
@@ -826,6 +875,29 @@ Return JSON only:
     fi
 }
 
+# ── #1718: unverified-consumption advisory ───────────────────────────────────
+# Non-reviewer block: the heading does not start with agy/codex so the aggregator
+# ignores it, and the JSON is in a PLAIN fence — never ```json — because
+# validation_logic.py extract_json_objects scans every json fence file-wide. The
+# payload must never carry the keys verdict/findings/attacks/error. Verdict-inert.
+append_consumption_advisory() {
+    local payload="$1"
+    {
+        echo "## [ADVISORY] Prompt consumption unverified (#1718)"
+        echo '```'
+        echo "$payload"
+        echo '```'
+        echo ""
+    } >> "$OUTFILE"
+}
+
+append_codex_consumption_advisory() {
+    local ceiling
+    ceiling=$(vendor_invoke_max_bytes codex)
+    append_consumption_advisory \
+        "{\"status\": \"unverified\", \"reason\": \"codex_no_usage_envelope\", \"prompt_ceiling_bytes\": ${ceiling}}"
+}
+
 # ── Execute reviewers ────────────────────────────────────────────────────────
 if $RUN_AGY && $AGY_AVAILABLE; then
     echo "Running agy (correctness + spec adherence)..."
@@ -834,7 +906,8 @@ if $RUN_AGY && $AGY_AVAILABLE; then
     # back into this scope, but a file it writes to a path decided out here
     # does). Read below in the token-usage-report section.
     AGY_USAGE_METADATA_FILE=$(vendor_invoke_tmpfile)
-    AGY_OUT=$(run_agy_review "correctness+spec" "" "$AGY_USAGE_METADATA_FILE")
+    AGY_CONSUMPTION_FILE=$(vendor_invoke_tmpfile)
+    AGY_OUT=$(run_agy_review "correctness+spec" "" "$AGY_USAGE_METADATA_FILE" "$AGY_CONSUMPTION_FILE")
     {
         echo "## agy — Correctness + Spec Adherence"
         echo '```json'
@@ -842,6 +915,9 @@ if $RUN_AGY && $AGY_AVAILABLE; then
         echo '```'
         echo ""
     } >> "$OUTFILE"
+    if grep -q '"status": "unverified"' "$AGY_CONSUMPTION_FILE"; then
+        append_consumption_advisory "$(cat "$AGY_CONSUMPTION_FILE")"
+    fi
     create_finding_issues "agy" "$AGY_OUT"
     log_context_advisory "agy" "$AGY_OUT"
     echo "  done"
@@ -858,6 +934,7 @@ elif $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
         echo '```'
         echo ""
     } >> "$OUTFILE"
+    append_codex_consumption_advisory
     create_finding_issues "codex-fallback" "$FALLBACK_OUT"
     log_context_advisory "codex-fallback" "$FALLBACK_OUT"
     echo "  done (fallback)"
@@ -877,6 +954,7 @@ if $RUN_CODEX && $CODEX_AVAILABLE && ! ( $RUN_AGY && ! $AGY_AVAILABLE ); then
         echo '```'
         echo ""
     } >> "$OUTFILE"
+    append_codex_consumption_advisory
     create_finding_issues "codex" "$CODEX_OUT"
     log_context_advisory "codex" "$CODEX_OUT"
     echo "  done"
@@ -1008,6 +1086,9 @@ FINAL_VERDICT=$(grep -m1 '^verdict:' "$OUTFILE" | awk '{print $2}')
 if [[ "$FINAL_VERDICT" == "error" ]]; then
     echo "run_second_review: FAIL-CLOSED — a required reviewer errored at runtime (verdict=error)." >&2
     echo "  The mandatory cross-vendor review did not produce an independent judgment. Re-run." >&2
+    if grep -qE '"outcome_detail": "(prompt_too_large|prompt_not_consumed)"' "$OUTFILE"; then
+        echo "  Input-size failure (#1718): re-running unchanged will not help — escalate to a human; do not narrow with --files or a sub-range --diff." >&2
+    fi
     exit 1
 fi
 # ── Fail closed on a blocking review verdict (#986) ──────────────────────────

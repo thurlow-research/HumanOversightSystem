@@ -616,3 +616,134 @@ def test_degradation_lines_name_the_artifact_they_actually_measured():
     assert "tier 1 digest" in lines[0], lines[0]
     assert "tier 2 digest" in lines[1], lines[1]
     assert "full summary" not in " ".join(lines)
+
+
+# ── #1718 — assess_consumption ───────────────────────────────────────────────
+
+assess_consumption = second_review_logic.assess_consumption
+_T = 6.0
+
+
+def _meta(input_tokens, cache=None, num_turns=None):
+    usage = {"input_tokens": input_tokens}
+    if cache is not None:
+        usage["cache_read_tokens"] = cache
+    meta = {"usage": usage}
+    if num_turns is not None:
+        meta["num_turns"] = num_turns
+    return meta
+
+
+def test_consumption_verified_at_four_bytes_per_token():
+    r = assess_consumption(400_000, _meta(100_000), _T)
+    assert r["status"] == "verified"
+    assert r["bytes_per_token"] == 4.0
+    assert set(r) == {
+        "status", "prompt_bytes", "input_tokens", "cache_read_tokens",
+        "consumed_tokens", "bytes_per_token", "threshold", "num_turns", "reason",
+    }
+
+
+def test_consumption_not_consumed_for_the_measured_1718_case():
+    r = assess_consumption(793_000, _meta(68_000), _T)
+    assert r["status"] == "not_consumed"
+    assert round(r["bytes_per_token"], 1) == 11.7
+
+
+def test_consumption_threshold_boundary():
+    assert assess_consumption(600, _meta(100), _T)["status"] == "verified"
+    assert assess_consumption(60_001, _meta(10_000), _T)["status"] == "not_consumed"
+
+
+def test_consumption_cache_both_readings_over_is_not_consumed():
+    r = assess_consumption(1_000_000, _meta(100_000, cache=50_000), _T)
+    assert r["status"] == "not_consumed"
+    assert r["consumed_tokens"] == 150_000
+
+
+def test_consumption_cache_readings_disagree_is_unverified():
+    # generous 900k/150k = 6.0 (<= T) but input-only 900k/100k = 9.0 (> T)
+    r = assess_consumption(900_000, _meta(100_000, cache=50_000), _T)
+    assert r["status"] == "unverified"
+    assert r["reason"] == "cache_semantics_unmeasured"
+
+
+def test_consumption_cache_both_readings_under_is_verified():
+    assert assess_consumption(400_000, _meta(100_000, cache=50_000), _T)["status"] == "verified"
+
+
+def test_consumption_multi_turn_under_threshold_is_unverified():
+    r = assess_consumption(400_000, _meta(100_000, num_turns=3), _T)
+    assert r["status"] == "unverified" and r["reason"] == "multi_turn"
+
+
+def test_consumption_multi_turn_over_threshold_is_still_not_consumed():
+    assert assess_consumption(793_000, _meta(68_000, num_turns=3), _T)["status"] == "not_consumed"
+
+
+def test_consumption_bool_num_turns_is_ignored():
+    assert assess_consumption(400_000, _meta(100_000, num_turns=True), _T)["status"] == "verified"
+
+
+def test_consumption_invalid_input_tokens_fail_closed():
+    for bad in (0, True, "68000", -4, 1.5):
+        assert assess_consumption(400_000, _meta(bad), _T)["status"] == "invalid_usage", bad
+
+
+def test_consumption_negative_or_garbage_cache_is_invalid():
+    assert assess_consumption(400_000, _meta(100_000, cache=-1), _T)["status"] == "invalid_usage"
+    assert assess_consumption(400_000, _meta(100_000, cache="x"), _T)["status"] == "invalid_usage"
+
+
+def test_consumption_no_usage_is_unverified():
+    for meta in ({}, {"usage": None}, {"usage": {"output_tokens": 5}}, {"usage": []}):
+        r = assess_consumption(400_000, meta, _T)
+        assert r["status"] == "unverified" and r["reason"] == "no_usage", meta
+
+
+def test_consumption_threshold_clamp_is_lower_only():
+    resolve = second_review_logic.resolve_threshold
+    assert resolve("9.0")[0] == 6.0 and resolve("9.0")[1]
+    assert resolve("3.0") == (3.0, "")
+    assert resolve("")[0] == 6.0 and resolve("")[1] == ""
+    for bad in ("abc", "nan", "inf", "1.0", "-3"):
+        assert resolve(bad)[0] == 6.0 and resolve(bad)[1], bad
+
+
+def _run_consumption_cli(tmp_path, capsys, meta_text, prompt_bytes, extra=()):
+    meta = tmp_path / "meta.json"
+    if meta_text is not None:
+        meta.write_text(meta_text)
+    rc = second_review_logic.main(
+        ["consumption", "--prompt-bytes", str(prompt_bytes), "--metadata-file", str(meta), *extra]
+    )
+    out = capsys.readouterr().out
+    return rc, json.loads(out)
+
+
+def test_consumption_cli_exit_codes(tmp_path, capsys):
+    rc, r = _run_consumption_cli(tmp_path, capsys, json.dumps(_meta(100_000)), 400_000)
+    assert (rc, r["status"]) == (0, "verified")
+    rc, r = _run_consumption_cli(tmp_path, capsys, "{}", 400_000)
+    assert (rc, r["status"]) == (0, "unverified")
+    rc, r = _run_consumption_cli(tmp_path, capsys, json.dumps(_meta(68_000)), 793_000)
+    assert (rc, r["status"]) == (1, "not_consumed")
+    rc, r = _run_consumption_cli(tmp_path, capsys, json.dumps(_meta(0)), 400_000)
+    assert (rc, r["status"]) == (1, "invalid_usage")
+
+
+def test_consumption_cli_missing_or_garbage_metadata_is_unverified(tmp_path, capsys):
+    rc, r = _run_consumption_cli(tmp_path, capsys, None, 400_000)
+    assert (rc, r["status"]) == (0, "unverified")
+    rc, r = _run_consumption_cli(tmp_path, capsys, "{not json", 400_000)
+    assert (rc, r["status"]) == (0, "unverified")
+    rc, r = _run_consumption_cli(tmp_path, capsys, "[1,2]", 400_000)
+    assert (rc, r["status"]) == (0, "unverified")
+
+
+def test_consumption_cli_threshold_override(tmp_path, capsys):
+    meta = json.dumps(_meta(100_000))
+    rc, r = _run_consumption_cli(tmp_path, capsys, meta, 400_000, ("--max-bytes-per-token", "3.0"))
+    assert (rc, r["status"], r["threshold"]) == (1, "not_consumed", 3.0)
+    rc, r = _run_consumption_cli(tmp_path, capsys, meta, 700_000, ("--max-bytes-per-token", "9.0"))
+    assert (rc, r["status"], r["threshold"]) == (1, "not_consumed", 6.0)

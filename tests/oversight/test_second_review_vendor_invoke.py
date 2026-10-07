@@ -151,22 +151,28 @@ def test_oversized_prompt_reaches_the_reviewer_on_stdin(tmp_path):
     `#!/bin/sh` stub is just as unable to be launched with a 174 KB argv
     element as the real agy — E2BIG is raised by the kernel, independent of
     the target binary — so this fails before the fix and passes after."""
-    _make_target(tmp_path, size=200_000)
+    # 150_000 keeps the prompt above 131,072 (the ADR-1683 argv point) and under
+    # the #1718 agy ceiling of 180,000 — asserted below so the two constraints
+    # cannot drift apart silently.
+    _make_target(tmp_path, size=150_000)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    size_file = tmp_path / "prompt_size.txt"
     _write_exec(
         fake_bin / "agy",
-        """#!/bin/sh
+        f"""#!/bin/sh
 n=$(wc -c)
+echo "$n" > {size_file}
 if [ "$n" -gt 131072 ]; then
-    printf '%s' '{"reviewer":"agy","lens":"correctness+spec","findings":[],"verdict":"approve","summary":"clean"}'
+    printf '%s' '{{"reviewer":"agy","lens":"correctness+spec","findings":[],"verdict":"approve","summary":"clean"}}'
 fi
 """,
     )
 
     r = _run(tmp_path, fake_bin)
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+    assert 131_072 < int(size_file.read_text()) <= 180_000
     content = _artifact_text(tmp_path)
     assert "verdict: approve" in content, content
     assert "invocation failed" not in content, content
@@ -180,7 +186,7 @@ def test_argv_still_carries_no_prompt_content(tmp_path):
     """Pins the property directly (longest argv element < 4096 bytes) rather
     than inferring it from a size threshold, so it keeps holding if the cap
     ever changes."""
-    _make_target(tmp_path, size=200_000)
+    _make_target(tmp_path, size=150_000)  # above 131,072, under the 180,000 #1718 ceiling
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

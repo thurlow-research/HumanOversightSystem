@@ -22,9 +22,20 @@
 #       result=$(cat "$stdout_file")
 #   else
 #       # $VENDOR_INVOKE_CLASS / $VENDOR_INVOKE_DETAIL / $VENDOR_INVOKE_STDERR /
-#       # $VENDOR_INVOKE_RC / $VENDOR_INVOKE_BYTES are set on every call.
+#       # $VENDOR_INVOKE_RC / $VENDOR_INVOKE_BYTES / $VENDOR_INVOKE_MAX_BYTES
+#       # are set on every call.
 #       :
 #   fi
+#
+# PER-VENDOR PROMPT CEILING (#1718): agy has been measured silently truncating an
+# oversized prompt while reporting SUCCESS, so vendor_invoke REFUSES, before
+# launching anything, a prompt larger than the vendor's byte ceiling (agy 180,000;
+# codex 1,048,576 — codex's ceiling is a loud-failure classification bound from
+# #1384, not a truncation bound). The refusal is class `harness`, detail
+# `prompt_too_large`; the binary is never launched. Ceilings may only be LOWERED,
+# via VENDOR_INVOKE_MAX_BYTES_AGY / VENDOR_INVOKE_MAX_BYTES_CODEX; a larger or
+# malformed value is ignored with a stderr warning. `vendor_invoke_max_bytes
+# <vendor>` prints the effective ceiling and is the only implementation of it.
 #
 # vendor_invoke_tmpfile creates a file under this helper's own per-process temp
 # directory (D-6), so the EXIT/INT/TERM trap installed on first use cleans it up
@@ -53,7 +64,7 @@
 # helper owns only the base command and the stdin contract, never prompt content.
 
 # shellcheck disable=SC2034
-# The five VENDOR_INVOKE_* globals are this library's public output contract,
+# The six VENDOR_INVOKE_* globals are this library's public output contract,
 # read by the sourcing caller (see `second_review_failure_json` in
 # scripts/run_second_review.sh). shellcheck cannot follow a `source` back into
 # the consumer, so it reports every one of them as unused. Scoped to the whole
@@ -74,6 +85,56 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/run_with_retry.sh"
 
 _VENDOR_INVOKE_TMPDIR=""
 _VENDOR_INVOKE_TRAP_INSTALLED=""
+
+# Per-vendor prompt byte ceilings (#1718). Read-only defaults; env may only lower.
+# agy: observed silent truncation near 270 KB / ~68k input tokens (#1718); 180,000
+# B stays under it even at a dense 3.0 B/token.
+_VENDOR_INVOKE_DEFAULT_MAX_BYTES_AGY=180000
+# codex: its turn/start API rejects input over 1,048,576 characters loudly
+# (#1384, CODEX_MAX_INPUT_CHARS in scripts/framework/validate_agents.sh). Bytes are
+# >= characters, so this never admits a prompt codex would reject on length. It is
+# a deterministic-classification bound, NOT a truncation bound.
+_VENDOR_INVOKE_DEFAULT_MAX_BYTES_CODEX=1048576
+
+# Set by _vendor_invoke_resolve_ceiling (not via command substitution, so they
+# survive in the caller's shell).
+_VENDOR_INVOKE_CEILING=""
+_VENDOR_INVOKE_CEILING_LOWERED_BY=""
+
+# _vendor_invoke_resolve_ceiling <vendor> — the ONLY implementation of the
+# lower-only clamp. Sets _VENDOR_INVOKE_CEILING and, when an env var lowered it,
+# _VENDOR_INVOKE_CEILING_LOWERED_BY (the variable's name). Returns 1 for an
+# unknown vendor. Falling back to the default on a bad value is the stronger
+# setting, so ignoring it is safe; it is never silent.
+_vendor_invoke_resolve_ceiling() {
+    local vendor="$1" default env_name env_val
+    _VENDOR_INVOKE_CEILING=""
+    _VENDOR_INVOKE_CEILING_LOWERED_BY=""
+    case "$vendor" in
+        agy)   default="$_VENDOR_INVOKE_DEFAULT_MAX_BYTES_AGY";   env_name="VENDOR_INVOKE_MAX_BYTES_AGY" ;;
+        codex) default="$_VENDOR_INVOKE_DEFAULT_MAX_BYTES_CODEX"; env_name="VENDOR_INVOKE_MAX_BYTES_CODEX" ;;
+        *) return 1 ;;
+    esac
+    _VENDOR_INVOKE_CEILING="$default"
+    env_val="${!env_name:-}"
+    [[ -z "$env_val" ]] && return 0
+    if [[ "$env_val" =~ ^[1-9][0-9]*$ && ${#env_val} -le 18 ]] && (( env_val <= default )); then
+        if (( env_val < default )); then
+            _VENDOR_INVOKE_CEILING="$env_val"
+            _VENDOR_INVOKE_CEILING_LOWERED_BY="$env_name"
+        fi
+    else
+        echo "vendor_invoke: ignoring ${env_name}=${env_val} — may only lower the ${default}-byte ceiling" >&2
+    fi
+    return 0
+}
+
+# vendor_invoke_max_bytes <vendor> — print the effective prompt ceiling in bytes.
+# Prints nothing and returns 1 for an unknown vendor.
+vendor_invoke_max_bytes() {
+    _vendor_invoke_resolve_ceiling "$1" || return 1
+    printf '%s\n' "$_VENDOR_INVOKE_CEILING"
+}
 
 # _vendor_invoke_init_tmpdir — create the one per-process temp dir (idempotent).
 # mktemp -d (not mkdir -p on a $$-suffixed path): mode 0700 regardless of the
@@ -194,9 +255,11 @@ _vendor_invoke_is_arg_parse_error() {
 #   VENDOR_INVOKE_CLASS    ok | harness | vendor
 #   VENDOR_INVOKE_DETAIL   ok | unknown_vendor | binary_not_found | not_executable |
 #                          exec_failed | argv_content_detected | vendor_nonzero_exit |
-#                          timeout | empty_output | arg_parse_failed
+#                          timeout | empty_output | arg_parse_failed |
+#                          prompt_too_large (class harness, never launched, #1718)
 #   VENDOR_INVOKE_STDERR   redacted, single-line, <=500-byte tail (D-5)
 #   VENDOR_INVOKE_BYTES    byte size of <prompt_file>
+#   VENDOR_INVOKE_MAX_BYTES effective prompt ceiling for the vendor ("" if unknown vendor)
 vendor_invoke() {
     local vendor="$1" timeout_sec="$2" prompt_file="$3" stdout_file="$4"
     shift 4
@@ -209,6 +272,7 @@ vendor_invoke() {
     VENDOR_INVOKE_DETAIL=""
     VENDOR_INVOKE_STDERR=""
     VENDOR_INVOKE_BYTES=0
+    VENDOR_INVOKE_MAX_BYTES=""
     : > "$stdout_file"
 
     if [[ -f "$prompt_file" ]]; then
@@ -239,6 +303,20 @@ vendor_invoke() {
             return 1
             ;;
     esac
+
+    # #1718: ceiling check BEFORE command -v and launch, so refusal is
+    # deterministic and the binary is never started on an oversized prompt.
+    _vendor_invoke_resolve_ceiling "$vendor"
+    VENDOR_INVOKE_MAX_BYTES="$_VENDOR_INVOKE_CEILING"
+    if [[ "$VENDOR_INVOKE_BYTES" -gt "$VENDOR_INVOKE_MAX_BYTES" ]]; then
+        local lowered=""
+        [[ -n "$_VENDOR_INVOKE_CEILING_LOWERED_BY" ]] && lowered=" (lowered by ${_VENDOR_INVOKE_CEILING_LOWERED_BY})"
+        VENDOR_INVOKE_CLASS="harness"
+        VENDOR_INVOKE_DETAIL="prompt_too_large"
+        VENDOR_INVOKE_STDERR="vendor_invoke: refused — prompt is ${VENDOR_INVOKE_BYTES} bytes, over the ${VENDOR_INVOKE_MAX_BYTES}-byte ${vendor} ceiling${lowered} (#1718: agy silently truncates oversized input). Narrow the input; do not re-run as-is."
+        echo "$VENDOR_INVOKE_STDERR" >&2
+        return 1
+    fi
 
     if ! command -v "${base[0]}" &>/dev/null; then
         VENDOR_INVOKE_CLASS="harness"

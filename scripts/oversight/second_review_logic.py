@@ -769,6 +769,106 @@ def salvage_review_json(raw: str) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+# #1718 — prompt consumption check                                            #
+# --------------------------------------------------------------------------- #
+# agy has been measured silently truncating an oversized prompt while reporting
+# status SUCCESS; the only evidence is the envelope's own `usage` token counts.
+# A prompt of N bytes that agy "consumed" in far fewer than N/threshold tokens
+# was not read in full. Pure: no I/O. Decision logic lives here, not in shell (#314).
+_DEFAULT_MAX_BYTES_PER_TOKEN = 6.0
+_MIN_MAX_BYTES_PER_TOKEN = 2.0
+
+
+def resolve_threshold(raw) -> tuple[float, str]:
+    """Lower-only clamp of the bytes/token threshold (#985 precedent). Returns
+    (threshold, warning). `raw` None or "" means "use the default", silently. A
+    value that is not a finite float in [2.0, 6.0] keeps the default and warns."""
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_MAX_BYTES_PER_TOKEN, ""
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        value = float("nan")
+    if not (_MIN_MAX_BYTES_PER_TOKEN <= value <= _DEFAULT_MAX_BYTES_PER_TOKEN):
+        return _DEFAULT_MAX_BYTES_PER_TOKEN, (
+            f"second_review_logic consumption: ignoring max-bytes-per-token={raw!r} — "
+            f"must be a finite number in [{_MIN_MAX_BYTES_PER_TOKEN}, "
+            f"{_DEFAULT_MAX_BYTES_PER_TOKEN}]; keeping {_DEFAULT_MAX_BYTES_PER_TOKEN}"
+        )
+    return value, ""
+
+
+def _is_plain_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def assess_consumption(prompt_bytes: int, metadata: dict, max_bytes_per_token: float) -> dict:
+    """Decide whether the vendor consumed the prompt it was sent (#1718).
+
+    status: verified | unverified | not_consumed | invalid_usage. See the
+    technical design §5 for the ordering rationale; in short, `not_consumed`
+    needs BOTH readings of cache_read_tokens (summed / not summed) to agree the
+    ratio is over the threshold, and `verified` needs both to agree it is under.
+    """
+    threshold = max_bytes_per_token
+    num_turns = metadata.get("num_turns") if isinstance(metadata, dict) else None
+    result = {
+        "status": "unverified",
+        "prompt_bytes": prompt_bytes,
+        "input_tokens": None,
+        "cache_read_tokens": None,
+        "consumed_tokens": None,
+        "bytes_per_token": None,
+        "threshold": threshold,
+        "num_turns": num_turns,
+        "reason": "",
+    }
+    usage = metadata.get("usage") if isinstance(metadata, dict) else None
+    if not isinstance(usage, dict) or "input_tokens" not in usage:
+        result["reason"] = "no_usage"
+        return result
+
+    input_tokens = usage["input_tokens"]
+    result["input_tokens"] = input_tokens
+    if not _is_plain_int(input_tokens) or input_tokens <= 0:
+        result["status"] = "invalid_usage"
+        result["reason"] = "invalid_input_tokens"
+        return result
+
+    cache = usage.get("cache_read_tokens", 0)
+    result["cache_read_tokens"] = cache
+    if not _is_plain_int(cache) or cache < 0:
+        result["status"] = "invalid_usage"
+        result["reason"] = "invalid_cache_read_tokens"
+        return result
+
+    consumed = input_tokens + cache
+    result["consumed_tokens"] = consumed
+
+    if not _is_plain_int(prompt_bytes) or prompt_bytes <= 0:
+        result["reason"] = "no_prompt_bytes"
+        return result
+
+    generous = prompt_bytes / consumed
+    result["bytes_per_token"] = generous
+    if generous > threshold:
+        result["status"] = "not_consumed"
+        result["reason"] = "bytes_per_token_over_threshold"
+        return result
+
+    if _is_plain_int(num_turns) and num_turns > 1:
+        result["reason"] = "multi_turn"
+        return result
+
+    if cache > 0 and prompt_bytes / input_tokens > threshold:
+        result["reason"] = "cache_semantics_unmeasured"
+        return result
+
+    result["status"] = "verified"
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # R5 (ADR-1683 D-3) — validator-summary digest                                #
 # --------------------------------------------------------------------------- #
 # `run_second_review.sh` no longer interpolates the raw validators/summary.json
@@ -1057,6 +1157,26 @@ def _cmd_digest_validators(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_consumption(args: argparse.Namespace) -> int:
+    """CLI shim over assess_consumption (#1718). Prints the result as one JSON
+    line. Exit 0 for verified/unverified, 1 for not_consumed/invalid_usage; the
+    shell treats any non-zero exit as a failure, so this fails closed. A missing,
+    unreadable or non-JSON metadata file is treated as `{}` (unverified)."""
+    threshold, warning = resolve_threshold(args.max_bytes_per_token)
+    if warning:
+        print(warning, file=sys.stderr)
+    try:
+        with open(args.metadata_file, encoding="utf-8") as fh:
+            metadata = json.load(fh)
+        if not isinstance(metadata, dict):
+            metadata = {}
+    except Exception:
+        metadata = {}
+    result = assess_consumption(args.prompt_bytes, metadata, threshold)
+    print(json.dumps(result))
+    return 0 if result["status"] in ("verified", "unverified") else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Second-review reviewer selection + verdict aggregation (SPEC-331)."
@@ -1101,6 +1221,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_dig.add_argument("--file", required=True, help="validators summary.json path")
     p_dig.set_defaults(func=_cmd_digest_validators)
+
+    p_con = sub.add_parser(
+        "consumption",
+        help="Check whether the vendor consumed the whole prompt from the "
+        "envelope's usage metadata (#1718). Exit 1 on not_consumed/invalid_usage.",
+    )
+    p_con.add_argument("--prompt-bytes", type=int, required=True)
+    p_con.add_argument("--metadata-file", required=True)
+    p_con.add_argument(
+        "--max-bytes-per-token",
+        default="",
+        help="optional raw threshold; lower-only clamp to [2.0, 6.0] applies",
+    )
+    p_con.set_defaults(func=_cmd_consumption)
 
     args = parser.parse_args(argv)
     return args.func(args)
