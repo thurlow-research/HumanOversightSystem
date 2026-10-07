@@ -586,6 +586,11 @@ if detail == "prompt_too_large":
         "narrowed review is a compliance failure. Escalate to a human, who may "
         "restructure the step."
     )
+elif detail == "consumption_check_failed":
+    summary = (
+        "The prompt-consumption check itself crashed (#1718), so truncation could not be "
+        "ruled out. Fix the checker (second_review_logic.py consumption) and re-run."
+    )
 elif detail == "prompt_not_consumed":
     summary = (
         "Vendor reported consuming materially less input than was sent (silent "
@@ -608,7 +613,7 @@ record = {
     "summary": summary,
     "prompt_ceiling_bytes": int(ceiling) if ceiling.isdigit() else None,
 }
-if detail == "prompt_not_consumed":
+if detail in ("prompt_not_consumed", "consumption_check_failed"):
     try:
         with open(os.environ.get("VI_CONSUMPTION_FILE", ""), encoding="utf-8") as fh:
             record["consumption"] = json.load(fh)
@@ -753,8 +758,16 @@ CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object a
         if ! python3 "$(dirname "$0")/oversight/second_review_logic.py" consumption \
             --prompt-bytes "$VENDOR_INVOKE_BYTES" --metadata-file "${metadata_file:-/dev/null}" \
             --max-bytes-per-token "${SECOND_REVIEW_MAX_BYTES_PER_TOKEN:-}" > "$consumption_out"; then
-            VENDOR_INVOKE_CLASS="vendor"
-            VENDOR_INVOKE_DETAIL="prompt_not_consumed"
+            # A real not_consumed/invalid_usage verdict prints a JSON result with
+            # a status; a crash or argparse error prints nothing parseable.
+            if python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["status"]' \
+                "$consumption_out" >/dev/null 2>&1; then
+                VENDOR_INVOKE_CLASS="vendor"
+                VENDOR_INVOKE_DETAIL="prompt_not_consumed"
+            else
+                VENDOR_INVOKE_CLASS="harness"
+                VENDOR_INVOKE_DETAIL="consumption_check_failed"
+            fi
             second_review_failure_json "agy" "$lens" "$consumption_out"
             return
         fi
@@ -915,7 +928,9 @@ if $RUN_AGY && $AGY_AVAILABLE; then
         echo '```'
         echo ""
     } >> "$OUTFILE"
-    if grep -q '"status": "unverified"' "$AGY_CONSUMPTION_FILE"; then
+    AGY_CONSUMPTION_STATUS=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("status", ""))' \
+        "$AGY_CONSUMPTION_FILE" 2>/dev/null) || AGY_CONSUMPTION_STATUS=""
+    if [[ "$AGY_CONSUMPTION_STATUS" == "unverified" ]]; then
         append_consumption_advisory "$(cat "$AGY_CONSUMPTION_FILE")"
     fi
     create_finding_issues "agy" "$AGY_OUT"

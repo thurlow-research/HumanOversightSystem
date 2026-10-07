@@ -107,7 +107,8 @@ Re-running unchanged cannot succeed, which matches the existing harness summary
 
 Pure function `assess_consumption(prompt_bytes: int, metadata: dict, max_bytes_per_token: float) -> dict`.
 No I/O. Returns exactly these keys:
-`status, prompt_bytes, input_tokens, cache_read_tokens, consumed_tokens, bytes_per_token, threshold, reason`.
+`status, prompt_bytes, input_tokens, cache_read_tokens, consumed_tokens, bytes_per_token, threshold, reason`
+(num_turns added in implementation; review round 1).
 
 Algorithm (evaluated in this order):
 1. `usage = metadata.get("usage")`. If it is not a dict, or it has no `input_tokens` key →

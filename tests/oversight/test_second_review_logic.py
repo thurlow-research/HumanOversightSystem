@@ -708,6 +708,13 @@ def test_consumption_no_usage_is_unverified():
         assert r["status"] == "unverified" and r["reason"] == "no_usage", meta
 
 
+def test_consumption_no_prompt_bytes_is_unverified():
+    for nbytes in (0, -5, True, None):
+        r = assess_consumption(nbytes, _meta(100_000), _T)
+        assert r["status"] == "unverified" and r["reason"] == "no_prompt_bytes", nbytes
+        assert r["bytes_per_token"] is None and r["consumed_tokens"] == 100_000
+
+
 def test_consumption_threshold_clamp_is_lower_only():
     resolve = second_review_logic.resolve_threshold
     assert resolve("9.0")[0] == 6.0 and resolve("9.0")[1]

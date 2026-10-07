@@ -125,6 +125,40 @@ sys.stdout.write(json.dumps(env))
     return side, counter, marker
 
 
+def _agy_sequence_stub(stub: Path, tmp_path: Path, calls: list[dict]) -> tuple[Path, Path]:
+    """A fake agy whose Nth launch follows calls[N] (the last entry repeats):
+    {"keep": bytes of the prompt it "reads" (None = all), "prose": answer with
+    prose instead of the review JSON}. Every envelope carries usage proportionate
+    to `keep` (4 bytes/token). Appends each launch's received byte count to the
+    returned lengths file, one per line."""
+    counter = tmp_path / "agy_seq_count.txt"
+    lengths = tmp_path / "agy_seq_lengths.txt"
+    _write_stub(
+        stub / "agy",
+        f"""#!/usr/bin/env python3
+import json, sys
+data = sys.stdin.buffer.read()
+calls = {calls!r}
+try:
+    n = len(open({str(counter)!r}).read().split())
+except FileNotFoundError:
+    n = 0
+with open({str(counter)!r}, "a") as fh:
+    fh.write("x\\n")
+with open({str(lengths)!r}, "a") as fh:
+    fh.write(str(len(data)) + "\\n")
+call = calls[min(n, len(calls) - 1)]
+keep = call.get("keep")
+kept = len(data) if keep is None else min(keep, len(data))
+resp = "Here is my prose review, no JSON." if call.get("prose") else json.dumps({_APPROVE!r})
+env = {{"status": "SUCCESS", "conversation_id": "c", "response": resp,
+       "usage": {{"input_tokens": max(kept // 4, 1), "output_tokens": 50}}}}
+sys.stdout.write(json.dumps(env))
+""",
+    )
+    return counter, lengths
+
+
 def _codex_stub(stub: Path) -> None:
     _write_stub(
         stub / "codex",
@@ -378,6 +412,86 @@ def test_full_consumption_passes(tmp_path):
     content = _artifact(tmp_path)
     assert "verdict: approve" in content
     assert "Prompt consumption unverified" not in content
+
+
+# ── run_agy_review retry path ─────────────────────────────────────────────────
+
+
+def test_retry_prompt_over_ceiling_fails_closed_after_one_launch(tmp_path):
+    """First prompt fits under the ceiling, the reinforce suffix pushes the
+    retry over it: prompt_too_large, error verdict, exactly one agy launch."""
+    _make_target(tmp_path, 20_000)
+    stub = _stub_path(tmp_path)
+    counter, lengths = _agy_sequence_stub(stub, tmp_path, [{"prose": True}])
+    # Calibration run: learn the real first-prompt size.
+    _run(tmp_path, stub)
+    first = int(lengths.read_text().split()[0])
+    for f in (counter, lengths):
+        f.unlink()
+    # Ceiling = first prompt size exactly: first launches (equal passes), the
+    # longer retry prompt cannot.
+    r = _run(tmp_path, stub, extra_env={"VENDOR_INVOKE_MAX_BYTES_AGY": str(first)})
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert len(counter.read_text().split()) == 1, "retry must not launch agy"
+    assert int(lengths.read_text().split()[0]) == first
+    rec = _agy_record(_artifact(tmp_path))
+    assert rec["outcome_detail"] == "prompt_too_large"
+    assert rec["failure_class"] == "harness"
+    assert rec["verdict"] == "error"
+    assert rec["prompt_ceiling_bytes"] == first
+
+
+def test_retry_envelope_usage_is_the_one_assessed_not_consumed(tmp_path):
+    """First attempt: prose with a CONSUMED-looking usage. Retry: valid JSON but
+    usage shows truncation. Stale first-attempt usage would pass; reading the
+    retry's usage fails closed."""
+    _make_target(tmp_path, 150_000)
+    stub = _stub_path(tmp_path)
+    counter, _ = _agy_sequence_stub(stub, tmp_path, [{"prose": True}, {"keep": 50_000}])
+    r = _run(tmp_path, stub)
+    assert len(counter.read_text().split()) == 2
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    content = _artifact(tmp_path)
+    rec = _agy_record(content)
+    assert rec["outcome_detail"] == "prompt_not_consumed"
+    assert rec["consumption"]["status"] == "not_consumed"
+    assert rec["consumption"]["input_tokens"] == 12_500
+    assert "STUB-APPROVE-REVIEW" not in content
+
+
+def test_retry_envelope_usage_is_the_one_assessed_verified(tmp_path):
+    """Mirror: first attempt prose with TRUNCATED-looking usage, retry fully
+    consumed. Stale first-attempt usage would fail closed; the retry's passes."""
+    _make_target(tmp_path, 150_000)
+    stub = _stub_path(tmp_path)
+    counter, _ = _agy_sequence_stub(stub, tmp_path, [{"prose": True, "keep": 50_000}, {}])
+    r = _run(tmp_path, stub)
+    assert len(counter.read_text().split()) == 2
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    content = _artifact(tmp_path)
+    assert "verdict: approve" in content
+    assert "Prompt consumption unverified" not in content
+
+
+def test_consumption_check_crash_is_distinct_harness_failure(tmp_path):
+    """A crashing consumption CLI (no parseable result) still fails closed, but
+    is labelled consumption_check_failed/harness, not prompt_not_consumed."""
+    _make_target(tmp_path, 1_000)
+    stub = _stub_path(tmp_path)
+    _agy_stub(stub, tmp_path)
+    real = shutil.which("python3")
+    (stub / "python3").unlink()
+    _write_stub(
+        stub / "python3",
+        f'#!/bin/sh\n[ "$2" = consumption ] && exit 2\n' f'exec {real} "$@"\n',
+    )
+    r = _run(tmp_path, stub)
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    rec = _agy_record(_artifact(tmp_path))
+    assert rec["outcome_detail"] == "consumption_check_failed"
+    assert rec["failure_class"] == "harness"
+    assert rec["verdict"] == "error"
+    assert rec["consumption"] is None
 
 
 def test_missing_usage_is_unverified_not_failed(tmp_path):
