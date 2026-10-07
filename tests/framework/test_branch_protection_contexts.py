@@ -214,7 +214,13 @@ exit 0
 """
 
 
-def _run_script(tmp_path: Path, hos_file: str | None, *args: str, python3_stub: str | None = None):
+def _run_script(
+    tmp_path: Path,
+    hos_file: str | None,
+    *args: str,
+    python3_stub: str | None = None,
+    extra_env: dict | None = None,
+):
     """Run a copy of the script in an isolated dir with a stub gh on PATH."""
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
@@ -238,6 +244,7 @@ def _run_script(tmp_path: Path, hos_file: str | None, *args: str, python3_stub: 
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "GH_LOG": str(log),
         "GH_CAPTURE": str(capture),
+        **(extra_env or {}),
     }
     proc = subprocess.run(
         ["bash", str(script_dir / "setup_branch_protection.sh"), "owner/repo", *args],
@@ -288,6 +295,17 @@ def test_script_rejects_invalid_context_before_any_api_call(tmp_path, bad_line):
     proc, log, capture = _run_script(tmp_path, f"good-one\n{bad_line}\n")
     assert proc.returncode != 0
     assert not log.exists() or log.read_text() == "", "gh was invoked before validation"
+    assert not capture.exists()
+
+
+@pytest.mark.parametrize("locale_name", ["C.UTF-8", "en_US.UTF-8"])
+def test_script_rejects_non_ascii_context_under_utf8_locale(tmp_path, locale_name):
+    proc, log, capture = _run_script(
+        tmp_path, "good-one\ncaf\u00e9\n", extra_env={"LC_ALL": locale_name}
+    )
+    assert proc.returncode != 0
+    assert "Invalid context name" in proc.stderr + proc.stdout
+    assert not log.exists() or log.read_text() == ""
     assert not capture.exists()
 
 

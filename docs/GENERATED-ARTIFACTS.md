@@ -47,8 +47,8 @@ before `test_scripts_index.py` / `test_codeowners_current.py` even run.
 independent audit could not confirm from in-repo source alone that
 `check_validation_current.sh` / "Validation Stamp Check" is actually wired
 into `scripts/framework/setup_branch_protection.sh`'s required-status-check
-list — `required_status_checks.contexts` there is
-`["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped"]`,
+list — the required contexts there are the script's core three plus
+the HOS-only `scripts/framework/hos_required_contexts.txt`,
 and `tests/framework/test_branch_protection_contexts.py` does not hardcode
 that exact set: it dynamically derives the required contexts from the setup
 script and asserts each one has a producing workflow job, plus a fixed

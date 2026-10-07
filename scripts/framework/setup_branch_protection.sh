@@ -81,6 +81,8 @@ echo ""
 # Read and validated BEFORE any API call so a malformed file can neither inject
 # JSON into the payload nor leave a half-applied state. Absent file → nothing
 # appended (the consumer case).
+command -v python3 >/dev/null 2>&1 \
+  || die "python3 is required (used to build and verify the protection payload) — install it and re-run"
 HOS_CONTEXTS=()
 HOS_CONTEXTS_FILE="${SCRIPT_DIR}/hos_required_contexts.txt"
 HOS_CONTEXTS_JSON=""
@@ -90,7 +92,8 @@ if [ -f "$HOS_CONTEXTS_FILE" ]; then
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     case "$line" in ''|'#'*) continue ;; esac
-    [[ "$line" =~ ^[A-Za-z0-9._-]+$ ]] \
+    # LC_ALL=C on the grep: [[ =~ ]] ranges are locale-dependent (é matches under en_US.UTF-8).
+    printf '%s\n' "$line" | LC_ALL=C grep -qxE '[A-Za-z0-9._-]+' \
       || die "Invalid context name in ${HOS_CONTEXTS_FILE}: '${line}' (must match ^[A-Za-z0-9._-]+\$)"
     HOS_CONTEXTS+=("$line")
     HOS_CONTEXTS_JSON+=", \"${line}\""
