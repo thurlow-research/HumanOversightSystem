@@ -188,7 +188,7 @@ exit 0
 """
 
 
-def _run_script(tmp_path: Path, hos_file: str | None, *args: str):
+def _run_script(tmp_path: Path, hos_file: str | None, *args: str, python3_stub: str | None = None):
     """Run a copy of the script in an isolated dir with a stub gh on PATH."""
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
@@ -201,6 +201,10 @@ def _run_script(tmp_path: Path, hos_file: str | None, *args: str):
     gh = bin_dir / "gh"
     gh.write_text(_STUB_GH)
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+    if python3_stub is not None:
+        py = bin_dir / "python3"
+        py.write_text(python3_stub)
+        py.chmod(py.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "gh.log"
     capture = tmp_path / "payload.json"
     env = {
@@ -251,4 +255,15 @@ def test_script_rejects_invalid_context_before_any_api_call(tmp_path, bad_line):
     proc, log, capture = _run_script(tmp_path, f"good-one\n{bad_line}\n")
     assert proc.returncode != 0
     assert not log.exists() or log.read_text() == "", "gh was invoked before validation"
+    assert not capture.exists()
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)])
+def test_script_refuses_to_apply_when_payload_parse_fails(tmp_path, extra):
+    proc, log, capture = _run_script(
+        tmp_path, "alpha-one\n", *extra, python3_stub="#!/usr/bin/env bash\nexit 1\n"
+    )
+    assert proc.returncode != 0
+    assert "not valid JSON" in proc.stderr + proc.stdout
+    assert not log.exists() or "--method PUT" not in log.read_text()
     assert not capture.exists()

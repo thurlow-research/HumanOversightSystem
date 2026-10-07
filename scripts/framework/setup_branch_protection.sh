@@ -197,9 +197,18 @@ echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
 # Derived from the payload itself so the listing cannot drift from what is sent.
-mapfile -t EFFECTIVE_CONTEXTS < <(printf '%s' "$PAYLOAD" | python3 -c '
+# Captured via command substitution (not process substitution) so a parse
+# failure is fatal instead of silently yielding an empty list; read loop rather
+# than mapfile for Bash 3.2 portability (docs/SHELL-PORTABILITY.md).
+_ctx_lines="$(printf '%s' "$PAYLOAD" | python3 -c '
 import json, sys
-print("\n".join(json.load(sys.stdin)["required_status_checks"]["contexts"]))')
+print("\n".join(json.load(sys.stdin)["required_status_checks"]["contexts"]))')" \
+  || die "Built payload is not valid JSON — refusing to apply"
+EFFECTIVE_CONTEXTS=()
+while IFS= read -r _ctx; do
+  [ -n "$_ctx" ] && EFFECTIVE_CONTEXTS+=("$_ctx")
+done <<< "$_ctx_lines"
+[ "${#EFFECTIVE_CONTEXTS[@]}" -gt 0 ] || die "Built payload has no required status contexts — refusing to apply"
 CORE_COUNT=$(( ${#EFFECTIVE_CONTEXTS[@]} - ${#HOS_CONTEXTS[@]} ))
 echo "  Required status checks (${#EFFECTIVE_CONTEXTS[@]}):"
 for i in "${!EFFECTIVE_CONTEXTS[@]}"; do
