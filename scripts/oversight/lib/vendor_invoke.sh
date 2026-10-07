@@ -124,6 +124,7 @@ _vendor_invoke_resolve_ceiling() {
             _VENDOR_INVOKE_CEILING_LOWERED_BY="$env_name"
         fi
     else
+        printf -v env_val '%q' "${env_val:0:64}"
         echo "vendor_invoke: ignoring ${env_name}=${env_val} — may only lower the ${default}-byte ceiling" >&2
     fi
     return 0

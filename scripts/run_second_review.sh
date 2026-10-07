@@ -619,7 +619,9 @@ if detail in ("prompt_not_consumed", "consumption_check_failed"):
             record["consumption"] = json.load(fh)
     except Exception:
         record["consumption"] = None
-print(json.dumps(record))
+# Defence in depth (CWE-74): no backtick may reach the artifact, so no field can
+# forge a markdown fence. \u0060 is the JSON escape for a backtick.
+print(json.dumps(record).replace("`", "\\u0060"))
 '
 }
 
@@ -894,7 +896,7 @@ Return JSON only:
 # validation_logic.py extract_json_objects scans every json fence file-wide. The
 # payload must never carry the keys verdict/findings/attacks/error. Verdict-inert.
 append_consumption_advisory() {
-    local payload="$1"
+    local payload="${1//\`/}"
     {
         echo "## [ADVISORY] Prompt consumption unverified (#1718)"
         echo '```'
@@ -906,6 +908,8 @@ append_consumption_advisory() {
 
 append_codex_consumption_advisory() {
     local ceiling
+    # Only when codex actually returned a review, not an invocation-failure record.
+    [[ "$1" == *'"outcome": "invocation_failed"'* ]] && return 0
     ceiling=$(vendor_invoke_max_bytes codex)
     append_consumption_advisory \
         "{\"status\": \"unverified\", \"reason\": \"codex_no_usage_envelope\", \"prompt_ceiling_bytes\": ${ceiling}}"
@@ -949,7 +953,7 @@ elif $RUN_AGY && ! $AGY_AVAILABLE && $RUN_CODEX && $CODEX_AVAILABLE; then
         echo '```'
         echo ""
     } >> "$OUTFILE"
-    append_codex_consumption_advisory
+    append_codex_consumption_advisory "$FALLBACK_OUT"
     create_finding_issues "codex-fallback" "$FALLBACK_OUT"
     log_context_advisory "codex-fallback" "$FALLBACK_OUT"
     echo "  done (fallback)"
@@ -969,7 +973,7 @@ if $RUN_CODEX && $CODEX_AVAILABLE && ! ( $RUN_AGY && ! $AGY_AVAILABLE ); then
         echo '```'
         echo ""
     } >> "$OUTFILE"
-    append_codex_consumption_advisory
+    append_codex_consumption_advisory "$CODEX_OUT"
     create_finding_issues "codex" "$CODEX_OUT"
     log_context_advisory "codex" "$CODEX_OUT"
     echo "  done"

@@ -761,3 +761,15 @@ def test_consumption_cli_threshold_override(tmp_path, capsys):
     assert (rc, r["status"], r["threshold"]) == (1, "not_consumed", 3.0)
     rc, r = _run_consumption_cli(tmp_path, capsys, meta, 700_000, ("--max-bytes-per-token", "9.0"))
     assert (rc, r["status"], r["threshold"]) == (1, "not_consumed", 6.0)
+
+
+def test_consumption_non_scalar_vendor_values_are_dropped():
+    """CWE-74: nothing non-int from vendor output survives into the result."""
+    forged = {"a": "```json"}
+    meta = {"num_turns": forged, "usage": {"input_tokens": forged, "cache_read_tokens": "```"}}
+    r = assess_consumption(1000, meta, _T)
+    assert r["num_turns"] is None and r["input_tokens"] is None
+    meta["usage"] = {"input_tokens": 100, "cache_read_tokens": ["```"]}
+    r = assess_consumption(1000, meta, _T)
+    assert r["num_turns"] is None and r["cache_read_tokens"] is None
+    assert "`" not in json.dumps(r)

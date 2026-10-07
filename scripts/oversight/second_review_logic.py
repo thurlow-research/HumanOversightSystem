@@ -812,7 +812,12 @@ def assess_consumption(prompt_bytes: int, metadata: dict, max_bytes_per_token: f
     ratio is over the threshold, and `verified` needs both to agree it is under.
     """
     threshold = max_bytes_per_token
-    num_turns = metadata.get("num_turns") if isinstance(metadata, dict) else None
+    # CWE-74: every value copied from vendor output is coerced to a plain int
+    # (or None) — never a dict/list/arbitrary string — because this result is
+    # serialised into the review artifact, where a forged ``` fence could pair
+    # with a real one and mint a fake verdict.
+    raw_turns = metadata.get("num_turns") if isinstance(metadata, dict) else None
+    num_turns = raw_turns if _is_plain_int(raw_turns) else None
     result = {
         "status": "unverified",
         "prompt_bytes": prompt_bytes,
@@ -830,14 +835,14 @@ def assess_consumption(prompt_bytes: int, metadata: dict, max_bytes_per_token: f
         return result
 
     input_tokens = usage["input_tokens"]
-    result["input_tokens"] = input_tokens
+    result["input_tokens"] = input_tokens if _is_plain_int(input_tokens) else None
     if not _is_plain_int(input_tokens) or input_tokens <= 0:
         result["status"] = "invalid_usage"
         result["reason"] = "invalid_input_tokens"
         return result
 
     cache = usage.get("cache_read_tokens", 0)
-    result["cache_read_tokens"] = cache
+    result["cache_read_tokens"] = cache if _is_plain_int(cache) else None
     if not _is_plain_int(cache) or cache < 0:
         result["status"] = "invalid_usage"
         result["reason"] = "invalid_cache_read_tokens"
