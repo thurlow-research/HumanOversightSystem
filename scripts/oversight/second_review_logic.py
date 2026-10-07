@@ -36,6 +36,7 @@ import argparse
 import json
 import re
 import sys
+from typing import TypeGuard
 
 # Severity ordering: lower index = more severe. Unknown severity ranks as "none"
 # (least severe), matching the heredoc's SEV_RANK.get(s, 4).
@@ -798,7 +799,7 @@ def resolve_threshold(raw) -> tuple[float, str]:
     return value, ""
 
 
-def _is_plain_int(value) -> bool:
+def _is_plain_int(value) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 

@@ -31,8 +31,26 @@ _LOGIC = _REPO_ROOT / "scripts" / "oversight" / "second_review_logic.py"
 _VALIDATION = _REPO_ROOT / "scripts" / "oversight" / "validation_logic.py"
 
 _REQUIRED_BINS = [
-    "bash", "python3", "git", "cat", "grep", "awk", "sed", "mkdir", "date", "head",
-    "wc", "tr", "cut", "dirname", "mktemp", "rm", "env", "tail", "find", "timeout",
+    "bash",
+    "python3",
+    "git",
+    "cat",
+    "grep",
+    "awk",
+    "sed",
+    "mkdir",
+    "date",
+    "head",
+    "wc",
+    "tr",
+    "cut",
+    "dirname",
+    "mktemp",
+    "rm",
+    "env",
+    "tail",
+    "find",
+    "timeout",
 ]
 
 _APPROVE = {
@@ -131,9 +149,23 @@ def _run(
     env = {"PATH": str(stub), "HOME": str(tmp_path)}
     env.update(extra_env or {})
     return subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py", "--step", "1718",
-         "--tier", tier, "--score", score],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "1718",
+            "--tier",
+            tier,
+            "--score",
+            score,
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
 
 
@@ -149,8 +181,9 @@ def _agy_record(content: str) -> dict:
     return json.loads(m.group(1))
 
 
-def _lib(tmp_path: Path, body: str, *, env: dict[str, str] | None = None,
-         fake_bin: Path | None = None) -> subprocess.CompletedProcess:
+def _lib(
+    tmp_path: Path, body: str, *, env: dict[str, str] | None = None, fake_bin: Path | None = None
+) -> subprocess.CompletedProcess:
     snippet = tmp_path / "snippet.sh"
     snippet.write_text(f'source "{_VENDOR_INVOKE_SH}"\n{body}\n')
     e = dict(os.environ)
@@ -160,8 +193,7 @@ def _lib(tmp_path: Path, body: str, *, env: dict[str, str] | None = None,
     if fake_bin is not None:
         e["PATH"] = f"{fake_bin}:{e['PATH']}"
     e.update(env or {})
-    return subprocess.run(["bash", str(snippet)], capture_output=True, text=True,
-                          timeout=60, env=e)
+    return subprocess.run(["bash", str(snippet)], capture_output=True, text=True, timeout=60, env=e)
 
 
 def _invoke_snippet(vendor: str, nbytes: int) -> str:
@@ -169,7 +201,9 @@ def _invoke_snippet(vendor: str, nbytes: int) -> str:
 f=$(vendor_invoke_tmpfile); o=$(vendor_invoke_tmpfile)
 head -c {nbytes} /dev/zero | tr '\\0' x > "$f"
 vendor_invoke {vendor} 10 "$f" "$o"
-echo "rc=$? class=$VENDOR_INVOKE_CLASS detail=$VENDOR_INVOKE_DETAIL RC=[$VENDOR_INVOKE_RC] MAX=$VENDOR_INVOKE_MAX_BYTES BYTES=$VENDOR_INVOKE_BYTES"
+rc=$?
+echo "rc=$rc class=$VENDOR_INVOKE_CLASS detail=$VENDOR_INVOKE_DETAIL RC=[$VENDOR_INVOKE_RC]" \\
+    "MAX=$VENDOR_INVOKE_MAX_BYTES BYTES=$VENDOR_INVOKE_BYTES"
 """
 
 
@@ -187,7 +221,10 @@ def _touch_stub(tmp_path: Path, name: str) -> tuple[Path, Path]:
 def test_ceiling_refusal_never_launches_binary(tmp_path):
     fake, marker = _touch_stub(tmp_path, "agy")
     r = _lib(tmp_path, _invoke_snippet("agy", 180_001), fake_bin=fake)
-    assert "rc=1 class=harness detail=prompt_too_large RC=[] MAX=180000" in r.stdout, (r.stdout, r.stderr)
+    assert "rc=1 class=harness detail=prompt_too_large RC=[] MAX=180000" in r.stdout, (
+        r.stdout,
+        r.stderr,
+    )
     assert not marker.exists()
     assert "over the 180000-byte agy ceiling" in r.stderr
 
@@ -202,7 +239,10 @@ def test_ceiling_boundary_equal_passes(tmp_path):
 def test_ceiling_applies_to_codex(tmp_path):
     fake, marker = _touch_stub(tmp_path, "codex")
     r = _lib(tmp_path, _invoke_snippet("codex", 1_048_577), fake_bin=fake)
-    assert "rc=1 class=harness detail=prompt_too_large RC=[] MAX=1048576" in r.stdout, (r.stdout, r.stderr)
+    assert "rc=1 class=harness detail=prompt_too_large RC=[] MAX=1048576" in r.stdout, (
+        r.stdout,
+        r.stderr,
+    )
     assert not marker.exists()
 
 
@@ -215,8 +255,11 @@ def test_codex_400kb_prompt_is_launched(tmp_path):
 
 
 def test_max_bytes_helper_is_single_source(tmp_path):
-    r = _lib(tmp_path, 'vendor_invoke_max_bytes agy; vendor_invoke_max_bytes codex; '
-                       'vendor_invoke_max_bytes bogus; echo "rc=$?"')
+    r = _lib(
+        tmp_path,
+        "vendor_invoke_max_bytes agy; vendor_invoke_max_bytes codex; "
+        'vendor_invoke_max_bytes bogus; echo "rc=$?"',
+    )
     assert r.stdout.split() == ["180000", "1048576", "rc=1"], (r.stdout, r.stderr)
 
 
@@ -228,31 +271,41 @@ def test_unknown_vendor_has_empty_max_bytes(tmp_path):
 
 def test_env_may_lower_ceiling(tmp_path):
     fake, marker = _touch_stub(tmp_path, "agy")
-    r = _lib(tmp_path, _invoke_snippet("agy", 1_001),
-             env={"VENDOR_INVOKE_MAX_BYTES_AGY": "1000"}, fake_bin=fake)
+    r = _lib(
+        tmp_path,
+        _invoke_snippet("agy", 1_001),
+        env={"VENDOR_INVOKE_MAX_BYTES_AGY": "1000"},
+        fake_bin=fake,
+    )
     assert "detail=prompt_too_large" in r.stdout and "MAX=1000" in r.stdout, (r.stdout, r.stderr)
     assert not marker.exists()
 
 
 def test_env_cannot_raise_ceiling(tmp_path):
-    r = _lib(tmp_path, "vendor_invoke_max_bytes agy",
-             env={"VENDOR_INVOKE_MAX_BYTES_AGY": "10000000"})
+    r = _lib(
+        tmp_path, "vendor_invoke_max_bytes agy", env={"VENDOR_INVOKE_MAX_BYTES_AGY": "10000000"}
+    )
     assert r.stdout.strip() == "180000"
     assert "ignoring VENDOR_INVOKE_MAX_BYTES_AGY=10000000" in r.stderr
 
 
 def test_env_malformed_ceiling_keeps_default(tmp_path):
     for bad in ("abc", "0", "-5", "1.5", "99999999999999999999999"):
-        r = _lib(tmp_path, "vendor_invoke_max_bytes codex",
-                 env={"VENDOR_INVOKE_MAX_BYTES_CODEX": bad})
+        r = _lib(
+            tmp_path, "vendor_invoke_max_bytes codex", env={"VENDOR_INVOKE_MAX_BYTES_CODEX": bad}
+        )
         assert r.stdout.strip() == "1048576", (bad, r.stdout, r.stderr)
         assert "ignoring VENDOR_INVOKE_MAX_BYTES_CODEX" in r.stderr, bad
 
 
 def test_lowered_ceiling_named_in_refusal(tmp_path):
     fake, _ = _touch_stub(tmp_path, "agy")
-    r = _lib(tmp_path, _invoke_snippet("agy", 1_001),
-             env={"VENDOR_INVOKE_MAX_BYTES_AGY": "1000"}, fake_bin=fake)
+    r = _lib(
+        tmp_path,
+        _invoke_snippet("agy", 1_001),
+        env={"VENDOR_INVOKE_MAX_BYTES_AGY": "1000"},
+        fake_bin=fake,
+    )
     assert "(lowered by VENDOR_INVOKE_MAX_BYTES_AGY)" in r.stderr, r.stderr
     r = _lib(tmp_path, _invoke_snippet("agy", 180_001), fake_bin=fake)
     assert "lowered by" not in r.stderr, r.stderr
@@ -386,7 +439,9 @@ def test_advisory_block_is_verdict_inert(tmp_path):
     r = _run(tmp_path, stub)
     assert r.returncode == 0, (r.stdout, r.stderr)
     with_block = _artifact(tmp_path)
-    m = re.search(r"## \[ADVISORY\] Prompt consumption unverified \(#1718\)\n(.*?)\n\n?$", with_block, re.S)
+    m = re.search(
+        r"## \[ADVISORY\] Prompt consumption unverified \(#1718\)\n(.*?)\n\n?$", with_block, re.S
+    )
     assert m, with_block
     block = m.group(0)
     assert block.splitlines()[1] == "```", block
@@ -400,11 +455,23 @@ def test_advisory_block_is_verdict_inert(tmp_path):
     for i, text in enumerate((with_block, without_block)):
         f = tmp_path / f"copy{i}.md"
         f.write_text(text)
-        subprocess.run(["python3", str(_LOGIC), "aggregate", "--file", str(f)], check=True,
-                       capture_output=True)
-        subprocess.run(["python3", str(_VALIDATION), "process", "--file", str(f),
-                        "--ledger", str(tmp_path / f"ledger{i}.json"), "--strict-empty"],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["python3", str(_LOGIC), "aggregate", "--file", str(f)], check=True, capture_output=True
+        )
+        subprocess.run(
+            [
+                "python3",
+                str(_VALIDATION),
+                "process",
+                "--file",
+                str(f),
+                "--ledger",
+                str(tmp_path / f"ledger{i}.json"),
+                "--strict-empty",
+            ],
+            check=True,
+            capture_output=True,
+        )
         results.append(_header(f.read_text()))
     assert results[0] == results[1], results
     assert results[0].get("verdict") == "approve"

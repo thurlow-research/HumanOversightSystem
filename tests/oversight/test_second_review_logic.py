@@ -639,8 +639,15 @@ def test_consumption_verified_at_four_bytes_per_token():
     assert r["status"] == "verified"
     assert r["bytes_per_token"] == 4.0
     assert set(r) == {
-        "status", "prompt_bytes", "input_tokens", "cache_read_tokens",
-        "consumed_tokens", "bytes_per_token", "threshold", "num_turns", "reason",
+        "status",
+        "prompt_bytes",
+        "input_tokens",
+        "cache_read_tokens",
+        "consumed_tokens",
+        "bytes_per_token",
+        "threshold",
+        "num_turns",
+        "reason",
     }
 
 
