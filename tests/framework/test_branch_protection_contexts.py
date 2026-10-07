@@ -122,6 +122,32 @@ def test_setup_script_exists():
     assert _SETUP_SCRIPT.is_file(), f"missing {_SETUP_SCRIPT}"
 
 
+_HOS_EFFECTIVE_CONTEXTS = (
+    "require-overseer-approval",
+    "require-human-approval",
+    "require-tier-ceiling",
+    "tests",
+    "oversight-gate-repo-scoped",
+    "oversight-validator-python",
+    "oversight-validator-migration",
+    "oversight-validator-shell",
+    "oversight-validator-diff-size",
+    "oversight-gate-lint",
+    "oversight-gate-type-check",
+)
+
+
+def test_hos_effective_required_contexts_are_pinned():
+    """Pin the HOS repo's exact effective required-context list, in order.
+
+    Removing or adding a required context must be a deliberate edit of
+    _HOS_EFFECTIVE_CONTEXTS too (#1981), so a silent drop (weaker protection)
+    or add (possible #737 deadlock) fails here. #1542 PR 2 will append
+    sandbox-detector / sandbox-coverage to this tuple.
+    """
+    assert tuple(_core_contexts() + _hos_only_contexts()) == _HOS_EFFECTIVE_CONTEXTS
+
+
 def test_required_contexts_are_nonempty():
     contexts = _required_contexts()
     assert contexts, "branch protection declares no required status checks"
@@ -248,6 +274,13 @@ def test_script_payload_is_core_then_file_names_in_order(tmp_path):
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(capture.read_text())
     assert payload["required_status_checks"]["contexts"] == _CORE + ["alpha-one", "beta.two"]
+
+
+def test_help_prints_exactly_the_header_block(tmp_path):
+    proc, _, _ = _run_script(tmp_path, None, "--help")
+    assert proc.returncode == 0, proc.stderr
+    assert "Restrictions" in proc.stdout
+    assert "set -euo pipefail" not in proc.stdout
 
 
 @pytest.mark.parametrize("bad_line", ['bad"name', 'x", "y', "has space", "semi;colon"])

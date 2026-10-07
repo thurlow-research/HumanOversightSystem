@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --branch) shift; BRANCH="${1:-main}"; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
-    --help|-h) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     */*)  REPO_SLUG="$1"; shift ;;
     *) die "Unknown option: $1  (try --help)" ;;
   esac

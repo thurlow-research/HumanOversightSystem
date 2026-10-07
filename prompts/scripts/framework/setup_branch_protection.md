@@ -71,7 +71,14 @@ the AGENTS.md self-flag.
 
 ## Refinement History
 
-First attempt accepted; see the PR's sign-off summary for review rounds.
+- v1: the prompt above.
+- v2 (gate-driven): `bash_check` flagged `mapfile` (Bash 4+). Follow-up
+  prompt: replace it with a Bash-3.2-safe here-string read loop; capture the
+  payload JSON parse with `|| die` so a malformed payload or missing python3
+  refuses to apply instead of PUTting silently; guard empty-array expansion
+  under `set -u`; add a test for the refusal path.
+- v3 (code-review SHOULD_FIX): fix `--help` line range (`2,32p`) with a test;
+  pin the HOS repo's exact 11-context effective list in a frozen tuple.
 
 ## Human Review Notes
 
