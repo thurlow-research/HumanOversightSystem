@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: HumanOversightSystem
+authors:
+  - family-names: Thurlow
+    given-names: Scott
+    affiliation: Purdue University
+license: MIT
+repository-code: "https://github.com/thurlow-research/HumanOversightSystem"
+doi: "10.5281/zenodo.21347097"
