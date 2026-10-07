@@ -1,5 +1,7 @@
 # Human Oversight System
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21347097.svg)](https://doi.org/10.5281/zenodo.21347097)
+
 A framework for scaling human oversight of AI-generated code — grounded in lean manufacturing principles, statistical quality control, and multi-agent system design.
 
 This is both a working system and active doctoral research — Doctor of Technology program, Purdue University. The research sits at the intersection of engineering management, software quality assurance, and AI governance.
