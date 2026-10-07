@@ -270,14 +270,62 @@ def get_branch_protection(
     owner: str,
     repo: str,
     branch: str,
+    *,
+    retries: int = 3,
 ) -> Optional[dict[str, Any]]:
     """
     GET /repos/{owner}/{repo}/branches/{branch}/protection
 
     Returns the protection object or None if unprotected / not found.
-    Used by merge_authority.py detect_server_side_gate (O3).
+    Used by merge_authority.py detect_server_side_gate (O3). ``retries`` is
+    passed to _run_gh; callers that treat a failed read as a soft degrade
+    (check_required_content_checks, #1731) pass 0 to skip 403 backoff.
     """
-    return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"])
+    return _run_gh([f"/repos/{owner}/{repo}/branches/{branch}/protection"], retries=retries)
+
+
+_RULES_MAX_PAGES = 10
+
+
+def get_ruleset_required_checks(
+    owner: str,
+    repo: str,
+    branch: str,
+) -> list[str]:
+    """
+    GET /repos/{owner}/{repo}/rules/branches/{branch} (all pages).
+
+    Returns the de-duplicated required status-check contexts (first-seen
+    order) from every ``required_status_checks`` rule that applies to the
+    branch, or [] if none / not found. Repository rulesets are where this
+    repo's required checks live, and the overseer App gets 403 on the classic
+    protection endpoint (#1731, #1588). Used by merge_authority.py
+    check_required_content_checks. GitHubError propagates to the caller,
+    including when more than _RULES_MAX_PAGES full pages come back.
+    """
+    contexts: list[str] = []
+    for page in range(1, _RULES_MAX_PAGES + 1):
+        batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
+        rules = [] if batch is None else batch
+        if not isinstance(rules, list):
+            raise GitHubError(
+                f"unexpected rules payload for {owner}/{repo}@{branch}: "
+                f"expected list, got {type(rules).__name__}"
+            )
+        for rule in rules:
+            if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+                continue
+            params = rule.get("parameters")
+            checks = params.get("required_status_checks") if isinstance(params, dict) else None
+            if not isinstance(checks, list):
+                continue
+            for check in checks:
+                context = check.get("context") if isinstance(check, dict) else None
+                if isinstance(context, str) and context and context not in contexts:
+                    contexts.append(context)
+        if len(rules) < 100:
+            return contexts
+    raise GitHubError(f"rules for {owner}/{repo}@{branch} exceeded {_RULES_MAX_PAGES} pages")
 
 
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:

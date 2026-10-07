@@ -33,6 +33,7 @@ from scripts.automation.lib.github import (
     GitHubError,
     _run_gh,
     get_branch_protection,
+    get_ruleset_required_checks,
     list_check_runs_for_ref,
     post_comment,
 )
@@ -1062,26 +1063,70 @@ def check_required_content_checks(
     adds a bounce opportunity, it never removes the human-approval
     requirement for the final merge.
 
-    Reads the live branch-protection required_status_checks.contexts (not a
-    hardcoded list) so it stays in sync with whatever is actually promoted
-    to required at call time.
+    Reads the union of repository-ruleset required checks and classic
+    branch-protection required_status_checks.contexts (not a hardcoded list)
+    so it stays in sync with whatever is actually promoted to required at call
+    time. Rulesets matter because this repo's required checks live there, and
+    the overseer App gets 403 on the classic endpoint (#1731, #1588). Each
+    read degrades independently, and a single failure is logged at warning.
+    The gate fails open (no bounce, warning logged, diagnostic summary) when
+    both reads fail, or when the ruleset read fails and classic yields no
+    contexts: rulesets are the primary source, so an empty classic set says
+    nothing about what is required. The protected-surface/CODEOWNERS gates
+    that run next still fail closed to HUMAN_REQUIRED, so merge safety is
+    unaffected. Malformed payload elements are ignored, never raised.
     """
-    protection = get_branch_protection(owner, repo, default_branch)
-    if not protection:
-        return RequiredChecksResult(bounce_required=False)
+    required_contexts: list[str] = []
+    errors: list[str] = []
+    ruleset_failed = False
 
-    required_contexts = (protection.get("required_status_checks") or {}).get("contexts") or []
-    content_contexts = [c for c in required_contexts if c not in _META_GATE_CHECKS]
+    try:
+        protection = get_branch_protection(owner, repo, default_branch, retries=0)
+        rsc = protection.get("required_status_checks") if isinstance(protection, dict) else None
+        classic = rsc.get("contexts") if isinstance(rsc, dict) else None
+        if isinstance(classic, list):
+            required_contexts.extend(c for c in classic if isinstance(c, str))
+    except GitHubError as exc:
+        errors.append(f"classic protection read failed: {exc}")
+        logger.warning("required-checks gate: classic protection read failed: %s", exc)
+
+    classic_count = len(required_contexts)
+
+    try:
+        required_contexts.extend(get_ruleset_required_checks(owner, repo, default_branch))
+    except GitHubError as exc:
+        ruleset_failed = True
+        errors.append(f"ruleset read failed: {exc}")
+        logger.warning("required-checks gate: ruleset read failed: %s", exc)
+
+    if len(errors) == 2 or (ruleset_failed and classic_count == 0):
+        summary = "required-checks gate skipped, no usable required-check source: " + "; ".join(
+            errors
+        )
+        logger.warning(summary)
+        return RequiredChecksResult(bounce_required=False, summary=summary)
+
+    content_contexts = [c for c in dict.fromkeys(required_contexts) if c not in _META_GATE_CHECKS]
     if not content_contexts:
         return RequiredChecksResult(bounce_required=False)
 
     runs = list_check_runs_for_ref(owner, repo, head_sha)
     latest_by_name: dict[str, dict] = {}
+
+    def _run_id(r: dict) -> int:
+        rid = r.get("id")
+        return rid if isinstance(rid, int) and not isinstance(rid, bool) else -1
+
     for run in runs:
+        if not isinstance(run, dict):
+            continue
         name = run.get("name")
-        # GitHub returns check runs most-recently-created first; keep the
-        # first (i.e. latest) occurrence of each name.
-        if name and name not in latest_by_name:
+        if not isinstance(name, str) or not name:
+            continue
+        # List order is not guaranteed; the highest id is the latest run. A
+        # run with a missing or non-int id loses to any run that has one.
+        current = latest_by_name.get(name)
+        if current is None or _run_id(run) > _run_id(current):
             latest_by_name[name] = run
 
     failing = []
@@ -1135,8 +1180,8 @@ def bounce_count(cid: str, *, repo_root: str = ".") -> int:
     The audit trail (audit/log/) is append-only and already the source of
     truth for every other per-cid counter in this codebase (contract §6a);
     this derives the count from it rather than maintaining separate state.
-    Shared by step 4a (register-completeness) and step 4b (out-of-scope
-    commits) — "the existing bounce_count(cid) counter" both cite.
+    Shared by step 4a (register-completeness) and step 4c (required
+    content checks) — "the existing bounce_count(cid) counter" both cite.
     """
     count = 0
     for raw in _AUDIT_LOG.read_stream(repo_root):

@@ -16,6 +16,7 @@ from scripts.automation.lib.github import (
     RateLimitError,
     _run_gh,
     get_branch,
+    get_ruleset_required_checks,
     list_check_runs_for_ref,
     list_issue_comments,
     list_pulls,
@@ -202,6 +203,109 @@ class TestListCheckRunsForRef:
             result = list_check_runs_for_ref("o", "r", "abc123")
         assert len(result) == 101
         assert result[-1]["name"] == "check-100"
+
+
+def _rule(*contexts: str) -> dict:
+    return {
+        "type": "required_status_checks",
+        "parameters": {"required_status_checks": [{"context": c} for c in contexts]},
+    }
+
+
+class TestGetRulesetRequiredChecks:
+    def test_returns_empty_on_404(self):
+        with _patch_run([_make_result(404)]):
+            assert get_ruleset_required_checks("o", "r", "main") == []
+
+    def test_only_required_status_checks_rules_contribute(self):
+        rules = [
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+            _rule("tests", "oversight-gate-lint"),
+            {"type": "required_status_checks"},
+            {"type": "deletion"},
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert result == ["tests", "oversight-gate-lint"]
+
+    def test_deduplicates_across_rulesets_preserving_order(self):
+        rules = [_rule("tests", "a"), _rule("a", "b", "tests")]
+        with _patch_run([_make_result(200, rules)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert result == ["tests", "a", "b"]
+
+    def test_paginates(self):
+        page1 = [_rule(f"c{i}") for i in range(100)]
+        page2 = [_rule("c-last")]
+        with _patch_run([_make_result(200, page1), _make_result(200, page2)]):
+            result = get_ruleset_required_checks("o", "r", "main")
+        assert len(result) == 101
+        assert result[-1] == "c-last"
+
+    def test_github_error_propagates(self):
+        with (
+            _patch_run([_make_result(403, {"message": "forbidden"})] * 5),
+            patch("scripts.automation.lib.github.time.sleep"),
+        ):
+            with pytest.raises(GitHubError):
+                get_ruleset_required_checks("o", "r", "main")
+
+    def test_dict_payload_raises_github_error(self):
+        with _patch_run([_make_result(200, {"message": "unexpected"})]):
+            with pytest.raises(GitHubError):
+                get_ruleset_required_checks("o", "r", "main")
+
+    def test_non_string_context_is_skipped(self):
+        rules = [
+            _rule("tests"),
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [
+                        {"context": {"a": 1}},
+                        {"context": ""},
+                        {"context": 5},
+                    ]
+                },
+            },
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
+
+    def test_non_dict_parameters_are_skipped(self):
+        rules = [
+            {"type": "required_status_checks", "parameters": ["x"]},
+            {"type": "required_status_checks", "parameters": "x"},
+            _rule("tests"),
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
+
+    def test_page_cap_raises_github_error(self):
+        full = [_rule(f"c{i}") for i in range(100)]
+        with _patch_run([_make_result(200, full)] * 10) as run:
+            with pytest.raises(GitHubError, match="exceeded 10 pages"):
+                get_ruleset_required_checks("o", "r", "main")
+        assert run.call_count == 10
+
+    def test_tenth_partial_page_is_accepted(self):
+        full = [_rule(f"c{i}") for i in range(100)]
+        pages = [_make_result(200, full)] * 9 + [_make_result(200, [_rule("last")])]
+        with _patch_run(pages):
+            assert get_ruleset_required_checks("o", "r", "main")[-1] == "last"
+
+    def test_malformed_elements_are_skipped(self):
+        rules = [
+            "garbage",
+            None,
+            {"type": "required_status_checks", "parameters": {"required_status_checks": "x"}},
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": [None, "s", {"context": "tests"}]},
+            },
+        ]
+        with _patch_run([_make_result(200, rules)]):
+            assert get_ruleset_required_checks("o", "r", "main") == ["tests"]
 
 
 class TestNoSearchApi:
