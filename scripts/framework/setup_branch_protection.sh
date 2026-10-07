@@ -23,7 +23,11 @@
 # What this sets (§9):
 #   Required PR reviews: ≥1 approving review, CODEOWNERS enforcement,
 #   dismiss stale on push, NO bypass actors for bots.
-#   Required status checks: require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped, oversight-validator-python, oversight-validator-migration, oversight-validator-shell, oversight-validator-diff-size.
+#   Required status checks: a CORE set of three consumer-shipped contexts
+#   (require-overseer-approval, require-human-approval, require-tier-ceiling),
+#   plus any HOS-repo-only contexts listed in hos_required_contexts.txt (read
+#   if present next to this script; never shipped to consumers, #1981). The
+#   effective list is printed by --dry-run.
 #   Enforce admins: OFF — you (admin) retain bypass ability when needed.
 #   Restrictions: only bots + humans who are collaborators may push.
 
@@ -54,7 +58,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --branch) shift; BRANCH="${1:-main}"; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
-    --help|-h) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     */*)  REPO_SLUG="$1"; shift ;;
     *) die "Unknown option: $1  (try --help)" ;;
   esac
@@ -72,6 +76,26 @@ info "Repo   : $OWNER/$REPO"
 info "Branch : $BRANCH"
 info "Mode   : $([ "$DRY_RUN" = true ] && echo 'DRY RUN (no changes)' || echo 'APPLY')"
 echo ""
+
+# ── HOS-only required contexts (#1981) ────────────────────────────────────────
+# Read and validated BEFORE any API call so a malformed file can neither inject
+# JSON into the payload nor leave a half-applied state. Absent file → nothing
+# appended (the consumer case).
+HOS_CONTEXTS=()
+HOS_CONTEXTS_FILE="${SCRIPT_DIR}/hos_required_contexts.txt"
+HOS_CONTEXTS_JSON=""
+if [ -f "$HOS_CONTEXTS_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ "$line" =~ ^[A-Za-z0-9._-]+$ ]] \
+      || die "Invalid context name in ${HOS_CONTEXTS_FILE}: '${line}' (must match ^[A-Za-z0-9._-]+\$)"
+    HOS_CONTEXTS+=("$line")
+    HOS_CONTEXTS_JSON+=", \"${line}\""
+  done < "$HOS_CONTEXTS_FILE"
+fi
 
 # ── Verify caller is human (not a bot) ────────────────────────────────────────
 header "Pre-flight: verify caller identity"
@@ -112,70 +136,31 @@ fi
 # below MUST equal a workflow job `name:` — that is the string GitHub reports as
 # the status-check context, NOT the workflow's top-level display name. If they
 # drift, the required context never appears, stays permanently "expected", and
-# every merge returns HTTP 405 even though the gates run green. Producers:
+# every merge returns HTTP 405 even though the gates run green.
+#
+# Consumer-safe split (#1981): this script ships to consumers
+# (framework_consumer_files.txt), so the literal array below holds ONLY the
+# three contexts whose producing workflows also ship to consumers. Requiring a
+# context nothing in the consumer repo produces would block every consumer PR
+# forever (the #737 failure mode). Core producers:
 #   require-overseer-approval ← .github/workflows/require-overseer-approval.yml
 #   require-human-approval    ← .github/workflows/require-human-approval.yml
 #   require-tier-ceiling      ← .github/workflows/require-tier-ceiling.yml
-#   tests                     ← .github/workflows/tests.yml (job name: tests; #1244 ruling
-#                                2026-09-10 — retry-then-fail via pytest-rerunfailures,
-#                                no agent-settable escape hatch, override only via the
-#                                audited contract/gate-suspension.md mechanism)
-#   oversight-gate-repo-scoped ← .github/workflows/oversight-gates.yml (job:
-#                                oversight-gate-repo-scoped; #1571 item 1 — the
-#                                one gate group with zero debt baseline as of
-#                                2026-09-11; promoted alongside the four
-#                                existing required checks)
-#   oversight-validator-python    ← .github/workflows/oversight-validators.yml
-#                                (job: oversight-validator-python; #1571 item 2
-#                                — all seven Python-scoped dimensions run clean
-#                                against this repo's full 195-file Python set
-#                                as of 2026-09-12, AFTER a bandit progress-bar
-#                                parsing bug found during that baseline was
-#                                fixed in the same change — see DECISIONS.md)
-#   oversight-validator-migration ← .github/workflows/oversight-validators.yml
-#                                (job: oversight-validator-migration; #1571
-#                                item 2 — zero debt against all ~8,650 tracked
-#                                files as of 2026-09-12)
-#   oversight-validator-shell     ← .github/workflows/oversight-validators.yml
-#                                (job: oversight-validator-shell; #1571 item 2
-#                                — zero debt against all 81 tracked .sh files
-#                                as of 2026-09-12)
-#   oversight-validator-diff-size ← .github/workflows/oversight-validators.yml
-#                                (job: oversight-validator-diff-size; #1571
-#                                item 2 — git-only/deterministic, no external
-#                                tool to crash on, verified 2026-09-12)
-#   oversight-gate-lint        ← .github/workflows/oversight-gates.yml (job:
-#                                oversight-gate-lint; SEVERE debt as of
-#                                #1571's 2026-09-11 baseline — file-scoped, not
-#                                repo-scoped, so a PR is only gated on files it
-#                                itself touches. Human ruling 2026-09-14
-#                                (ratchet principle, #1567/#1642/#1641):
-#                                promote now rather than waiting for the
-#                                whole-repo cleanup (#1642) to land first —
-#                                activating the gate stops new lint debt from
-#                                entering touched files immediately, and forces
-#                                cleanup of existing debt organically as those
-#                                files are next touched, rather than risking
-#                                fresh debt accruing again between "clean" and
-#                                "required".)
-#   oversight-gate-type-check  ← .github/workflows/oversight-gates.yml (job:
-#                                oversight-gate-type-check; same SEVERE-debt /
-#                                file-scoped / ratchet-override rationale as
-#                                oversight-gate-lint above, same ruling date)
-# tests/framework/test_branch_protection_contexts.py enforces this invariant.
 #
-# oversight-validator-js is NOT promoted: this repo has zero tracked JS/TS
-# files and no package.json, so #1571 item 2's baseline method (run the real
-# script against every tracked file in scope) does not apply — its own unit
-# tests pass, but that is not equivalent to a real-code crash baseline. Stays
-# advisory until real JS/TS content (or a deliberate synthetic corpus)
-# exists to baseline against. See DECISIONS.md's 2026-09-12 #1571 entry.
+# HOS-only (hos_required_contexts.txt): contexts produced only by HOS-repo
+# workflows (tests, oversight-gate-*, oversight-validator-*) live in
+# scripts/framework/hos_required_contexts.txt, which is read if present and
+# appended inside the array via HOS_CONTEXTS_JSON. That file is deliberately
+# not shipped to consumers, so absence narrows the list to the core three. Each
+# name's producer and promotion rationale is recorded next to it in that file.
+# tests/framework/test_branch_protection_contexts.py enforces this invariant
+# for both lists, and that every core context has a consumer-shipped producer.
 
 PAYLOAD="$(cat <<JSON
 {
   "required_status_checks": {
     "strict": false,
-    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling", "tests", "oversight-gate-repo-scoped", "oversight-validator-python", "oversight-validator-migration", "oversight-validator-shell", "oversight-validator-diff-size", "oversight-gate-lint", "oversight-gate-type-check"]
+    "contexts": ["require-overseer-approval", "require-human-approval", "require-tier-ceiling"${HOS_CONTEXTS_JSON}]
   },
   "enforce_admins": false,
   "required_pull_request_reviews": {
@@ -211,7 +196,19 @@ echo "    require_code_owner_reviews      : true   (protected paths → human CO
 echo "    dismiss_stale_reviews           : true"
 echo "    bypass_pull_request_allowances  : []     (bots are NOT bypass actors)"
 echo ""
-echo "  Required status checks            : require-overseer-approval, require-human-approval, require-tier-ceiling, tests, oversight-gate-repo-scoped, oversight-validator-python, oversight-validator-migration, oversight-validator-shell, oversight-validator-diff-size"
+# Derived from the payload itself so the listing cannot drift from what is sent.
+mapfile -t EFFECTIVE_CONTEXTS < <(printf '%s' "$PAYLOAD" | python3 -c '
+import json, sys
+print("\n".join(json.load(sys.stdin)["required_status_checks"]["contexts"]))')
+CORE_COUNT=$(( ${#EFFECTIVE_CONTEXTS[@]} - ${#HOS_CONTEXTS[@]} ))
+echo "  Required status checks (${#EFFECTIVE_CONTEXTS[@]}):"
+for i in "${!EFFECTIVE_CONTEXTS[@]}"; do
+  if [ "$i" -lt "$CORE_COUNT" ]; then
+    echo "    ${EFFECTIVE_CONTEXTS[$i]}"
+  else
+    echo "    ${EFFECTIVE_CONTEXTS[$i]}   (from hos_required_contexts.txt)"
+  fi
+done
 echo "  enforce_admins                    : false  (admin/human retains emergency bypass)"
 echo "  allow_force_pushes                : false"
 echo "  allow_deletions                   : false"
@@ -285,9 +282,9 @@ echo ""
 ok "Branch protection setup complete."
 echo ""
 info "Next: verify with  gh api $API_BASE | jq ."
-info "Then: enable 'Require status checks to pass' for 'require-human-approval',"
-info "       'require-tier-ceiling', 'tests', 'oversight-gate-repo-scoped',"
-info "       'oversight-validator-python', 'oversight-validator-migration',"
-info "       'oversight-validator-shell', and 'oversight-validator-diff-size'"
-info "       in the GitHub UI if not yet showing (each CI check must run at"
-info "       least once before GitHub will enforce it)."
+info "Then: enable 'Require status checks to pass' in the GitHub UI for any of"
+info "       the contexts below that are not yet showing (each CI check must run"
+info "       at least once before GitHub will enforce it):"
+for ctx in "${EFFECTIVE_CONTEXTS[@]}"; do
+  info "         $ctx"
+done
