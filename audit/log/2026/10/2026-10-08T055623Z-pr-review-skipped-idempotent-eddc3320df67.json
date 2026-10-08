@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","cid":"1978","event":"pr-review-skipped-idempotent","head_sha":"8ec48f6a9bcf376913be6e049448aff72eec7a8b","pr":2029,"reason":"#1215: verdict review + human-required already recorded at this head (05:42-05:43Z); needs-human applied; no new commits, comments, reviews, or label changes since"}
