@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","decision":"PROPOSE_ONLY","event":"pr-review","head_sha":"86aac819ae47f7f31cc8836a88a93766e261d43b","labels_applied":[],"note":"needs-ai withheld per #1557; gate not detected #1653/#1588","pr":2041,"review_id":5463206510,"tier":"HIGH","verdict_event":"comment"}
