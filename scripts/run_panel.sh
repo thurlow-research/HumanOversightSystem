@@ -552,6 +552,7 @@ CDIR="$RUN_DIR/chunks"; mkdir -p "$CDIR"
 python3 "$PANEL_LOGIC" chunk-diff --diff "$DIFF_FILE" --cap "$CAP" --out-dir "$CDIR" || { _rc=$?; die "chunk-diff failed (exit $_rc) — diff cannot be reviewed whole or in parts under ${CAP}B; refusing to truncate (#2016)"; }
 CHUNKS=()
 while IFS= read -r _cp; do CHUNKS+=("$CDIR/$_cp"); done < <(jq -r '.chunks[].path' "$CDIR/chunk-manifest.json")
+(( ${#CHUNKS[@]} > 0 )) || die "chunk manifest yielded no chunks — refusing to review nothing (#2016)"
 cp "$CDIR/chunk-manifest.json" "$RUN_DIR/chunk-manifest.json"
 DIFF_SIZE=$(wc -c < "$DIFF_FILE")
 (( ${#CHUNKS[@]} > 1 )) && warn "diff is ${DIFF_SIZE}B > ${CAP}B cap → chunked into ${#CHUNKS[@]} file-group(s)"

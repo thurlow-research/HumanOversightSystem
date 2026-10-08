@@ -926,3 +926,6 @@ def test_t9_run_panel_source_pins():
     preflight = src.index('for c in "${CHUNKS[@]}"; do (( $(wc -c < "$c") <= CAP ))')
     assert preflight < src.index('for spec in "${ROSTER[@]}"; do\n  tool="${spec%%:*}"')
     assert '$(head -c "$CAP" "$DIFF_FILE")' in src
+    assert preflight < src.index("build_review_prompt() {")
+    assert '$(cat "$2")' in src
+    assert "chunk manifest yielded no chunks — refusing to review nothing (#2016)" in src
