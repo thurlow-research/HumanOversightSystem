@@ -66,3 +66,28 @@ tests/oversight/test_panel_logic.py.
    must sit before `build_review_prompt() {`.
 3. code-review round 2 and security-reviewer: APPROVED (two NITs: the split
    warn loop's jq failure is silent; there is no ceiling on chunk count).
+4. Second review (full range): codex raised a medium CWE-400 finding (no
+   bound on header-repetition amplification) and agy a low one (`_file_name`
+   records git's quoted-path form verbatim). The architect added carve-out
+   (c5). Follow-up prompt to the coder:
+
+   ```
+   Implement ADR-1340 (c5) in panel_logic.py: _split_section raises
+   UnsplittableError when a file it must split has a header > cap // 2;
+   chunk_diff fails closed when total chunk bytes exceed 4*len(data)+cap
+   (backstop only, never fires on admissible input). No chunk-count limit.
+   _file_name strips git's quoted-path form (names only; grouping and
+   splitting must not depend on it). Hermetic tests for each.
+   ```
+5. The first c5 version used `2*len(data)+cap`, and the coder measured 2.16×
+   on an ordinary 20-line-hunk layout with the header at `cap // 2`. The
+   architect revised the backstop to `4*len(data)+cap`. code-review round 3
+   and security-reviewer round 2: APPROVED.
+6. Prompt-fidelity measured 3.71×, and the architect then reproduced 4.87× at
+   cap 60000: the splitter flushed before and after each line-split hunk, so
+   the backstop rejected admissible input. (c5) revised again: packing must
+   be strictly greedy (line-split a too-large hunk starting in the current
+   part, and keep the tail part open). Follow-up prompt to the coder: make
+   `_split_section` strictly greedy; add regression tests for the
+   architect's pattern at cap 60000 and 1000, the 3.71× alternating case,
+   and a seeded fuzz (lossless, each chunk <= cap, ratio <= 3).
