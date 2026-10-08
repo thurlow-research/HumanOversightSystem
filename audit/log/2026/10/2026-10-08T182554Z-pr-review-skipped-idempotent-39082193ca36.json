@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"e498a4fd77f72c945dc41a746183d9348023c7de","pr":2039,"reason":"#1215 precheck: own verdict review 5461015363 (NO ACTION, PROPOSE_ONLY) is on current head; no comments, reviews, or pushes since; disposition unchanged."}
