@@ -720,6 +720,7 @@ def test_run_panel_salvage_escalates():
 # ── #2016 / ADR-1340 carve-out (c): chunk-diff ────────────────────────────────
 
 import json  # noqa: E402
+import pytest  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 
@@ -929,3 +930,70 @@ def test_t9_run_panel_source_pins():
     assert preflight < src.index("build_review_prompt() {")
     assert '$(cat "$2")' in src
     assert "chunk manifest yielded no chunks — refusing to review nothing (#2016)" in src
+
+
+# ── #2016 / ADR-1340 carve-out (c5): amplification bound + quoted names ───────
+
+
+def test_c5_header_over_half_cap_is_refused_and_named(tmp_path):
+    diff = _file_diff("h.py", [_hunk(i * 20, lines=20) for i in range(10)])
+    header = _header_of(diff)
+    cap = 2 * len(header) - 2  # header > cap // 2, but still < cap
+    assert cap // 2 < len(header) < cap < len(diff)
+    src = tmp_path / "in.diff"
+    src.write_bytes(diff)
+    out = tmp_path / "out"
+    res = _run_cli("chunk-diff", "--diff", str(src), "--cap", str(cap), "--out-dir", str(out))
+    assert res.returncode == 3
+    assert res.stderr.startswith(f"chunk-diff: UNSPLITTABLE: h.py: header {len(header)} bytes")
+    assert f"cap/2 ({cap // 2} bytes)" in res.stderr
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_c5_header_at_half_cap_with_short_lines_splits_within_bound():
+    diff = _file_diff("h" * 200, [_hunk(i, lines=1, width=8) for i in range(600)])
+    header = _header_of(diff)
+    cap = 2 * len(header)  # header == cap // 2 exactly
+    assert len(header) == cap // 2 and len(diff) > cap
+    chunks, manifest = chunk_diff(diff, cap)
+    assert len(chunks) >= 2 and manifest["all_whole"] is False
+    assert all(len(b) <= cap for b, _ in chunks)
+    assert sum(len(b) for b, _ in chunks) <= 4 * len(diff) + cap
+
+
+def test_c5_total_size_backstop_fires_on_chunker_bug(monkeypatch):
+    diff = _file_diff("big.py", [_hunk(i * 20) for i in range(20)])
+    cap = len(diff) // 2
+    monkeypatch.setattr(panel_logic, "_split_section", lambda sec, c: [b"q" * c] * 20)
+    with pytest.raises(panel_logic.UnsplittableError) as exc:
+        chunk_diff(diff, cap)
+    msg = str(exc.value)
+    assert msg.startswith(f"chunk-diff: UNSPLITTABLE: chunks total {20 * cap} bytes")
+    assert f"for {len(diff)} input bytes" in msg and "ratio" in msg
+    assert f"4x input + cap ({4 * len(diff) + cap} bytes)" in msg
+
+
+def test_c5_header_at_half_cap_with_20_line_hunks_succeeds():
+    diff = _file_diff("h" * 200, [_hunk(i * 20, lines=20, width=8) for i in range(60)])
+    cap = 2 * len(_header_of(diff))  # header == cap // 2; measured 2.16x here
+    chunks, _ = chunk_diff(diff, cap)
+    total = sum(len(b) for b, _ in chunks)
+    assert 2 * len(diff) < total <= 4 * len(diff) + cap
+    assert all(len(b) <= cap for b, _ in chunks)
+
+
+def test_c5_many_small_files_are_not_count_limited():
+    diff = b"".join(_file_diff(f"f{i}.py", [_hunk(1, lines=2)]) for i in range(300))
+    chunks, _ = chunk_diff(diff, len(_file_diff("f0.py", [_hunk(1, lines=2)])) + 10)
+    assert len(chunks) == 300
+
+
+def test_c5_quoted_git_path_name_is_unquoted():
+    diff = (
+        b'diff --git "a/x y.py" "b/x y.py"\nindex 1..2 100644\n'
+        b'--- "a/x y.py"\n+++ "b/x y.py"\n@@ -1 +1 @@\n+x\n'
+    )
+    chunks, manifest = chunk_diff(diff, 60000)
+    assert chunks[0][1]["files"] == ["x y.py"]
+    assert manifest["files"][0]["file"] == "x y.py"
+    assert panel_logic._file_name(b'diff --git "a/x y" "b/x y"\n') == "x y"

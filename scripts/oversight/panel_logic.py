@@ -692,7 +692,10 @@ def _split_lines(data: bytes) -> list[bytes]:
 def _file_name(diff_line: bytes) -> str:
     rest = diff_line[len(_DIFF_MARK) :].rstrip(b"\r\n")
     name = rest
-    if rest.startswith(b"a/"):
+    if rest.startswith(b'"a/') and b'" "b/' in rest:
+        # git quotes paths with special characters; cosmetic (manifest/warn text only)
+        name = rest[rest.rindex(b'" "b/') + 5 :].removesuffix(b'"')
+    elif rest.startswith(b"a/"):
         half = (len(rest) - 5) // 2
         if (len(rest) - 5) % 2 == 0 and rest[2 + half : 5 + half] == b" b/":
             name = rest[5 + half :]
@@ -731,6 +734,11 @@ def _split_section(sec: dict, cap: int) -> list[bytes]:
     if len(header) > cap:
         raise UnsplittableError(
             f"chunk-diff: UNSPLITTABLE: {name}: header {len(header)} bytes exceeds cap {cap} bytes"
+        )
+    if len(header) > cap // 2:
+        raise UnsplittableError(
+            f"chunk-diff: UNSPLITTABLE: {name}: header {len(header)} bytes exceeds "
+            f"cap/2 ({cap // 2} bytes); splitting would repeat it in every part"
         )
     parts: list[bytes] = []
     cur = header
@@ -817,6 +825,14 @@ def chunk_diff(data: bytes, cap: int) -> tuple[list[tuple[bytes, dict]], dict]:
                 chunks[0] = (preamble + first, fmeta)
             else:
                 chunks.insert(0, (preamble, meta(len(preamble), [], 1, 1)))
+
+    total = sum(len(blob) for blob, _ in chunks)
+    if total > 4 * len(data) + cap:
+        raise UnsplittableError(
+            f"chunk-diff: UNSPLITTABLE: chunks total {total} bytes for {len(data)} input bytes "
+            f"(ratio {total / max(len(data), 1):.2f}) exceeds 4x input + cap "
+            f"({4 * len(data) + cap} bytes)"
+        )
 
     for n, (_, m) in enumerate(chunks, 1):
         m["path"] = f"chunk-{n:03d}.diff"
