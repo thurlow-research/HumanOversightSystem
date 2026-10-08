@@ -120,8 +120,9 @@ This is the **only** sanctioned way to create a branch (#967). Never `git checko
 ```bash
 cd "$REPO_ROOT"
 bash scripts/framework/run_tests_inner_loop.sh
-bash scripts/oversight/run_validators.sh
+bash scripts/oversight/run_validators.sh --diff origin/main...HEAD
 ```
+Commit your changes before running the validators: `--diff` sees only committed changes. The unscoped form (no files) always fail-closes CRITICAL (#1978).
 Tests MUST run against YOUR changes, after you make them. The cycle-start environment does not run tests — you must run them here. If tests fail: fix before opening a PR. Do NOT open a PR with failing tests.
 
 **Step 4b — Pre-PR stale-commit check (HARD GATE — no exceptions):**
