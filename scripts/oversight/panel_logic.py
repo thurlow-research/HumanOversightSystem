@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 
@@ -254,14 +255,12 @@ def reconcile_membership(raw_findings: list, finding: dict) -> list:
         except (TypeError, ValueError):
             continue
         if abs(r_line_i - f_line_i) <= _LINE_PROXIMITY:
-            membership.append(
-                {"reviewer": raw.get("reviewer"), "lens": raw.get("lens")}
-            )
+            membership.append({"reviewer": raw.get("reviewer"), "lens": raw.get("lens")})
     return membership
 
 
 def _severity_key(finding: dict) -> int:
-    return _SEVERITY_RANK.get(finding.get("severity"), _SEVERITY_UNKNOWN)
+    return _SEVERITY_RANK.get(finding.get("severity") or "", _SEVERITY_UNKNOWN)
 
 
 def rank_findings(findings: list) -> list:
@@ -287,7 +286,11 @@ def rank_findings(findings: list) -> list:
             tier,
             _severity_key(finding),
             str(finding.get("file") or ""),
-            int(finding.get("line") or 0) if str(finding.get("line") or "0").lstrip("-").isdigit() else 0,
+            (
+                int(finding.get("line") or 0)
+                if str(finding.get("line") or "0").lstrip("-").isdigit()
+                else 0
+            ),
         )
 
     return sorted(findings, key=key)
@@ -330,18 +333,19 @@ def extract_json(reviewer_response: str) -> dict:
     `.findings // []` pluck on arrays. NEVER raises; empty/whitespace input is a
     documented benign degrade to the fallback (not an error).
     """
+
     def _load(s):
         try:
             return json.loads(s)
         except Exception:
             return None
 
-    obj = _load(reviewer_response)              # 1) whole string is clean JSON
-    if obj is None:                             # 2) fenced ```json ... ``` block
+    obj = _load(reviewer_response)  # 1) whole string is clean JSON
+    if obj is None:  # 2) fenced ```json ... ``` block
         m = _FENCE_RE.search(reviewer_response)
         if m:
             obj = _load(m.group(1))
-    if obj is None:                             # 3) JSON embedded in prose
+    if obj is None:  # 3) JSON embedded in prose
         dec = json.JSONDecoder()
         for i, ch in enumerate(reviewer_response):
             if ch in "{[":
@@ -538,7 +542,7 @@ def reconcile_arbiter(arbiter_obj: dict, raw_findings: list | None) -> dict:
         )
         return {
             "summary": summary,
-            "findings": list(raw_findings),
+            "findings": list(raw_findings or []),
             "arbiter_salvaged": True,
         }
 
@@ -661,6 +665,226 @@ def _run_reconcile_arbiter(args) -> int:
     return 0
 
 
+# ─────────────────────────────────────────────────────────────────────────────── #
+# #2016 / ADR-1340 carve-out (c) — chunk-diff. A diff larger than the reviewer   #
+# prompt cap is split on file boundaries, and a single file larger than the cap  #
+# is split on hunk (then line) boundaries, so no reviewer sees a silent prefix.  #
+# Pure over bytes; the CLI wrapper below does the file I/O.                      #
+# ─────────────────────────────────────────────────────────────────────────────── #
+
+_DIFF_MARK = b"diff --git "
+_HUNK_MARK = b"@@"
+
+
+class UnsplittableError(Exception):
+    """A diff cannot be split within the cap; str() is the exact stderr text."""
+
+
+def _split_lines(data: bytes) -> list[bytes]:
+    """Split on b"\\n" only, keeping terminators (a lone \\r is not a line break)."""
+    lines = data.split(b"\n")
+    out = [ln + b"\n" for ln in lines[:-1]]
+    if lines[-1]:
+        out.append(lines[-1])
+    return out
+
+
+def _file_name(diff_line: bytes) -> str:
+    rest = diff_line[len(_DIFF_MARK) :].rstrip(b"\r\n")
+    name = rest
+    if rest.startswith(b'"a/') and b'" "b/' in rest:
+        # git quotes paths with special characters; cosmetic (manifest/warn text only)
+        name = rest[rest.rindex(b'" "b/') + 5 :].removesuffix(b'"')
+    elif rest.startswith(b"a/"):
+        half = (len(rest) - 5) // 2
+        if (len(rest) - 5) % 2 == 0 and rest[2 + half : 5 + half] == b" b/":
+            name = rest[5 + half :]
+        elif b" b/" in rest:
+            name = rest[rest.rindex(b" b/") + 3 :]
+        else:
+            name = rest
+    return name.decode("utf-8", errors="replace")
+
+
+def _parse_sections(lines: list[bytes]) -> tuple[bytes, list[dict]]:
+    """Return (preamble, sections); each section has name, header, hunks (lists of lines)."""
+    preamble: list[bytes] = []
+    sections: list[dict] = []
+    for ln in lines:
+        if ln.startswith(_DIFF_MARK):
+            sections.append({"name": _file_name(ln), "header": [ln], "hunks": []})
+        elif not sections:
+            preamble.append(ln)
+        elif sections[-1]["hunks"]:
+            if ln.startswith(_HUNK_MARK):
+                sections[-1]["hunks"].append([ln])
+            else:
+                sections[-1]["hunks"][-1].append(ln)
+        elif ln.startswith(_HUNK_MARK):
+            sections[-1]["hunks"].append([ln])
+        else:
+            sections[-1]["header"].append(ln)
+    return b"".join(preamble), sections
+
+
+def _split_section(sec: dict, cap: int) -> list[bytes]:
+    """Split one over-cap file section into parts <= cap (header + whole hunks / lines)."""
+    name = sec["name"]
+    header = b"".join(sec["header"])
+    if len(header) > cap:
+        raise UnsplittableError(
+            f"chunk-diff: UNSPLITTABLE: {name}: header {len(header)} bytes exceeds cap {cap} bytes"
+        )
+    if len(header) > cap // 2:
+        raise UnsplittableError(
+            f"chunk-diff: UNSPLITTABLE: {name}: header {len(header)} bytes exceeds "
+            f"cap/2 ({cap // 2} bytes); splitting would repeat it in every part"
+        )
+    parts: list[bytes] = []
+    cur = header
+    for hunk in sec["hunks"]:
+        body = b"".join(hunk)
+        if len(header) + len(body) <= cap:  # whole hunk fits in an empty part
+            if len(cur) + len(body) > cap:
+                parts.append(cur)
+                cur = header
+            cur += body
+            continue
+        for ln in hunk:  # too big for an empty part: split by line, starting in cur
+            if len(header) + len(ln) > cap:
+                raise UnsplittableError(
+                    f"chunk-diff: UNSPLITTABLE: {name}: header+line "
+                    f"{len(header) + len(ln)} bytes exceeds cap {cap} bytes"
+                )
+            if len(cur) + len(ln) > cap:
+                parts.append(cur)
+                cur = header
+            cur += ln
+    if len(cur) > len(header):
+        parts.append(cur)
+    return parts
+
+
+def chunk_diff(data: bytes, cap: int) -> tuple[list[tuple[bytes, dict]], dict]:
+    """Split a unified diff into chunks of at most `cap` bytes; return (chunks, manifest).
+
+    Each chunk is (bytes, meta) with meta keys path/bytes/files/part/parts/whole.
+    Raises UnsplittableError when the diff cannot be split within the cap.
+    """
+    preamble, sections = _parse_sections(_split_lines(data))
+    chunks: list[tuple[bytes, dict]] = []
+    files: list[dict] = []
+
+    def meta(size: int, names: list[str], part: int, parts: int) -> dict:
+        return {
+            "path": "",
+            "bytes": size,
+            "files": names,
+            "part": part,
+            "parts": parts,
+            "whole": parts == 1,
+        }
+
+    if len(data) <= cap:
+        names = [s["name"] for s in sections]
+        chunks.append((data, meta(len(data), names, 1, 1)))
+        for sec in sections:
+            size = len(b"".join(sec["header"]) + b"".join(b"".join(h) for h in sec["hunks"]))
+            files.append({"file": sec["name"], "bytes": size, "parts": 1, "whole": True})
+    else:
+        for sec in sections:
+            blob = b"".join(sec["header"]) + b"".join(b"".join(h) for h in sec["hunks"])
+            parts = [blob] if len(blob) <= cap else _split_section(sec, cap)
+            for i, part in enumerate(parts, 1):
+                chunks.append((part, meta(len(part), [sec["name"]], i, len(parts))))
+            files.append(
+                {
+                    "file": sec["name"],
+                    "bytes": len(blob),
+                    "parts": len(parts),
+                    "whole": len(parts) == 1,
+                }
+            )
+        if preamble:
+            if len(preamble) > cap:
+                raise UnsplittableError(
+                    f"chunk-diff: UNSPLITTABLE: <preamble>: header {len(preamble)} bytes "
+                    f"exceeds cap {cap} bytes"
+                )
+            if chunks and len(preamble) + len(chunks[0][0]) <= cap:
+                first, fmeta = chunks[0]
+                fmeta["bytes"] = len(preamble) + len(first)
+                chunks[0] = (preamble + first, fmeta)
+            else:
+                chunks.insert(0, (preamble, meta(len(preamble), [], 1, 1)))
+
+    total = sum(len(blob) for blob, _ in chunks)
+    if total > 4 * len(data) + cap:
+        raise UnsplittableError(
+            f"chunk-diff: UNSPLITTABLE: chunks total {total} bytes for {len(data)} input bytes "
+            f"(ratio {total / max(len(data), 1):.2f}) exceeds 4x input + cap "
+            f"({4 * len(data) + cap} bytes)"
+        )
+
+    for n, (_, m) in enumerate(chunks, 1):
+        m["path"] = f"chunk-{n:03d}.diff"
+    manifest = {
+        "schema": "panel-chunk-manifest/1",
+        "cap": cap,
+        "input_bytes": len(data),
+        "input_sha256": hashlib.sha256(data).hexdigest(),
+        "chunks": [m for _, m in chunks],
+        "files": files,
+        "all_whole": all(f["whole"] for f in files),
+    }
+    return chunks, manifest
+
+
+def _run_chunk_diff(args) -> int:
+    """chunk-diff: split --diff into <=--cap-byte chunk files under --out-dir (#2016).
+
+    Exit 0 ok; 2 usage/I-O error; 3 unsplittable. Everything is computed before
+    anything is written, so a non-zero exit leaves no manifest and no chunk files.
+    """
+    if args.cap < 1:
+        sys.stderr.write("chunk-diff: ERROR: --cap must be >= 1\n")
+        return 2
+    try:
+        with open(args.diff, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:
+        sys.stderr.write(f"chunk-diff: ERROR: cannot read {args.diff}: {exc.strerror}\n")
+        return 2
+    try:
+        chunks, manifest = chunk_diff(data, args.cap)
+    except UnsplittableError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 3
+
+    written: list[str] = []
+    tmp = os.path.join(args.out_dir, "chunk-manifest.json.tmp")
+    try:
+        os.makedirs(args.out_dir, exist_ok=True)
+        for blob, meta in chunks:
+            path = os.path.join(args.out_dir, meta["path"])
+            written.append(path)
+            with open(path, "wb") as fh:
+                fh.write(blob)
+        written.append(tmp)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        os.replace(tmp, os.path.join(args.out_dir, "chunk-manifest.json"))
+    except OSError as exc:
+        for path in written:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        sys.stderr.write(f"chunk-diff: ERROR: cannot write to {args.out_dir}: {exc.strerror}\n")
+        return 2
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Panel deterministic logic (SPEC-376 ranking + SPEC-332 triage/SQC)."
@@ -676,16 +900,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd")
 
     # SPEC-332 — triage-floor subcommand (binding 8).
-    p_floor = sub.add_parser(
-        "triage-floor", help="deterministic risk floor (file list on stdin)"
-    )
+    p_floor = sub.add_parser("triage-floor", help="deterministic risk floor (file list on stdin)")
     p_floor.add_argument("--added-lines", type=int, required=True)
     p_floor.add_argument("--size-floor", type=int, default=_DEFAULT_SIZE_FLOOR)
 
     # SPEC-332 — sqc-sample subcommand (binding 8).
-    p_sqc = sub.add_parser(
-        "sqc-sample", help="salted-deterministic red-team audit sample decision"
-    )
+    p_sqc = sub.add_parser("sqc-sample", help="salted-deterministic red-team audit sample decision")
     p_sqc.add_argument("--head-sha", required=True)
     p_sqc.add_argument("--salt", required=True)
     p_sqc.add_argument("--tier", required=True)
@@ -715,6 +935,13 @@ def main(argv: list[str] | None = None) -> int:
         help="path to findings.raw.json (the reviewer fan-out's archived findings)",
     )
 
+    p_chunk = sub.add_parser(
+        "chunk-diff", help="split a diff into <=cap-byte chunk files + manifest (#2016)"
+    )
+    p_chunk.add_argument("--diff", required=True)
+    p_chunk.add_argument("--cap", type=int, required=True)
+    p_chunk.add_argument("--out-dir", required=True)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "triage-floor":
@@ -731,6 +958,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_render_tier(args)
     if args.cmd == "reconcile-arbiter":
         return _run_reconcile_arbiter(args)
+    if args.cmd == "chunk-diff":
+        return _run_chunk_diff(args)
 
     # Default (no subcommand): SPEC-376 corroboration ranking — unchanged.
     data = sys.stdin.read()

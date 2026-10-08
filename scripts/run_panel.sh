@@ -546,16 +546,20 @@ IP_IN_ROSTER=0; printf '%s\n' "${ROSTER[@]}" | grep -q '^ipcheck:' && IP_IN_ROST
 info "roster ($RISK$( ((SAMPLED)) && echo ' +audit' )): ${ROSTER[*]}   (Opus authored → excluded; Copilot runs natively in CI)"
 
 # ── Chunk the diff if it exceeds the cap (split on file boundaries) ─────────────
+# ADR-1340 carve-out (c), #2016: panel_logic.py chunk-diff splits on file, hunk,
+# then line boundaries so no chunk exceeds the cap and none is truncated.
+CDIR="$RUN_DIR/chunks"; mkdir -p "$CDIR"
+python3 "$PANEL_LOGIC" chunk-diff --diff "$DIFF_FILE" --cap "$CAP" --out-dir "$CDIR" || { _rc=$?; die "chunk-diff failed (exit $_rc) — diff cannot be reviewed whole or in parts under ${CAP}B; refusing to truncate (#2016)"; }
 CHUNKS=()
+while IFS= read -r _cp; do CHUNKS+=("$CDIR/$_cp"); done < <(jq -r '.chunks[].path' "$CDIR/chunk-manifest.json")
+(( ${#CHUNKS[@]} > 0 )) || die "chunk manifest yielded no chunks — refusing to review nothing (#2016)"
+cp "$CDIR/chunk-manifest.json" "$RUN_DIR/chunk-manifest.json"
 DIFF_SIZE=$(wc -c < "$DIFF_FILE")
-if (( DIFF_SIZE <= CAP )); then
-  CHUNKS=("$DIFF_FILE")
-else
-  CDIR="$RUN_DIR/chunks"; mkdir -p "$CDIR"
-  awk -v d="$CDIR" 'BEGIN{n=0} /^diff --git /{n++; f=sprintf("%s/chunk-%03d.diff", d, n)} {if(n==0){n=1; f=sprintf("%s/chunk-%03d.diff", d, n)} print > f}' "$DIFF_FILE"
-  for f in "$CDIR"/chunk-*.diff; do CHUNKS+=("$f"); done
-  warn "diff is ${DIFF_SIZE}B > ${CAP}B cap → chunked into ${#CHUNKS[@]} file-group(s)"
-fi
+(( ${#CHUNKS[@]} > 1 )) && warn "diff is ${DIFF_SIZE}B > ${CAP}B cap → chunked into ${#CHUNKS[@]} file-group(s)"
+while IFS=$'\t' read -r _sf _sp; do
+  warn "split (not reviewed whole): $_sf → $_sp parts"
+done < <(jq -r '.files[] | select(.whole == false) | [.file, .parts] | @tsv' "$CDIR/chunk-manifest.json")
+for c in "${CHUNKS[@]}"; do (( $(wc -c < "$c") <= CAP )) || die "chunk $c exceeds ${CAP}B cap — refusing to truncate (#2016)"; done
 
 lens_brief() {
   case "$1" in
@@ -598,7 +602,7 @@ Return ONLY JSON of this exact shape (no prose outside the JSON):
 {"findings":[{"file":"path","line":<int>,"end_line":<int>,"severity":"tier1|tier2|tier3|tier4","title":"short","detail":"why it's wrong","suggestion":"concrete fix"}]}
 
 PR diff to review:
-$(head -c "$CAP" "$2")
+$(cat "$2")
 EOF
 }
 
@@ -606,7 +610,7 @@ EOF
 # Non-blocking. Appends an ADVISORY entry to .claudetmp/panel/ (the dir the
 # oversight-evaluator reads). Does NOT change exit code, the arbiter verdict,
 # posted threads, or the summary.
-# ADR-1340 TD-VF-3 / architect ruling C3 — engine carve-out 1 of 2 (the ONLY
+# ADR-1340 TD-VF-3 / architect ruling C3 — engine carve-out 1 of 3 (the ONLY
 # permitted edits inside the chunking/fan-out/arbiter/rank span are this one
 # and the chunk-counter increments below): PR-bound filename generalized to
 # RUN_LABEL, which is mode-invariant (PR mode: "pr${PR}", byte-identical to
@@ -636,7 +640,7 @@ log_context_advisory() {  # $1=reviewer  $2=response-text
 # uses the `extract-json` subcommand; the per-reviewer chunk union stays a trivial
 # `.findings // []` jq concat (binding 4 permits trivial single-field plucks).
 RESPONSES_JSON="[]"
-# ADR-1340 AD-11 / TD-VF-3 / architect ruling C3 — engine carve-out 2 of 2 (the
+# ADR-1340 AD-11 / TD-VF-3 / architect ruling C3 — engine carve-out 2 of 3 (the
 # ONLY other permitted edit inside the chunking/fan-out/arbiter/rank span):
 # two chunk counters, incremented in BOTH modes, read only by release mode
 # (AD-7 check 7: "a skipped chunk is a FAIL"). No control-flow change — every
