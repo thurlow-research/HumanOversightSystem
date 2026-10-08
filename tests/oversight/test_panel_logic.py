@@ -21,13 +21,9 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "panel_logic.py"
-)
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "panel_logic.py"
 _spec = importlib.util.spec_from_file_location("panel_logic", _MOD_PATH)
+assert _spec is not None and _spec.loader is not None
 panel_logic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(panel_logic)
 
@@ -400,7 +396,7 @@ def test_extract_json_fenced_block():
 
 def test_extract_json_fenced_block_bare_fence():
     # Parity: a bare ``` ... ``` fence (no json tag) is also parsed.
-    raw = "```\n{\"findings\":[]}\n```"
+    raw = '```\n{"findings":[]}\n```'
     assert extract_json(raw) == {"findings": []}
 
 
@@ -577,17 +573,17 @@ def _override_branch() -> str:
 def test_risk_override_clamps_to_floor():
     # The override branch must raise RISK to at least the floor via max_risk.
     branch = _override_branch()
-    assert 'max_risk "$FLOOR" "$RISK_OVERRIDE"' in branch, (
-        "--risk override must be clamped to the deterministic floor (#910)"
-    )
+    assert (
+        'max_risk "$FLOOR" "$RISK_OVERRIDE"' in branch
+    ), "--risk override must be clamped to the deterministic floor (#910)"
 
 
 def test_risk_override_not_bare_assignment():
     # Regression: a bare `RISK="$RISK_OVERRIDE"` reintroduces the floor bypass.
     branch = _override_branch()
-    assert 'RISK="$RISK_OVERRIDE"' not in branch, (
-        "bare RISK=$RISK_OVERRIDE lets --risk lower the floor (#910 regression)"
-    )
+    assert (
+        'RISK="$RISK_OVERRIDE"' not in branch
+    ), "bare RISK=$RISK_OVERRIDE lets --risk lower the floor (#910 regression)"
 
 
 # --------------------------------------------------------------------------- #
@@ -602,12 +598,26 @@ def test_reconcile_salvages_when_arbiter_drops_nonempty_raw():
     # reviewers found real issues (findings.raw.json non-empty). Salvage them.
     arbiter = {"summary": "Panel found no issues under the active lenses.", "findings": []}
     raw = [
-        {"file": "a.py", "line": 10, "severity": "tier1", "reviewer": "agy", "lens": "correctness", "title": "off-by-one"},
-        {"file": "b.py", "line": 3, "severity": "tier2", "reviewer": "codex", "lens": "security", "title": "unescaped input"},
+        {
+            "file": "a.py",
+            "line": 10,
+            "severity": "tier1",
+            "reviewer": "agy",
+            "lens": "correctness",
+            "title": "off-by-one",
+        },
+        {
+            "file": "b.py",
+            "line": 3,
+            "severity": "tier2",
+            "reviewer": "codex",
+            "lens": "security",
+            "title": "unescaped input",
+        },
     ]
     out = reconcile_arbiter(arbiter, raw)
     assert out["arbiter_salvaged"] is True
-    assert out["findings"] == raw            # raw findings surface, ungrouped
+    assert out["findings"] == raw  # raw findings surface, ungrouped
     assert "2 reviewer finding" in out["summary"]
     assert "#978" in out["summary"]
 
@@ -624,8 +634,13 @@ def test_reconcile_salvages_on_prose_empty_arbiter():
 
 def test_reconcile_passthrough_when_arbiter_has_findings():
     # Arbiter produced a real synthesized verdict → do NOT overwrite it.
-    arbiter = {"summary": "one issue", "findings": [{"file": "a.py", "line": 5, "severity": "tier1"}]}
-    raw = [{"file": "a.py", "line": 5, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}]
+    arbiter = {
+        "summary": "one issue",
+        "findings": [{"file": "a.py", "line": 5, "severity": "tier1"}],
+    }
+    raw = [
+        {"file": "a.py", "line": 5, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}
+    ]
     out = reconcile_arbiter(arbiter, raw)
     assert out["arbiter_salvaged"] is False
     assert out["findings"] == arbiter["findings"]
@@ -645,7 +660,9 @@ def test_reconcile_no_false_salvage_when_raw_empty():
 def test_reconcile_treats_malformed_arbiter_as_empty():
     # A malformed/None arbiter object with a non-empty raw set still salvages —
     # the raw findings must never be lost to a bad arbiter payload.
-    raw = [{"file": "a.py", "line": 2, "severity": "tier1", "reviewer": "codex", "lens": "security"}]
+    raw = [
+        {"file": "a.py", "line": 2, "severity": "tier1", "reviewer": "codex", "lens": "security"}
+    ]
     for bad in (None, [], "prose", {"findings": "not-a-list"}):
         out = reconcile_arbiter(bad, raw)
         assert out["arbiter_salvaged"] is True
@@ -657,8 +674,8 @@ def test_reconcile_does_not_mutate_inputs():
     raw = [{"file": "a.py", "line": 1, "severity": "tier1", "reviewer": "agy", "lens": "x"}]
     out = reconcile_arbiter(arbiter, raw)
     out["findings"].append({"file": "injected"})
-    assert arbiter == {"findings": []}       # caller's arbiter untouched
-    assert len(raw) == 1                       # caller's raw list untouched
+    assert arbiter == {"findings": []}  # caller's arbiter untouched
+    assert len(raw) == 1  # caller's raw list untouched
 
 
 def test_reconcile_arbiter_cli_roundtrip(tmp_path, monkeypatch, capsys):
@@ -667,7 +684,9 @@ def test_reconcile_arbiter_cli_roundtrip(tmp_path, monkeypatch, capsys):
     import io
     import json as _json
 
-    raw = [{"file": "a.py", "line": 9, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}]
+    raw = [
+        {"file": "a.py", "line": 9, "severity": "tier1", "reviewer": "agy", "lens": "correctness"}
+    ]
     raw_path = tmp_path / "findings.raw.json"
     raw_path.write_text(_json.dumps(raw))
     monkeypatch.setattr("sys.stdin", io.StringIO(_json.dumps({"findings": []})))
@@ -696,3 +715,214 @@ def test_run_panel_salvage_escalates():
         "a salvaged arbiter must force escalation (exit 3), else a silent arbiter "
         "failure still slides through mergeable (#978 regression)"
     )
+
+
+# ── #2016 / ADR-1340 carve-out (c): chunk-diff ────────────────────────────────
+
+import json  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+chunk_diff = panel_logic.chunk_diff
+_RUN_PANEL = _MOD_PATH.parents[1] / "run_panel.sh"
+
+
+def _file_diff(name: str, hunks: list[bytes]) -> bytes:
+    header = (
+        f"diff --git a/{name} b/{name}\nindex 1111111..2222222 100644\n"
+        f"--- a/{name}\n+++ b/{name}\n"
+    ).encode()
+    return header + b"".join(hunks)
+
+
+def _hunk(i: int, lines: int = 20, width: int = 40) -> bytes:
+    body = b"".join(b"+" + (b"x" * width) + b"\n" for _ in range(lines))
+    return f"@@ -{i},0 +{i},{lines} @@\n".encode() + body
+
+
+def _strip_header(chunk: bytes, header: bytes) -> bytes:
+    assert chunk.startswith(header)
+    return chunk[len(header) :]
+
+
+def _header_of(diff: bytes) -> bytes:
+    return diff[: diff.index(b"@@")]
+
+
+def _run_cli(*argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(_MOD_PATH), *argv], capture_output=True, text=True)
+
+
+def test_t1_single_large_file_splits_on_hunks():
+    diff = _file_diff("big.py", [_hunk(i * 60, lines=60) for i in range(40)])
+    assert len(diff) > 60000
+    chunks, manifest = chunk_diff(diff, 60000)
+    header = _header_of(diff)
+    assert len(chunks) >= 2
+    for blob, _ in chunks:
+        assert len(blob) <= 60000
+        assert blob.startswith(header)
+    assert manifest["files"][0]["whole"] is False
+    assert manifest["all_whole"] is False
+    rebuilt = header + b"".join(_strip_header(b, header) for b, _ in chunks)
+    assert rebuilt == diff
+
+
+def test_t2_oversize_hunk_splits_on_line_boundaries():
+    diff = _file_diff("one.py", [_hunk(1, lines=400, width=40)])
+    cap = 5000
+    assert len(diff) > cap
+    chunks, manifest = chunk_diff(diff, cap)
+    header = _header_of(diff)
+    assert len(chunks) >= 2
+    for blob, _ in chunks:
+        assert len(blob) <= cap
+        assert blob.endswith(b"\n")
+    rebuilt = header + b"".join(_strip_header(b, header) for b, _ in chunks)
+    assert rebuilt == diff
+    assert manifest["all_whole"] is False
+
+
+def test_t3_unsplittable_line_exits_3_and_writes_nothing(tmp_path):
+    diff = _file_diff("w.py", [b"@@ -1 +1 @@\n+" + b"y" * 3000 + b"\n"])
+    src = tmp_path / "in.diff"
+    src.write_bytes(diff)
+    out = tmp_path / "out"
+    cap = 1000
+    res = _run_cli("chunk-diff", "--diff", str(src), "--cap", str(cap), "--out-dir", str(out))
+    header = _header_of(diff)
+    line_len = len(b"+" + b"y" * 3000 + b"\n")
+    assert res.returncode == 3
+    assert res.stderr == (
+        f"chunk-diff: UNSPLITTABLE: w.py: header+line {len(header) + line_len} "
+        f"bytes exceeds cap {cap} bytes\n"
+    )
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_t3_header_over_cap_exits_3(tmp_path):
+    diff = _file_diff("h.py", [_hunk(1)])
+    src = tmp_path / "in.diff"
+    src.write_bytes(diff)
+    res = _run_cli(
+        "chunk-diff", "--diff", str(src), "--cap", "50", "--out-dir", str(tmp_path / "o")
+    )
+    assert res.returncode == 3
+    assert res.stderr.startswith("chunk-diff: UNSPLITTABLE: h.py: header ")
+    assert "bytes exceeds cap 50 bytes" in res.stderr
+
+
+def test_t4_fast_path_is_byte_identical(tmp_path):
+    diff = _file_diff("a.py", [_hunk(1, lines=2)]) + _file_diff("b.py", [_hunk(1, lines=2)])
+    src = tmp_path / "in.diff"
+    src.write_bytes(diff)
+    out = tmp_path / "out"
+    res = _run_cli("chunk-diff", "--diff", str(src), "--cap", "60000", "--out-dir", str(out))
+    assert res.returncode == 0
+    assert (out / "chunk-001.diff").read_bytes() == diff
+    manifest = json.loads((out / "chunk-manifest.json").read_text())
+    assert manifest["schema"] == "panel-chunk-manifest/1"
+    assert manifest["input_sha256"] == hashlib.sha256(diff).hexdigest()
+    assert len(manifest["chunks"]) == 1
+    assert manifest["chunks"][0]["path"] == "chunk-001.diff"
+    assert manifest["all_whole"] is True
+    assert [f["file"] for f in manifest["files"]] == ["a.py", "b.py"]
+    assert all(f["whole"] for f in manifest["files"])
+
+
+def test_t4_empty_input_gives_one_empty_chunk():
+    chunks, manifest = chunk_diff(b"", 100)
+    assert chunks[0][0] == b"" and chunks[0][1]["files"] == []
+    assert len(chunks) == 1 and manifest["all_whole"] is True
+
+
+def test_t4_no_trailing_newline_preserved():
+    diff = _file_diff("a.py", [b"@@ -1 +1 @@\n+x"])
+    chunks, _ = chunk_diff(diff, 60000)
+    assert chunks[0][0] == diff
+
+
+def test_t5_small_large_small_ordering():
+    small_a = _file_diff("a.py", [_hunk(1, lines=2)])
+    large = _file_diff("big.py", [_hunk(i * 30) for i in range(10)])
+    small_b = _file_diff("c.py", [_hunk(1, lines=2)])
+    cap = 3000
+    assert len(small_a) <= cap and len(small_b) <= cap and len(large) > cap
+    chunks, manifest = chunk_diff(small_a + large + small_b, cap)
+    names = [m["files"] for _, m in chunks]
+    n_large = names.count(["big.py"])
+    assert n_large >= 2
+    assert names == [["a.py"]] + [["big.py"]] * n_large + [["c.py"]]
+    assert chunks[0][0] == small_a and chunks[-1][0] == small_b
+    assert [(f["file"], f["whole"]) for f in manifest["files"]] == [
+        ("a.py", True),
+        ("big.py", False),
+        ("c.py", True),
+    ]
+    assert manifest["files"][1]["parts"] == n_large
+    assert [m["part"] for _, m in chunks if m["files"] == ["big.py"]] == list(range(1, n_large + 1))
+
+
+def test_t6_multibyte_counts_bytes_not_chars():
+    body = "+" + "é" * 20 + "\n"
+    hunks = [f"@@ -{i} +{i} @@\n{body}".encode() for i in range(30)]
+    diff = _file_diff("u.py", hunks)
+    cap = len(diff.decode()) + 10
+    assert len(diff) > cap
+    chunks, manifest = chunk_diff(diff, cap)
+    assert len(chunks) >= 2
+    assert all(len(b) <= cap for b, _ in chunks)
+    assert manifest["all_whole"] is False
+
+
+def test_t7_header_only_section_and_preamble_preserved():
+    preamble = b"From abc Mon Sep 17\nSubject: x\n\n"
+    binary = (
+        b"diff --git a/img.png b/img.png\nnew file mode 100644\n"
+        b"Binary files /dev/null and b/img.png differ\n"
+    )
+    big = _file_diff("big.py", [_hunk(i * 30) for i in range(6)])
+    cap = len(big) - 100
+    chunks, manifest = chunk_diff(preamble + binary + big, cap)
+    assert chunks[0][0] == preamble + binary
+    assert chunks[0][1]["files"] == ["img.png"] and chunks[0][1]["whole"] is True
+    assert manifest["files"][0] == {
+        "file": "img.png",
+        "bytes": len(binary),
+        "parts": 1,
+        "whole": True,
+    }
+
+
+def test_t7_preamble_over_cap_becomes_own_chunk():
+    preamble = b"p" * 100 + b"\n"
+    sec = _file_diff("a.py", [_hunk(1, lines=2)])
+    chunks, _ = chunk_diff(preamble + sec, len(sec) + 10)
+    assert chunks[0] == (preamble, chunks[0][1]) and chunks[0][1]["files"] == []
+    assert chunks[1][0] == sec
+
+
+def test_t8_cli_usage_errors_exit_2(tmp_path):
+    src = tmp_path / "in.diff"
+    src.write_bytes(b"x\n")
+    out = tmp_path / "out"
+    assert (
+        _run_cli("chunk-diff", "--diff", str(src), "--cap", "0", "--out-dir", str(out)).returncode
+        == 2
+    )
+    missing = _run_cli(
+        "chunk-diff", "--diff", str(tmp_path / "nope.diff"), "--cap", "10", "--out-dir", str(out)
+    )
+    assert missing.returncode == 2
+    assert missing.stderr.startswith("chunk-diff: ERROR: ")
+    assert not out.exists()
+
+
+def test_t9_run_panel_source_pins():
+    src = _RUN_PANEL.read_text()
+    assert 'head -c "$CAP" "$2"' not in src
+    assert 'python3 "$PANEL_LOGIC" chunk-diff --diff "$DIFF_FILE"' in src
+    assert "refusing to truncate (#2016)" in src
+    preflight = src.index('for c in "${CHUNKS[@]}"; do (( $(wc -c < "$c") <= CAP ))')
+    assert preflight < src.index('for spec in "${ROSTER[@]}"; do\n  tool="${spec%%:*}"')
+    assert '$(head -c "$CAP" "$DIFF_FILE")' in src
