@@ -742,21 +742,15 @@ def _split_section(sec: dict, cap: int) -> list[bytes]:
         )
     parts: list[bytes] = []
     cur = header
-    fresh = True  # cur holds only the header
     for hunk in sec["hunks"]:
         body = b"".join(hunk)
-        if len(cur) + len(body) <= cap:
+        if len(header) + len(body) <= cap:  # whole hunk fits in an empty part
+            if len(cur) + len(body) > cap:
+                parts.append(cur)
+                cur = header
             cur += body
-            fresh = False
             continue
-        if not fresh:
-            parts.append(cur)
-            cur, fresh = header, True
-        if len(cur) + len(body) <= cap:
-            cur += body
-            fresh = False
-            continue
-        for ln in hunk:  # header + one hunk exceeds cap: split by line
+        for ln in hunk:  # too big for an empty part: split by line, starting in cur
             if len(header) + len(ln) > cap:
                 raise UnsplittableError(
                     f"chunk-diff: UNSPLITTABLE: {name}: header+line "
@@ -766,9 +760,7 @@ def _split_section(sec: dict, cap: int) -> list[bytes]:
                 parts.append(cur)
                 cur = header
             cur += ln
-        parts.append(cur)  # the next hunk starts a new part
-        cur, fresh = header, True
-    if not fresh:
+    if len(cur) > len(header):
         parts.append(cur)
     return parts
 

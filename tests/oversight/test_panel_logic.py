@@ -998,3 +998,68 @@ def test_c5_quoted_git_path_name_is_unquoted():
     assert chunks[0][1]["files"] == ["x y.py"]
     assert manifest["files"][0]["file"] == "x y.py"
     assert panel_logic._file_name(b'diff --git "a/x y" "b/x y"\n') == "x y"
+
+
+# ── #2016 (c5) greedy packing: no flush around line-split hunks ───────────────
+
+
+def _header_for(size: int) -> str:
+    """A file name whose diff header is the largest one that is <= size bytes."""
+    const = len(_header_of(_file_diff("", [b"@@"])))
+    return "h" * ((size - const) // 4)
+
+
+def _ratio(diff: bytes, cap: int) -> float:
+    chunks, _ = chunk_diff(diff, cap)
+    assert all(len(b) <= cap for b, _ in chunks)
+    return sum(len(b) for b, _ in chunks) / len(diff)
+
+
+def _architect_pattern(cap: int, cycles: int) -> bytes:
+    hunks = []
+    for _ in range(cycles):
+        hunks.append(b"@@ -1 +1 @@\n+t\n")
+        hunks.append(b"@@ -2 +2 @@\n+" + b"x" * (cap // 2 - 2) + b"\n+y\n")
+    return _file_diff(_header_for(cap // 2), hunks)
+
+
+@pytest.mark.parametrize("cap", [60000, 1000])
+def test_c5_architect_pattern_stays_within_ratio_3(cap):
+    diff = _architect_pattern(cap, 30)
+    assert len(_header_of(diff)) <= cap // 2
+    assert _ratio(diff, cap) <= 3
+
+
+def test_c5_alternating_51_line_and_1_line_hunks_ratio_le_3():
+    cap = 1000
+    hunks = []
+    for i in range(30):
+        hunks.append(_hunk(i, lines=51, width=8))
+        hunks.append(_hunk(i, lines=1, width=8))
+    diff = _file_diff(_header_for(cap // 2), hunks)
+    assert len(_header_of(diff)) <= cap // 2
+    assert _ratio(diff, cap) <= 3
+
+
+def test_c5_fuzz_lossless_capped_and_ratio_le_3():
+    import random
+
+    rng = random.Random(2016)
+    for _ in range(200):
+        cap = rng.randint(400, 3000)
+        header_size = rng.randint(100, cap // 2)
+        hunks = []
+        for i in range(rng.randint(1, 25)):
+            lines = [f"@@ -{i} +{i} @@\n".encode()]
+            for _ in range(rng.randint(1, 30)):
+                lines.append(b"+" + b"z" * rng.randint(0, cap // 2 - 2) + b"\n")
+            hunks.append(b"".join(lines))
+        diff = _file_diff(_header_for(header_size), hunks)
+        header = _header_of(diff)
+        assert len(header) <= cap // 2
+        if len(diff) <= cap:
+            continue
+        chunks, _ = chunk_diff(diff, cap)
+        assert all(len(b) <= cap and b.startswith(header) for b, _ in chunks)
+        assert header + b"".join(_strip_header(b, header) for b, _ in chunks) == diff
+        assert sum(len(b) for b, _ in chunks) / len(diff) <= 3
