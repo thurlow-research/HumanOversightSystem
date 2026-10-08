@@ -720,9 +720,10 @@ def test_run_panel_salvage_escalates():
 # ── #2016 / ADR-1340 carve-out (c): chunk-diff ────────────────────────────────
 
 import json  # noqa: E402
-import pytest  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
+
+import pytest  # noqa: E402
 
 chunk_diff = panel_logic.chunk_diff
 _RUN_PANEL = _MOD_PATH.parents[1] / "run_panel.sh"
