@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"human-required","head_sha":"04b18da1fdb8486b81d61726b905a56df5c4cd7d","pr":2044,"reason_category":"GATE_UNSATISFIED","review_id":5465556097,"summary":"Protected-surface/CODEOWNERS paths (CLAUDE.md, templates/CLAUDE.human.md) require ScottThurlow approval; no blocking findings.","tier":"LOW","verdict_event":"approve"}
