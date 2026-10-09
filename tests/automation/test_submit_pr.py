@@ -150,10 +150,10 @@ class Harness:
         self.audit_log_path = self.audit_lib_dir / "audit_log.sh"
         _write_exec(
             self.audit_log_path,
-            '#!/usr/bin/env bash\n'
-            'audit_write_event() {\n'
+            "#!/usr/bin/env bash\n"
+            "audit_write_event() {\n"
             '    echo "AUDIT_EVENT:$1" >> "$CAPTURE_FILE"\n'
-            '}\n',
+            "}\n",
         )
 
         # #1856 closing-keyword guard (submit_pr.sh resolves it relative to itself).
@@ -213,7 +213,9 @@ class Harness:
             )
         return path
 
-    def run(self, args, env_overrides=None, cycle_id=DEFAULT_CYCLE_ID, write_record=True, bash=BASH):
+    def run(
+        self, args, env_overrides=None, cycle_id=DEFAULT_CYCLE_ID, write_record=True, bash=BASH
+    ):
         """Run submit_pr.sh. For --app worker, by default exports HOS_CYCLE_ID
         and writes a matching valid ownership record for the resolved --head
         branch (or "current-branch" if --head is omitted) so existing
@@ -236,7 +238,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [bash, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
         )
 
     def capture(self) -> str:
@@ -269,7 +275,18 @@ def test_missing_body_file_flag(h):
 
 
 def test_body_file_does_not_exist(h):
-    result = h.run(["--title", "t", "--body-file", str(h.tmp / "missing.md"), "--base", "main", "--app", "worker"])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.tmp / "missing.md"),
+            "--base",
+            "main",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode != 0
     assert "not found" in result.stderr
 
@@ -287,7 +304,9 @@ def test_missing_app(h):
 
 
 def test_invalid_app_value(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "bogus"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "bogus"]
+    )
     assert result.returncode != 0
     assert "--app" in result.stderr
 
@@ -304,7 +323,9 @@ def test_rejects_inline_body(h):
 
 
 def test_app_human_without_confirmed_fails(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "human"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "human"]
+    )
     assert result.returncode != 0
     assert "--confirmed" in result.stderr
     cap = h.capture()
@@ -312,21 +333,34 @@ def test_app_human_without_confirmed_fails(h):
 
 
 def test_app_human_with_confirmed_proceeds(h):
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--base", "main",
-        "--app", "human", "--confirmed",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--app",
+            "human",
+            "--confirmed",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     assert "GET_APP_TOKEN_CALLED_WITH:--app human" in h.capture()
 
 
 def test_app_worker_does_not_require_confirmed(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"]
+    )
     assert result.returncode == 0, result.stderr
 
 
 def test_app_overseer_does_not_require_confirmed(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "overseer"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "overseer"]
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -336,21 +370,37 @@ def test_app_overseer_does_not_require_confirmed(h):
 
 
 def test_head_defaults_to_current_branch(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"]
+    )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
+    push_line = [
+        ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
+    ][0]
     assert "refs/heads/current-branch:refs/heads/current-branch" in push_line
 
 
 def test_explicit_head_used_over_current_branch(h):
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--base", "main",
-        "--head", "explicit-branch", "--app", "worker",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "explicit-branch",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
+    push_line = [
+        ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
+    ][0]
     assert "refs/heads/explicit-branch:refs/heads/explicit-branch" in push_line
     # #1166 regression guard: the push source must be the named branch, never
     # the working-tree HEAD (current-branch != explicit-branch in this test).
@@ -360,10 +410,20 @@ def test_explicit_head_used_over_current_branch(h):
 def test_gh_pr_create_receives_private_snapshot_of_scanned_body(h):
     """Body is copied once; gh gets the private copy (same content), removed on exit."""
     h.body_file.write_text("single-line body\n")
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--base", "main",
-        "--head", "feature-x", "--app", "worker",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "feature-x",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     lines = h.capture().splitlines()
     path = [ln for ln in lines if ln.startswith("GH_BODY_PATH:")][0].split(":", 1)[1]
@@ -373,16 +433,28 @@ def test_gh_pr_create_receives_private_snapshot_of_scanned_body(h):
 
 
 def test_happy_path_pushes_creates_pr_and_revokes_token(h):
-    result = h.run([
-        "--title", "My PR", "--body-file", str(h.body_file), "--base", "main",
-        "--head", "feature-x", "--app", "worker",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "My PR",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "feature-x",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "https://github.com/test-owner/test-repo/pull/999"
 
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH:--app worker" in cap
-    push_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln][0]
+    push_line = [
+        ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
+    ][0]
     assert "x-access-token:fake-token-worker@github.com/test-owner/test-repo.git" in push_line
     assert "refs/heads/feature-x:refs/heads/feature-x" in push_line
     gh_line = [ln for ln in cap.splitlines() if ln.startswith("GH_CALLED_WITH:pr create")][0]
@@ -431,10 +503,14 @@ def test_gh_pr_create_failure_still_revokes_token(h):
 
 
 def test_fetches_base_before_pushing(h):
-    result = h.run(["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"])
+    result = h.run(
+        ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "worker"]
+    )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
-    fetch_line = [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and " fetch " in ln][0]
+    fetch_line = [
+        ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and " fetch " in ln
+    ][0]
     assert "fetch origin main" in fetch_line
 
 
@@ -518,8 +594,18 @@ def test_merge_conflict_does_not_emit_audit_event(h):
 
 def test_missing_local_branch_fails_closed(h):
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "no-such-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "no-such-branch",
+            "--app",
+            "worker",
+        ],
         env_overrides={"GIT_VERIFY_FAIL": "1"},
     )
     assert result.returncode != 0
@@ -535,8 +621,18 @@ def test_stale_non_checked_out_head_refuses_instead_of_merging(h):
     # produced the 11k-deletion incident when submit_pr.sh pushed the
     # checked-out HEAD under the named branch instead of refusing.
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "explicit-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "explicit-branch",
+            "--app",
+            "worker",
+        ],
         env_overrides={"GIT_BEHIND_COUNT": "3"},
     )
     assert result.returncode != 0
@@ -544,8 +640,10 @@ def test_stale_non_checked_out_head_refuses_instead_of_merging(h):
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH" not in cap
     assert not any("x-access-token" in ln for ln in cap.splitlines())
-    assert not any(ln.startswith("GIT_CALLED_WITH") and " merge " in ln and "--abort" not in ln
-                   for ln in cap.splitlines())
+    assert not any(
+        ln.startswith("GIT_CALLED_WITH") and " merge " in ln and "--abort" not in ln
+        for ln in cap.splitlines()
+    )
 
 
 def test_fetch_failure_aborts_before_token_mint(h):
@@ -577,8 +675,18 @@ def test_worker_refuses_pr_for_branch_without_ownership_record(h):
     record must never reach fetch, token mint, push, or gh pr create. This
     test MUST fail against pre-fix behaviour."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -591,8 +699,18 @@ def test_worker_refuses_pr_when_no_cycle_id_set(h):
     """T3 — no_cycle_id: the checking process itself was not launched with a
     cycle identity, e.g. a session not started by bin/hos-cron."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         cycle_id=None,
     )
     assert result.returncode != 0
@@ -605,9 +723,20 @@ def test_worker_refuses_pr_for_record_from_a_different_cycle(h):
     cycle. Ownership does not transfer (ADR-037 AD-1)."""
     h.write_record("current-branch", cycle_id="some-other-cycle")
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
-        write_record=False, cycle_id="this-cycle",
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
+        write_record=False,
+        cycle_id="this-cycle",
     )
     assert result.returncode != 0
     assert "current-branch" in result.stderr
@@ -619,8 +748,18 @@ def test_worker_refuses_pr_for_record_naming_a_different_branch(h):
     different branch name inside it (no prefix/glob match is ever honoured)."""
     h.write_record("current-branch", branch_field="someone-elses-branch")
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -632,8 +771,18 @@ def test_worker_refuses_pr_for_record_with_non_worker_role(h):
     non-worker session per R2; this is the fail-closed check on that value."""
     h.write_record("current-branch", role="human")
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -644,8 +793,18 @@ def test_worker_refuses_pr_for_malformed_record(h):
     """T3 — malformed: content doesn't match the key=value grammar."""
     h.write_record("current-branch", body="this is not a valid record\n")
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -657,8 +816,18 @@ def test_worker_refuses_pr_for_unreadable_record(h):
     path = h.write_record("current-branch")
     path.chmod(0o000)
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -673,8 +842,18 @@ def test_worker_refuses_pr_for_oversized_record(h):
     )
     h.write_record("current-branch", body=oversized_body)
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -684,8 +863,18 @@ def test_worker_refuses_pr_for_oversized_record(h):
 def test_worker_refuses_pr_for_absent_record(h):
     """T3 — no_record: nothing at all was written for this branch."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "never-created-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "never-created-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -697,10 +886,20 @@ def test_worker_with_valid_record_reaches_unchanged_push_pr_path(h):
     fail-open/fail-closed risk are covered by one proof obligation (SPEC §10).
     A branch with a valid current-cycle record still reaches the unchanged
     push/PR flow."""
-    result = h.run([
-        "--title", "My PR", "--body-file", str(h.body_file), "--base", "main",
-        "--head", "worker-owned-branch", "--app", "worker",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "My PR",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "worker-owned-branch",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "https://github.com/test-owner/test-repo/pull/999"
     cap = h.capture()
@@ -713,8 +912,17 @@ def test_app_human_confirmed_ignores_ownership_state(h):
     must not affect --app human --confirmed: it never consults the store."""
     h.write_record("current-branch", cycle_id="not-this-session")
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--app", "human", "--confirmed"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--app",
+            "human",
+            "--confirmed",
+        ],
         cycle_id=None,
     )
     assert result.returncode == 0, result.stderr
@@ -734,8 +942,19 @@ def test_confirmed_flag_does_not_bypass_worker_ownership_check(h):
     """T5 — no override. --confirmed is a human-proxy authorization flag; it
     must not let --app worker skip the ownership check."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker", "--confirmed"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+            "--confirmed",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -746,8 +965,18 @@ def test_hos_state_dir_env_var_is_not_consulted_for_ownership(h):
     """T5 — no override. HOS_STATE_DIR is the launcher's unrelated state-dir
     idiom; R5 forbids any environment escape hatch for the ownership check."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
         env_overrides={"HOS_STATE_DIR": str(h.tmp / "fake-state-dir")},
     )
@@ -759,8 +988,18 @@ def test_hos_bo_reason_env_var_cannot_fake_a_valid_record(h):
     """T5 — no override. Pre-setting the library's own out-parameter must not
     influence the outcome; it is only ever an output, never an input."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
         env_overrides={"HOS_BO_REASON": ""},
     )
@@ -771,8 +1010,18 @@ def test_hos_bo_reason_env_var_cannot_fake_a_valid_record(h):
 def test_refusal_emits_audit_event(h):
     """R9 — a refusal is observable via the standard audit-log writer."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -787,8 +1036,18 @@ def test_audit_sink_failure_does_not_mask_refusal(h):
     """R9 — an audit-sink failure must never convert a refusal into a pass."""
     h.audit_log_path.unlink()
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "foreign-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "foreign-branch",
+            "--app",
+            "worker",
+        ],
         write_record=False,
     )
     assert result.returncode != 0
@@ -802,8 +1061,17 @@ def test_audit_sink_failure_does_not_mask_refusal(h):
 
 def test_update_pr_rejects_non_worker_app(h):
     result = h.run(
-        ["--update-pr", "42", "--base", "main", "--head", "current-branch",
-         "--app", "human", "--confirmed"],
+        [
+            "--update-pr",
+            "42",
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "human",
+            "--confirmed",
+        ],
     )
     assert result.returncode != 0
     assert "--update-pr requires --app worker" in result.stderr
@@ -811,8 +1079,18 @@ def test_update_pr_rejects_non_worker_app(h):
 
 def test_update_pr_rejects_title(h):
     result = h.run(
-        ["--update-pr", "42", "--title", "t", "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--update-pr",
+            "42",
+            "--title",
+            "t",
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
     )
     assert result.returncode != 0
     assert "--title" in result.stderr
@@ -820,8 +1098,18 @@ def test_update_pr_rejects_title(h):
 
 def test_update_pr_rejects_body_file(h):
     result = h.run(
-        ["--update-pr", "42", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--update-pr",
+            "42",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
     )
     assert result.returncode != 0
     assert "--body-file" in result.stderr
@@ -829,8 +1117,16 @@ def test_update_pr_rejects_body_file(h):
 
 def test_update_pr_rejects_non_numeric_pr_number(h):
     result = h.run(
-        ["--update-pr", "not-a-number", "--base", "main",
-         "--head", "current-branch", "--app", "worker"],
+        [
+            "--update-pr",
+            "not-a-number",
+            "--base",
+            "main",
+            "--head",
+            "current-branch",
+            "--app",
+            "worker",
+        ],
     )
     assert result.returncode != 0
     assert "--update-pr" in result.stderr
@@ -923,8 +1219,18 @@ def test_update_pr_refuses_on_author_mismatch(h):
 
 def test_open_mode_worker_refuses_when_open_pr_already_exists(h):
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "worker-owned-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "worker-owned-branch",
+            "--app",
+            "worker",
+        ],
         env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
     )
     assert result.returncode != 0
@@ -937,16 +1243,36 @@ def test_open_mode_worker_refuses_when_open_pr_already_exists(h):
 def test_open_mode_worker_proceeds_when_no_existing_pr(h):
     """Default stub returns zero existing PRs — the unchanged happy path."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "worker-owned-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "worker-owned-branch",
+            "--app",
+            "worker",
+        ],
     )
     assert result.returncode == 0, result.stderr
 
 
 def test_open_mode_worker_refuses_when_duplicate_check_query_fails(h):
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--head", "worker-owned-branch", "--app", "worker"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--head",
+            "worker-owned-branch",
+            "--app",
+            "worker",
+        ],
         env_overrides={"GH_API_DUP_FAIL": "1"},
     )
     assert result.returncode != 0
@@ -959,8 +1285,17 @@ def test_open_mode_human_unaffected_by_duplicate_guard(h):
     """R6 — --app human sees no behaviour change; the duplicate guard is
     scoped to --app worker only."""
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--base", "main",
-         "--app", "human", "--confirmed"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--base",
+            "main",
+            "--app",
+            "human",
+            "--confirmed",
+        ],
         env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
     )
     assert result.returncode == 0, result.stderr
@@ -1133,7 +1468,12 @@ def test_ck_git_log_failure_fails_closed(h):
 
 
 def _bash32():
-    for cand in ("/bin/bash", "/usr/bin/bash", shutil.which("bash3") or "", shutil.which("bash-3.2") or ""):
+    for cand in (
+        "/bin/bash",
+        "/usr/bin/bash",
+        shutil.which("bash3") or "",
+        shutil.which("bash-3.2") or "",
+    ):
         if not cand or not os.path.exists(cand):
             continue
         out = subprocess.run([cand, "-c", "echo $BASH_VERSINFO"], capture_output=True, text=True)

@@ -1,8 +1,8 @@
 """Tests for scripts/automation/closing_keywords.py (#1856)."""
 
 import subprocess
-import time
 import sys
+import time
 from pathlib import Path
 
 import pytest
