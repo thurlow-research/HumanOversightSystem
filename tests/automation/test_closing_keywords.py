@@ -157,6 +157,26 @@ def test_read_commits(repo):
     assert ck.find_closing_refs(commits[1][1], SLUG) == []
 
 
+def test_read_commits_ignores_replacement_refs(repo):
+    """CWE-693: a local `git replace` must not hide a closing keyword."""
+    _git(repo, "checkout", "-q", "-b", "scratch", "main")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "innocent subject")
+    clean = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    _git(repo, "checkout", "-q", "-b", "evil", "main")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "subject\n\ncloses #7")
+    evil = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    _git(repo, "replace", evil, clean)
+    commits = ck.read_commits(str(repo), f"main..{evil}")
+    assert [m.key for _, msg in commits for m in ck.find_closing_refs(msg, SLUG)] == ["7"]
+    result = run_cli("--repo-dir", str(repo), "--range", f"main..{evil}")
+    assert result.returncode == 1
+    assert result.stdout.strip() == "7"
+
+
 def test_read_commits_git_failure(repo):
     with pytest.raises(RuntimeError):
         ck.read_commits(str(repo), "nope..feat")

@@ -107,7 +107,7 @@ def read_commits(repo_dir: str, rev_range: str) -> list[tuple[str, str]]:
     if rev_range.startswith("-"):
         raise RuntimeError(f"invalid revision range: {rev_range!r}")
     proc = subprocess.run(
-        ["git", "-C", repo_dir, "log", "-z", "--format=%H%n%B", rev_range],
+        ["git", "-C", repo_dir, "--no-replace-objects", "log", "-z", "--format=%H%n%B", rev_range],
         capture_output=True,
         check=False,
     )

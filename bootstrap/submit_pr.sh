@@ -25,7 +25,7 @@
 # way). This script refuses to open or update a PR unless every such issue is
 # declared with --closes (repeatable; comma-separated lists accepted). The
 # title and body are scanned before any network access; the commits in
-# origin/<base>..refs/heads/<head> are scanned after the base fetch/merge. No
+# origin/<base>..<pinned head SHA> are scanned after the base fetch/merge. No
 # exemptions for code spans, fences, or blockquotes. --closes declares intent;
 # only pass it for an issue the PR genuinely closes. --confirmed does not
 # bypass the guard, and every --app role is scanned. Implementation:
@@ -292,18 +292,28 @@ if [[ "$BEHIND_COUNT" -gt 0 ]]; then
     _hos_audit_stale_base_merge "$HEAD" "$BASE" "$BEHIND_COUNT"
 fi
 
+# ── Pin the head to an immutable SHA (#1856, CWE-367/CWE-693) ─────────────────
+# Resolve refs/heads/<head> exactly once, after the merge-from-base step, with
+# replacement refs (refs/replace/*) ignored. The guard scans, and the push
+# sends, exactly this commit -- a concurrent ref move or a local `git replace`
+# can no longer make the scanned history differ from the pushed history.
+HEAD_SHA="$(git -C "$SCRIPT_DIR/.." --no-replace-objects rev-parse --verify "refs/heads/${HEAD}^{commit}")" \
+    || err "Could not resolve refs/heads/${HEAD} to a commit — refusing (#1856)"
+[[ "$HEAD_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || err "Resolved head for '${HEAD}' is not a commit SHA: '${HEAD_SHA}' — refusing (#1856)"
+
 # ── Closing-keyword guard, phase 2: branch commits (#1856) ────────────────────
 # Runs after the merge-from-base so the range excludes what is already on base.
 # A failing `git log` is a guard failure (exit 2), never "zero commits".
 if [[ -z "$UPDATE_PR" ]]; then
     _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
         ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
-        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..refs/heads/${HEAD}" \
+        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..${HEAD_SHA}" \
         --title="$TITLE" --body-file "$BODY_FILE" --warn-unused
 else
     _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
         ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
-        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..refs/heads/${HEAD}" \
+        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..${HEAD_SHA}" \
         --warn-unused
 fi
 
@@ -364,9 +374,12 @@ fi
 # Token lives in the URL only for this one push, never in .git/config or any
 # remote name — passed directly as the push destination. No --force in
 # either mode: a non-fast-forward push fails loudly rather than silently
-# overwriting a PR head (#967 AD-4).
+# overwriting a PR head (#967 AD-4). The push source is the pinned commit SHA
+# the guard scanned (HEAD_SHA), not the mutable branch name: it is still the
+# named branch's content, never the checked-out tree (#1166), but cannot move
+# between scan and push (#1856).
 PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git"
-if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "refs/heads/${HEAD}:refs/heads/${HEAD}"; then
+if ! git -C "$SCRIPT_DIR/.." push "$PUSH_URL" "${HEAD_SHA}:refs/heads/${HEAD}"; then
     revoke_token
     err "git push failed"
 fi

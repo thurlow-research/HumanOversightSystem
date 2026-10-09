@@ -39,6 +39,7 @@ GIT_STUB = """#!/usr/bin/env bash
 echo "GIT_CALLED_WITH:$*" >> "$CAPTURE_FILE"
 i=0
 if [[ "$1" == "-C" ]]; then i=2; fi
+if [[ "${@:$((i+1)):1}" == "--no-replace-objects" ]]; then i=$((i+1)); fi
 sub="${@:$((i+1)):1}"
 case "$sub" in
   remote) echo "https://github.com/test-owner/test-repo.git" ;;
@@ -47,6 +48,7 @@ case "$sub" in
         echo "${GIT_COMMON_DIR:?GIT_COMMON_DIR not set in test harness}"
     elif [[ "$*" == *"--verify"* ]]; then
         if [[ "${GIT_VERIFY_FAIL:-}" == "1" ]]; then exit 1; fi
+        echo "${GIT_HEAD_SHA:-1111111111111111111111111111111111111111}"
     else
         echo "current-branch"
     fi
@@ -119,6 +121,7 @@ def _write_exec(path: Path, body: str) -> None:
 
 
 DEFAULT_CYCLE_ID = "test-cycle"
+PINNED_SHA = "1111111111111111111111111111111111111111"
 
 
 def _encode_branch(branch: str) -> str:
@@ -378,7 +381,7 @@ def test_head_defaults_to_current_branch(h):
     push_line = [
         ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
     ][0]
-    assert "refs/heads/current-branch:refs/heads/current-branch" in push_line
+    assert f"{PINNED_SHA}:refs/heads/current-branch" in push_line
 
 
 def test_explicit_head_used_over_current_branch(h):
@@ -401,7 +404,7 @@ def test_explicit_head_used_over_current_branch(h):
     push_line = [
         ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
     ][0]
-    assert "refs/heads/explicit-branch:refs/heads/explicit-branch" in push_line
+    assert f"{PINNED_SHA}:refs/heads/explicit-branch" in push_line
     # #1166 regression guard: the push source must be the named branch, never
     # the working-tree HEAD (current-branch != explicit-branch in this test).
     assert "HEAD:refs/heads/" not in push_line
@@ -456,7 +459,7 @@ def test_happy_path_pushes_creates_pr_and_revokes_token(h):
         ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
     ][0]
     assert "x-access-token:fake-token-worker@github.com/test-owner/test-repo.git" in push_line
-    assert "refs/heads/feature-x:refs/heads/feature-x" in push_line
+    assert f"{PINNED_SHA}:refs/heads/feature-x" in push_line
     gh_line = [ln for ln in cap.splitlines() if ln.startswith("GH_CALLED_WITH:pr create")][0]
     assert "--repo test-owner/test-repo" in gh_line
     assert "--base main" in gh_line
@@ -1372,7 +1375,7 @@ def test_ck_commit_refused_after_fetch_with_range_and_ordering(h):
     fetch_idx = calls.index(_git_calls(cap, "fetch")[0])
     log_line = _git_calls(cap, "log")[0]
     assert fetch_idx < calls.index(log_line)
-    assert log_line.split()[-1] == "origin/main..refs/heads/current-branch"
+    assert log_line.split()[-1] == f"origin/main..{PINNED_SHA}"
 
 
 def test_ck_declared_closes_allows_pr(h):
@@ -1488,3 +1491,21 @@ def test_ck_empty_closes_array_under_bash32(h):
         pytest.skip("no bash 3.x available")
     result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS], bash=bash32)
     assert result.returncode == 0, result.stderr
+
+
+def test_push_source_is_pinned_sha_not_branch_name(h):
+    """#1856 CWE-367: scan and push the same immutable commit."""
+    other = "2222222222222222222222222222222222222222"
+    result = h.run(
+        [*_body(h, "clean body\n"), *OPEN_ARGS],
+        env_overrides={"GIT_HEAD_SHA": other},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    push_line = [
+        ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and "x-access-token" in ln
+    ][0]
+    assert push_line.endswith(f" {other}:refs/heads/current-branch")
+    assert "refs/heads/current-branch:refs/heads/" not in push_line
+    assert _git_calls(cap, "log")[0].split()[-1] == f"origin/main..{other}"
+    assert any("--no-replace-objects" in ln and "rev-parse" in ln for ln in cap.splitlines())
