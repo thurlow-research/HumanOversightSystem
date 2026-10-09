@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #1856: closing-keyword guard in `submit_pr.sh`
 
-Status: DRAFT, awaiting architect review · Change class: **additive** · Author: technical-design
+Status: Architect APPROVED WITH CONDITIONS C1–C5, applied in-document (§11a) · Change class: **additive** · Author: technical-design
 
 RISK: MEDIUM — changes a shared PR-opening path used by all three bot identities; a defect either blocks every PR (false refusal) or silently fails open.
 CONFIDENCE: HIGH on contract; MEDIUM on GitHub's exact grammar edges (resolved conservatively, see §3).
@@ -19,14 +19,17 @@ Searched `scripts/` (recursive), `bootstrap/`, `bin/`, `scripts/automation/lib/`
 Scan with Python `re`, `IGNORECASE`, over the **whole text** (not per line), so a keyword at end-of-line followed by a ref on the next line is caught. Report the 1-based line of the keyword's first character.
 
 ```
-KEYWORD = (?<![A-Za-z0-9_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)
+KEYWORD = (?<![A-Za-z0-9_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)(?![A-Za-z0-9_])
 SEP     = \s*:?\s*                      # zero-or-more whitespace incl. newline, optional colon
 REF     = #(\d+)                                                     -> same-repo N
         | GH-(\d+)                                                   -> same-repo N
         | ([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#(\d+)                  -> owner/repo#N
         | https?://github\.com/([^/\s]+)/([^/\s]+)/(?:issues|pull)/(\d+)  -> owner/repo#N
+CHAIN   = (?:\s*(?:,|&|\band\b)\s*REF)*  # further refs joined by ',', '&', or 'and'
 ```
-Match = `KEYWORD SEP REF`. Only the **first** ref after a keyword is taken (GitHub requires a keyword per issue: "Closes #1, #2" closes only #1).
+Match = `KEYWORD SEP REF CHAIN`. Every ref in the chain is a match (each at its own line). [Architect C2] GitHub documents one keyword per issue ("Closes #1, closes #2"), so "Closes #1, #2" probably closes only #1 — but that is an unverified grammar edge, and §3's own rule is to flag when in doubt. Chained refs are therefore flagged; a false refusal costs one rephrase or one extra `--closes`.
+
+[Architect C1] The trailing `(?![A-Za-z0-9_])` on KEYWORD stops `fixtures/foo#12` or `fixesGH-5` from matching as `fix`+owner/repo ref / `fixes`+`GH-5`. `closes#5` still matches, because `#` is not a word character.
 
 Conservative choices (flag when in doubt — a false refusal costs one rephrase; a miss costs a silently closed issue):
 - `closes#5` (no space) **matches**. `re-fixes #3` **matches** (hyphen is a boundary).
@@ -52,7 +55,7 @@ CLI: `python3 closing_keywords.py check --repo-slug <owner/repo> [--closes <list
 - **Exit 2**: usage error, invalid `--closes` item, unreadable body file, git failure. stderr one line. Never prints a partial verdict.
 
 ## 5. `bootstrap/submit_pr.sh` changes
-1. **Arg**: add `--closes <list>` (repeatable; accumulate into a bash array `CLOSES_ARGS+=(--closes "$2")`). Valid in both open and `--update-pr` modes. Add to the usage `err` line and the header Usage block.
+1. **Arg**: add `--closes <list>` (repeatable; accumulate into a bash array `CLOSES_ARGS+=(--closes "$2")`). Valid in both open and `--update-pr` modes. Add to the usage `err` line and the header Usage block. [Architect C3] Initialize `CLOSES_ARGS=()` and always expand it as `${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"}`. Under `set -u`, a bare `"${CLOSES_ARGS[@]}"` on an empty array aborts on bash < 4.4 (macOS /bin/bash 3.2) — and the empty array is the common case. `edit_issue_edges.sh` and `query_issues.sh` already use this idiom.
 2. **Prereq resolution** (local, fail-closed): `CK_PY="$SCRIPT_DIR/../scripts/automation/closing_keywords.py"`. Missing file or no `python3` on PATH → `err` naming the missing piece ("closing-keyword guard unavailable — refusing to open a PR (#1856)"). Applies to all `--app` roles.
 3. **Move** the existing "Resolve owner/repo from the origin remote" block (local `git remote get-url`) up to immediately after the branch-ownership block. No behavior change.
 4. **Phase 1 — text scan** (open mode only; pre-network): immediately after step 3, before `git fetch`: run `check --repo-slug "$REPO_SLUG" "${CLOSES_ARGS[@]}" --title "$TITLE" --body-file "$BODY_FILE"`. Exit 1 → audit (§7, `phase":"text"`) then `err` with the summary line; exit 2 → `err`. stderr report from Python passes through to the caller unmodified.
@@ -70,6 +73,8 @@ Merging this PR would close the issue(s) above. If that is NOT intended, rephras
 commit messages, amend/reword the commit. If it IS intended, pass --closes 1539.
 ```
 Display key: bare keys rendered `#N`; cross-repo keys as-is. One line per match (a key matched in two places prints twice).
+
+[Architect C4] Append one more fixed line to the report whenever a commit source matched: "If the commit is already pushed (an --update-pr branch), it cannot be reworded without a force-push, which submit_pr.sh never does. Do NOT pass --closes for an issue you do not intend to close — escalate to a human to rebuild the branch." This is the only exit from the update-mode deadlock: an already-pushed commit that predates the guard or arrived by another route. Without it, the remedy the report offers — `--closes` — is a false declaration that would close the issue.
 
 ## 7. Audit
 New best-effort helper `_hos_audit_closing_keyword_refusal <head> <base> <app> <phase> <keys>`, same shape and guarantees as `_hos_audit_stale_base_merge` (missing/failing sink never masks the refusal; always returns 0). Event JSON: `{"event":"closing-keyword-refused","branch":…,"base":…,"app":…,"phase":"text|full","refs":"<comma-joined keys>","timestamp":…}`, all strings through `_hos_pr_json_escape`. Emitted only on exit 1, before `err`.
@@ -93,7 +98,7 @@ New best-effort helper `_hos_audit_closing_keyword_refusal <head> <base> <app> <
 2. Colon forms: `Closes: #5`, `closes :#5`; no-space `closes#5`; newline between keyword and ref.
 3. Ref forms: `#5`, `GH-5`, `o/r#5`, `https://github.com/o/r/issues/5`, `…/pull/5`; same-repo slug (any case) normalizes to `5`; other repo → `o/r#5`.
 4. Negatives: `prefixes #12`, `unfixed #3`, `fix_closes #4`, `closes the bug in #9` (words between), `#5 is closed`, bare `#5`.
-5. First-ref-only: `Closes #1, #2` → `{1}`; `closes #1 and fixes #2` → `{1,2}`.
+5. Ref chains (C2): `Closes #1, #2` → `{1,2}`; `fixes #1 and #2` → `{1,2}`; `closes #1 & o/r#3` → `{1,o/r#3}`; `closes #1 and fixes #2` → `{1,2}`; `closes #1 see #2` → `{1}`. Trailing boundary (C1): `fixtures/foo#12`, `fixesGH-5` → no match; `closes#5` → match.
 6. No exemptions: inside backticks, inside a ```` ``` ```` fence, inside `> ` blockquote, inside `<!-- -->` → match.
 7. **#1725 fixture**: a 60+-line body whose line 60 is `> H6 — yes. S2 is the fix that closes #1539.` → key `1539`, line 60.
 8. `parse_declared`: `"1539,12"`, repeated values, `o/r#7`, same-repo `owner/repo#5`→`5`, invalid items (`abc`, `#5`, `5,`, empty) → ValueError.
@@ -103,7 +108,7 @@ New best-effort helper `_hos_audit_closing_keyword_refusal <head> <base> <app> <
 **B. `tests/automation/test_submit_pr.py`** — harness changes: copy `scripts/automation/closing_keywords.py` into `tmp/scripts/automation/`; git stub gains `log) [[ -n "${GIT_LOG_FILE:-}" ]] && cat "$GIT_LOG_FILE" ;;` (default empty → zero commits, so every existing test is unchanged). New tests:
 1. #1725 fixture body, no `--closes` → exit 1, stderr names `#1539` and `body line 60`; `_assert_fully_refused_before_network`.
 2. Title `fix: closes #42` → refused pre-network, stderr `title`.
-3. Clean body, `GIT_LOG_FILE` with `fixes #77` in a commit body → refused after fetch, no token mint, no push; stderr `commit <sha7>`.
+3. Clean body, `GIT_LOG_FILE` with `fixes #77` in a commit body → refused after fetch, no token mint, no push; stderr `commit <sha7>`. (C5) Assert ordering from the capture log: the `fetch` call precedes the `log` call, and the `log` call's range argument is exactly `origin/main..refs/heads/<head>`.
 4. Same as 1 with `--closes 1539` → PR created.
 5. No keywords, no flag → PR created (equals existing happy path).
 6. `--closes 99`, no matches → PR created, stderr warning.
@@ -112,10 +117,22 @@ New best-effort helper `_hos_audit_closing_keyword_refusal <head> <base> <app> <
 9. Refusal emits `closing-keyword-refused` audit event; audit sink failure does not mask refusal.
 10. Module missing from `tmp/scripts/automation/` → fail-closed `err`, no push.
 11. Invalid `--closes abc` → exit non-zero, no network.
+12. (C5) Phase-2 fail-closed: the git stub's `log)` branch honors `GIT_LOG_FAIL=1` (exit 1). This must refuse with no token mint and no push. A failing `git log` must never read as "zero commits".
+13. (C3) A happy path with no `--closes` must pass under `set -u` — test 5 already covers this. Where a bash 3.2 binary is available, also run test 5 under it (skip if absent).
 
 ## 11. Residuals (not built here; for the worker to file if architect agrees)
 - PR body edited after open (`edit_issue.sh --body-file` on a PR, or GitHub UI) bypasses this guard.
 - Squash-merge commit message composed at merge time by `merge_authority`/overseer is not scanned.
+
+## 11a. Architect review record (2026-10-09)
+Verdict: APPROVED WITH CONDITIONS. The architect applied C1–C5 directly to this TD:
+- C1 §3 — trailing word boundary on KEYWORD.
+- C2 §3, §10.A5 — flag ref chains (`, & and`) conservatively.
+- C3 §5.1, §10.B13 — bash-3.2-safe empty-array expansion.
+- C4 §6 — update-mode remedy line (escalate; never pass a false `--closes`).
+- C5 §10.B3/B12 — phase-2 ordering assertion and `git log` failure fail-closed test.
+
+Verified: `submit_pr.sh` and `scripts/automation/` are absent from `scripts/framework/framework_consumer_files.txt` and from `hos_install.sh`'s explicit `bootstrap/` copy list, and `hos_install.sh` rsyncs only `scripts/oversight/`. The script therefore always runs from a full HOS tree, so the `$SCRIPT_DIR/../scripts/automation/` path is sound. The shipped `worker.md` and `worker-cron-prompt.md` already name `submit_pr.sh`, so adding `--closes` to their prose adds no new consumer gap.
 
 ## 12. Startup-gap analysis
 Not a reactive correction to an existing design contract (new guard on an unchanged contract). No prior sign-offs affected.
