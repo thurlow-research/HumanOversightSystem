@@ -91,8 +91,8 @@ install_tmp_reaper() {
     if command -v sha256sum &>/dev/null; then got="$(sha256sum "$src" | awk '{print $1}')"
     else got="$(shasum -a 256 "$src" | awk '{print $1}')"; fi
     if [[ -z "$want" || "$want" != "$got" ]]; then
-      warn "tmp_reaper.py failed the corruption check against the bundle's SHA256SUMS — NOT installing the temp reaper"
-      return 0
+      err "tmp_reaper.py failed the corruption check against the bundle's SHA256SUMS — NOT installing the temp reaper"
+      return 1
     fi
   fi
   if [[ -f "$dest" ]] && cmp -s "$src" "$dest" && [[ -x "$dest" ]]; then
@@ -108,7 +108,8 @@ install_tmp_reaper() {
     ok "temp reaper installed: $dest (HOS does not schedule it — see docs/CRON-SETUP.md)"
   else
     rm -f "$tmp" 2>/dev/null || true
-    warn "could not install the temp reaper to $dest"
+    err "could not install the temp reaper to $dest"
+    return 1
   fi
   return 0
 }
@@ -118,7 +119,7 @@ fail() { err "$*"; ERRORS=$((ERRORS + 1)); }
 
 if $REAPER_ONLY; then
   header "Machine temp reaper"
-  install_tmp_reaper
+  install_tmp_reaper || exit 1   # a checksum mismatch or failed copy is an error (a missing source is not)
   exit 0
 fi
 
@@ -368,7 +369,7 @@ fi
 # counts failures (no early exit), the reaper copy needs none of the verified tools, and
 # a half-bootstrapped machine still wants its temp reclaimed. The summary below exits 1.
 header "6. Machine temp reaper"
-install_tmp_reaper
+install_tmp_reaper || fail "temp reaper not installed (see above)"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 header "Done"

@@ -139,3 +139,43 @@ def test_i1_an_existing_config_without_the_key_does_not_abort_the_upgrade(tmp_pa
     r = _install(target, home)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _config_line(target) == 'HOS_TMP_ROOT="../.tmp"'
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ['" & touch {marker} #', "$(touch {marker})", "`touch {marker}`", "; touch {marker}", "'x"],
+)
+def test_i1_a_shell_injection_value_is_refused_and_never_reaches_config_sh(tmp_path, tail):
+    """Review PoC: a value that breaks out of the double quotes would run when config.sh is
+    sourced. The allowlist refuses it at validate time; nothing is written."""
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "proj" / "Human"
+    target.mkdir(parents=True)
+    marker = tmp_path / "PWNED"
+    r = _install(target, home, {"HOS_TMP_ROOT": f"{tmp_path}/r" + tail.format(marker=marker)})
+    assert r.returncode != 0 and "forbidden character" in r.stderr, r.stdout + r.stderr
+    config = target / "scripts" / "framework" / "config.sh"
+    assert not config.exists() or "PWNED" not in config.read_text()
+    assert not marker.exists()
+
+
+def test_i1_the_written_value_is_safe_to_source(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "proj" / "Human"
+    target.mkdir(parents=True)
+    r = _install(target, home, {"HOS_TMP_ROOT": f"{tmp_path}/ok-dir_1.x+y"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{target}/scripts/framework/config.sh" && printf %s "$HOS_TMP_ROOT"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=child_env({"PATH": "/usr/bin:/bin"}),
+    )
+    assert out.stdout == f"{tmp_path}/ok-dir_1.x+y"

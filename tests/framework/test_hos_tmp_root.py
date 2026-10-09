@@ -147,9 +147,10 @@ def test_an_unquoted_value_with_whitespace_is_rejected(tmp_path):
     assert "whitespace" in r.stderr
 
 
-def test_a_quoted_value_may_contain_whitespace(tmp_path):
+def test_a_quoted_value_with_whitespace_is_now_rejected_by_the_allowlist(tmp_path):
     clone = _clone(tmp_path, 'HOS_TMP_ROOT="../a b"\n')
-    assert mod.resolve_root(clone) == Path(os.path.realpath(clone)).parent / "a b"
+    with pytest.raises(mod.TmpRootError, match="forbidden character"):
+        mod.resolve_root(clone)
 
 
 def test_an_os_error_while_creating_exits_3_with_a_prefixed_line(tmp_path, monkeypatch, capsys):
@@ -158,7 +159,7 @@ def test_an_os_error_while_creating_exits_3_with_a_prefixed_line(tmp_path, monke
     def deny(*_a, **_k):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(os, "listdir", deny)
+    monkeypatch.setattr(os, "mkdir", deny)
     assert mod.main(["resolve", "--repo", str(clone), "--role", "worker", "--create"]) == 3
     assert capsys.readouterr().err.startswith("hos_tmp_root: ")
 
@@ -684,9 +685,8 @@ def test_r1_v1_entries_without_repo_are_read_and_migrated_on_the_next_write(tmp_
     reg.write_text(json.dumps({"version": 1, "entries": [legacy]}))
     os.chmod(reg, 0o600)
     assert _registry() == [legacy] and _registered(role)
-    mod.resolve_role_dir(clone, "worker", create=True)  # registered: accepted, no rewrite needed
-    mod.register(role, clone, "worker")  # the next write migrates it
-    (entry,) = _registry()
+    mod.resolve_role_dir(clone, "worker", create=True)  # registered, but not for this repo yet
+    (entry,) = _registry()  # ... so the legacy entry was migrated in place
     assert entry["repo"] == os.path.realpath(clone) and entry["path"] == legacy["path"]
 
 
@@ -699,17 +699,19 @@ def test_r1_an_entry_whose_repo_dir_vanished_is_pruned(tmp_path):
     for clone in (stale, live):
         _repoint(clone, shared)
         mod.resolve_role_dir(clone, "worker", create=True, force_mark=True)
-    # both worktrees share one live role dir, but each registration replaced the other's key
-    assert len(_registry()) == 1
+    # two repos share one live role dir: each gets its own (repo, role) entry
+    assert sorted(e["repo"] for e in _registry()) == sorted(
+        os.path.realpath(c) for c in (stale, live)
+    )
     other = tmp_path / "wt3" / "Overseer"
     _repoint(other, shared)
     mod.resolve_role_dir(other, "overseer", create=True)
-    assert len(_registry()) == 2
+    assert len(_registry()) == 3
     shutil.rmtree(tmp_path / "wt3")  # the worktree is gone; its role dir (shared) is not
     newcomer = tmp_path / "wt4" / "Human"
     _repoint(newcomer, shared)
     mod.resolve_role_dir(newcomer, "human", create=True)  # any registration prunes
-    assert sorted(e["role"] for e in _registry()) == ["Human", "Worker"], "stale key pruned"
+    assert sorted(e["role"] for e in _registry()) == ["Human", "Worker", "Worker"], "stale pruned"
 
 
 def test_r1_a_write_that_would_exceed_the_read_cap_is_refused_as_registry_full(
@@ -728,3 +730,93 @@ def test_r1_a_write_that_would_exceed_the_read_cap_is_refused_as_registry_full(
     assert refused and "registry-full" in refused and "would exceed 900 bytes" in refused
     assert "Remedy:" in refused and "malformed" not in refused
     assert 0 < len(_registry()) < 10, "what was written stays readable"
+
+
+def test_a_second_repo_sharing_a_registered_dir_gets_its_own_entry(tmp_path):
+    shared = tmp_path / "shared"
+    a, b = tmp_path / "A" / "Worker", tmp_path / "B" / "Worker"
+    for clone in (a, b):
+        _repoint(clone, shared)
+        mod.resolve_role_dir(clone, "worker", create=True)
+    entries = _registry()
+    assert len(entries) == 2 and {e["path"] for e in entries} == {
+        os.path.realpath(shared / "Worker")
+    }
+    assert {e["repo"] for e in entries} == {os.path.realpath(a), os.path.realpath(b)}
+
+
+def test_repo_a_can_be_repointed_to_a_dir_another_repo_already_registered(tmp_path):
+    """Review repro: B owns rootY; A moves from rootX to rootY."""
+    a, b = tmp_path / "A" / "Worker", tmp_path / "B" / "Worker"
+    _repoint(a, tmp_path / "rootX")
+    _repoint(b, tmp_path / "rootY")
+    mod.resolve_role_dir(a, "worker", create=True)
+    mod.resolve_role_dir(b, "worker", create=True)
+    _repoint(a, tmp_path / "rootY")
+    with pytest.raises(mod.TmpRootError, match="refusing to re-point"):
+        mod.resolve_role_dir(a, "worker", create=True)  # a plain resolve still refuses
+    done = _cli("mark", "--repo", str(a), "--role", "worker", "--reviewed")  # the remedy
+    assert done.returncode == 0, done.stderr
+    by_repo = {e["repo"]: e["path"] for e in _registry()}
+    assert by_repo[os.path.realpath(a)] == os.path.realpath(tmp_path / "rootY" / "Worker")
+    assert by_repo[os.path.realpath(b)] == os.path.realpath(tmp_path / "rootY" / "Worker")
+    mod.resolve_role_dir(a, "worker", create=True)  # and now a plain resolve works
+
+
+def test_the_letter_case_refusal_happens_before_any_side_effect(tmp_path, monkeypatch):
+    clone = _worker_clone(tmp_path)
+    root = tmp_path / "hos" / ".tmp"
+    (root / "worker").mkdir(parents=True, mode=0o755)  # present as "worker", wanted "Worker"
+    os.chmod(root / "worker", 0o755)
+    real_lexists = os.path.lexists
+    # simulate a case-insensitive filesystem: "Worker" is found although only "worker" exists
+    monkeypatch.setattr(
+        os.path,
+        "lexists",
+        lambda p: (
+            real_lexists(str(p).replace("/Worker", "/worker"))
+            if str(p).endswith("/.tmp/Worker")
+            else real_lexists(p)
+        ),
+    )
+    with pytest.raises(mod.TmpRootError, match="different letter case"):
+        mod.resolve_role_dir(clone, "worker", create=True)
+    assert stat.S_IMODE((root / "worker").stat().st_mode) == 0o755, "no chmod"
+    assert not (root / "worker" / ".hos-tmp-root").exists(), "no marker"
+    assert not Path(mod.registry_path()).exists(), "nothing registered"
+    assert sorted(os.listdir(root)) == ["worker"], "nothing created"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        'x" & touch PWNED #',
+        '/tmp/r" & touch /tmp/PWNED #',
+        "/tmp/a b",
+        "/tmp/a'b",
+        "/tmp/a|b",
+        "/tmp/a&b",
+        "/tmp/a#b",
+        "/tmp/a$b",
+        "/tmp/a`b`",
+        "/tmp/a;b",
+        "/tmp/a\\b",
+        "/tmp/a\nb",
+        "/tmp/a(b)",
+        "/tmp/a<b",
+        "/tmp/a@b",
+    ],
+)
+def test_the_value_allowlist_rejects_shell_metacharacters(tmp_path, value):
+    clone = _worker_clone(tmp_path)
+    with pytest.raises(mod.TmpRootError, match="forbidden character"):
+        mod.validate_value(clone, value)
+    result = _cli("validate", "--repo", str(clone), "--value", value)
+    assert result.returncode == 3 and "forbidden character" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "value", ["../.tmp", "~/.local/state/hos/tmp/my-app", "/srv/hos+x/tmp-1.d"]
+)
+def test_the_value_allowlist_accepts_ordinary_paths(tmp_path, value):
+    mod.validate_value(_worker_clone(tmp_path), value)

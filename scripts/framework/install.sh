@@ -360,6 +360,12 @@ PROJECT_PACKAGE=""           # Top-level package name, e.g. parkshare
 CONFIGEOF
 
 if [[ -n "$NEW_HOS_TMP_ROOT" ]]; then
+    # config.sh is SOURCED by shell scripts. validate (above) already enforces the
+    # allowlist; re-check here so no future path can write an unsafe value into it.
+    if [[ ! "$NEW_HOS_TMP_ROOT" =~ ^[A-Za-z0-9._/~+-]+$ ]]; then
+        echo "  ✘ HOS_TMP_ROOT contains characters outside [A-Za-z0-9._/~+-] — refusing to write it into config.sh" >&2
+        exit 1
+    fi
     cat >> "$CONFIG_FILE" <<TMPEOF
 
 # ── Temp root (#2054) ────────────────────────────────────────────────────────

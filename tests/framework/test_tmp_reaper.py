@@ -740,7 +740,12 @@ def test_rs9_removal_identity(tmp_path, reap, monkeypatch):
     called = []
     real_rmtree = shutil.rmtree
     monkeypatch.setattr(os, "lstat", fake_lstat)
-    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: called.append(a))
+
+    def fake_rmtree(*a, **k):
+        called.append(a)
+
+    fake_rmtree.avoids_symlink_attacks = True
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
     rc, out = reap("--root", str(tmp_path))
     monkeypatch.setattr(os, "lstat", real_lstat)
     monkeypatch.setattr(shutil, "rmtree", real_rmtree)
@@ -1836,3 +1841,70 @@ def test_without_proc_fd_paths_a_garbage_tree_is_not_reaped(tmp_path, reap, monk
     )
     rc, out = reap("--root", str(tmp_path))
     assert any(ln.startswith("SKIP no-fd-paths") for ln in out) and leftover.exists()
+
+
+# ── Second-review fixes ─────────────────────────────────────────────────────────
+def test_a_relative_or_symlinked_hos_tmp_root_argument_still_matches_the_registry(
+    tmp_path, reap, monkeypatch
+):
+    real = tmp_path / "real"
+    role = mark(real / ".tmp" / "Worker")
+    _old_tree(role / "review-copy")
+    age(role)
+    (tmp_path / "alias").symlink_to(real)  # a symlinked ANCESTOR of the root
+    monkeypatch.chdir(real)
+    rc, out = reap("--hos-tmp-root", ".tmp")  # relative
+    assert rc == 0 and not (role / "review-copy").exists(), out
+    _old_tree(role / "again")
+    age(role)
+    rc, out = reap("--hos-tmp-root", str(tmp_path / "alias" / ".tmp"))
+    assert rc == 0 and not (role / "again").exists(), out
+
+
+def test_a_hos_tmp_root_that_is_itself_a_symlink_is_refused(tmp_path, reap):
+    real = tmp_path / "real-tmp"
+    role = mark(real / "Worker")
+    _old_tree(role / "review-copy")
+    age(role)
+    (tmp_path / ".tmp").symlink_to(real)
+    rc, out = reap("--hos-tmp-root", str(tmp_path / ".tmp"))
+    assert rc == 3 and any(ln.startswith("SKIP root-invalid") for ln in out), out
+    assert (role / "review-copy").exists()
+
+
+def test_a_dangling_symlink_that_vanishes_before_the_unlink_is_raced_not_an_error(
+    tmp_path, reap, monkeypatch
+):
+    pd = pdir(tmp_path)
+    (pd / "pytest-current").symlink_to(tmp_path / "nowhere")
+    real_unlink = os.unlink
+
+    def vanish(path, *a, **k):
+        if str(path) == "pytest-current":
+            real_unlink(path, *a, **k)  # a concurrent cleaner won
+        return real_unlink(path, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", vanish)
+    rc, out = reap("--root", str(tmp_path), "--no-scratch")
+    assert any(ln.startswith("SKIP raced") for ln in out), out
+    assert summary(out)["errors"] == "0" and not [ln for ln in out if ln.startswith("ERROR")]
+
+
+def test_an_rmtree_that_is_not_the_fd_based_variant_reaps_nothing(tmp_path, reap, monkeypatch):
+    run = make_run(tmp_path, 1)
+    tree = make_tree(tmp_path)
+    leftover = tmp_path / "claude" / "garbage-hos-1234"
+    (leftover / "z").mkdir(parents=True)
+    age(leftover)
+    real = shutil.rmtree
+
+    def plain_rmtree(*a, **k):  # no avoids_symlink_attacks attribute
+        return real(*a, **k)
+
+    monkeypatch.setattr(shutil, "rmtree", plain_rmtree)
+    rc, out = reap("--root", str(tmp_path))
+    assert len([ln for ln in out if ln.startswith("SKIP unsafe-rmtree")]) == 3, out
+    assert run.exists() and tree.exists() and leftover.exists()
+    assert tr.Reaper._rmtree_is_safe() is False
+    monkeypatch.setattr(shutil, "rmtree", real)
+    assert tr.Reaper._rmtree_is_safe() is True or sys.platform == "darwin"

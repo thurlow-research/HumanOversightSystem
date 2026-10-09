@@ -940,9 +940,12 @@ def resolve_roots(root_args: Iterable[str], hos_args: Iterable[str], environ, ui
     for h in hos_args:
         explicit = True
         try:
-            hst = os.lstat(h)
+            hst = os.lstat(h)  # the root itself must not be a symlink (O_NOFOLLOW semantics)
             if not stat.S_ISDIR(hst.st_mode) or hst.st_uid not in (0, uid):
                 raise OSError
+            # Registry paths are realpaths, so build the role dir paths from the realpath of
+            # the root (a relative argument or a symlinked ancestor must still match).
+            h = os.path.realpath(h)
             children = sorted(os.listdir(h))
         except OSError:
             notes.append(("root-invalid", h))
@@ -1208,7 +1211,11 @@ class Reaper:
                 pass
             if st.st_uid == self.uid:
                 if not self.policy.dry_run:
-                    os.unlink(name, dir_fd=pb.fd)
+                    try:
+                        os.unlink(name, dir_fd=pb.fd)
+                    except FileNotFoundError:
+                        self.skip("raced", path)
+                        return
                 self.reap("P", "symlink-dangling", path, 0)
             return
         is_garbage = name.startswith("garbage-")
@@ -1265,6 +1272,12 @@ class Reaper:
         facts.probe, facts.probe_fd = probe_hos_live(os.path.join(base, ".hos-live"))
 
     # ── removal ──
+    @staticmethod
+    def _rmtree_is_safe() -> bool:
+        """shutil.rmtree must be the fd-based variant that cannot be redirected through a
+        symlink swapped in mid-removal; if this platform's is not, nothing is reaped."""
+        return bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
+
     def _rmtree(self, bd: BoundDir, name: str) -> list:
         errs: list = []
         base = bd.spath("")
@@ -1295,6 +1308,9 @@ class Reaper:
         """Rename-to-garbage inside the bound parent, with dev/ino re-checks before and
         after (R2-2) and a check that the parent path still names the bound directory."""
         path = bd.child_path(name)
+        if not self._rmtree_is_safe():
+            self.skip("unsafe-rmtree", path)
+            return
         if _before_remove is not None:
             _before_remove(path)
         if not bd.intact():
@@ -1325,6 +1341,9 @@ class Reaper:
     ) -> None:
         """A tree that is already named garbage: re-check identity, then rmtree."""
         path = bd.child_path(name)
+        if not self._rmtree_is_safe():
+            self.skip("unsafe-rmtree", path)
+            return
         if not bd.fd_paths:
             # Without /proc/self/fd the rmtree would be path-based and so swappable.
             self.skip("no-fd-paths", path)

@@ -195,7 +195,7 @@ The human's facts and ruling: `/tmp` here is `tmpfs size=1735952k nr_inodes=1048
   - `~/…` → `$HOME/…`, using `pwd.getpwuid(os.getuid()).pw_dir`;
   - an absolute path.
 
-  A value containing `$`, a backtick, `;`, a newline or a glob metacharacter is a configuration error.
+  The value must match the ALLOWLIST `[A-Za-z0-9._/~+-]+` (no space, no quote, `&`, `|`, `#`, `$`, backtick, `;`, newline or glob character); anything else is a configuration error. `config.sh` is sourced by shell scripts, so a blocklist is not safe: `install.sh` re-checks the allowlist before writing the double-quoted line.
 - **This repo:** commit `export HOS_TMP_ROOT="../.tmp"`, with a comment pointing to §2A. The file is committed and shared by the Human, Worker and Overseer clones; a relative value makes it machine-independent.
 - **Consumer installs (`scripts/framework/install.sh`).** The installer prompts for the value with a computed default:
   - **Multi-clone layout:** `projects.conf` registers a `<project>_worker_root` or `<project>_overseer_root` whose parent equals the target's parent. Default: `../.tmp`.
@@ -763,6 +763,8 @@ Claude Code keeps per-user session state, task output and scratchpads under `<ro
 - **Linked-worktree registrations.** If the deleted tree was the main repo of linked worktrees elsewhere, those worktrees lose their repo. If the deleted tree was itself a linked worktree, its main repo keeps a stale registration, which `git worktree prune` clears.
 - **Small agent draft dirs** idle for more than 24 h are deleted. Draft *files* directly in `/tmp/claude` are never touched.
 - **A narrow race.** A process could `chdir` into the tree in the milliseconds between the step-8(a) recheck and the rename.
+- **Content moved deeper after the walk.** Only the top directory's `(st_dev, st_ino)` is rechecked between the walk and the removal, so data moved into the tree after the safety walk is deleted with it. No privilege boundary is crossed: the only party who can do that is the same uid that owns the tree. `shutil.rmtree` must be the fd-based variant (`shutil.rmtree.avoids_symlink_attacks`), which the code asserts; otherwise nothing is reaped (`SKIP unsafe-rmtree`).
+- **`garbage-hos-*` uses a top-level-only age** (step 9): a leftover from an interrupted removal is judged by its own top-level ctime, not a whole-tree walk, because it is already renamed out of use.
 - **Invisible processes.** A non-dumpable same-uid process (R2-6) is invisible to the veto. In practice these are system and session daemons, not agent tools.
 
 ---

@@ -90,7 +90,10 @@ EXIT_USAGE = 2
 EXIT_INVALID = 3
 
 _LINE_RE = re.compile(r"^\s*(?:export\s+)?HOS_TMP_ROOT=(.*)$")
-_FORBIDDEN_CHARS = ("$", "`", ";", "\n", "\r", "*", "?", "[", "]", "{", "}")
+# ALLOWLIST (not a blocklist): config.sh is sourced by shell scripts, so any character
+# outside this set (quotes, &, |, #, $, backtick, spaces, newlines...) could break out
+# of the assignment. No space is allowed; the value is written double-quoted.
+ALLOWED_VALUE_RE = re.compile(r"[A-Za-z0-9._/~+-]+")
 
 
 class TmpRootError(Exception):
@@ -137,11 +140,12 @@ def _home() -> str:
 def expand(value: str, repo: Path) -> str:
     """Grammar of section 2A.1: relative -> against realpath(repo); ~/ -> home;
     absolute as-is. Returns a normalised absolute path (symlinks unresolved)."""
-    for char in _FORBIDDEN_CHARS:
-        if char in value:
-            raise TmpRootError(
-                f"HOS_TMP_ROOT value {value!r} contains a forbidden character {char!r}"
-            )
+    if not ALLOWED_VALUE_RE.fullmatch(value):
+        bad = next((c for c in value if not ALLOWED_VALUE_RE.fullmatch(c)), "")
+        raise TmpRootError(
+            f"HOS_TMP_ROOT value {value!r} contains a forbidden character {bad!r}: "
+            "only A-Z a-z 0-9 . _ / ~ + - are allowed"
+        )
     if value == "~" or value.startswith("~/"):
         path = os.path.join(_home(), value[2:])
     elif value.startswith("~"):
@@ -287,8 +291,10 @@ def read_registry(path: str) -> list[dict] | None:
     return entries
 
 
-def is_registered(role_dir: Path, info: os.stat_result) -> bool:
-    """True if this exact directory (path, role name AND device/inode) is registered."""
+def is_registered(role_dir: Path, info: os.stat_result, repo_real: str | None = None) -> bool:
+    """True if this exact directory (path, role name AND device/inode) is registered; with
+    ``repo_real``, only if it is registered for that repo (a legacy entry without ``repo``
+    does not count, so it gets migrated)."""
     try:
         entries = read_registry(registry_path())
     except TmpRootError:
@@ -299,6 +305,7 @@ def is_registered(role_dir: Path, info: os.stat_result) -> bool:
         and e["role"] == role_dir.name
         and e["st_dev"] == info.st_dev
         and e["st_ino"] == info.st_ino
+        and (repo_real is None or e.get("repo") == repo_real)
         for e in entries or []
     )
 
@@ -513,6 +520,10 @@ def resolve_role_dir(
                 raise TmpRootError(_repoint_message(conflict, str(role_dir), repo, role))
         _make_dirs_0700(root)
         _require_private_dir(root, tighten=False)
+        # Case-insensitive filesystems: lstat of "Worker" also finds "worker". Refuse
+        # before ANY side effect (mkdir, registration, marker, chmod).
+        if os.path.lexists(role_dir) and ROLE_DIRS[role] not in os.listdir(root):
+            raise TmpRootError(f"{role_dir} exists under a different letter case")
         created = False
         try:
             os.mkdir(role_dir, 0o700)
@@ -530,14 +541,15 @@ def resolve_role_dir(
             if blockers:
                 raise TmpRootError(_remedy(role_dir, role, repo, blockers))
             register(role_dir, repo, role, reviewed=force_mark)
+        elif not is_registered(role_dir, os.lstat(role_dir), repo_real):
+            # Registered by another repo (or a legacy entry): this (repo, role) still gets
+            # its own entry, without re-running adoption checks.
+            register(role_dir, repo, role, reviewed=force_mark)
         # An already-registered dir is accepted whatever it holds (an agent that deletes
         # its marker or adds children cannot lock its role out); the marker is only
         # re-written for the human reader.
         write_info_marker(role_dir)
         _require_private_dir(role_dir, tighten=True)
-        # Case-insensitive filesystems: lstat of "Worker" also finds "worker".
-        if ROLE_DIRS[role] not in os.listdir(root):
-            raise TmpRootError(f"{role_dir} exists under a different letter case")
     return role_dir
 
 

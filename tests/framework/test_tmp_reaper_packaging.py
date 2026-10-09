@@ -155,7 +155,20 @@ def test_bootstrap_refuses_a_copy_that_does_not_match_the_bundle_checksums(tmp_p
     dest.unlink()
     (bundle / "SHA256SUMS").write_text("0" * 64 + "  tmp_reaper.py\n")
     bad = _bootstrap(home, bundle)
-    assert bad.returncode == 0 and "corruption check" in bad.stdout and not dest.exists()
+    assert bad.returncode != 0 and "corruption check" in bad.stdout and not dest.exists()
+
+
+def test_bootstrap_reaper_only_fails_when_the_copy_fails_but_not_for_a_missing_source(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".local").write_text("a file, so ~/.local/share/hos cannot be created")
+    bundle = _bundle(tmp_path, with_reaper=True)
+    failed = _bootstrap(home, bundle)
+    assert failed.returncode != 0 and "could not install the temp reaper" in failed.stdout
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    missing = _bootstrap(home2, _bundle_old(tmp_path))
+    assert missing.returncode == 0 and "tmp_reaper.py not found" in missing.stdout
 
 
 def test_bootstrap_warns_when_run_from_inside_a_git_work_tree(tmp_path):
