@@ -990,7 +990,7 @@ def _body(h, text):
     return ["--title", "t", "--body-file", str(h.body_file)]
 
 
-def _commit_log(h, message, sha="1a2b3c4d5e6f7a8b9c0d1a2b3c4d5e6f7a8b9c0d"):
+def _commit_log(h, message, sha="abcdef0000000000000000000000000000000000"):
     path = h.tmp / "git_log.bin"
     path.write_text(f"{sha}\n{message}\n\0")
     return {"GIT_LOG_FILE": str(path)}
@@ -1029,7 +1029,7 @@ def test_ck_commit_refused_after_fetch_with_range_and_ordering(h):
         env_overrides=_commit_log(h, "subject\n\nfixes #77"),
     )
     assert result.returncode == 1
-    assert "commit 1a2b3c4" in result.stderr
+    assert "commit abcdef0" in result.stderr
     assert "#77" in result.stderr
     cap = h.capture()
     _assert_no_mint_no_push(cap)

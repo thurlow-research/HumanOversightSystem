@@ -20,7 +20,7 @@ import bisect
 import re
 import subprocess
 import sys
-from typing import NamedTuple
+from typing import NamedTuple, NoReturn
 
 _KEYWORD = (
     r"(?<![A-Za-z0-9_])"
@@ -148,7 +148,7 @@ def _report(undeclared: list[tuple[str, str, Match]], any_commit: bool) -> str:
 
 
 class _Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:  # one-line usage errors, exit 2
+    def error(self, message: str) -> NoReturn:  # one-line usage errors, exit 2
         print(f"closing_keywords: {message}", file=sys.stderr)
         sys.exit(2)
 
