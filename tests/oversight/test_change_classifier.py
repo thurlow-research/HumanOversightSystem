@@ -8,6 +8,8 @@ git-diff parsing in a throwaway repo.
 """
 
 import importlib.util
+import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -17,6 +19,7 @@ _SPEC = importlib.util.spec_from_file_location(
     "change_classifier",
     Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "change_classifier.py",
 )
+assert _SPEC is not None and _SPEC.loader is not None
 cc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(cc)
 
@@ -101,7 +104,9 @@ def test_pure_move_of_auth_decorator_is_not_flagged():
 def test_auth_modification_in_framework_tooling_is_exempt():
     # binding 3: scripts/oversight/*.py is exempt — its literal patterns self-match.
     ns = [("M", "scripts/oversight/change_classifier.py")]
-    added = {"scripts/oversight/change_classifier.py": ["    r'permission_required|login_required'"]}
+    added = {
+        "scripts/oversight/change_classifier.py": ["    r'permission_required|login_required'"]
+    }
     removed = {"scripts/oversight/change_classifier.py": ["    r'permission_required'"]}
     sigs = {s["signal"] for s in cc.detect_structural_modifications(ns, added, removed)}
     assert "modified-permission-or-auth-state" not in sigs
@@ -259,9 +264,7 @@ def test_financial_rule_still_matches_real_tokens(line):
 
 
 def test_plain_code_floors_medium():
-    floor, _ = cc.detect_tier_floor(
-        [("M", "app/utils.py")], {"app/utils.py": ["    return x + 1"]}
-    )
+    floor, _ = cc.detect_tier_floor([("M", "app/utils.py")], {"app/utils.py": ["    return x + 1"]})
     assert floor == "MEDIUM"
 
 
@@ -323,7 +326,6 @@ def test_collect_diff_parses_added_lines(tmp_path):
     run("commit", "-qm", "change")
 
     # collect_diff shells out to git in cwd; run it from the repo dir.
-    import os
 
     prev = os.getcwd()
     try:
@@ -357,8 +359,6 @@ def test_collect_diff_captures_removed_lines(tmp_path):
     run("add", "-A")
     run("commit", "-qm", "change")
 
-    import os
-
     prev = os.getcwd()
     try:
         os.chdir(repo)
@@ -372,12 +372,8 @@ def test_collect_diff_captures_removed_lines(tmp_path):
 
 
 # ── #121: CLI integration — byte-stability and --modifications-only ───────────
-import json  # noqa: E402
-import os  # noqa: E402
 
-CLASSIFIER = (
-    Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "change_classifier.py"
-)
+CLASSIFIER = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "change_classifier.py"
 
 
 def _make_auth_mod_repo(repo):
