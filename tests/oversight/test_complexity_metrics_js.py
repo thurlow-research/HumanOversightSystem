@@ -4,14 +4,15 @@ Integration tests for complexity_metrics_js.py (S4, ADR-032 D4).
 tree-sitter is an in-process library (unlike radon's subprocess), so these
 tests exercise the real parser against real temp files rather than mocking.
 """
+
 import os
-import tempfile
 import textwrap
 
 import pytest
-
 from complexity_metrics_js import analyse_files as cmjs_analyse
 from schema import WEIGHTS
+
+from tests.tmp_hygiene import named_temp
 
 SIMPLE_TS = textwrap.dedent(
     """
@@ -56,16 +57,16 @@ COMPLEX_TS = textwrap.dedent(
 GARBAGE_TS = "function broken( {{{ !!! not real syntax at all $$$ ###"
 
 
-def _tmpfile(content: str, suffix: str = ".ts") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+def _tmpfile(tmp_path, content: str, suffix: str = ".ts") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
 
 
 class TestComplexityMetricsJs:
-    def test_simple_function_scores_low(self):
-        path = _tmpfile(SIMPLE_TS)
+    def test_simple_function_scores_low(self, tmp_path):
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = cmjs_analyse([path])
             assert result["error"] is None
@@ -74,8 +75,8 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_complex_function_counts_every_decision_point(self):
-        path = _tmpfile(COMPLEX_TS)
+    def test_complex_function_counts_every_decision_point(self, tmp_path):
+        path = _tmpfile(tmp_path, COMPLEX_TS)
         try:
             result = cmjs_analyse([path])
             assert result["error"] is None
@@ -84,9 +85,9 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_complex_file_scores_higher_than_simple(self):
-        simple = _tmpfile(SIMPLE_TS)
-        complex_ = _tmpfile(COMPLEX_TS)
+    def test_complex_file_scores_higher_than_simple(self, tmp_path):
+        simple = _tmpfile(tmp_path, SIMPLE_TS)
+        complex_ = _tmpfile(tmp_path, COMPLEX_TS)
         try:
             r_simple = cmjs_analyse([simple])
             r_complex = cmjs_analyse([complex_])
@@ -95,7 +96,7 @@ class TestComplexityMetricsJs:
             os.unlink(simple)
             os.unlink(complex_)
 
-    def test_nested_function_scored_separately_not_folded_into_outer(self):
+    def test_nested_function_scored_separately_not_folded_into_outer(self, tmp_path):
         src = textwrap.dedent(
             """
             function outer(a: number) {
@@ -108,7 +109,7 @@ class TestComplexityMetricsJs:
             }
             """
         )
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = cmjs_analyse([path])
             # inner() has 2 ifs (cyclomatic=3); outer() has none of its own (cyclomatic=1).
@@ -118,8 +119,8 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_all_unparseable_excludes_dimension(self):
-        path = _tmpfile(GARBAGE_TS)
+    def test_all_unparseable_excludes_dimension(self, tmp_path):
+        path = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = cmjs_analyse([path])
             assert result["error"] is not None
@@ -127,9 +128,9 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_partial_unparseable_keeps_signal_and_flags(self):
-        good = _tmpfile(COMPLEX_TS)
-        bad = _tmpfile(GARBAGE_TS)
+    def test_partial_unparseable_keeps_signal_and_flags(self, tmp_path):
+        good = _tmpfile(tmp_path, COMPLEX_TS)
+        bad = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = cmjs_analyse([good, bad])
             assert result["error"] is None
@@ -145,7 +146,7 @@ class TestComplexityMetricsJs:
         assert result["score"] == pytest.approx(0.0)
         assert result["dimension"] == "complexity"
 
-    def test_astro_extracts_frontmatter_and_script_with_correct_lines(self):
+    def test_astro_extracts_frontmatter_and_script_with_correct_lines(self, tmp_path):
         src = textwrap.dedent(
             """\
             ---
@@ -161,7 +162,7 @@ class TestComplexityMetricsJs:
             </script>
             """
         )
-        path = _tmpfile(src, suffix=".astro")
+        path = _tmpfile(tmp_path, src, suffix=".astro")
         try:
             result = cmjs_analyse([path])
             assert result["error"] is None
@@ -172,7 +173,7 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_tsx_jsx_syntax_parses_without_error(self):
+    def test_tsx_jsx_syntax_parses_without_error(self, tmp_path):
         src = textwrap.dedent(
             """
             function Widget(props: { on: boolean }) {
@@ -180,7 +181,7 @@ class TestComplexityMetricsJs:
             }
             """
         )
-        path = _tmpfile(src, suffix=".tsx")
+        path = _tmpfile(tmp_path, src, suffix=".tsx")
         try:
             result = cmjs_analyse([path])
             assert result["error"] is None
@@ -188,8 +189,8 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_result_envelope(self):
-        path = _tmpfile(SIMPLE_TS)
+    def test_result_envelope(self, tmp_path):
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = cmjs_analyse([path])
             for key in (
@@ -206,9 +207,9 @@ class TestComplexityMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_dimension_and_weight_match_python_sibling(self):
+    def test_dimension_and_weight_match_python_sibling(self, tmp_path):
         # AC-3: same dimension string + WEIGHTS key as complexity_metrics.py.
-        path = _tmpfile(SIMPLE_TS)
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = cmjs_analyse([path])
             assert result["dimension"] == "complexity"

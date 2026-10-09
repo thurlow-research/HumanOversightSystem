@@ -38,6 +38,8 @@ from typing import Optional
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
 HOS_CRON = Path(__file__).parent.parent.parent / "bin" / "hos-cron"
@@ -631,7 +633,7 @@ class CronEnv:
             text=True,
             timeout=timeout,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def add_agent_files(self, *slugs: str) -> None:
@@ -725,7 +727,7 @@ class CronEnv:
                 slug,
             ],
             cwd=self.repo,
-            env=env,
+            env=child_env(env),
             capture_output=True,
             text=True,
             check=True,
@@ -1373,7 +1375,7 @@ class TestOverlapLock:
         proc_a = subprocess.Popen(
             [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"],
             cwd=str(cron.repo),
-            env=env,
+            env=child_env(env),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1454,7 +1456,7 @@ class TestOverlapLock:
         proc = subprocess.Popen(
             argv,
             cwd=str(cron.repo),
-            env=env,
+            env=child_env(env),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1946,7 +1948,7 @@ class TestGitCredentialsGuard:
             text=True,
             timeout=15,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def test_present_file_sources_normally(self, tmp_path):
@@ -4475,7 +4477,7 @@ def _run_sync(local: Path, env_extra=None) -> subprocess.CompletedProcess:
         text=True,
         timeout=30,
         check=False,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -5114,7 +5116,7 @@ class TestUsagePauseGate:
             capture_output=True,
             text=True,
             check=False,
-            env={"PATH": str(bindir), "HOME": str(tmp_path / "nohome")},
+            env=child_env({"PATH": str(bindir), "HOME": str(tmp_path / "nohome")}),
         )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "[USAGE-OK]" in r.stdout and "THROUGH" in r.stdout

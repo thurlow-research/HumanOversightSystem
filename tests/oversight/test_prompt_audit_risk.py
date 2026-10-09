@@ -8,23 +8,26 @@ Primary mutation targets:
   - normalize() call boundaries
   - Pattern matching logic
 """
+
 import json
+import os
 import sys
 import textwrap
-import tempfile
-import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from prompt_audit_risk import (
-    score_prompt_ambiguity,
-    score_fidelity_surface,
-    get_prompt_artifact,
-    get_process_ambiguity,
     analyse_files,
+    get_process_ambiguity,
+    get_prompt_artifact,
+    score_fidelity_surface,
+    score_prompt_ambiguity,
 )
 
+from tests.tmp_hygiene import make_dir, named_temp
 
 # ── score_prompt_ambiguity() ──────────────────────────────────────────────────
+
 
 class TestScorePromptAmbiguity:
     def test_empty_prompt_zero_score(self):
@@ -33,10 +36,12 @@ class TestScorePromptAmbiguity:
         assert signals == []
 
     def test_clean_spec_prompt_low_score(self):
-        prompt = textwrap.dedent("""
+        prompt = textwrap.dedent(
+            """
             Write a Django view that validates user input per spec §3.
             Must return 400 on invalid input. Required fields: email, name.
-        """)
+        """
+        )
         score, _ = score_prompt_ambiguity(prompt)
         # Clarity markers reduce the score
         assert score < 0.5
@@ -48,12 +53,12 @@ class TestScorePromptAmbiguity:
 
     def test_tbd_increases_score(self):
         score_without, _ = score_prompt_ambiguity("Write a function.")
-        score_with, _    = score_prompt_ambiguity("Write a function. TBD: error handling.")
+        score_with, _ = score_prompt_ambiguity("Write a function. TBD: error handling.")
         assert score_with > score_without
 
     def test_question_marks_increase_score(self):
         score_clean, _ = score_prompt_ambiguity("Implement the login flow.")
-        score_q, _     = score_prompt_ambiguity("Implement the login flow? Maybe add remember me?")
+        score_q, _ = score_prompt_ambiguity("Implement the login flow? Maybe add remember me?")
         assert score_q > score_clean
 
     def test_normative_language_reduces_score(self):
@@ -63,7 +68,7 @@ class TestScorePromptAmbiguity:
 
     def test_spec_citation_reduces_score(self):
         score_no_cite, _ = score_prompt_ambiguity("Handle the booking flow.")
-        score_cite, _    = score_prompt_ambiguity("Handle the booking flow per spec §4.2.")
+        score_cite, _ = score_prompt_ambiguity("Handle the booking flow per spec §4.2.")
         assert score_cite <= score_no_cite
 
     def test_signals_list_populated(self):
@@ -72,26 +77,32 @@ class TestScorePromptAmbiguity:
 
     def test_score_capped_at_one(self):
         # Pile on many ambiguity signals
-        very_vague = " ".join([
-            "TBD maybe probably perhaps unclear etc. I don't know.",
-            "TBD maybe probably perhaps unclear etc. I don't know.",
-            "TBD maybe probably perhaps unclear etc. I don't know.",
-        ])
+        very_vague = " ".join(
+            [
+                "TBD maybe probably perhaps unclear etc. I don't know.",
+                "TBD maybe probably perhaps unclear etc. I don't know.",
+                "TBD maybe probably perhaps unclear etc. I don't know.",
+            ]
+        )
         score, _ = score_prompt_ambiguity(very_vague)
         assert score <= 1.0
 
     def test_score_non_negative(self):
         # Pile on clarity signals — should never go below 0
-        very_clear = " ".join([
-            "Must precisely implement per spec §1 §2 §3.",
-            "Required: unit tests, exactly as specified.",
-            "Specifically: must shall required per RFC.",
-        ] * 5)
+        very_clear = " ".join(
+            [
+                "Must precisely implement per spec §1 §2 §3.",
+                "Required: unit tests, exactly as specified.",
+                "Specifically: must shall required per RFC.",
+            ]
+            * 5
+        )
         score, _ = score_prompt_ambiguity(very_clear)
         assert score >= 0.0
 
 
 # ── score_fidelity_surface() ──────────────────────────────────────────────────
+
 
 class TestScoreFidelitySurface:
     """score_fidelity_surface(prompt_text, code_text) -> (float, list)"""
@@ -167,9 +178,10 @@ class TestScoreFidelitySurface:
 
 # ── get_prompt_artifact() ────────────────────────────────────────────────────
 
+
 class TestGetPromptArtifact:
-    def test_direct_mirror_path_found(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_direct_mirror_path_found(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         artifact = os.path.join(tmpdir, "views.md")
         with open(artifact, "w") as f:
             f.write("prompt content")
@@ -179,29 +191,33 @@ class TestGetPromptArtifact:
             assert text is not None
             assert "prompt content" in text
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
 
     def test_no_artifact_returns_none(self):
         text, path = get_prompt_artifact("/nonexistent/views.py", "/nonexistent/prompts")
         assert text is None
         assert path is None
 
-    def test_git_trailer_path_used(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_git_trailer_path_used(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         artifact = os.path.join(tmpdir, "custom.md")
         with open(artifact, "w") as f:
             f.write("from git trailer")
         git_log = f"Prompt-Artifact: {artifact}\nAI-Risk: HIGH\n"
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout=git_log)):
+        with patch("prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout=git_log)):
             text, path = get_prompt_artifact("auth/views.py", tmpdir)
         try:
             assert text is not None
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
 
 
 # ── get_process_ambiguity() ───────────────────────────────────────────────────
+
 
 class TestGetProcessAmbiguity:
     def test_no_step_returns_zero(self):
@@ -209,28 +225,32 @@ class TestGetProcessAmbiguity:
         assert 0.0 <= score <= 1.0
 
     def test_with_step_runs_without_error(self):
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout="[]", returncode=0)):
+        with patch(
+            "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="[]", returncode=0)
+        ):
             score, signals = get_process_ambiguity(step="3")
         assert 0.0 <= score <= 1.0
 
     def test_spec_gap_issues_raise_score(self):
         issues = [{"number": i, "title": f"gap {i}"} for i in range(5)]
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout=json.dumps(issues), returncode=0)):
+        with patch(
+            "prompt_audit_risk.subprocess.run",
+            return_value=MagicMock(stdout=json.dumps(issues), returncode=0),
+        ):
             score, signals = get_process_ambiguity(step="3")
         assert score > 0.0
 
 
 # ── analyse_files() ───────────────────────────────────────────────────────────
 
+
 class TestPromptAuditAnalyse:
     def test_no_files(self):
         result = analyse_files([])
         assert result["score"] == pytest.approx(0.0)
 
-    def test_py_file_no_artifact(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_py_file_no_artifact(self, tmp_path):
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("def greet(name): return f'hello {name}'\n")
             path = f.name
         try:
@@ -239,9 +259,9 @@ class TestPromptAuditAnalyse:
         finally:
             os.unlink(path)
 
-    def test_md_prompt_file_analysed(self):
+    def test_md_prompt_file_analysed(self, tmp_path):
         prompt = "Write a function. TBD: add tests. Maybe use Redis?\n"
-        with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".md", mode="w") as f:
             f.write(prompt)
             path = f.name
         try:
@@ -250,8 +270,8 @@ class TestPromptAuditAnalyse:
         finally:
             os.unlink(path)
 
-    def test_py_file_with_matching_prompt_artifact(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_py_file_with_matching_prompt_artifact(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         py_path = os.path.join(tmpdir, "views.py")
         md_path = os.path.join(tmpdir, "views.md")
         with open(py_path, "w") as f:
@@ -263,10 +283,12 @@ class TestPromptAuditAnalyse:
             assert 0.0 <= result["score"] <= 1.0
             assert result["error"] is None
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_high_ambiguity_prompt_raises_score(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_high_ambiguity_prompt_raises_score(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         py_path = os.path.join(tmpdir, "service.py")
         md_path = os.path.join(tmpdir, "service.md")
         with open(py_path, "w") as f:
@@ -277,11 +299,13 @@ class TestPromptAuditAnalyse:
             result = analyse_files([py_path], prompts_dir=tmpdir)
             assert result["score"] > 0.0
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_fidelity_surface_unmentioned_functions_in_evidence(self):
+            shutil.rmtree(tmpdir)
+
+    def test_fidelity_surface_unmentioned_functions_in_evidence(self, tmp_path):
         """Functions in code not mentioned in prompt produce fidelity evidence."""
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = make_dir(tmp_path)
         py_path = os.path.join(tmpdir, "module.py")
         md_path = os.path.join(tmpdir, "module.md")
         with open(py_path, "w") as f:
@@ -296,10 +320,12 @@ class TestPromptAuditAnalyse:
             fid = result["raw_value"].get("fidelity_signals", [])
             assert len(fid) > 0
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_high_ambiguity_score_raises_evidence_with_high_severity(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_high_ambiguity_score_raises_evidence_with_high_severity(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         py_path = os.path.join(tmpdir, "thing.py")
         md_path = os.path.join(tmpdir, "thing.md")
         with open(py_path, "w") as f:
@@ -315,22 +341,27 @@ class TestPromptAuditAnalyse:
             high = [e for e in result["evidence"] if e["severity"] == "high"]
             assert len(high) > 0
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_missing_artifact_produces_checklist_item(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_missing_artifact_produces_checklist_item(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         py_path = os.path.join(tmpdir, "views.py")
         with open(py_path, "w") as f:
             f.write("def view(): pass\n")
         # No .md prompt artifact in tmpdir
         try:
-            with patch("prompt_audit_risk.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch(
+                "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="", returncode=0)
+            ):
                 result = analyse_files([py_path], prompts_dir=tmpdir)
             missing = result["raw_value"].get("missing_artifacts", [])
             assert py_path in missing
-            assert any("missing" in item.lower() or "prompt" in item.lower()
-                       for item in result["checklist_items"])
+            assert any(
+                "missing" in item.lower() or "prompt" in item.lower()
+                for item in result["checklist_items"]
+            )
         finally:
             os.unlink(py_path)
             os.rmdir(tmpdir)
@@ -339,12 +370,13 @@ class TestPromptAuditAnalyse:
         result = analyse_files(["/nonexistent/path.py"])
         assert 0.0 <= result["score"] <= 1.0
 
-    def test_unreadable_file_skipped(self):
+    def test_unreadable_file_skipped(self, tmp_path):
         # Pass a directory path — read_text will fail
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = make_dir(tmp_path)
         try:
-            with patch("prompt_audit_risk.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch(
+                "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="", returncode=0)
+            ):
                 result = analyse_files([tmpdir])
             assert isinstance(result, dict)
         finally:
@@ -352,6 +384,7 @@ class TestPromptAuditAnalyse:
 
 
 # ── get_process_ambiguity — architect iteration file ─────────────────────────
+
 
 class TestGetProcessAmbiguityWithStep:
     def test_high_iteration_count_raises_score(self, tmp_path):
@@ -361,8 +394,9 @@ class TestGetProcessAmbiguityWithStep:
         arch_file = design_dir / "architect-5-20260101T120000.md"
         arch_file.write_text("iteration: 4\nsome content\n")
 
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout="[]", returncode=0)):
+        with patch(
+            "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="[]", returncode=0)
+        ):
             # Patch glob.glob inside the function's import namespace
             with patch("glob.glob", return_value=[str(arch_file)]):
                 score, signals = get_process_ambiguity(step="5")
@@ -375,46 +409,47 @@ class TestGetProcessAmbiguityWithStep:
         arch_file = design_dir / "architect-5-20260101T120000.md"
         arch_file.write_text("iteration: 2\nsome content\n")
 
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout="[]", returncode=0)):
+        with patch(
+            "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="[]", returncode=0)
+        ):
             with patch("glob.glob", return_value=[str(arch_file)]):
                 score, signals = get_process_ambiguity(step="5")
         # iteration: 2 is below threshold of 3
         assert not any("iteration" in s for s in signals)
 
     def test_subprocess_exception_does_not_crash(self):
-        with patch("prompt_audit_risk.subprocess.run",
-                   side_effect=Exception("gh not found")):
+        with patch("prompt_audit_risk.subprocess.run", side_effect=Exception("gh not found")):
             score, signals = get_process_ambiguity(step=None)
         assert 0.0 <= score <= 1.0
 
 
 # ── get_prompt_artifact — git trailer not-found path ─────────────────────────
 
+
 class TestGetPromptArtifactGitTrailer:
     def test_git_trailer_path_not_found_falls_through(self, tmp_path):
         # Git log returns a Prompt-Artifact: that doesn't exist on disk
         git_log = "Prompt-Artifact: /nonexistent/artifact.md\n"
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout=git_log)):
+        with patch("prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout=git_log)):
             text, path = get_prompt_artifact(str(tmp_path / "views.py"), str(tmp_path))
         # Falls through to prompts mirror search → also not found → None
         assert text is None
         assert path is None
 
     def test_git_subprocess_error_falls_through(self, tmp_path):
-        with patch("prompt_audit_risk.subprocess.run",
-                   side_effect=Exception("git error")):
+        with patch("prompt_audit_risk.subprocess.run", side_effect=Exception("git error")):
             text, path = get_prompt_artifact(str(tmp_path / "views.py"), str(tmp_path))
         assert text is None
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
 
+
 class TestPromptAuditMain:
     def test_main_no_files_prints_json(self, capsys, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["prompt_audit_risk.py"])
         import prompt_audit_risk
+
         prompt_audit_risk.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -424,15 +459,23 @@ class TestPromptAuditMain:
     def test_main_with_step_arg(self, capsys, monkeypatch, tmp_path):
         py_file = tmp_path / "views.py"
         py_file.write_text("def view(): pass\n")
-        monkeypatch.setattr(sys, "argv", [
-            "prompt_audit_risk.py",
-            "--step", "3",
-            "--prompts-dir", str(tmp_path),
-            str(py_file),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prompt_audit_risk.py",
+                "--step",
+                "3",
+                "--prompts-dir",
+                str(tmp_path),
+                str(py_file),
+            ],
+        )
         import prompt_audit_risk
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout="[]", returncode=0)):
+
+        with patch(
+            "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="[]", returncode=0)
+        ):
             prompt_audit_risk.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -441,14 +484,21 @@ class TestPromptAuditMain:
     def test_main_with_prompts_dir_arg(self, capsys, monkeypatch, tmp_path):
         py_file = tmp_path / "service.py"
         py_file.write_text("def process(): pass\n")
-        monkeypatch.setattr(sys, "argv", [
-            "prompt_audit_risk.py",
-            "--prompts-dir", str(tmp_path),
-            str(py_file),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prompt_audit_risk.py",
+                "--prompts-dir",
+                str(tmp_path),
+                str(py_file),
+            ],
+        )
         import prompt_audit_risk
-        with patch("prompt_audit_risk.subprocess.run",
-                   return_value=MagicMock(stdout="[]", returncode=0)):
+
+        with patch(
+            "prompt_audit_risk.subprocess.run", return_value=MagicMock(stdout="[]", returncode=0)
+        ):
             prompt_audit_risk.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)

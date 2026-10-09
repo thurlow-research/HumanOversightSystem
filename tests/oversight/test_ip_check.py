@@ -5,32 +5,34 @@ classify_license() is a pure-logic function with well-defined behavior
 and clear mutation targets (string membership checks, score thresholds).
 The requirement-parsing logic is tested with temp files.
 """
-import json
-import tempfile
-import os
-import pytest
-from io import BytesIO
-from unittest.mock import patch, MagicMock
 
+import json
+import os
+from io import BytesIO
+from unittest.mock import MagicMock, patch
+
+import pytest
 from ip_check import (
-    classify_license,
-    check_dependency_licenses,
-    check_prompt_cleanroom,
-    check_regurgitation_stub,
-    analyse_files,
-    _pypi_license,
-    _npm_license,
-    _scancode_license,
-    COPYLEFT,
-    PERMISSIVE,
-    UNKNOWN_MARKERS,
     _COPYLEFT_SCORE,
     _PERMISSIVE_SCORE,
     _UNKNOWN_SCORE,
+    COPYLEFT,
+    PERMISSIVE,
+    UNKNOWN_MARKERS,
+    _npm_license,
+    _pypi_license,
+    _scancode_license,
+    analyse_files,
+    check_dependency_licenses,
+    check_prompt_cleanroom,
+    check_regurgitation_stub,
+    classify_license,
 )
 
+from tests.tmp_hygiene import make_dir, named_temp
 
 # ── classify_license() — primary mutation target ──────────────────────────────
+
 
 class TestClassifyLicense:
     # None / unknown markers
@@ -119,16 +121,17 @@ class TestClassifyLicense:
 
 # ── check_dependency_licenses() — file parsing ───────────────────────────────
 
+
 class TestCheckDependencyLicenses:
-    def _write(self, name: str, content: str) -> str:
-        d = tempfile.mkdtemp()
+    def _write(self, tmp_path, name: str, content: str) -> str:
+        d = make_dir(tmp_path)
         path = os.path.join(d, name)
         with open(path, "w") as f:
             f.write(content)
         return path
 
-    def test_requirements_txt_parsed(self):
-        path = self._write("requirements.txt", "requests>=2.28\ndjango>=4.0\n")
+    def test_requirements_txt_parsed(self, tmp_path):
+        path = self._write(tmp_path, "requirements.txt", "requests>=2.28\ndjango>=4.0\n")
         try:
             # Mock license lookup to return MIT so we get permissive findings
             with patch("ip_check._pypi_license", return_value="MIT"):
@@ -138,8 +141,8 @@ class TestCheckDependencyLicenses:
         finally:
             os.unlink(path)
 
-    def test_requirements_skips_comments(self):
-        path = self._write("requirements.txt", "# this is a comment\nrequests>=2.0\n")
+    def test_requirements_skips_comments(self, tmp_path):
+        path = self._write(tmp_path, "requirements.txt", "# this is a comment\nrequests>=2.0\n")
         try:
             with patch("ip_check._pypi_license", return_value="MIT"):
                 findings = check_dependency_licenses([path])
@@ -149,13 +152,15 @@ class TestCheckDependencyLicenses:
         finally:
             os.unlink(path)
 
-    def test_package_json_parsed(self):
-        pkg = json.dumps({
-            "name": "myapp",
-            "dependencies": {"react": "^18.0.0"},
-            "devDependencies": {"jest": "^29.0.0"},
-        })
-        path = self._write("package.json", pkg)
+    def test_package_json_parsed(self, tmp_path):
+        pkg = json.dumps(
+            {
+                "name": "myapp",
+                "dependencies": {"react": "^18.0.0"},
+                "devDependencies": {"jest": "^29.0.0"},
+            }
+        )
+        path = self._write(tmp_path, "package.json", pkg)
         try:
             with patch("ip_check._npm_license", return_value="MIT"):
                 findings = check_dependency_licenses([path])
@@ -167,8 +172,8 @@ class TestCheckDependencyLicenses:
         findings = check_dependency_licenses(["/does/not/exist/requirements.txt"])
         assert findings == []
 
-    def test_copyleft_package_produces_high_severity_finding(self):
-        path = self._write("requirements.txt", "gpl-package>=1.0\n")
+    def test_copyleft_package_produces_high_severity_finding(self, tmp_path):
+        path = self._write(tmp_path, "requirements.txt", "gpl-package>=1.0\n")
         try:
             with patch("ip_check._pypi_license", return_value="GPL-3.0"):
                 findings = check_dependency_licenses([path])
@@ -176,8 +181,8 @@ class TestCheckDependencyLicenses:
         finally:
             os.unlink(path)
 
-    def test_unknown_license_produces_medium_finding(self):
-        path = self._write("requirements.txt", "mystery-pkg>=1.0\n")
+    def test_unknown_license_produces_medium_finding(self, tmp_path):
+        path = self._write(tmp_path, "requirements.txt", "mystery-pkg>=1.0\n")
         try:
             with patch("ip_check._pypi_license", return_value=None):
                 findings = check_dependency_licenses([path])
@@ -188,30 +193,27 @@ class TestCheckDependencyLicenses:
 
 # ── _pypi_license() and _npm_license() ───────────────────────────────────────
 
+
 class TestAPILookups:
     def test_pypi_license_parses_response(self):
         payload = json.dumps({"info": {"license": "MIT"}}).encode()
-        with patch("ip_check.urllib.request.urlopen",
-                   return_value=BytesIO(payload)):
+        with patch("ip_check.urllib.request.urlopen", return_value=BytesIO(payload)):
             result = _pypi_license("requests")
         assert result == "MIT"
 
     def test_pypi_license_network_error_returns_none(self):
-        with patch("ip_check.urllib.request.urlopen",
-                   side_effect=Exception("network error")):
+        with patch("ip_check.urllib.request.urlopen", side_effect=Exception("network error")):
             result = _pypi_license("requests")
         assert result is None
 
     def test_npm_license_parses_response(self):
         payload = json.dumps({"license": "Apache-2.0"}).encode()
-        with patch("ip_check.urllib.request.urlopen",
-                   return_value=BytesIO(payload)):
+        with patch("ip_check.urllib.request.urlopen", return_value=BytesIO(payload)):
             result = _npm_license("react")
         assert result == "Apache-2.0"
 
     def test_npm_license_network_error_returns_none(self):
-        with patch("ip_check.urllib.request.urlopen",
-                   side_effect=Exception("network error")):
+        with patch("ip_check.urllib.request.urlopen", side_effect=Exception("network error")):
             result = _npm_license("react")
         assert result is None
 
@@ -221,9 +223,7 @@ class TestAPILookups:
         assert result is None
 
     def test_scancode_license_parses_output(self):
-        scancode_output = json.dumps({
-            "files": [{"licenses": [{"spdx_license_key": "MIT"}]}]
-        })
+        scancode_output = json.dumps({"files": [{"licenses": [{"spdx_license_key": "MIT"}]}]})
         mock = MagicMock(stdout=scancode_output, returncode=0)
         with patch("ip_check.subprocess.run", return_value=mock):
             result = _scancode_license("test.py")
@@ -234,30 +234,32 @@ class TestAPILookups:
 
 # ── check_prompt_cleanroom() ──────────────────────────────────────────────────
 
+
 class TestPromptCleanroom:
     def test_missing_prompts_dir_returns_empty(self):
         findings = check_prompt_cleanroom("/does/not/exist", ["auth/views.py"])
         assert findings == []
 
-    def test_clean_spec_prompt_not_flagged(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_clean_spec_prompt_not_flagged(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         # Write a clean spec-based prompt artifact
         prompt_path = os.path.join(tmpdir, "views.md")
         with open(prompt_path, "w") as f:
             f.write("Implement per spec §3. Required fields: email, name.\n")
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
-                findings = check_prompt_cleanroom(tmpdir, [
-                    os.path.join(tmpdir, "views.py")])
+            with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
+                findings = check_prompt_cleanroom(tmpdir, [os.path.join(tmpdir, "views.py")])
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
         # Clean prompt may produce info findings (positive signal) but not high
         high_findings = [f for f in findings if f["severity"] == "high"]
         assert len(high_findings) == 0
 
 
 # ── check_regurgitation_stub() ────────────────────────────────────────────────
+
 
 class TestRegurgitationStub:
     def test_returns_stub_flag(self):
@@ -272,13 +274,14 @@ class TestRegurgitationStub:
 
 # ── analyse_files() ───────────────────────────────────────────────────────────
 
+
 class TestIPAnalyseFiles:
     def test_no_files(self):
         result = analyse_files([])
         assert result["score"] == pytest.approx(0.0)
 
-    def test_non_manifest_file_low_score(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_non_manifest_file_low_score(self, tmp_path):
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("import os\n")
             path = f.name
         try:
@@ -289,12 +292,20 @@ class TestIPAnalyseFiles:
 
     def test_result_envelope(self):
         result = analyse_files([])
-        for key in ("dimension", "score", "raw_value", "weight", "evidence",
-                    "checklist_items", "findings", "error"):
+        for key in (
+            "dimension",
+            "score",
+            "raw_value",
+            "weight",
+            "evidence",
+            "checklist_items",
+            "findings",
+            "error",
+        ):
             assert key in result
 
-    def test_copyleft_in_requirements_raises_score(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_copyleft_in_requirements_raises_score(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         req = os.path.join(tmpdir, "requirements.txt")
         with open(req, "w") as f:
             f.write("gpl-package>=1.0\n")
@@ -303,17 +314,21 @@ class TestIPAnalyseFiles:
                 result = analyse_files([req])
             assert result["score"] > 0.0
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
 
 
 # ── pyproject.toml parsing ────────────────────────────────────────────────────
 
+
 class TestPyprojectToml:
-    def test_pyproject_toml_parsed(self):
+    def test_pyproject_toml_parsed(self, tmp_path):
         import sys
+
         if sys.version_info < (3, 11):
             pytest.skip("tomllib not available on Python < 3.11")
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = make_dir(tmp_path)
         toml_path = os.path.join(tmpdir, "pyproject.toml")
         with open(toml_path, "w") as f:
             f.write('[project]\ndependencies = ["requests>=2.28"]\n')
@@ -328,9 +343,10 @@ class TestPyprojectToml:
 
 # ── package.json invalid JSON skipped ────────────────────────────────────────
 
+
 class TestPackageJsonEdgeCases:
-    def test_invalid_json_package_json_skipped(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_invalid_json_package_json_skipped(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         pkg_path = os.path.join(tmpdir, "package.json")
         with open(pkg_path, "w") as f:
             f.write("not valid json {\n")
@@ -345,24 +361,26 @@ class TestPackageJsonEdgeCases:
 
 # ── check_prompt_cleanroom — attribution trigger ───────────────────────────────
 
+
 class TestPromptCleanroomAttribution:
-    def test_attribution_trigger_flagged(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_attribution_trigger_flagged(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         prompt_path = os.path.join(tmpdir, "views.md")
         with open(prompt_path, "w") as f:
             f.write("based on the implementation from Django's source code.\n")
         src_file = os.path.join(tmpdir, "views.py")
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
                 findings = check_prompt_cleanroom(tmpdir, [src_file])
             attr = [f for f in findings if f.get("category") == "attribution-trigger"]
             assert len(attr) >= 1
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_cleanroom_positive_signal_included(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_cleanroom_positive_signal_included(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         prompt_path = os.path.join(tmpdir, "views.md")
         with open(prompt_path, "w") as f:
             # Multiple clean-room signals
@@ -372,76 +390,87 @@ class TestPromptCleanroomAttribution:
             )
         src_file = os.path.join(tmpdir, "views.py")
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
                 findings = check_prompt_cleanroom(tmpdir, [src_file])
             positive = [f for f in findings if f.get("category") == "cleanroom-positive"]
             assert len(positive) >= 1
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_git_trailer_prompt_artifact_resolved(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_git_trailer_prompt_artifact_resolved(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         artifact = os.path.join(tmpdir, "custom_prompt.md")
         with open(artifact, "w") as f:
             f.write("Implement per spec §3.\n")
         src_file = os.path.join(tmpdir, "views.py")
         trailer = f"Prompt-Artifact: {artifact}\n"
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout=trailer, returncode=0)):
+            with patch(
+                "ip_check.subprocess.run", return_value=MagicMock(stdout=trailer, returncode=0)
+            ):
                 findings = check_prompt_cleanroom(tmpdir, [src_file])
             # No attribution trigger — just verify no error raised
             assert isinstance(findings, list)
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_git_subprocess_exception_does_not_crash(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_git_subprocess_exception_does_not_crash(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         prompt_path = os.path.join(tmpdir, "views.md")
         with open(prompt_path, "w") as f:
             f.write("per spec from scratch.\n")
         src_file = os.path.join(tmpdir, "views.py")
         try:
-            with patch("ip_check.subprocess.run",
-                       side_effect=Exception("git not found")):
+            with patch("ip_check.subprocess.run", side_effect=Exception("git not found")):
                 findings = check_prompt_cleanroom(tmpdir, [src_file])
             assert isinstance(findings, list)
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
 
 
 # ── analyse_files — checklist paths ──────────────────────────────────────────
 
+
 class TestIPAnalyseChecklist:
-    def test_copyleft_in_checklist(self):
-        tmpdir = tempfile.mkdtemp()
+    def test_copyleft_in_checklist(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         req = os.path.join(tmpdir, "requirements.txt")
         with open(req, "w") as f:
             f.write("gpl-package>=1.0\n")
         try:
             with patch("ip_check._pypi_license", return_value="GPL-3.0"):
                 result = analyse_files([req])
-            assert any("copyleft" in item or "GPL" in item
-                       for item in result["checklist_items"])
+            assert any("copyleft" in item or "GPL" in item for item in result["checklist_items"])
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_unknown_license_in_checklist(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_unknown_license_in_checklist(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         req = os.path.join(tmpdir, "requirements.txt")
         with open(req, "w") as f:
             f.write("mystery-pkg>=1.0\n")
         try:
             with patch("ip_check._pypi_license", return_value=None):
                 result = analyse_files([req])
-            assert any("legal review" in item or "unknown" in item.lower()
-                       for item in result["checklist_items"])
+            assert any(
+                "legal review" in item or "unknown" in item.lower()
+                for item in result["checklist_items"]
+            )
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_attribution_trigger_in_checklist(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_attribution_trigger_in_checklist(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         prompt = os.path.join(tmpdir, "service.md")
         with open(prompt, "w") as f:
             f.write("based on the implementation in library X.\n")
@@ -449,16 +478,17 @@ class TestIPAnalyseChecklist:
         with open(src, "w") as f:
             f.write("import os\n")
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
                 result = analyse_files([src], prompts_dir=tmpdir)
             # Attribution trigger may produce checklist item
             assert isinstance(result["checklist_items"], list)
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
 
-    def test_cleanroom_positive_in_checklist(self):
-        tmpdir = tempfile.mkdtemp()
+            shutil.rmtree(tmpdir)
+
+    def test_cleanroom_positive_in_checklist(self, tmp_path):
+        tmpdir = make_dir(tmp_path)
         prompt = os.path.join(tmpdir, "service.md")
         with open(prompt, "w") as f:
             f.write("Per spec, implement from scratch. Spec section 3.\n")
@@ -466,22 +496,26 @@ class TestIPAnalyseChecklist:
         with open(src, "w") as f:
             f.write("import os\n")
         try:
-            with patch("ip_check.subprocess.run",
-                       return_value=MagicMock(stdout="", returncode=0)):
+            with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
                 result = analyse_files([src], prompts_dir=tmpdir)
             # Clean-room positive may appear in checklist
             assert isinstance(result["checklist_items"], list)
         finally:
-            import shutil; shutil.rmtree(tmpdir)
+            import shutil
+
+            shutil.rmtree(tmpdir)
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
 
+
 class TestIPCheckMain:
     def test_main_no_files_prints_json(self, capsys, monkeypatch):
         import sys
+
         monkeypatch.setattr(sys, "argv", ["ip_check.py"])
         import ip_check
+
         ip_check.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -490,16 +524,22 @@ class TestIPCheckMain:
 
     def test_main_with_prompts_dir_arg(self, capsys, monkeypatch, tmp_path):
         import sys
+
         py_file = tmp_path / "test.py"
         py_file.write_text("import os\n")
-        monkeypatch.setattr(sys, "argv", [
-            "ip_check.py",
-            "--prompts-dir", str(tmp_path),
-            str(py_file),
-        ])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "ip_check.py",
+                "--prompts-dir",
+                str(tmp_path),
+                str(py_file),
+            ],
+        )
         import ip_check
-        with patch("ip_check.subprocess.run",
-                   return_value=MagicMock(stdout="", returncode=0)):
+
+        with patch("ip_check.subprocess.run", return_value=MagicMock(stdout="", returncode=0)):
             ip_check.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
@@ -507,10 +547,10 @@ class TestIPCheckMain:
 
     def test_main_nonexistent_file_prints_no_input(self, capsys, monkeypatch):
         import sys
-        monkeypatch.setattr(sys, "argv", [
-            "ip_check.py", "/nonexistent/path.py"
-        ])
+
+        monkeypatch.setattr(sys, "argv", ["ip_check.py", "/nonexistent/path.py"])
         import ip_check
+
         ip_check.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)

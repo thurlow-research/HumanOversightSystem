@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _GATES_DIR = _REPO / "scripts" / "oversight" / "gates"
 _VENV_BIN = _REPO / "scripts" / "oversight" / ".venv" / "bin"
@@ -78,7 +80,7 @@ def _run(
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
 
 

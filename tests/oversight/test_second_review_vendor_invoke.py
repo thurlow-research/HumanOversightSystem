@@ -25,6 +25,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "run_second_review.sh"
 _VENDOR_INVOKE_SH = _REPO_ROOT / "scripts" / "oversight" / "lib" / "vendor_invoke.sh"
@@ -98,7 +100,7 @@ def _run(
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -138,7 +140,7 @@ def _run_lib_snippet(
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=child_env(env),
         cwd=str(tmp_path),
     )
 
@@ -374,7 +376,7 @@ exit 3
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
     assert r.returncode == 1, f"stdout={r.stdout}\nstderr={r.stderr}"
     leftover = list(isolated_tmp.rglob("*"))

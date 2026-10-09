@@ -5,18 +5,24 @@ These validators shell out to external tools (radon, bandit, semgrep).
 Mocking subprocess.run lets us test the parsing and scoring logic without
 requiring the tools to be installed or produce specific output.
 """
+
 import ast
 import json
-import textwrap
-import tempfile
 import os
-import pytest
-from unittest.mock import patch, MagicMock
+import textwrap
+from unittest.mock import MagicMock, patch
 
+import pytest
+from complexity_metrics import _radon_cc, _radon_mi
+from complexity_metrics import analyse_files as cm_analyse
+from hallucination_surface import _HallucinationVisitor
+from hallucination_surface import analyse_files as hs_analyse
+from static_analysis import _run_bandit
+from static_analysis import analyse_files as sa_analyse
+
+from tests.tmp_hygiene import named_temp
 
 # ── complexity_metrics (mocked radon) ─────────────────────────────────────────
-
-from complexity_metrics import _radon_cc, _radon_mi, analyse_files as cm_analyse
 
 
 class TestComplexityMocked:
@@ -27,10 +33,12 @@ class TestComplexityMocked:
         return json.dumps({"test.py": {"mi": mi}})
 
     def test_radon_cc_parses_output(self):
-        cc_json = self._make_cc_json([
-            {"name": "simple_fn", "lineno": 1, "complexity": 3},
-            {"name": "complex_fn", "lineno": 10, "complexity": 12},
-        ])
+        cc_json = self._make_cc_json(
+            [
+                {"name": "simple_fn", "lineno": 1, "complexity": 3},
+                {"name": "complex_fn", "lineno": 10, "complexity": 12},
+            ]
+        )
         mock = MagicMock(stdout=cc_json, stderr="", returncode=0)
         with patch("complexity_metrics.subprocess.run", return_value=mock):
             funcs, errors = _radon_cc(["test.py"])
@@ -58,10 +66,12 @@ class TestComplexityMocked:
         # parse. entries is a dict there — iterating it as a list of entries
         # raised AttributeError and crashed the whole validator. Now it is
         # recorded as a parse error and does NOT crash.
-        cc_json = json.dumps({
-            "good.py": [{"name": "ok", "lineno": 1, "complexity": 2}],
-            "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
-        })
+        cc_json = json.dumps(
+            {
+                "good.py": [{"name": "ok", "lineno": 1, "complexity": 2}],
+                "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
+            }
+        )
         mock = MagicMock(stdout=cc_json, stderr="", returncode=0)
         with patch("complexity_metrics.subprocess.run", return_value=mock):
             funcs, errors = _radon_cc(["good.py", "bad.py"])
@@ -74,12 +84,14 @@ class TestComplexityMocked:
         # #979: when radon can parse NO input file, exclude the dimension
         # (error set) rather than reporting a clean 0.0.
         cc_json = json.dumps({"bad.py": {"error": "invalid syntax (bad.py, line 1)"}})
-        with patch("complexity_metrics.subprocess.run",
-                   side_effect=[
-                       MagicMock(returncode=0),  # version check
-                       MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
-                       MagicMock(stdout="{}", stderr="", returncode=0),     # mi
-                   ]):
+        with patch(
+            "complexity_metrics.subprocess.run",
+            side_effect=[
+                MagicMock(returncode=0),  # version check
+                MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
+                MagicMock(stdout="{}", stderr="", returncode=0),  # mi
+            ],
+        ):
             result = cm_analyse(["bad.py"])
         assert result["error"] is not None
         assert result["score"] == pytest.approx(0.0)
@@ -87,16 +99,20 @@ class TestComplexityMocked:
     def test_analyse_partial_unparseable_keeps_signal_and_flags(self):
         # #979: one parseable + one radon-broken file → keep the real signal,
         # do NOT exclude, but flag the unparseable file for review.
-        cc_json = json.dumps({
-            "good.py": [{"name": "bad_fn", "lineno": 5, "complexity": 14}],
-            "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
-        })
-        with patch("complexity_metrics.subprocess.run",
-                   side_effect=[
-                       MagicMock(returncode=0),  # version check
-                       MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
-                       MagicMock(stdout="{}", stderr="", returncode=0),     # mi
-                   ]):
+        cc_json = json.dumps(
+            {
+                "good.py": [{"name": "bad_fn", "lineno": 5, "complexity": 14}],
+                "bad.py": {"error": "invalid syntax (bad.py, line 1)"},
+            }
+        )
+        with patch(
+            "complexity_metrics.subprocess.run",
+            side_effect=[
+                MagicMock(returncode=0),  # version check
+                MagicMock(stdout=cc_json, stderr="", returncode=0),  # cc
+                MagicMock(stdout="{}", stderr="", returncode=0),  # mi
+            ],
+        ):
             result = cm_analyse(["good.py", "bad.py"])
         assert result["error"] is None
         assert result["score"] > 0.0
@@ -117,64 +133,73 @@ class TestComplexityMocked:
         assert result == {}
 
     def test_analyse_files_high_complexity_produces_evidence(self):
-        cc_json = self._make_cc_json([
-            {"name": "bad_fn", "lineno": 5, "complexity": 14},
-        ])
+        cc_json = self._make_cc_json(
+            [
+                {"name": "bad_fn", "lineno": 5, "complexity": 14},
+            ]
+        )
         mi_json = self._make_mi_json(80.0)
         cc_mock = MagicMock(stdout=cc_json, stderr="", returncode=0)
         mi_mock = MagicMock(stdout=mi_json, stderr="", returncode=0)
         # First call: radon --version check; second: cc; third: mi
-        with patch("complexity_metrics.subprocess.run",
-                   side_effect=[
-                       MagicMock(returncode=0),  # version check
-                       cc_mock,                   # cc call
-                       mi_mock,                   # mi call
-                   ]):
+        with patch(
+            "complexity_metrics.subprocess.run",
+            side_effect=[
+                MagicMock(returncode=0),  # version check
+                cc_mock,  # cc call
+                mi_mock,  # mi call
+            ],
+        ):
             result = cm_analyse(["test.py"])
         assert result["error"] is None
         assert result["score"] > 0.0
         assert len(result["evidence"]) >= 1
 
     def test_analyse_files_low_complexity_low_score(self):
-        cc_json = self._make_cc_json([
-            {"name": "simple", "lineno": 1, "complexity": 2},
-        ])
+        cc_json = self._make_cc_json(
+            [
+                {"name": "simple", "lineno": 1, "complexity": 2},
+            ]
+        )
         mi_json = self._make_mi_json(95.0)
-        with patch("complexity_metrics.subprocess.run",
-                   side_effect=[
-                       MagicMock(returncode=0),
-                       MagicMock(stdout=cc_json, stderr="", returncode=0),
-                       MagicMock(stdout=mi_json, stderr="", returncode=0),
-                   ]):
+        with patch(
+            "complexity_metrics.subprocess.run",
+            side_effect=[
+                MagicMock(returncode=0),
+                MagicMock(stdout=cc_json, stderr="", returncode=0),
+                MagicMock(stdout=mi_json, stderr="", returncode=0),
+            ],
+        ):
             result = cm_analyse(["test.py"])
         assert result["score"] < 0.5
 
     def test_radon_not_installed_returns_error(self):
-        with patch("complexity_metrics.subprocess.run",
-                   side_effect=FileNotFoundError("radon not found")):
+        with patch(
+            "complexity_metrics.subprocess.run", side_effect=FileNotFoundError("radon not found")
+        ):
             result = cm_analyse(["test.py"])
         assert result["error"] is not None
 
 
 # ── static_analysis (mocked bandit) ──────────────────────────────────────────
 
-from static_analysis import analyse_files as sa_analyse, _run_bandit
-
 
 class TestStaticAnalysisMocked:
-    BANDIT_OUTPUT = json.dumps({
-        "results": [
-            {
-                "filename": "test.py",
-                "line_number": 5,
-                "issue_text": "Use of eval is a security risk.",
-                "issue_severity": "HIGH",
-                "issue_confidence": "HIGH",
-                "test_id": "B307",
-            }
-        ],
-        "metrics": {"test.py": {"loc": 10, "nosec": 0}},
-    })
+    BANDIT_OUTPUT = json.dumps(
+        {
+            "results": [
+                {
+                    "filename": "test.py",
+                    "line_number": 5,
+                    "issue_text": "Use of eval is a security risk.",
+                    "issue_severity": "HIGH",
+                    "issue_confidence": "HIGH",
+                    "test_id": "B307",
+                }
+            ],
+            "metrics": {"test.py": {"loc": 10, "nosec": 0}},
+        }
+    )
 
     def test_run_bandit_parses_findings(self):
         mock = MagicMock(stdout=self.BANDIT_OUTPUT, returncode=0)
@@ -205,8 +230,9 @@ class TestStaticAnalysisMocked:
         assert err is not None
 
     def test_run_bandit_not_installed_signals_error(self):
-        with patch("static_analysis.subprocess.run",
-                   side_effect=FileNotFoundError("bandit not found")):
+        with patch(
+            "static_analysis.subprocess.run", side_effect=FileNotFoundError("bandit not found")
+        ):
             findings, err = _run_bandit(["test.py"])
         assert findings == []
         assert err is not None
@@ -214,8 +240,9 @@ class TestStaticAnalysisMocked:
     def test_analyse_bandit_not_installed_excludes_dimension(self):
         # #917: bandit missing → error set so the aggregator EXCLUDES the
         # highest-weight security dimension rather than scoring a clean 0.0.
-        with patch("static_analysis.subprocess.run",
-                   side_effect=FileNotFoundError("bandit not found")):
+        with patch(
+            "static_analysis.subprocess.run", side_effect=FileNotFoundError("bandit not found")
+        ):
             result = sa_analyse(["test.py"])
         assert result["error"] is not None
         assert result["score"] == pytest.approx(0.0)
@@ -245,19 +272,21 @@ class TestStaticAnalysisMocked:
         assert result["score"] == pytest.approx(0.0)
 
     def test_medium_severity_finding_produces_checklist(self):
-        bandit_output = json.dumps({
-            "results": [
-                {
-                    "filename": "test.py",
-                    "line_number": 10,
-                    "issue_text": "Possible SQL injection.",
-                    "issue_severity": "MEDIUM",
-                    "issue_confidence": "HIGH",
-                    "test_id": "B608",
-                },
-            ],
-            "metrics": {"test.py": {"loc": 20, "nosec": 0}},
-        })
+        bandit_output = json.dumps(
+            {
+                "results": [
+                    {
+                        "filename": "test.py",
+                        "line_number": 10,
+                        "issue_text": "Possible SQL injection.",
+                        "issue_severity": "MEDIUM",
+                        "issue_confidence": "HIGH",
+                        "test_id": "B608",
+                    },
+                ],
+                "metrics": {"test.py": {"loc": 20, "nosec": 0}},
+            }
+        )
         mock = MagicMock(stdout=bandit_output, returncode=0)
         with patch("static_analysis.subprocess.run", return_value=mock):
             result = sa_analyse(["test.py"])
@@ -268,20 +297,22 @@ class TestStaticAnalysisMocked:
 
     @staticmethod
     def _bandit_json(severity: str, n: int = 1) -> str:
-        return json.dumps({
-            "results": [
-                {
-                    "filename": "test.py",
-                    "line_number": 5 + i,
-                    "issue_text": "Use of eval is a security risk.",
-                    "issue_severity": severity,
-                    "issue_confidence": "HIGH",
-                    "test_id": "B307",
-                }
-                for i in range(n)
-            ],
-            "metrics": {"test.py": {"loc": 10, "nosec": 0}},
-        })
+        return json.dumps(
+            {
+                "results": [
+                    {
+                        "filename": "test.py",
+                        "line_number": 5 + i,
+                        "issue_text": "Use of eval is a security risk.",
+                        "issue_severity": severity,
+                        "issue_confidence": "HIGH",
+                        "test_id": "B307",
+                    }
+                    for i in range(n)
+                ],
+                "metrics": {"test.py": {"loc": 10, "nosec": 0}},
+            }
+        )
 
     def test_high_finding_sets_high_tier_floor(self):
         # #997: a HIGH bandit finding must raise tier_floor="HIGH" so the
@@ -327,16 +358,19 @@ class TestStaticAnalysisMocked:
 
     def test_run_semgrep_not_installed(self):
         from static_analysis import _run_semgrep
-        with patch("static_analysis.subprocess.run",
-                   side_effect=FileNotFoundError("semgrep not found")):
+
+        with patch(
+            "static_analysis.subprocess.run", side_effect=FileNotFoundError("semgrep not found")
+        ):
             results, status, error = _run_semgrep(["test.py"])
         assert results == []
         assert status == "not_installed"
         assert error is None
 
     def test_run_semgrep_timeout_signals_error(self):
-        from static_analysis import _run_semgrep
         import subprocess as sp
+
+        from static_analysis import _run_semgrep
 
         def _side_effect(cmd, **kwargs):
             if cmd[:2] == ["semgrep", "--version"]:
@@ -376,6 +410,7 @@ class TestStaticAnalysisMocked:
             if cmd[:2] == ["semgrep", "--version"]:
                 return MagicMock(returncode=0)
             import subprocess as sp
+
             raise sp.TimeoutExpired("semgrep", 60)
 
         with patch("static_analysis.subprocess.run", side_effect=_side_effect):
@@ -446,13 +481,11 @@ class TestStaticAnalysisMocked:
 
 # ── hallucination_surface (mocked) ────────────────────────────────────────────
 
-from hallucination_surface import analyse_files as hs_analyse, _HallucinationVisitor
-
 
 class TestHallucinationSurfaceMocked:
-    def test_clean_file_no_patterns(self):
+    def test_clean_file_no_patterns(self, tmp_path):
         src = "def greet(name):\n    return f'hello {name}'\n"
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -462,12 +495,14 @@ class TestHallucinationSurfaceMocked:
         finally:
             os.unlink(path)
 
-    def test_type_ignore_comment_flagged(self):
-        src = textwrap.dedent("""
+    def test_type_ignore_comment_flagged(self, tmp_path):
+        src = textwrap.dedent(
+            """
             import requests  # type: ignore
             r = requests.get("https://example.com")
-        """)
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -489,9 +524,9 @@ class TestHallucinationSurfaceMocked:
         result = hs_analyse([])
         assert result["score"] == pytest.approx(0.0)
 
-    def test_verify_comment_flagged(self):
+    def test_verify_comment_flagged(self, tmp_path):
         src = "x = some_lib.method()  # ⚠️ VERIFY: check this API exists\n"
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:

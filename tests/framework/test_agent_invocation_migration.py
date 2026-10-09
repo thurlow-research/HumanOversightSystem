@@ -528,8 +528,8 @@ MODEL="opus"
 OUT_DIR={str(out_dir)!r}
 mkdir -p "$OUT_DIR"
 TIMESTAMP="20260101T000000"
-OUTFILE="$(mktemp)"
-LEDGER="$(mktemp)"
+OUTFILE="$OUT_DIR/outfile.md"
+LEDGER="$OUT_DIR/ledger.jsonl"
 : > "$LEDGER"
 printf 'verdict: pending\\nhighest_severity: none\\nblocking_count: 0\\nnew_blocking_count: 0\\n\\n' > "$OUTFILE"
 run_opus() {{ printf '%s' {synthetic_opus_out!r}; }}

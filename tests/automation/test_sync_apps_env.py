@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
 BOOTSTRAP_DIR = Path(__file__).parent.parent.parent / "bootstrap"
@@ -40,8 +42,12 @@ def _run(config_dir, args=(), env_extra=None, input_text=None):
         env.update(env_extra)
     return subprocess.run(
         [BASH, str(SCRIPT), "--config-dir", str(config_dir), *args],
-        capture_output=True, text=True, timeout=30, check=False,
-        env=env, input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env=child_env(env),
+        input=input_text,
     )
 
 
@@ -168,10 +174,11 @@ class TestGapFill:
         # Feed in every key the shipped template defines up front (same
         # extraction regex the script itself uses to walk the template).
         full_body = [
-            line for line in TEMPLATE.read_text().splitlines()
+            line
+            for line in TEMPLATE.read_text().splitlines()
             if re.match(r'^[A-Z_][A-Z0-9_]*="', line)
         ]
-        apps_env = _write_apps_env(config_dir, "\n".join(full_body) + "\n")
+        _write_apps_env(config_dir, "\n".join(full_body) + "\n")
         r = _run(config_dir, args=["--non-interactive"])
         assert r.returncode == 0, r.stdout + r.stderr
         assert "nothing to do" in r.stdout
@@ -190,7 +197,10 @@ class TestGapFill:
         # unbound `$2` under `set -u` — it should fail with a clear message.
         r = subprocess.run(
             [BASH, str(SCRIPT), "--config-dir"],
-            capture_output=True, text=True, timeout=30, check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         assert r.returncode == 1
         assert "unbound variable" not in r.stderr

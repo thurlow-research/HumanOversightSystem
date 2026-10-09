@@ -18,6 +18,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "framework" / "run_tests_inner_loop.sh"
 
@@ -96,7 +98,7 @@ def _run(repo: Path, *args: str, env: dict | None = None) -> subprocess.Complete
         cwd=repo,
         capture_output=True,
         text=True,
-        env=full_env,
+        env=child_env(full_env),
     )
 
 

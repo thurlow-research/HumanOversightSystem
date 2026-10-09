@@ -24,13 +24,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _RUN_VALIDATORS = _REPO / "scripts" / "oversight" / "run_validators.sh"
 _OUT_REL = Path(".claudetmp") / "oversight" / "validators"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="bash unavailable"
-)
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 
 # run_gates.sh writes a JSON *list* of per-gate records.
 _GATE_RECORDS = [{"gate": "lint", "exit_code": 1, "suspended": False}]
@@ -44,10 +44,22 @@ def _run(tmp_path: Path) -> subprocess.CompletedProcess:
     (out_dir / "complexity.json").write_text('{"stale": "prior-run"}')
     (tmp_path / "sample.py").write_text("def f(x):\n    return x\n")
 
+    # semgrep (run by the static-analysis validator) creates $TMPDIR/semgrep-mcp at import time and
+    # nothing in its environment suppresses that, so the child gets a TMPDIR under this test's own
+    # tmp_path rather than the session-tmp the leak guard watches (#2054).
+    child_tmp = tmp_path / "child-tmp"
+    child_tmp.mkdir()
     return subprocess.run(
         ["bash", str(_RUN_VALIDATORS), "sample.py"],
         cwd=tmp_path,
-        env={"VALIDATOR_TIMEOUT": "10", "NETWORK_TIMEOUT": "5", "PATH": _path_env()},
+        env=child_env(
+            {
+                "VALIDATOR_TIMEOUT": "10",
+                "NETWORK_TIMEOUT": "5",
+                "PATH": _path_env(),
+                "TMPDIR": str(child_tmp),
+            }
+        ),
         capture_output=True,
         text=True,
     )

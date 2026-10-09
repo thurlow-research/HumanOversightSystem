@@ -26,6 +26,7 @@ import yaml
 
 from scripts.automation import dimension_registry_cli as cli
 from tests.automation.test_dimension_registry_data import REPO_ROOT, stage
+from tests.tmp_hygiene import child_env
 
 SWEEP_REL = "scripts/framework/run_post_change_sweep.sh"
 SWEEP_SRC = (REPO_ROOT / SWEEP_REL).read_text(encoding="utf-8")
@@ -110,7 +111,7 @@ def run(
         text=True,
         encoding="utf-8",
         cwd=str(tree),
-        env=full,
+        env=child_env(full),
         check=False,
     )
 

@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 from regions import parse
 
+from tests.tmp_hygiene import child_env
+
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = ROOT / "bootstrap" / "hos_install.sh"
 PACK_AGENT = "security-reviewer"
@@ -28,7 +30,7 @@ def _run_installer(target: Path, extra_args: list[str]) -> subprocess.CompletedP
         cmd,
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
         input="\n",
     )
 
@@ -130,10 +132,10 @@ def test_config_records_leaf_only_not_closure(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
 
     config_file = target / "scripts" / "framework" / "config.sh"
-    pack_lines = [
-        line for line in config_file.read_text().splitlines() if line.startswith("PACK=")
-    ]
-    assert pack_lines == ['PACK="testpack-dep"'], f"expected single leaf-only PACK= line: {pack_lines}"
+    pack_lines = [line for line in config_file.read_text().splitlines() if line.startswith("PACK=")]
+    assert pack_lines == [
+        'PACK="testpack-dep"'
+    ], f"expected single leaf-only PACK= line: {pack_lines}"
 
 
 @pytest.mark.slow
@@ -154,14 +156,12 @@ def test_pack_astro_resolves_node_dependency(tmp_path):
     # #1080: PACK:node (the dependency astro requires) must compose BEFORE
     # PACK:astro (the dependent/most-specific layer) so recency precedence
     # favors the specialization, not the base it specializes.
-    assert ids.index("PACK:node") < ids.index("PACK:astro"), (
-        f"node must precede astro for recency precedence: {ids}"
-    )
+    assert ids.index("PACK:node") < ids.index(
+        "PACK:astro"
+    ), f"node must precede astro for recency precedence: {ids}"
 
     config_file = target / "scripts" / "framework" / "config.sh"
-    pack_lines = [
-        line for line in config_file.read_text().splitlines() if line.startswith("PACK=")
-    ]
+    pack_lines = [line for line in config_file.read_text().splitlines() if line.startswith("PACK=")]
     assert pack_lines == ['PACK="astro"'], f"expected single leaf-only PACK= line: {pack_lines}"
 
 
@@ -183,6 +183,6 @@ def test_pack_astro_test_agent_regions_inject(tmp_path):
         assert "PACK:astro" in ids, f"{agent_name}: astro leaf region missing: {ids}"
         # #1080: node (base) must precede astro (dependent) — recency
         # precedence.
-        assert ids.index("PACK:node") < ids.index("PACK:astro"), (
-            f"{agent_name}: node must precede astro for recency precedence: {ids}"
-        )
+        assert ids.index("PACK:node") < ids.index(
+            "PACK:astro"
+        ), f"{agent_name}: node must precede astro for recency precedence: {ids}"

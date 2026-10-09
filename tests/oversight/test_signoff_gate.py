@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import load_module_from_path
+from tests.tmp_hygiene import child_env
 
 _GATE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "signoff_gate.py"
 sg = load_module_from_path("signoff_gate", _GATE_PATH, register=True)
@@ -100,7 +101,7 @@ def _git(repo: Path, *args: str, when: int | None = None) -> str:
         env["GIT_AUTHOR_DATE"] = stamp
         env["GIT_COMMITTER_DATE"] = stamp
     out = subprocess.run(
-        [_GIT, *args], cwd=repo, env=env, capture_output=True, text=True, check=True
+        [_GIT, *args], cwd=repo, env=child_env(env), capture_output=True, text=True, check=True
     )
     return out.stdout.strip()
 

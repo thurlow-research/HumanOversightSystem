@@ -28,11 +28,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
-ENSURE_VENV_SH = (
-    Path(__file__).parent.parent.parent / "scripts" / "oversight" / "ensure_venv.sh"
-)
+ENSURE_VENV_SH = Path(__file__).parent.parent.parent / "scripts" / "oversight" / "ensure_venv.sh"
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -94,13 +94,13 @@ class EnsureVenvEnv:
             # pip shebang must match VENV path for ensure_venv.sh stale check
             '  printf "#!%s/bin/python3\\n# stub pip\\n" "$P" > "$P/bin/pip"\n'
             '  chmod 755 "$P/bin/pip"\n'
-            '  exit 0\n'
-            'fi\n'
+            "  exit 0\n"
+            "fi\n"
             # python3 --version
             'if [[ "${1:-}" == "--version" ]]; then\n'
             '  echo "Python 3.10.0"\n'
-            '  exit 0\n'
-            'fi\n'
+            "  exit 0\n"
+            "fi\n"
             # python3 -c "import ..." smoke test
             'if [[ "${1:-}" == "-c" ]]; then\n'
             # HOS_TEST_SMOKE_FAIL_ONCE: if set and the named file exists, consume it
@@ -108,19 +108,19 @@ class EnsureVenvEnv:
             '  ONCE="${HOS_TEST_SMOKE_FAIL_ONCE:-}"\n'
             '  if [[ -n "$ONCE" && -f "$ONCE" ]]; then\n'
             '    rm -f "$ONCE"\n'
-            '    exit 1\n'
-            '  fi\n'
+            "    exit 1\n"
+            "  fi\n"
             '  exit "${HOS_TEST_SMOKE_EXIT:-0}"\n'
-            'fi\n'
+            "fi\n"
             # Fallback: pip-via-shebang invocations (python3 /path/to/pip install ...).
             # Log args so tests can assert which -r files were installed.
             '[[ -n "${HOS_TEST_PIP_CALL_LOG:-}" ]] && printf "%s\\n" "$*" >> "$HOS_TEST_PIP_CALL_LOG"\n'
             # HOS_TEST_PIP_FAIL_ON_SUBSTRING: fail only the pip call whose args
             # contain this substring (e.g. a specific requirements filename).
             'if [[ -n "${HOS_TEST_PIP_FAIL_ON_SUBSTRING:-}" && "$*" == *"${HOS_TEST_PIP_FAIL_ON_SUBSTRING}"* ]]; then\n'
-            '  exit 1\n'
-            'fi\n'
-            'exit 0\n',
+            "  exit 1\n"
+            "fi\n"
+            "exit 0\n",
         )
         self.pip_call_log = self.tmp / "pip_calls.log"
 
@@ -143,7 +143,9 @@ class EnsureVenvEnv:
             return False
         return bool(list(self.marker_dir.glob("oversight-venv-*")))
 
-    def write_project_requirements(self, name: str = "requirements.txt", content: str = "django\n") -> Path:
+    def write_project_requirements(
+        self, name: str = "requirements.txt", content: str = "django\n"
+    ) -> Path:
         """Drop a consumer-project requirements file at the fake repo root."""
         path = self.repo_root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +171,12 @@ class EnsureVenvEnv:
         if quiet:
             args.append("--quiet")
         return subprocess.run(
-            args, capture_output=True, text=True, timeout=30, check=False, env=env,
+            args,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
         )
 
 
@@ -233,9 +240,9 @@ class TestBrokenVenvAutoRepair:
         venv_env.create_fake_venv()
         r = venv_env.run(env_overrides={"HOS_TEST_SMOKE_EXIT": "1"})
         assert r.returncode != 0
-        assert not venv_env.marker_exists(), (
-            "marker must not be written when smoke test fails even after rebuild"
-        )
+        assert (
+            not venv_env.marker_exists()
+        ), "marker must not be written when smoke test fails even after rebuild"
 
 
 # ─────────────── Rebuild also fails — exit non-zero, no marker ─────────────
@@ -248,9 +255,9 @@ class TestRebuildFails:
     def test_rebuild_also_fails_no_marker(self, venv_env):
         """All smoke tests fail → marker NOT written."""
         venv_env.run(env_overrides={"HOS_TEST_SMOKE_EXIT": "1"})
-        assert not venv_env.marker_exists(), (
-            "marker must not be written when venv cannot be repaired"
-        )
+        assert (
+            not venv_env.marker_exists()
+        ), "marker must not be written when venv cannot be repaired"
 
 
 # ─────────── Consumer-project requirements installed on venv build (#956) ───────────
@@ -269,7 +276,9 @@ class TestProjectRequirements:
         r = venv_env.run()
         assert r.returncode == 0, r.stderr
         calls = venv_env.pip_calls()
-        assert any(str(req) in c for c in calls), f"expected a pip install -r {req} call, got: {calls}"
+        assert any(
+            str(req) in c for c in calls
+        ), f"expected a pip install -r {req} call, got: {calls}"
 
     def test_project_requirements_subdir_installed(self, venv_env):
         """requirements/*.txt files are installed too (same convention as expensive_gates_stub.sh)."""
@@ -277,7 +286,9 @@ class TestProjectRequirements:
         r = venv_env.run()
         assert r.returncode == 0, r.stderr
         calls = venv_env.pip_calls()
-        assert any(str(req) in c for c in calls), f"expected a pip install -r {req} call, got: {calls}"
+        assert any(
+            str(req) in c for c in calls
+        ), f"expected a pip install -r {req} call, got: {calls}"
 
     def test_healthy_existing_venv_does_not_reinstall_project_requirements(self, venv_env):
         """An already-built, healthy venv is left alone — no rebuild, no project pip calls."""

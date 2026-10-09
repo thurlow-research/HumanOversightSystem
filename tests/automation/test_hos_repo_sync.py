@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 GIT = shutil.which("git")
 
@@ -28,8 +30,12 @@ SCRIPT = Path(__file__).parent.parent.parent / "bootstrap" / "hos_repo_sync.sh"
 
 def _git(*args, cwd):
     return subprocess.run(
-        [GIT, *args], cwd=cwd, capture_output=True, text=True,
-        check=True, timeout=30,
+        [GIT, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
     )
 
 
@@ -40,8 +46,13 @@ def _run_script(repo_dir, state_dir, interval=None):
     if interval is not None:
         args.append(str(interval))
     return subprocess.run(
-        args, cwd=repo_dir, capture_output=True, text=True,
-        timeout=30, env=env, check=False,
+        args,
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=child_env(env),
+        check=False,
     )
 
 
@@ -57,8 +68,7 @@ class RepoEnv:
         self.clone = base / "clone"
         self.pusher = base / "pusher"
 
-        _git("init", "--bare", f"--initial-branch={default_branch}",
-             str(self.origin), cwd=base)
+        _git("init", "--bare", f"--initial-branch={default_branch}", str(self.origin), cwd=base)
 
         seed = base / "seed"
         _git("clone", str(self.origin), str(seed), cwd=base)
@@ -131,12 +141,10 @@ class TestFastForward:
         assert "fast-forwarded" in (r.stdout + r.stderr)
 
         local = _git("rev-parse", repo.default_branch, cwd=repo.clone).stdout.strip()
-        remote = _git("rev-parse", f"origin/{repo.default_branch}",
-                       cwd=repo.clone).stdout.strip()
+        remote = _git("rev-parse", f"origin/{repo.default_branch}", cwd=repo.clone).stdout.strip()
         assert local == remote
 
-        current = _git("rev-parse", "--abbrev-ref", "HEAD",
-                        cwd=repo.clone).stdout.strip()
+        current = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo.clone).stdout.strip()
         assert current == "feature", "must not touch the checked-out branch"
 
     def test_ff_only_when_default_branch_checked_out_and_clean(self, repo, state_dir):
@@ -147,8 +155,7 @@ class TestFastForward:
         assert "fast-forwarded" in (r.stdout + r.stderr)
 
         local = _git("rev-parse", "HEAD", cwd=repo.clone).stdout.strip()
-        remote = _git("rev-parse", f"origin/{repo.default_branch}",
-                       cwd=repo.clone).stdout.strip()
+        remote = _git("rev-parse", f"origin/{repo.default_branch}", cwd=repo.clone).stdout.strip()
         assert local == remote
 
     def test_skips_fast_forward_when_working_tree_dirty(self, repo, state_dir):

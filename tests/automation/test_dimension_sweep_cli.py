@@ -89,9 +89,13 @@ def _commit(root: Path, message: str) -> None:
     _git(root, "commit", "-q", "-m", message)
 
 
-def make_repo(root: Path, files: dict[str, str]) -> Path:
+def _init_base_repo(root: Path) -> Path:
+    """Build the identical base content, the `base` commit and the BASE tag from scratch.
+
+    `--template=` keeps git from copying ~8 KB of `.git/hooks` samples into every repo.
+    """
     root.mkdir(parents=True)
-    _git(root, "init", "-q", "-b", "main")
+    _git(root, "init", "-q", "--template=", "-b", "main")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
     _git(root, "config", "commit.gpgsign", "false")
@@ -109,6 +113,36 @@ def make_repo(root: Path, files: dict[str, str]) -> Path:
     (root / "README.md").write_text("base\n")
     _commit(root, "base")
     _git(root, "tag", BASE)
+    return root
+
+
+# The module-scoped base repo `make_repo` clones from (#2054): ~45 tests used to rebuild it with
+# `git init` + two commits each (~1.2 MiB per test dir). Bound by `_base_repo_template`.
+_TEMPLATE: Path | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _base_repo_template(tmp_path_factory):
+    global _TEMPLATE
+    _TEMPLATE = _init_base_repo(tmp_path_factory.mktemp("sweep-template") / "base")
+    yield
+    _TEMPLATE = None
+
+
+def make_repo(root: Path, files: dict[str, str]) -> Path:
+    """A repo at `root` holding the base commit (tagged BASE) plus one `change` commit.
+
+    Clones the module's base template when bound; otherwise (variant bases, or use outside the
+    fixture) builds the base from scratch.
+    """
+    if _TEMPLATE is None:
+        _init_base_repo(root)
+    else:
+        root.parent.mkdir(parents=True, exist_ok=True)
+        _git(_TEMPLATE, "clone", "-q", "--local", "--template=", str(_TEMPLATE), str(root))
+        _git(root, "config", "user.email", "t@example.com")
+        _git(root, "config", "user.name", "t")
+        _git(root, "config", "commit.gpgsign", "false")
     for rel, content in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)

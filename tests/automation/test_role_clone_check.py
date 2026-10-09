@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +37,7 @@ def _run_check(home: Path, role: str, repo_root: Path) -> subprocess.CompletedPr
         [BASH, "-c", script],
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
 
 

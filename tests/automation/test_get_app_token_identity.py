@@ -28,12 +28,12 @@ from pathlib import Path
 
 import pytest
 
-BASH = shutil.which("bash") or "/bin/bash"
-OPENSSL = shutil.which("openssl")
+from tests.tmp_hygiene import child_env
 
-GET_APP_TOKEN_SH = (
-    Path(__file__).parent.parent.parent / "bootstrap" / "get_app_token.sh"
-)
+BASH = shutil.which("bash") or "/bin/bash"
+OPENSSL = shutil.which("openssl") or "openssl"
+
+GET_APP_TOKEN_SH = Path(__file__).parent.parent.parent / "bootstrap" / "get_app_token.sh"
 
 OWNER = "test-org"
 
@@ -59,7 +59,8 @@ class TokenEnv:
         self.pem = self.config_dir / "worker.pem"
         subprocess.run(
             [OPENSSL, "genrsa", "-out", str(self.pem), "2048"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         self.pem.chmod(0o600)
 
@@ -75,8 +76,8 @@ class TokenEnv:
             '  *installations) printf \'[{"account":{"login":"%s"},"id":42}]\' "$SHIM_OWNER" ;;\n'
             '  */app)          printf \'{"slug":"%s"}\' "$SHIM_SLUG" ;;\n'
             '  *) echo "unexpected url: $url" >&2; exit 22 ;;\n'
-            'esac\n'
-            'exit 0\n',
+            "esac\n"
+            "exit 0\n",
         )
 
     def write_apps_env(self, declared_login: str | None) -> None:
@@ -101,7 +102,11 @@ class TokenEnv:
         }
         return subprocess.run(
             [BASH, str(GET_APP_TOKEN_SH), "--app", "worker"],
-            capture_output=True, text=True, timeout=60, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=child_env(env),
         )
 
 
@@ -116,7 +121,7 @@ def _exports(stdout: str) -> dict:
     out = {}
     for line in stdout.splitlines():
         if line.startswith("export ") and "=" in line:
-            key, _, val = line[len("export "):].partition("=")
+            key, _, val = line[len("export ") :].partition("=")
             out[key] = val.strip().strip("'")
     return out
 
@@ -168,7 +173,8 @@ class TokenEnvHuman:
         self.pem = self.config_dir / "human.pem"
         subprocess.run(
             [OPENSSL, "genrsa", "-out", str(self.pem), "2048"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         self.pem.chmod(0o600)
 
@@ -183,8 +189,8 @@ class TokenEnvHuman:
             '  *installations) printf \'[{"account":{"login":"%s"},"id":42}]\' "$SHIM_OWNER" ;;\n'
             '  */app)          printf \'{"slug":"%s"}\' "$SHIM_SLUG" ;;\n'
             '  *) echo "unexpected url: $url" >&2; exit 22 ;;\n'
-            'esac\n'
-            'exit 0\n',
+            "esac\n"
+            "exit 0\n",
         )
 
     def write_apps_env(self, declared_login: str | None) -> None:
@@ -209,7 +215,11 @@ class TokenEnvHuman:
         }
         return subprocess.run(
             [BASH, str(GET_APP_TOKEN_SH), "--app", "human"],
-            capture_output=True, text=True, timeout=60, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=child_env(env),
         )
 
 

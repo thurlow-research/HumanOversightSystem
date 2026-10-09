@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _GATES = _REPO / "scripts" / "oversight" / "gates"
 _SECURITY = _GATES / "security_scan.sh"
@@ -54,7 +56,7 @@ def _run(script: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess:
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
 
 

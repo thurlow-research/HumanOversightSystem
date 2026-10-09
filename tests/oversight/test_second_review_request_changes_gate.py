@@ -28,6 +28,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "run_second_review.sh"
 
@@ -63,9 +65,23 @@ def _run(tmp_path: Path, agy_json: str, score: str) -> subprocess.CompletedProce
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
 
     return subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py",
-         "--step", "3", "--tier", "MEDIUM", "--score", score],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=120, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "3",
+            "--tier",
+            "MEDIUM",
+            "--score",
+            score,
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=child_env(env),
     )
 
 

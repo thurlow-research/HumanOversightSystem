@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
+from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +37,7 @@ echo "REASON=$HOS_CFC_REASON"
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
-        [BASH, "-c", script], capture_output=True, text=True, timeout=15, env=env
+        [BASH, "-c", script], capture_output=True, text=True, timeout=15, env=child_env(env)
     )
 
 
@@ -112,8 +112,7 @@ def test_missing_enum_rejected(tmp_path):
 def test_multiple_enum_values_rejected(tmp_path):
     body = _write(
         tmp_path,
-        "**Executive summary:** foo **APPROVE** bar **OTHER**. "
-        "Not verified this run: nothing.",
+        "**Executive summary:** foo **APPROVE** bar **OTHER**. " "Not verified this run: nothing.",
     )
     result = _run("hos_cfc_check_overseer_format", body)
     assert "RC=1" in result.stdout

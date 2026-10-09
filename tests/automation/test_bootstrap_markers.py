@@ -24,11 +24,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
-HOS_BOOTSTRAP_SH = (
-    Path(__file__).parent.parent.parent / "bootstrap" / "hos_bootstrap.sh"
-)
+HOS_BOOTSTRAP_SH = Path(__file__).parent.parent.parent / "bootstrap" / "hos_bootstrap.sh"
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -70,16 +70,16 @@ class BootstrapEnv:
             # print(f'{major}.{minor}') — must output version string
             '  if [[ "$*" == *"print"* && "$*" == *"version_info"* ]]; then\n'
             '    echo "3.12"; exit 0\n'
-            '  fi\n'
+            "  fi\n"
             # sys.exit(0 if version >= (3,10)) — just needs correct exit code
             '  if [[ "$*" == *"version_info"* ]]; then exit 0; fi\n'
-            '  exit 0\n'
-            'fi\n'
+            "  exit 0\n"
+            "fi\n"
             'if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then\n'
             '  if [[ "${3:-}" == "--version" ]]; then echo "pip 23.0 from /usr 3.12"; exit 0; fi\n'
-            '  exit 0\n'
-            'fi\n'
-            'exit 0\n',
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
         )
 
         # Stub gh — version + auth status both succeed.
@@ -88,7 +88,7 @@ class BootstrapEnv:
             "#!/usr/bin/env bash\n"
             'if [[ "${1:-}" == "--version" ]]; then echo "gh version 2.40.0 (2024-01-01)"; exit 0; fi\n'
             'if [[ "${1:-}" == "auth" ]]; then exit 0; fi\n'
-            'exit 0\n',
+            "exit 0\n",
         )
 
         # Stub md5sum (used by ensure_venv for the repo hash; not called by bootstrap
@@ -117,8 +117,9 @@ class BootstrapEnv:
     def marker(self) -> Path:
         return self.marker_dir / "bootstrap"
 
-    def run(self, extra_args=None, env_overrides=None,
-            python_stub=None) -> subprocess.CompletedProcess:
+    def run(
+        self, extra_args=None, env_overrides=None, python_stub=None
+    ) -> subprocess.CompletedProcess:
         """
         Run hos_bootstrap.sh with the stubbed environment.
 
@@ -141,8 +142,12 @@ class BootstrapEnv:
         if extra_args:
             args += list(extra_args)
         return subprocess.run(
-            args, capture_output=True, text=True, timeout=60,
-            check=False, env=env,
+            args,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=child_env(env),
         )
 
 
@@ -179,21 +184,19 @@ class TestBootstrapMarkerWritten:
         """
         # scancode is absent from our stub PATH — that sets DEGRADED="ScanCode ..."
         r = bootstrap.run()
-        assert "DEGRADED" in (r.stdout + r.stderr) or r.returncode == 0, (
-            "expected either DEGRADED warning or clean exit; got neither"
-        )
+        assert (
+            "DEGRADED" in (r.stdout + r.stderr) or r.returncode == 0
+        ), "expected either DEGRADED warning or clean exit; got neither"
         # Regardless of DEGRADED, the marker must be written
-        assert bootstrap.marker.exists(), (
-            "bootstrap marker must be written even when running in DEGRADED state"
-        )
+        assert (
+            bootstrap.marker.exists()
+        ), "bootstrap marker must be written even when running in DEGRADED state"
 
     def test_dry_run_does_not_write_marker(self, bootstrap):
         """--dry-run must NOT write the marker (the marker write is wrapped in ! $DRY_RUN)."""
         r = bootstrap.run(extra_args=["--dry-run"])
         assert r.returncode == 0, r.stdout + r.stderr
-        assert not bootstrap.marker.exists(), (
-            "marker must not be written in --dry-run mode"
-        )
+        assert not bootstrap.marker.exists(), "marker must not be written in --dry-run mode"
 
 
 # ─────────────── Marker NOT written when bootstrap has errors ───────────────
@@ -208,9 +211,7 @@ class TestBootstrapMarkerNotWrittenOnError:
             "exit 0\n"
         )
         r = bootstrap.run(python_stub=old_python)
-        assert r.returncode == 1, (
-            "bootstrap must exit 1 when python3 3.10+ is missing"
-        )
-        assert not bootstrap.marker.exists(), (
-            "marker must NOT be written when bootstrap exits with errors"
-        )
+        assert r.returncode == 1, "bootstrap must exit 1 when python3 3.10+ is missing"
+        assert (
+            not bootstrap.marker.exists()
+        ), "marker must NOT be written when bootstrap exits with errors"

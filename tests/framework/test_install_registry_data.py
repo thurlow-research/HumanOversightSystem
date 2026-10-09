@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from scripts.automation.lib import dimension_registry as dr
+from tests.tmp_hygiene import child_env
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = ROOT / "bootstrap" / "hos_install.sh"
@@ -63,7 +64,7 @@ def _run_installer(target: Path, *extra_args: str) -> subprocess.CompletedProces
         ["bash", str(INSTALL_SH), "--local", str(target), *extra_args],
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
         input="\n",
     )
 

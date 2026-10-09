@@ -19,6 +19,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "framework" / "validate_scripts.sh"
 COMMITTED_LEDGER = REPO_ROOT / "scripts" / "framework" / "scripts-review-ledger.jsonl"
@@ -27,7 +29,7 @@ COMMITTED_LEDGER = REPO_ROOT / "scripts" / "framework" / "scripts-review-ledger.
 def _run(args, ledger_path, cwd):
     env = {**os.environ, "HOS_SCRIPTS_REVIEW_LEDGER": str(ledger_path)}
     return subprocess.run(
-        ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True
+        ["bash", str(SCRIPT), *args], cwd=cwd, env=child_env(env), capture_output=True, text=True
     )
 
 

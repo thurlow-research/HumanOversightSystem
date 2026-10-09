@@ -17,6 +17,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "run_second_review.sh"
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -107,7 +109,7 @@ def _run(tmp_path: Path, agy_stdout: str, score: str = "0.5") -> subprocess.Comp
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -219,7 +221,7 @@ def test_codex_plain_json_review_is_unaffected_by_envelope_unwrapping(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
     fields, artifact = _artifact_fields(tmp_path, "1737codex")
 
@@ -346,7 +348,7 @@ def test_codex_path_still_always_estimates_never_actual(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
     entry = _last_usage_entry(tmp_path, "codex")
     assert entry["estimated"] is True, entry

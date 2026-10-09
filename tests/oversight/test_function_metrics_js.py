@@ -4,14 +4,15 @@ Integration tests for function_metrics_js.py (S5, ADR-032 D5).
 tree-sitter is an in-process library (unlike radon's subprocess), so these
 tests exercise the real parser against real temp files rather than mocking.
 """
+
 import os
-import tempfile
 import textwrap
 
 import pytest
-
 from function_metrics_js import analyse_files as fmjs_analyse
 from schema import WEIGHTS
+
+from tests.tmp_hygiene import named_temp
 
 SIMPLE_TS = textwrap.dedent(
     """
@@ -47,16 +48,16 @@ CONCERNING_TS = textwrap.dedent(
 GARBAGE_TS = "function broken( {{{ !!! not real syntax at all $$$ ###"
 
 
-def _tmpfile(content: str, suffix: str = ".ts") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+def _tmpfile(tmp_path, content: str, suffix: str = ".ts") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
 
 
 class TestFunctionMetricsJs:
-    def test_simple_function_scores_low(self):
-        path = _tmpfile(SIMPLE_TS)
+    def test_simple_function_scores_low(self, tmp_path):
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = fmjs_analyse([path])
             assert result["error"] is None
@@ -65,8 +66,8 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_concerning_function_trips_every_threshold(self):
-        path = _tmpfile(CONCERNING_TS)
+    def test_concerning_function_trips_every_threshold(self, tmp_path):
+        path = _tmpfile(tmp_path, CONCERNING_TS)
         try:
             result = fmjs_analyse([path])
             assert result["error"] is None
@@ -79,9 +80,9 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_concerning_file_scores_higher_than_simple(self):
-        simple = _tmpfile(SIMPLE_TS)
-        concerning = _tmpfile(CONCERNING_TS)
+    def test_concerning_file_scores_higher_than_simple(self, tmp_path):
+        simple = _tmpfile(tmp_path, SIMPLE_TS)
+        concerning = _tmpfile(tmp_path, CONCERNING_TS)
         try:
             r_simple = fmjs_analyse([simple])
             r_concerning = fmjs_analyse([concerning])
@@ -90,7 +91,7 @@ class TestFunctionMetricsJs:
             os.unlink(simple)
             os.unlink(concerning)
 
-    def test_this_parameter_excluded_from_param_count(self):
+    def test_this_parameter_excluded_from_param_count(self, tmp_path):
         src = textwrap.dedent(
             """
             class C {
@@ -100,16 +101,16 @@ class TestFunctionMetricsJs:
             }
             """
         )
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = fmjs_analyse([path])
             assert result["raw_value"]["high_param_count"] == 0
         finally:
             os.unlink(path)
 
-    def test_unparenthesized_arrow_param_counts_as_one(self):
+    def test_unparenthesized_arrow_param_counts_as_one(self, tmp_path):
         src = "const h = x => x + 1;\n"
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = fmjs_analyse([path])
             assert result["raw_value"]["total_functions"] == 1
@@ -117,7 +118,7 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_nested_function_scored_separately_not_folded_into_outer(self):
+    def test_nested_function_scored_separately_not_folded_into_outer(self, tmp_path):
         src = textwrap.dedent(
             """
             function outer(a: number) {
@@ -130,7 +131,7 @@ class TestFunctionMetricsJs:
             }
             """
         )
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = fmjs_analyse([path])
             # inner() has 3 return paths, nesting=1; outer() has 1 return path
@@ -140,8 +141,8 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_all_unparseable_excludes_dimension(self):
-        path = _tmpfile(GARBAGE_TS)
+    def test_all_unparseable_excludes_dimension(self, tmp_path):
+        path = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = fmjs_analyse([path])
             assert result["error"] is not None
@@ -149,9 +150,9 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_partial_unparseable_keeps_signal_and_flags(self):
-        good = _tmpfile(CONCERNING_TS)
-        bad = _tmpfile(GARBAGE_TS)
+    def test_partial_unparseable_keeps_signal_and_flags(self, tmp_path):
+        good = _tmpfile(tmp_path, CONCERNING_TS)
+        bad = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = fmjs_analyse([good, bad])
             assert result["error"] is None
@@ -167,7 +168,7 @@ class TestFunctionMetricsJs:
         assert result["score"] == pytest.approx(0.0)
         assert result["dimension"] == "function_metrics"
 
-    def test_astro_extracts_frontmatter_and_script_with_correct_lines(self):
+    def test_astro_extracts_frontmatter_and_script_with_correct_lines(self, tmp_path):
         src = textwrap.dedent(
             """\
             ---
@@ -183,7 +184,7 @@ class TestFunctionMetricsJs:
             </script>
             """
         )
-        path = _tmpfile(src, suffix=".astro")
+        path = _tmpfile(tmp_path, src, suffix=".astro")
         try:
             result = fmjs_analyse([path])
             assert result["error"] is None
@@ -191,7 +192,7 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_tsx_jsx_syntax_parses_without_error(self):
+    def test_tsx_jsx_syntax_parses_without_error(self, tmp_path):
         src = textwrap.dedent(
             """
             function Widget(props: { on: boolean }) {
@@ -199,7 +200,7 @@ class TestFunctionMetricsJs:
             }
             """
         )
-        path = _tmpfile(src, suffix=".tsx")
+        path = _tmpfile(tmp_path, src, suffix=".tsx")
         try:
             result = fmjs_analyse([path])
             assert result["error"] is None
@@ -207,8 +208,8 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_result_envelope(self):
-        path = _tmpfile(SIMPLE_TS)
+    def test_result_envelope(self, tmp_path):
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = fmjs_analyse([path])
             for key in (
@@ -225,9 +226,9 @@ class TestFunctionMetricsJs:
         finally:
             os.unlink(path)
 
-    def test_dimension_and_weight_match_python_sibling(self):
+    def test_dimension_and_weight_match_python_sibling(self, tmp_path):
         # AC-3: same dimension string + WEIGHTS key as function_metrics.py.
-        path = _tmpfile(SIMPLE_TS)
+        path = _tmpfile(tmp_path, SIMPLE_TS)
         try:
             result = fmjs_analyse([path])
             assert result["dimension"] == "function_metrics"

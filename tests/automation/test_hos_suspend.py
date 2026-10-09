@@ -1,10 +1,13 @@
 """Tests for bin/hos-suspend — the project suspension CLI (#778)."""
+
 import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 HOS_SUSPEND = Path(__file__).parent.parent.parent / "bin" / "hos-suspend"
@@ -21,7 +24,11 @@ def _run(args, tmp_home, tmp_state=None, extra_env=None):
         env.update(extra_env)
     return subprocess.run(
         [BASH, str(HOS_SUSPEND)] + args,
-        capture_output=True, text=True, check=False, env=env, timeout=10,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env(env),
+        timeout=10,
     )
 
 
@@ -32,14 +39,12 @@ def env(tmp_path):
     state = tmp_path / "state"
     conf = home / ".config" / "hos" / "projects.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text(
-        f"hos_config_dir={home}/.config/hos\n"
-        f"hos_worker_root={tmp_path}/repo\n"
-    )
+    conf.write_text(f"hos_config_dir={home}/.config/hos\n" f"hos_worker_root={tmp_path}/repo\n")
     return home, state
 
 
 # ────────────────────────────── suspend ──────────────────────────────────────
+
 
 class TestSuspend:
     def test_creates_marker_file(self, env):
@@ -100,6 +105,7 @@ class TestSuspend:
 
 # ────────────────────────────── clear ────────────────────────────────────────
 
+
 class TestClear:
     def test_removes_existing_marker(self, env):
         home, state = env
@@ -130,6 +136,7 @@ class TestClear:
 
 # ────────────────────────────── list ─────────────────────────────────────────
 
+
 class TestList:
     def test_empty_shows_none_suspended(self, env):
         home, state = env
@@ -151,7 +158,9 @@ class TestList:
         home, state = env
         marker = state / "suspend" / "hos"
         marker.parent.mkdir(parents=True)
-        marker.write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z", "until": "2099-12-31"}))
+        marker.write_text(
+            json.dumps({"suspended_at": "2026-06-23T00:00:00Z", "until": "2099-12-31"})
+        )
         r = _run(["--list"], home, state)
         assert r.returncode == 0, r.stderr
         assert "2099-12-31" in r.stdout
@@ -160,7 +169,9 @@ class TestList:
         home, state = env
         marker = state / "suspend" / "hos"
         marker.parent.mkdir(parents=True)
-        marker.write_text(json.dumps({"suspended_at": "2026-01-01T00:00:00Z", "until": "2026-01-02"}))
+        marker.write_text(
+            json.dumps({"suspended_at": "2026-01-01T00:00:00Z", "until": "2026-01-02"})
+        )
         r = _run(["--list"], home, state)
         assert r.returncode == 0, r.stderr
         assert "EXPIRED" in r.stdout

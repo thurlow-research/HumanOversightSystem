@@ -6,24 +6,21 @@ against real temp files. The npm-registry dependency-existence check hits
 the network, so those tests mock urllib.request.urlopen — real registry
 calls have no place in CI.
 """
+
 from __future__ import annotations
 
 import json
 import os
-import tempfile
 import textwrap
 import urllib.error
 from io import BytesIO
 from unittest.mock import patch
 
 import pytest
-
-from hallucination_surface_js import (
-    _check_dependencies_exist,
-    _npm_package_exists,
-    analyse_files,
-)
+from hallucination_surface_js import _check_dependencies_exist, _npm_package_exists, analyse_files
 from schema import WEIGHTS
+
+from tests.tmp_hygiene import make_dir, named_temp
 
 RISKY_TS = textwrap.dedent(
     """
@@ -48,18 +45,18 @@ CLEAN_TS = textwrap.dedent(
 GARBAGE_TS = "function broken( {{{ !!! not real syntax at all $$$ ###"
 
 
-def _tmpfile(content: str, suffix: str = ".ts") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+def _tmpfile(tmp_path, content: str, suffix: str = ".ts") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
 
 
-def _tmp_pkg_json(deps: dict, dev_deps: dict | None = None) -> str:
+def _tmp_pkg_json(tmp_path, deps: dict, dev_deps: dict | None = None) -> str:
     payload = {"name": "x", "version": "1.0.0", "dependencies": deps}
     if dev_deps:
         payload["devDependencies"] = dev_deps
-    d = tempfile.mkdtemp()
+    d = make_dir(tmp_path)
     path = os.path.join(d, "package.json")
     with open(path, "w") as f:
         json.dump(payload, f)
@@ -67,8 +64,8 @@ def _tmp_pkg_json(deps: dict, dev_deps: dict | None = None) -> str:
 
 
 class TestApiScan:
-    def test_clean_file_scores_zero(self):
-        path = _tmpfile(CLEAN_TS)
+    def test_clean_file_scores_zero(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = analyse_files([path])
             assert result["error"] is None
@@ -77,8 +74,8 @@ class TestApiScan:
         finally:
             os.unlink(path)
 
-    def test_risky_apis_detected(self):
-        path = _tmpfile(RISKY_TS)
+    def test_risky_apis_detected(self, tmp_path):
+        path = _tmpfile(tmp_path, RISKY_TS)
         try:
             result = analyse_files([path])
             assert result["error"] is None
@@ -92,8 +89,8 @@ class TestApiScan:
         finally:
             os.unlink(path)
 
-    def test_dimension_and_weight_match_python_sibling(self):
-        path = _tmpfile(CLEAN_TS)
+    def test_dimension_and_weight_match_python_sibling(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = analyse_files([path])
             assert result["dimension"] == "hallucination_surface"
@@ -101,8 +98,8 @@ class TestApiScan:
         finally:
             os.unlink(path)
 
-    def test_unparseable_file_excluded_not_scored_clean(self):
-        path = _tmpfile(GARBAGE_TS)
+    def test_unparseable_file_excluded_not_scored_clean(self, tmp_path):
+        path = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = analyse_files([path])
             # Garbage still parses to *something* under tree-sitter (error
@@ -112,7 +109,7 @@ class TestApiScan:
         finally:
             os.unlink(path)
 
-    def test_astro_frontmatter_scanned(self):
+    def test_astro_frontmatter_scanned(self, tmp_path):
         astro_src = textwrap.dedent(
             """\
             ---
@@ -121,7 +118,7 @@ class TestApiScan:
             <div>{posts.length}</div>
             """
         )
-        path = _tmpfile(astro_src, suffix=".astro")
+        path = _tmpfile(tmp_path, astro_src, suffix=".astro")
         try:
             result = analyse_files([path])
             patterns = {f["pattern"] for f in result["raw_value"]["findings"]}
@@ -163,9 +160,7 @@ class TestNpmPackageExists:
 class TestCheckDependenciesExist:
     def test_missing_package_flagged(self):
         deps = {"totally-hallucinated-pkg": ("^1.0.0", "package.json")}
-        with patch(
-            "hallucination_surface_js._npm_package_exists", return_value=False
-        ):
+        with patch("hallucination_surface_js._npm_package_exists", return_value=False):
             result = _check_dependencies_exist(deps)
         assert len(result["missing"]) == 1
         assert result["missing"][0]["name"] == "totally-hallucinated-pkg"
@@ -199,25 +194,21 @@ class TestCheckDependenciesExist:
 
 
 class TestPackageJsonIntegration:
-    def test_missing_dependency_scores_and_flags(self):
-        pkg_path = _tmp_pkg_json({"totally-hallucinated-pkg-xyz": "^1.0.0"})
+    def test_missing_dependency_scores_and_flags(self, tmp_path):
+        pkg_path = _tmp_pkg_json(tmp_path, {"totally-hallucinated-pkg-xyz": "^1.0.0"})
         try:
-            with patch(
-                "hallucination_surface_js._npm_package_exists", return_value=False
-            ):
+            with patch("hallucination_surface_js._npm_package_exists", return_value=False):
                 result = analyse_files([pkg_path])
             assert result["error"] is None
             assert result["raw_value"]["missing_package_count"] == 1
             assert result["score"] > 0.0
-            assert any(
-                "totally-hallucinated-pkg-xyz" in item for item in result["checklist_items"]
-            )
+            assert any("totally-hallucinated-pkg-xyz" in item for item in result["checklist_items"])
         finally:
             os.unlink(pkg_path)
             os.rmdir(os.path.dirname(pkg_path))
 
-    def test_all_dependencies_exist_scores_zero(self):
-        pkg_path = _tmp_pkg_json({"react": "^18.0.0"})
+    def test_all_dependencies_exist_scores_zero(self, tmp_path):
+        pkg_path = _tmp_pkg_json(tmp_path, {"react": "^18.0.0"})
         try:
             with patch("hallucination_surface_js._npm_package_exists", return_value=True):
                 result = analyse_files([pkg_path])
@@ -228,8 +219,8 @@ class TestPackageJsonIntegration:
             os.unlink(pkg_path)
             os.rmdir(os.path.dirname(pkg_path))
 
-    def test_no_dependencies_is_clean_not_error(self):
-        pkg_path = _tmp_pkg_json({})
+    def test_no_dependencies_is_clean_not_error(self, tmp_path):
+        pkg_path = _tmp_pkg_json(tmp_path, {})
         try:
             result = analyse_files([pkg_path])
             assert result["error"] is None
@@ -238,8 +229,8 @@ class TestPackageJsonIntegration:
             os.unlink(pkg_path)
             os.rmdir(os.path.dirname(pkg_path))
 
-    def test_all_unresolved_and_no_source_excludes_dimension(self):
-        pkg_path = _tmp_pkg_json({"react": "^18.0.0"})
+    def test_all_unresolved_and_no_source_excludes_dimension(self, tmp_path):
+        pkg_path = _tmp_pkg_json(tmp_path, {"react": "^18.0.0"})
         try:
             with patch("hallucination_surface_js._npm_package_exists", return_value=None):
                 result = analyse_files([pkg_path])
@@ -248,8 +239,8 @@ class TestPackageJsonIntegration:
             os.unlink(pkg_path)
             os.rmdir(os.path.dirname(pkg_path))
 
-    def test_invalid_json_flagged_as_error_detail(self):
-        d = tempfile.mkdtemp()
+    def test_invalid_json_flagged_as_error_detail(self, tmp_path):
+        d = make_dir(tmp_path)
         path = os.path.join(d, "package.json")
         with open(path, "w") as f:
             f.write("{not valid json")
@@ -260,13 +251,11 @@ class TestPackageJsonIntegration:
             os.unlink(path)
             os.rmdir(d)
 
-    def test_combined_source_and_package_json(self):
-        src_path = _tmpfile(RISKY_TS)
-        pkg_path = _tmp_pkg_json({"totally-hallucinated-pkg-xyz": "^1.0.0"})
+    def test_combined_source_and_package_json(self, tmp_path):
+        src_path = _tmpfile(tmp_path, RISKY_TS)
+        pkg_path = _tmp_pkg_json(tmp_path, {"totally-hallucinated-pkg-xyz": "^1.0.0"})
         try:
-            with patch(
-                "hallucination_surface_js._npm_package_exists", return_value=False
-            ):
+            with patch("hallucination_surface_js._npm_package_exists", return_value=False):
                 result = analyse_files([src_path, pkg_path])
             assert result["error"] is None
             assert result["raw_value"]["version_sensitive_count"] > 0
@@ -288,10 +277,10 @@ class TestMain:
         out = json.loads(capsys.readouterr().out)
         assert out["error"] == "no input files"
 
-    def test_main_accepts_package_json_by_basename(self, capsys, monkeypatch):
+    def test_main_accepts_package_json_by_basename(self, tmp_path, capsys, monkeypatch):
         import sys
 
-        pkg_path = _tmp_pkg_json({})
+        pkg_path = _tmp_pkg_json(tmp_path, {})
         try:
             monkeypatch.setattr(sys, "argv", ["hallucination_surface_js.py", pkg_path])
             import hallucination_surface_js

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPO_ROOT / "scripts" / "oversight" / "lib" / "resolve_node_tool.sh"
 BASH = shutil.which("bash") or "/bin/bash"
@@ -39,7 +41,7 @@ def _run(cwd: Path, tool: str, path_env: str | None = None) -> subprocess.Comple
         # fail to launch at all rather than exercising the tier under test.
         env["PATH"] = f"{path_env}:{os.path.dirname(BASH)}"
     return subprocess.run(
-        [BASH, "-c", script], cwd=str(cwd), capture_output=True, text=True, env=env
+        [BASH, "-c", script], cwd=str(cwd), capture_output=True, text=True, env=child_env(env)
     )
 
 

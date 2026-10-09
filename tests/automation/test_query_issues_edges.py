@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUERY_ISSUES_SH = REPO_ROOT / "bootstrap" / "query_issues.sh"
@@ -147,7 +149,7 @@ class Harness:
             capture_output=True,
             text=True,
             timeout=60,
-            env=env,
+            env=child_env(env),
         )
 
     def call_log(self):
@@ -398,7 +400,7 @@ def test_edge_mode_gh_call_is_bounded(h):
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=child_env(env),
     )
     assert r.returncode == 1
     assert r.stdout == ""

@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 
-GIT_CREDS_SH = (
-    Path(__file__).parent.parent.parent / "bin" / "lib" / "git-credentials.sh"
-)
+GIT_CREDS_SH = Path(__file__).parent.parent.parent / "bin" / "lib" / "git-credentials.sh"
 
 # A `gh` stub speaking the credential-helper protocol: on `auth git-credential
 # get` it prints a sentinel token. Used to prove git invokes *this* helper and
@@ -43,7 +43,7 @@ def _bash(script: str, env: dict, timeout: int = 10) -> subprocess.CompletedProc
         text=True,
         timeout=timeout,
         check=False,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -60,7 +60,8 @@ def isolated_home(tmp_path):
             del env[k]
     subprocess.run(
         ["git", "config", "--global", "credential.helper", "credential-manager-core"],
-        env=env, check=True,
+        env=child_env(env),
+        check=True,
     )
     return env, home
 
@@ -128,8 +129,7 @@ def test_token_never_materialized_in_config(isolated_home, fake_gh):
     config value (gh supplies it over stdin at fill time)."""
     env, _ = isolated_home
     result = _bash(
-        f'hos_configure_git_credentials "{fake_gh}"\n'
-        "env | grep '^GIT_CONFIG_VALUE_'\n",
+        f'hos_configure_git_credentials "{fake_gh}"\n' "env | grep '^GIT_CONFIG_VALUE_'\n",
         env,
     )
     assert result.returncode == 0, result.stderr
@@ -145,8 +145,7 @@ def test_fails_when_gh_absent(isolated_home):
     env, _ = isolated_home
     env["PATH"] = "/nonexistent"
     result = _bash(
-        'hos_configure_git_credentials ""\n'
-        'echo "COUNT=[${GIT_CONFIG_COUNT:-unset}]"\n',
+        'hos_configure_git_credentials ""\n' 'echo "COUNT=[${GIT_CONFIG_COUNT:-unset}]"\n',
         env,
     )
     assert "COUNT=[unset]" in result.stdout

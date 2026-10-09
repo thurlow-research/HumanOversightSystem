@@ -6,31 +6,39 @@ Primary mutation targets:
   - _count_logical_ops(): counts of and/or operators and ternary expressions
   - _FunctionRNVisitor: depth tracking, nesting increment application
 """
+
 import ast
+import os
 import sys
 import textwrap
+
 import pytest
 from rn_calculator import (
-    nesting_increment,
+    _NESTING_B,
+    _NESTING_TABLE,
+    _NESTING_W,
     _count_logical_ops,
     _FunctionRNVisitor,
     analyse_files,
-    _NESTING_TABLE,
-    _NESTING_W,
-    _NESTING_B,
+    nesting_increment,
 )
 
+from tests.tmp_hygiene import named_temp
 
 # ── nesting_increment() ──────────────────────────────────────────────────────
 
+
 class TestNestingIncrement:
-    @pytest.mark.parametrize("depth,expected", [
-        (0, 0.0),
-        (1, 1.0),
-        (2, 3.0),
-        (3, 4.8),
-        (4, 7.1),
-    ])
+    @pytest.mark.parametrize(
+        "depth,expected",
+        [
+            (0, 0.0),
+            (1, 1.0),
+            (2, 3.0),
+            (3, 4.8),
+            (4, 7.1),
+        ],
+    )
     def test_table_values(self, depth, expected):
         assert nesting_increment(depth) == pytest.approx(expected)
 
@@ -50,8 +58,9 @@ class TestNestingIncrement:
 
     def test_monotone_in_table(self):
         for d in range(len(_NESTING_TABLE) - 1):
-            assert _NESTING_TABLE[d] <= _NESTING_TABLE[d + 1], \
-                f"nesting table not monotone at depth {d}"
+            assert (
+                _NESTING_TABLE[d] <= _NESTING_TABLE[d + 1]
+            ), f"nesting table not monotone at depth {d}"
 
     def test_linear_exceeds_table_max_beyond_table(self):
         # For depth >> table, linear formula should exceed table's max
@@ -59,6 +68,7 @@ class TestNestingIncrement:
 
 
 # ── _count_logical_ops() ─────────────────────────────────────────────────────
+
 
 def _parse_stmt(src: str) -> ast.AST:
     """Parse a single statement and return the first statement node."""
@@ -112,6 +122,7 @@ class TestCountLogicalOps:
 
 # ── _FunctionRNVisitor — depth tracking and RN accumulation ──────────────────
 
+
 def _analyse_source(src: str) -> list[dict]:
     """Parse src and run _FunctionRNVisitor on the first function def.
 
@@ -128,18 +139,22 @@ def _analyse_source(src: str) -> list[dict]:
 
 class TestFunctionRNVisitor:
     def test_empty_function_no_statements(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f():
                 pass
-        """)
+        """
+        )
         assert stmts == []
 
     def test_single_if_at_depth_zero(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x):
                 if x:
                     pass
-        """)
+        """
+        )
         assert len(stmts) == 1
         s = stmts[0]
         assert s["nesting_depth"] == 0
@@ -147,12 +162,14 @@ class TestFunctionRNVisitor:
         assert s["rn"] == pytest.approx(1.0)
 
     def test_nested_if_increments_depth(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x, y):
                 if x:
                     if y:
                         pass
-        """)
+        """
+        )
         assert len(stmts) == 2
         assert stmts[0]["nesting_depth"] == 0
         assert stmts[1]["nesting_depth"] == 1
@@ -162,112 +179,136 @@ class TestFunctionRNVisitor:
         assert stmts[1]["rn"] == pytest.approx(2.0)
 
     def test_if_with_and_adds_logical_op(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x, y):
                 if x and y:
                     pass
-        """)
+        """
+        )
         # RN = nesting_increment(0) + 1 (flow-break) + 1 (logical op) = 2.0
         assert stmts[0]["rn"] == pytest.approx(2.0)
 
     def test_for_loop_at_depth_zero(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(items):
                 for item in items:
                     pass
-        """)
+        """
+        )
         assert len(stmts) == 1
         # for loop: nesting_increment(0) + 1 = 1.0
         assert stmts[0]["rn"] == pytest.approx(1.0)
 
     def test_depth_restored_after_block(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x, y):
                 if x:
                     pass
                 if y:
                     pass
-        """)
+        """
+        )
         # Both ifs at depth 0 — depth must be restored between them
         assert stmts[0]["nesting_depth"] == 0
         assert stmts[1]["nesting_depth"] == 0
 
     def test_else_clause_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x):
                 if x:
                     pass
                 else:
                     pass
-        """)
+        """
+        )
         # if is recorded; else increments total_rn but not via _record
         assert len(stmts) >= 1
 
     def test_elif_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(x, y):
                 if x:
                     pass
                 elif y:
                     pass
-        """)
+        """
+        )
         # if + elif both recorded
         assert len(stmts) == 2
 
     def test_with_statement_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f():
                 with open("x") as fh:
                     pass
-        """)
+        """
+        )
         assert len(stmts) == 1
         assert stmts[0]["type"] == "With"
 
     def test_for_with_else_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(items):
                 for item in items:
                     pass
                 else:
                     pass
-        """)
+        """
+        )
         assert len(stmts) >= 1
         assert stmts[0]["type"] == "For"
 
     def test_while_with_else_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f(cond):
                 while cond:
                     pass
                 else:
                     pass
-        """)
+        """
+        )
         assert len(stmts) >= 1
         assert stmts[0]["type"] == "While"
 
     def test_try_except_handler_recorded(self):
-        stmts = _analyse_source("""
+        stmts = _analyse_source(
+            """
             def f():
                 try:
                     risky()
                 except ValueError:
                     pass
-        """)
+        """
+        )
         assert any(s["type"] == "ExceptHandler" for s in stmts)
 
     def test_total_rn_accumulates(self):
-        stmts = _analyse_source("""
+        _analyse_source(
+            """
             def f(x, y):
                 if x:
                     if y:
                         pass
-        """)
-        tree = ast.parse(textwrap.dedent("""
+        """
+        )
+        tree = ast.parse(
+            textwrap.dedent(
+                """
             def f(x, y):
                 if x:
                     if y:
                         pass
-        """))
+        """
+            )
+        )
         func = tree.body[0]
         visitor = _FunctionRNVisitor("t.py", func.name, func.lineno)
         for stmt in func.body:
@@ -278,12 +319,10 @@ class TestFunctionRNVisitor:
 
 # ── analyse_file() integration — uses actual temp files ──────────────────────
 
-import tempfile
-import os
 
 class TestAnalyseFile:
-    def test_empty_file_returns_zero_score(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_empty_file_returns_zero_score(self, tmp_path):
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("")
             path = f.name
         try:
@@ -293,14 +332,16 @@ class TestAnalyseFile:
         finally:
             os.unlink(path)
 
-    def test_simple_function_runs_without_error(self):
-        src = textwrap.dedent("""
+    def test_simple_function_runs_without_error(self, tmp_path):
+        src = textwrap.dedent(
+            """
             def greet(name):
                 if name:
                     return f"hello {name}"
                 return "hello"
-        """)
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -310,8 +351,8 @@ class TestAnalyseFile:
         finally:
             os.unlink(path)
 
-    def test_invalid_python_returns_error(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_invalid_python_returns_error(self, tmp_path):
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("def broken(\n")
             path = f.name
         try:
@@ -320,22 +361,24 @@ class TestAnalyseFile:
         finally:
             os.unlink(path)
 
-    def test_partial_parse_failure_keeps_signal_and_flags(self):
+    def test_partial_parse_failure_keeps_signal_and_flags(self, tmp_path):
         # #979: one parseable file with a real function + one broken file → keep
         # the RN signal (no exclusion), but flag the unparseable file so a
         # reviewer confirms it hides no high-RN functions.
-        src = textwrap.dedent("""
+        src = textwrap.dedent(
+            """
             def risky(x):
                 if x:
                     for i in range(x):
                         while i:
                             if i and x:
                                 pass
-        """)
-        good = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        """
+        )
+        good = named_temp(tmp_path, suffix=".py", mode="w")
         good.write(src)
         good.close()
-        bad = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        bad = named_temp(tmp_path, suffix=".py", mode="w")
         bad.write("def broken(\n")
         bad.close()
         try:
@@ -347,16 +390,18 @@ class TestAnalyseFile:
             os.unlink(good.name)
             os.unlink(bad.name)
 
-    def test_nested_function_not_double_counted(self):
-        src = textwrap.dedent("""
+    def test_nested_function_not_double_counted(self, tmp_path):
+        src = textwrap.dedent(
+            """
             def outer(x):
                 if x:
                     def inner(y):
                         if y:
                             pass
                     pass
-        """)
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -395,48 +440,61 @@ class TestChecklistItems:
 
     def test_for_loop_checklist(self):
         from rn_calculator import _checklist_items
-        func = self._make_func_dict("""
+
+        func = self._make_func_dict(
+            """
             def f(items):
                 for item in items:
                     pass
-        """)
+        """
+        )
         items = _checklist_items(func)
         assert any("loop" in i.lower() or "bound" in i.lower() for i in items)
 
     def test_while_checklist(self):
         from rn_calculator import _checklist_items
-        func = self._make_func_dict("""
+
+        func = self._make_func_dict(
+            """
             def f(cond):
                 while cond:
                     pass
-        """)
+        """
+        )
         items = _checklist_items(func)
         assert any("while" in i.lower() or "condition" in i.lower() for i in items)
 
     def test_with_statement_checklist(self):
         from rn_calculator import _checklist_items
-        func = self._make_func_dict("""
+
+        func = self._make_func_dict(
+            """
             def f():
                 with open("x") as fh:
                     pass
-        """)
+        """
+        )
         items = _checklist_items(func)
         assert any("context manager" in i.lower() or "resources" in i.lower() for i in items)
 
     def test_except_handler_checklist(self):
         from rn_calculator import _checklist_items
-        func = self._make_func_dict("""
+
+        func = self._make_func_dict(
+            """
             def f():
                 try:
                     risky()
                 except ValueError:
                     pass
-        """)
+        """
+        )
         items = _checklist_items(func)
         assert any("exception" in i.lower() or "granularity" in i.lower() for i in items)
 
     def test_zero_rn_statements_skipped(self):
         from rn_calculator import _checklist_items
+
         # A function with all-zero rn statements (shouldn't happen in practice,
         # but test the guard)
         func_dict = {
@@ -454,7 +512,8 @@ class TestElifWithTrailingElse:
     """Exercises the elif-with-trailing-else path (line 148)."""
 
     def test_elif_with_else_recorded(self):
-        src = textwrap.dedent("""
+        src = textwrap.dedent(
+            """
             def f(x, y):
                 if x:
                     pass
@@ -462,7 +521,8 @@ class TestElifWithTrailingElse:
                     pass
                 else:
                     pass
-        """)
+        """
+        )
         tree = ast.parse(src)
         func = tree.body[0]
         visitor = _FunctionRNVisitor("t.py", func.name, func.lineno)
@@ -476,8 +536,10 @@ class TestElifWithTrailingElse:
 class TestRNCalculatorMain:
     def test_main_no_files(self, capsys, monkeypatch):
         import json as _json
+
         monkeypatch.setattr(sys, "argv", ["rn_calculator.py"])
         from rn_calculator import main
+
         main()
         captured = capsys.readouterr()
         data = _json.loads(captured.out)
@@ -486,12 +548,12 @@ class TestRNCalculatorMain:
 
     def test_main_with_files_flag(self, capsys, monkeypatch, tmp_path):
         import json as _json
+
         py = tmp_path / "mod.py"
         py.write_text("def f(x):\n    if x:\n        return x\n")
-        monkeypatch.setattr(sys, "argv", [
-            "rn_calculator.py", "--files", str(py)
-        ])
+        monkeypatch.setattr(sys, "argv", ["rn_calculator.py", "--files", str(py)])
         from rn_calculator import main
+
         main()
         captured = capsys.readouterr()
         data = _json.loads(captured.out)
@@ -499,10 +561,12 @@ class TestRNCalculatorMain:
 
     def test_main_valid_file_direct(self, capsys, monkeypatch, tmp_path):
         import json as _json
+
         py = tmp_path / "service.py"
         py.write_text("def process(x):\n    for i in x:\n        pass\n")
         monkeypatch.setattr(sys, "argv", ["rn_calculator.py", str(py)])
         from rn_calculator import main
+
         main()
         captured = capsys.readouterr()
         data = _json.loads(captured.out)

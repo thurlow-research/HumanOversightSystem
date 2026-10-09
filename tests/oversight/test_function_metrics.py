@@ -2,20 +2,22 @@
 Tests for function_metrics.py, portability_check.py, and migration_scorer.py.
 All three have pure-Python logic that is well-suited to unit testing.
 """
-import ast
-import textwrap
-import tempfile
-import os
-import pytest
 
+import ast
+import os
+import textwrap
+
+import pytest
+from function_metrics import _depth_recursive, _FuncMetricsVisitor
+from function_metrics import analyse_files as fm_analyse_files
+from migration_scorer import _check_add_field_nullable, _MigrationVisitor
+from migration_scorer import analyse_files as ms_analyse_files
+from portability_check import _scan_file
+from portability_check import main as pc_main
+
+from tests.tmp_hygiene import named_temp
 
 # ── function_metrics ──────────────────────────────────────────────────────────
-
-from function_metrics import (
-    _FuncMetricsVisitor,
-    _depth_recursive,
-    analyse_files as fm_analyse_files,
-)
 
 
 def _visit_src(src: str) -> list[dict]:
@@ -25,84 +27,108 @@ def _visit_src(src: str) -> list[dict]:
     return v.functions
 
 
+# Built at runtime so this file carries no literal machine-specific path (the portability gate
+# scans whole files, and these are fixtures for that very detector).
+MAC_HOME = "/" + "Users/alice"
+LINUX_HOME = "/" + "home/bob"
+
+
 class TestFuncMetricsVisitor:
     def test_empty_module(self):
         assert _visit_src("x = 1") == []
 
     def test_simple_function_detected(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def greet(name):
                 return f"hello {name}"
-        """)
+        """
+        )
         assert len(funcs) == 1
         assert funcs[0]["name"] == "greet"
 
     def test_param_count(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def f(a, b, c):
                 pass
-        """)
+        """
+        )
         assert funcs[0]["params"] == 3
 
     def test_self_excluded_from_param_count(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             class C:
                 def method(self, x, y):
                     pass
-        """)
+        """
+        )
         m = next(f for f in funcs if f["name"] == "method")
         assert m["params"] == 2  # self excluded
 
     def test_cls_excluded_from_param_count(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             class C:
                 @classmethod
                 def factory(cls, x):
                     return cls()
-        """)
+        """
+        )
         m = next(f for f in funcs if f["name"] == "factory")
         assert m["params"] == 1
 
     def test_vararg_and_kwarg_count(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def f(*args, **kwargs):
                 pass
-        """)
+        """
+        )
         assert funcs[0]["params"] == 2
 
     def test_return_paths_counted(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def f(x):
                 if x > 0:
                     return x
                 return -x
-        """)
+        """
+        )
         assert funcs[0]["return_paths"] == 2
 
     def test_raise_counts_as_return_path(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def f(x):
                 if x < 0:
                     raise ValueError("negative")
                 return x
-        """)
+        """
+        )
         assert funcs[0]["return_paths"] == 2
 
     def test_line_count_approximate(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def f():
                 x = 1
                 y = 2
                 return x + y
-        """)
+        """
+        )
         assert funcs[0]["lines"] >= 4
 
     def test_multiple_functions(self):
-        funcs = _visit_src("""
+        funcs = _visit_src(
+            """
             def a(): pass
             def b(): pass
             def c(): pass
-        """)
+        """
+        )
         assert len(funcs) == 3
         names = {f["name"] for f in funcs}
         assert names == {"a", "b", "c"}
@@ -133,13 +159,15 @@ class TestDepthRecursive:
         assert _depth_recursive(stmts, 0) >= 1
 
     def test_if_else_depth(self):
-        src = textwrap.dedent("""
+        src = textwrap.dedent(
+            """
             if x:
                 pass
             else:
                 if y:
                     pass
-        """)
+        """
+        )
         stmts = self._stmts(src)
         assert _depth_recursive(stmts, 0) >= 2
 
@@ -149,8 +177,8 @@ class TestDepthRecursive:
 
 
 class TestFunctionMetricsAnalyse:
-    def test_analyse_empty_file(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_analyse_empty_file(self, tmp_path):
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("")
             path = f.name
         try:
@@ -160,14 +188,16 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
-    def test_analyse_simple_function(self):
-        src = textwrap.dedent("""
+    def test_analyse_simple_function(self, tmp_path):
+        src = textwrap.dedent(
+            """
             def greet(name, greeting="hello"):
                 if name:
                     return f"{greeting} {name}"
                 return greeting
-        """)
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -181,12 +211,12 @@ class TestFunctionMetricsAnalyse:
         result = fm_analyse_files([])
         assert result["score"] == pytest.approx(0.0)
 
-    def test_long_function_raises_score(self):
+    def test_long_function_raises_score(self, tmp_path):
         # A function with many lines should produce a non-zero score
         lines = ["    x = 1"] * 60  # 60-line function body
         src = "def big_fn(" + ", ".join(f"a{i}" for i in range(10)) + "):\n"
         src += "\n".join(lines) + "\n    return x\n"
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -197,10 +227,10 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
-    def test_too_many_params_flagged(self):
+    def test_too_many_params_flagged(self, tmp_path):
         params = ", ".join(f"p{i}" for i in range(12))
         src = f"def bloated({params}):\n    pass\n"
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -209,10 +239,10 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
-    def test_all_unparseable_excludes_dimension(self):
+    def test_all_unparseable_excludes_dimension(self, tmp_path):
         # #979: a syntax-error file must EXCLUDE the dimension (error set)
         # rather than report a clean 0.0 with error=None.
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="w") as f:
             f.write("def broken(:\n    x =\n")
             path = f.name
         try:
@@ -222,10 +252,10 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
-    def test_non_utf8_file_excludes_dimension(self):
+    def test_non_utf8_file_excludes_dimension(self, tmp_path):
         # #979: a latin-1 file with non-UTF8 bytes (passes flake8 per PEP 263)
         # must EXCLUDE the dimension, not read as clean 0.0.
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="wb", delete=False) as f:
+        with named_temp(tmp_path, suffix=".py", mode="wb") as f:
             f.write(b"# -*- coding: latin-1 -*-\nx = '\xe9'\n")
             path = f.name
         try:
@@ -235,14 +265,14 @@ class TestFunctionMetricsAnalyse:
         finally:
             os.unlink(path)
 
-    def test_partial_parse_failure_keeps_signal_and_flags(self):
+    def test_partial_parse_failure_keeps_signal_and_flags(self, tmp_path):
         # #979: one parseable + one broken file → keep the real signal, do NOT
         # exclude, but flag the unparseable file for review.
         params = ", ".join(f"p{i}" for i in range(12))
-        good = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        good = named_temp(tmp_path, suffix=".py", mode="w")
         good.write(f"def bloated({params}):\n    pass\n")
         good.close()
-        bad = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+        bad = named_temp(tmp_path, suffix=".py", mode="w")
         bad.write("def broken(:\n")
         bad.close()
         try:
@@ -258,25 +288,23 @@ class TestFunctionMetricsAnalyse:
 
 # ── portability_check ─────────────────────────────────────────────────────────
 
-from portability_check import _scan_file, main as pc_main
-
 
 class TestPortabilityCheck:
-    def _write(self, content: str) -> str:
-        f = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False)
+    def _write(self, tmp_path, content: str) -> str:
+        f = named_temp(tmp_path, suffix=".py", mode="w")
         f.write(textwrap.dedent(content))
         f.close()
         return f.name
 
-    def test_clean_file_no_findings(self):
-        path = self._write("x = 1\nprint(x)\n")
+    def test_clean_file_no_findings(self, tmp_path):
+        path = self._write(tmp_path, "x = 1\nprint(x)\n")
         try:
             assert _scan_file(path) == []
         finally:
             os.unlink(path)
 
-    def test_hardcoded_home_path_flagged(self):
-        path = self._write('CONFIG = "/Users/alice/config.json"\n')
+    def test_hardcoded_home_path_flagged(self, tmp_path):
+        path = self._write(tmp_path, f'CONFIG = "{MAC_HOME}/config.json"\n')
         try:
             findings = _scan_file(path)
             assert len(findings) >= 1
@@ -284,35 +312,34 @@ class TestPortabilityCheck:
         finally:
             os.unlink(path)
 
-    def test_linux_home_path_flagged(self):
-        path = self._write('LOG = "/home/bob/app.log"\n')
+    def test_linux_home_path_flagged(self, tmp_path):
+        path = self._write(tmp_path, f'LOG = "{LINUX_HOME}/app.log"\n')
         try:
             findings = _scan_file(path)
             assert len(findings) >= 1
         finally:
             os.unlink(path)
 
-    def test_score_zero_for_clean(self):
-        path = self._write("x = 1\n")
+    def test_score_zero_for_clean(self, tmp_path):
+        path = self._write(tmp_path, "x = 1\n")
         try:
             result = pc_main([path])
             assert result["score"] == pytest.approx(0.0)
         finally:
             os.unlink(path)
 
-    def test_score_elevated_for_finding(self):
-        path = self._write('CONFIG = "/Users/alice/settings.py"\n')
+    def test_score_elevated_for_finding(self, tmp_path):
+        path = self._write(tmp_path, f'CONFIG = "{MAC_HOME}/settings.py"\n')
         try:
             result = pc_main([path])
             assert result["score"] >= 0.55  # one finding → 0.55 floor
         finally:
             os.unlink(path)
 
-    def test_multiple_findings_increase_score(self):
+    def test_multiple_findings_increase_score(self, tmp_path):
         path = self._write(
-            'A = "/Users/alice/a.py"\n'
-            'B = "/Users/alice/b.py"\n'
-            'C = "/home/bob/c.py"\n'
+            tmp_path,
+            f'A = "{MAC_HOME}/a.py"\n' f'B = "{MAC_HOME}/b.py"\n' f'C = "{LINUX_HOME}/c.py"\n',
         )
         try:
             result = pc_main([path])
@@ -321,9 +348,9 @@ class TestPortabilityCheck:
         finally:
             os.unlink(path)
 
-    def test_score_capped_at_one(self):
-        lines = "\n".join(f'P{i} = "/Users/alice/p{i}.py"' for i in range(10))
-        path = self._write(lines + "\n")
+    def test_score_capped_at_one(self, tmp_path):
+        lines = "\n".join(f'P{i} = "{MAC_HOME}/p{i}.py"' for i in range(10))
+        path = self._write(tmp_path, lines + "\n")
         try:
             result = pc_main([path])
             assert result["score"] <= 1.0
@@ -337,12 +364,6 @@ class TestPortabilityCheck:
 
 # ── migration_scorer ──────────────────────────────────────────────────────────
 
-from migration_scorer import (
-    _MigrationVisitor,
-    _check_add_field_nullable,
-    analyse_files as ms_analyse_files,
-)
-
 
 class TestMigrationVisitor:
     def test_empty_file_no_ops(self):
@@ -352,11 +373,13 @@ class TestMigrationVisitor:
         assert v.operations == []
 
     def test_add_field_detected(self):
-        src = textwrap.dedent("""
+        src = textwrap.dedent(
+            """
             operations = [
                 migrations.AddField(model_name='user', name='bio', field=models.TextField()),
             ]
-        """)
+        """
+        )
         tree = ast.parse(src)
         v = _MigrationVisitor()
         v.visit(tree)
@@ -392,12 +415,16 @@ class TestCheckAddFieldNullable:
 
 
 class TestMigrationScorerAnalyse:
-    def test_non_migration_files_zero_score(self):
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+    def test_non_migration_files_zero_score(self, tmp_path_factory):
+        # Not tmp_path: its dir is named after this test, and the scorer filters on the substring
+        # "migration" anywhere in the full path, which would take the migration branch instead.
+        with named_temp(tmp_path_factory.mktemp("plain"), suffix=".py", mode="w") as f:
             f.write("x = 1\n")
             path = f.name
+        assert "migration" not in path.lower()
         try:
             result = ms_analyse_files([path])
+            assert result["raw_value"]["note"] == "no migration files in changeset"
             assert result["score"] == pytest.approx(0.0)
         finally:
             os.unlink(path)
@@ -406,17 +433,17 @@ class TestMigrationScorerAnalyse:
         result = ms_analyse_files([])
         assert result["score"] == pytest.approx(0.0)
 
-    def test_migration_file_with_remove_field_is_risky(self):
-        src = textwrap.dedent("""
+    def test_migration_file_with_remove_field_is_risky(self, tmp_path):
+        src = textwrap.dedent(
+            """
             from django.db import migrations
             class Migration(migrations.Migration):
                 operations = [
                     migrations.RemoveField(model_name='user', name='bio'),
                 ]
-        """)
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", prefix="0001_migration_", mode="w", delete=False
-        ) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", prefix="0001_migration_", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -425,8 +452,9 @@ class TestMigrationScorerAnalyse:
         finally:
             os.unlink(path)
 
-    def test_migration_file_with_add_field_no_default_is_high_risk(self):
-        src = textwrap.dedent("""
+    def test_migration_file_with_add_field_no_default_is_high_risk(self, tmp_path):
+        src = textwrap.dedent(
+            """
             from django.db import migrations, models
             class Migration(migrations.Migration):
                 operations = [
@@ -436,10 +464,9 @@ class TestMigrationScorerAnalyse:
                         field=models.CharField(max_length=20),
                     ),
                 ]
-        """)
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", prefix="0002_migration_", mode="w", delete=False
-        ) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", prefix="0002_migration_", mode="w") as f:
             f.write(src)
             path = f.name
         try:
@@ -450,18 +477,18 @@ class TestMigrationScorerAnalyse:
         finally:
             os.unlink(path)
 
-    def test_multiple_critical_ops_trigger_checklist(self):
-        src = textwrap.dedent("""
+    def test_multiple_critical_ops_trigger_checklist(self, tmp_path):
+        src = textwrap.dedent(
+            """
             from django.db import migrations, models
             class Migration(migrations.Migration):
                 operations = [
                     migrations.RunSQL('DROP TABLE users'),
                     migrations.RemoveField(model_name='user', name='email'),
                 ]
-        """)
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", prefix="0003_migration_", mode="w", delete=False
-        ) as f:
+        """
+        )
+        with named_temp(tmp_path, suffix=".py", prefix="0003_migration_", mode="w") as f:
             f.write(src)
             path = f.name
         try:

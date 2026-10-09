@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POST_REVIEW_THREAD_SH = REPO_ROOT / "bootstrap" / "post_review_thread.sh"
@@ -66,7 +68,7 @@ if [[ "$1" == "api" && "$*" == *"/events"* ]]; then
     exit 0
 fi
 exit 1
-"""
+"""  # noqa: E501
 
 CURL_STUB = """#!/usr/bin/env bash
 echo "CURL_CALLED_WITH:$*" >> "$CAPTURE_FILE"
@@ -118,7 +120,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
         )
 
     def capture(self) -> str:
@@ -203,9 +209,16 @@ def test_rejects_at_path_literal_body_content(h):
 
 
 def test_happy_path_posts_thread_and_revokes_token(h):
-    result = h.run([
-        "--pr", "1207", "--body-file", str(h.body_file), "--app", "overseer",
-    ])
+    result = h.run(
+        [
+            "--pr",
+            "1207",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "overseer",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     assert "addPullRequestReviewThread" in result.stdout
     assert "isResolved" in result.stdout
@@ -267,13 +280,21 @@ def test_wellformed_overseer_thread_posts_in_enforce_mode(h):
 
 
 def test_happy_path_submits_the_pending_review(h):
-    result = h.run([
-        "--pr", "1207", "--body-file", str(h.body_file), "--app", "overseer",
-    ])
+    result = h.run(
+        [
+            "--pr",
+            "1207",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "overseer",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
     submit_calls = [
-        line for line in cap.splitlines()
+        line
+        for line in cap.splitlines()
         if line.startswith("GH_CALLED_WITH:") and "/events" in line
     ]
     assert len(submit_calls) == 1, cap
