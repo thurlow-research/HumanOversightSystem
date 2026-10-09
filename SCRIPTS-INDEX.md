@@ -66,6 +66,7 @@ excluded.
 ## scripts/automation/
 
 - `scripts/automation/agent_invoke_cli.py` — L2 deterministic agent-invocation primitive (#1643 W1).
+- `scripts/automation/closing_keywords.py` — Closing-keyword guard for PR titles, bodies, and commit messages (#1856).
 - `scripts/automation/dimension_registry_cli.py` — L2 CLI over lib/dimension_registry.py (ADR-1643 TD §7.10 as amended by Amendment C §C.2.7).
 - `scripts/automation/dimension_sweep_cli.py` — L2 measurement runner (ADR-1643 AD-13, W6; TD Amendment G, docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md §G.1-§G.12).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).

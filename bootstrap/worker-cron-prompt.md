@@ -135,9 +135,9 @@ If it exits 0: proceed. If it exits 1 with "commits overlap an open PR": STOP �
 
 **Step 5 — Open PR:** You open a PR only for a branch you created **in this cycle** via `bootstrap/create_branch.sh` (Step 2b). Ownership is **recorded, never inferred** — a commit on a branch, an issue label, or a matching branch name is not evidence the work is yours or finished. PR opening goes through:
 ```bash
-bash bootstrap/submit_pr.sh --title <title> --body-file <path> --base main --head <branch> --app worker
+bash bootstrap/submit_pr.sh --title <title> --body-file <path> --base main --head <branch> --app worker [--closes <n>]
 ```
-`submit_pr.sh` refuses (before any network access) without a valid ownership record for `<branch>` (#967). Size limits unchanged: ≤15 files, ≤10 commits. Then STOP.
+`submit_pr.sh` refuses (before any network access) without a valid ownership record for `<branch>` (#967). It also refuses if the title, body, or any branch commit message contains a closing keyword (`closes/fixes/resolves #N`, any tense) for an issue not passed in `--closes` — when quoting a ruling, rephrase rather than quote the keyword (#1856). Size limits unchanged: ≤15 files, ≤10 commits. Then STOP.
 
 **PR attribution (AGENTS.md §Pull Request Attribution — never omit):**
 

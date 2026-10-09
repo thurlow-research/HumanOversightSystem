@@ -285,7 +285,10 @@ application to shell commands.
    `--body-file`-only, never hand-composed `gh issue create`/`gh pr create` +
    token mint + revoke) — see their headers for usage. `submit_pr.sh --app human`
    requires `--confirmed`: only pass it when a human has given explicit
-   per-instance authorization for that specific push. Issue/PR comments go
+   per-instance authorization for that specific push. `submit_pr.sh` also
+   refuses undeclared closing keywords in the title/body/commits; pass
+   `--closes <n>` only when the PR genuinely closes that issue (#1856).
+   Issue/PR comments go
    through `bootstrap/post_comment.sh --number <n> --body-file <path> --app
    <role>` (same pattern) — never `gh api --field body=@path` /
    `-f body=@path`, which silently posts the literal `@path` string instead
