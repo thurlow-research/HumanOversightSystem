@@ -1,6 +1,7 @@
 # Technical Design — #2054 test runs exhaust the per-user /tmp quota
 
-Status: **Round 2 revision (2026-10-09). Applied to the body: the architect's round-1 conditions AC-1..AC-16, the human ruling of 2026-10-09, and the later human Q6 ruling that the reaper deletes stale agent scratch trees (class S, D13, §5.7)** (see "Round-2 revision note" at the end). Awaiting the architect's round-2 diff check, which is verification only. The coder gets this after the architect approves. Merging is also gated on the three open human confirmations in §12.1 (AC-16). Coding proceeds on the architect's recommended defaults.
+Status: **Architect round 2 (2026-10-09): APPROVED WITH CONDITIONS R2-1..R2-8** (see "Architect review (round 2 of 5)" at the end). Commit 1 (S1) and commit 3 (S3) are **ready for the coder now**. Commit 2 (S2, the reaper and its call sites) goes to the coder only after technical-design applies R2-1..R2-8 and the architect checks the diff (round 3: verification only).
+Previous status: **Round 2 revision (2026-10-09). Applied to the body: the architect's round-1 conditions AC-1..AC-16, the human ruling of 2026-10-09, and the later human Q6 ruling that the reaper deletes stale agent scratch trees (class S, D13, §5.7)** (see "Round-2 revision note" at the end). Awaiting the architect's round-2 diff check, which is verification only. The coder gets this after the architect approves. Merging is also gated on the three open human confirmations in §12.1 (AC-16). Coding proceeds on the architect's recommended defaults.
 Issue: #2054 (bug, blocks work). Being fixed in a human-authorized interactive Worker session on 2026-10-09.
 Related: #1616 (sandbox PID namespaces break `kill -0`), #1903 (`--failure-log` in literal /tmp), #1910 (wrapper replica), #314 (decision logic belongs in Python), D41 (one invocation site).
 Change class: **additive**. This adds new config, a new test plugin, a new script and two new call sites. No existing contract field is removed or renamed. There are two behavior changes:
@@ -884,3 +885,101 @@ Design choices that go beyond the ruling, flagged for the architect:
 - §12.1(a) and (b) are widened to name class S. §12.1(d), non-empty `tmp*` dirs at the `/tmp` top level, is **unchanged and still open**: this ruling covers only the scratch roots.
 
 Requesting the architect's round-2 diff check (round 2 of 5).
+
+---
+
+## Architect review (round 2 of 5, 2026-10-09)
+
+**Verdict: APPROVED WITH CONDITIONS R2-1..R2-8.**
+- Every round-1 condition, AC-1 through AC-16, is applied correctly. I checked each one against the body, not just against the mapping table.
+- The human rulings (a)–(e) are applied faithfully.
+- All of the remaining conditions are in **class S** (§5.7) and its call site.
+- **Commit 1 (S1) and commit 3 (S3) are ready for the coder now**, because no R2 condition touches them. **Commit 2 (S2)** waits for technical-design to apply R2-1..R2-8 and for my round-3 diff check.
+
+### Evidence gathered this round
+
+- **`/proc/locks` is filtered by PID namespace. Verified** (scratchpad `flk/locks.sh`):
+  - A flock held inside bwrap appears in the **host's** `/proc/locks`, with its host PID.
+  - It is **absent** from `/proc/locks` read inside a second PID namespace.
+  - So the §5.7.1 host-view precondition is load-bearing, not defence in depth. Without it, the lock veto silently passes inside a sandbox.
+  - The device field is **hex** `major:minor`: `00:26` for `st_dev` 38.
+- **Own-uid processes with unreadable `/proc` entries exist on this host:** `systemd --user`, `(sd-pam)` and `sshd-session`, which are non-dumpable (`EACCES` on `cwd`/`fd`).
+  - "Index complete" must not mean "every process readable", or class S would never run.
+  - See R2-6.
+- **What `/tmp/claude` holds today:**
+  - About 37 small agent draft files: PR bodies, commit messages and probes, the CLAUDE.md `--body-file` convention.
+  - One small, fresh draft dir (`adr2033`).
+  - `hos1935` is already gone.
+  - The draft-dir case is why the size floor (R2-3) matters: idle drafts for an issue that is waiting on a human for more than 24 h would otherwise be deleted.
+- **No own-uid process sets `TMPDIR` under `/tmp/claude`.** One process sets `TMPDIR=/tmp`. So `pytest-of-*` does not currently appear as a scratch child, but nothing prevents it. See R2-7.
+
+### Rulings on technical-design's judgment calls
+
+1. **Cron-only `--scratch` with refusal without a host view: APPROVED.** It is required, given the `/proc/locks` evidence above. R2-4 adds a configuration gate on top of it.
+2. **No size floor: REJECTED.**
+   - The human's words were "the **large** scratch copies".
+   - Small trees contribute nothing to the quota, and they are exactly the agent draft dirs whose loss costs work.
+   - Size is not a *safety* signal, but it is the *scope* signal the human used. See R2-3.
+3. **§12.1(d): non-empty top-level `tmp*` dirs are report-only: APPROVED as the default.**
+   - If the human answers "yes", these dirs must go through the class-S per-tree procedure: host view, whole-tree walk, lock and process vetoes, git check (R2-1) and floor.
+   - That would be a second class-S root of a different shape, never a new age-only rule.
+4. **`/proc` veto also on rule 2 and `garbage-*`: APPROVED.** It is strictly more conservative and costs nothing.
+5. **The newest finished failed run is kept beyond 24 h: APPROVED.**
+   - It is bounded to one dir, and the next completed session's own pytest cleanup supersedes it.
+   - §0's "only entries older than 24 h" must name this single exception.
+6. **S1 may carry a TMPDIR-correctness script fix: APPROVED.** This is consistent with Q2. If it is used, commit 1 touches a protected file, so "cherry-pick S1 out" also needs human review. That is harmless, because the whole PR is human-gated anyway.
+
+### Binding conditions (round 2)
+
+- **R2-1: class S must not destroy unpushed git work, and must never execute git.**
+  - Ad-hoc clones are the main target, and a clone can hold the only copy of local commits.
+  - Running `git` from the **unsandboxed** cron inside a tree that a **sandboxed** agent wrote would be a sandbox escape: repo-local `.git/config` keys such as `core.fsmonitor` or `core.pager` would execute on the host. So the check is **static file parsing only**.
+  - For every `.git` entry found during the §5.7.4 walk:
+    - (i) `.git` is a **file** (a linked worktree) → `SKIP git-worktree`. Deleting the dir would leave a registered worktree that blocks checking out that branch elsewhere.
+    - (ii) `.git` is a dir → read `HEAD`, `refs/heads/**`, `refs/remotes/**`, `packed-refs` and `refs/stash`, with a byte cap on each.
+      - Any local branch head, or a detached `HEAD` SHA, that does not equal some `refs/remotes/**` SHA → `SKIP git-unpushed`.
+      - `refs/stash` present → `SKIP git-stash`.
+      - Unparseable refs → `SKIP unknown`.
+  - Uncommitted working-tree edits cannot be detected without git. Losing them after 24 h idle is within the human ruling, and is an accepted residual.
+  - Add tests RS11 (unpushed branch kept; detached unpushed HEAD kept; worktree `.git` file kept; stash kept; pushed clone reaped) and RS12 (no subprocess is ever spawned: monkeypatch `subprocess` and `os.exec*` to raise).
+- **R2-2: removal identity must be the walked identity.**
+  - §5.7.4 step 7(a) records `(st_dev, st_ino)` at removal time, so a dir renamed into place after the walk would be deleted unverified.
+  - Instead, compare against the identity captured at **step 1**, before the walk. A mismatch → `SKIP raced`, with no rename.
+  - Keep the post-rename check at 7(c).
+  - Extend RS9 to cover the case where the identity is swapped between the walk and the rename.
+- **R2-3: size floor.**
+  - `SCRATCH_MIN_BYTES = 10 * 1024 * 1024`, of allocated bytes from the walk. It is a protected constant with no CLI or env override.
+  - A tree below the floor → `SKIP small`. The walk may stop early once it is clear that the tree is old, but the size total must be complete before REAP.
+  - Add §12.1(e) as a merge-time human confirmation of the value.
+  - Add test RS13: a stale 1 MiB tree is kept, and a stale tree above the floor is reaped.
+- **R2-4: consumer default is off. Class S is opt-in per host.**
+  - `bin/hos-cron` passes `--scratch` only when `projects.conf` has `${PROJECT}_tmp_reap_scratch=1`, read the same way `${PROJECT}_max_seconds` is. It is absent or `0` by default.
+  - A destructive behaviour whose consumer scope is an unanswered human question (§12.1(b)) must ship with the safe default. The human's ruling then takes effect on this host by adding one host-config line, outside the repo. The PR body must say so.
+  - Extend C2 so that `--scratch` is present only when the key is `1`.
+  - §12.1(b) narrows to classes P and T, which ship on by default.
+- **R2-5: `/proc/locks` parsing contract.**
+  - Parse the `major:minor:inode` field with major and minor in **hex** and the inode in decimal. Match it against `os.major(st_dev)`, `os.minor(st_dev)` and `st_ino`.
+  - Any line in the file that cannot be parsed → class S is disabled for the run (`SKIP scratch-disabled locks-unparseable`). Do not skip the line.
+  - Evaluate the §5.7.1 NSpid host-view check **before** reading `/proc/locks`.
+  - In RS4's POSIX-lock variant, assert that the matched entry came from the hex parse.
+- **R2-6: define "complete index".**
+  - `complete=True` means the scan was not cut short by `--max-seconds`.
+  - Per-process `EACCES`/`ENOENT`/`ESRCH` is tolerated and counted. Print one `SKIP proc-unreadable <n>` informational line when n > 0 under `--scratch`.
+  - Requiring every process to be readable would disable class S permanently on this host (non-dumpable session daemons).
+  - Record this as an accepted residual: a non-dumpable same-uid process whose cwd is inside a stale scratch tree is invisible to the veto. Such processes are system and session daemons, not agent tools.
+- **R2-7: class S must not swallow other classes' entries, and runs last.**
+  - A scratch-root child named `pytest-of-*`, `garbage-*` (other than `garbage-hos-*`), `tmp*` or `hos-*` → `SKIP other-class`. This covers a future session that sets `TMPDIR=/tmp/claude`, whose `pytest-of-<user>` would otherwise be judged by whole-tree age, ignoring class P's keep-newest and flock rules.
+  - Evaluate classes in the order **P, T, then S**, so that a long class-S walk exhausting `--max-seconds` only defers S.
+  - A tree that hits `SKIP walk-truncated` is re-walked every cycle. That is an accepted cost, visible in the log.
+- **R2-8: §0 accuracy.**
+  - §0 Layer 2 must state the R2-3 floor and the R2-4 per-host opt-in for class S.
+  - It must name the single exception to "only entries older than 24 h" (judgment call 5).
+  - The CLAUDE.md row (§8.3) and the CRON-SETUP paragraph (§8.4) must state that class S runs only when the host enables it.
+
+### What still could go wrong (accepted residuals, class S)
+
+- Uncommitted working-tree edits in a pushed clone that has been idle for more than 24 h are deleted. This is within the human ruling, and is the reason R2-1 exists for committed work.
+- A process could `chdir` into a tree in the milliseconds between the walk and the rename. This is narrowed by R2-2 and the complete-index requirement.
+- A non-dumpable same-uid process is invisible to the veto (R2-6).
+
+**Affected sign-offs:** none. No design or code has been approved against the round-2 body. R2-1..R2-8 touch only §0, §5.7, §8.2–§8.4, §10 (RS/C2) and §12.1, so S1/S3 work started now is not orphaned.
