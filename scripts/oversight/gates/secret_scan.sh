@@ -20,6 +20,17 @@
 
 set -euo pipefail
 
+# Temp files this script creates; removed on every exit path, including a kill
+# (#2054 S3). The TERM/INT/HUP handlers turn a signal into an exit so the EXIT
+# trap runs.
+_TMP_CLEANUP=()
+_cleanup_tmp() { [[ ${#_TMP_CLEANUP[@]} -gt 0 ]] && rm -rf "${_TMP_CLEANUP[@]}"; return 0; }
+trap _cleanup_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+
 _GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/gates/check_suspension.sh
 source "$_GATES_DIR/check_suspension.sh"
@@ -143,7 +154,8 @@ PARSE_PY="${OVERSIGHT_PYTHON:-python3}"
 if [[ -n "$DETECT_SECRETS" ]]; then
     echo "=== detect-secrets ==="
     if [[ ${#FILES[@]} -gt 0 ]]; then
-        DS_TMP=$(mktemp /tmp/detect_secrets_XXXXXX)
+        DS_TMP=$(mktemp "${TMPDIR:-/tmp}/detect_secrets_XXXXXX")
+        _TMP_CLEANUP+=("$DS_TMP")
         # Unit of work: detect-secrets under the configured timeout, capture to
         # temp. DS_LAST_RC records the most recent attempt's exit code so a
         # retry-exhaustion failure can tell "detect-secrets rejected its

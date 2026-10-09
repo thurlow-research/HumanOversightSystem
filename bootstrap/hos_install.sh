@@ -219,8 +219,12 @@ detect_platform
 HOS_SOURCE="$HOS_REPO_ROOT"   # overridden below unless --local
 HOS_REF="(local working copy)"
 CLEANUP_DIRS=()
-cleanup() { for d in "${CLEANUP_DIRS[@]:-}"; do [[ -n "$d" && -d "$d" ]] && rm -rf "$d"; done; }
+# CLEANUP_DIRS holds temp dirs AND temp files (#2054 S3); -e covers both.
+cleanup() { for d in "${CLEANUP_DIRS[@]:-}"; do [[ -n "$d" && -e "$d" ]] && rm -rf "$d"; done; return 0; }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Resolve the HOS repo slug (owner/name) for release fetching.
 # The bootstrap scripts normally live INSIDE the TARGET project's git tree (e.g.
@@ -1032,7 +1036,7 @@ PYEOF
 
     # Write the marked disk image: migrate the flat file first, then inject PROJECT body
     if [[ -f "$_REGIONS_PY_BF" ]]; then
-      local _marked_tmp; _marked_tmp="$(mktemp "${TMPDIR:-/tmp}/hos-bf.XXXXXX")"
+      local _marked_tmp; _marked_tmp="$(mktemp "${TMPDIR:-/tmp}/hos-bf.XXXXXX")"; CLEANUP_DIRS+=("$_marked_tmp")
       python3 "$_REGIONS_PY_BF" migrate "$_agent_md" --ships yes > "$_marked_tmp" 2>/dev/null || true
       if [[ -s "$_marked_tmp" ]]; then
         cp "$_marked_tmp" "$_agent_md"
@@ -1446,7 +1450,7 @@ _subst_pack_tokens() {
 _regions_strict() {  # _regions_strict <outfile|-> <args...>
   local _out="$1"; shift
   local _err _rc
-  _err="$(mktemp "${TMPDIR:-/tmp}/hos-regions.XXXXXX")"
+  _err="$(mktemp "${TMPDIR:-/tmp}/hos-regions.XXXXXX")"; CLEANUP_DIRS+=("$_err")
   if [[ "$_out" == "-" ]]; then
     python3 "$_REGIONS_PY" "$@" 2>"$_err"; _rc=$?
   else
@@ -2027,7 +2031,7 @@ elif ! grep -qF "$_HOS_BS" "$_CLAUDE_MD"; then
   printf '\n%s\n' "$_HOS_BLOCK" >> "$_CLAUDE_MD"
   info "CLAUDE.md — HOS orchestrator block appended (your existing content untouched)"
 else
-  _bf="$(mktemp)"; _tmp="$(mktemp)"
+  _bf="$(mktemp)"; _tmp="$(mktemp)"; CLEANUP_DIRS+=("$_bf" "$_tmp")
   printf '%s\n' "$_HOS_BLOCK" > "$_bf"
   awk -v s="$_HOS_BS" -v e="$_HOS_BE" -v bf="$_bf" '
     BEGIN { while ((getline line < bf) > 0) block = block line "\n" }
@@ -2059,7 +2063,7 @@ if $DRY_RUN; then
 elif [[ ! -f "$_human_tpl" ]]; then
   warn "templates/CLAUDE.human.md not found in release — skipping CLAUDE.md human-proxy block"
 else
-  _human_generated="$(mktemp)"
+  _human_generated="$(mktemp)"; CLEANUP_DIRS+=("$_human_generated")
   if _subst_prompt "$_human_tpl" "$_human_generated" \
       "scottthurlow-claude[bot]" "" "__HUMAN_BOT_LOGIN__"; then
     if [[ ! -f "$_CLAUDE_MD" ]]; then
@@ -2074,7 +2078,7 @@ else
       info "CLAUDE.human.generated.md written (CLAUDE.md exists without HOS:HUMAN-PROXY marker — merge the block into CLAUDE.md manually, then re-run)"
     else
       # (a) HOS:HUMAN-PROXY marker present — refresh the block in place
-      _tmp="$(mktemp)"
+      _tmp="$(mktemp)"; CLEANUP_DIRS+=("$_tmp")
       awk -v s="$_HOS_HP_BS" -v e="$_HOS_HP_BE" -v bf="$_human_generated" '
         BEGIN { while ((getline line < bf) > 0) block = block line "\n" }
         $0==s { printf "%s", block; skip=1; next }

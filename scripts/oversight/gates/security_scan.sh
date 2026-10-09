@@ -17,6 +17,17 @@
 
 set -euo pipefail
 
+# Temp files this script creates; removed on every exit path, including a kill
+# (#2054 S3). The TERM/INT/HUP handlers turn a signal into an exit so the EXIT
+# trap runs.
+_TMP_CLEANUP=()
+_cleanup_tmp() { [[ ${#_TMP_CLEANUP[@]} -gt 0 ]] && rm -rf "${_TMP_CLEANUP[@]}"; return 0; }
+trap _cleanup_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+
 GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/oversight/ensure_venv.sh
 source "$GATES_DIR/../ensure_venv.sh"
@@ -71,7 +82,8 @@ echo "=== bandit (HIGH severity) ==="
 echo "security_scan: bandit received ${#FILES[@]} file(s)"
 if [[ -x "$VENV_BIN/bandit" ]]; then
     if [[ ${#FILES[@]} -gt 0 ]]; then
-        BANDIT_TMP=$(mktemp /tmp/bandit_XXXXXX)
+        BANDIT_TMP=$(mktemp "${TMPDIR:-/tmp}/bandit_XXXXXX")
+        _TMP_CLEANUP+=("$BANDIT_TMP")
         # Unit of work: run bandit under the configured timeout, capture to temp.
         # bandit exits 1 when it FINDS issues — that is a successful scan for us
         # (we parse the JSON afterward). Only timeout (124) or a bandit error
@@ -111,7 +123,8 @@ fi
 echo ""
 echo "=== pip-audit (dependency vulnerabilities) ==="
 if [[ -x "$VENV_BIN/pip-audit" ]]; then
-    PIP_AUDIT_TMP=$(mktemp /tmp/pip_audit_XXXXXX)
+    PIP_AUDIT_TMP=$(mktemp "${TMPDIR:-/tmp}/pip_audit_XXXXXX")
+    _TMP_CLEANUP+=("$PIP_AUDIT_TMP")
     # Unit of work: run pip-audit under the configured timeout, capture JSON.
     # pip-audit exits 1 when it FINDS vulnerabilities — that is a SUCCESSFUL scan
     # for us, NOT an execution failure (#672). We must separate the two:

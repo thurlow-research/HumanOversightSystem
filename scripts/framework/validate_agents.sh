@@ -34,6 +34,16 @@
 
 set -euo pipefail
 
+# Temp files this script creates; removed on every exit path, including a kill
+# (#2054 S3). The TERM/INT/HUP handlers turn a signal into an exit so the EXIT
+# trap runs.
+_TMP_CLEANUP=()
+_cleanup_tmp() { [[ ${#_TMP_CLEANUP[@]} -gt 0 ]] && rm -rf "${_TMP_CLEANUP[@]}"; return 0; }
+trap _cleanup_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Resolve the repo root from the script's own location so the validation_logic.py
 # delegation works regardless of the caller's cwd (SPEC-334). The ledger paths
 # stay cwd-relative (OUT_DIR), preserving the existing --record/--reset contract.
@@ -293,9 +303,9 @@ Return JSON only — no prose outside the JSON block:
     # the prompt file, with a short instruction (well under ARG_MAX) telling
     # agy to read it. Verified empirically against a 1.5MB payload.
     local tmpdir tmpfile outfile
-    tmpdir=$(mktemp -d /tmp/validate_agents_agy_XXXXXX)
+    tmpdir=$(mktemp -d "$_RUN_TMP/agy_XXXXXX")
     tmpfile="$tmpdir/review-prompt.txt"
-    outfile=$(mktemp /tmp/validate_agents_agy_out_XXXXXX)
+    outfile=$(mktemp "$_RUN_TMP/agy_out_XXXXXX")
     echo "$prompt" > "$tmpfile"
     local result rc=0
     run_capped "$AI_REVIEW_TIMEOUT" "$outfile" agy --add-dir "$tmpdir" -p \
@@ -353,8 +363,8 @@ Return JSON only:
 }"
 
     local tmpfile outfile
-    tmpfile=$(mktemp /tmp/validate_agents_codex_XXXXXX)
-    outfile=$(mktemp /tmp/validate_agents_codex_out_XXXXXX)
+    tmpfile=$(mktemp "$_RUN_TMP/codex_XXXXXX")
+    outfile=$(mktemp "$_RUN_TMP/codex_out_XXXXXX")
     echo "$prompt" > "$tmpfile"
     local result rc=0
 
@@ -392,6 +402,11 @@ Return JSON only:
 }
 
 # ── Execute reviewers and write output ──────────────────────────────────────
+# run_agy/run_codex execute inside $(...) subshells, where the EXIT trap and any
+# array append are not visible to this shell. They therefore create their files
+# under one per-run directory that this shell owns and removes on every exit.
+_RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/validate_agents.XXXXXX")"
+_TMP_CLEANUP+=("$_RUN_TMP")
 {
     printf "# Agent Pipeline Validation\n"
     printf "Timestamp: %s\n" "$TIMESTAMP"

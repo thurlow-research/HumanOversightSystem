@@ -20,6 +20,16 @@
 
 set -euo pipefail
 
+# Temp files this script creates; removed on every exit path, including a kill
+# (#2054 S3). The TERM/INT/HUP handlers turn a signal into an exit so the EXIT
+# trap runs.
+_TMP_CLEANUP=()
+_cleanup_tmp() { [[ ${#_TMP_CLEANUP[@]} -gt 0 ]] && rm -rf "${_TMP_CLEANUP[@]}"; return 0; }
+trap _cleanup_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATORS_DIR="$SCRIPT_DIR/validators"
 OUT_DIR=".claudetmp/oversight/validators"
@@ -216,7 +226,8 @@ run_validator() {
     fi
 
     local tmpout
-    tmpout=$(mktemp /tmp/validator_XXXXXX)
+    tmpout=$(mktemp "${TMPDIR:-/tmp}/validator_XXXXXX")
+    _TMP_CLEANUP+=("$tmpout")
 
     # Unit of work — one attempt. Sees name/script/args/timeout/tmpout via bash
     # dynamic scope (it is called from run_with_retry, which we call from here).
