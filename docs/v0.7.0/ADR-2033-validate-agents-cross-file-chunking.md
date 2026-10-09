@@ -1,6 +1,6 @@
 # ADR-2033: Cross-file chunked review for validate_agents.sh. A deterministic agent graph in every chunk, and chunks packed so every directed agent-to-agent reference is co-resident
 
-**Status:** Proposed (architect), **round 3**, revised after the technical-design review (round 2: REQUEST_CHANGES; round 3: APPROVE_WITH_CONDITIONS on `6d2b4e163`; see §12, Revision log). Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
+**Status:** Proposed (architect), **round 4**, revised after the technical-design review (round 2: REQUEST_CHANGES; rounds 3 and 4: APPROVE_WITH_CONDITIONS on `6d2b4e163` and `18cefbb10`; see §12, Revision log). Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
 **Date:** 2026-10-09
 **Author:** architect (autonomous worker cycle; no human present)
 **Issue:** #2033 (priority:high, v0.7.0) · **Risk tier: HIGH.** S3 touches `scripts/framework/**`, a protected surface, so human approval is required at merge whatever the computed tier.
@@ -201,7 +201,7 @@ The lens must say: *"The index is machine-extracted and may be incomplete or inc
    - `chunk_logic` only applies #2014's cut function to `src` and checks that it yields `section_count` sections.
 
    Endpoints are **unit paths**, never agent names. Agent names appear only in the rendered index. Hyperedge JSONL: `{"members": [paths], "kind": "esc-cycle"}`. Focus file: one repo-relative path per line.
-4. **Mode `cover`:** `plan --mode cover --units F --edges F [--hyperedges F] [--focus F] …`. Units may appear in several chunks. Pack mode's "every unit exactly once" proof does not apply.
+4. **Mode `cover`:** `plan --mode cover --units F --edges F [--hyperedges F] [--focus F --placed F] …`. Units may appear in several chunks. Pack mode's "every unit exactly once" proof does not apply.
 5. **Section-fallback units**, rendered as `EXCERPT: sections i,j of n of <A> (A is reviewed whole in chunk-NNN)`. In the manifest, each chunk's `units` list records every entry with a `role`:
    - `{"path": P, "role": "whole", "sha256": …}`
    - `{"path": P, "role": "part", "part": i, "of": n, "sha256": …}` (doc parts)
@@ -214,11 +214,17 @@ The lens must say: *"The index is machine-extracted and may be incomplete or inc
 
 The planner input is **directed edges**: 136 required agent→agent edges today.
 
-- **Placed set P.** In full mode, P is every unit. In focus mode (AD-8), P is the focus units, plus both ends of every required edge incident to a focus unit, plus every member of a required cycle that contains a focus unit. Units outside P are **context-only**: they feed the index and the preamble but are never placed. P is computed by `agent_graph_logic.py placed-set` (S1), and `plan` must reproduce it exactly (AD-11).
+- **Placed set P.** In full mode, P is every unit. In focus mode (AD-8), P is the focus units, plus both ends of every required edge incident to a focus unit, plus every member of a required cycle that contains a focus unit. Units outside P are **context-only**: they feed the index and the preamble but are never placed. P is computed by `agent_graph_logic.py placed-set` (S1). `plan` takes it as `--placed F` and verifies it; it does not recompute it (AD-11).
 1. Every agent in P appears **whole** in ≥ 1 chunk. Every doc in P appears as its complete set of parts, each part in ≥ 1 chunk.
-2. For every required directed edge A→B with A or B in the focus set (every edge in full mode), some chunk contains **B whole** and either **A whole** (the preferred form, used whenever `|A| + |B| ≤ B_budget`) or **every naming section of A for B** (section fallback). The fallback always keeps the *referenced* agent B whole, because B's full contract is what the claim in A is checked against. If only A→B exists, only A→B gets a placement. If both A→B and B→A exist and neither whole pair fits, each direction gets its own fallback placement. That is the both-directions row in §2.1.
+2. For every required directed edge A→B with A or B in the focus set (every edge in full mode), some chunk contains **B whole** and either **A whole** (the preferred form, used whenever `pair_bytes(A, B) ≤ B_budget`) or **every naming section of A for B** (section fallback). The fallback always keeps the *referenced* agent B whole, because B's full contract is what the claim in A is checked against. If only A→B exists, only A→B gets a placement. If both A→B and B→A exist and neither whole pair fits, each direction gets its own fallback placement. That is the both-directions row in §2.1.
 3. Every required hyperedge (an `[esc]` cycle of length ≤ 3 that intersects the focus set, or every such cycle in full mode) has all members whole in one chunk. If they do not fit, it degrades to its member edges under rule 2, and the degradation is recorded.
-4. If B whole plus A's naming sections is over B_budget → exit 3 `edge_too_large`, naming both paths and the byte counts. **Agents are never reviewed only as fragments.** An excerpt is always *in addition to* a whole appearance, so #2014 D5 holds.
+4. If `excerpt_pair_bytes(A, B)` is over B_budget → exit 3 `edge_too_large`, naming both paths and the byte counts.
+
+**One shared size function (round 4, C4).** `chunk_logic` defines exactly one pair of functions, used by `plan`'s fits test, by `plan`'s post-render assertion, and by `verify-run`'s fallback check. No other code computes these sizes.
+- `pair_bytes(A, B)` is the bytes A and B contribute to a rendered chunk body: each unit's header line, its content, and the separator that follows it, exactly as #2014's renderer emits them.
+- `excerpt_pair_bytes(A, B)` is the same for B whole plus A's excerpt: the `EXCERPT:` label line, the naming sections, and the separators.
+
+A test asserts that each function equals the byte length of the corresponding rendered fragment. `overseer` + `worker` (139,822 B, against today's ≈ 139,650 B budget) is the live boundary case. It is pinned by a test at budgets one byte below, equal to, and one byte above `pair_bytes`. **Agents are never reviewed only as fragments.** An excerpt is always *in addition to* a whole appearance, so #2014 D5 holds.
 
 **Manifest `coverage` (cover mode):**
 ```
@@ -250,11 +256,11 @@ The two inventory lines together list the corpus minus this chunk, so #2014 AR-7
 
 ### 4.4 `verify-run` for cover mode
 
-- **`--cover-inputs DIR` is the plan's `--out-dir`**: the same directory that holds `chunk-manifest.json`. `plan` copies its exact inputs into `DIR/inputs/` (units, edges, hyperedges, focus) and records their sha256 values in `coverage.input_sha256s`. `verify-run` refuses (exit 2) a `DIR` that is not the manifest's own directory.
+- **`--cover-inputs DIR` is the plan's `--out-dir`**: the same directory that holds `chunk-manifest.json`. `plan` copies its exact inputs into `DIR/inputs/` (units, edges, hyperedges, focus, placed) and records their sha256 values in `coverage.input_sha256s`. The copies follow #2014 §4's atomicity rule: everything is computed before anything is written, so **a failed plan (any non-zero exit) leaves no `inputs/` copies**, as well as no manifest and no prompt files. `verify-run` refuses (exit 2) a `DIR` that is not the manifest's own directory.
 - `verify-run --manifest M --results R --lane L --cover-inputs DIR`:
   - re-hashes the input copies against the manifest;
   - re-reads every placed unit from disk and compares each unit's sha256 to the manifest, which detects a tree that changed mid-run;
-  - recomputes invariant rules 1 to 4 from the copied inputs, using the manifest's `budget_bytes`. **"Whole whenever it fits" is checked, not just preferred:** for every edge in `edges_section_fallback`, `verify-run` asserts `bytes(A) + bytes(B) > budget_bytes`, with the bytes taken from the manifest's units (headers included). A fallback used where the whole pair fits is a coverage failure;
+  - recomputes invariant rules 1 to 4 from the copied inputs, using the manifest's `budget_bytes`. **"Whole whenever it fits" is checked, not just preferred:** for every edge in `edges_section_fallback`, `verify-run` asserts `pair_bytes(A, B) > budget_bytes`, using the same shared function `plan` used (C4) over the units re-read from disk. A fallback used where the whole pair fits is a coverage failure;
   - checks every `excerpt` entry: `sections` must equal that edge's `naming_sections` from the copied edges file; `of` must equal its `section_count`; and re-cutting A from disk with #2014's cut function and concatenating those sections must reproduce the entry's `sha256`. An excerpt that is missing a naming section therefore fails;
   - runs the unchanged per-chunk-id record check.
 - `--cover-inputs` is required in cover mode, and is mutually exclusive with #2014's `--input` (pack/grid).
@@ -286,7 +292,11 @@ S3 needs three things per chunk: the `VENDOR_INVOKE_*` values (for `_agents_vi_f
   | `unconsumed` | `prompt_not_consumed` |
   | `consumption_check_failed` | `consumption_check_failed` |
 
-- **Empty-output rule** (preserves #2015 T12). The result is `failed`/`empty_output`, with **no reinforce retry**, if raw stdout is whitespace-only, **or** an envelope parses but its `result` is missing, non-string, or whitespace-only. Salvage is not attempted.
+- **Empty-output rule: a per-caller option, default OFF (round 4, N4).** The shared lane loop gains an opt-in flag (named by the TD, for example `--empty-output-fails`).
+  - **Default OFF.** #2014's behaviour is unchanged for every other caller. A text-but-no-JSON reply, including an envelope whose `result` is empty, takes the single reinforce retry (TD-2014 §6.3, `run_second_review.sh:734`) and ends as `unparseable`, which second review tolerates under `--allow-unparseable`. So when #2014 S2 moves second review onto the lib, the mandatory pre-PR gate's outcome does not change. This makes the result file purely additive.
+  - **ON (validate_agents opts in; preserves #2015 T12).** The result is `failed`/`empty_output`, with **no reinforce retry**, if raw stdout is whitespace-only, **or** an envelope parses but its `result` is missing, non-string, or whitespace-only. Salvage is not attempted.
+  - For validate_agents both settings fail closed, because it does not pass `--allow-unparseable`. The option only fixes which detail is reported.
+  - A #2014 lib test pins that the default leaves an empty-`result` envelope on the retry → `unparseable` path.
 - S3 maps each result file: on `ok`, run `split-findings` (AD-8) on `salvaged`, then re-serialise. Otherwise, write `_agents_vi_failure_json` built from `vi.*`, `detail`, and `stdout_prefix`.
 
 **Rejected alternatives.**
@@ -339,13 +349,25 @@ The cap is deterministic for a given input and never cuts a line. It applies to 
     - Each routed finding is rendered as one plain-text line inside a plain fence: `- [<severity>] <category|type> | <files, comma-joined> | <description> | <fix>`.
     - Every field has backticks replaced by `'` and newlines collapsed to spaces, so nothing in it can open a fence or be parsed as a block.
   - Everything else stays in the reviewer's json block and goes through `process` as normal.
-  - **Fail-closed rules:** if `files` is missing, empty, or not a list, the finding stays blocking. A path that is not in the corpus, or not recognised as a unit path or a `basename.md` of one, also stays blocking. Only a finding whose every listed file is a known context unit is routed out.
-  - **Block verdict after routing (round 3, N1). This is pinned so the result does not depend on whether #2032 is fixed.** Let V be the reviewer's block-level `verdict` and BF the set of its blocking-severity findings (`blocking` for agy; `critical`/`high` for codex, the same `BLOCKING_SEVERITIES` that `compute_verdict` uses).
+  - **Fail-closed rules:** if `files` is missing, empty, or not a list, the finding stays blocking. Only a finding whose **every** listed file resolves to a CONTEXT unit is routed out.
+  - **Path resolution (round 4, C3).** Each listed string is matched against the unit inventory with **exact byte equality**: no trimming, no case folding, no normalisation of `./` or `\`. It resolves to a unit if it equals:
+    - **(a)** a unit's repo-relative path, or
+    - **(b)** a unit's basename (`os.path.basename` of the path), and that basename belongs to **exactly one** unit in the corpus.
+
+    A listed string stays blocking, so the whole finding stays blocking, if:
+    - it matches nothing;
+    - it is a basename shared by more than one corpus unit;
+    - it resolves to a **FOCUS** unit, whether by path or basename;
+    - it resolves to a unit that is in the corpus but **context-only / index-only**, meaning outside P. Only units in P and tagged [CONTEXT] can be routed. The reviewer never saw an index-only unit's text, so a finding about it cannot be pre-existing-in-view.
+
+    Doc parts resolve through their parent doc's path. A string such as `docs/AGENTS.md#3` matches nothing, so it blocks.
+  - **Block verdict after routing (round 3, N1). This is pinned so the result does not depend on whether #2032 is fixed.** Let V be the reviewer's block-level `verdict`, compared after `str(...).strip().lower()`. Let BF be the set of its findings (both `findings` and `attacks`) whose severity, under the **same** `strip().lower()` normalisation, is in `validation_logic.BLOCKING_SEVERITIES` (`("critical","high","blocking")`, `validation_logic.py:62`). That one set applies to **every** lane, agy and codex alike, imported rather than restated (round 4, C2).
     - `error` → unchanged.
     - `approve` → unchanged.
     - `request_changes` → becomes `approve` **only if** BF was non-empty **and** every member of BF was routed to [CONTEXT]. In every other case it stays `request_changes`. That includes the #2032 shape (no findings, or only non-blocking findings): routing never turns a request with no stated blocking basis into an approval.
     - When it downgrades, the re-serialised block records `routed_from_verdict: "request_changes"` and `context_routed: <count>`. The routed findings stay visible in [CONTEXT].
-    - *Why this is not a #683 laundering path:* #683 forbids downgrading a blocking verdict on the strength of a dedup or count. Here the downgrade happens only when the **entire stated blocking basis** has been moved, by deterministic routing the reviewer does not control, to a section a human sees. It is never ledger-driven or model-driven.
+    - *Why this is not a #683 laundering path:* #683 forbids downgrading a blocking verdict on the strength of a dedup or count. Here the downgrade happens only when the **entire stated blocking basis** has been moved to a section a human sees, and the move follows the deterministic rules above. It is never ledger-driven.
+    - **It is model-influenced** (round 4, C5). The rules are deterministic, but their input, each finding's `files`, is written by the reviewer. A FOCUS defect that the reviewer attributes only to CONTEXT files is routed out, and can therefore downgrade the block. That is the **ESC-2 attribution residual** (the "Residual (named)" bullet below). The mitigations are the C3 rules (any FOCUS, ambiguous, unknown, or index-only path keeps the finding blocking) and the [CONTEXT] section, which keeps the routed finding in front of the human. ESC-2 asks the human to accept this residual.
     - *Coupling:* today `compute_verdict` ignores the block verdict (#2032), so an un-rewritten block would *happen* to be non-blocking. Once #2032 is fixed, it would block, and #130 scoping would be undone. This rule makes the outcome identical under both. Without it the design would fail **loud**, not open, but it would still have been wrong to claim independence from #2032 (AD-10).
 - **Residual (named).** A reviewer that lists only context files for a defect that is really in a focus file has that finding routed to [CONTEXT], visible but non-blocking. This is model-controlled attribution. The [CONTEXT] section keeps it in front of the human.
 - **Full mode** (major releases, ad hoc runs) has no context units, and every finding can block.
@@ -408,7 +430,11 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
 **AD-11: codex lane (BINDING).** The codex lane is **not chunked** and gets no index. It stays #2015's single `_vi_lane codex attacks` call under the 1,048,576 B ceiling, with #2015's output path. **Input contract:**
 - **Full mode:** every corpus unit whole, in path order, under today's `=== FILES TO ATTACK ===` marker, plus the capped known-issues block. That is about 0.63 MB, 60% of the ceiling.
 - **Focus mode:** exactly the **placed set P**, whole and in path order. Docs in P are sent whole, not as parts. A `FOCUS: <paths>` / `CONTEXT: <paths>` header goes before the marker, together with the same "findings must involve a FOCUS unit" instruction.
-  - **Round 3: P does not come from `plan`.** It is computed by `agent_graph_logic.py placed-set --focus F` (S1). That is a pure graph computation over focus, edges, and cycles, with no packing, so it **cannot fail for size reasons**. `chunk_logic` recomputes P from the same inputs and must get the same set; a mismatch is a `chunk_plan_failed` on the agy lane.
+  - **Round 3: P does not come from `plan`.** It is computed by `agent_graph_logic.py placed-set --focus F` (S1). That is a pure graph computation over focus, edges, and cycles, with no packing, so it **cannot fail for size reasons**. `chunk_logic` **takes P as an input** (`plan --placed F`, round 4 note (a)) and does not recompute it, so there is one implementation (#2014 D3). It **verifies** P element by element:
+- closure: every focus unit, both ends of every required edge incident to a focus unit, and every member of a required cycle containing one, are all in P;
+- justification: every unit in P is one of those.
+
+A failed check is `chunk_plan_failed` on the agy lane.
   - **When `plan` fails** (exit 2/3/4, with or without agy enabled), codex is unaffected: it still runs on P. Under `--skip-agy`, `plan` is not run at all.
   - If `placed-set` itself fails (exit 2: bad input, I/O), **both** lanes record `chunk_plan_failed` and nothing is launched.
   - **Codex output in focus mode.** #2015's `_vi_lane` path runs unchanged up to `_vi_neutralize_output`. If the neutralised stdout yields **exactly one** reviewer-shaped object, using the same `validation_logic` parser #2015 already uses to accept it, S3 applies `split-findings` and the verdict-after-routing rule (AD-8), then re-serialises the object (AD-10's success path).
@@ -607,4 +633,18 @@ No finding was declined.
 
 No condition was declined.
 
-**Status: Proposed (architect), round 3.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
+**Round 4 (2026-10-09, final)**, responding to APPROVE_WITH_CONDITIONS on `18cefbb10`. Only the listed items were changed. `BLOCKING_SEVERITIES` was verified at `validation_logic.py:62`.
+
+| # | Condition | Disposition |
+|---|---|---|
+| N4 | §4.5's empty-output rule changes the shared lane loop and would make second review exit 1 | **Fixed (per-caller option, as preferred).** The rule is an opt-in lib flag, **default OFF**, which keeps #2014's retry → `unparseable` path for every other caller, second review included. validate_agents opts in. A #2014 lib test pins the default. No #2014 contract change, so no #2014 sign-off is affected. |
+| C2 | Contradictory "blocking finding" definition | **Fixed.** Every lane uses `validation_logic.BLOCKING_SEVERITIES` (`critical`, `high`, `blocking`), imported, with severities compared after `strip().lower()`. The `request_changes` comparison uses the same normalisation. |
+| C3 | Path matching for routing not pinned | **Fixed.** Exact byte equality. A string resolves by repo-relative path, or by basename only if that basename belongs to exactly one corpus unit. Any of the following keeps the finding blocking: an ambiguous basename, an unmatched string, any FOCUS resolution, or an index-only (outside P) unit. Only [CONTEXT] units in P can be routed. |
+| C4 | Plan's fits test and verify-run's check could disagree at the boundary | **Fixed.** One shared `pair_bytes` / `excerpt_pair_bytes` in `chunk_logic` covers headers, separators, and labels, exactly as rendered. It is used by plan's fits test, the post-render assertion, and verify-run. The boundary test uses `overseer` + `worker` at −1/0/+1 bytes. |
+| C5 | The #683 rationale misstated who controls routing | **Fixed.** The text now says routing is deterministic but model-influenced (the reviewer writes `files`). A mis-attributed FOCUS defect can be routed out, and the text points to the ESC-2 attribution residual and its mitigations. |
+| (a) | One implementation of P | **Fixed.** `plan --placed F` takes P from `placed-set` and verifies closure and justification element by element. It does not recompute P. |
+| (b) | Atomicity of `inputs/` copies | **Fixed.** A failed plan writes no `inputs/` copies, following #2014 §4. |
+
+No condition was declined.
+
+**Status: Proposed (architect), round 4.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
