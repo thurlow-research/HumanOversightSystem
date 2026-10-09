@@ -1,6 +1,6 @@
 # ADR-2033: Cross-file chunked review for validate_agents.sh. A deterministic agent graph in every chunk, and chunks packed so every directed agent-to-agent reference is co-resident
 
-**Status:** Proposed (architect), **round 4**, revised after the technical-design review (round 2: REQUEST_CHANGES; rounds 3 and 4: APPROVE_WITH_CONDITIONS on `6d2b4e163` and `18cefbb10`; see §12, Revision log). Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
+**Status:** Proposed (architect), **round 5**, revised after the technical-design review (round 2: REQUEST_CHANGES; rounds 3 and 4: APPROVE_WITH_CONDITIONS on `6d2b4e163` and `18cefbb10`) and the agy second review of `6ab7600b0` (round 5); see §12, Revision log. Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
 **Date:** 2026-10-09
 **Author:** architect (autonomous worker cycle; no human present)
 **Issue:** #2033 (priority:high, v0.7.0) · **Risk tier: HIGH.** S3 touches `scripts/framework/**`, a protected surface, so human approval is required at merge whatever the computed tier.
@@ -247,12 +247,19 @@ The TD may improve the heuristic. It may not weaken the invariant, and it must r
 ```
 CHUNKED REVIEW: this is chunk k of n of ONE review. You see only this chunk.
 This chunk contains: <paths, part i/j, EXCERPT labels>, each tagged [FOCUS] or [CONTEXT] in focus mode
-Reviewed whole in OTHER chunks of this run (not visible to you): <P minus this chunk>
+Reviewed in OTHER chunks of this run (not visible to you): <entries of P not in this chunk; agents listed by path (each is whole in another chunk), docs listed per part as "path part i/j" (each part is in another chunk)>
 In the corpus but NOT reviewed in this run (index only): <context-only units; line omitted when empty>
 <the #2014 cross_chunk instruction, unchanged>
 ```
 
-The two inventory lines together list the corpus minus this chunk, so #2014 AR-7's `P_max` bound and collapse rule carry over unchanged: an 8,192 B bound, then collapse, then exit 3. In full mode the third line is always omitted. The statement "reviewed in other chunks" is therefore never false.
+The two inventory lines together list the corpus minus this chunk, so #2014 AR-7's `P_max` bound and collapse rule carry over unchanged: an 8,192 B bound, then collapse, then exit 3. In full mode the third line is always omitted.
+
+**Why the "other chunks" line is never false (round 5, finding 4).** It no longer says "whole", because doc units are always split (AD-7). Its claim is per entry:
+- An **agent** is listed only if this chunk does not hold it whole. That includes an agent present here only as an EXCERPT. By invariant rule 1, that agent is whole in some other chunk.
+- A **doc part** is listed only if that part is not in this chunk. By rule 1, every part is in some chunk, so it is in another one.
+- No doc is ever claimed to be whole anywhere.
+
+The part-level listing is still bounded by #2014 AR-7's 8,192 B inventory bound and collapse rule. Today's full inventory of 54 entries, parts included, measured 1,795 B in §5.
 
 ### 4.4 `verify-run` for cover mode
 
@@ -364,9 +371,12 @@ The cap is deterministic for a given input and never cuts a line. It applies to 
   - **Block verdict after routing (round 3, N1). This is pinned so the result does not depend on whether #2032 is fixed.** Let V be the reviewer's block-level `verdict`, compared after `str(...).strip().lower()`. Let BF be the set of its findings (both `findings` and `attacks`) whose severity, under the **same** `strip().lower()` normalisation, is in `validation_logic.BLOCKING_SEVERITIES` (`("critical","high","blocking")`, `validation_logic.py:62`). That one set applies to **every** lane, agy and codex alike, imported rather than restated (round 4, C2).
     - `error` → unchanged.
     - `approve` → unchanged.
-    - `request_changes` → becomes `approve` **only if** BF was non-empty **and** every member of BF was routed to [CONTEXT]. In every other case it stays `request_changes`. That includes the #2032 shape (no findings, or only non-blocking findings): routing never turns a request with no stated blocking basis into an approval.
-    - When it downgrades, the re-serialised block records `routed_from_verdict: "request_changes"` and `context_routed: <count>`. The routed findings stay visible in [CONTEXT].
-    - *Why this is not a #683 laundering path:* #683 forbids downgrading a blocking verdict on the strength of a dedup or count. Here the downgrade happens only when the **entire stated blocking basis** has been moved to a section a human sees, and the move follows the deterministic rules above. It is never ledger-driven.
+    - `request_changes` → becomes `approve` **only if** the block originally had **at least one finding** (any severity) **and every one of its findings** (all severities, in both `findings` and `attacks`) was routed to [CONTEXT]. In every other case it stays `request_changes` (round 5, finding 2, which replaces the round-3 "BF non-empty" test).
+      - *Covered:* a block whose findings were all non-blocking and all routed to [CONTEXT] (BF empty) now downgrades. Its entire stated basis is pre-existing context, so after #2032 is fixed it cannot block a release on context-only findings (#130).
+      - *Still never downgraded:* the #2032 no-basis shape. A `request_changes` with **no findings at all**, or with `findings`/`attacks` null, absent, or empty, stays `request_changes`. Routing never turns a request with no stated basis into an approval.
+      - **No downgrade while any FOCUS finding remains.** If even one finding of any severity stays in the block, the block keeps `request_changes`. So a downgraded block never carries unrouted findings. Any FOCUS finding (blocking or not) stays in the block at its own severity, `compute_verdict` counts it exactly as today (blocking severities as NEW blocking unless ledgered), and the block keeps the reviewer's `request_changes`. Routing cannot launder a FOCUS finding of any severity.
+    - When it downgrades, the re-serialised block records `routed_from_verdict: "request_changes"` and `context_routed: <count>`, which is always ≥ 1. The routed findings stay visible in [CONTEXT].
+    - *Why this is not a #683 laundering path:* #683 forbids downgrading a blocking verdict on the strength of a dedup or count. Here the downgrade happens only when the **reviewer's entire stated basis**, meaning every finding, has been moved to a section a human sees, and the move follows the deterministic rules above. It is never ledger-driven.
     - **It is model-influenced** (round 4, C5). The rules are deterministic, but their input, each finding's `files`, is written by the reviewer. A FOCUS defect that the reviewer attributes only to CONTEXT files is routed out, and can therefore downgrade the block. That is the **ESC-2 attribution residual** (the "Residual (named)" bullet below). The mitigations are the C3 rules (any FOCUS, ambiguous, unknown, or index-only path keeps the finding blocking) and the [CONTEXT] section, which keeps the routed finding in front of the human. ESC-2 asks the human to accept this residual.
     - *Coupling:* today `compute_verdict` ignores the block verdict (#2032), so an un-rewritten block would *happen* to be non-blocking. Once #2032 is fixed, it would block, and #130 scoping would be undone. This rule makes the outcome identical under both. Without it the design would fail **loud**, not open, but it would still have been wrong to claim independence from #2032 (AD-10).
 - **Residual (named).** A reviewer that lists only context files for a defect that is really in a focus file has that finding routed to [CONTEXT], visible but non-blocking. This is model-controlled attribution. The [CONTEXT] section keeps it in front of the human.
@@ -410,14 +420,22 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
       - The other details follow the same `agy not launched: … (<detail>, #2033)` pattern.
 
   - The record goes under that chunk's section heading, `## agy — Consistency + Completeness [chunk k/n]`. When n = 1 the heading has no suffix. A heading never contains "skipped".
-- **Coverage gate.** After the lane, the shell keeps `verify-run`'s exit status. If it is non-zero, the shell:
-  - appends one lane-level block **after** all chunk sections (`reviewer: "agy"`, `outcome_detail: "chunk_coverage_failed"`, `verdict: "error"`, the verify-run JSON as `chunk_coverage`);
-  - prints FAIL;
-  - writes **no stamp**;
-  - exits **1** regardless of the finalizer;
-  - **does not count the run as a review pass** (the pass counter is restored), so it never exits 3.
+- **agy-lane failure: plan failure or coverage gate (round 5, findings 1 and 3).** An agy-lane failure stops **only the agy lane**. The run then continues through the codex lane and the normal finalizer. There are two triggers:
+  - **Plan failure** (`plan` exit 2/3/4, or a failed P verification): no agy chunk is launched. The shell writes one agy plan-failure record (the AD-10 keys and stderr above, ending "recorded as error, continuing") and skips the chunk loop and `verify-run`.
+  - **Coverage gate:** the chunk loop ran, but `verify-run` exits non-zero. The shell appends one lane-level block **after** all chunk sections: `reviewer: "agy"`, `outcome_detail: "chunk_coverage_failed"`, `verdict: "error"`, with the verify-run JSON as `chunk_coverage`.
 
-  Plan failures (exit 2/3/4) take the same path with their detail, and no vendor is launched. When n > 1, a verdict-inert `## [COVERAGE] Chunked review (#2014/#2033)` section in a plain fence lists the placed and context-only units, every fallback edge, and every degraded cycle.
+  In both cases the shell sets an `AGY_LANE_FAILED` flag and goes on to the codex lane, which runs on P as AD-11 says, unless it is skipped or unavailable.
+
+  **Then `validation_logic.py process --strict-empty` always runs, exactly once**, over every block, failure records included. Because each failure record carries `verdict: "error"`, `compute_verdict` counts it as one NEW blocking finding (#670). The header is therefore rewritten by `process` from `pending` to **`verdict: request_changes`**, with `new_blocking_count` ≥ 1. It is never left at `pending`. This matches #2015 T3's `header_verdict == "request_changes"`, verified against the test file on #2015's branch.
+
+  **Final exit code when `AGY_LANE_FAILED` is set:**
+  - **1**, whatever codex returned and whatever `process` computed;
+  - **no stamp** is written;
+  - **the run does not count as a review pass** (the pass counter is restored), so it never exits 3 (pass cap) on an operational failure.
+
+  When the agy lane did not fail, today's exit logic applies unchanged: 0 = approve, 1 = new blocking findings, 3 = pass cap.
+
+  When n > 1, a verdict-inert `## [COVERAGE] Chunked review (#2014/#2033)` section in a plain fence lists the placed and context-only units, every fallback edge, and every degraded cycle.
 - **Timeout guard.** #2015's `_vi_unenforceable_reason agy` runs **once, before `plan`**. If it is non-empty, the shell writes one `timeout_unenforceable` record and launches nothing.
 - **Verdict.** One `validation_logic.py process --strict-empty` run over all blocks. **No verdict may be written to the header before `process`.** The header starts at `pending`, which keeps **#2036 inert** for this caller.
 - **#2032 is live here, and the design is coupled to it (round 3 correction).** `compute_verdict` ignores a block-level `request_changes` that has null or empty findings, and chunking multiplies the number of blocks. Round 2 said this design "neither fixes #2032 nor depends on its fix". That was **false** for focus mode: the non-blocking [CONTEXT] rule silently relied on #2032's bug. The AD-8 verdict-after-routing rule removes that dependence, so the gate outcome is the same before and after #2032 is fixed.
@@ -435,7 +453,7 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
 - justification: every unit in P is one of those.
 
 A failed check is `chunk_plan_failed` on the agy lane.
-  - **When `plan` fails** (exit 2/3/4, with or without agy enabled), codex is unaffected: it still runs on P. Under `--skip-agy`, `plan` is not run at all.
+  - **When `plan` fails** (exit 2/3/4), codex is unaffected: it still runs on P, and the run then ends as AD-10's agy-lane failure (`process` runs, header `request_changes`, exit 1). Under `--skip-agy`, `plan` is not run at all.
   - If `placed-set` itself fails (exit 2: bad input, I/O), **both** lanes record `chunk_plan_failed` and nothing is launched.
   - **Codex output in focus mode.** #2015's `_vi_lane` path runs unchanged up to `_vi_neutralize_output`. If the neutralised stdout yields **exactly one** reviewer-shaped object, using the same `validation_logic` parser #2015 already uses to accept it, S3 applies `split-findings` and the verdict-after-routing rule (AD-8), then re-serialises the object (AD-10's success path).
   - If it yields more than one such object, S3 does **not** route. It writes #2015's neutralised output as today, so every attack can block. That is fail-closed, and the stderr names it.
@@ -460,9 +478,9 @@ A failed check is `chunk_plan_failed` on the agy lane.
   - cycles on a synthetic graph;
   - `split-findings`: every fail-closed case (no/empty/non-list `files`, unknown path) stays blocking;
   - verdict after routing (AD-8, round 3):
-    - `request_changes` with all blocking findings routed → `approve`, with `routed_from_verdict` and `context_routed`;
-    - one blocking focus finding left → stays `request_changes`;
-    - `request_changes` with no findings, or only non-blocking findings (the #2032 shape) → stays `request_changes`;
+    - `request_changes` with every finding routed → `approve`, with `routed_from_verdict` and `context_routed` ≥ 1. This covers both an all-blocking block and an all-non-blocking block (BF empty);
+    - any FOCUS finding left, of any severity (a blocking one, or a single non-blocking warning) → stays `request_changes`, and the remaining finding is counted by `compute_verdict` at its own severity;
+    - `request_changes` with no findings, or with null/absent `findings`/`attacks` (the #2032 shape) → stays `request_changes`;
     - `error` is never touched;
   - [CONTEXT] rendering: no JSON object and no `verdict`/`findings`/`attacks`/`error` key in the section, and a backtick-laden description cannot open a fence (AR-5);
   - `placed-set`: focus plus edge ends plus cycle members, size-independent, with exit 2 only on bad input;
@@ -498,12 +516,12 @@ A failed check is `chunk_plan_failed` on the agy lane.
 - Hermetic tests:
   - a ~400 KB fixture with two ~70 KB hub agents → ≥ 3 agy calls, each stdin ≤ 180,000 B; every fixture agent is whole in some stdin; every fixture edge is satisfied per §4.2;
   - all approve → exit 0 and stamp;
-  - one chunk fails → its `_agents_vi_failure_json`-shaped record, then `chunk_coverage_failed`, exit 1, no stamp, pass counter not advanced;
+  - one chunk fails → its `_agents_vi_failure_json`-shaped record, then `chunk_coverage_failed`, codex still runs, header `verdict: request_changes` (written by `process`), exit 1, no stamp, pass counter not advanced;
   - an unterminated JSON chunk followed by a `request_changes` chunk → exit 1;
   - a prose chunk → exit 1;
   - no `timeout` binary → no plan and no launch;
   - codex called once, with no index in its stdin, full corpus in full mode, exactly P in focus mode;
-  - focus mode where `plan` fails with `unit_too_large`: codex still runs on P;
+  - focus mode where `plan` fails with `unit_too_large`: codex still runs on P, `process` runs, header `request_changes`, exit 1 (never 3, even at the pass cap), no stamp;
   - `--skip-agy` focus mode: codex runs on P and `plan` is never invoked;
   - a codex reply in focus mode with two reviewer objects → no routing, all attacks blocking;
   - plan-failure records carry the AD-10 numeric keys and stderr wording;
@@ -647,4 +665,15 @@ No condition was declined.
 
 No condition was declined.
 
-**Status: Proposed (architect), round 4.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
+**Round 5 (2026-10-09)**, responding to the cross-vendor second review (agy) of `6ab7600b0`. The coordinator verified all four findings as real. Only these were changed. T3's `header_verdict == "request_changes"` assertion was verified against `git show worker-2015-validators-vendor-invoke-261008083501-752797:tests/framework/test_framework_validators_vendor_invoke.py`.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 (HIGH) | AD-10 said a plan failure launches no vendor and exits 1; AD-11 said codex still runs on P | **Fixed.** AD-10 now defines an **agy-lane failure** (plan failure, or a coverage-gate failure). It stops only the agy lane: no agy chunks, one agy failure record. The run continues to codex on P, then the finalizer. The final exit code is **1**, with no stamp, the pass not counted, and never 3. The stderr "recorded as error, continuing" is now accurate. AD-11 and the S3 tests are aligned. |
+| 2 (HIGH) | An all-non-blocking block routed entirely to [CONTEXT] stays `request_changes`, so it blocks once #2032 is fixed | **Fixed.** The rule is now: `request_changes` → `approve` iff the block had ≥ 1 finding **and every finding** (all severities) was routed. That covers the BF-empty case. A block with no findings, or null/absent ones, still never downgrades. No downgrade happens while **any** FOCUS finding remains, so a remaining FOCUS finding of any severity stays in the block, is counted by `compute_verdict` at its own severity, and cannot be laundered. S1 tests updated. |
+| 3 (MEDIUM) | The failure path skipped `process`, leaving the header at `pending` | **Fixed.** `process --strict-empty` **always runs once**, on the failure path too. The failure records' `verdict: "error"` count as NEW blocking (#670), so the header becomes `request_changes`, never `pending`. That satisfies #2015 T3. The exit code is then forced to 1 by `AGY_LANE_FAILED`. |
+| 4 (MEDIUM) | "Reviewed whole in OTHER chunks" is false for always-split docs | **Fixed.** The line is now "Reviewed in OTHER chunks": agents listed by path (each whole elsewhere, including agents present here only as an excerpt), docs listed per part. A per-entry argument from invariant rule 1 keeps "never false" true. The AR-7 bound is unchanged. |
+
+No finding was declined.
+
+**Status: Proposed (architect), round 5.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
