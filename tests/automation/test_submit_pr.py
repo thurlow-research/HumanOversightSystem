@@ -46,6 +46,8 @@ case "$sub" in
   rev-parse)
     if [[ "$*" == *"--git-common-dir"* ]]; then
         echo "${GIT_COMMON_DIR:?GIT_COMMON_DIR not set in test harness}"
+    elif [[ "$*" == *"refs/remotes/origin/"* ]]; then
+        echo "${GIT_BASE_SHA:-3333333333333333333333333333333333333333}"
     elif [[ "$*" == *"--verify"* ]]; then
         if [[ "${GIT_VERIFY_FAIL:-}" == "1" ]]; then exit 1; fi
         echo "${GIT_HEAD_SHA:-1111111111111111111111111111111111111111}"
@@ -121,6 +123,7 @@ def _write_exec(path: Path, body: str) -> None:
 
 
 DEFAULT_CYCLE_ID = "test-cycle"
+PINNED_BASE_SHA = "3333333333333333333333333333333333333333"
 PINNED_SHA = "1111111111111111111111111111111111111111"
 
 
@@ -1375,7 +1378,7 @@ def test_ck_commit_refused_after_fetch_with_range_and_ordering(h):
     fetch_idx = calls.index(_git_calls(cap, "fetch")[0])
     log_line = _git_calls(cap, "log")[0]
     assert fetch_idx < calls.index(log_line)
-    assert log_line.split()[-1] == f"origin/main..{PINNED_SHA}"
+    assert log_line.split()[-1] == f"{PINNED_BASE_SHA}..{PINNED_SHA}"
 
 
 def test_ck_declared_closes_allows_pr(h):
@@ -1507,5 +1510,41 @@ def test_push_source_is_pinned_sha_not_branch_name(h):
     ][0]
     assert push_line.endswith(f" {other}:refs/heads/current-branch")
     assert "refs/heads/current-branch:refs/heads/" not in push_line
-    assert _git_calls(cap, "log")[0].split()[-1] == f"origin/main..{other}"
+    assert _git_calls(cap, "log")[0].split()[-1] == f"{PINNED_BASE_SHA}..{other}"
     assert any("--no-replace-objects" in ln and "rev-parse" in ln for ln in cap.splitlines())
+
+
+def test_scan_range_starts_at_pinned_base_sha(h):
+    """#1856 CWE-367: the scanned range uses the base SHA pinned after fetch."""
+    base = "4444444444444444444444444444444444444444"
+    result = h.run(
+        [*_body(h, "clean body\n"), *OPEN_ARGS],
+        env_overrides={"GIT_BASE_SHA": base},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    assert _git_calls(cap, "log")[0].split()[-1] == f"{base}..{PINNED_SHA}"
+    assert any(base in ln for ln in _git_calls(cap, "rev-list"))
+    calls = cap.splitlines()
+    pin = [i for i, ln in enumerate(calls) if "refs/remotes/origin/main" in ln][0]
+    assert calls.index(_git_calls(cap, "fetch")[0]) < pin
+
+
+def test_update_pr_scan_range_uses_pinned_shas(h):
+    base = "4444444444444444444444444444444444444444"
+    result = h.run(
+        ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"],
+        env_overrides={"GIT_BASE_SHA": base},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _git_calls(h.capture(), "log")[0].split()[-1] == f"{base}..{PINNED_SHA}"
+
+
+def test_merge_from_base_uses_pinned_base_sha(h):
+    base = "4444444444444444444444444444444444444444"
+    result = h.run(
+        [*_body(h, "clean body\n"), *OPEN_ARGS],
+        env_overrides={"GIT_BASE_SHA": base, "GIT_BEHIND_COUNT": "2"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _git_calls(h.capture(), "merge")[0].split()[-1] == base

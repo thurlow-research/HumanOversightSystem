@@ -25,7 +25,7 @@
 # way). This script refuses to open or update a PR unless every such issue is
 # declared with --closes (repeatable; comma-separated lists accepted). The
 # title and body are scanned before any network access; the commits in
-# origin/<base>..<pinned head SHA> are scanned after the base fetch/merge. No
+# <pinned base SHA>..<pinned head SHA> are scanned after the base fetch/merge. No
 # exemptions for code spans, fences, or blockquotes. --closes declares intent;
 # only pass it for an issue the PR genuinely closes. --confirmed does not
 # bypass the guard, and every --app role is scanned. Implementation:
@@ -279,13 +279,20 @@ fi
 git -C "$SCRIPT_DIR/.." fetch origin "$BASE" \
     || err "Could not fetch origin/${BASE} — resolve network/auth before opening a PR"
 
-BEHIND_COUNT="$(git -C "$SCRIPT_DIR/.." rev-list --count "refs/heads/${HEAD}..origin/${BASE}")"
+# Pin the base once (CWE-367): every later use -- behind-count, merge, and the
+# phase-2 scan range -- takes this SHA, never the movable origin/<base> ref.
+BASE_SHA="$(git -C "$SCRIPT_DIR/.." --no-replace-objects rev-parse --verify "refs/remotes/origin/${BASE}^{commit}")" \
+    || err "Could not resolve origin/${BASE} to a commit — refusing (#1856)"
+[[ "$BASE_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+    || err "Resolved base for '${BASE}' is not a commit SHA: '${BASE_SHA}' — refusing (#1856)"
+
+BEHIND_COUNT="$(git -C "$SCRIPT_DIR/.." rev-list --count "refs/heads/${HEAD}..${BASE_SHA}")"
 if [[ "$BEHIND_COUNT" -gt 0 ]]; then
     if [[ "$HEAD_IS_CHECKED_OUT" != "true" ]]; then
         err "${HEAD} is ${BEHIND_COUNT} commit(s) behind origin/${BASE} and is not the checked-out branch, so it cannot be merged here without touching the working tree. Rebuild it onto a fresh base (scripts/dev/commit_onto_base.sh --base origin/${BASE} --branch ${HEAD} ...) and retry."
     fi
     warn "${HEAD} is ${BEHIND_COUNT} commit(s) behind origin/${BASE} — merging base in before push"
-    if ! git -C "$SCRIPT_DIR/.." merge --no-edit "origin/${BASE}"; then
+    if ! git -C "$SCRIPT_DIR/.." merge --no-edit -m "Merge origin/${BASE} (${BASE_SHA}) into ${HEAD}" "$BASE_SHA"; then
         git -C "$SCRIPT_DIR/.." merge --abort 2>/dev/null || true
         err "Merging origin/${BASE} into ${HEAD} produced conflicts — resolve manually (git fetch origin ${BASE} && git merge origin/${BASE}, fix conflicts, commit), then retry submit_pr.sh. Never push a branch built on a stale base: its PR would silently propose reverting the commits it's missing (#1162)."
     fi
@@ -308,12 +315,12 @@ HEAD_SHA="$(git -C "$SCRIPT_DIR/.." --no-replace-objects rev-parse --verify "ref
 if [[ -z "$UPDATE_PR" ]]; then
     _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
         ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
-        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..${HEAD_SHA}" \
+        --repo-dir "$SCRIPT_DIR/.." --range "${BASE_SHA}..${HEAD_SHA}" \
         --title="$TITLE" --body-file "$BODY_FILE" --warn-unused
 else
     _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
         ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
-        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..${HEAD_SHA}" \
+        --repo-dir "$SCRIPT_DIR/.." --range "${BASE_SHA}..${HEAD_SHA}" \
         --warn-unused
 fi
 
