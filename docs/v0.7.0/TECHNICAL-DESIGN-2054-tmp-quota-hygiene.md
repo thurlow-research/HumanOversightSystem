@@ -2,8 +2,10 @@
 
 Status: **Architect round 3 (2026-10-09): APPROVED WITH CONDITIONS R3-1..R3-6** (see "Architect review (round 3 of 5)" at the end).
 - **S2a and S2b are ready for the coder now.** R3-1..R3-6 are binding and fully specified, and **where they conflict with the body, they govern**.
-- technical-design folds them into the body in parallel. No round 4 is required unless technical-design disputes a condition.
+- **R3-1..R3-6 are now folded into the body** (see "Round-3 fold-in note" at the end). The body and the conditions agree.
+- technical-design disputes no condition, so no round 4 is required.
 - The code-reviewer checks conformance to R3-1..R3-6.
+- The R3-2 follow-up is #2056 (milestone v0.7.4, Sandboxing & Isolation).
 
 Previous status: **Round 3 revision (2026-10-09), restructured.**
 
@@ -51,12 +53,15 @@ The design has three layers. The order is deliberate.
 - `HOS_TMP_ROOT` is a `config.sh` setting chosen at install time.
   - The default is the hidden `<clone>/../.tmp`, which here is `~/Code/HumanOversightSystem/.tmp`. That matches the sibling `.local/handoff/<role>` and `.config/hos` convention.
   - Each role gets `$HOS_TMP_ROOT/<role>`, mode 0700.
-- `bin/hos-cron` (worker, overseer), `bin/hos-human` (human) and `run_tests_inner_loop.sh` export `TMPDIR` to that dir. pytest's `pytest-of-<user>`, Python `tempfile` and `mktemp` all follow `TMPDIR`. So pytest results no longer consume RAM or the `/tmp` quota.
-- **Role isolation.** Each role's sandbox may read and write **only** its own `.tmp/<role>`, never a shared writable `.tmp`. The overseer reviews worker artifacts, and cross-role writes would break that separation.
+- `bin/hos-cron` (worker, overseer) and `bin/hos-human` (human) export `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` to that dir (R3-1).
+  - `CLAUDE_CODE_TMPDIR` is what reaches **sandboxed** Bash, where Claude Code overrides `TMPDIR`.
+  - `run_tests_inner_loop.sh` resolves its own dir in a fixed order (§2A.3).
+  - pytest's `pytest-of-<user>`, Python `tempfile` and `mktemp` all follow `TMPDIR`, so pytest results no longer consume RAM or the `/tmp` quota.
+- **Role separation (R3-2).** No role's sandbox is granted another role's temp dir, and `.tmp` itself is never granted as a shared writable dir. This is a temp-dir separation, not a role-integrity boundary: the pre-existing cross-clone write grants are out of scope, and are tracked in #2056.
 - **What stays on `/tmp`:**
   - small agent draft files in `/tmp/claude/…`, because CLAUDE.md mandates those literal paths for allowlisting;
-  - Claude Code's own `/tmp/claude-<uid>`;
-  - the `${TMPDIR:-/tmp}` fallback when no root is configured.
+  - the `${TMPDIR:-/tmp}` fallback, when no root is configured or the session was not started by a launcher.
+- **What moves:** in launched sessions, Claude Code's own `claude-<uid>` dir moves into `.tmp/<role>/`, via `CLAUDE_CODE_TMPDIR` (R3-5).
 
 ### Layer 1: primary, in-run cleanup (S1, unchanged)
 
@@ -82,7 +87,7 @@ The reaper sweeps `/tmp` **and** every HOS tmp root it is given (`--root`, `--ho
 - a **low-space trigger**: at `bin/hos-cron` cycle start, a write probe of the role's `TMPDIR` and of `/tmp` runs the reaper only when a write fails with EDQUOT/ENOSPC (§8.5). `df` is unreliable under `usrquota`;
 - the **inner-loop pre-run**, for classes P and T only (§8.1).
 
-It removes **only entries older than 24 h** (D11). The one exception is that the newest finished failed pytest run is **kept** beyond 24 h (§5.3.2 rule 4). Age is **never sufficient alone**. Every removal also needs liveness evidence that the entry is dead (§5.6):
+It removes **only entries older than 24 h** (D11), with **no exceptions** (R3-3, human ruling "Anything older than a day goes"). The only window for inspecting a failed run is Layer 1's pytest `count=1` retention, which lasts until the next completed session. Age is **never sufficient alone**. Every removal also needs liveness evidence that the entry is dead (§5.6):
 - a dead flock;
 - no live process with a cwd, root, exe or open fd under it;
 - no held lock;
@@ -225,15 +230,26 @@ The same module exposes `resolve_root(repo) -> Path` and `check_outside_work_tre
 
 | Launcher | Placement | Behaviour |
 |---|---|---|
-| `bin/hos-cron` (worker, overseer) | Immediately after the `_audit()` helper definition. That is after the overlap lock and cycle-identity minting, and before the §8.5 low-space trigger, the usage-pause gate, preflight and auth. | `_hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create)"`. On rc 0: `export TMPDIR="$_hos_tmp_dir"` and `HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"`. On failure: one `$LOG_PREFIX WARN: HOS tmp root unusable (<reason>) — TMPDIR left as-is` line, plus `_audit cycle-tmp-root-fallback "reason=<reason>"`, and the cycle continues. **Never fatal.** The launched Claude session, the inner-loop baseline and every child inherit `TMPDIR`. |
-| `bin/hos-human` (human) | After the token mint, identity guard and repo sync, immediately before `exec claude`. | Same resolve call with `--role human`. On failure, a warning on stderr; the session still starts. Placing it **after** the token mint keeps `get_app_token.sh`'s short-lived token temp file on the RAM-backed `/tmp`, as today, rather than on disk. |
-| `scripts/framework/run_tests_inner_loop.sh` | Top of the script, after `REPO_ROOT`. | If `TMPDIR` is set and non-empty, **inherit it** (the launcher already chose). Otherwise resolve with `--role local --create` and export the result. On failure, warn on stderr and leave `TMPDIR` unset, so `/tmp` is used as before. |
+| `bin/hos-cron` (worker, overseer) | Immediately after the `_audit()` helper definition. That is after the overlap lock and cycle-identity minting, and before the §8.5 low-space trigger, the usage-pause gate, preflight and auth. | `_hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create)"`. On rc 0, export **three** variables, each set to the role dir (R3-1): `export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"`. Also set `HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"`. On failure: one `$LOG_PREFIX WARN: HOS tmp root unusable (<reason>) — TMPDIR left as-is` line, plus `_audit cycle-tmp-root-fallback "reason=<reason>"`, and the cycle continues with none of the three exported. **Never fatal.** The launched Claude session, the inner-loop baseline and every child inherit them. |
+| `bin/hos-human` (human) | After the token mint, identity guard and repo sync, immediately before `exec claude`. | Same resolve call with `--role human`. On success, the same three exports: `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` (R3-1). On failure, a warning on stderr, nothing exported, and the session still starts. Placing it **after** the token mint keeps `get_app_token.sh`'s short-lived token temp file on the RAM-backed `/tmp`, as today, rather than on disk. |
+| `scripts/framework/run_tests_inner_loop.sh` | Top of the script, after `REPO_ROOT`. | **Resolution order (R3-1)**, first match wins, and the result is exported as `TMPDIR`:<br>1. `HOS_TMP_DIR`, if set and an existing writable dir (a launcher chose);<br>2. otherwise `resolve --repo "$REPO_ROOT" --role local --create`, if it succeeds and the dir is writable;<br>3. otherwise the inherited non-empty `TMPDIR`;<br>4. otherwise unset, i.e. `/tmp`.<br>Steps 2→3 and 3→4 each print one WARN line on stderr. Blindly inheriting a non-empty `TMPDIR` is **not** allowed: in a sandboxed ad-hoc session it is Claude Code's `/tmp/claude`, which would put pytest back on the RAM tmpfs, inside the class-S scratch root. |
 
 S1 needs no change: pytest's `pytest-of-<user>`, the D4 `session-tmp` redirect and the D6 basetemp measurement all follow `TMPDIR`.
 
-**Coder verification item.** Confirm whether Claude Code places its own temp dir (`claude-<uid>`) under `$TMPDIR` when `TMPDIR` is set. If it does, that dir moves into `.tmp/<role>/`, which the role's sandbox already allows. The reaper never touches `claude-<digits>` names (§5.7.3). Record the observed behaviour in the PR.
+**Why `CLAUDE_CODE_TMPDIR` (R3-1; architect evidence from the installed CLI 2.1.295).**
+- In **sandboxed** Bash, Claude Code sets the child `TMPDIR` to `CLAUDE_CODE_TMPDIR || CLAUDE_TMPDIR || "/tmp/claude"`. That **replaces** any launcher-exported `TMPDIR`.
+- Claude Code's own dir is `<CLAUDE_CODE_TMPDIR || os.tmpdir()>/claude-<uid>`.
+- Exporting `CLAUDE_CODE_TMPDIR` therefore puts both sandboxed Bash children and `claude-<uid>` inside the role's granted `.tmp/<role>`.
+- `HOS_TMP_DIR` is the HOS-owned marker that the inner loop trusts (step 1 above). Claude Code never rewrites it.
 
-### 2A.4 Sandbox template: role isolation (`contract/sandbox-policy.template.json`, protected)
+**Residual (R3-1).** A sandboxed session that no launcher started (for example a plain `claude` in a worktree) cannot write `.tmp/local`. Step 2 fails, so it falls to step 3, `/tmp/claude`.
+- R2-7's `SKIP other-class` keeps class S off its `pytest-of-*`.
+- The inner-loop pre-run (`--root "$TMPDIR"`) reaps it as class P.
+- §8.3's CLAUDE.md text tells interactive users to start sessions through `bin/hos-human`, or to export `CLAUDE_CODE_TMPDIR`.
+
+**Coder verification item (replaces the round-3 open question).** In a session launched by `bin/hos-human`, a sandboxed Bash `echo $TMPDIR` must print `<HOS_ROOT>/.tmp/human`. Record the output in the PR.
+
+### 2A.4 Sandbox template: per-role temp-dir separation (`contract/sandbox-policy.template.json`, protected)
 
 Add exactly these entries, using the existing placeholders. This is the shape the human is adding by hand to the live `settings.local.json`:
 
@@ -248,8 +264,13 @@ Add exactly these entries, using the existing placeholders. This is the shape th
 Unchanged:
 - every `/tmp` entry (`additionalDirectories` `/tmp/claude` and `/tmp`; `Read`/`Edit`/`Write(//tmp/**)`; `allowWrite` `/tmp`). Drafts in `/tmp/claude`, Claude Code's `/tmp/claude-<uid>` and the `${TMPDIR:-/tmp}` fallback still need them.
 - `denyRead` `"__HOME__/"`. It already hides the *other* roles' `.tmp/<role>` dirs, because `__HOS_ROOT__` is under `__HOME__` and only the own-role subdir is re-allowed.
+- Every `__HOME__/.local/share` entry. It is readable but not writable from the sandbox, which is why the daily cron runs the reaper copy installed there (§8.2, R3-4).
 
-**No entry grants `__HOS_ROOT__/.tmp` itself or another role's dir. That is the isolation guarantee.**
+**The guarantee, stated precisely (R3-2): no role's sandbox is granted another role's temp dir.** No entry grants `__HOS_ROOT__/.tmp` itself or a sibling role's dir. The grant **does not widen any existing access**: `.tmp` lies outside every clone, and `denyRead __HOME__/` hides the sibling role dirs.
+- This is a **temp-dir separation, not a role-integrity boundary.** Every role's sandbox can already write all three clones (`allowWrite` `__HOS_ROOT__/{Human,Worker,Overseer}`). That includes another clone's `scripts/framework/config.sh`, which sets that role's `HOS_TMP_ROOT`, and its `bin/hos-cron`. So this design gives no protection against a role that tampers with another clone.
+- That cross-clone write grant is pre-existing and out of scope here. Narrowing it per role is tracked in **#2056** (milestone v0.7.4, Sandboxing & Isolation), alongside #1146.
+
+**The cross-role janitor (R3-6).** The §8.5 low-space trigger and the daily reaper (§8.2) act on **every** role's dir, as **unsandboxed machine processes**. That is outside the per-role sandbox grants by design. Per-role isolation governs agent sessions; the reaper is a machine janitor, not an agent.
 
 `scripts/framework/gen_sandbox_config.py` adds a guard before rendering (D15). It fails closed with `EXIT_USAGE` and a message naming the fix in these cases:
 - `resolve_root(--clone-dir)` ≠ `<HOS_ROOT>/.tmp`, compared as realpath, or by string when the path does not exist yet;
@@ -264,7 +285,10 @@ The values sidecar is unchanged: no new key, no version bump. Check mode against
   - the per-role `.tmp/__ROLE__` grant;
   - why the dir is never shared across roles (the overseer must not read or write worker scratch through a common dir);
   - why `/tmp` stays;
-  - why `denyRead __HOME__/` is what hides sibling role dirs.
+  - why `denyRead __HOME__/` is what hides sibling role dirs;
+  - the R3-2 wording: temp-dir separation, not a role-integrity boundary, with a pointer to #2056;
+  - the R3-6 note on the cross-role janitor;
+  - `CLAUDE_CODE_TMPDIR` (R3-1).
 - §3 `permissions` notes `quota` and `findmnt`.
 - §5 gains a note under the table: `.tmp/__ROLE__` is derived from `__HOS_ROOT__` and needs no placeholder of its own, and the generator refuses a clone whose `HOS_TMP_ROOT` is not `__HOS_ROOT__/.tmp` (D15).
 
@@ -286,21 +310,23 @@ Bounds:
 - retention (D1) removes green runs;
 - the daily reaper and the low-space trigger remove stale debris after 24 h.
 
-The low-space probe (§8.5) catches ENOSPC on the disk root as well as EDQUOT on `/tmp`. There is no automatic size cap on the root beyond these. `quota`/`findmnt` are allowed in the sandbox for diagnosis.
+The low-space probe (§8.5) catches ENOSPC on the disk root as well as EDQUOT on `/tmp`. There is no automatic size cap on the root beyond these. `quota` and `findmnt` are allowed in the sandbox for diagnosis.
+
+**Claude Code's own dir on disk (R3-5, accepted residual).** With `CLAUDE_CODE_TMPDIR` exported, `claude-<uid>` lives in `.tmp/<role>/` on disk, so a reboot no longer clears it. Claude Code manages that dir itself; it is 124 KB today. The reaper never deletes any `claude-*` entry. Under `--measure`, a `claude-<uid>` entry over 100 MiB in any root is reported as `WARN large-unowned` (§5.4), for visibility only.
 
 ### 2A.7 Tests (S2a)
 
 | ID | Asserts |
 |---|---|
-| H1 | `tests/framework/test_hos_tmp_root.py`: config.sh missing or empty → `<repo>/../.tmp`. Relative, `~/` and absolute values resolve as specified. A value with `$`, a backtick, `;` or `*` → exit 3. The last `HOS_TMP_ROOT=` line wins. |
+| H1 | `tests/framework/test_hos_tmp_root.py`: config.sh missing or empty → `<repo>/../.tmp`. Relative, `~/` and absolute values resolve as specified. A value with `$`, a backtick, `;` or `*` → exit 3. The last `HOS_TMP_ROOT=` line wins. **This repo's committed `scripts/framework/config.sh` line parses to `../.tmp`** (architect ruling 7). That guards against an edit the shell accepts but the resolver rejects. |
 | H2 | Root inside a work tree: `.git` dir in an ancestor, and `.git` *file* in an ancestor → exit 3. Root equal to or under the repo → exit 3. |
 | H3 | `--create`: creates root and role dir with 0700. Tightens an existing 0755 role dir to 0700. A symlinked root or role dir → exit 3. A role outside the set → exit 2. |
 | H4 | No subprocess: `subprocess` and `os.exec*` are monkeypatched to raise, and resolution succeeds. |
 | G1 | `tests/framework/test_gen_sandbox_config.py`: a rendered `human` config contains exactly the five §2A.4 locations' new entries, with `human` substituted. It contains no `.tmp/worker`, `.tmp/overseer` or bare `.tmp` grant. The `/tmp` entries are unchanged. |
 | G2 | The generator fails closed (`EXIT_USAGE`) when the clone's config.sh moves `HOS_TMP_ROOT` elsewhere, and when `--hos-root` is not under `--home`. |
-| L1 | `tests/automation/test_hos_cron.py`: the launched session's environment has `TMPDIR=<fake parent>/.tmp/worker`, and that dir exists with mode 0700. With the resolver stubbed to fail: one WARN line, a `cycle-tmp-root-fallback` audit event, and the cycle continues with `TMPDIR` unchanged. |
-| L2 | `tests/framework/test_hos_human_launcher.py` (static order check): in `bin/hos-human`, the resolver call and `export TMPDIR` come after the `get_app_token.sh` call and before `exec claude`. |
-| L3 | `tests/framework/test_run_tests_inner_loop.py`: an inherited non-empty `TMPDIR` is kept. An unset `TMPDIR` resolves to `.tmp/local`. A resolver failure gives a WARN and an unset `TMPDIR`. |
+| L1 | `tests/automation/test_hos_cron.py`: the launched session's environment has `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` all equal to `<fake parent>/.tmp/worker`, and that dir exists with mode 0700. With the resolver stubbed to fail: one WARN line, a `cycle-tmp-root-fallback` audit event, none of the three exported, and the cycle continues. |
+| L2 | `tests/framework/test_hos_human_launcher.py` (static order check): in `bin/hos-human`, the resolver call and the export of `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` come after the `get_app_token.sh` call and before `exec claude`. |
+| L3 | `tests/framework/test_run_tests_inner_loop.py`, all four R3-1 branches: (1) `HOS_TMP_DIR` set to a writable dir → used, even with a different `TMPDIR` inherited; (2) no `HOS_TMP_DIR`, inherited `TMPDIR=/tmp/claude`-equivalent, and `.tmp/local` creatable → **`.tmp/local` wins**; (3) `.tmp/local` not creatable (resolver stubbed to fail) with an inherited `TMPDIR` → inherited value kept, plus a WARN; (4) nothing usable → `TMPDIR` unset, plus a WARN. |
 | I1 | `tests/framework/test_install*.py`: the default is `../.tmp` for a multi-clone registry fixture and `~/.local/state/hos/tmp/<slug>` otherwise. A value inside a work tree is refused (non-interactive: non-zero exit). |
 
 ---
@@ -510,8 +536,6 @@ Candidates are the direct children of `<root>/pytest-of-<user>`, where `<user>` 
 
 #### 5.3.2 Decision table for `pytest-N`, evaluated in order
 
-Before the table, compute **NEWEST_FINISHED**: the highest-numbered `pytest-N` with **no `.lock`**, over all children and regardless of age.
-
 1. quiet < AGE → **SKIP fresh**. This applies always.
 2. `.hos-live` exists → run the §5.3.1 probe.
    - SKIP verdicts stand.
@@ -520,8 +544,9 @@ Before the table, compute **NEWEST_FINISHED**: the highest-numbered `pytest-N` w
      - `.lock` **absent** → the run finished normally (§4.5 released the flock) → go to rule 4 (AC-1).
 3. No `.hos-live` and `.lock` exists (a legacy, consumer or other-repo run without D3) → candidate **REAP legacy-stale**. AGE is already satisfied by rule 1, and the veto still applies.
 4. No `.lock` (a finished run, with or without an unlocked `.hos-live`):
-   - if this is NEWEST_FINISHED → **KEEP newest**. This preserves count=1's inspection intent; the next completed session's own pytest cleanup supersedes it.
-   - otherwise → candidate **REAP finished** (AC-2: quiet ≥ AGE, which is 24 h, plus the veto).
+   - → candidate **REAP finished** (AC-2: quiet ≥ AGE, which is 24 h, plus the veto).
+   - **No KEEP-newest exception (R3-3, human ruling: "Anything older than a day goes").** The inspection window is Layer 1: pytest's `count=1` keeps the newest failed dir until the next completed session (§3 R-2). The reaper adds no window of its own.
+   - AC-1's routing of a successful probe with no `.lock` to this rule, rather than to `dead-flock`, is kept. It now affects only the reason label.
 5. **Live-process veto (AC-3)**, applied to *every* candidate REAP in class P (rules 2, 3 and 4, and `garbage-*`). This is stricter than AC-3's "rules 3 and 4": adding rule 2 costs nothing and covers a killed pytest whose own child is still running in the dir. The veto checks, in order:
    - `.lock` names PID p, `/proc/p` exists, and `/proc/p/cmdline` contains `pytest` → **SKIP live-proc**;
    - any visible process's `cwd`, `root` or open fd resolves to a path at or under the candidate → **SKIP live-proc**;
@@ -567,7 +592,7 @@ Each must also be **owned by uid** and **not a symlink**.
 - **Open-handle veto.** If the entry is an exact target of any `cwd`, `root` or fd in the §5.3.3 index → **SKIP open**. If the index is incomplete → **SKIP proc-scan-incomplete**. If `/proc` is absent → no veto (accepted residual, D12).
 - **Never touched:** `pytest-of-*`, `claude-*`, `hos-*` (including the #1903 failure logs), `node-compile-cache`, `gh-cli-cache`, `*.sock`, and anything not matching the patterns. This is an allowlist of patterns.
 - **Non-empty `tmp*` dirs are deleted only through class S** (human ruling §12.1(d): "Anything older than a day goes"). They are never deleted by an age-only rule. The class-S procedure applies in full: newest-timestamp-in-tree age, ownership, same device, no symlink traversal, host view, the process and lock vetoes, session exclusions, and the rename plus dev/ino re-check.
-- **Large-entry warning (AC-10: `--measure` only).** Under `--measure`, any user-owned top-level entry larger than 100 MiB that no class covers produces `WARN large-unowned <path> <bytes>`. The walk is depth-bounded and time-boxed, and **never runs** in default or `--summary-only` mode. Deletion of large *agent scratch trees*, such as `/tmp/claude/hos1935` (548 MB), is no longer report-only. The human rulings that supersede Q6 move them to class S (§5.7). Class S is on unless `--no-scratch` is given, and deletes them only when every §5.7 liveness condition holds. Large entries that are not class-S candidates stay report-only.
+- **Large-entry warning (AC-10: `--measure` only).** Under `--measure`, any user-owned top-level entry larger than 100 MiB that no class covers produces `WARN large-unowned <path> <bytes>`. This explicitly includes a **`claude-<uid>` entry in any root**, which `CLAUDE_CODE_TMPDIR` now places in `.tmp/<role>/` (R3-5). That is visibility only: `claude-*` is never deleted. The walk is depth-bounded and time-boxed, and **never runs** in default or `--summary-only` mode. Deletion of large *agent scratch trees*, such as `/tmp/claude/hos1935` (548 MB), is no longer report-only. The human rulings that supersede Q6 move them to class S (§5.7). Class S is on unless `--no-scratch` is given, and deletes them only when every §5.7 liveness condition holds. Large entries that are not class-S candidates stay report-only.
 
 ### 5.5 Output (stable, greppable)
 
@@ -601,7 +626,7 @@ TMP_REAPER roots=<n> reaped=<n> freed_bytes=<n> skipped=<n> errors=<n> truncated
 - **Age alone never deletes.** "Older than a day" is the age rule. Every REAP needs age ≥ 24 h **and** a non-age liveness signal **and** must survive the live-process veto. The non-age signals are:
   - a dead flock on a verified inode, with `.lock` present (killed run);
   - a legacy `.lock` with no `.hos-live`;
-  - a lock-free finished dir that is not the newest;
+  - a lock-free finished dir;
   - `garbage-` naming;
   - a class-T empty dir or regular file;
   - class S, which needs all of:
@@ -813,12 +838,14 @@ This supersedes two earlier positions:
 
 `bin/hos-cron` makes **no unconditional reap**. It has only the **conditional low-space trigger** (§8.5), which a later disk-temp ruling added. There is no `${PROJECT}_tmp_reap_scratch` key. Machine policy lives in the script's own defaults and flags (§5.1).
 
-**Recipe** (goes into `docs/CRON-SETUP.md`; see §8.4). There is one entry per machine, in the **user's own** crontab (`crontab -e`) and never root's. The reaper refuses to run as root (exit 3). The entry points at any HOS copy on the machine, either the HOS clone or a consumer project's installed `bootstrap/tmp_reaper.py`:
+**Recipe** (goes into `docs/CRON-SETUP.md`; see §8.4). There is one entry per machine, in the **user's own** crontab (`crontab -e`) and never root's. The reaper refuses to run as root (exit 3).
+
+**The entry runs the machine copy at `~/.local/share/hos/tmp_reaper.py`, never a clone's `bootstrap/tmp_reaper.py` (R3-4).** The worker cron checks out arbitrary branches in its clone, and every role's sandbox can write every clone. An **unsandboxed** daily job with recursive-delete power must not run whatever is checked out there, or whatever a sandboxed agent wrote. `~/.local/share` is readable but **not writable** from every sandbox. `bootstrap/hos_bootstrap.sh` installs the copy (see "Machine copy" below).
 
 ```cron
 # HOS per-machine temp reaper (#2054). Daily. Create the log dir once: mkdir -p ~/.hos/logs
 # One --hos-tmp-root per HOS disk temp root on this machine (python3 bootstrap/lib/hos_tmp_root.py root --repo <clone> prints it).
-17 3 * * *  timeout --kill-after=10 600 python3 -I "$HOME/Code/HumanOversightSystem/Worker/bootstrap/tmp_reaper.py" --summary-only --max-seconds 540 --root /tmp --hos-tmp-root "$HOME/Code/HumanOversightSystem/.tmp" >> "$HOME/.hos/logs/tmp-reaper.log" 2>&1
+17 3 * * *  timeout --kill-after=10 600 python3 -I "$HOME/.local/share/hos/tmp_reaper.py" --summary-only --max-seconds 540 --root /tmp --hos-tmp-root "$HOME/Code/HumanOversightSystem/.tmp" >> "$HOME/.hos/logs/tmp-reaper.log" 2>&1
 ```
 
 Rules for the recipe, each restated from an architect condition:
@@ -831,25 +858,35 @@ Rules for the recipe, each restated from an architect condition:
 - **Concurrency is safe.** Concurrent reapers converge without harm (R11), so an overlapping inner-loop pre-run call is harmless.
 - **Record line.** To make the log readable without the `hos-cron` prefix, the reaper prints a first line before anything else: `TMP_REAPER_RUN ts=<ISO-8601 UTC> pid=<pid> roots=<comma-separated realpaths>` (§5.5).
 
+**Machine copy (R3-4): a file copy, not a crontab install.** `bootstrap/hos_bootstrap.sh` is the machine setup, and it runs from the validated release bundle. It **idempotently** copies `tmp_reaper.py` from its own directory (`$(dirname "$0")/tmp_reaper.py`) to `~/.local/share/hos/tmp_reaper.py`:
+- create `~/.local/share/hos` if it is missing;
+- if the destination is byte-identical (`cmp -s`), do nothing;
+- otherwise write `tmp_reaper.py.new.<pid>` in the same directory, `chmod 0755`, and `mv -f` it into place (atomic replace);
+- print one line naming the destination;
+- if the source is absent (an old bundle), print one WARN line saying how to fetch it, and **do not fail** the bootstrap.
+
+Re-running `hos_bootstrap.sh` from a newer release bundle is the documented way to update the machine copy. The never-auto-install ruling holds: `hos_bootstrap.sh` copies a file and never touches the crontab.
+
 **Discoverability, with no auto-install:**
-- `bootstrap/hos_bootstrap.sh`, at the end of its machine-setup summary, prints a short informational block. It says that a per-machine `/tmp` reaper ships with HOS as `bootstrap/tmp_reaper.py`, that HOS does not schedule it, and where the crontab recipe is in `docs/CRON-SETUP.md`.
-- `bootstrap/hos_install.sh`, in its end-of-install summary, prints one line with the installed path `<target>/bootstrap/tmp_reaper.py` and the same doc pointer.
-- Neither script invokes `crontab` (C2).
+- `bootstrap/hos_bootstrap.sh`, at the end of its machine-setup summary, prints a short informational block. It says that the per-machine temp reaper is installed at `~/.local/share/hos/tmp_reaper.py`, that HOS does not schedule it, and where the crontab recipe is in `docs/CRON-SETUP.md`.
+- `bootstrap/hos_install.sh`, in its end-of-install summary, prints one line pointing to the same doc and to the machine copy. It does not point to `<target>/bootstrap/tmp_reaper.py`.
+- Neither script invokes `crontab` (C4).
+- The `bin/hos-cron` low-space trigger (§8.5) keeps running `$REPO_ROOT/bootstrap/tmp_reaper.py`. That copy is at the same trust level as `bin/hos-cron` itself, so this is not a new exposure (R3-4).
 
 **Packaging:**
 - `bootstrap/tmp_reaper.py` is listed in `scripts/framework/framework_consumer_files.txt`, in its `bootstrap/` section, with a `# #2054` comment. The install copy loop and `.hos-manifest` therefore ship and track it in every consumer install.
-- It is **not** added to the release-asset list in `cut_release.sh` (`hos_install.sh`, `hos_bootstrap.sh`, `setup_clis.sh`). Those are the files needed *before* any install exists. The reaper is scheduled against an installed copy, so it does not need to be one.
+- **It is added to the release-asset list in `scripts/framework/cut_release.sh`** (`ASSET_NAMES`, alongside `hos_install.sh`, `hos_bootstrap.sh` and `setup_clis.sh`). The bundle-download loop that `cut_release.sh` prints gains `tmp_reaper.py`. This reverses the round-3 position, and it follows from R3-4: `hos_bootstrap.sh` runs from the release bundle and copies the reaper from its own directory, so the reaper must be in the bundle. That copy is the validated release artifact, never a mutable clone.
 - The file is executable (`chmod +x`), with a `#!/usr/bin/env python3` shebang. The recipe still calls it through `python3 -I`, so that `-I` isolation applies.
 
 ### 8.3 `CLAUDE.md`
 
 In the **"Canonical entry points by task"** table, add one row:
 
-> | Reclaiming temp space (machine-level backstop) in `/tmp` and the HOS disk temp roots (`<clone>/../.tmp/<role>`): stale `pytest-of-$USER/pytest-N` dirs, orphaned `tmp*` files/dirs, and agent scratch trees under `/tmp/claude/` whose newest file is older than 24 h. Never touches a live process's files, a held lock, or Claude Code session dirs. Install once per machine as a daily crontab entry, using the recipe in `docs/CRON-SETUP.md` (HOS never installs it); `--root`, `--hos-tmp-root`, `--no-scratch`, `--dry-run`, `--measure` | `bootstrap/tmp_reaper.py` |
+> | Reclaiming temp space (machine-level backstop) in `/tmp` and the HOS disk temp roots (`<clone>/../.tmp/<role>`): stale `pytest-of-$USER/pytest-N` dirs, orphaned `tmp*` files/dirs, and agent scratch trees under `/tmp/claude/` whose newest file is older than 24 h. Never touches a live process's files, a held lock, or Claude Code session dirs. `hos_bootstrap.sh` installs a machine copy at `~/.local/share/hos/tmp_reaper.py`. The operator schedules **that copy**, never a clone's, as a daily entry in their own crontab, using the recipe in `docs/CRON-SETUP.md` (HOS never installs the crontab entry); `--root`, `--hos-tmp-root`, `--no-scratch`, `--dry-run`, `--measure` | `bootstrap/tmp_reaper.py` (source); `~/.local/share/hos/tmp_reaper.py` (machine copy) |
 >
 > | Resolving this clone's per-role disk temp dir (`HOS_TMP_ROOT`, `TMPDIR`) | `bootstrap/lib/hos_tmp_root.py` |
 
-After the table, add two sentences: *"HOS temp lives on disk in `<clone>/../.tmp/<role>` (`HOS_TMP_ROOT` in `config.sh`); the launchers export `TMPDIR` there. `/tmp/claude/` remains the place for small draft files such as PR and issue bodies. Test runs clean up their own temp files when they complete. The suite enforces zero leaked temp entries and a 50 MiB budget per session (`tests/conftest.py`, #2054), and a red `TMP_HYGIENE FAIL` is a real failure, not flake."*
+After the table, add these sentences: *"HOS temp lives on disk in `<clone>/../.tmp/<role>` (`HOS_TMP_ROOT` in `config.sh`). The launchers export `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` there. Start interactive sessions through `bin/hos-human`, or export `CLAUDE_CODE_TMPDIR` yourself; otherwise sandboxed Bash puts temp in the RAM-backed `/tmp/claude`. `/tmp/claude/` remains the place for small draft files such as PR and issue bodies. Test runs clean up their own temp files when they complete. The suite enforces zero leaked temp entries and a 50 MiB budget per session (`tests/conftest.py`, #2054), and a red `TMP_HYGIENE FAIL` is a real failure, not flake."*
 
 In the **Repo layout** block, under `bootstrap/`, add one line: `tmp_reaper.py  MACHINE /tmp reaper (#2054); operator installs it in their own crontab`.
 
@@ -858,7 +895,7 @@ In the **Repo layout** block, under `bootstrap/`, add one line: `tmp_reaper.py  
 ### 8.4 `docs/CRON-SETUP.md`
 
 Add a new section, "HOS temp on disk and the per-machine reaper". It contains:
-- **Where temp lives.** `HOS_TMP_ROOT` (§2A), the per-role `TMPDIR` the launchers export, the 0700 dirs, the role isolation, and why `/tmp/claude` drafts stay on `/tmp`.
+- **Where temp lives.** `HOS_TMP_ROOT` (§2A), the per-role `TMPDIR`/`CLAUDE_CODE_TMPDIR`/`HOS_TMP_DIR` the launchers export, the 0700 dirs, the temp-dir separation (not a role-integrity boundary, #2056), the cross-role janitor (R3-6), the advice to start interactive sessions through `bin/hos-human`, and why `/tmp/claude` drafts stay on `/tmp`.
 - **The daily recipe** (§8.2) and its rules: user crontab only, explicit roots, a log path outside `/tmp`, an inner budget below the outer bound, and `gtimeout` on macOS.
 - **The low-space trigger** (§8.5). A `bin/hos-cron` cycle reaps on its own only when a write probe fails, and that event is audited as `cycle-tmp-reap`.
 - What the reaper removes and what it never touches.
@@ -939,7 +976,7 @@ The section also states that it supersedes the issue's original "cron-cycle wrap
 | R2 | Legacy `.lock`, no `.hos-live`: quiet 3 h → `SKIP fresh`; quiet 23 h → `SKIP fresh`; old → `REAP legacy-stale` (uniform 24 h, D11). |
 | R3 | Legacy `.lock` naming a live child whose argv contains `pytest`, old → `SKIP live-proc` (skipped if `/proc` is absent). |
 | R4 | Quiet < 24 h beats a dead flock → `SKIP fresh`. |
-| R5 | Two old lock-free finished dirs → the newest is KEPT and the older is REAPED. |
+| R5 | Two old lock-free finished dirs → **both** are REAPED (R3-3: no keep-newest). |
 | R6 | **Symlinks.** `pytest-of-<user>` is a symlink → nothing reaped in class P. `pytest-7` is a symlink to an outside dir → the outside dir is intact. A reaped dir containing a symlink to an outside file → the outside file is intact. A dangling `pytest-current` is removed; a valid one is kept. |
 | R7 | `decide()` with synthetic facts: uid mismatch → SKIP; probe error ≠ EWOULDBLOCK → SKIP unknown; absent PID → never REAP by itself; index `complete=False` → SKIP proc-scan-incomplete; a `/proc`-absent index removes the veto but never creates a REAP on its own. |
 | R8 | Class T: old empty `tmpabcd1234` → removed. Non-empty → handed to class S (RS16), and with `--no-scratch` → `SKIP non-empty`. 23 h → SKIP. Old `tmp.AbCdEf1234` file → removed (D12). Old `tmpabcd1234.py` file → removed. File held open by a live child → `SKIP open` (Linux). FIFO → SKIP. Non-matching names untouched. |
@@ -949,11 +986,11 @@ The section also states that it supersedes the issue's original "cron-cycle wrap
 | R12 | Root resolution with no flags: TMPDIR set → used; unset → `/tmp` (unit-test the resolver only). All given roots missing → exit 3; one of two missing → `SKIP root-invalid` and the other is swept. `geteuid()==0` (monkeypatched) → exit 3. |
 | R13 | The `TMP_REAPER_RUN` line is first. The summary line is last and matches the §5.5 regex. `--measure` deletes nothing and prints a numeric `user_bytes`. |
 | R14 | `--max-seconds 0` → `truncated=1`, exit 0, and nothing reaped. |
-| R15 | **AC-1.** An old **finished red** dir (unlocked `.hos-live`, no `.lock`) that is NEWEST_FINISHED → KEEP. An older sibling of the same shape → `REAP finished`. |
+| R15 | **AC-1 routing (R3-3).** An old **finished red** dir (unlocked `.hos-live`, no `.lock`) → `REAP finished`, **not** `dead-flock`. An old dir with an unlocked `.hos-live` **and** a `.lock` → `REAP dead-flock`. |
 | R16 | **AC-4.** `.hos-live` whose record `dev`/`ino` mismatch → `SKIP unknown`. A FIFO named `.hos-live` → `SKIP unknown`, and the reaper returns within the test timeout (no hang). A symlink named `.hos-live` → `SKIP unknown` (`O_NOFOLLOW`). |
-| R17 | **AC-3.** An old lock-free non-newest dir that is the `cwd` of a live child → `SKIP live-proc` (Linux). The same holds for an old dead-flock dir (the stricter rule-2 veto). |
+| R17 | **AC-3.** An old lock-free finished dir that is the `cwd` of a live child → `SKIP live-proc` (Linux). The same holds for an old dead-flock dir (the stricter rule-2 veto). |
 | R18 | **D11.** `--min-age-hours 2` → exit 2. `--min-age-hours 48` is accepted. |
-| R19 | **AC-10.** Default and `--summary-only` runs print `user_bytes=-` and no `WARN` line. They never call the size-walk function, asserted in process by monkeypatching the walk to raise. Under `--measure`, with the large-entry threshold monkeypatched down to a small value, a user-owned non-candidate tree above it produces one `WARN large-unowned`. |
+| R19 | **AC-10.** Default and `--summary-only` runs print `user_bytes=-` and no `WARN` line. They never call the size-walk function, asserted in process by monkeypatching the walk to raise. Under `--measure`, with the large-entry threshold monkeypatched down to a small value, a user-owned non-candidate tree above it produces one `WARN large-unowned`. **R3-5:** so does a `claude-1000` dir above the threshold in an `--hos-tmp-root` role dir, and that dir is never reaped in any mode. |
 | RS1 | **Class S: a stale tree is removed.** In process, with default flags (class S on) and `clock = real + 48 h`, the tree holding `<tmp_path>/claude/clone1/a/b/c.txt` → `REAP S scratch-stale`. The tree is gone and no `garbage-hos-*` is left. |
 | RS2 | **One recent deep file keeps the tree.** As RS1, but `a/b/c.txt` is `os.utime`-d to `fake_now − 1 h` → `SKIP fresh-deep`, and the tree is byte-identical. |
 | RS3 | **A tree that is some process's cwd is kept.** A child process `chdir`s into `<tmp_path>/claude/clone2/sub` and sleeps → `SKIP live-proc` (Linux; skipped if `/proc` is absent). After the child is killed → `REAP`. |
@@ -974,7 +1011,7 @@ The section also states that it supersedes the issue's original "cron-cycle wrap
 | RS18 | **`--if-low-space`.** (a) Both roots writable → `TMP_REAPER_PROBE ok`, nothing reaped even with old candidates present, exit 0. (b) Monkeypatch `os.write` to raise `OSError(EDQUOT)` for one root's probe fd → `TMP_REAPER_PROBE low roots=<that root>`, then a normal reap over **all** roots: old candidates go, young ones stay. (c) `ENOSPC` is handled the same way. (d) In every case no `.hos-space-probe.*` file remains, and a pre-existing orphan probe dotfile is never reaped. (e) The 24 h rule is unchanged: a 23 h candidate survives a low-space reap. |
 | C1 | `tests/framework/test_run_tests_inner_loop.py`: with the reaper stub placed at `bootstrap/tmp_reaper.py` in the replica, it runs before `regen_all.sh` with `-I … --summary-only --no-scratch --max-seconds 20 --root <TMPDIR> --root /tmp`. Reaper rc=1 → the suite's exit code is unchanged. Existing tests (reaper absent) are unchanged. |
 | C2 | **Low-space trigger, AC-8 restored as amended** (`tests/automation/test_hos_cron.py`, reaper stub installed): (a) invoked **exactly once** per lock-acquiring cycle, with `--if-low-space --summary-only --max-seconds 20 --root /tmp --hos-tmp-root <fake parent>/.tmp`; (b) the `--hos-tmp-root` pair is absent when the §2A.3 resolver is stubbed to fail; (c) still invoked once when the `get_app_token.sh` stub fails; (d) **not** invoked when suspended or lock-held; (e) invoked after `TMPDIR` is exported and before the usage-pause helper (shared stub log); (f) stub output `TMP_REAPER_PROBE ok` with rc 0 → no audit record; (g) stub output `TMP_REAPER_PROBE low …`, or rc 1 → one `cycle-tmp-reap` record, and the cycle exit is unchanged; (h) a stub that sleeps past the bound is killed and the cycle continues (if `timeout` exists). |
-| C4 | **Packaging, static** (new `tests/framework/test_tmp_reaper_packaging.py`): (a) `bin/hos-cron` references `tmp_reaper.py` exactly once, on a line containing `--if-low-space`, and never `tmp_reap_scratch`; (b) `docs/CRON-SETUP.md` contains a recipe line that invokes `bootstrap/tmp_reaper.py` through `timeout --kill-after=`, whose `--max-seconds` value is strictly less than its timeout value, whose `>>` log target does not start with `/tmp`, which passes `--root /tmp` and at least one `--hos-tmp-root`, and which is scheduled daily (numeric minute and hour fields, `*` day fields); (c) `bootstrap/hos_bootstrap.sh` and `bootstrap/hos_install.sh` each mention `tmp_reaper.py`, and neither *invokes* `crontab`: every occurrence of the word is in a comment, or inside an `echo`/`printf` argument or heredoc message; (d) `CLAUDE.md` has the §8.3 row pointing at `bootstrap/tmp_reaper.py`. |
+| C4 | **Packaging, static** (new `tests/framework/test_tmp_reaper_packaging.py`): (a) `bin/hos-cron` references `tmp_reaper.py` exactly once, on a line containing `--if-low-space`, and never `tmp_reap_scratch`; (b) `docs/CRON-SETUP.md` contains a recipe line that invokes `tmp_reaper.py` through `timeout --kill-after=`, **at a script path that contains `.local/share/hos/` and is not under `Code/` or any clone path (R3-4)**, whose `--max-seconds` value is strictly less than its timeout value, whose `>>` log target does not start with `/tmp`, which passes `--root /tmp` and at least one `--hos-tmp-root`, and which is scheduled daily (numeric minute and hour fields, `*` day fields); (c) `bootstrap/hos_bootstrap.sh` copies `tmp_reaper.py` to `~/.local/share/hos/tmp_reaper.py` with mode 0755 and idempotently. This is asserted behaviourally, by running the copy step twice under a fake `HOME`: the second run is a no-op, and a missing source gives a WARN and exit 0. `bootstrap/hos_install.sh` mentions the machine copy. Neither script *invokes* `crontab`: every occurrence of the word is in a comment, or inside an `echo`/`printf` argument or heredoc message (R3-4); (d) `CLAUDE.md` has the §8.3 row pointing at `bootstrap/tmp_reaper.py` and the machine copy; (e) `scripts/framework/cut_release.sh` `ASSET_NAMES` includes `tmp_reaper.py`. |
 | C3 | `tests/framework/test_consumer_framework_files.py`: `bootstrap/tmp_reaper.py` is listed in `framework_consumer_files.txt` and exists, and `scripts/framework/tmp_reaper.py` does not exist. |
 
 ### S3
@@ -994,7 +1031,7 @@ One PR. Each commit must pass the inner loop on its own, so the human can review
 |---|---|---|
 | **1. S1: tests only (Layer 1). UNCHANGED by every round-3 ruling.** | `pyproject.toml` (pytest ini); `tests/conftest.py`; new `tests/tmp_hygiene.py`; new `tests/framework/test_tmp_hygiene_plugin.py` and `tests/framework/test_tmp_hygiene_static.py`; the ~18 test files of §7.1; the §4.8 `child_env` sites; `tests/automation/test_dimension_sweep_cli.py` and `tests/automation/test_agent_invoke_wrapper.py` (§7.2) | No. **Sole permitted exception:** a script fix that §4.9 requires to keep this commit green. It is limited to TMPDIR correctness or a cleanup trap, and is named in the commit message and the PR body. |
 | **2. S2a: disk temp root (Layer 0)** | new `bootstrap/lib/hos_tmp_root.py`; `scripts/framework/config.sh` (`HOS_TMP_ROOT="../.tmp"`); `scripts/framework/install.sh` (prompt, default, refusal); `bin/hos-cron` (§2A.3 export only); `bin/hos-human`; `scripts/framework/run_tests_inner_loop.sh` (§2A.3 `TMPDIR` inherit/derive); `contract/sandbox-policy.template.json` (§2A.4); `scripts/framework/gen_sandbox_config.py` (D15 guard); `docs/SANDBOX-POLICY.md`; `scripts/framework/framework_consumer_files.txt` (ship `bootstrap/lib/hos_tmp_root.py`); new `tests/framework/test_hos_tmp_root.py` and `tests/framework/test_hos_human_launcher.py`; `tests/framework/test_gen_sandbox_config.py`; `tests/automation/test_hos_cron.py` (L1); `tests/framework/test_run_tests_inner_loop.py` (L3); `tests/framework/test_install*.py` (I1) | Yes |
-| **3. S2b: machine reaper, triggers and docs (Layer 2)** | new `bootstrap/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py` and `tests/framework/test_tmp_reaper_packaging.py`; `scripts/framework/run_tests_inner_loop.sh` (§8.1 pre-run); `bin/hos-cron` (§8.5 low-space trigger); `scripts/framework/framework_consumer_files.txt`; `bootstrap/hos_bootstrap.sh` and `bootstrap/hos_install.sh` (informational notes only); `bootstrap/README.md`; `CLAUDE.md`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py` (C1); `tests/automation/test_hos_cron.py` (C2); `tests/framework/test_consumer_framework_files.py`; `SCRIPTS-INDEX.md` and CODEOWNERS regenerated via `regen_all.sh` | Yes |
+| **3. S2b: machine reaper, triggers and docs (Layer 2)** | new `bootstrap/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py` and `tests/framework/test_tmp_reaper_packaging.py`; `scripts/framework/run_tests_inner_loop.sh` (§8.1 pre-run); `bin/hos-cron` (§8.5 low-space trigger); `scripts/framework/framework_consumer_files.txt`; `bootstrap/hos_bootstrap.sh` (idempotent machine copy to `~/.local/share/hos/`, plus an informational note; R3-4); `bootstrap/hos_install.sh` (informational note only); `scripts/framework/cut_release.sh` (`ASSET_NAMES` + printed bundle loop gain `tmp_reaper.py`; R3-4); `bootstrap/README.md`; `CLAUDE.md`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py` (C1); `tests/automation/test_hos_cron.py` (C2); `tests/framework/test_consumer_framework_files.py`; `SCRIPTS-INDEX.md` and CODEOWNERS regenerated via `regen_all.sh` | Yes |
 | **4. S3: literal-/tmp script fixes. UNCHANGED in content** (all sites become `"${TMPDIR:-/tmp}"`, human item 5) | `scripts/oversight/run_validators.sh`, `scripts/oversight/gates/secret_scan.sh`, `scripts/oversight/gates/security_scan.sh`, `scripts/framework/validate_agents.sh`, `scripts/framework/validate_scripts.sh`, `bootstrap/hos_install.sh` (traps); new `tests/framework/test_tmp_template_static.py` | Yes |
 
 - **The PR as a whole** touches protected surfaces and needs human approval (CODEOWNERS). The combined risk tier is HIGH, for two reasons: a recursive delete, and a change to the shipped sandbox template and every launcher's `TMPDIR`. Second review runs at HIGH (agy + codex) over the full diff, with an explicit `--tier HIGH`.
@@ -1061,7 +1098,8 @@ Safety rests on the following, all kept in full:
 - explicit roots only, with role-named children only under `--hos-tmp-root`;
 - refusal to run as root;
 - no subprocess or exec;
-- a 0700 per-role temp dir outside every work tree, granted to that role's sandbox only.
+- a 0700 per-role temp dir outside every work tree, granted to that role's sandbox only. This is a temp-dir separation, not a role-integrity boundary: every sandbox can already write every clone, a pre-existing grant tracked in #2056 (R3-2);
+- an unsandboxed daily job that runs only the release-installed machine copy in `~/.local/share/hos`, never a mutable clone (R3-4).
 
 A wrong rule could delete a live run's working dir or an idle agent's scratch work. A wrong sandbox entry could deny a role its own temp dir; that is fail closed, and the launchers fall back to `/tmp`. Neither failure can cross users.
 
@@ -1524,3 +1562,26 @@ Requesting the architect's round-3 diff check (round 3 of 5).
 - Cross-clone write grants make role temp separation non-authoritative against a tampering role (R3-2). This is pre-existing.
 
 **Affected sign-offs:** none. S1 (in progress) is untouched by R3-1..R3-6. S3 is unchanged. No S2a or S2b code exists yet.
+
+---
+
+## Round-3 fold-in note (technical-design, 2026-10-09)
+
+R3-1..R3-6 are folded into the body. **No condition is disputed.** Change classification: clarifying + additive. Every element is architect-specified.
+
+**Affected sign-offs.** None:
+- S1 is untouched.
+- S3 is unchanged.
+- No S2a or S2b code had been approved.
+
+**Startup-artifact-gap check.** The `CLAUDE_CODE_TMPDIR` override (R3-1) is the kind of fact the initial design should have verified. It was caught before any S2a code existed, so no issue is needed.
+
+| Condition | Folded into |
+|---|---|
+| **R3-1**: export `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR`; inner-loop resolution order | §0 Layer 0. §2A.3: three exports in `hos-cron` and `hos-human`; the four-step inner-loop order replaces "inherit any non-empty `TMPDIR`"; the why paragraph; the no-launcher residual; the new verification item, `echo $TMPDIR` → `.tmp/human`. §8.3 CLAUDE.md text tells users to start sessions through `bin/hos-human` or export `CLAUDE_CODE_TMPDIR`. L1, L2 and L3 (all four branches). |
+| **R3-2**: accurate isolation wording; follow-up issue | §0 Layer 0, renamed "Role separation". §2A.4 heading and guarantee are reworded: "no role's sandbox is granted another role's temp dir"; this is a temp-dir separation, not a role-integrity boundary; the cross-clone write grant is pre-existing and tracked in **#2056** (v0.7.4). The SANDBOX-POLICY.md bullets and §13 are updated. |
+| **R3-3**: no KEEP-newest in the reaper | §0 ("no exceptions"). §5.3.2: NEWEST_FINISHED deleted, rule 4 always gives `REAP finished`, and AC-1 routing is kept for the reason label. §5.6. R5 (both reaped), R15 (`REAP finished`, not `dead-flock`), R17. §3 R-2 and Layer 1 are unchanged. |
+| **R3-4**: the daily cron never executes a mutable clone | §8.2: the recipe runs `~/.local/share/hos/tmp_reaper.py`. A new "Machine copy" paragraph has `hos_bootstrap.sh` copy the file idempotently and atomically, with mode 0755, from its own directory, with a WARN and no failure if the source is absent. The `hos-cron` trigger keeps the `$REPO_ROOT` copy, at the same trust level. §2A.4 notes that `.local/share` is read-only from sandboxes. §8.3 row. C4(b) checks the path contains `.local/share/hos/` and is not under `Code/`. C4(c) checks the copy behaviour and that `crontab` is never invoked. §13. **Implementation consequence (not a dispute):** `hos_bootstrap.sh` runs from the release bundle, so `tmp_reaper.py` must be in it. It is added to `cut_release.sh` `ASSET_NAMES` and the printed bundle loop, which reverses round 3's "not a release asset" (§8.2 Packaging, §11 S2b, C4(e)). |
+| **R3-5**: Claude Code's dir on disk | §0 Layer 0 ("What moves"). §2A.6 accepted residual (persists across reboot, 124 KB today, never reaped). §5.4: `WARN large-unowned` covers `claude-<uid>` over 100 MiB in any root, under `--measure` only. R19 extended. |
+| **R3-6**: the cross-role janitor | §2A.4: one paragraph saying the trigger and the daily reaper act on every role's dir, as unsandboxed machine processes, outside the per-role sandbox grants by design. Also in the SANDBOX-POLICY.md bullets. |
+| Ruling 7: H1 test | H1 now asserts that this repo's committed `config.sh` line parses to `../.tmp`. |
