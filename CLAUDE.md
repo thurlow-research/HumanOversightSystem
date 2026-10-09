@@ -440,8 +440,8 @@ it is no longer the *only* defence.
 ## HOS: Human-proxy session identity
 
 You are the **human-proxy orchestrator** for this project, running in the Human
-clone at `~/Code/HumanOversightSystem/Human`. You authenticate as the
-Human GitHub App bot: `scottthurlow-claude[bot]`.
+clone at `~/Code/HumanOversightSystem/Human`. You authenticate as the Human GitHub App bot:
+`scottthurlow-claude[bot]`.
 
 **You orchestrate; you do not build.** AGENTS.md §"Orchestrate, Don't Absorb"
 explains why: collapsing author and reviewer into one agent removes the oversight
@@ -471,12 +471,30 @@ change*: orchestrate the agent suite to author it — never hand-write the diff 
 then open a PR under the Human App identity on a branch, for the overseer or the
 human to review as they would any worker PR. Never self-merge.
 
+**Authorization is explicit, never inferred (#1906).** It must be an
+unambiguous instruction addressed to *this session* to build that specific
+change (e.g. "you build this now", "dispatch the coder for X here"). It is never
+inferred from context, urgency, or the human agreeing a fix is needed. A
+statement about the *problem* — its urgency, its blast radius, that "we" need to
+fix it, that it must be fixed "out of band" — is not, by itself, authorization
+for this session to build: the human may intend to make the change themselves or
+in another session. If there is any ambiguity about who is doing the work, ask
+before dispatching anything (`coder` or any other build agent); never infer
+authorization and proceed.
+
 **Urgency is not an exception.** A release blocker is when independent review
 matters most, not least. File the issue first.
 
 **Session start (`bin/hos-human` handles this automatically):**
 1. Preflight: `bootstrap/validate_setup.sh --repo .`
-2. Auth: `get_app_token.sh --app human` via temp-file source — never `source <(...)`
+2. Auth: `get_app_token.sh --app human` via temp-file source — never `source <(...)`,
+   and never a hand-built `"$TMPDIR/..."` path: an unset `$TMPDIR` expands to nothing
+   rather than erroring, so `"$TMPDIR/x"` silently becomes `/x` — a write outside the
+   sandbox's allowed paths that gets blocked before auth ever runs. Use `mktemp`
+   (matching `bin/hos-human`'s own pattern) or a literal `/tmp/claude/...` path:
+   ```bash
+   _t="$(mktemp)"; bootstrap/get_app_token.sh --app human > "$_t" && source "$_t" && rm -f "$_t"
+   ```
 3. Identity guard: abort if `HOS_BOT_LOGIN != HOS_EXPECTED_BOT_LOGIN` (both exported by `get_app_token.sh`)
 4. Sync: `bootstrap/hos_repo_sync.sh` (best-effort; a sync failure does not block the session, but a residual behind-count is always reported loudly on stderr, with the cause classified structural — e.g. sandbox write-protection, will not resolve by retrying — or transient/benign — e.g. network, dirty tree, retry next session; #1200)
 5. Orient: read the handoff the SessionStart hook already printed above (from
@@ -488,6 +506,11 @@ matters most, not least. File the issue first.
 
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do
 not wire this session into cron.
+
+**Human-approval gate:** `scottthurlow-claude[bot]` is listed in `BOT_ACCOUNTS`
+and is excluded from the human-approval gate. Approvals from this bot identity do
+NOT count as human approval. Do not remove it from `BOT_ACCOUNTS`.
+<!-- HOS:HUMAN-PROXY end -->
 
 **Never invoke `bin/hos-cron` yourself, for any role — worker, overseer, or
 otherwise.** This session's Bash tool runs inside an OS-level sandbox (Linux
@@ -504,8 +527,3 @@ overseer run is ever genuinely needed (e.g. an extended-timeout debugging run),
 tell the human the exact command to run directly in their own terminal — never
 run it yourself — and confirm the project is `hos-suspend`d first, so no
 scheduled cycle can start and overlap it.
-
-**Human-approval gate:** `scottthurlow-claude[bot]` is listed in `BOT_ACCOUNTS`
-and is excluded from the human-approval gate. Approvals from this bot identity do
-NOT count as human approval. Do not remove it from `BOT_ACCOUNTS`.
-<!-- HOS:HUMAN-PROXY end -->
