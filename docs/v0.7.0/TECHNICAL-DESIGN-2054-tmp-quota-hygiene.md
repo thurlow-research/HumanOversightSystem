@@ -236,7 +236,7 @@ The same module exposes `resolve_root(repo) -> Path` and `check_outside_work_tre
 |---|---|---|
 | `bin/hos-cron` (worker, overseer) | Immediately after the `_audit()` helper definition. That is after the overlap lock and cycle-identity minting, and before the §8.5 low-space trigger, the usage-pause gate, preflight and auth. | `_hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create)"`. On rc 0, export **three** variables, each set to the role dir (R3-1): `export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"`. Also set `HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"`. On failure: one `$LOG_PREFIX WARN: HOS tmp root unusable (<reason>) — TMPDIR left as-is` line, plus `_audit cycle-tmp-root-fallback "reason=<reason>"`, and the cycle continues with none of the three exported. **Never fatal.** The launched Claude session, the inner-loop baseline and every child inherit them. |
 | `bin/hos-human` (human) | After the token mint, identity guard and repo sync, immediately before `exec claude`. | Same resolve call with `--role human`. On success, the same three exports: `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` (R3-1). On failure, a warning on stderr, nothing exported, and the session still starts. Placing it **after** the token mint keeps `get_app_token.sh`'s short-lived token temp file on the RAM-backed `/tmp`, as today, rather than on disk. |
-| `scripts/framework/run_tests_inner_loop.sh` | Top of the script, after `REPO_ROOT`. | **Resolution order (R3-1)**, first match wins, and the result is exported as `TMPDIR`:<br>1. `HOS_TMP_DIR`, if set and an existing writable dir (a launcher chose);<br>2. otherwise `resolve --repo "$REPO_ROOT" --role local --create`, if it succeeds and the dir is writable;<br>3. otherwise the inherited non-empty `TMPDIR`;<br>4. otherwise unset, i.e. `/tmp`.<br>Steps 2→3 and 3→4 each print one WARN line on stderr. Blindly inheriting a non-empty `TMPDIR` is **not** allowed: in a sandboxed ad-hoc session it is Claude Code's `/tmp/claude`, which would put pytest back on the RAM tmpfs, inside the class-S scratch root. |
+| `scripts/framework/run_tests_inner_loop.sh` | Top of the script, after `REPO_ROOT`. | **Resolution order (R3-1)**, first match wins, and the result is exported as `TMPDIR`:<br>1. `HOS_TMP_DIR`, if set and an existing writable dir (a launcher chose);<br>2. otherwise `resolve --repo "$REPO_ROOT" --role local --create`, if it succeeds and the dir is writable;<br>3. otherwise the inherited non-empty `TMPDIR`, **unless its realpath is under `$REPO_ROOT`** (rule 4 of §8.6; for example a `TMPDIR` pointing into `.claudetmp/`, which is skipped with a WARN);<br>4. otherwise unset, i.e. `/tmp`.<br>Steps 2→3 and 3→4 each print one WARN line on stderr. Blindly inheriting a non-empty `TMPDIR` is **not** allowed: in a sandboxed ad-hoc session it is Claude Code's `/tmp/claude`, which would put pytest back on the RAM tmpfs, inside the class-S scratch root. |
 
 S1 needs no change: pytest's `pytest-of-<user>`, the D4 `session-tmp` redirect and the D6 basetemp measurement all follow `TMPDIR`.
 
@@ -306,7 +306,7 @@ The values sidecar is unchanged: no new key, no version bump. Check mode against
 
 The resolver and the installer both reject a root that:
 - is inside a git work tree. Walk from the root path (or its nearest existing ancestor) up to `/`. Any ancestor, or the path itself, with an lstat-visible `.git` entry (dir or file) means rejection. This is a static check that never runs git. It also catches a dotfiles repo at `$HOME`, which the operator must then avoid with an explicit value;
-- equals, or is under, `realpath(<repo>)`;
+- equals, or is under, `realpath(<repo>)`, or **contains** `realpath(<repo>)`. Either case would nest `.claudetmp/` and `.tmp/` (§8.6 rule 4);
 - is not absolute after expansion.
 
 This replaces any reliance on `.gitignore`: an ignored in-repo dir is still walked by tools.
@@ -329,7 +329,7 @@ The low-space probe (§8.5) catches ENOSPC on the disk root as well as EDQUOT on
 | ID | Asserts |
 |---|---|
 | H1 | `tests/framework/test_hos_tmp_root.py`: config.sh missing or empty → `<repo>/../.tmp`. Relative, `~/` and absolute values resolve as specified. A value with `$`, a backtick, `;` or `*` → exit 3. The last `HOS_TMP_ROOT=` line wins. **This repo's committed `scripts/framework/config.sh` line parses to `../.tmp`** (architect ruling 7). That guards against an edit the shell accepts but the resolver rejects. |
-| H2 | Root inside a work tree: `.git` dir in an ancestor, and `.git` *file* in an ancestor → exit 3. Root equal to or under the repo → exit 3. |
+| H2 | Root inside a work tree: `.git` dir in an ancestor, and `.git` *file* in an ancestor → exit 3. Root equal to or under the repo → exit 3. Root that **contains** the repo → exit 3 (§8.6 rule 4). |
 | H5 | **Capitalised dir names (human ruling).** `--role worker`, `overseer`, `human` and `local` print `<root>/Worker`, `Overseer`, `Human` and `Local` respectively. `--create` never creates a lowercase sibling. `--role Worker` (a capitalised *role arg*) → exit 2. |
 | H3 | `--create`: creates root and role dir with 0700. Tightens an existing 0755 role dir to 0700. A symlinked root or role dir → exit 3. A role outside the set → exit 2. |
 | H4 | No subprocess: `subprocess` and `os.exec*` are monkeypatched to raise, and resolution succeeds. |
@@ -337,7 +337,7 @@ The low-space probe (§8.5) catches ENOSPC on the disk root as well as EDQUOT on
 | G2 | The generator fails closed (`EXIT_USAGE`) when the clone's config.sh moves `HOS_TMP_ROOT` elsewhere, and when `--hos-root` is not under `--home`. |
 | L1 | `tests/automation/test_hos_cron.py`: the launched session's environment has `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` all equal to `<fake parent>/.tmp/Worker`, and that dir exists with mode 0700. With the resolver stubbed to fail: one WARN line, a `cycle-tmp-root-fallback` audit event, none of the three exported, and the cycle continues. |
 | L2 | `tests/framework/test_hos_human_launcher.py` (static order check): in `bin/hos-human`, the resolver call and the export of `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` come after the `get_app_token.sh` call and before `exec claude`. |
-| L3 | `tests/framework/test_run_tests_inner_loop.py`, all four R3-1 branches: (1) `HOS_TMP_DIR` set to a writable dir → used, even with a different `TMPDIR` inherited; (2) no `HOS_TMP_DIR`, inherited `TMPDIR=/tmp/claude`-equivalent, and `.tmp/Local` creatable → **`.tmp/Local` wins**; (3) `.tmp/Local` not creatable (resolver stubbed to fail) with an inherited `TMPDIR` → inherited value kept, plus a WARN; (4) nothing usable → `TMPDIR` unset, plus a WARN. |
+| L3 | `tests/framework/test_run_tests_inner_loop.py`, all four R3-1 branches: (1) `HOS_TMP_DIR` set to a writable dir → used, even with a different `TMPDIR` inherited; (2) no `HOS_TMP_DIR`, inherited `TMPDIR=/tmp/claude`-equivalent, and `.tmp/Local` creatable → **`.tmp/Local` wins**; (3) `.tmp/Local` not creatable (resolver stubbed to fail) with an inherited `TMPDIR` → inherited value kept, plus a WARN; (4) nothing usable → `TMPDIR` unset, plus a WARN; (5) an inherited `TMPDIR` under `$REPO_ROOT` (for example `.claudetmp/x`) with `.tmp/Local` not creatable → skipped with a WARN, so `TMPDIR` is unset (§8.6 rule 4). |
 | I1 | `tests/framework/test_install*.py`: the default is `../.tmp` for a multi-clone registry fixture and `~/.local/state/hos/tmp/<slug>` otherwise. A value inside a work tree is refused (non-interactive: non-zero exit). |
 
 ---
@@ -937,6 +937,63 @@ The section also states that it supersedes the issue's original "cron-cycle wrap
 - **Never fatal.** Whatever the rc, the cycle continues to the usage-pause gate. Nothing later reads the trigger's output or rc.
 - **Cost on a healthy cycle.** Two 64 KiB writes plus fsyncs, one listing per root, and no `/proc` scan, because the reap does not run.
 
+### 8.6 Temp-location rules for every role (human ruling, 2026-10-09) [S2b]
+
+**Human ruling:** every role (Worker, Overseer, Human sessions and their subagents) must be told the temp-location rules in this PR. Evidence from the same day: a 555 MB `git archive` review copy under `Worker-2054/.claudetmp/clean` broke a repo-walking test.
+
+**The normative block.** The text below goes, **byte-identical** between its markers, into three files. The markers deliberately do **not** use the `HOS:` prefix, so the installer's CORE/PACK/PROJECT region parser never treats them as a region:
+
+```markdown
+<!-- TEMP-RULES:BEGIN (#2054; keep identical in contract/OVERSIGHT-CONTRACT.md §1, CLAUDE.md, AGENTS.md) -->
+**Temp and working-state locations.** Every role — Worker, Overseer, Human, and their subagents — follows these four rules.
+
+1. **Throwaway temp goes under `$TMPDIR`.** This covers pytest runs, `mktemp`/`tempfile` output, scratch repo copies, `git archive` or clone copies made for review, and pip/npm caches created for a task. The launchers point `$TMPDIR` at `$HOS_TMP_ROOT/<RoleDir>` (default `<clone>/../.tmp/<RoleDir>`, on disk). In scripts, use `mktemp`/`tempfile` or `${TMPDIR:-/tmp}`; never hard-code `/tmp` for large output. In an agent Bash call, run `mktemp -d` once and reuse the printed literal path. Anything here is reaped once it is more than 24 h old.
+2. **`.claudetmp/` (inside the clone) is persistent working state**: sign-off registers, design-round state, logs that must survive a cycle, and handoff-adjacent notes. It is uncommitted and is **never reaped**. Never put repo copies or other large scratch trees in it.
+3. **`/tmp/claude/…` literal paths are only for small allowlisted command artifacts**: PR, issue and comment bodies, and commit messages, per the sandbox shell rules.
+4. **`.claudetmp/` and `.tmp/` stay separate.** Neither is ever placed inside the other.
+<!-- TEMP-RULES:END -->
+```
+
+**Rule 3 and the sandbox rule "Use literal paths" do not conflict.** The literal-path rule governs the *command text* an agent types, so that it can be allowlisted. Rule 1 governs *where large scratch lives*. `mktemp -d` is allowlisted (`Bash(mktemp *)`), and reusing its printed path literally keeps every later command allowlistable.
+
+**Placement** (exact locations):
+
+| File | Where | What | Protected? |
+|---|---|---|---|
+| `contract/OVERSIGHT-CONTRACT.md` | §1 Filesystem protocol, immediately after the closing fence of the directory tree | The block. In the tree, change the `.claudetmp/` annotation from `← ephemeral working state (gitignored)` to `← persistent working state (gitignored, uncommitted; never reaped — see "Temp and working-state locations" below)`. Add one sentence after the block: "Outside the project root, `$HOS_TMP_ROOT/<RoleDir>` (default `<project-root>/../.tmp/<RoleDir>`) holds throwaway temp; it is never inside any git work tree." The contract is the **normative source**. | Yes (`contract/**`) |
+| `CLAUDE.md` | `## Working in this repo`: a new `### Temp and working-state locations` subsection placed immediately **before** `### Shell usage under the sandbox` | The block, preceded by one line: "Normative source: `contract/OVERSIGHT-CONTRACT.md` §1." | Yes |
+| `CLAUDE.md` | Shell rule 8 ("Use literal paths") | Append one sentence: "Literal `/tmp/claude/…` is for small command artifacts only; large scratch follows 'Temp and working-state locations' above (`mktemp -d`, then reuse the printed path)." | Yes |
+| `CLAUDE.md` | Human-proxy session-start item 5 | Replace "`.claudetmp/` is ephemeral working state (gitignored), not the durable handoff location" with "`.claudetmp/` is persistent but uncommitted working state (gitignored), not the handoff location". This removes the "ephemeral" vs "persistent" contradiction with rule 2. | Yes |
+| `AGENTS.md` | A new top-level section `## Temp and Working-State Locations`, immediately before `## Session Discipline` | The block, preceded by one line: "Normative source: `contract/OVERSIGHT-CONTRACT.md` §1." | Yes |
+| `docs/SANDBOX-POLICY.md` | §3 `sandbox.filesystem`, at the end of the §2A.4 paragraph | Cross-reference: "Which location an agent should use is normative in `contract/OVERSIGHT-CONTRACT.md` §1, 'Temp and working-state locations'; this section only states what the sandbox *grants*." No copy of the block. | No, but human-reviewed with the PR |
+
+**Why AGENTS.md as well (decision).** Yes, AGENTS.md gets the block:
+- **AGENTS.md is shipped to every consumer install** (`hos_install.sh` lists it as a required framework file). `CLAUDE.md` is this repo's own file and is not shipped; consumers get only the human-proxy block from `templates/CLAUDE.human.md`. Consumer projects get `HOS_TMP_ROOT` and the reaper from this PR, so their agents need the rules too, and AGENTS.md together with the contract is how they receive them.
+- **AGENTS.md is the vendor-neutral Layer-1 document.** Codex and agy read it natively. CLAUDE.md is Claude-Code-specific.
+- The block is short and procedural, and does not change AGENTS.md's self-flagging protocol.
+
+Placing it **before** `## Session Discipline` keeps it out of the `Mandatory Behaviors` numbering, so existing references to "Mandatory Behavior N" are untouched. `templates/CLAUDE.human.md` is **not** changed, because consumer human-proxy sessions already read AGENTS.md.
+
+**Agent definitions: specified text, applied by the orchestrator, NOT by the coder** (CLAUDE.md #1347). `.claude/agents/worker.md` and `.claude/agents/overseer.md` each carry, in CORE, the same shell-rules list that ends with "- Literal paths — `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`." Immediately after that bullet, in **both** files, insert exactly:
+
+```markdown
+- Large or throwaway scratch (repo copies, `git archive`/clone review copies, test output) goes under `$TMPDIR` — run `mktemp -d` once and reuse the printed literal path. Never put it in `.claudetmp/` (persistent state, never reaped) or `/tmp/claude/` (small command artifacts only). Rules: "Temp and working-state locations" in `contract/OVERSIGHT-CONTRACT.md` §1.
+```
+
+No other agent file needs it. Subagents dispatched from a session receive `CLAUDE.md`, and the coder and the reviewers create no large scratch on their own. `.claude/agents/**` is protected, so this edit is human-gated. If the orchestrator applies it inside this PR, its commit sits between S2b and S3, authored by the top-level session.
+
+**Test (cheap, deterministic):** `tests/framework/test_temp_location_rules_parity.py` (S2b).
+
+| ID | Asserts |
+|---|---|
+| P1 | Each of `contract/OVERSIGHT-CONTRACT.md`, `CLAUDE.md` and `AGENTS.md` contains exactly one `TEMP-RULES:BEGIN … TEMP-RULES:END` block, and the three blocks are identical after normalising trailing whitespace. |
+| P2 | The block contains all of these tokens: `$TMPDIR`, `$HOS_TMP_ROOT/<RoleDir>`, `.claudetmp/`, `never reaped`, `/tmp/claude/`, `24 h`, and four numbered rules. |
+| P3 | `docs/SANDBOX-POLICY.md` contains `Temp and working-state locations` and `OVERSIGHT-CONTRACT.md`, and does **not** contain a `TEMP-RULES:BEGIN` block (a cross-reference, not a fourth copy). |
+| P4 | `contract/OVERSIGHT-CONTRACT.md` §1 no longer annotates `.claudetmp/` as `ephemeral`, and `CLAUDE.md` contains no `.claudetmp/` + `ephemeral` phrase. |
+| P5 | No marker starts with `HOS:` (a guard against confusing the installer's region parser). |
+
+The coder greps `tests/` and `scripts/` for tests that match the old "ephemeral working state" wording, and updates them in the same commit.
+
 ---
 
 ## 9. Acceptance procedure (the coder records the evidence in the PR)
@@ -1042,7 +1099,7 @@ One PR. Each commit must pass the inner loop on its own, so the human can review
 |---|---|---|
 | **1. S1: tests only (Layer 1). UNCHANGED by every round-3 ruling.** | `pyproject.toml` (pytest ini); `tests/conftest.py`; new `tests/tmp_hygiene.py`; new `tests/framework/test_tmp_hygiene_plugin.py` and `tests/framework/test_tmp_hygiene_static.py`; the ~18 test files of §7.1; the §4.8 `child_env` sites; `tests/automation/test_dimension_sweep_cli.py` and `tests/automation/test_agent_invoke_wrapper.py` (§7.2) | No. **Sole permitted exception:** a script fix that §4.9 requires to keep this commit green. It is limited to TMPDIR correctness or a cleanup trap, and is named in the commit message and the PR body. |
 | **2. S2a: disk temp root (Layer 0)** | new `bootstrap/lib/hos_tmp_root.py`; `scripts/framework/config.sh` (`HOS_TMP_ROOT="../.tmp"`); `scripts/framework/install.sh` (prompt, default, refusal); `bin/hos-cron` (§2A.3 export only); `bin/hos-human`; `scripts/framework/run_tests_inner_loop.sh` (§2A.3 `TMPDIR` inherit/derive); `contract/sandbox-policy.template.json` (§2A.4); `scripts/framework/gen_sandbox_config.py` (D15 guard); `docs/SANDBOX-POLICY.md`; `scripts/framework/framework_consumer_files.txt` (ship `bootstrap/lib/hos_tmp_root.py`); new `tests/framework/test_hos_tmp_root.py` and `tests/framework/test_hos_human_launcher.py`; `tests/framework/test_gen_sandbox_config.py`; `tests/automation/test_hos_cron.py` (L1); `tests/framework/test_run_tests_inner_loop.py` (L3); `tests/framework/test_install*.py` (I1) | Yes |
-| **3. S2b: machine reaper, triggers and docs (Layer 2)** | new `bootstrap/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py` and `tests/framework/test_tmp_reaper_packaging.py`; `scripts/framework/run_tests_inner_loop.sh` (§8.1 pre-run); `bin/hos-cron` (§8.5 low-space trigger); `scripts/framework/framework_consumer_files.txt`; `bootstrap/hos_bootstrap.sh` (idempotent machine copy to `~/.local/share/hos/`, plus an informational note; R3-4); `bootstrap/hos_install.sh` (informational note only); `scripts/framework/cut_release.sh` (`ASSET_NAMES` + printed bundle loop gain `tmp_reaper.py`; R3-4); `bootstrap/README.md`; `CLAUDE.md`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py` (C1); `tests/automation/test_hos_cron.py` (C2); `tests/framework/test_consumer_framework_files.py`; `SCRIPTS-INDEX.md` and CODEOWNERS regenerated via `regen_all.sh` | Yes |
+| **3. S2b: machine reaper, triggers and docs (Layer 2)** | new `bootstrap/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py` and `tests/framework/test_tmp_reaper_packaging.py`; `scripts/framework/run_tests_inner_loop.sh` (§8.1 pre-run); `bin/hos-cron` (§8.5 low-space trigger); `scripts/framework/framework_consumer_files.txt`; `bootstrap/hos_bootstrap.sh` (idempotent machine copy to `~/.local/share/hos/`, plus an informational note; R3-4); `bootstrap/hos_install.sh` (informational note only); `scripts/framework/cut_release.sh` (`ASSET_NAMES` + printed bundle loop gain `tmp_reaper.py`; R3-4); `bootstrap/README.md`; `CLAUDE.md` (§8.3 row and §8.6 block); `contract/OVERSIGHT-CONTRACT.md` (§8.6); `AGENTS.md` (§8.6); `docs/SANDBOX-POLICY.md` (§8.6 cross-reference); new `tests/framework/test_temp_location_rules_parity.py`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py` (C1); `tests/automation/test_hos_cron.py` (C2); `tests/framework/test_consumer_framework_files.py`; `SCRIPTS-INDEX.md` and CODEOWNERS regenerated via `regen_all.sh` | Yes |
 | **4. S3: literal-/tmp script fixes. UNCHANGED in content** (all sites become `"${TMPDIR:-/tmp}"`, human item 5) | `scripts/oversight/run_validators.sh`, `scripts/oversight/gates/secret_scan.sh`, `scripts/oversight/gates/security_scan.sh`, `scripts/framework/validate_agents.sh`, `scripts/framework/validate_scripts.sh`, `bootstrap/hos_install.sh` (traps); new `tests/framework/test_tmp_template_static.py` | Yes |
 
 - **The PR as a whole** touches protected surfaces and needs human approval (CODEOWNERS). The combined risk tier is HIGH, for two reasons: a recursive delete, and a change to the shipped sandbox template and every launcher's `TMPDIR`. Second review runs at HIGH (agy + codex) over the full diff, with an explicit `--tier HIGH`.
@@ -1124,13 +1181,15 @@ BLAST RADIUS:
 - S2a: every HOS launcher invocation (worker, overseer, human); every inner-loop run; the shipped sandbox template and generator; consumer installs via `install.sh` and `config.sh`.
 - S2b: every inner-loop run (classes P and T), every `hos-cron` cycle (the probe; a reap only when low), and every machine whose operator installs the daily entry (all classes).
 - S3: six gate, validator and installer scripts.
+- S2b governance text (§8.6): every session and agent that reads `CLAUDE.md`, `AGENTS.md` or the contract, in this repo and in consumers. The orchestrator-applied bullet reaches `worker.md` and `overseer.md`.
 
 Change classification (this revision): **structural**. The temp location, sandbox grants and slicing all change. Every structural element is **human-ruled** (the disk-temp, packaging and §12.1 rulings), so the CORE rule that "every structural change escalates to a human before writing" is satisfied by those rulings. The architect's round-3 check is still required. No code has been approved against any earlier body. S1, which the coder is building now, is explicitly unchanged, and S3 is unchanged in content. No sign-off is orphaned.
 
 ## Human Review Required
 
-- The PR touches these protected surfaces: `bin/**` (`hos-cron`, `hos-human`), `bootstrap/**`, `contract/sandbox-policy.template.json`, `scripts/framework/**` (including `config.sh`, `install.sh` and `gen_sandbox_config.py`), `scripts/oversight/gates/**`, `scripts/oversight/run_validators.sh`, `docs/SANDBOX-POLICY.md` and `CLAUDE.md`. Human approval is mandatory under CODEOWNERS.
+- The PR touches these protected surfaces: `AGENTS.md`, `contract/OVERSIGHT-CONTRACT.md` (§8.6 rules), `bin/**` (`hos-cron`, `hos-human`), `bootstrap/**`, `contract/sandbox-policy.template.json`, `scripts/framework/**` (including `config.sh`, `install.sh` and `gen_sandbox_config.py`), `scripts/oversight/gates/**`, `scripts/oversight/run_validators.sh`, `docs/SANDBOX-POLICY.md` and `CLAUDE.md`. Human approval is mandatory under CODEOWNERS.
 - §12.1 is fully resolved by the human rulings of 2026-10-09.
+- If the orchestrator applies the §8.6 bullet to `.claude/agents/worker.md` and `.claude/agents/overseer.md` in this PR, that edit is authored by the top-level session (#1347), not by the coder, and is human-gated as `.claude/agents/**`.
 - The human is already adding the §2A.4 entries to the live Human `settings.local.json` by hand. After merge, `gen_sandbox_config.py --check` must report no divergence for that clone. If it does, the template and the hand edit disagree, and the template wins.
 
 ---
@@ -1611,3 +1670,21 @@ R3-1..R3-6 are folded into the body. **No condition is disputed.** Change classi
 - **Resolver tests.** New H5.
 
 This rename stays inside S2a and S2b. **S1 is unaffected.**
+
+**Human ruling (2026-10-09): temp-location rules for every role (added to S2b).** New §8.6 contains:
+- one normative four-rule block, kept byte-identical between non-`HOS:` markers in `contract/OVERSIGHT-CONTRACT.md` §1 (the normative source), `CLAUDE.md` (new subsection before the shell rules, plus a sentence on shell rule 8) and `AGENTS.md` (new section before Session Discipline);
+- a cross-reference only in `docs/SANDBOX-POLICY.md`.
+
+**AGENTS.md is included.** It ships to consumers, whereas `CLAUDE.md` does not, and it is the vendor-neutral Layer-1 document.
+
+**Contradiction removed.** `.claudetmp/` is no longer called "ephemeral" in the contract tree or in CLAUDE.md's session-start item 5, because rule 2 makes it persistent and never reaped.
+
+**Agent definitions.** The exact bullet text for `worker.md` and `overseer.md` CORE is specified for the **orchestrator** to apply (#1347). It is not a coder task.
+
+**Rule 4 is enforced in code as well as in docs:**
+- the resolver rejects a root that contains the repo (H2);
+- the inner loop refuses an inherited `TMPDIR` under the repo (L3(5)).
+
+**Parity test:** P1–P5 in `tests/framework/test_temp_location_rules_parity.py`.
+
+**S1 is unaffected.**
