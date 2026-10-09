@@ -1,6 +1,6 @@
 # ADR-2033: Cross-file chunked review for validate_agents.sh. A deterministic agent graph in every chunk, and chunks packed so every directed agent-to-agent reference is co-resident
 
-**Status:** Proposed (architect), **round 2**, revised after the technical-design review's REQUEST_CHANGES (see §12, Revision log). Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
+**Status:** Proposed (architect), **round 3**, revised after the technical-design review (round 2: REQUEST_CHANGES; round 3: APPROVE_WITH_CONDITIONS on `6d2b4e163`; see §12, Revision log). Decisions marked BINDING bind `technical-design`, `coder`, `code-reviewer`, and the reviewers once their gating ESC items (§9) are cleared on record. Decisions marked **PROVISIONAL (ESC-n)** are drafted on the recommended answer. None is treated as ruled by the human.
 **Date:** 2026-10-09
 **Author:** architect (autonomous worker cycle; no human present)
 **Issue:** #2033 (priority:high, v0.7.0) · **Risk tier: HIGH.** S3 touches `scripts/framework/**`, a protected surface, so human approval is required at merge whatever the computed tier.
@@ -67,14 +67,16 @@ Round 1's fallback sizes (132,139 / 128,340 / 113,107 / 93,695) were computed wi
 
 None of the reverse edges exist, so no hub pair needs a fallback in both directions.
 
-Packing simulation: greedy cover, AD-5 invariant, docs always split, doc edges soft.
+**Which edges need the fallback today (round 3).** Today's B_budget is about **139.65 KB**. That is the technical-design reviewer's exact figure, and it supersedes my round-2 estimate of ≈ 139.8 KB. At that budget the `overseer` + `worker` whole pair (139,822 B) does **not** fit, so **2 edges need the section fallback today**: `overseer` → `oversight-evaluator` and `overseer` → `worker`. The `overseer` + `worker` pair sits within about 0.2 KB of the boundary, so known-issues churn can flip it from run to run. At the worst-case bound, all 3 hub edges need the fallback.
 
-| Scope | Required directed edges | B = 139.8 KB (today, AD-6) | B = 122,766 (worst-case bound, AD-6) |
+**Chunk counts (approximate).** These come from two independent greedy planners: the architect's and the technical-design reviewer's. Both use the AD-5 invariant, always-split docs, and soft doc edges.
+
+| Scope | Required directed edges | Today's budget (≈ 139.65 KB) | Worst-case bound (122,766) |
 |---|---|---|---|
-| Full mode | 136 | **12 chunks**, 1 section fallback, 1.52 MB of units | **15 chunks**, 3 fallbacks, 1.60 MB |
-| Release focus, v0.6.0 (5 agents + 2 docs) | 58 | **9 chunks** | **10 chunks** |
+| Full mode | 136 | **11 to 12 chunks**, 2 section fallbacks, ≈ 1.5 MB of units | **13 to 15 chunks**, 3 fallbacks, ≈ 1.6 MB |
+| Release focus, v0.6.0 (5 agents + 2 docs) | 58 | **8 to 9 chunks** | **10 chunks** |
 
-No edge comes near `edge_too_large` at either budget. The largest fallback is 92,669 B, which leaves about 30 KB of margin even at the worst-case bound. These counts come from a greedy approximation. The binding constraints are the invariant and the cap (AD-5, AD-9), and S3 re-measures with the real planner.
+These counts are approximate. The binding constraints are the invariant and the cap of 24 (AD-5, AD-9). **S3's live `plan --dry-run` is the measurement of record.** No edge comes near `edge_too_large` at either budget: the largest fallback is 92,669 B, which leaves about 30 KB of margin at the worst-case bound.
 
 **VF-2 (a correction on record to #2015 AR-11 / ESC-2).** #2015 says both validators "ship to consumers (`test_consumer_framework_files.py:21-22`)". Those lines are in `_HOS_DEV_ONLY`, the never-ship list. The release installer does not ship `validate_agents.sh`. The legacy `scripts/framework/install.sh --source` copy loop (L99-115) still copies it, but without `scripts/oversight/**`. The worker annotates #2015. AD-11 below makes a missing dependency fail loudly.
 
@@ -87,13 +89,13 @@ No edge comes near `edge_too_large` at either budget. The largest fallback is 92
 | AD-1 | Cross-file coverage comes from a **deterministic cross-file index in every agy chunk**, plus **edge-cover packing** over directed agent→agent edges. There is no AI summary pass. (BINDING) |
 | AD-2 | The index is a pointer, not evidence. Findings must be confirmed in visible text. (BINDING) |
 | AD-3 | New pure module `agent_graph_logic.py`, with one pinned mention rule and one pinned naming-section rule. It reuses `agents_static_logic` read-only. (BINDING) |
-| AD-4 | New `cover` mode in #2014's `chunk_logic.py`. What is reused unchanged and what is new are stated exactly. (BINDING) |
+| AD-4 | New `cover` mode in #2014's `chunk_logic.py`. It states exactly what is reused unchanged and what is new, and adds a per-chunk result-file interface required of #2014's lane loop (§4.5). (BINDING) |
 | AD-5 | Coverage invariant over the **placed set**, per directed edge. The section fallback keeps B whole. A run fails loudly if an edge cannot fit. (BINDING) |
 | AD-6 | Budget follows #2014 §4.2. Known issues are deterministically capped at 16,384 B. Feasibility is proven at the worst-case bound. (BINDING) |
 | AD-7 | Docs are **always** split at `## ` (a new trigger, reusing the split function). Doc edges are soft. (BINDING) |
 | AD-8 | `--changed-only` narrows to the corpus and plans focus plus required neighbours. Context-only findings are non-blocking. (PROVISIONAL, ESC-2) |
 | AD-9 | Sequential calls. Cap 24 (lower-only). Never sampled. (BINDING; cost is ESC-4) |
-| AD-10 | Per-chunk blocks: Python re-serialisation for success, `_agents_vi_failure_json` shape for failure. Coverage gate exits 1 and is not counted as a pass. #2036 stays inert; the #2032 exposure is recorded. (BINDING) |
+| AD-10 | Per-chunk blocks: Python re-serialisation for success, `_agents_vi_failure_json` shape for failure. The block verdict after routing is pinned, so the result is correct whether or not #2032 is fixed. Coverage gate exits 1 and is not counted as a pass. #2036 stays inert. (BINDING) |
 | AD-11 | Codex is not chunked. Its input is a stated contract in both modes. (BINDING) |
 | AD-13 | Composition with #2015: S3 reuses #2015's lane machinery and never absorbs it. The meaning of "hold" is ESC-7. (BINDING except where marked) |
 
@@ -133,7 +135,7 @@ The lens must say: *"The index is machine-extracted and may be incomplete or inc
 |---|---|---|---|
 | 1 Escalation loops | Index (b) lists `[esc]` cycles of length ≤ 4. Cycles of length ≤ 3 are required co-resident (AD-5). | The cycle is in the `[esc]` graph, length ≤ 3. | Loops without a backticked name or an escalation verb. Length-4 cycles are listed but not guaranteed co-resident. |
 | 2 Dead ends | Deterministic: `check_agents_static.sh` §4 (Phase 1, blocking). Semantic: as class 3. | The target exists but does not describe the handoff. | Roles named in prose without backticks. |
-| 3 Cross-file mismatches | Every directed agent→agent edge is co-resident (AD-5). | Always, for pinned-rule mentions between agent files. | (i) Mentions without an exact-name span, for example `` `overseer.md` `` or "the overseer". (ii) Doc→agent edges are soft; Phase 3 validate_docs owns the pairwise check once #2014 S1b lands. (iii) Section-fallback edges: B is whole, but A is seen only through its naming sections, so a contract in A's *other* sections that bears on B is missed. Today that is 1 edge; at the worst-case bound, 3. |
+| 3 Cross-file mismatches | Every directed agent→agent edge is co-resident (AD-5). | Always, for pinned-rule mentions between agent files. | (i) Mentions without an exact-name span, for example `` `overseer.md` `` or "the overseer". (ii) Doc→agent edges are soft; Phase 3 validate_docs owns the pairwise check once #2014 S1b lands. (iii) Section-fallback edges: B is whole, but A is seen only through its naming sections, so a contract in A's *other* sections that bears on B is missed. Today that is 2 edges (`overseer` → `oversight-evaluator`, `overseer` → `worker`); at the worst-case bound, 3. |
 | 3b Hub pairs in fallback **in both directions** | Each direction gets its own fallback chunk, so A and B are never whole together. | Each one-directional claim, against the other side's full text. | Reasoning that needs **both full contracts at once**, for example a loop exit spread across non-naming sections of both files. **Today: 0 such pairs at either budget** (no reverse hub edges, §0.3). The [COVERAGE] section names any that arise. |
 | 4 File-path inconsistency | Index (c) everywhere; `check_agents_static.sh` §3/§5. | Backticked paths. | Paths in prose without backticks. |
 | 5 Pipeline ordering | As class 3, along each edge. | Adjacent pairs. | Chains of three or more steps that are not a cycle. |
@@ -187,23 +189,32 @@ The lens must say: *"The index is machine-extracted and may be incomplete or inc
 - `resolve_max_chunks`;
 - `plan --dry-run`;
 - split-md-h2's **cut function**: cut points, fence rule, byte-exact recombination assertion, `part i/j` labels, and heading outline (counted in P_max);
-- the whole `chunked_review.sh` lane loop, under ESC-1 = yes.
+- the `chunked_review.sh` lane loop (salvage → single reinforce retry → consumption check), under ESC-1 = yes. **Round 3: this is reuse plus a required interface, not "unchanged".** The loop must emit the per-chunk result file defined in §4.5, which TD-2014 does not define today.
 
 **New, and not "unchanged":**
 1. **Unit JSONL gains two additive fields:** `{"path","header","kind":"agent"|"doc","split":"h2-always"|"never"}`. #2014's pack and grid modes ignore them. `agent_graph_logic` emits `kind:"agent"` with `split:"never"` for agents, and `kind:"doc"` with `split:"h2-always"` for `*.md` docs. Non-markdown extras get `split:"never"`. There is no `--split-kind` flag.
 2. **Split trigger (AD-7).** #2014 §4.3 splits a unit only when it is over capacity. Under that rule `docs/AGENTS.md` (81,922 < B) would never split. Cover mode splits every `h2-always` unit **unconditionally**, using the same cut function.
    - *Why:* doc sections ride with the agents they name. In the round-1 simulation, a whole `docs/AGENTS.md` landed alone in a chunk with no agent.
    - *Cost:* a whole-doc omission claim can read falsely in one part. The outline mitigates this, and such false positives fail loud (as #2014 §6.5).
-3. **Edge JSONL:** `{"src": <repo-relative path>, "dst": <repo-relative path>, "kind": "mention"|"esc", "required": bool, "lines": [1-based…]}`. Endpoints are **unit paths**, never agent names. Agent names appear only in the rendered index. Hyperedge JSONL: `{"members": [paths], "kind": "esc-cycle"}`. Focus file: one repo-relative path per line.
+3. **Edge JSONL:** `{"src": <repo-relative path>, "dst": <repo-relative path>, "kind": "mention"|"esc", "required": bool, "lines": [1-based…], "naming_sections": [1-based section indices of src], "section_count": n}`.
+   - `naming_sections` is computed by `agent_graph_logic` under the pinned rule (AD-3). `chunk_logic` never re-derives the mention rule, so agent semantics stay in one module.
+   - `chunk_logic` only applies #2014's cut function to `src` and checks that it yields `section_count` sections.
+
+   Endpoints are **unit paths**, never agent names. Agent names appear only in the rendered index. Hyperedge JSONL: `{"members": [paths], "kind": "esc-cycle"}`. Focus file: one repo-relative path per line.
 4. **Mode `cover`:** `plan --mode cover --units F --edges F [--hyperedges F] [--focus F] …`. Units may appear in several chunks. Pack mode's "every unit exactly once" proof does not apply.
-5. **Section-fallback units**, rendered as `EXCERPT: sections i,j of n of <A> (A is reviewed whole in chunk-NNN)`.
+5. **Section-fallback units**, rendered as `EXCERPT: sections i,j of n of <A> (A is reviewed whole in chunk-NNN)`. In the manifest, each chunk's `units` list records every entry with a `role`:
+   - `{"path": P, "role": "whole", "sha256": …}`
+   - `{"path": P, "role": "part", "part": i, "of": n, "sha256": …}` (doc parts)
+   - `{"path": A, "role": "excerpt", "for_edge": [A, B], "sections": [i, j, …], "of": n, "sha256": <sha of the concatenated section bytes>}`
+
+   That gives `verify-run` everything it needs to check a fallback (§4.4).
 6. **The cover preamble (§4.3)** and **`verify-run --cover-inputs DIR`** (§4.4).
 
 ### 4.2 Coverage invariant (AD-5), asserted in `plan` and recomputed by `verify-run`
 
 The planner input is **directed edges**: 136 required agent→agent edges today.
 
-- **Placed set P.** In full mode, P is every unit. In focus mode (AD-8), P is the focus units, plus both ends of every required edge incident to a focus unit, plus every member of a required cycle that contains a focus unit. Units outside P are **context-only**: they feed the index and the preamble but are never placed.
+- **Placed set P.** In full mode, P is every unit. In focus mode (AD-8), P is the focus units, plus both ends of every required edge incident to a focus unit, plus every member of a required cycle that contains a focus unit. Units outside P are **context-only**: they feed the index and the preamble but are never placed. P is computed by `agent_graph_logic.py placed-set` (S1), and `plan` must reproduce it exactly (AD-11).
 1. Every agent in P appears **whole** in ≥ 1 chunk. Every doc in P appears as its complete set of parts, each part in ≥ 1 chunk.
 2. For every required directed edge A→B with A or B in the focus set (every edge in full mode), some chunk contains **B whole** and either **A whole** (the preferred form, used whenever `|A| + |B| ≤ B_budget`) or **every naming section of A for B** (section fallback). The fallback always keeps the *referenced* agent B whole, because B's full contract is what the claim in A is checked against. If only A→B exists, only A→B gets a placement. If both A→B and B→A exist and neither whole pair fits, each direction gets its own fallback placement. That is the both-directions row in §2.1.
 3. Every required hyperedge (an `[esc]` cycle of length ≤ 3 that intersects the focus set, or every such cycle in full mode) has all members whole in one chunk. If they do not fit, it degrades to its member edges under rule 2, and the degradation is recorded.
@@ -211,7 +222,8 @@ The planner input is **directed edges**: 136 required agent→agent edges today.
 
 **Manifest `coverage` (cover mode):**
 ```
-{placed: [...], context_only: [...],
+{budget_bytes: B_budget, max_bytes, reserve_bytes, fixed_bytes: T, p_max_bytes,
+ placed: [...], context_only: [...],
  edges_required, edges_whole, edges_section_fallback: [{src, dst, chunk}],
  hyperedges_required, hyperedges_whole, hyperedges_degraded: [...],
  soft_edges, soft_edges_coresident, input_sha256s: {units, edges, hyperedges, focus}}
@@ -238,14 +250,44 @@ The two inventory lines together list the corpus minus this chunk, so #2014 AR-7
 
 ### 4.4 `verify-run` for cover mode
 
-- `plan` copies its exact inputs into `DIR/inputs/` (units, edges, hyperedges, focus) and records their sha256 values in `coverage.input_sha256s`.
+- **`--cover-inputs DIR` is the plan's `--out-dir`**: the same directory that holds `chunk-manifest.json`. `plan` copies its exact inputs into `DIR/inputs/` (units, edges, hyperedges, focus) and records their sha256 values in `coverage.input_sha256s`. `verify-run` refuses (exit 2) a `DIR` that is not the manifest's own directory.
 - `verify-run --manifest M --results R --lane L --cover-inputs DIR`:
-  - re-hashes those copies against the manifest;
+  - re-hashes the input copies against the manifest;
   - re-reads every placed unit from disk and compares each unit's sha256 to the manifest, which detects a tree that changed mid-run;
-  - recomputes invariant rules 1 to 4;
+  - recomputes invariant rules 1 to 4 from the copied inputs, using the manifest's `budget_bytes`. **"Whole whenever it fits" is checked, not just preferred:** for every edge in `edges_section_fallback`, `verify-run` asserts `bytes(A) + bytes(B) > budget_bytes`, with the bytes taken from the manifest's units (headers included). A fallback used where the whole pair fits is a coverage failure;
+  - checks every `excerpt` entry: `sections` must equal that edge's `naming_sections` from the copied edges file; `of` must equal its `section_count`; and re-cutting A from disk with #2014's cut function and concatenating those sections must reproduce the entry's `sha256`. An excerpt that is missing a naming section therefore fails;
   - runs the unchanged per-chunk-id record check.
 - `--cover-inputs` is required in cover mode, and is mutually exclusive with #2014's `--input` (pack/grid).
 - Any mismatch → exit 1 with a JSON line, as in #2014 §4.6.
+- **Trust level (stated plainly).** The input copies, the manifest, and the results file all live in one writable directory. The re-hash catches **accidents**: a tree edited mid-run, a truncated copy, a planner bug. It does **not** catch deliberate tampering by anyone who can write that directory, because they can rewrite the manifest too. This is the same trust level as #2014's manifest and results. It is not a security boundary.
+
+### 4.5 Per-chunk result interface required of `chunked_review.sh` (round 3, N2)
+
+S3 needs three things per chunk: the `VENDOR_INVOKE_*` values (for `_agents_vi_failure_json`), the salvaged object (for `split-findings` and re-serialisation), and a failure cause finer than #2014's `record-result` outcome set. TD-2014 defines none of these. **Binding:**
+
+- **Where it lives.** It is a requirement on #2014 S1a's `chunked_review.sh`. If S1a has merged without it, **S2 adds it to `chunked_review.sh` additively**: a new output file and no change to existing behaviour, with every #2014 test passing unmodified. Neither S3 nor any other caller may build a second lane loop to obtain it (#2014 D3, AR-14).
+- **The file.** For each chunk and lane, the loop writes `<out-dir>/chunk-NNN.<lane>.result.json`. Python encodes it; it is never built in shell:
+  ```
+  {chunk_id, lane, vendor,
+   outcome:  ok|unparseable|refused|failed|unconsumed|consumption_check_failed,   # #2014 set, unchanged
+   detail:   <finer cause, below>,
+   vi: {class, detail, rc, bytes, max_bytes, stderr_tail},   # VENDOR_INVOKE_* of the LAST attempt
+   consumption: <assess_consumption dict> | null,
+   salvaged: <reviewer object> | null,
+   stdout_prefix: <first 200 chars of the envelope "result" field; of raw stdout only when no envelope parsed>}
+  ```
+- **`detail` values.** `record-result --detail` already carries a free-form detail, so the outcome set is unchanged:
+
+  | `outcome` | `detail` |
+  |---|---|
+  | `failed` | `timeout`, `vendor_nonzero_exit`, any other `vendor_invoke` detail, or `empty_output` |
+  | `refused` | `prompt_too_large` |
+  | `unparseable` | `unparseable_output` |
+  | `unconsumed` | `prompt_not_consumed` |
+  | `consumption_check_failed` | `consumption_check_failed` |
+
+- **Empty-output rule** (preserves #2015 T12). The result is `failed`/`empty_output`, with **no reinforce retry**, if raw stdout is whitespace-only, **or** an envelope parses but its `result` is missing, non-string, or whitespace-only. Salvage is not attempted.
+- S3 maps each result file: on `ok`, run `split-findings` (AD-8) on `salvaged`, then re-serialise. Otherwise, write `_agents_vi_failure_json` built from `vi.*`, `detail`, and `stdout_prefix`.
 
 **Rejected alternatives.**
 - **(R6)** A parallel chunker. Rejected: #2014 D1/D3.
@@ -259,16 +301,17 @@ The two inventory lines together list the corpus minus this chunk, so #2014 AR-7
 
 | Term | Today (measured) | Worst-case bound | Source of the bound |
 |---|---|---|---|
-| R: reinforce suffix | ≈ 0.3 KB | **401** | the three source lines that build it, `run_second_review.sh:736-738`, used as an upper bound. The real value comes from `chunked_review_reserve_bytes`. |
+| R: reinforce suffix | ≈ 0.3 KB | **401** | A safe upper bound. The three source lines that build the suffix (`run_second_review.sh:736-738`) are **258 B**, so the real suffix is smaller still. The real value comes from `chunked_review_reserve_bytes`. (Round 2 wrongly said those lines were 401 B.) |
 | T: lens | ≈ 3.3 KB | **4,096** | S3 test pins the lens template ≤ 4,096 B |
 | T: known issues | 13,324 | **16,384** | **New deterministic cap** (below) |
 | T: index | ≈ 17.4 KB | **24,576** | AD-3 bound |
 | P_max: inventory lines | ≈ 2.4 KB (54 units, 1,795 B of paths) | **8,192** | #2014 AR-7 |
 | P_max: heading outlines of split docs | 3,385 | **3,585** (outlines + labels) | **measured, not capped.** It grows with the docs' headings, and `plan` counts it exactly. |
-| **B_budget** | **≈ 139.8 KB** | **122,766** | |
+| **B_budget** | **≈ 139.65 KB** (technical-design reviewer's figure) | **122,766** | |
 
 **Known-issues cap (new, S3).** Today's block is up to 100 titles of ≤ 256 chars each, about 27 KB unbounded. A small Python helper renders it:
-- keep whole title lines in `gh`'s order until the next line would exceed **16,384 B** minus the trailer;
+- the **16,384 B cap covers the whole rendered block**: the ≈ 240 B heading (`=== KNOWN, ALREADY-TRACKED ISSUES … ===` plus its instructions), every title line, and the trailer;
+- keep whole title lines in `gh`'s order until the next line would push the block past 16,384 B once the trailer is counted;
 - then append `(+N more open issues not listed)`.
 
 The cap is deterministic for a given input and never cuts a line. It applies to both lanes. Its consequence is only noise: an omitted known issue may be re-reported (loud, ledger-dedupable). It is never fail-open.
@@ -276,7 +319,7 @@ The cap is deterministic for a given input and never cuts a line. It applies to 
 **Consequences:**
 - At the worst-case bound, the three hub edges all need fallback. Each fits, with a maximum of 92,669 B against 122,766 B.
 - **No combination of issue-title length, index size, or lens size up to their bounds can cause `edge_too_large` on today's tree.** Round 1's outage scenario is closed.
-- Planning uses the actual B_budget, as #2014 does. Plans can therefore vary with the live known-issues block. Each run records its plan (`input_sha256`). The chunk count stays within 12 to 15 on today's tree.
+- Planning uses the actual B_budget, as #2014 does. Plans can therefore vary with the live known-issues block. Each run records its plan (`input_sha256`). On today's tree the chunk count is approximately 11 to 15 (§0.3), well under the cap of 24. S3's live run is the measurement.
 
 **Single file over budget:**
 - An agent over B_budget → `unit_too_large`, exit 3. The fix is a human authoring decision.
@@ -286,14 +329,24 @@ The cap is deterministic for a given input and never cuts a line. It applies to 
 
 ## 6. AD-8: release scope and context units (PROVISIONAL, ESC-2)
 
-**Corpus.** `--changed-only` selects `changed ∩ corpus` and never widens. The **focus set** is that intersection. The placed set and the rules follow §4.2. Measured for v0.6.0: 58 required edges, 9 chunks (10 at the worst-case bound). If the intersection is empty, today's WARN-then-full-mode fallback (`validate_agents.sh:204-207`) stays.
+**Corpus.** `--changed-only` selects `changed ∩ corpus` and never widens. The **focus set** is that intersection. The placed set and the rules follow §4.2. Measured for v0.6.0: 58 required edges, approximately 8 to 9 chunks (10 at the worst-case bound). If the intersection is empty, today's WARN-then-full-mode fallback (`validate_agents.sh:204-207`) stays.
 
 **Context units.** These are unchanged neighbours placed whole so that edges can be checked.
 - **Lens labelling.** Focus mode tags every unit `[FOCUS]` or `[CONTEXT]` in the preamble (§4.3). The lens says: *"Report a finding only if it involves at least one [FOCUS] unit. A defect that lies entirely within [CONTEXT] units is pre-existing and out of scope for this run."*
 - **Deterministic routing.** `agent_graph_logic.py split-findings --focus F` partitions each salvaged reviewer object:
-  - A finding whose `files` share no path with the focus set goes to a verdict-inert `## [CONTEXT] Pre-existing findings on unchanged files (#130)` section, in a **plain** fence, and does not block.
+  - A finding whose `files` share no path with the focus set goes to a verdict-inert `## [CONTEXT] Pre-existing findings on unchanged files (#130)` section and does not block.
+    - **#2014 AR-5 applies to this section.** It contains **no JSON objects** and none of the keys `verdict`, `findings`, `attacks`, or `error`.
+    - Each routed finding is rendered as one plain-text line inside a plain fence: `- [<severity>] <category|type> | <files, comma-joined> | <description> | <fix>`.
+    - Every field has backticks replaced by `'` and newlines collapsed to spaces, so nothing in it can open a fence or be parsed as a block.
   - Everything else stays in the reviewer's json block and goes through `process` as normal.
   - **Fail-closed rules:** if `files` is missing, empty, or not a list, the finding stays blocking. A path that is not in the corpus, or not recognised as a unit path or a `basename.md` of one, also stays blocking. Only a finding whose every listed file is a known context unit is routed out.
+  - **Block verdict after routing (round 3, N1). This is pinned so the result does not depend on whether #2032 is fixed.** Let V be the reviewer's block-level `verdict` and BF the set of its blocking-severity findings (`blocking` for agy; `critical`/`high` for codex, the same `BLOCKING_SEVERITIES` that `compute_verdict` uses).
+    - `error` → unchanged.
+    - `approve` → unchanged.
+    - `request_changes` → becomes `approve` **only if** BF was non-empty **and** every member of BF was routed to [CONTEXT]. In every other case it stays `request_changes`. That includes the #2032 shape (no findings, or only non-blocking findings): routing never turns a request with no stated blocking basis into an approval.
+    - When it downgrades, the re-serialised block records `routed_from_verdict: "request_changes"` and `context_routed: <count>`. The routed findings stay visible in [CONTEXT].
+    - *Why this is not a #683 laundering path:* #683 forbids downgrading a blocking verdict on the strength of a dedup or count. Here the downgrade happens only when the **entire stated blocking basis** has been moved, by deterministic routing the reviewer does not control, to a section a human sees. It is never ledger-driven or model-driven.
+    - *Coupling:* today `compute_verdict` ignores the block verdict (#2032), so an un-rewritten block would *happen* to be non-blocking. Once #2032 is fixed, it would block, and #130 scoping would be undone. This rule makes the outcome identical under both. Without it the design would fail **loud**, not open, but it would still have been wrong to claim independence from #2032 (AD-10).
 - **Residual (named).** A reviewer that lists only context files for a defect that is really in a focus file has that finding routed to [CONTEXT], visible but non-blocking. This is model-controlled attribution. The [CONTEXT] section keeps it in front of the human.
 - **Full mode** (major releases, ad hoc runs) has no context units, and every finding can block.
 
@@ -307,25 +360,32 @@ The cap is deterministic for a given input and never cuts a line. It applies to 
 
 | Mode | agy calls today (worst-case bound) | agy input | Worst case at cap |
 |---|---|---|---|
-| Full (major release, ad hoc, `framework-validator`) | 12 (15) | ≈ 2.0 MB (≈ 2.45 MB) | 24 × 300 s = 2 h; 4 h with prose retries |
-| Release focus (minor/patch) | 9 (10) | ≈ 1.5 MB | same |
+| Full (major release, ad hoc, `framework-validator`) | ≈ 11 to 12 (13 to 15) | ≈ 2.0 MB (≈ 2.45 MB) | 24 × 300 s = 2 h; 4 h with prose retries |
+| Release focus (minor/patch) | ≈ 8 to 9 (10) | ≈ 1.5 MB | same |
+
+These counts are approximate (§0.3). S3's live `plan --dry-run` is the measurement of record.
 
 For comparison, today's full mode is 1 call, and it is refused under #2015. A minor release cut with #2014 S1b in place is about 9 + 18 + 9 ≈ **36 agy calls** across Phases 2 to 4. `run_framework_validation.sh` prints the `plan --dry-run` before Phase 2.
 
 **AD-10: output, aggregation, fail-closed coverage (BINDING).**
 - **Which path writes each per-chunk block.** For agy, it is the `chunked_review.sh` lane loop (#2014), not #2015's `_vi_lane`/`_vi_neutralize_output`.
   - **Success:** the salvaged object, after AD-8 routing, is re-serialised by Python (`json.dumps`). Then every backtick character is replaced by its six-character JSON escape (backslash, `u`, `0060`), which is #2015's AR-3 policy. Raw vendor stdout is never written inside a json fence (#2014 AR-9). `_vi_neutralize_output` stays only on the codex lane, which is #2015's approved path and is unchanged.
-  - **Failure:** S3 writes the chunk's record with **`_agents_vi_failure_json`, keeping its exact keys and its `error`/`summary` strings**, built from that chunk's `VENDOR_INVOKE_*` values. It adds `chunk_id`, `chunk_k`, and `chunk_n`. The detail mapping is:
+  - **Failure:** S3 writes the chunk's record with **`_agents_vi_failure_json`, keeping its exact keys and its `error`/`summary` strings**.
+    - The record is built from the chunk's §4.5 result file: `vi.*` supplies the `VENDOR_INVOKE_*` values, `detail` becomes `outcome_detail`, and `stdout_prefix` is used for `unparseable_output`. The outcome-to-detail mapping is the §4.5 table.
+    - It adds `chunk_id`, `chunk_k`, and `chunk_n`.
+    - **Plan failures** (before any launch) use the same helper, with `failure_class: "harness"` and `outcome_detail` set to `unit_too_large`, `fixed_context_too_large`, `edge_too_large`, `chunk_cap_exceeded`, or `chunk_plan_failed`. Detail-specific numeric keys replace `prompt_bytes`/`max_bytes`:
 
-    | Chunk outcome | `outcome_detail` |
-    |---|---|
-    | `timeout` | `timeout` |
-    | `refused` | `prompt_too_large` |
-    | vendor failure | `vendor_nonzero_exit` and the vendor's other details |
-    | empty stdout | `empty_output` |
-    | prose after the single reinforce retry | `unparseable_output`, plus `stdout_prefix` |
-    | not consumed (ESC-1) | `prompt_not_consumed` |
-    | consumption check failed (ESC-1) | `consumption_check_failed` |
+      | Detail | Keys |
+      |---|---|
+      | `unit_too_large` | `unit_path`, `unit_bytes`, `budget_bytes`, `max_bytes` (= the vendor ceiling) |
+      | `fixed_context_too_large` | `fixed_bytes`, `max_bytes` |
+      | `edge_too_large` | `src`, `dst`, `edge_bytes`, `budget_bytes` |
+      | `chunk_cap_exceeded` | `chunks_required`, `max_chunks` |
+
+    - Their stderr lines, exactly:
+      - `WARN: agy not launched: <path> is <U> bytes, over the <B>-byte per-chunk budget under the <C>-byte ceiling (unit_too_large, #2033) — recorded as error, continuing`
+      - `WARN: agy not launched: fixed context is <F> bytes, over the <C>-byte ceiling (fixed_context_too_large, #2033) — recorded as error, continuing`
+      - The other details follow the same `agy not launched: … (<detail>, #2033)` pattern.
 
   - The record goes under that chunk's section heading, `## agy — Consistency + Completeness [chunk k/n]`. When n = 1 the heading has no suffix. A heading never contains "skipped".
 - **Coverage gate.** After the lane, the shell keeps `verify-run`'s exit status. If it is non-zero, the shell:
@@ -338,12 +398,22 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
   Plan failures (exit 2/3/4) take the same path with their detail, and no vendor is launched. When n > 1, a verdict-inert `## [COVERAGE] Chunked review (#2014/#2033)` section in a plain fence lists the placed and context-only units, every fallback edge, and every degraded cycle.
 - **Timeout guard.** #2015's `_vi_unenforceable_reason agy` runs **once, before `plan`**. If it is non-empty, the shell writes one `timeout_unenforceable` record and launches nothing.
 - **Verdict.** One `validation_logic.py process --strict-empty` run over all blocks. **No verdict may be written to the header before `process`.** The header starts at `pending`, which keeps **#2036 inert** for this caller.
-- **#2032 is live here.** `compute_verdict` ignores a block-level `request_changes` that has null or empty findings. Chunking multiplies the number of blocks. This design neither fixes #2032 nor depends on its fix. The worker records the coupling on #2032.
+- **#2032 is live here, and the design is coupled to it (round 3 correction).** `compute_verdict` ignores a block-level `request_changes` that has null or empty findings, and chunking multiplies the number of blocks. Round 2 said this design "neither fixes #2032 nor depends on its fix". That was **false** for focus mode: the non-blocking [CONTEXT] rule silently relied on #2032's bug. The AD-8 verdict-after-routing rule removes that dependence, so the gate outcome is the same before and after #2032 is fixed.
+  - **Note for #2032** (recorded by the worker):
+    - (a) Its fix covers validate_agents, so its tests should include a multi-block chunked fixture.
+    - (b) A fixed `compute_verdict` must honour a routed block's rewritten `verdict`. It must not reconstruct `request_changes` from `routed_from_verdict`, which is an audit field, not a verdict.
+    - (c) A routed block with `routed_from_verdict` set must never have zero routed findings, because AD-8 forbids the downgrade in that case. A #2032 test can assert this.
 - **Dedup and convergence.** The fingerprint and ledger are unchanged. Hub files appear in about 2.5 chunks on average, so duplicate findings inflate `blocking_count` until dispositioned. That triage cost is accepted. The pass cap counts runs, not chunks.
 
 **AD-11: codex lane (BINDING).** The codex lane is **not chunked** and gets no index. It stays #2015's single `_vi_lane codex attacks` call under the 1,048,576 B ceiling, with #2015's output path. **Input contract:**
 - **Full mode:** every corpus unit whole, in path order, under today's `=== FILES TO ATTACK ===` marker, plus the capped known-issues block. That is about 0.63 MB, 60% of the ceiling.
-- **Focus mode:** exactly the **placed set P** from the same `plan`, whole and in path order. Docs in P are sent whole, not as parts. A `FOCUS: <paths>` / `CONTEXT: <paths>` header goes before the marker, together with the same "findings must involve a FOCUS unit" instruction. The attacks go through the same `split-findings` routing. The plan is computed (no vendor call) even under `--skip-agy`, so codex always has P.
+- **Focus mode:** exactly the **placed set P**, whole and in path order. Docs in P are sent whole, not as parts. A `FOCUS: <paths>` / `CONTEXT: <paths>` header goes before the marker, together with the same "findings must involve a FOCUS unit" instruction.
+  - **Round 3: P does not come from `plan`.** It is computed by `agent_graph_logic.py placed-set --focus F` (S1). That is a pure graph computation over focus, edges, and cycles, with no packing, so it **cannot fail for size reasons**. `chunk_logic` recomputes P from the same inputs and must get the same set; a mismatch is a `chunk_plan_failed` on the agy lane.
+  - **When `plan` fails** (exit 2/3/4, with or without agy enabled), codex is unaffected: it still runs on P. Under `--skip-agy`, `plan` is not run at all.
+  - If `placed-set` itself fails (exit 2: bad input, I/O), **both** lanes record `chunk_plan_failed` and nothing is launched.
+  - **Codex output in focus mode.** #2015's `_vi_lane` path runs unchanged up to `_vi_neutralize_output`. If the neutralised stdout yields **exactly one** reviewer-shaped object, using the same `validation_logic` parser #2015 already uses to accept it, S3 applies `split-findings` and the verdict-after-routing rule (AD-8), then re-serialises the object (AD-10's success path).
+  - If it yields more than one such object, S3 does **not** route. It writes #2015's neutralised output as today, so every attack can block. That is fail-closed, and the stderr names it.
+  - Full mode keeps #2015's output path unchanged.
 - P ⊆ corpus, so focus input ≤ full input.
 - Above the ceiling, the lane fails loudly with `prompt_too_large` (#2015). It is not silently decomposed. Extending `cover` mode to codex would need a new decision.
 - *Why not chunked:* its adversarial lens is the most cross-file of all (#2014 AR-12), and it fits whole.
@@ -363,15 +433,28 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
   - the index bound and collapse, and over the bound → exit 3;
   - cycles on a synthetic graph;
   - `split-findings`: every fail-closed case (no/empty/non-list `files`, unknown path) stays blocking;
+  - verdict after routing (AD-8, round 3):
+    - `request_changes` with all blocking findings routed → `approve`, with `routed_from_verdict` and `context_routed`;
+    - one blocking focus finding left → stays `request_changes`;
+    - `request_changes` with no findings, or only non-blocking findings (the #2032 shape) → stays `request_changes`;
+    - `error` is never touched;
+  - [CONTEXT] rendering: no JSON object and no `verdict`/`findings`/`attacks`/`error` key in the section, and a backtick-laden description cannot open a fence (AR-5);
+  - `placed-set`: focus plus edge ends plus cycle members, size-independent, with exit 2 only on bad input;
+  - edge JSONL `naming_sections`/`section_count`, checked against the pinned rule on fixtures;
   - on the live tree: **136 directed agent→agent edges, 116 unordered pairs, 191 directed edges in total**, and index ≤ 24,576 B. The live counts are asserted as ≥ to tolerate growth, with the exact values recorded in the PR.
 
 **S2: `cover` mode in `chunk_logic.py`.**
 - Risk HIGH. Not protected. **Gated on #2014 S1a merged.**
 - Condition: all #2014 S1a tests pass **unmodified**.
 - Reviewers: code, security, reliability.
-- Files (≤ 6): `scripts/oversight/chunk_logic.py` · `tests/oversight/test_chunk_logic_cover.py` (new) · `DECISIONS.md` · `SCRIPTS-INDEX.md` · prompt artifact.
+- Files (≤ 8): `scripts/oversight/chunk_logic.py` · `tests/oversight/test_chunk_logic_cover.py` (new) · `DECISIONS.md` · `SCRIPTS-INDEX.md` · prompt artifact.
+  - **Only if #2014 S1a merged without §4.5:** also `scripts/oversight/lib/chunked_review.sh` (additive result file) and `tests/oversight/test_chunked_review_result_file.py` (new).
 - Tests:
   - invariant rules 1 to 4, including the both-directions case and the "B stays whole" fallback direction;
+  - the manifest records `budget_bytes`. `verify-run` fails a manifest that uses a fallback where the whole pair fits;
+  - `verify-run` fails an excerpt entry that is missing a naming section, or whose sha does not re-derive from disk;
+  - `verify-run` refuses a `--cover-inputs` directory that is not the manifest's own;
+  - §4.5 result file: every outcome/detail row; whitespace-only stdout and an empty-`result` envelope give `empty_output` with no retry; `stdout_prefix` comes from `result`; `vi.*` is from the last attempt;
   - unconditional doc split, recombining byte-exact;
   - focus placed set and context-only units, with preamble lines that are never false;
   - `verify-run --cover-inputs`, failing on a tampered input, a tampered manifest that drops an edge, or a unit changed on disk;
@@ -394,6 +477,10 @@ For comparison, today's full mode is 1 call, and it is refused under #2015. A mi
   - a prose chunk → exit 1;
   - no `timeout` binary → no plan and no launch;
   - codex called once, with no index in its stdin, full corpus in full mode, exactly P in focus mode;
+  - focus mode where `plan` fails with `unit_too_large`: codex still runs on P;
+  - `--skip-agy` focus mode: codex runs on P and `plan` is never invoked;
+  - a codex reply in focus mode with two reviewer objects → no routing, all attacks blocking;
+  - plan-failure records carry the AD-10 numeric keys and stderr wording;
   - focus mode: unrelated unchanged files are not placed; neighbours are placed with a [CONTEXT] tag; a context-only finding is non-blocking and visible; an empty-`files` finding blocks;
   - `docs/v9/X.md` changes are excluded;
   - the header is `pending` before `process`;
@@ -416,7 +503,7 @@ These are product-boundary checkpoints. pm-agent assesses product impact. The hu
 
 - **ESC-1 (consumption flags; answer jointly with #2014 ESC-1).** May validate_agents' agy chunks run `--sandbox --output-format json` through `chunked_review.sh`, so every chunk gets a real #1718 consumption check? *Recommended: yes, with one ruling for all three validators.* **S3 is conditional on yes.** "No" returns the design to the architect, because #2014's lane loop defines agy only in that form.
 - **ESC-2 (AD-8 release scope and context units).** Should `--changed-only` narrow to the agent corpus (today it covers all of `docs/**`: 91 files, 5.4 MB, 84 of them design history) and switch to focus mode? In focus mode, changed units' neighbours are placed whole for cross-reference. Findings that lie entirely in those unchanged neighbours are shown in a non-blocking [CONTEXT] section and do **not** block the release (consistent with #130). A defect the reviewer attributes only to context files is also non-blocking. *Recommended: yes.* If "no" on narrowing: Phase 2 cannot pass at a minor or patch release. If "no" on non-blocking context findings: neighbours' pre-existing findings block release cuts, which undoes #130's scoping.
-- **ESC-3 (coverage model).** Is the §2.1 model an acceptable basis for release Phase 2? It consists of: every exact-name agent↔agent mention co-resident, with section fallback (1 edge today, 3 at the worst-case bound); doc↔agent edges best-effort; and the named residuals, including possible "handled nowhere" false positives. *Recommended: yes.*
+- **ESC-3 (coverage model).** Is the §2.1 model an acceptable basis for release Phase 2? It consists of: every exact-name agent↔agent mention co-resident, with section fallback (2 edges today, 3 at the worst-case bound); doc↔agent edges best-effort; and the named residuals, including possible "handled nowhere" false positives. *Recommended: yes.*
 - **ESC-4 (cost model).** Accept about 12 agy calls (≈ 2.0 MB) per full run where today there is 1, up to 15 at the worst-case bound; about 9 per minor/patch release cut; a cap of 24; and a worst case of 2 h (4 h with retries), sequential? With #2014 S1b, that is about 36 agy calls per release cut. *Recommended: yes.*
 - **ESC-5 (operational obligation).** `framework-validator` (`.claude/agents/framework-validator.md:42`, reached via `post-change-sweep`) runs full-mode `validate_agents.sh` inside a Bash call capped at 600 s. Twelve sequential calls will usually exceed that, and the kill leaves no verdict. Accept this, with a follow-up issue (protected `.claude/agents/**`) to move that invocation to focus mode run in the background, or to a human-run step, filed before S3 merges? *Recommended: yes.*
 - **ESC-6 (scope; supersedes round-1 AD-12).** #2014 ESC-7 and ESC-8, still awaiting the human, propose deferring `run_red_team.sh` and `review_self.sh` "to the #2033 cross-file design". Should #2033 **exclude** them? Cover mode takes its edges as an input file, so each could adopt it later with its own edge extractor (agents↔scripts↔contract path references; component call edges), under a separate issue and decision. *Recommended: yes, exclude.* Their lenses need different edge extractors, and bundling them would put two more callers behind a protected HIGH slice. If the human rules "include", the architect adds slices S4/S5 here.
@@ -429,8 +516,25 @@ These are product-boundary checkpoints. pm-agent assesses product impact. The hu
 - **#2015's tests**, in `tests/framework/test_framework_validators_vendor_invoke.py`, for the `script="agents"` parameter. Every assertion is listed below as superseded or preserved.
 
   **Superseded** (S3 amends these, citing this ADR):
-  - **T1:** the agents argv `["--sandbox"]` becomes `["--sandbox","--output-format","json"]` (ESC-1). The 150,000 B single-agent fixture is now over B_budget (`unit_too_large`). The fixture shrinks to ≤ 100,000 B; the stdin-marker assertions stay.
-  - **T3 (both modes):** an oversized single agent is now `unit_too_large`, a plan failure with no launch, and the 1,000 B lowered ceiling is `fixed_context_too_large`, in place of `prompt_too_large`. The "not invoked", `verdict: error`, `request_changes`, and exit 1 assertions stay.
+  - **T1: only the argv assertion changes.** The agents argv `["--sandbox"]` becomes `["--sandbox","--output-format","json"]` (ESC-1).
+    - *Round 2 was wrong here.* The 150,000 B fixture is **not** `unit_too_large`. The harness sets `HOS_FEED_KNOWN_ISSUES=0` and uses one agent and no docs, so B_budget is about 175 KB and the fixture fits in one chunk.
+    - The fixture size and both stdin assertions (marker, and the 150,000-byte run arriving intact) are **unchanged**. That preserves T1's purpose: a prompt over `MAX_ARG_STRLEN` (131,072) arrives on stdin intact.
+  - **T3, default mode** (200,000 B single agent, over B_budget): `unit_too_large`, a plan failure with no launch. Assertions kept: `not invoked`, `verdict == "error"`, `header_verdict == "request_changes"`, `returncode == 1`, and `b["max_bytes"] == 180000` (AD-10: `max_bytes` is the vendor ceiling). Assertions replaced:
+
+    | Old assertion | New assertion |
+    |---|---|
+    | `outcome_detail == "prompt_too_large"` | `== "unit_too_large"` |
+    | `prompt_bytes > max_bytes` | `b["unit_bytes"] > b["budget_bytes"]` |
+    | stderr `prompt is \d+ bytes` | `is \d+ bytes, over the \d+-byte per-chunk budget` |
+    | stderr `over the 180000-byte ceiling` | `under the 180000-byte ceiling` (AD-10 wording) |
+
+  - **T3, lowered mode** (`VENDOR_INVOKE_MAX_BYTES_AGY=1000`, 2,000 B fixture): the fixed context alone exceeds 1,000 B, so the result is `fixed_context_too_large`. Assertions kept: `not invoked`, `verdict == "error"`, `request_changes`, exit 1, `b["max_bytes"] == 1000`, and stderr `over the 1000-byte ceiling` (AD-10's wording matches it). Assertions replaced:
+
+    | Old assertion | New assertion |
+    |---|---|
+    | `outcome_detail == "prompt_too_large"` | `== "fixed_context_too_large"` |
+    | `prompt_bytes > max_bytes` | `b["fixed_bytes"] > b["max_bytes"]` |
+    | stderr `prompt is \d+ bytes` | `fixed context is \d+ bytes` |
   - **T8:** the agents count of `vendor_invoke agy` call sites goes from 1 to 0, because the call moves into `chunked_review.sh`. The `vendor_invoke codex` count of 1 and every launch-pattern assertion stay.
 
   **Preserved with unchanged assertions** (because of AD-10's record shape, the guard placement, and the fact that the n = 1 fixtures stay below B_budget; `block("agy")` returns the first, per-chunk, record):
@@ -438,13 +542,13 @@ These are product-boundary checkpoints. pm-agent assesses product impact. The hu
   - T7 (one `timeout_unenforceable` record per lane, nothing launched, exit 1);
   - T9 (quote/backslash-safe `stderr_tail`);
   - T11, T11b, T11c (budget guard);
-  - T12 (`empty_output`);
+  - T12 (`empty_output`). The `blank` stub mode prints a bare `\n` and is **exempt from envelope wrapping**, because it models a vendor that printed nothing. §4.5's empty-output rule classifies whitespace-only stdout, and also an envelope with an empty `result`, as `failed`/`empty_output` with no reinforce retry. So T12 holds whether or not the stub wraps;
   - T14 (`vendor_nonzero_exit`, rc 3, keys per lane);
-  - T16 (`unparseable_output` + `stdout_prefix`, after the single reinforce retry);
+  - T16 (`unparseable_output` + `stdout_prefix`, after the single reinforce retry). **Pinned:** `stdout_prefix` is the first 200 characters of the envelope's `result` field, which is the model's text (§4.5). It is taken from raw stdout only when no envelope parsed. The wrapped stub puts `Looks fine to me, \`ship it\`.` in `result`, so `"Looks fine to me" in b["stdout_prefix"]` holds;
   - T17 (a raw fenced approve is salvaged as approve, exit 0);
   - T4, T10, T15 (codex lane, unchanged).
 
-  **Fixture-only change:** under ESC-1 = yes, the agy stub wraps its output in the agy JSON envelope for every mode, with a `usage` consistent with the stdin size. That is a helper change, not an assertion change. Any other edit to #2015's assertions voids this ruling and needs re-review against #2015 AR-2/AR-3/AR-4.
+  **Fixture-only change:** under ESC-1 = yes, the agy stub wraps its output in the agy JSON envelope (output as the `result` string, with a `usage` consistent with the stdin size) for the `approve`, `raw`, and `fail` modes. The `blank` and `sleep` modes are not wrapped. That is a helper change, not an assertion change. Any other edit to #2015's assertions voids this ruling and needs re-review against #2015 AR-2/AR-3/AR-4.
 - **#2014's sign-offs** stand, on S2's unmodified-tests condition.
 - **VF-2:** the worker annotates #2015. No code or gate change follows from it.
 
@@ -480,4 +584,27 @@ These are product-boundary checkpoints. pm-agent assesses product impact. The hu
 
 No finding was declined.
 
-**Status: Proposed (architect), round 2.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
+**Round 3 (2026-10-09)**, responding to the technical-design review's APPROVE_WITH_CONDITIONS on `6d2b4e163`. The `T1`/`T3`/`T12`/`T16` claims were verified against `git show worker-2015-validators-vendor-invoke-261008083501-752797:tests/framework/test_framework_validators_vendor_invoke.py`, covering the harness (`HOS_FEED_KNOWN_ISSUES=0`, one agent `coder.md`, an empty `docs/`) and the stub modes. The 258 B figure was measured with `sed -n 736,738p scripts/run_second_review.sh | wc -c`.
+
+| # | Condition | Disposition |
+|---|---|---|
+| N1 | The non-blocking [CONTEXT] rule silently depends on #2032 staying unfixed | **Fixed.** AD-8 pins the block verdict after routing: `request_changes` → `approve` only if the block had ≥ 1 blocking finding and *all* of them were routed. The #2032 shape (no findings, or only non-blocking ones) is never downgraded, and `error` is never touched. Audit fields are added. The ADR explains why this is not a #683 laundering path. AD-10's independence claim is corrected and the #2032 note extended to items (a) to (c). |
+| N2 | The lane loop is not "reused unchanged"; outcome and detail mismatch; no `VENDOR_INVOKE_*` or salvaged-object interface | **Fixed.** New §4.5: a per-chunk `result.json` interface, with a detail table inside #2014's unchanged outcome set and `vi.*` / `salvaged` / `stdout_prefix`. It is stated as a requirement on #2014 S1a's lib; if S1a merged without it, S2 adds it additively (S2 files updated). §4.1 no longer says "unchanged". |
+| §10-T1 | The 150 KB fixture is not `unit_too_large` | **Fixed.** Only the argv assertion changes. The fixture and the MAX_ARG_STRLEN purpose are kept. |
+| §10-T12 | Envelope-wrapping `blank` mode would turn `empty_output` into `unparseable_output` | **Fixed, both ways.** `blank` is exempt from wrapping, and §4.5 also treats an envelope with an empty `result` as `empty_output` with no retry. |
+| §10-T3 | `prompt_bytes`/`max_bytes` and the stderr regexes cannot hold | **Fixed.** AD-10 defines plan-failure numeric keys and exact stderr wording. §10 lists every kept and replaced T3 assertion for both modes. |
+| §10-T16 | `stdout_prefix` source not pinned | **Fixed.** It is the envelope's `result`, falling back to raw stdout only if there is no envelope (§4.5, §10). |
+| F4-a | Manifest must record B_budget; is "whole when it fits" verified? | **Fixed.** The manifest records `budget_bytes`, `max_bytes`, `reserve_bytes`, `fixed_bytes`, and `p_max_bytes`. `verify-run` **checks** that every fallback edge's whole pair exceeds `budget_bytes`. |
+| F4-b | Excerpt representation in the chunk's units list | **Fixed.** Each entry has a `role` (`whole`, `part`, or `excerpt` with `for_edge`/`sections`/`of`/`sha256`). Edge JSONL carries `naming_sections`/`section_count`. `verify-run` checks section equality and re-derives the sha from disk. |
+| F4-c | Is `--cover-inputs DIR` the `--out-dir`? | **Fixed.** Yes. `verify-run` refuses any other directory. |
+| F4-d | A shared writable dir means accidents, not tampering | **Fixed.** Stated explicitly in §4.4, at the same trust level as #2014. |
+| S-1 | 2 fallbacks today, not 1 | **Fixed.** Today's B_budget is ≈ 139.65 KB. `overseer` → `worker` (139,822) also falls back. §0.3, §2.1, §5, and ESC-3 updated. |
+| S-2 | Chunk counts disagree with an independent planner | **Fixed.** Stated as approximate ranges (full 11 to 12 / 13 to 15; release 8 to 9 / 10). S3's live run is the measurement of record. Cap 24 unchanged. |
+| S-3 | Codex behaviour when `plan` fails under `--skip-agy` | **Fixed.** P now comes from `agent_graph_logic placed-set` (pure graph computation, no size failure). Codex runs on P whether or not `plan` fails, and `plan` is not run under `--skip-agy`. A `placed-set` failure stops both lanes. Codex focus-mode routing and its fail-closed multi-object case are specified (AD-11). |
+| S-4 | R = 401 wording | **Fixed.** The lines are 258 B; 401 is kept as a safe bound. |
+| S-5 | Is the known-issues heading inside the cap? | **Fixed.** Inside. The 16,384 B cap covers heading, titles, and trailer. |
+| S-6 | Does #2014 AR-5 apply to [CONTEXT]? | **Fixed.** Yes. The section holds plain-text lines only, with no JSON objects and no `verdict`/`findings`/`attacks`/`error` keys, and backticks are neutralised. |
+
+No condition was declined.
+
+**Status: Proposed (architect), round 3.** S1 may go to `technical-design` and `coder` now. S2 waits for #2014 S1a. S3 waits for its §8 gates, including ESC-1 = yes. Any deviation from AD-1 to AD-11 and AD-13 comes back to the architect.
