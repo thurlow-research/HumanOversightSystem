@@ -1,6 +1,11 @@
 # Technical Design — #2054 test runs exhaust the per-user /tmp quota
 
-Status: **Round 3 revision (2026-10-09), restructured.**
+Status: **Architect round 3 (2026-10-09): APPROVED WITH CONDITIONS R3-1..R3-6** (see "Architect review (round 3 of 5)" at the end).
+- **S2a and S2b are ready for the coder now.** R3-1..R3-6 are binding and fully specified, and **where they conflict with the body, they govern**.
+- technical-design folds them into the body in parallel. No round 4 is required unless technical-design disputes a condition.
+- The code-reviewer checks conformance to R3-1..R3-6.
+
+Previous status: **Round 3 revision (2026-10-09), restructured.**
 
 Applied to the body:
 - the architect's round-2 conditions R2-1..R2-8;
@@ -1434,3 +1439,88 @@ This revision applies, in order:
 - `TMP_REAPER_RUN` first line, and `roots=<n>` in the summary.
 
 Requesting the architect's round-3 diff check (round 3 of 5).
+
+---
+
+## Architect review (round 3 of 5, 2026-10-09)
+
+**Verdict: APPROVED WITH CONDITIONS R3-1..R3-6.**
+- R2-2, R2-5, R2-6, R2-7 and R2-8 are applied correctly.
+- R2-1 (git veto), R2-3 and R2-4 are correctly withdrawn or overridden by the human's rulings, and never-execute is kept.
+- The disk-temp, packaging and §12.1 rulings are applied faithfully.
+- Class S safety is unchanged from round 2 apart from the human-ruled scope widening (shape 2, no floor, no git veto). Every liveness check stands.
+- **S2a and S2b are ready for the coder now.** R3-1..R3-6 below are fully specified and govern where they conflict with the body. technical-design folds them in. No round 4 is needed unless a condition is disputed.
+
+### Evidence gathered this round
+
+- **Claude Code overrides `TMPDIR` in sandboxed Bash.** Read from the installed CLI 2.1.295; see scratchpad `flk/cc_tmp.py`.
+  - In sandboxed Bash commands, the child environment gets `TMPDIR = CLAUDE_CODE_TMPDIR || CLAUDE_TMPDIR || "/tmp/claude"`. That **replaces whatever `TMPDIR` the launcher exported**.
+  - Claude Code's own dir is `join(Og(), "claude-<uid>")`, where `Og() = CLAUDE_CODE_TMPDIR || os.tmpdir()`. `os.tmpdir()` honours `TMPDIR`.
+  - So: (a) exporting `TMPDIR` alone **does** move `claude-<uid>` into `.tmp/<role>/`. (b) Exporting `TMPDIR` alone does **not** reach sandboxed Bash children. In every sandboxed session (Human today; worker and overseer after #1146), tests would still land in `/tmp/claude`, which is RAM-backed **and** is the class-S scratch root. Layer 0 would silently fail exactly where it matters. See R3-1.
+- **Sandbox template cross-role reach.** Every role's sandbox has `allowWrite` on `__HOS_ROOT__/{Human,Worker,Overseer}` and on `/tmp`. `__HOME__/.local/share` and `~/.hos` are readable but **not** writable from the sandbox. See R3-2 and R3-4.
+- **No git work tree above the default root.** Neither `~/Code/HumanOversightSystem`, `~/Code` nor `$HOME` has a `.git`, so the default `../.tmp` passes D16 on this host.
+- **`get_app_token.sh` creates no temp files.** The only token temp file is the caller's: `mktemp` in `hos-human` (honours `TMPDIR`) and `mktemp -p ~/.hos` in `hos-cron` (already on disk). The `hos-human` ordering is therefore sound, and the cron difference is harmless.
+
+### Rulings on technical-design's open calls
+
+1. **Fourth role `local`: APPROVED**, with the R3-1 resolution order. `local` is reached only when no launcher chose a dir. Inside a sandbox it is not writable, so the run falls back. That is a documented residual, not an error.
+2. **Inner loop also sweeps `/tmp` with `--no-scratch`: APPROVED.** It is the only automatic path that drains the `/tmp` class-P/T backlog before an operator installs the crontab.
+3. **Trigger sweeps all roots: APPROVED.** One quota or disk is shared, and a low probe on any root justifies the sweep. This crosses role dirs by design: the reaper is a machine janitor running as an unsandboxed process, not an agent. Per-role isolation governs *agent sessions*, so this does not breach it. §2A.4 must say so.
+4. **Newest failed run kept past 24 h: OVERRIDDEN by the human's ruling ("Anything older than a day goes").** See R3-3.
+   - Layer 1 still keeps the newest failed dir (pytest `count=1`) until the next completed session. That is the inspection window.
+   - The reaper applies no KEEP-newest exception.
+5. **`hos-human` exports `TMPDIR` only after the token mint: APPROVED.** The minted token's sourced file stays on the RAM-backed `/tmp` and never touches disk. `hos-cron`'s auth file already lives in `~/.hos`; that is pre-existing and unchanged.
+6. **Single-clone default `~/.local/state/hos/tmp/<project>`: APPROVED.** Such clones are refused by the D15 generator guard, which is consistent with "only the multi-clone human role is generatable today".
+7. **Resolver `bootstrap/lib/hos_tmp_root.py` parses `config.sh` statically: APPROVED.** Never sourcing is the right call for a value read by unsandboxed launchers. Add one test to H1: this repo's committed `config.sh` line parses to `../.tmp`. That guards against an edit that the shell accepts but the resolver rejects.
+8. **Four-commit split S1/S2a/S2b/S3: APPROVED.**
+
+### Binding conditions (round 3)
+
+- **R3-1: export `CLAUDE_CODE_TMPDIR`, and fix the inner loop's resolution order.**
+  - Every launcher in §2A.3 (`bin/hos-cron`, `bin/hos-human`) exports **three** variables on success: `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR`, each set to the resolved role dir. The placements are unchanged.
+  - With `CLAUDE_CODE_TMPDIR` set, Claude Code gives sandboxed Bash children that dir as `TMPDIR`, and puts its own `claude-<uid>` there. Both are inside the role's granted `.tmp/<role>`.
+  - `run_tests_inner_loop.sh` resolves its `TMPDIR` in this order:
+    1. `HOS_TMP_DIR`, if set and an existing writable dir (a launcher chose);
+    2. otherwise `resolve --role local --create`, used if it succeeds and the dir is writable;
+    3. otherwise the inherited non-empty `TMPDIR`;
+    4. otherwise unset, i.e. `/tmp`.
+  - This replaces "inherit any non-empty `TMPDIR`", which in a sandboxed ad-hoc session would inherit Claude's `/tmp/claude` and put pytest back on the tmpfs, inside the class-S scratch root.
+  - Residual: a sandboxed session that no launcher started (for example a plain `claude` in a worktree) cannot write `.tmp/local`, so it falls to step 3 (`/tmp/claude`). R2-7's `SKIP other-class` keeps class S off its `pytest-of-*`, and the inner-loop pre-run (`--root "$TMPDIR"`) reaps it as class P. The CLAUDE.md sentence (§8.3) must tell interactive users to start sessions through `bin/hos-human`, or to export `CLAUDE_CODE_TMPDIR`.
+  - Tests:
+    - L1 and L2 also assert `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR`.
+    - L3 covers all four branches, including "inherited `TMPDIR=/tmp/claude` with `.tmp/local` creatable → `.tmp/local` wins".
+  - Verification item, replacing the §2A.3 open question: in a launched Human session, a sandboxed Bash `echo $TMPDIR` prints `.tmp/human`. The coder records this in the PR.
+- **R3-2: state the isolation guarantee accurately (§2A.4, §13).**
+  - The per-role `.tmp/<role>` grant **does not widen any existing access**. `.tmp` lies outside every clone, and `denyRead __HOME__/` hides sibling role dirs.
+  - It is a *temp-dir* separation, **not** a role-integrity boundary. Every role's sandbox can already write all three clones, including another clone's `scripts/framework/config.sh`, which sets that role's `HOS_TMP_ROOT`, and its `bin/hos-cron`. That cross-clone write grant is pre-existing and out of scope. Its consequence for this TD is that "the isolation guarantee" must be worded as "no role's sandbox is granted another role's temp dir". It must not be presented as protection against a role that tampers with another clone.
+  - File a follow-up issue, worker-pipeline, not this PR: narrow the template's cross-clone `allowWrite` per role. That belongs with #1146.
+- **R3-3: no KEEP-newest exception in the reaper (human ruling).**
+  - §5.3.2 rule 4 becomes: no `.lock` → candidate **REAP finished**, subject to quiet ≥ AGE and the veto.
+  - Delete NEWEST_FINISHED.
+  - Keep AC-1's routing: a successful probe with no `.lock` goes to rule 4, not to `dead-flock`. It now matters only for the reason label.
+  - §0 removes "the one exception".
+  - R5 becomes: both old lock-free finished dirs → REAP.
+  - R15 becomes: an old finished red dir with an unlocked `.hos-live` → `REAP finished` (not `dead-flock`).
+  - The §3 R-2 and Layer 1 text is unchanged: pytest still keeps one failed dir until the next completed session.
+- **R3-4: the daily crontab must not execute a mutable agent working copy.**
+  - The §8.2 recipe runs `~/Code/HumanOversightSystem/Worker/bootstrap/tmp_reaper.py`. The worker cron checks out arbitrary branches in that clone, and every sandbox can write it. An **unsandboxed** daily job with recursive-delete power would then run whatever is checked out, or whatever a sandboxed agent wrote there.
+  - Fix:
+    - `bootstrap/hos_bootstrap.sh` (machine setup; it runs from the validated release bundle) idempotently copies `bootstrap/tmp_reaper.py` to `~/.local/share/hos/tmp_reaper.py`, mode 0755. That path is readable but **not writable** from every sandbox.
+    - This is a file copy, **not** a crontab install, so the never-auto-install ruling holds.
+    - The recipe invokes that copy.
+  - C4(b) additionally asserts that the recipe's script path is not under `Code/` or any clone path, and contains `.local/share/hos/`.
+  - C4(c) asserts that `hos_bootstrap.sh` copies the file and still never invokes `crontab`.
+  - The `bin/hos-cron` low-space trigger keeps running `$REPO_ROOT/bootstrap/tmp_reaper.py`. That is the same trust level as `bin/hos-cron` itself, so it is not a new exposure.
+- **R3-5: Claude Code's own dir on disk.** With R3-1, `claude-<uid>` lives in `.tmp/<role>/` on disk. Reboots no longer clear it, and the reaper never touches `claude-*`.
+  - Record this as an accepted residual in §2A.6: Claude Code manages its own dir; it is 124 KB today.
+  - Under `--measure`, `WARN large-unowned` must also report a `claude-<uid>` entry over 100 MiB in any root. That is visibility only, never deletion.
+  - Extend R19.
+- **R3-6: §2A.4 notes the cross-role janitor (ruling 3).** One sentence: the low-space trigger and the daily reaper act on every role's dir, as unsandboxed machine processes, which is outside the per-role sandbox grants by design.
+
+### Accepted residuals (round 3, in addition to earlier rounds)
+
+- A sandboxed session that no launcher started keeps temp on `/tmp/claude` (R3-1).
+- Disk exhaustion replaces quota exhaustion (§2A.6), and Claude Code's dir persists across reboots (R3-5).
+- Cross-clone write grants make role temp separation non-authoritative against a tampering role (R3-2). This is pre-existing.
+
+**Affected sign-offs:** none. S1 (in progress) is untouched by R3-1..R3-6. S3 is unchanged. No S2a or S2b code exists yet.
