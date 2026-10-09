@@ -1,6 +1,6 @@
 # Technical Design — #2054 test runs exhaust the per-user /tmp quota
 
-Status: **DRAFT, round 1. Waiting for architect review.** Do not hand this to the coder until the architect approves it.
+Status: **Architect round 1 (2026-10-09): APPROVED WITH CONDITIONS AC-1..AC-16** (see "Architect review" at the end). technical-design must apply the conditions to the body. The architect then checks the diff (round 2 is a check, not a redesign). Only after that may this go to the coder.
 Issue: #2054 (bug, blocks work). Being fixed in a human-authorized interactive Worker session on 2026-10-09.
 Related: #1616 (sandbox PID namespaces break `kill -0`), #1903 (`--failure-log` in literal /tmp), #1910 (wrapper replica), #314 (decision logic belongs in Python), D41 (one invocation site).
 Change class: **additive**. This adds new config, a new test plugin, a new script and two new call sites. No existing contract field is removed or renamed. The test-environment change in D4 (the TMPDIR redirect) is the one behavior change; §12 Q2 asks the architect about it.
@@ -478,6 +478,116 @@ BLAST RADIUS: every pytest run in this repo (S1); every hos-cron cycle and inner
 
 ---
 
-## Architect review
+## Architect review (round 1 of 5, 2026-10-09)
 
-*(pending — round 1 not yet requested)*
+**Verdict: APPROVED WITH CONDITIONS.** The overall approach is sound: D1 retention, D3 flock liveness, D4 private TMPDIR, D6 in-pytest gate, a pure `decide()`, and rename-then-rmtree. The conditions below fix two correctness defects (AC-1, AC-8) and several weaker points. technical-design applies them to the body. Coder handoff waits for that and for the architect's diff check.
+
+### Evidence gathered this round
+
+- **pytest 9.1.1 source** (installed venv). Three findings:
+  - `wrap_session` returns `session.exitstatus` *after* `pytest_sessionfinish`, so §4.4's override is honored.
+  - `make_numbered_dir_with_cleanup` creates `.lock` only when `keep != 0`. This confirms D2.
+  - Under `failed`, `tmpdir.pytest_sessionfinish` rmtrees the basetemp on green **before** `_exit_stack.close()`. So the cleanup and `.lock` removal run inside `pytest_sessionfinish`, with atexit only as a fallback, not "only at exit" as §1.3 says. The effect in §1.3 is unchanged.
+- **The flock crosses sandboxes. Verified by experiment** (scratchpad `flk/run.sh`; bwrap `--unshare-pid` with a new mount namespace and `/tmp` bind-mounted):
+  - A holder inside bwrap blocks a probe from the host (`EAGAIN`).
+  - A holder inside bwrap blocks a probe from a *second* bwrap sandbox.
+  - A holder on the host blocks a probe from inside bwrap.
+  - All views saw the same `dev=38 ino=…`.
+  - SIGKILL of the holder released the lock.
+  - A forked child that inherits the fd keeps the lock after its parent is SIGKILLed. That is fail-safe (it keeps the dir).
+  - The holder's in-namespace PID was `2`, which confirms #1616 for `.lock` PIDs.
+  - The guarantee depends on the sandbox **bind-mounting** the host tmpfs. An overlay or private tmpfs would put a different inode behind the same path. Indirect evidence says it is a bind: sandboxed cron runs appear at the host path `/tmp/pytest-of-scott`. AC-4 turns that assumption into a check.
+- **EDQUOT and placement.** Under a full quota `get_app_token.sh` fails, and `bin/hos-cron` exits 0 at "AUTH FAILED" long before wrap-up. That is AC-8.
+
+### Rulings on the open questions
+
+- **Q2 (session TMPDIR redirect): ACCEPTED**, with AC-5, AC-6, AC-7 and AC-12.
+  - The coder fixes *tests* when they break.
+  - If a **script** breaks only because `TMPDIR` is not `/tmp`, that is a real portability defect, since consumers set TMPDIR. The PR is a protected-surface PR anyway (AC-15), so the coder may fix that script in this PR. The fix must be limited to TMPDIR correctness, and the PR body must list it.
+  - The coder must **never** neutralise the redirect for a test (for example `monkeypatch.setenv("TMPDIR", "/tmp")`). Any other kind of script break: stop and escalate.
+- **Q3 (leak allowlist vs hold S1): moot under a single PR.**
+  - `LEAK_ALLOWLIST` must be **empty at merge**, and T7 asserts that unconditionally. Delete the "temporary, protected-producer, S3-tracked" carve-out (AC-13).
+  - Note: today's literal-`/tmp/` scripts *escape* the redirect, so they never trip G-leak. It is S3's conversion to `${TMPDIR:-/tmp}` that brings them into view. Any leak that conversion exposes is fixed with a trap in the same PR, never allowlisted.
+- **Q5 (early-exit paths): YES, but as a move, not an addition.**
+  - Wrap-up is the wrong site. The quota-full condition kills the cycle at auth, so a wrap-up-only reaper can never recover the state it exists to fix. Reaping at wrap-up also gains nothing, because `--min-age-hours 2` means the next cycle start can reap the same set.
+  - Use one cron call site: after the overlap lock is acquired and `_audit` is defined, and before the usage-pause gate, preflight and auth (AC-8).
+  - Not on the suspended exit (a human said stop) or the lock-held exit (the holder reaps).
+- **Q7 (24 h legacy-lock threshold): ACCEPTED**, with AC-3.
+  - After D1, a killed run's dir holds only session-scoped fixtures and the in-flight test. So the 72 h→24 h change matters less for bytes and is mainly about bounding pinned dirs.
+  - 24 h is safe given the positive-live evidence that AC-3 extends.
+
+### Binding conditions
+
+- **AC-1: correctness, the §5.3 rule 2/4 conflict.** Under S1, every *finished* red run keeps its `.hos-live`, unlocked, inside its retained basetemp. As written, rule 2 reaps it as `dead-flock` after 2 h, so rule 4's "KEEP newest" never fires for this suite's runs. That defeats count=1's inspection intent.
+  - Fix: on a successful probe, REAP `dead-flock` **only if `.lock` is present** (a killed run).
+  - If `.lock` is absent, the run finished normally. Go to rule 4.
+  - Add a test: a red finished dir with `.hos-live` and no `.lock`, backdated 48 h, newest → KEEP.
+- **AC-2: rule 4 threshold.** REAP `finished` needs quiet ≥ `--legacy-lock-hours` (24 h), not `min-age`, plus no positive-live evidence (AC-3). A live run from a non-HOS repo of the same user, running with `policy=none`, has neither `.lock` nor `.hos-live`. At 2 h it would be deleted. pytest's own keep=1 cleanup already handles the common case.
+- **AC-3: positive-live evidence, extended.** Reuse the single per-invocation `/proc` scan from §5.4. If any visible process has `cwd`, `root` or an open fd that resolves under a class-P candidate → `SKIP live-proc`. This applies to rules 3 and 4.
+  - From the host cron this sees the sandboxed processes as well.
+  - From inside a sandbox it is absent. Absence is never evidence of death, which is unchanged.
+- **AC-4: inode identity and safe probe.**
+  - §4.2 writes `dev=<st_dev> ino=<st_ino>` (from `fstat` of its own fd) into `.hos-live`.
+  - The reaper opens `.hos-live` with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` and calls `fstat`. It requires `S_ISREG`, the current uid as owner, and a `dev`/`ino` that match the recorded values.
+  - Any mismatch, unreadable content or open error → `SKIP unknown`. This makes the bind-mount assumption a checked fact. Under an overlay the `st_dev` differs.
+  - Tests: a mismatched record → SKIP; a FIFO named `.hos-live` → SKIP with no hang.
+- **AC-5: per-session plugin state.** Keep all state (`fd`, `session_tmp`, `basetemp`, saved `TMPDIR`/`tempdir`, report) in `config.stash`, never in module globals. In-process nested `pytest.main` (T6, mutmut) would otherwise overwrite the outer session's fd and paths. T6 must assert that the *outer* session's state is intact after an in-process inner run.
+- **AC-6: restore timing.** `tmpdir.pytest_sessionfinish` deletes `session-tmp` on green while `TMPDIR` and `tempfile.tempdir` still point at it. Any later hook or plugin that calls `tempfile` would then fail.
+  - Restore both inside the tryfirst `pytest_sessionfinish`, immediately after measuring.
+  - `pytest_unconfigure` releases the flock, and restores only if the values were not already restored (the fallback for sessions that never reached finish).
+  - Update §4.5 and T6.
+- **AC-7: gate determinism.** It is mandatory, so flakiness is unacceptable.
+  - Call `gc.collect()` before measuring. `TemporaryDirectory` objects reachable only through reference cycles are otherwise cleaned at GC time, and that timing is non-deterministic.
+  - The gate is never retried, never marked xfail/flaky, and has no sleep or poll. Every leak line names a path, so any recurrence is fixed at its producer.
+  - The private 0700 `session-tmp` is the right design (§6.1's rejection of a /tmp delta stands).
+- **AC-8: Q5 placement, correctness.**
+  - Replace §8.2's wrap-up placement with a single call site in `bin/hos-cron`: after the overlap lock and the `_audit` helper, and before the usage-pause gate and preflight.
+  - Not on the suspended or lock-held exits.
+  - Remove the wrap-up call (one site, D41).
+  - Rewrite C2:
+    - invoked exactly once per lock-acquiring cycle, including when the `get_app_token.sh` stub fails;
+    - not invoked when suspended or lock-held;
+    - rc≠0 never changes the cycle exit;
+    - the audit rule is unchanged.
+  - Update §8.4 (`CRON-SETUP.md`) to match.
+- **AC-9: dedicated bound.**
+  - Do not reuse `_UP_BOUND`, which belongs to the #1944 usage-pause schema block. Its 60 s outer limit equals the proposed inner `--max-seconds 60`, so it is a race.
+  - Define a reaper-owned bound: `timeout`/`gtimeout --kill-after=5 30`, with an inner `--max-seconds 20`. Inner must be strictly less than outer.
+  - The inner loop uses the same `--max-seconds 20`.
+- **AC-10: per-cycle cost.**
+  - The `user_bytes` walk and the `WARN large-unowned` walk run **only** under `--measure`. The current trees are 390k inodes, plus `/tmp/claude` at 548 MB, so walking them on every cron fire is unacceptable.
+  - Default and `--summary-only` runs print `user_bytes=-`. The §5.5 regex accepts `-`.
+  - Byte counts on `REAP` lines cover only the candidate itself.
+- **AC-11: restate R-2 honestly.**
+  - "At most one unlocked `pytest-N`" holds only for **sequential** sessions.
+  - Under overlap, two concurrent red sessions both survive. Also, a later-numbered session's exit cleanup may delete an earlier finished red dir, which loses evidence that someone may have wanted to inspect. That is acceptable, because the #1903 failure log is the inspection artifact.
+  - The count is bounded by the number of overlapping red sessions and converges at the next completed session.
+  - T1 asserts the sequential cases only. No test asserts a concurrent retention invariant.
+- **AC-12: escapes through scrubbed envs.**
+  - About 93 `env={…}` / `env = {…}` sites in `tests/` build subprocess environments from scratch, so their children write to the real /tmp, which the gate cannot see.
+  - The coder audits them and passes `TMPDIR` through one test helper wherever the child may create temp files. The PR body reports the residual count.
+  - This is not a gate. The §9 `empty_tmp_dirs` evidence is the backstop.
+- **AC-13: allowlist semantics.** The `LEAK_ALLOWLIST` entry types are `(glob, producer, reason, issue)`. They are permitted only for a deterministic third-party tool artifact that the test cannot suppress through env. The list is empty at merge (Q3).
+- **AC-14: static-scan breadth.**
+  - D10's AST scan also resolves `from tempfile import mkdtemp/mkstemp/NamedTemporaryFile` aliases.
+  - It catches `delete=False` as a keyword.
+  - T9 also catches `mktemp -p /tmp`, `mktemp --tmpdir=/tmp` and `-t` forms, as well as templates that begin with `/tmp/`.
+- **AC-15: slicing. A single PR is approved.** One PR contains S1, S2 and S3 as **three ordered commits**, each green on the inner loop. The human can then review per commit, and if S2 draws objections, S1 can be cherry-picked out without a redesign.
+  - Cost:
+    - The whole PR becomes protected-surface and human-gated, so S1 can no longer auto-merge.
+    - The combined risk is HIGH (a scheduled recursive delete), so second review runs at HIGH, agy plus codex, over the full diff.
+    - The human reviews roughly 30 files once instead of twice.
+  - S3 inside the same PR removes the need for any temporary allowlist (Q3).
+- **AC-16: product and policy boundary.** This gates merge, not coding. The human must explicitly clear three things now, recorded in the PR body:
+  - (a) The cron reaper acts on **all** of the user's `pytest-of-<user>` runs and `tmp*` orphans in the shared tmp root, including runs from other repos and projects of the same user.
+  - (b) The reaper ships **default-on to consumers** (`framework_consumer_files.txt` plus the `bin/hos-cron` call). That is a new scheduled-deletion behavior on every consumer host.
+  - (c) The cycle-start placement (AC-8) departs from the issue's wording, "cron-cycle wrap-up".
+  - Q1, Q4 and Q6 remain human items as the TD states.
+
+### What still could go wrong (accepted residuals)
+
+- A test that leaves a background process writing into `session-tmp` after its own teardown would make G-leak timing-dependent. That is a real test defect. AC-7's named-path report makes it attributable. It is not a design flaw.
+- If the reaper runs inside a PID-namespaced sandbox (the inner loop), it cannot see host processes, so AC-3 evidence is absent there. Safety then rests on the flock (rule 2) and the 24 h thresholds (rules 3 and 4), which is fail-safe by construction.
+- Q1 (reaping regular class-T files): a file held open in a namespace that the sandboxed reaper cannot see may be unlinked. The holder keeps its data through the fd. This risk is for the human to accept or reject.
+
+**Affected sign-offs:** none. No design or code has been approved against this TD yet.
