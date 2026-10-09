@@ -33,6 +33,17 @@ change*: orchestrate the agent suite to author it — never hand-write the diff 
 then open a PR under the Human App identity on a branch, for the overseer or the
 human to review as they would any worker PR. Never self-merge.
 
+**Authorization is explicit, never inferred (#1906).** It must be an
+unambiguous instruction addressed to *this session* to build that specific
+change (e.g. "you build this now", "dispatch the coder for X here"). It is never
+inferred from context, urgency, or the human agreeing a fix is needed. A
+statement about the *problem* — its urgency, its blast radius, that "we" need to
+fix it, that it must be fixed "out of band" — is not, by itself, authorization
+for this session to build: the human may intend to make the change themselves or
+in another session. If there is any ambiguity about who is doing the work, ask
+before dispatching anything (`coder` or any other build agent); never infer
+authorization and proceed.
+
 **Urgency is not an exception.** A release blocker is when independent review
 matters most, not least. File the issue first.
 
