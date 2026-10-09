@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"04b18da1fdb8486b81d61726b905a56df5c4cd7d","pr":2044,"reason":"#1215: verdict review 5465556097 (approve, human-required GATE_UNSATISFIED, needs-human applied) already posted at this head 03:58:04Z; no new commits, comments, reviews, or threads since; awaiting CODEOWNERS approval"}
