@@ -14,6 +14,7 @@ Usage (from bash in cron/LOOP context):
 Events:
   cycle-start          logged by bin/hos-cron (shell-level)
   cycle-preflight-fail logged by bin/hos-cron (shell-level)
+  cycle-tmp-root-fallback logged by bin/hos-cron (shell-level); reason=<str>
   cycle-stop           logged here; reason=<enum>
   cycle-pick           logged here; issue=<N> title=<str>
   cycle-pr-opened      logged here; pr=<N> issue=<N>

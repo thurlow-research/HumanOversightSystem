@@ -61,6 +61,9 @@ class _Launcher:
         self.parent = tmp_path / "hos"
         self.repo = self.parent / "Human"
         self.claude_env = tmp_path / "claude_env.txt"
+        self.token_dir = tmp_path / "tokendir"
+        self.token_dir.mkdir()
+        self.token_listing = tmp_path / "token_listing.txt"
         fakebin = tmp_path / "fakebin"
 
         (self.repo / "bin").mkdir(parents=True)
@@ -83,7 +86,8 @@ class _Launcher:
             "#!/usr/bin/env bash\n"
             f'echo "TMPDIR=${{TMPDIR-UNSET}}" > "{self.claude_env}"\n'
             f'echo "CLAUDE_CODE_TMPDIR=${{CLAUDE_CODE_TMPDIR-UNSET}}" >> "{self.claude_env}"\n'
-            f'echo "HOS_TMP_DIR=${{HOS_TMP_DIR-UNSET}}" >> "{self.claude_env}"\n',
+            f'echo "HOS_TMP_DIR=${{HOS_TMP_DIR-UNSET}}" >> "{self.claude_env}"\n'
+            f'ls -A "{self.token_dir}" > "{self.token_listing}"\n',
         )
         self.fakebin = fakebin
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
@@ -92,6 +96,8 @@ class _Launcher:
         env = {
             "HOME": str(self.home),
             "PATH": f"{self.fakebin}:/usr/bin:/bin",
+            # hos-human's mktemp (the token file) lands here, before TMPDIR moves.
+            "TMPDIR": str(self.token_dir),
         }
         return subprocess.run(
             ["bash", str(self.repo / "bin" / "hos-human")],
@@ -140,3 +146,11 @@ def test_l2_a_resolver_failure_warns_and_still_starts_the_session(launcher):
     seen = launcher.seen()
     assert seen["CLAUDE_CODE_TMPDIR"] == "UNSET" and seen["HOS_TMP_DIR"] == "UNSET"
     assert not seen["TMPDIR"].endswith("/.tmp/Human")
+
+
+def test_the_token_file_is_removed_before_claude_starts(launcher):
+    """The EXIT trap does not fire across `exec claude`, so the launcher must
+    remove the sourced token file itself or it stays in the temp dir."""
+    r = launcher.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert launcher.token_listing.read_text() == "", "token temp file left behind"

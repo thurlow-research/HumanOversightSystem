@@ -377,14 +377,47 @@ _audit() {
 # the exported TMPDIR) and HOS_TMP_DIR (the HOS-owned marker the inner loop
 # trusts). Never fatal: on any failure nothing is exported and the cycle runs
 # with the inherited temp location.
-if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create 2>&1)"; then
+if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create 2>/dev/null)"; then
   export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"
   HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"
 else
-  _hos_tmp_reason="${_hos_tmp_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
+  # Failure path only: stdout is the dir (never mixed with stderr), so re-run for the reason.
+  # Last line only: a crashed resolver prints a traceback.
+  _hos_tmp_reason="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create 2>&1 >/dev/null | tail -n 1)" || true  # pipefail: the resolver just failed
   _hos_tmp_reason="${_hos_tmp_reason#hos_tmp_root: }"
+  _hos_tmp_reason="$(printf '%s' "$_hos_tmp_reason" | LC_ALL=C tr -d '\000-\037\177' | cut -c1-1200)"   # no control bytes in the log
   echo "$LOG_PREFIX WARN: HOS tmp root unusable (${_hos_tmp_reason}) — TMPDIR left as-is"
   _audit cycle-tmp-root-fallback "reason=${_hos_tmp_reason}"
+fi
+
+# ── Low-space trigger (#2054, TD §8.5) ────────────────────────────────────────
+# A full per-user /tmp quota (EDQUOT) kills the cycle at auth, so this runs before
+# preflight and auth. The reaper decides everything (#314): it write-probes /tmp and
+# the HOS tmp root (and reads the real per-user quota where supported) and reaps,
+# with its full 24 h rule, only when a probe says low. A healthy cycle costs two
+# 64 KiB writes. Never fatal: nothing later reads the output or rc.
+_TR_CHECK_TIMEOUT_S=30      # outer bound; strictly greater than _TR_MAX_SECONDS
+_TR_CHECK_KILL_AFTER_S=5
+_TR_MAX_SECONDS=20          # the reaper's own wall-clock budget
+_TR_BOUND=()
+if [[ -n "$(command -v timeout)" ]]; then
+  _TR_BOUND=(timeout --kill-after="$_TR_CHECK_KILL_AFTER_S" "$_TR_CHECK_TIMEOUT_S")
+elif [[ -n "$(command -v gtimeout)" ]]; then
+  _TR_BOUND=(gtimeout --kill-after="$_TR_CHECK_KILL_AFTER_S" "$_TR_CHECK_TIMEOUT_S")
+fi
+if [[ -f "$REPO_ROOT/bootstrap/tmp_reaper.py" ]]; then
+  _tr_hos_root_arg=()
+  [[ -n "${HOS_TMP_ROOT_RESOLVED:-}" ]] && _tr_hos_root_arg=(--hos-tmp-root "$HOS_TMP_ROOT_RESOLVED")
+  _tr_rc=0
+  _tr_out="$(${_TR_BOUND[@]+"${_TR_BOUND[@]}"} python3 -I "$REPO_ROOT/bootstrap/tmp_reaper.py" --if-low-space --summary-only --max-seconds "$_TR_MAX_SECONDS" --root /tmp ${_tr_hos_root_arg[@]+"${_tr_hos_root_arg[@]}"} 2>&1)" || _tr_rc=$?
+  while IFS= read -r _tr_line; do
+    [[ -n "$_tr_line" ]] && echo "$LOG_PREFIX $_tr_line"
+  done <<< "$(printf '%s\n' "$_tr_out" | head -n 200)"   # a flood of REAP lines must not flood the log
+  if [[ $_tr_rc -ne 0 || "$_tr_out" == *"TMP_REAPER_PROBE low"* ]]; then
+    _tr_probe="$(grep -m1 '^TMP_REAPER_PROBE' <<< "$_tr_out" || true)"
+    _tr_summary="$(grep -m1 '^TMP_REAPER ' <<< "$_tr_out" || true)"
+    _audit cycle-tmp-reap "rc=$_tr_rc" "probe=${_tr_probe:--}" "summary=${_tr_summary:--}"
+  fi
 fi
 
 # ── Usage-threshold pause gate (#1944, ADR-1944 AD-7/A2-4) ──────────

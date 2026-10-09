@@ -2600,6 +2600,10 @@ echo ""
   echo "  5. Review the audit trail:"
   echo "       cat audit/oversight-log.jsonl | jq 'select(.event==\"sign-off\")'"
   echo ""
+  echo "  Temp reaper (optional): the machine copy is ~/.local/share/hos/tmp_reaper.py"
+  echo "       (installed by hos_bootstrap.sh). HOS does not schedule it; see docs/CRON-SETUP.md"
+  echo "       \"HOS temp on disk and the per-machine reaper\" for the daily crontab recipe."
+  echo ""
   _next_step=6
   if $ROLE_WORKER || $ROLE_OVERSEER; then
     echo "  $_next_step. Set up autonomous cron agents (#715, #717):"

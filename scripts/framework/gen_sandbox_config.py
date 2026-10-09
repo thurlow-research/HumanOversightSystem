@@ -413,9 +413,7 @@ def check_tmp_root(clone_dir: Path, values: dict[str, str]) -> None:
         configured = str(_TMP_ROOT.resolve_root(clone_dir))
     except _TMP_ROOT.TmpRootError as exc:
         raise UsageError(f"HOS_TMP_ROOT of {clone_dir} is unusable: {exc}") from exc
-    if _TMP_ROOT._resolve_existing_prefix(configured) != _TMP_ROOT._resolve_existing_prefix(
-        expected
-    ):
+    if _TMP_ROOT.resolve_existing_prefix(configured) != _TMP_ROOT.resolve_existing_prefix(expected):
         raise UsageError(
             f"HOS_TMP_ROOT of {clone_dir} resolves to {configured!r}, but the sandbox "
             f'template grants only {expected!r}. Set HOS_TMP_ROOT="../.tmp" in '

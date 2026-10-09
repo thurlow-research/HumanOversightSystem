@@ -44,6 +44,12 @@ bootstrap/lib/sandbox_paths.sh
 # gen_sandbox_config.py. Without it the launchers fall back to /tmp with a warning.
 bootstrap/lib/hos_tmp_root.py
 
+# ── bootstrap/ — machine-level temp reaper (#2054) ─────────────────────────────
+# hos_bootstrap.sh installs a machine copy at ~/.local/share/hos/tmp_reaper.py for
+# the operator's daily crontab; bin/hos-cron's low-space trigger and the inner loop
+# run this copy. HOS never installs the crontab entry.
+bootstrap/tmp_reaper.py
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,

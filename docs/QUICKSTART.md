@@ -12,12 +12,11 @@ three small bootstrap scripts to your machine; they fetch everything else.
 
 ```bash
 mkdir -p hos-bootstrap && cd hos-bootstrap
-for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do
+for f in hos_bootstrap.sh setup_clis.sh hos_install.sh tmp_reaper.py SHA256SUMS; do
   curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/$f
 done && chmod +x *.sh
 
 # Verify what you downloaded (recommended):
-curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/SHA256SUMS
 shasum -a 256 -c SHA256SUMS      # Linux: sha256sum -c SHA256SUMS
 ```
 

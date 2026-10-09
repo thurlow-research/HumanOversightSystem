@@ -63,6 +63,9 @@ def test_i1_multi_clone_registry_defaults_to_dot_tmp_beside_the_clones(tmp_path)
     r = _install(target, home)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _config_line(target) == 'HOS_TMP_ROOT="../.tmp"'
+    # prompt_value must return the bare value, not its own prompt text.
+    config = (target / "scripts" / "framework" / "config.sh").read_text()
+    assert 'PROJECT_NAME="My App"\n' in config
 
 
 def test_i1_lone_clone_defaults_to_a_per_project_state_dir(tmp_path):
@@ -117,3 +120,22 @@ def test_i1_an_existing_value_is_kept_on_reinstall(tmp_path):
     r = _install(target, home)
     assert r.returncode == 0, r.stdout + r.stderr
     assert _config_line(target) == 'HOS_TMP_ROOT="../custom"'
+
+
+def test_i1_an_existing_config_without_the_key_does_not_abort_the_upgrade(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "proj" / "Human"
+    (target / "scripts" / "framework").mkdir(parents=True)
+    (home / ".config" / "hos").mkdir(parents=True)
+    (home / ".config" / "hos" / "projects.conf").write_text(
+        f"p_worker_root={tmp_path}/proj/Worker\n"
+    )
+    (target / "scripts" / "framework" / "config.sh").write_text(
+        'PROJECT_NAME="My App"\nPROJECT_STACK=""\nPROJECT_NON_AGENT_TOKENS=""\n'
+        'DESIGN_PACK_PATH=""\nEXTRA_REVIEW_FILES=""\nSPEC_FILE=""\nDESIGN_PACK_DIR=""\n'
+        'PACK=""\n'
+    )
+    r = _install(target, home)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _config_line(target) == 'HOS_TMP_ROOT="../.tmp"'

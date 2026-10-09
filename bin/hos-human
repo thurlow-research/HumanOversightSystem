@@ -117,10 +117,12 @@ bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true
 # (what Claude Code gives sandboxed Bash as TMPDIR, replacing the exported
 # TMPDIR) and HOS_TMP_DIR (the marker the inner loop trusts) all name the role
 # dir. Never fatal: on failure nothing is exported and the session still starts.
-if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role human --create 2>&1)"; then
+if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role human --create 2>/dev/null)"; then
   export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"
 else
-  _hos_tmp_reason="${_hos_tmp_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
+  # Failure path only: stdout is the dir (never mixed with stderr), so re-run for the reason.
+  # Last line only: a crashed resolver prints a traceback.
+  _hos_tmp_reason="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role human --create 2>&1 >/dev/null | tail -n 1)" || true  # pipefail: the resolver just failed
   echo "hos-human: WARN: HOS tmp root unusable (${_hos_tmp_reason#hos_tmp_root: }) -- TMPDIR left as-is" >&2
 fi
 

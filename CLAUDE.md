@@ -30,6 +30,7 @@ bootstrap/             The copy-to-machine bundle (the only thing you copy to a 
                          a target repo (--release <tag> / --local). No sudo. Records
                          the installed tag at the target's .hos-release.
   setup_clis.sh          MACHINE bootstrap of agent CLIs (Node + claude/codex/agy + auth)
+  tmp_reaper.py          MACHINE /tmp reaper (#2054); operator installs it in their own crontab
 .claude/agents/        All shipped agents: 10 oversight layer agents (worker, overseer,
                        evaluator, orchestrator, risk-assessor, etc.) + 16-agent base team
                        (pm-agent, architect, technical-design, coder, 8 reviewers,
@@ -203,6 +204,19 @@ CHECKPOINT (milestone: after steps 3, 6, 10, 11)
 - `DECISIONS.md` is append-only. New decisions go at the bottom with a date header.
 - Do not commit `.claudetmp/`, `.ai-local/`, or any `.salt` files.
 
+### Temp and working-state locations
+
+Normative source: `contract/OVERSIGHT-CONTRACT.md` §1.
+
+<!-- TEMP-RULES:BEGIN (#2054; keep identical in contract/OVERSIGHT-CONTRACT.md §1, CLAUDE.md, AGENTS.md) -->
+**Temp and working-state locations.** Every role — Worker, Overseer, Human, and their subagents — follows these four rules.
+
+1. **Throwaway temp goes under `$TMPDIR`.** This covers pytest runs, `mktemp`/`tempfile` output, scratch repo copies, `git archive` or clone copies made for review, and pip/npm caches created for a task. The launchers point `$TMPDIR` at `$HOS_TMP_ROOT/<RoleDir>` (default `<clone>/../.tmp/<RoleDir>`, on disk). In scripts, use `mktemp`/`tempfile` or `${TMPDIR:-/tmp}`; never hard-code `/tmp` for large output. In an agent Bash call, run `mktemp -d` once and reuse the printed literal path. Anything here is reaped once it is more than 24 h old.
+2. **`.claudetmp/` (inside the clone) is persistent working state**: sign-off registers, design-round state, logs that must survive a cycle, and handoff-adjacent notes. It is uncommitted and is **never reaped**. Never put repo copies or other large scratch trees in it.
+3. **`/tmp/claude/…` literal paths are only for small allowlisted command artifacts**: PR, issue and comment bodies, and commit messages, per the sandbox shell rules.
+4. **`.claudetmp/` and `.tmp/` stay separate.** Neither is ever placed inside the other.
+<!-- TEMP-RULES:END -->
+
 ### Shell usage under the sandbox
 
 This session runs inside an OS-enforced sandbox. Filesystem and network boundaries
@@ -315,7 +329,7 @@ application to shell commands.
 7. **One command per Bash call.** No `&&`/`;` chaining of unrelated steps — each
    subcommand is evaluated independently, so one unallowlistable stage prompts for
    the whole thing.
-8. **Use literal paths.** Write `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`.
+8. **Use literal paths.** Write `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`. Literal `/tmp/claude/…` is for small command artifacts only; large scratch follows 'Temp and working-state locations' above (`mktemp -d`, then reuse the printed path).
 
 #### Canonical entry points by task
 
@@ -353,6 +367,10 @@ T4.1 for the enforced, current exemption set.
 | CODEOWNERS regeneration | `scripts/framework/gen_codeowners.sh` |
 | Full script/module index regeneration | `scripts/framework/gen_scripts_index.sh` |
 | Invoking a shipped Claude agent as a subprocess and getting a machine-readable verdict | `bootstrap/invoke_agent.sh` |
+| Reclaiming temp space (machine-level backstop) in `/tmp` and the HOS disk temp roots (`<clone>/../.tmp/<RoleDir>`): stale `pytest-of-$USER/pytest-N` dirs, orphaned `tmp*` files/dirs, agent scratch trees under `/tmp/claude/`, and (in role dirs only) any top-level entry, whose newest file is older than 24 h. Never touches a live process's files, a held lock, or Claude Code session dirs. `hos_bootstrap.sh` installs a machine copy at `~/.local/share/hos/tmp_reaper.py`. The operator schedules **that copy**, never a clone's, as a daily entry in their own crontab, using the recipe in `docs/CRON-SETUP.md` (HOS never installs the crontab entry); `--root`, `--hos-tmp-root`, `--no-scratch`, `--dry-run`, `--measure` | `bootstrap/tmp_reaper.py` (source); `~/.local/share/hos/tmp_reaper.py` (machine copy) |
+| Resolving this clone's per-role disk temp dir (`HOS_TMP_ROOT`, `TMPDIR`) | `bootstrap/lib/hos_tmp_root.py` |
+
+HOS temp lives on disk in `<clone>/../.tmp/<RoleDir>` (`HOS_TMP_ROOT` in `config.sh`). The launchers export `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` there. Start interactive sessions through `bin/hos-human`, or export `CLAUDE_CODE_TMPDIR` yourself; otherwise sandboxed Bash puts temp in the RAM-backed `/tmp/claude`. Any other launcher (a systemd unit, remote-control, a wrapper script) must export `TMPDIR` and `CLAUDE_CODE_TMPDIR` too; for a systemd unit that is `Environment=TMPDIR=%h/Code/HumanOversightSystem/.tmp/Worker` and `Environment=CLAUDE_CODE_TMPDIR=%h/Code/HumanOversightSystem/.tmp/Worker` in `[Service]`. `/tmp/claude/` remains the place for small draft files such as PR and issue bodies. Test runs clean up their own temp files when they complete. The suite enforces zero leaked temp entries and a 50 MiB budget per session (`tests/conftest.py`, #2054), and a red `TMP_HYGIENE FAIL` is a real failure, not flake.
 
 #### When a prompt does appear
 
@@ -501,7 +519,7 @@ matters most, not least. File the issue first.
    this clone's `HANDOFF_DIR`, configured in `.claude/settings.local.json` —
    see `docs/SANDBOX-POLICY.md` §5) before acting. Do not read
    `.claudetmp/HANDOFF.md`: per `contract/OVERSIGHT-CONTRACT.md` §1,
-   `.claudetmp/` is ephemeral working state (gitignored), not the durable
+   `.claudetmp/` is persistent but uncommitted working state (gitignored), not the
    handoff location, and nothing writes a handoff there.
 
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do

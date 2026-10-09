@@ -289,7 +289,7 @@ if ! HEAD_SHA="$("$PYBIN" "$RELEASE_LOGIC" resolve-target \
   exit 1
 fi
 sha256() { if command -v sha256sum &>/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
-ASSET_NAMES=(hos_install.sh hos_bootstrap.sh setup_clis.sh)
+ASSET_NAMES=(hos_install.sh hos_bootstrap.sh setup_clis.sh tmp_reaper.py)
 ASSET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hos-assets.XXXXXX")"; CLEANUP+=("$ASSET_DIR")
 for n in "${ASSET_NAMES[@]}"; do
   git show "$HEAD_SHA:bootstrap/$n" > "$ASSET_DIR/$n" 2>/dev/null \
@@ -366,10 +366,11 @@ echo "  Latest assets (always newest release):"
 echo "    ${BASE}/latest/download/hos_install.sh"
 echo "    ${BASE}/latest/download/hos_bootstrap.sh"
 echo "    ${BASE}/latest/download/setup_clis.sh"
+echo "    ${BASE}/latest/download/tmp_reaper.py"
 echo ""
 echo "  Get started on a fresh machine:"
 echo "    mkdir -p hos-bootstrap && cd hos-bootstrap"
-echo "    for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do"
+echo "    for f in hos_bootstrap.sh setup_clis.sh hos_install.sh tmp_reaper.py SHA256SUMS; do"
 echo "      curl -fsSLO ${BASE}/latest/download/\$f; done && chmod +x *.sh"
 echo "    ./hos_bootstrap.sh                 # once per machine"
 echo "    ./hos_install.sh /path/to/project  # installs ${VERSION} (the latest release)"

@@ -195,7 +195,11 @@ Each role's sandbox is granted **its own dir only**: `additionalDirectories`,
   ```
 
   `python3 bootstrap/lib/hos_tmp_root.py resolve --repo <clone> --role <role> --create`
-  prints (and creates) the right path. Do not put this in `.envrc`: it is
+  prints (and creates) the right path.
+  For a session started by the systemd unit (`claude-rc.service` -> `bin/claude-role`),
+  which never runs the resolver, also run this once, unsandboxed, so the reaper's
+  registry knows the dir: `python3 -I bootstrap/lib/hos_tmp_root.py resolve --repo
+  <Human clone> --role human --create`. Do not put this in `.envrc`: it is
   git-tracked and shared by every role.
 - **What this is and is not.** A *temp-dir* separation: no role's sandbox is
   granted another role's temp dir. It is **not** a role-integrity boundary.
@@ -203,7 +207,7 @@ Each role's sandbox is granted **its own dir only**: `additionalDirectories`,
   clone's `config.sh` (which sets that role's `HOS_TMP_ROOT`) and `bin/hos-cron`.
   Narrowing that pre-existing grant per role is tracked in #2056, alongside #1146.
 - **The cross-role janitor.** The low-space trigger and the daily reaper
-  (`bootstrap/tmp_reaper.py`) act on every role's dir as unsandboxed machine
+  (`bootstrap/tmp_reaper.py`, added in S2b) act on every role's dir as unsandboxed machine
   processes. That is outside the per-role sandbox grants by design: per-role
   isolation governs agent sessions, and the reaper is a machine janitor.
 - **Enforcement today.** Only the `human` role is generatable (#1146). For
@@ -215,6 +219,16 @@ Each role's sandbox is granted **its own dir only**: `additionalDirectories`,
   instead of hitting a per-user quota. The pytest hygiene guardrail (50 MiB per
   session) and the reaper bound it. `Bash(quota *)` and `Bash(findmnt *)` are
   allowed for diagnosis (`df`, `du` and `stat` already were).
+- **Never grant `~/.local/state`.** `~/.local/state/hos/tmp-roots.json` is the
+  machine registry of which role dirs the reaper may delete from; it is trustworthy
+  only while a sandboxed agent can neither read nor edit it. `denyRead __HOME__/`
+  hides it and the template re-allows only `.local/bin` and `.local/share`; adding
+  `.local/state` (or `.local`, or the home dir) to any `allowRead`/`allowWrite`/
+  `additionalDirectories` entry would let a sandboxed agent register a foreign
+  directory as reapable. A test pins this.
+- **Which location to use.** Which location an agent should use is normative in
+  `contract/OVERSIGHT-CONTRACT.md` §1, "Temp and working-state locations"; this
+  section only states what the sandbox *grants*.
 
 ### Arbitrary code execution is intentional, not an oversight
 

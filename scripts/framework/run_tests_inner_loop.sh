@@ -42,6 +42,9 @@ case "${1:-}" in
     echo "                  /tmp and print its path as INNER_LOOP_LOG=<path> on"
     echo "                  stdout. No log is created on a passing run. (#1903)"
     echo ""
+    echo "Before the suite, bootstrap/tmp_reaper.py frees stale test temp (pytest"
+    echo "run dirs and leaked tmp* entries older than 24 h); it never aborts the run."
+    echo ""
     echo "For the full release suite: ./scripts/framework/run_tests_release.sh"
     exit 0
     ;;
@@ -49,31 +52,49 @@ esac
 
 # #2054: pick the temp dir for this run, first match wins, and export it as
 # TMPDIR so pytest-of-<user>, tempfile and mktemp land on disk, not on /tmp:
-#   1. HOS_TMP_DIR, when a launcher chose one (existing, writable dir)
+#   1. HOS_TMP_DIR, when a launcher chose one: a 0700 dir owned by the user, not
+#      a symlink, not inside this clone (else WARN and fall through)
 #   2. the "local" role dir from bootstrap/lib/hos_tmp_root.py (--create)
-#   3. the inherited non-empty TMPDIR (WARN)
+#   3. the inherited non-empty TMPDIR, unless it is inside this clone (WARN)
 #   4. unset, i.e. /tmp (WARN)
 # Blindly inheriting TMPDIR is not allowed: in a sandboxed ad-hoc session it is
 # Claude Code's /tmp/claude, which would put pytest back on the RAM-backed tmpfs.
 _select_tmpdir() {
-  if [[ -n "${HOS_TMP_DIR:-}" && -d "$HOS_TMP_DIR" && -w "$HOS_TMP_DIR" ]]; then
-    export TMPDIR="$HOS_TMP_DIR"
-    return 0
+  local _tool="$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" _dir="" _why=""
+  if [[ -n "${HOS_TMP_DIR:-}" ]]; then
+    if _why="$(python3 -I "$_tool" check-dir --repo "$REPO_ROOT" --dir "$HOS_TMP_DIR" 2>&1)"; then
+      export TMPDIR="$HOS_TMP_DIR"
+      return 0
+    fi
+    echo -e "  ${RED}!${RESET}  WARN: ignoring HOS_TMP_DIR (${_why##*$'\n'}) — falling back" >&2
   fi
-  local _dir
-  if _dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role local --create 2>&1)" \
-      && [[ -d "$_dir" && -w "$_dir" ]]; then
-    export TMPDIR="$_dir"
-    return 0
+  if _dir="$(python3 -I "$_tool" resolve --repo "$REPO_ROOT" --role local --create 2>/dev/null)"; then
+    if [[ -d "$_dir" && -w "$_dir" ]]; then
+      export TMPDIR="$_dir"
+      return 0
+    fi
+    _why="the resolved dir is not writable"
+  else
+    # Failure path only: stdout is the dir (never mixed with stderr), so re-run for the reason.
+    # Last line only: a crashed resolver prints a traceback.
+    _why="$(python3 -I "$_tool" resolve --repo "$REPO_ROOT" --role local --create 2>&1 >/dev/null | tail -n 1 || true)"
+    _why="${_why#hos_tmp_root: }"
   fi
-  local _why="${_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
-  _why="${_why#hos_tmp_root: }"
   if [[ -n "${TMPDIR:-}" ]]; then
-    echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) — keeping inherited TMPDIR=$TMPDIR" >&2
+    # Independent of the resolver (which may be what failed): physical paths, so a
+    # symlink into the clone is caught too.
+    local _tmp_real _repo_real
+    _tmp_real="$(cd "$TMPDIR" 2>/dev/null && pwd -P || true)"
+    _repo_real="$(cd "$REPO_ROOT" && pwd -P)"
+    if [[ "$_tmp_real" != "$_repo_real" && "$_tmp_real" != "$_repo_real"/* ]]; then
+      echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) — keeping inherited TMPDIR=$TMPDIR" >&2
+      return 0
+    fi
+    echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) and the inherited TMPDIR is inside this clone — using /tmp" >&2
   else
     echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) and TMPDIR unset — using /tmp" >&2
-    unset TMPDIR
   fi
+  unset TMPDIR
 }
 _select_tmpdir
 
@@ -110,6 +131,14 @@ if [[ "$FAILURE_LOG" -eq 1 ]]; then
 fi
 
 _run_suite() {
+  # #2054 (TD 8.1): free stale test debris (classes P and T only) before the suite
+  # runs. --no-scratch is explicit: a test run never deletes agent scratch trees.
+  # Best-effort: a failure here never changes this script's exit code.
+  if [[ -f "$REPO_ROOT/bootstrap/tmp_reaper.py" ]]; then
+    "$PYTHON" -I "$REPO_ROOT/bootstrap/tmp_reaper.py" --summary-only --no-scratch --max-seconds 20 \
+      --root "${TMPDIR:-/tmp}" --root /tmp \
+      || echo -e "  ${RED}✘${RESET}  tmp_reaper failed (rc=$?) — continuing" >&2
+  fi
   echo -e "  ${CYAN}→${RESET}  Regenerating derived artifacts (SCRIPTS-INDEX.md, CODEOWNERS)..."
   "$SCRIPT_DIR/regen_all.sh" || return $?
   echo ""

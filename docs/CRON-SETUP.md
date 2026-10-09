@@ -412,6 +412,66 @@ requires judgment the wrapper can't pre-filter.
 
 ---
 
+## 5a. HOS temp on disk and the per-machine reaper (#2054)
+
+This section supersedes the original "reap at cron-cycle wrap-up" idea, by human ruling: the reaper is a **per-machine** script that the operator schedules, not a per-project cycle step.
+
+### Where HOS temp lives
+
+- `/tmp` on the dev host is a small RAM-backed tmpfs with a per-user quota. HOS temp (pytest runs, `tempfile`, `mktemp`) therefore lives on disk, per role, in `HOS_TMP_ROOT` (`scripts/framework/config.sh`; default `<clone>/../.tmp`), in mode-0700 dirs `Worker`, `Overseer`, `Human` and `Local`.
+- `bin/hos-cron` and `bin/hos-human` export `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR` to the role's dir. Start interactive sessions through `bin/hos-human`; any other launcher (a systemd unit, remote-control, a wrapper script) must export `TMPDIR` and `CLAUDE_CODE_TMPDIR` itself, or sandboxed Bash puts temp in the RAM-backed `/tmp/claude`. Example for systemd:
+
+  ```ini
+  [Service]
+  Environment=TMPDIR=%h/Code/HumanOversightSystem/.tmp/Worker
+  Environment=CLAUDE_CODE_TMPDIR=%h/Code/HumanOversightSystem/.tmp/Worker
+  ```
+
+  **One-time registration for a systemd-launched Human session.** `bin/claude-role` (used by `claude-rc.service`) never runs the resolver, so nothing registers `.tmp/Human` and the daily reaper would skip it (`SKIP unregistered`). Run this once, unsandboxed, from the Human clone (and again after you move `HOS_TMP_ROOT`, with `mark ... --reviewed`, see below):
+
+  ```bash
+  python3 -I bootstrap/lib/hos_tmp_root.py resolve --repo <Human clone> --role human --create
+  ```
+
+- This is a temp-dir separation (no role's sandbox is granted another role's temp dir), not a role-integrity boundary; cross-clone write grants are tracked in #2056.
+- Small drafts such as PR and issue bodies stay in the literal `/tmp/claude/` (the sandbox allowlisting rules need literal paths).
+- Disk exhaustion replaces quota exhaustion as the failure mode of a runaway: the reaper and the low-space trigger below are the bound on it.
+
+### The daily recipe
+
+`hos_bootstrap.sh` copies the reaper to `~/.local/share/hos/tmp_reaper.py` (idempotent and atomic; `hos_bootstrap.sh --reaper-only` updates just that copy from a newer release bundle). Schedule **that copy**, never a clone's `bootstrap/tmp_reaper.py`: the worker checks out arbitrary branches in its clone, and an unsandboxed daily job with recursive-delete power must not run whatever is checked out there. HOS never installs the crontab entry; it is yours to add with `crontab -e`, in your own crontab (the reaper refuses to run as root).
+
+```cron
+# HOS per-machine temp reaper (#2054). Daily. Create the log dir once: mkdir -p ~/.hos/logs
+# One --hos-tmp-root per HOS disk temp root on this machine (python3 bootstrap/lib/hos_tmp_root.py root --repo <clone> prints it).
+17 3 * * *  timeout --kill-after=10 600 python3 -I "$HOME/.local/share/hos/tmp_reaper.py" --summary-only --max-seconds 540 --root /tmp --hos-tmp-root "$HOME/Code/HumanOversightSystem/.tmp" >> "$HOME/.hos/logs/tmp-reaper.log" 2>&1
+```
+
+- **Roots are explicit.** `--root /tmp` plus one `--hos-tmp-root` per HOS disk temp root (it sweeps only the `Worker`, `Overseer`, `Human` and `Local` children). There is no discovery.
+- **Inner budget below the outer bound.** `--max-seconds 540` is below `timeout 600`, and `--kill-after=10` guarantees termination. On macOS use `gtimeout` (coreutils).
+- **The log is not under `/tmp`.** It lives in `~/.hos/logs`, so it survives a full quota, which is exactly when it is needed. Rotate it with `logrotate` if you wish (`bin/hos-trim-logs` only trims `/tmp/hos-*.log`).
+- **Class S (stale scratch trees) is on by default.** Opt out per machine with `--no-scratch` on this line. A user crontab runs unsandboxed, so class S has the host view of processes and locks that it requires; run inside a sandbox it reports `SKIP scratch-disabled no-host-view` and does nothing.
+- **Daily is enough**: in-run cleanup removes green runs immediately, and the low-space trigger covers a squeeze between runs. Concurrent reapers are harmless.
+- **Remove the old stopgap.** If you installed the interim line `7 * * * * find /tmp/pytest-of-scott -mindepth 1 -maxdepth 1 -name 'pytest-[0-9]*' -mmin +60 -exec rm -rf {} +`, delete it when this lands: it deletes by age alone and can remove the dir of a live run, which the reaper never does.
+
+### The low-space trigger
+
+Each `bin/hos-cron` cycle, after it takes the overlap lock and before preflight and auth, runs `bootstrap/tmp_reaper.py --if-low-space` bounded by `timeout --kill-after=5 30`. The reaper write-probes `/tmp` and the HOS tmp root (catching EDQUOT and ENOSPC), and where the platform supports it also reads the real per-user quota with `quotactl_fd` (a root at or above 80% of its hard limit counts as low). Only when something is low does it reap, with the same 24 h rule. A healthy cycle only writes two 64 KiB probe files. A run that reaps, or fails, is audited as `cycle-tmp-reap`. The trigger is never fatal.
+
+### What it removes, and what it never touches
+
+Everything needs an age of at least 24 h (`--min-age-hours`, raise-only) **and** a second signal that the entry is dead **and** no live process using it.
+
+- **Class P** — `pytest-of-<user>/pytest-N` dirs: a dead flock on a verified `.hos-live` inode, a legacy stale `.lock`, or a finished lock-free dir; and `garbage-*` leftovers.
+- **Class T** — leaked top-level `tmp*` entries: empty dirs and regular files.
+- **Class S** — whole stale trees: children of `<root>/claude/` (agent scratch clones) and non-empty top-level `tmp*` dirs, when the newest file in the tree is at least 24 h old, with no live process, held lock or Claude Code session dir involved. There is no size floor and git state is not consulted, so **unpushed commits in an idle scratch clone are deleted**. The reaper never runs git.
+- **HOS role dirs** (`--hos-tmp-root`: `Worker`, `Overseer`, `Human`, `Local`) — by human ruling "anything older than a day goes", **any** top-level child of a role dir is reaped once the newest **ctime** in it is at least 24 h old, by the class-S procedure (so `$TMPDIR/review-copy` goes, but only after the same live-process, held-lock and ownership checks). This does **not** apply to `--root` dirs such as `/tmp`. A role dir is swept only if that exact directory (path, role name and inode) is registered in the machine registry `~/.local/state/hos/tmp-roots.json`. The resolver (`bootstrap/lib/hos_tmp_root.py`, run by every launcher) registers each role dir it creates or adopts; `~/.local/state` is never granted to a sandbox, so a sandboxed agent can neither read nor edit the registry, and nothing inside a role dir (not the `.hos-tmp-root` file, which is informational only) is consulted. Otherwise the reaper prints `SKIP no-registry` (registry missing, unreadable, loose-mode or malformed: nothing is reaped) or `SKIP unregistered` and deletes nothing, so a `config.sh` that points `HOS_TMP_ROOT` at another project reaps nothing there. It also refuses an `--hos-tmp-root` that is, or sits inside, a git work tree (`SKIP root-in-work-tree`). A `.git` *inside* a registered role dir is just an ordinary child and is reaped when old; deleting the informational marker changes nothing. Excluded in role dirs: `pytest-of-*` (class P), every `claude-*` entry (Claude Code's own), the `claude` scratch root itself, `.claudetmp` and the marker.
+
+  **If a launcher warns "refusing to adopt" (manual step).** An existing role dir that is not yet registered is adopted automatically only if it is empty or holds HOS-only entries (`pytest-of-*`, `tmp*`, `claude`, `claude-*`, `srt-*`, `hos-*`, `garbage-hos-*`, `.hos-*`). Once registered a role dir is accepted whatever it holds. The registry is keyed by (repo, role): one entry each, replaced on re-registration, with entries for vanished or replaced dirs pruned on every registration and a hard cap of 256 entries (a new key beyond that is refused with `registry-full` and a remedy; a full registry is still read normally by the reaper). Editing `config.sh` to move a role's `HOS_TMP_ROOT` is refused ("refusing to re-point") while the old registered dir still exists; if the move is intended, run the `mark --repo <clone> --role <role> --reviewed` command from the WARN. Otherwise the resolver exits 3 *before changing anything* and the one-line WARN (and the `cycle-tmp-root-fallback` audit event) names the blocking entries and the remedy: move them out of the role dir, or, after reviewing it yourself, run `python3 bootstrap/lib/hos_tmp_root.py mark --repo <clone> --role <worker|overseer|human|local> --reviewed`. Until then that launcher runs with the inherited temp location. Marking is a human step: it writes the registry, which a sandbox cannot reach.
+- **Never touched, anywhere:** `.claudetmp/`, any `claude-*` entry, `hos-*` files directly in a root, draft files directly in `/tmp/claude/`, anything not owned by you, symlinks (never followed), and — in `/tmp` and any other `--root` — anything not matching a pattern above.
+
+Useful flags: `--dry-run` (decide exactly as a real run, delete nothing, print `WOULD-REAP`), `--measure` (delete nothing; report `user_bytes`, the real per-user quota and any `WARN large-unowned` entry over 100 MiB), `--no-scratch`, `--max-seconds`. Start with `--dry-run`; the first run after a long gap can remove a large backlog.
+
 ## 6. Verify it works
 
 Run the wrapper once by hand:

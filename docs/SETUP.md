@@ -24,12 +24,11 @@ Get the bootstrap scripts from the latest release and run the machine bootstrap.
 ```bash
 # Pull the bootstrap scripts (the only files you copy to a machine):
 mkdir -p hos-bootstrap && cd hos-bootstrap
-for f in hos_bootstrap.sh setup_clis.sh hos_install.sh; do
+for f in hos_bootstrap.sh setup_clis.sh hos_install.sh tmp_reaper.py SHA256SUMS; do
   curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/$f
 done && chmod +x *.sh
 
 # (recommended) verify what you downloaded:
-curl -fsSLO https://github.com/ScottThurlow/HumanOversightSystem/releases/latest/download/SHA256SUMS
 shasum -a 256 -c SHA256SUMS      # or: sha256sum -c SHA256SUMS
 
 # Install prerequisites + agent CLIs (may prompt for sudo and browser auth):

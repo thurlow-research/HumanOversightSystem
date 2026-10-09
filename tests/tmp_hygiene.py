@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import fcntl
 import gc
+import importlib.util
 import os
 import sys
 import tempfile
@@ -119,39 +120,29 @@ def resolve_budget(environ: Mapping[str, str]) -> tuple[int, str | None]:
     )
 
 
+def _reaper_module():
+    """bootstrap/tmp_reaper.py, the one implementation of the allocated-bytes walk."""
+    name = "hos_tmp_reaper_walk"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = Path(__file__).resolve().parent.parent / "bootstrap" / "tmp_reaper.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 def measure_tree(root: Path, top_depth: int = 2) -> tuple[int, int, dict[str, int]]:
     """Allocated bytes (st_blocks * 512), inode count and per-subpath bytes.
 
     Each inode is counted once (hardlinks); symlinks are never followed. The
-    tmpfs quota counts allocated pages, so apparent size would understate.
+    tmpfs quota counts allocated pages, so apparent size would understate. The
+    walk lives in bootstrap/tmp_reaper.py (one implementation, D41).
     """
-    seen: set[tuple[int, int]] = set()
-    by_path: dict[str, int] = {}
-
-    def walk(path: str, depth: int) -> int:
-        try:
-            st = os.lstat(path)
-        except OSError:
-            return 0
-        key = (st.st_dev, st.st_ino)
-        if key in seen:
-            return 0
-        seen.add(key)
-        total = st.st_blocks * 512
-        if os.path.isdir(path) and not os.path.islink(path):
-            try:
-                with os.scandir(path) as it:
-                    names = [e.name for e in it]
-            except OSError:
-                names = []
-            for name in names:
-                total += walk(os.path.join(path, name), depth + 1)
-        if depth <= top_depth:
-            by_path[os.path.relpath(path, root)] = total
-        return total
-
-    total = walk(str(root), 0)
-    return total, len(seen), by_path
+    total, inodes, by_path, _truncated = _reaper_module().allocated_tree(root, top_depth)
+    return total, inodes, by_path
 
 
 def _is_allowlisted(name: str) -> bool:

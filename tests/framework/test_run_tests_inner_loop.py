@@ -90,7 +90,11 @@ def _short_sha(repo: Path) -> str:
 
 
 def _run(repo: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
-    full_env = {"PATH": "/usr/bin:/bin"}
+    # #2054: the resolver's trust registry must never be written in the real home.
+    full_env = {
+        "PATH": "/usr/bin:/bin",
+        "HOS_TMP_REGISTRY_FILE": str(repo.parent / "reg-state" / "hos" / "tmp-roots.json"),
+    }
     if env:
         full_env.update(env)
     return subprocess.run(
@@ -344,7 +348,7 @@ def _seen(result: subprocess.CompletedProcess) -> str:
 def test_l3_1_a_launcher_chosen_dir_wins_over_an_inherited_tmpdir(tmp_path):
     repo = _build_tmpdir_repo(tmp_path)
     chosen = tmp_path / "chosen"
-    chosen.mkdir()
+    chosen.mkdir(mode=0o700)
     other = tmp_path / "other"
     other.mkdir()
     result = _run(repo, env={"HOS_TMP_DIR": str(chosen), "TMPDIR": str(other)})
@@ -389,3 +393,109 @@ def test_l3_4_nothing_usable_leaves_tmpdir_unset_and_warns(tmp_path):
     assert _seen(result) == "UNSET"
     warns = [ln for ln in result.stderr.splitlines() if "WARN" in ln]
     assert len(warns) == 1 and "using /tmp" in warns[0], result.stderr
+
+
+def test_l3_5_an_inherited_tmpdir_inside_the_clone_is_skipped(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path, resolver="failing")
+    inside = repo / ".claudetmp" / "x"
+    inside.mkdir(parents=True)
+    result = _run(repo, env={"TMPDIR": str(inside)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _seen(result) == "UNSET", "a TMPDIR under the clone must not be kept"
+    warns = [ln for ln in result.stderr.splitlines() if "WARN" in ln]
+    assert len(warns) == 1 and "inside this clone" in warns[0], result.stderr
+
+
+def test_l3_6_a_symlinked_clone_path_is_still_recognised_as_inside(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path, resolver="failing")
+    inside = repo / "sub"
+    inside.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(inside)
+    result = _run(repo, env={"TMPDIR": str(alias)})
+    assert _seen(result) == "UNSET"
+
+
+def test_l3_7_an_open_hos_tmp_dir_is_rejected_and_the_local_dir_is_used(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path)
+    open_dir = tmp_path / "open"
+    open_dir.mkdir(mode=0o755)
+    open_dir.chmod(0o755)
+    result = _run(repo, env={"HOS_TMP_DIR": str(open_dir), "TMPDIR": ""})
+    assert _seen(result) == str(tmp_path / ".tmp" / "Local")
+    warns = [ln for ln in result.stderr.splitlines() if "ignoring HOS_TMP_DIR" in ln]
+    assert len(warns) == 1 and "0700" in warns[0], result.stderr
+
+
+def test_l3_8_a_symlinked_or_in_clone_hos_tmp_dir_is_rejected(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    inside = repo / ".claudetmp"
+    inside.mkdir(mode=0o700)
+    for bad in (link, inside):
+        result = _run(repo, env={"HOS_TMP_DIR": str(bad), "TMPDIR": ""})
+        assert _seen(result) == str(tmp_path / ".tmp" / "Local"), bad
+        assert "ignoring HOS_TMP_DIR" in result.stderr, bad
+
+
+# ───────────── Pre-run temp reaper call (#2054, TD 8.1, test C1) ─────────────
+def _build_reaper_repo(tmp_path: Path, reaper_rc: int = 0) -> tuple[Path, Path]:
+    """_build_repo plus a bootstrap/tmp_reaper.py stub. The stub venv python tells a
+    reaper call (argv starts with -I) from a pytest call, and logs the former."""
+    repo = _build_repo(tmp_path)
+    calls = tmp_path / "reaper-calls.log"
+    _write_exec(
+        repo / "scripts" / "oversight" / ".venv" / "bin" / "python",
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "-I" ]]; then\n'
+        f'  echo "$*" >> "{calls}"\n'
+        '  echo "REAPER-STUB-STDOUT"\n'
+        f"  exit {reaper_rc}\n"
+        "fi\n"
+        'echo "pytest-stub-stdout args=$*"\n'
+        "exit 0\n",
+    )
+    (repo / "bootstrap" / "lib").mkdir(parents=True)
+    shutil.copy(_RESOLVER, repo / "bootstrap" / "lib" / "hos_tmp_root.py")
+    (repo / "bootstrap" / "tmp_reaper.py").write_text("# stub\n")
+    return repo, calls
+
+
+def test_c1_the_reaper_runs_first_with_no_scratch_and_both_roots(tmp_path):
+    repo, calls = _build_reaper_repo(tmp_path)
+    chosen = tmp_path / "chosen"
+    chosen.mkdir(mode=0o700)
+    result = _run(repo, "-q", env={"HOS_TMP_DIR": str(chosen)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls.read_text().splitlines() == [
+        f"-I {repo}/bootstrap/tmp_reaper.py --summary-only --no-scratch --max-seconds 20 "
+        f"--root {chosen} --root /tmp"
+    ]
+    out = result.stdout
+    assert (
+        out.index("REAPER-STUB-STDOUT") < out.index("regen-stub-stdout") < out.index("pytest-stub")
+    )
+
+
+def test_c1_a_failing_reaper_never_changes_the_exit_code(tmp_path):
+    repo, calls = _build_reaper_repo(tmp_path, reaper_rc=1)
+    result = _run(repo, "-q", env={"HOS_TMP_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tmp_reaper failed (rc=1)" in result.stderr and "pytest-stub-stdout" in result.stdout
+    failing = _run(repo, "-q", env={"HOS_TMP_DIR": str(tmp_path), "REGEN_STUB_EXIT": "3"})
+    assert failing.returncode == 3, "the suite's own exit code is unchanged"
+
+
+def test_c1_without_the_reaper_file_nothing_is_called(tmp_path):
+    repo, calls = _build_reaper_repo(tmp_path)
+    (repo / "bootstrap" / "tmp_reaper.py").unlink()
+    result = _run(repo, "-q", env={"HOS_TMP_DIR": str(tmp_path)})
+    assert result.returncode == 0 and not calls.exists()
+
+
+def test_c1_help_names_the_reaper(tmp_path):
+    repo, _ = _build_reaper_repo(tmp_path)
+    assert "tmp_reaper.py" in _run(repo, "--help").stdout
