@@ -11,6 +11,8 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _SPEC = importlib.util.spec_from_file_location(
     "change_classifier",
     Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "change_classifier.py",
@@ -218,6 +220,41 @@ def test_financial_added_line_floors_critical():
     floor, _ = cc.detect_tier_floor(
         [("M", "svc/pay.py")], {"svc/pay.py": ["    intent = stripe.PaymentIntent.create()"]}
     )
+    assert floor == "CRITICAL"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "MACHINE_ACCOUNTS_ENV = 1",
+        'CACHE_DIR = "/tmp"',
+        "ATTACH",
+        "REACH",
+        "see docs/MACHINE-ACCOUNTS-SETUP.md",
+        "    card = GiftCard(code)",
+        "LIBIBANK = 1",
+    ],
+)
+def test_financial_rule_ignores_embedded_tokens(line):
+    floor, ev = cc.detect_tier_floor([("M", "app/foo.py")], {"app/foo.py": [line]})
+    assert floor != "CRITICAL"
+    assert not any("PCI" in str(e.get("rule", "")) for e in ev)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ACH transfer",
+        "ACH_ROUTING = 1",
+        '"ACH"',
+        "IBAN: DE89370400440532013000",
+        "    c = Card(number)",
+        "    stripe.Charge.create(",
+        "    account_number = x",
+    ],
+)
+def test_financial_rule_still_matches_real_tokens(line):
+    floor, _ = cc.detect_tier_floor([("M", "app/foo.py")], {"app/foo.py": [line]})
     assert floor == "CRITICAL"
 
 

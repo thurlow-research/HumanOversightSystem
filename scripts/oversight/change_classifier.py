@@ -253,11 +253,14 @@ TIER_FLOOR_PATH_RULES: list[tuple[str, re.Pattern, str]] = [
 # — kept separate so the tier floor and the structural-override set evolve independently.
 # Each: (tier, compiled regex over an added line, short pattern label).
 TIER_FLOOR_LINE_RULES: list[tuple[str, re.Pattern, str]] = [
-    # CRITICAL — PCI / financial API surfaces.
+    # CRITICAL — PCI / financial API surfaces. ACH/IBAN are letter-bounded (not \b, so
+    # ACH_ROUTING still matches) and Card( is word-anchored, so MACHINE/CACHE/ATTACH/
+    # REACH/GiftCard( no longer false-floor CRITICAL (#1889).
     (
         "CRITICAL",
         re.compile(
-            r"(stripe\.|braintree\.|PaymentIntent|charge\(|Card\(|ACH|IBAN|account_number)"
+            r"(stripe\.|braintree\.|PaymentIntent|charge\(|\bCard\(|"
+            r"(?<![A-Za-z])ACH(?![A-Za-z])|(?<![A-Za-z])IBAN(?![A-Za-z])|account_number)"
         ),
         "PCI/financial API",
     ),
