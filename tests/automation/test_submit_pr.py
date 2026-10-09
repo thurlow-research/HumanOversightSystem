@@ -17,6 +17,7 @@ import pytest
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUBMIT_PR_SH = REPO_ROOT / "bootstrap" / "submit_pr.sh"
+CLOSING_KEYWORDS_PY = REPO_ROOT / "scripts" / "automation" / "closing_keywords.py"
 
 GET_APP_TOKEN_STUB = """#!/usr/bin/env bash
 echo "GET_APP_TOKEN_CALLED_WITH:$*" >> "$CAPTURE_FILE"
@@ -30,7 +31,10 @@ printf "export HOS_BOT_LOGIN='fake-bot[bot]'\\n"
 # store resolution); remote get-url origin -> repo URL;
 # fetch -> honors GIT_FETCH_FAIL; rev-list --count -> GIT_BEHIND_COUNT (default 0);
 # merge -> honors GIT_MERGE_FAIL (merge --abort always succeeds);
-# push <url> <refspec> -> captured, honors GIT_PUSH_FAIL.
+# push <url> <refspec> -> captured, honors GIT_PUSH_FAIL;
+# log -> prints $GIT_LOG_FILE (NUL-separated "<sha>\\n<message>" records, the
+# `git log -z --format=%H%n%B` shape; default empty = zero commits), honors
+# GIT_LOG_FAIL (#1856 closing-keyword guard, phase 2).
 GIT_STUB = """#!/usr/bin/env bash
 echo "GIT_CALLED_WITH:$*" >> "$CAPTURE_FILE"
 i=0
@@ -54,6 +58,10 @@ case "$sub" in
     if [[ "${GIT_MERGE_FAIL:-}" == "1" ]]; then exit 1; fi
     ;;
   push) if [[ "${GIT_PUSH_FAIL:-}" == "1" ]]; then exit 1; fi ;;
+  log)
+    if [[ "${GIT_LOG_FAIL:-}" == "1" ]]; then exit 1; fi
+    if [[ -n "${GIT_LOG_FILE:-}" ]]; then cat "$GIT_LOG_FILE"; fi
+    ;;
 esac
 exit 0
 """
@@ -140,6 +148,12 @@ class Harness:
             '}\n',
         )
 
+        # #1856 closing-keyword guard (submit_pr.sh resolves it relative to itself).
+        self.ck_dir = tmp_path / "scripts" / "automation"
+        self.ck_dir.mkdir(parents=True)
+        self.ck_py = self.ck_dir / "closing_keywords.py"
+        shutil.copy(CLOSING_KEYWORDS_PY, self.ck_py)
+
         self.stub_bin = tmp_path / "stub_bin"
         self.stub_bin.mkdir()
         _write_exec(self.stub_bin / "git", GIT_STUB)
@@ -191,7 +205,7 @@ class Harness:
             )
         return path
 
-    def run(self, args, env_overrides=None, cycle_id=DEFAULT_CYCLE_ID, write_record=True):
+    def run(self, args, env_overrides=None, cycle_id=DEFAULT_CYCLE_ID, write_record=True, bash=BASH):
         """Run submit_pr.sh. For --app worker, by default exports HOS_CYCLE_ID
         and writes a matching valid ownership record for the resolved --head
         branch (or "current-branch" if --head is omitted) so existing
@@ -213,7 +227,7 @@ class Harness:
         if env_overrides:
             env.update(env_overrides)
         return subprocess.run(
-            [BASH, str(self.script), *args],
+            [bash, str(self.script), *args],
             capture_output=True, text=True, timeout=30, check=False, env=env,
         )
 
@@ -935,4 +949,179 @@ def test_open_mode_overseer_unaffected_by_duplicate_guard(h):
         ["--title", "t", "--body-file", str(h.body_file), "--base", "main", "--app", "overseer"],
         env_overrides={"GH_API_DUP_COUNT": "1", "GH_API_DUP_NUMBER": "77"},
     )
+    assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Closing-keyword guard (#1856)
+# --------------------------------------------------------------------------- #
+
+OPEN_ARGS = ["--base", "main", "--head", "current-branch", "--app", "worker"]
+RULING_BODY = "\n".join(f"line {i}" for i in range(1, 60)) + (
+    "\n> H6 \u2014 yes. S2 is the fix that closes #1539.\n"
+)
+
+
+def _body(h, text):
+    h.body_file.write_text(text)
+    return ["--title", "t", "--body-file", str(h.body_file)]
+
+
+def _commit_log(h, message, sha="1a2b3c4d5e6f7a8b9c0d1a2b3c4d5e6f7a8b9c0d"):
+    path = h.tmp / "git_log.bin"
+    path.write_text(f"{sha}\n{message}\n\0")
+    return {"GIT_LOG_FILE": str(path)}
+
+
+def _git_calls(cap, sub):
+    return [ln for ln in cap.splitlines() if ln.startswith("GIT_CALLED_WITH") and f" {sub} " in ln]
+
+
+def _assert_no_mint_no_push(cap):
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert not any("x-access-token" in ln for ln in cap.splitlines())
+    assert "GH_CALLED_WITH:pr create" not in cap
+
+
+def test_ck_body_ruling_refused_before_network(h):
+    result = h.run([*_body(h, RULING_BODY), *OPEN_ARGS])
+    assert result.returncode == 1
+    assert "#1539" in result.stderr
+    assert "body line 60" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_title_refused_before_network(h):
+    h.body_file.write_text("clean\n")
+    result = h.run(["--title", "fix: closes #42", "--body-file", str(h.body_file), *OPEN_ARGS])
+    assert result.returncode == 1
+    assert "title" in result.stderr
+    assert "#42" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_commit_refused_after_fetch_with_range_and_ordering(h):
+    result = h.run(
+        [*_body(h, "clean body\n"), *OPEN_ARGS],
+        env_overrides=_commit_log(h, "subject\n\nfixes #77"),
+    )
+    assert result.returncode == 1
+    assert "commit 1a2b3c4" in result.stderr
+    assert "#77" in result.stderr
+    cap = h.capture()
+    _assert_no_mint_no_push(cap)
+    calls = cap.splitlines()
+    fetch_idx = calls.index(_git_calls(cap, "fetch")[0])
+    log_line = _git_calls(cap, "log")[0]
+    assert fetch_idx < calls.index(log_line)
+    assert log_line.split()[-1] == "origin/main..refs/heads/current-branch"
+
+
+def test_ck_declared_closes_allows_pr(h):
+    result = h.run([*_body(h, RULING_BODY), *OPEN_ARGS, "--closes", "1539"])
+    assert result.returncode == 0, result.stderr
+    assert "GH_CALLED_WITH:pr create" in h.capture()
+
+
+def test_ck_clean_pr_proceeds_silently(h):
+    result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS])
+    assert result.returncode == 0, result.stderr
+    assert "closing" not in result.stderr.lower()
+
+
+def test_ck_declared_but_unmatched_warns_only(h):
+    result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS, "--closes", "99"])
+    assert result.returncode == 0, result.stderr
+    assert "--closes 99 declared but no closing keyword" in result.stderr
+
+
+def test_ck_update_pr_refuses_keyword_commit_before_mint(h):
+    args = ["--update-pr", "42", "--base", "main", "--head", "current-branch", "--app", "worker"]
+    env = _commit_log(h, "subject\n\nresolves #55")
+    result = h.run(args, env_overrides=env, write_record=False)
+    assert result.returncode == 1
+    assert "force-push" in result.stderr
+    _assert_no_mint_no_push(h.capture())
+
+    result = h.run([*args, "--closes", "55"], env_overrides=env, write_record=False)
+    assert result.returncode == 0, result.stderr
+    assert any("x-access-token" in ln for ln in h.capture().splitlines())
+
+
+def test_ck_applies_to_overseer(h):
+    result = h.run([*_body(h, RULING_BODY), "--base", "main", "--app", "overseer"])
+    assert result.returncode == 1
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_applies_to_human_confirmed(h):
+    result = h.run([*_body(h, RULING_BODY), "--base", "main", "--app", "human", "--confirmed"])
+    assert result.returncode == 1
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_refusal_emits_audit_event(h):
+    result = h.run([*_body(h, RULING_BODY), *OPEN_ARGS])
+    assert result.returncode == 1
+    cap = h.capture()
+    assert '"event":"closing-keyword-refused"' in cap
+    assert '"phase":"text"' in cap
+    assert '"refs":"1539"' in cap
+    assert '"app":"worker"' in cap
+
+
+def test_ck_full_phase_audit_event(h):
+    h.run(
+        [*_body(h, "clean\n"), *OPEN_ARGS],
+        env_overrides=_commit_log(h, "s\n\ncloses #8"),
+    )
+    assert '"phase":"full"' in h.capture()
+
+
+def test_ck_audit_sink_failure_does_not_mask_refusal(h):
+    h.audit_log_path.unlink()
+    result = h.run([*_body(h, RULING_BODY), *OPEN_ARGS])
+    assert result.returncode == 1
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_module_missing_fails_closed(h):
+    h.ck_py.unlink()
+    result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS])
+    assert result.returncode != 0
+    assert "closing-keyword guard unavailable" in result.stderr
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_invalid_closes_value_fails_before_network(h):
+    result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS, "--closes", "abc"])
+    assert result.returncode != 0
+    _assert_fully_refused_before_network(h.capture())
+
+
+def test_ck_git_log_failure_fails_closed(h):
+    result = h.run(
+        [*_body(h, "clean body\n"), *OPEN_ARGS],
+        env_overrides={"GIT_LOG_FAIL": "1"},
+    )
+    assert result.returncode != 0
+    assert "guard failed" in result.stderr
+    _assert_no_mint_no_push(h.capture())
+
+
+def _bash32():
+    for cand in ("/bin/bash", "/usr/bin/bash", shutil.which("bash3") or "", shutil.which("bash-3.2") or ""):
+        if not cand or not os.path.exists(cand):
+            continue
+        out = subprocess.run([cand, "-c", "echo $BASH_VERSINFO"], capture_output=True, text=True)
+        if out.stdout.strip() == "3":
+            return cand
+    return None
+
+
+def test_ck_empty_closes_array_under_bash32(h):
+    bash32 = _bash32()
+    if bash32 is None:
+        pytest.skip("no bash 3.x available")
+    result = h.run([*_body(h, "clean body\n"), *OPEN_ARGS], bash=bash32)
     assert result.returncode == 0, result.stderr

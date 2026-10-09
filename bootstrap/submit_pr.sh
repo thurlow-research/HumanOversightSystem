@@ -11,10 +11,25 @@
 #
 # Usage:
 #   bash bootstrap/submit_pr.sh --title <text> --body-file <path> --base <branch> \
-#     [--head <branch>] --app <worker|overseer|human> [--confirmed]
+#     [--head <branch>] --app <worker|overseer|human> [--confirmed] \
+#     [--closes <n>[,<n>...]]
 #
 #   bash bootstrap/submit_pr.sh --update-pr <N> --base <branch> [--head <branch>] \
-#     --app worker
+#     --app worker [--closes <n>[,<n>...]]
+#
+# Closing-keyword guard (#1856): a title, body, or commit message that contains
+# a GitHub closing keyword (close/closes/closed, fix/fixes/fixed, resolve/
+# resolves/resolved, any case) followed by an issue reference (#N, GH-N,
+# owner/repo#N, or an issue/PR URL) closes that issue on merge -- even when the
+# sentence merely quotes a ruling (PR #1725 silently closed critical #1539 this
+# way). This script refuses to open or update a PR unless every such issue is
+# declared with --closes (repeatable; comma-separated lists accepted). The
+# title and body are scanned before any network access; the commits in
+# origin/<base>..refs/heads/<head> are scanned after the base fetch/merge. No
+# exemptions for code spans, fences, or blockquotes. --closes declares intent;
+# only pass it for an issue the PR genuinely closes. --confirmed does not
+# bypass the guard, and every --app role is scanned. Implementation:
+# scripts/automation/closing_keywords.py (stdlib only).
 #
 # --update-pr <N> pushes to an EXISTING PR instead of opening a new one (#967
 # AD-4). Requires --app worker; --title/--body-file are rejected (the PR
@@ -94,6 +109,46 @@ _hos_audit_stale_base_merge() {
     return 0
 }
 
+# _hos_audit_closing_keyword_refusal <head> <base> <app> <phase> <keys>
+# Best-effort audit event for the #1856 closing-keyword guard refusing a PR.
+# Same guarantees as _hos_audit_stale_base_merge: a missing/failing sink never
+# masks the refusal it records. Always returns 0.
+_hos_audit_closing_keyword_refusal() {
+    local head="$1" base="$2" app="$3" phase="$4" keys="$5"
+    local audit_lib="$SCRIPT_DIR/../scripts/oversight/lib/audit_log.sh"
+    [[ -f "$audit_lib" ]] || return 0
+    # shellcheck disable=SC1090
+    source "$audit_lib" 2>/dev/null || return 0
+    command -v audit_write_event >/dev/null 2>&1 || return 0
+
+    local ts json
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    json="$(printf '{"event":"closing-keyword-refused","branch":"%s","base":"%s","app":"%s","phase":"%s","refs":"%s","timestamp":"%s"}' \
+        "$(_hos_pr_json_escape "$head")" "$(_hos_pr_json_escape "$base")" \
+        "$(_hos_pr_json_escape "$app")" "$(_hos_pr_json_escape "$phase")" \
+        "$(_hos_pr_json_escape "$keys")" "$ts")"
+    audit_write_event "$json" "$SCRIPT_DIR/.." >/dev/null 2>&1 || true
+    return 0
+}
+
+# _hos_closing_keyword_guard <phase> <check-args...> (#1856)
+# Runs the closing-keyword check. Python's stderr report passes through to the
+# caller. Exit 0 -> return; exit 1 (undeclared closing refs) -> audit + refuse;
+# anything else is treated as a guard failure and also refuses (fail closed).
+_hos_closing_keyword_guard() {
+    local phase="$1"; shift
+    local rc=0 out=""
+    out="$(python3 "$CK_PY" check "$@")" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1)
+            _hos_audit_closing_keyword_refusal "$HEAD" "$BASE" "$APP_ROLE" "$phase" "$out"
+            err "Refusing to submit: closing keyword(s) for undeclared issue(s): ${out} (#1856). Rephrase, or pass --closes only if the PR genuinely closes them." ;;
+        *)
+            err "closing-keyword guard failed (exit ${rc}) — refusing to submit a PR it could not check (#1856)" ;;
+    esac
+}
+
 TITLE=""
 BODY_FILE=""
 BASE=""
@@ -101,6 +156,7 @@ HEAD=""
 APP_ROLE=""
 CONFIRMED="false"
 UPDATE_PR=""
+CLOSES_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -111,8 +167,9 @@ while [[ $# -gt 0 ]]; do
         --app)        APP_ROLE="$2"; shift 2 ;;
         --confirmed)  CONFIRMED="true"; shift ;;
         --update-pr)  UPDATE_PR="$2"; shift 2 ;;
+        --closes)     CLOSES_ARGS+=(--closes "$2"); shift 2 ;;
         --body)       err "--body is not supported — write the body to a file and pass --body-file <path>. Inline text with newlines/quotes is exactly the unallowlistable shell pattern this script exists to eliminate." ;;
-        *)            err "Usage: $0 --title <text> --body-file <path> --base <branch> [--head <branch>] --app <worker|overseer|human> [--confirmed] | $0 --update-pr <N> --base <branch> [--head <branch>] --app worker" ;;
+        *)            err "Usage: $0 --title <text> --body-file <path> --base <branch> [--head <branch>] --app <worker|overseer|human> [--confirmed] [--closes <n>[,<n>...]] | $0 --update-pr <N> --base <branch> [--head <branch>] --app worker [--closes <n>[,<n>...]]" ;;
     esac
 done
 
@@ -137,6 +194,11 @@ fi
 if [[ "$APP_ROLE" == "human" && "$CONFIRMED" != "true" ]]; then
     err "--app human requires --confirmed: a human-proxy PR is only appropriate with explicit per-instance human authorization (docs/AGENT-IDENTITY.md, stuck-worker exception). Confirm a human has approved THIS push, then pass --confirmed."
 fi
+
+# ── Closing-keyword guard prerequisites (#1856) — fail closed, every --app ──
+CK_PY="$SCRIPT_DIR/../scripts/automation/closing_keywords.py"
+[[ -f "$CK_PY" ]] || err "closing-keyword guard unavailable (missing scripts/automation/closing_keywords.py) — refusing to open a PR (#1856)"
+command -v python3 >/dev/null 2>&1 || err "closing-keyword guard unavailable (python3 not on PATH) — refusing to open a PR (#1856)"
 
 CURRENT_BRANCH="$(git -C "$SCRIPT_DIR/.." rev-parse --abbrev-ref HEAD)"
 [[ -n "$HEAD" ]] || HEAD="$CURRENT_BRANCH"
@@ -182,6 +244,20 @@ if [[ "$APP_ROLE" == "worker" && -z "$UPDATE_PR" ]]; then
     fi
 fi
 
+# ── Resolve owner/repo from the origin remote (no auth required) ──────────────
+REPO_URL="$(git -C "$SCRIPT_DIR/.." remote get-url origin 2>/dev/null)" \
+    || err "Could not read git remote 'origin' — run from inside the HOS repo"
+REPO_SLUG="$(printf '%s' "$REPO_URL" | sed -E 's#^git@github\.com:##; s#^https://github\.com/##; s#\.git$##')"
+[[ "$REPO_SLUG" == */* ]] || err "Could not parse owner/repo from origin remote: $REPO_URL"
+
+# ── Closing-keyword guard, phase 1: title + body (#1856) ──────────────────────
+# Pre-network. Commits are scanned in phase 2, once the base is fetched.
+if [[ -z "$UPDATE_PR" ]]; then
+    _hos_closing_keyword_guard text --repo-slug "$REPO_SLUG" \
+        ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
+        --title="$TITLE" --body-file "$BODY_FILE"
+fi
+
 # ── Merge from base before pushing (#1162) ─────────────────────────────────────
 # A branch built on a stale base doesn't just miss the work that landed on
 # main while it was being built — its PR proposes *reverting* that work, and
@@ -204,11 +280,20 @@ if [[ "$BEHIND_COUNT" -gt 0 ]]; then
     _hos_audit_stale_base_merge "$HEAD" "$BASE" "$BEHIND_COUNT"
 fi
 
-# ── Resolve owner/repo from the origin remote (no auth required) ──────────────
-REPO_URL="$(git -C "$SCRIPT_DIR/.." remote get-url origin 2>/dev/null)" \
-    || err "Could not read git remote 'origin' — run from inside the HOS repo"
-REPO_SLUG="$(printf '%s' "$REPO_URL" | sed -E 's#^git@github\.com:##; s#^https://github\.com/##; s#\.git$##')"
-[[ "$REPO_SLUG" == */* ]] || err "Could not parse owner/repo from origin remote: $REPO_URL"
+# ── Closing-keyword guard, phase 2: branch commits (#1856) ────────────────────
+# Runs after the merge-from-base so the range excludes what is already on base.
+# A failing `git log` is a guard failure (exit 2), never "zero commits".
+if [[ -z "$UPDATE_PR" ]]; then
+    _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
+        ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
+        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..refs/heads/${HEAD}" \
+        --title="$TITLE" --body-file "$BODY_FILE" --warn-unused
+else
+    _hos_closing_keyword_guard full --repo-slug "$REPO_SLUG" \
+        ${CLOSES_ARGS[@]+"${CLOSES_ARGS[@]}"} \
+        --repo-dir "$SCRIPT_DIR/.." --range "origin/${BASE}..refs/heads/${HEAD}" \
+        --warn-unused
+fi
 
 # ── Mint token, source it, then remove the file immediately (#549: don't let
 # the token linger on disk any longer than it has to) ─────────────────────────
