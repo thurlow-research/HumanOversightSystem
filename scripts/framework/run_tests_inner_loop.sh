@@ -47,6 +47,36 @@ case "${1:-}" in
     ;;
 esac
 
+# #2054: pick the temp dir for this run, first match wins, and export it as
+# TMPDIR so pytest-of-<user>, tempfile and mktemp land on disk, not on /tmp:
+#   1. HOS_TMP_DIR, when a launcher chose one (existing, writable dir)
+#   2. the "local" role dir from bootstrap/lib/hos_tmp_root.py (--create)
+#   3. the inherited non-empty TMPDIR (WARN)
+#   4. unset, i.e. /tmp (WARN)
+# Blindly inheriting TMPDIR is not allowed: in a sandboxed ad-hoc session it is
+# Claude Code's /tmp/claude, which would put pytest back on the RAM-backed tmpfs.
+_select_tmpdir() {
+  if [[ -n "${HOS_TMP_DIR:-}" && -d "$HOS_TMP_DIR" && -w "$HOS_TMP_DIR" ]]; then
+    export TMPDIR="$HOS_TMP_DIR"
+    return 0
+  fi
+  local _dir
+  if _dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role local --create 2>&1)" \
+      && [[ -d "$_dir" && -w "$_dir" ]]; then
+    export TMPDIR="$_dir"
+    return 0
+  fi
+  local _why="${_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
+  _why="${_why#hos_tmp_root: }"
+  if [[ -n "${TMPDIR:-}" ]]; then
+    echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) — keeping inherited TMPDIR=$TMPDIR" >&2
+  else
+    echo -e "  ${RED}!${RESET}  WARN: HOS local tmp dir unavailable (${_why:-unknown}) and TMPDIR unset — using /tmp" >&2
+    unset TMPDIR
+  fi
+}
+_select_tmpdir
+
 echo -e "${BOLD}HOS Inner-Loop Tests${RESET} (PR-required tier)"
 echo -e "  ${CYAN}→${RESET}  Skipping: @slow, @integration"
 echo -e "  ${CYAN}→${RESET}  Repo: $REPO_ROOT"

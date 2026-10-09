@@ -97,6 +97,9 @@ if ! "$REPO_ROOT/bootstrap/get_app_token.sh" --app human > "$_t"; then
 fi
 # shellcheck source=/dev/null
 source "$_t"
+# Remove the token file now: the EXIT trap above does not fire across the final
+# `exec claude`, which would leave a live token in the temp dir (#2054).
+rm -f "$_t"
 
 # Identity guard -- portable: compare exported actual vs expected (both set by
 # get_app_token.sh), NOT a hardcoded literal. The Human App login does not follow
@@ -107,6 +110,19 @@ source "$_t"
 # Sync the shared repo at session start (fast-forward only; no-ops if recent).
 # Best-effort -- a sync failure must not block the session.
 bash "$REPO_ROOT/bootstrap/hos_repo_sync.sh" || true
+
+# Per-role disk temp dir (#2054, TD section 2A.3). Deliberately AFTER the token
+# mint above, so the short-lived token temp file stays on the RAM-backed /tmp
+# and never touches disk. TMPDIR (pytest, tempfile, mktemp), CLAUDE_CODE_TMPDIR
+# (what Claude Code gives sandboxed Bash as TMPDIR, replacing the exported
+# TMPDIR) and HOS_TMP_DIR (the marker the inner loop trusts) all name the role
+# dir. Never fatal: on failure nothing is exported and the session still starts.
+if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role human --create 2>&1)"; then
+  export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"
+else
+  _hos_tmp_reason="${_hos_tmp_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
+  echo "hos-human: WARN: HOS tmp root unusable (${_hos_tmp_reason#hos_tmp_root: }) -- TMPDIR left as-is" >&2
+fi
 
 echo "Authenticated as $HOS_BOT_LOGIN -- starting Claude..."
 exec claude

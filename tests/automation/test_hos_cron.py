@@ -199,6 +199,10 @@ class CronEnv:
             # #1434: proves the resolved session-timeout value (flag/env/conf/
             # default precedence) reached the launched session's environment.
             '  echo "max_seconds=${HOS_CRON_MAX_SECONDS:-UNSET}"\n'
+            # #2054: the per-role disk temp dir the launcher exports.
+            '  echo "tmpdir=${TMPDIR:-UNSET}"\n'
+            '  echo "claude_code_tmpdir=${CLAUDE_CODE_TMPDIR:-UNSET}"\n'
+            '  echo "hos_tmp_dir=${HOS_TMP_DIR:-UNSET}"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -445,6 +449,7 @@ class CronEnv:
             "scripts/framework/select_work_candidates.py",
             "scripts/framework/requester_trust.py",
             "scripts/framework/require_human_approval.py",
+            "bootstrap/lib/hos_tmp_root.py",  # #2054: the launcher's temp-dir resolver
         ):
             _dst = self.repo / _rel
             _dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1862,6 +1867,63 @@ class TestCycleIdentity:
             cron.claude_log.unlink()
         env2 = self._env(cron)
         assert env1["cycle_id"] != env2["cycle_id"]
+
+
+# ───────────── Per-role disk temp dir (#2054, TD §2A.3, test L1) ─────────────
+class TestHosTmpDir:
+    """bin/hos-cron exports TMPDIR, CLAUDE_CODE_TMPDIR and HOS_TMP_DIR, all set
+    to <HOS_TMP_ROOT>/<RoleDir>, into the launched session. The fake repo has no
+    config.sh, so the root is the default <repo>/../.tmp."""
+
+    def _record(self, cron) -> dict:
+        out = {}
+        for line in cron.claude_record().splitlines():
+            key, _, value = line.partition("=")
+            out[key] = value
+        return out
+
+    @pytest.mark.parametrize(
+        "role,role_dir,env_overrides",
+        [
+            ("worker", "Worker", None),
+            ("overseer", "Overseer", {"HOS_TEST_OPEN_PR_NUMS": "856"}),
+        ],
+    )
+    def test_session_gets_the_three_variables_and_a_0700_dir(
+        self, cron, role, role_dir, env_overrides
+    ):
+        r = cron.run(role=role, env_overrides=env_overrides)
+        assert r.returncode == 0, r.stdout + r.stderr
+        expected = cron.repo.parent / ".tmp" / role_dir
+        rec = self._record(cron)
+        assert rec["tmpdir"] == str(expected)
+        assert rec["claude_code_tmpdir"] == str(expected)
+        assert rec["hos_tmp_dir"] == str(expected)
+        assert expected.is_dir()
+        assert (expected.stat().st_mode & 0o777) == 0o700
+
+    def test_resolver_failure_warns_audits_and_continues(self, cron):
+        cron.install_cycle_log()
+        _write_exec(
+            cron.repo / "bootstrap" / "lib" / "hos_tmp_root.py",
+            "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('hos_tmp_root: boom\\n')\nsys.exit(3)\n",
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        warns = [ln for ln in r.stdout.splitlines() if "HOS tmp root unusable" in ln]
+        assert len(warns) == 1, r.stdout
+        assert "boom" in warns[0] and "TMPDIR left as-is" in warns[0]
+        records = cron.audit_records("cycle-tmp-root-fallback")
+        assert len(records) == 1
+        assert "boom" in json.dumps(records[0])
+        rec = self._record(cron)
+        # TMPDIR stays whatever was inherited (the hygiene fixture's session dir here).
+        assert not rec["tmpdir"].endswith("/.tmp/Worker")
+        assert (rec["claude_code_tmpdir"], rec["hos_tmp_dir"]) == (
+            "UNSET",
+            "UNSET",
+        ), "a failed resolve must export none of the three"
+        assert cron.claude_record(), "the cycle must still reach the launched session"
 
 
 # ───────────────────────────── Thin-env hardening ──────────────────────────

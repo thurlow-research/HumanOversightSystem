@@ -131,6 +131,7 @@ EXISTING_EXTRA_REVIEW_FILES=""
 EXISTING_SPEC_FILE=""
 EXISTING_DESIGN_PACK_DIR=""
 EXISTING_PACK=""
+EXISTING_HOS_TMP_ROOT=""
 
 if [[ -f "$CONFIG_FILE" ]]; then
     # Source safely by extracting values without executing arbitrary code
@@ -142,6 +143,9 @@ if [[ -f "$CONFIG_FILE" ]]; then
     EXISTING_SPEC_FILE=$(grep '^SPEC_FILE='                      "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_DESIGN_PACK_DIR=$(grep '^DESIGN_PACK_DIR='          "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
     EXISTING_PACK=$(grep '^PACK='                                "$CONFIG_FILE" | head -1 | cut -d= -f2- | tr -d '"')
+    # `|| true`: configs written before #2054 have no HOS_TMP_ROOT line, and a
+    # no-match grep would otherwise abort the install under pipefail.
+    EXISTING_HOS_TMP_ROOT=$(grep -E '^(export )?HOS_TMP_ROOT='   "$CONFIG_FILE" | tail -1 | cut -d= -f2- | tr -d '"' || true)
     echo "  Existing config found — will update only missing/changed values"
 else
     echo "  No existing config — will create fresh config.sh"
@@ -157,7 +161,7 @@ prompt_value() {
     local result
 
     if [[ -n "$existing" ]]; then
-        echo "  $varname: $existing (existing — press Enter to keep)"
+        echo "  $varname: $existing (existing — press Enter to keep)" >&2
         if $NON_INTERACTIVE; then
             result="$existing"
         else
@@ -165,9 +169,9 @@ prompt_value() {
             result="${input:-$existing}"
         fi
     else
-        echo "  $varname: $description"
+        echo "  $varname: $description" >&2
         if [[ -n "$default" ]]; then
-            echo "  Default: $default"
+            echo "  Default: $default" >&2
         fi
         if $NON_INTERACTIVE; then
             # Use env var if set, else default
@@ -247,6 +251,37 @@ NEW_EXTRA_FILES=$(prompt_value \
 
 echo ""
 
+# ── HOS_TMP_ROOT (#2054, TD §2A.1) ───────────────────────────────────────────
+# Default and validation live in bootstrap/lib/hos_tmp_root.py (decision logic
+# stays in Python). Prefer the source repo's copy; fall back to the target's.
+_tmp_root_tool=""
+for _cand in "${SOURCE_REPO:+$SOURCE_REPO/bootstrap/lib/hos_tmp_root.py}" \
+             "$TARGET_REPO/bootstrap/lib/hos_tmp_root.py"; do
+    if [[ -n "$_cand" && -f "$_cand" ]]; then _tmp_root_tool="$_cand"; break; fi
+done
+NEW_HOS_TMP_ROOT=""
+if [[ -z "$_tmp_root_tool" ]]; then
+    echo "  WARN: bootstrap/lib/hos_tmp_root.py not found — HOS_TMP_ROOT not configured (default ../.tmp applies)"
+else
+    _tmp_default=$(python3 -I "$_tmp_root_tool" install-default \
+        --target "$TARGET_REPO" --project-name "$NEW_PROJECT_NAME")
+    NEW_HOS_TMP_ROOT=$(prompt_value \
+        "HOS_TMP_ROOT" \
+        "Per-role disk temp root (HOS temp lives in <root>/<Role>, mode 0700, never inside a git work tree)" \
+        "$EXISTING_HOS_TMP_ROOT" \
+        "$_tmp_default")
+    until _tmp_err=$(python3 -I "$_tmp_root_tool" validate --repo "$TARGET_REPO" --value "$NEW_HOS_TMP_ROOT" 2>&1); do
+        echo "  ✘ $_tmp_err" >&2
+        if $NON_INTERACTIVE; then
+            echo "  HOS_TMP_ROOT refused — set a different value and re-run" >&2
+            exit 1
+        fi
+        read -r -p "  Enter a different HOS_TMP_ROOT [$_tmp_default]: " NEW_HOS_TMP_ROOT
+        NEW_HOS_TMP_ROOT="${NEW_HOS_TMP_ROOT:-$_tmp_default}"
+    done
+fi
+echo ""
+
 # ── Step 4b: Substitute placeholders in copied agent files ───────────────────
 # Runs here (after Step 4) so all NEW_* values are populated from either the
 # config file, env vars, or interactive prompts.  Substitution in Step 2 was
@@ -323,6 +358,17 @@ PROJECT_SETTINGS_MODULE=""   # Settings module path, e.g. parkshare/settings
 PROJECT_TESTS_DIR=""         # Tests dir relative to PROJECT_ROOT, e.g. tests
 PROJECT_PACKAGE=""           # Top-level package name, e.g. parkshare
 CONFIGEOF
+
+if [[ -n "$NEW_HOS_TMP_ROOT" ]]; then
+    cat >> "$CONFIG_FILE" <<TMPEOF
+
+# ── Temp root (#2054) ────────────────────────────────────────────────────────
+# HOS temp lives on disk, per role, in HOS_TMP_ROOT/<Role> (mode 0700), not on the
+# RAM-backed /tmp. Parsed statically by bootstrap/lib/hos_tmp_root.py. A relative
+# value resolves against the clone root. Never inside a git work tree or the clone.
+HOS_TMP_ROOT="${NEW_HOS_TMP_ROOT}"
+TMPEOF
+fi
 
 echo "  Written: $CONFIG_FILE"
 echo ""

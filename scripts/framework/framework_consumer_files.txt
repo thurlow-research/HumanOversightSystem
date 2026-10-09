@@ -39,6 +39,11 @@ bootstrap/create_branch.sh
 # but shipping it means fresh installs get it without a follow-up upgrade.
 bootstrap/lib/sandbox_paths.sh
 
+# ── bootstrap/lib/ — per-role disk temp root resolver (#2054) ────────────────────
+# Called by bin/hos-cron, bin/hos-human, run_tests_inner_loop.sh, install.sh and
+# gen_sandbox_config.py. Without it the launchers fall back to /tmp with a warning.
+bootstrap/lib/hos_tmp_root.py
+
 # ── .github/workflows/ — required CI status-check producers (#769) ───────────────
 # These produce the status-check contexts that setup_branch_protection.sh requires.
 # Without them a consumer's branch protection has required checks that never report,

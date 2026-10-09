@@ -370,6 +370,23 @@ _audit() {
   (cd "$REPO_ROOT" && python3 -m scripts.automation.lib.cycle_log "$event" "$@") 2>/dev/null || true
 }
 
+# ── Per-role disk temp dir (#2054, TD §2A.3) ──────────────────────────────────
+# HOS temp lives on disk in <HOS_TMP_ROOT>/<RoleDir> (0700), not on the RAM-backed
+# /tmp. Three variables, all the role dir: TMPDIR (pytest, tempfile, mktemp),
+# CLAUDE_CODE_TMPDIR (what Claude Code gives sandboxed Bash as TMPDIR, replacing
+# the exported TMPDIR) and HOS_TMP_DIR (the HOS-owned marker the inner loop
+# trusts). Never fatal: on any failure nothing is exported and the cycle runs
+# with the inherited temp location.
+if _hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create 2>&1)"; then
+  export TMPDIR="$_hos_tmp_dir" CLAUDE_CODE_TMPDIR="$_hos_tmp_dir" HOS_TMP_DIR="$_hos_tmp_dir"
+  HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"
+else
+  _hos_tmp_reason="${_hos_tmp_dir##*$'\n'}"   # last line only: a crashed resolver prints a traceback
+  _hos_tmp_reason="${_hos_tmp_reason#hos_tmp_root: }"
+  echo "$LOG_PREFIX WARN: HOS tmp root unusable (${_hos_tmp_reason}) — TMPDIR left as-is"
+  _audit cycle-tmp-root-fallback "reason=${_hos_tmp_reason}"
+fi
+
 # ── Usage-threshold pause gate (#1944, ADR-1944 AD-7/A2-4) ──────────
 # HOS-USAGE-PAUSE-GATE schema=1
 _UP_CHECK_TIMEOUT_S=60      # wall-clock cap on the verdict helper (a time bound, not a usage threshold)

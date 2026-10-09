@@ -29,3 +29,11 @@ export DESIGN_PACK_PATH=""
 
 # ── Extra review files ────────────────────────────────────────────────────────
 export EXTRA_REVIEW_FILES=""
+
+# ── Temp root (#2054, TD §2A) ─────────────────────────────────────────────────
+# HOS temp lives on disk, per role, in $HOS_TMP_ROOT/<RoleDir> (0700), not on the
+# RAM-backed /tmp. Parsed statically by bootstrap/lib/hos_tmp_root.py (never
+# sourced). A relative value resolves against the clone root, so this shared,
+# committed value is machine-independent: ../.tmp is <HOS_ROOT>/.tmp. It must
+# never be inside a git work tree or inside the clone.
+export HOS_TMP_ROOT="../.tmp"

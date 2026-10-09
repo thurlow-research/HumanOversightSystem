@@ -37,7 +37,7 @@ Usage:
     python3 scripts/framework/gen_sandbox_config.py \\
         --role human --clone-dir /srv/hos/Human \\
         --handoff-dir /srv/hos/handoff/human \\
-        --claude-project-state /home/hosuser/.claude/projects/-srv-hos-Human
+        --claude-project-state /srv/hosuser/.claude/projects/-srv-hos-Human
 
     # Check (compare only; never writes):
     python3 scripts/framework/gen_sandbox_config.py \\
@@ -104,6 +104,7 @@ rule content is #1146's work, not this generator's.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -125,6 +126,23 @@ LIVE_RELPATH = ".claude/settings.local.json"
 VALUES_RELPATH = ".claude/hos-sandbox.values"
 VALUES_VERSION = "1"
 GENERATOR_RELPATH = "scripts/framework/gen_sandbox_config.py"
+
+
+def _load_tmp_root_module() -> Any:
+    """bootstrap/lib/hos_tmp_root.py is the single source of the per-role temp
+    dir names and of the HOS_TMP_ROOT grammar (#2054, D15/D41)."""
+    path = REPO_ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
+    spec = importlib.util.spec_from_file_location("hos_tmp_root", path)
+    if spec is None or spec.loader is None or not path.is_file():
+        raise SystemExit(f"gen_sandbox_config: cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_TMP_ROOT = _load_tmp_root_module()
+# "local" is for direct inner-loop runs and is never sandbox-generated.
+ROLE_DIRS = {role: name for role, name in _TMP_ROOT.ROLE_DIRS.items() if role != "local"}
 
 KNOWN_ROLES = ("human", "worker", "overseer")
 SUPPORTED_ROLES = ("human",)
@@ -315,8 +333,10 @@ def resolve_values(
     default > required-error. Pure w.r.t. the filesystem: the caller supplies
     `sidecar`; this function never touches disk."""
     clone_dir = Path(args.clone_dir)
-    values: dict[str, str] = {"ROLE": args.role}
-    sources: dict[str, str] = {"ROLE": "flag"}
+    # ROLE_DIR is derived from ROLE (D15): it has no flag, no sidecar key and
+    # is not in PLACEHOLDERS, so the sidecar format and version are unchanged.
+    values: dict[str, str] = {"ROLE": args.role, "ROLE_DIR": ROLE_DIRS[args.role]}
+    sources: dict[str, str] = {"ROLE": "flag", "ROLE_DIR": "derived"}
 
     flag_values = {
         "PROJECT_ROOT": args.project_root,
@@ -372,6 +392,36 @@ def resolve_values(
 
 
 # ── The pure core (§2.1, §6 rows 6-9) ───────────────────────────────────────
+
+
+def check_tmp_root(clone_dir: Path, values: dict[str, str]) -> None:
+    """Fail closed (D15) unless the clone's HOS_TMP_ROOT is exactly
+    <HOS_ROOT>/.tmp and HOS_ROOT is under HOME. The template grants
+    __HOS_ROOT__/.tmp/__ROLE_DIR__ and nothing else, so a moved root would
+    produce a sandbox that grants the wrong dir; and without HOS_ROOT under
+    HOME, denyRead __HOME__/ would not hide the sibling roles' dirs."""
+    hos_root = values["HOS_ROOT"]
+    home = values["HOME"]
+    if hos_root != home and not hos_root.startswith(home + "/"):
+        raise UsageError(
+            f"--hos-root {hos_root!r} is not under --home {home!r}; denyRead "
+            "__HOME__/ would not hide the other roles' temp dirs. Pass a --hos-root "
+            "inside the home directory."
+        )
+    expected = f"{hos_root}/.tmp"
+    try:
+        configured = str(_TMP_ROOT.resolve_root(clone_dir))
+    except _TMP_ROOT.TmpRootError as exc:
+        raise UsageError(f"HOS_TMP_ROOT of {clone_dir} is unusable: {exc}") from exc
+    if _TMP_ROOT._resolve_existing_prefix(configured) != _TMP_ROOT._resolve_existing_prefix(
+        expected
+    ):
+        raise UsageError(
+            f"HOS_TMP_ROOT of {clone_dir} resolves to {configured!r}, but the sandbox "
+            f'template grants only {expected!r}. Set HOS_TMP_ROOT="../.tmp" in '
+            f"{clone_dir}/scripts/framework/config.sh (single-clone and moved roots are "
+            "not generatable until a separate issue adds a root placeholder)."
+        )
 
 
 def load_template(path: Path) -> str:
@@ -731,6 +781,8 @@ def echo_values(
     print(f"Resolved values (role={role}, clone={clone_dir}):", file=out)
     for name in PLACEHOLDERS:
         print(f"  {name:<22}= {values[name]:<40} [{sources[name]}]", file=out)
+        if name == "ROLE":
+            print(f"  {'ROLE_DIR':<22}= {values['ROLE_DIR']:<40} [{sources['ROLE_DIR']}]", file=out)
 
 
 def regenerate_command(values: dict[str, str], clone_dir: Path) -> str:
@@ -950,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
 
         values, sources = resolve_values(args, dict(os.environ), sidecar)
         echo_values(values, sources, args.role, clone_dir, sys.stdout)
+        check_tmp_root(clone_dir, values)
 
         template_text = load_template(TEMPLATE_PATH)
         rendered = render(template_text, values)

@@ -307,3 +307,85 @@ def test_mktemp_failure_degrades_to_unlogged_run(tmp_path, monkeypatch):
     finally:
         for p in _existing_logs() - before:
             Path(p).unlink(missing_ok=True)
+
+
+# ── #2054 S2a (TD section 2A.3, L3): the run's TMPDIR, four ordered branches ──
+
+_RESOLVER = ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
+
+
+def _build_tmpdir_repo(tmp_path: Path, resolver: str = "real") -> Path:
+    """_build_repo, with a pytest stub that reports its TMPDIR, and the resolver
+    copied in ("real"), made to fail ("failing"), or left out ("absent")."""
+    repo = _build_repo(tmp_path)
+    _write_exec(
+        repo / "scripts" / "oversight" / ".venv" / "bin" / "python",
+        '#!/usr/bin/env bash\necho "TMPDIR_SEEN=${TMPDIR-UNSET}"\nexit 0\n',
+    )
+    lib = repo / "bootstrap" / "lib"
+    if resolver == "real":
+        lib.mkdir(parents=True)
+        shutil.copy(_RESOLVER, lib / "hos_tmp_root.py")
+    elif resolver == "failing":
+        _write_exec(
+            lib / "hos_tmp_root.py",
+            "#!/usr/bin/env python3\nimport sys\n"
+            "sys.stderr.write('hos_tmp_root: stubbed failure\\n')\nsys.exit(3)\n",
+        )
+    return repo
+
+
+def _seen(result: subprocess.CompletedProcess) -> str:
+    lines = [ln for ln in result.stdout.splitlines() if ln.startswith("TMPDIR_SEEN=")]
+    assert len(lines) == 1, result.stdout + result.stderr
+    return lines[0].split("=", 1)[1]
+
+
+def test_l3_1_a_launcher_chosen_dir_wins_over_an_inherited_tmpdir(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path)
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    result = _run(repo, env={"HOS_TMP_DIR": str(chosen), "TMPDIR": str(other)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _seen(result) == str(chosen)
+    assert not (tmp_path / ".tmp").exists(), "branch 1 must not create the local dir"
+
+
+def test_l3_2_the_local_role_dir_beats_an_inherited_claude_tmpdir(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path)
+    inherited = tmp_path / "tmp" / "claude"  # what a sandboxed ad-hoc session carries
+    inherited.mkdir(parents=True)
+    result = _run(repo, env={"TMPDIR": str(inherited)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _seen(result) == str(tmp_path / ".tmp" / "Local")
+    assert (tmp_path / ".tmp" / "Local").is_dir()
+    assert "WARN" not in result.stderr
+
+
+def test_l3_2b_an_unusable_hos_tmp_dir_falls_through_to_the_local_dir(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path)
+    result = _run(repo, env={"HOS_TMP_DIR": str(tmp_path / "missing"), "TMPDIR": ""})
+    assert _seen(result) == str(tmp_path / ".tmp" / "Local")
+
+
+def test_l3_3_a_failing_resolver_keeps_the_inherited_tmpdir_and_warns(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path, resolver="failing")
+    inherited = tmp_path / "inherited"
+    inherited.mkdir()
+    result = _run(repo, env={"TMPDIR": str(inherited)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _seen(result) == str(inherited)
+    warns = [ln for ln in result.stderr.splitlines() if "WARN" in ln]
+    assert len(warns) == 1 and "stubbed failure" in warns[0], result.stderr
+    assert str(inherited) in warns[0]
+
+
+def test_l3_4_nothing_usable_leaves_tmpdir_unset_and_warns(tmp_path):
+    repo = _build_tmpdir_repo(tmp_path, resolver="absent")
+    result = _run(repo, env={"TMPDIR": ""})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _seen(result) == "UNSET"
+    warns = [ln for ln in result.stderr.splitlines() if "WARN" in ln]
+    assert len(warns) == 1 and "using /tmp" in warns[0], result.stderr
