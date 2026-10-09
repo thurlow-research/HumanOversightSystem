@@ -236,7 +236,7 @@ def test_financial_added_line_floors_critical():
         "ATTACH",
         "REACH",
         "see docs/MACHINE-ACCOUNTS-SETUP.md",
-        "    card = GiftCard(code)",
+        "ACHIEVE = 1",
         "LIBIBANK = 1",
     ],
 )
@@ -254,6 +254,7 @@ def test_financial_rule_ignores_embedded_tokens(line):
         '"ACH"',
         "IBAN: DE89370400440532013000",
         "    c = Card(number)",
+        "    c = CreditCard(number)",
         "    stripe.Charge.create(",
         "    account_number = x",
     ],
@@ -326,7 +327,6 @@ def test_collect_diff_parses_added_lines(tmp_path):
     run("commit", "-qm", "change")
 
     # collect_diff shells out to git in cwd; run it from the repo dir.
-
     prev = os.getcwd()
     try:
         os.chdir(repo)

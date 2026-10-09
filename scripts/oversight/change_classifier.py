@@ -254,12 +254,14 @@ TIER_FLOOR_PATH_RULES: list[tuple[str, re.Pattern, str]] = [
 # Each: (tier, compiled regex over an added line, short pattern label).
 TIER_FLOOR_LINE_RULES: list[tuple[str, re.Pattern, str]] = [
     # CRITICAL — PCI / financial API surfaces. ACH/IBAN are letter-bounded (not \b, so
-    # ACH_ROUTING still matches) and Card( is word-anchored, so MACHINE/CACHE/ATTACH/
-    # REACH/GiftCard( no longer false-floor CRITICAL (#1889).
+    # ACH_ROUTING still matches) so MACHINE/CACHE/ATTACH/REACH no longer false-floor
+    # CRITICAL (#1889). Card( is intentionally left unanchored so CreditCard(/DebitCard(
+    # still floor CRITICAL. Letter-bounding also stops glued forms like ACHTransfer/
+    # IBANValidator matching (accepted trade-off).
     (
         "CRITICAL",
         re.compile(
-            r"(stripe\.|braintree\.|PaymentIntent|charge\(|\bCard\(|"
+            r"(stripe\.|braintree\.|PaymentIntent|charge\(|Card\(|"
             r"(?<![A-Za-z])ACH(?![A-Za-z])|(?<![A-Za-z])IBAN(?![A-Za-z])|account_number)"
         ),
         "PCI/financial API",
