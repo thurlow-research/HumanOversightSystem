@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"ff9473b85dd3daad6f52114f2afa2e3f4130522f","pr":2061,"reason":"#1215: HUMAN_REQUIRED verdict review + escalation thread already posted at this head 23:44Z (PR-size hard ceiling, 114 files); no new commits, comments, reviews, or threads since; needs-human label already applied"}
