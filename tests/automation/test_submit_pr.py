@@ -76,6 +76,14 @@ GH_STUB = """#!/usr/bin/env bash
 echo "GH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
     if [[ "${GH_FAIL:-}" == "1" ]]; then exit 1; fi
+    prev=""
+    for a in "$@"; do
+        if [[ "$prev" == "--body-file" ]]; then
+            echo "GH_BODY_PATH:$a" >> "$CAPTURE_FILE"
+            echo "GH_BODY_CONTENT:$(cat "$a")" >> "$CAPTURE_FILE"
+        fi
+        prev="$a"
+    done
     echo "https://github.com/test-owner/test-repo/pull/999"
     exit 0
 fi
@@ -347,6 +355,21 @@ def test_explicit_head_used_over_current_branch(h):
     # #1166 regression guard: the push source must be the named branch, never
     # the working-tree HEAD (current-branch != explicit-branch in this test).
     assert "HEAD:refs/heads/" not in push_line
+
+
+def test_gh_pr_create_receives_private_snapshot_of_scanned_body(h):
+    """Body is copied once; gh gets the private copy (same content), removed on exit."""
+    h.body_file.write_text("single-line body\n")
+    result = h.run([
+        "--title", "t", "--body-file", str(h.body_file), "--base", "main",
+        "--head", "feature-x", "--app", "worker",
+    ])
+    assert result.returncode == 0, result.stderr
+    lines = h.capture().splitlines()
+    path = [ln for ln in lines if ln.startswith("GH_BODY_PATH:")][0].split(":", 1)[1]
+    assert path != str(h.body_file)
+    assert "GH_BODY_CONTENT:single-line body" in lines
+    assert not Path(path).exists()
 
 
 def test_happy_path_pushes_creates_pr_and_revokes_token(h):

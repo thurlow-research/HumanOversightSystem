@@ -1,6 +1,7 @@
 """Tests for scripts/automation/closing_keywords.py (#1856)."""
 
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -232,3 +233,32 @@ def test_cli_git_failure_exit_2(repo):
 def test_cli_rejects_option_like_range(repo):
     r = run_cli("--repo-dir", str(repo), "--range=--all")
     assert r.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "close" + " " * 200_000 + "x",
+        "close" + "\n" * 200_000 + "x",
+        "close" + "\u00a0" * 200_000 + "x",
+        "close" + " " * 200_000 + ":" + " " * 200_000 + "x",
+        "closes #1" + " " * 200_000 + "x",
+        "closes #1," + " " * 200_000 + "x",
+        "closes #1" + ", and" * 50_000 + " x",
+        "close " + "a" * 200_000,
+    ],
+    ids=[
+        "spaces",
+        "newlines",
+        "nbsp",
+        "colon-gap",
+        "chain-ws",
+        "chain-comma-ws",
+        "chain-and",
+        "long-word",
+    ],
+)
+def test_linear_time_on_adversarial_whitespace(text):
+    start = time.monotonic()
+    ck.find_closing_refs(text, "o/r")
+    assert time.monotonic() - start < 2.0

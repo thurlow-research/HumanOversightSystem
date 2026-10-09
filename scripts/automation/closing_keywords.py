@@ -16,6 +16,7 @@ Exit codes of the CLI:
 """
 
 import argparse
+import bisect
 import re
 import subprocess
 import sys
@@ -34,7 +35,7 @@ _REF = (
     r"|#(?P<hn>\d+)"
     r")"
 )
-_MAIN = re.compile(_KEYWORD + r"\s*:?\s*" + _REF, re.IGNORECASE)
+_MAIN = re.compile(_KEYWORD + r"\s*(?::\s*)?" + _REF, re.IGNORECASE)
 _CHAIN = re.compile(r"\s*(?:,(?:\s*and\b)?|&|\band\b)\s*" + _REF, re.IGNORECASE)
 
 _DECLARED_ITEM = re.compile(r"^(?:\d+|[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#\d+)$")
@@ -65,10 +66,13 @@ def _key_from(m: "re.Match[str]", repo_slug: str) -> str:
 def find_closing_refs(text: str, repo_slug: str) -> list[Match]:
     """Return every closing reference in text, in order of appearance."""
     lines = text.split("\n")
+    starts = [0]
+    for ln in lines[:-1]:
+        starts.append(starts[-1] + len(ln) + 1)
     found: list[Match] = []
 
     def emit(m: "re.Match[str]", at: int) -> None:
-        line = text.count("\n", 0, at) + 1
+        line = bisect.bisect_right(starts, at)
         found.append(Match(_key_from(m, repo_slug), line, lines[line - 1].strip()[:_SNIPPET_MAX]))
 
     pos = 0

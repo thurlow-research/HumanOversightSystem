@@ -138,7 +138,7 @@ _hos_audit_closing_keyword_refusal() {
 _hos_closing_keyword_guard() {
     local phase="$1"; shift
     local rc=0 out=""
-    out="$(python3 "$CK_PY" check "$@")" || rc=$?
+    out="$(python3 -I "$CK_PY" check "$@")" || rc=$?
     case "$rc" in
         0) return 0 ;;
         1)
@@ -199,6 +199,18 @@ fi
 CK_PY="$SCRIPT_DIR/../scripts/automation/closing_keywords.py"
 [[ -f "$CK_PY" ]] || err "closing-keyword guard unavailable (missing scripts/automation/closing_keywords.py) — refusing to open a PR (#1856)"
 command -v python3 >/dev/null 2>&1 || err "closing-keyword guard unavailable (python3 not on PATH) — refusing to open a PR (#1856)"
+
+# Snapshot the body once (TOCTOU): both guard phases scan, and gh pr create
+# submits, this private copy -- never the caller's path, which could change
+# between the scan and the submit.
+BODY_COPY=""
+TOKEN_FILE=""
+trap 'rm -f "${BODY_COPY:-}" "${TOKEN_FILE:-}"' EXIT
+if [[ -z "$UPDATE_PR" ]]; then
+    BODY_COPY="$(mktemp)"
+    cp -- "$BODY_FILE" "$BODY_COPY" || err "could not snapshot --body-file: $BODY_FILE"
+    BODY_FILE="$BODY_COPY"
+fi
 
 CURRENT_BRANCH="$(git -C "$SCRIPT_DIR/.." rev-parse --abbrev-ref HEAD)"
 [[ -n "$HEAD" ]] || HEAD="$CURRENT_BRANCH"
@@ -298,7 +310,6 @@ fi
 # ── Mint token, source it, then remove the file immediately (#549: don't let
 # the token linger on disk any longer than it has to) ─────────────────────────
 TOKEN_FILE="$(mktemp)"
-trap 'rm -f "$TOKEN_FILE"' EXIT
 
 bash "$SCRIPT_DIR/get_app_token.sh" --app "$APP_ROLE" > "$TOKEN_FILE" || err "Failed to mint ${APP_ROLE} token"
 # shellcheck source=/dev/null
