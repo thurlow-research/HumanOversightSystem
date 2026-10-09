@@ -1,39 +1,89 @@
 # Technical Design — #2054 test runs exhaust the per-user /tmp quota
 
-Status: **Architect round 2 (2026-10-09): APPROVED WITH CONDITIONS R2-1..R2-8** (see "Architect review (round 2 of 5)" at the end). Commit 1 (S1) and commit 3 (S3) are **ready for the coder now**. Commit 2 (S2, the reaper and its call sites) goes to the coder only after technical-design applies R2-1..R2-8 and the architect checks the diff (round 3: verification only).
-Previous status: **Round 2 revision (2026-10-09). Applied to the body: the architect's round-1 conditions AC-1..AC-16, the human ruling of 2026-10-09, and the later human Q6 ruling that the reaper deletes stale agent scratch trees (class S, D13, §5.7)** (see "Round-2 revision note" at the end). Awaiting the architect's round-2 diff check, which is verification only. The coder gets this after the architect approves. Merging is also gated on the three open human confirmations in §12.1 (AC-16). Coding proceeds on the architect's recommended defaults.
+Status: **Round 3 revision (2026-10-09), restructured.**
+
+Applied to the body:
+- the architect's round-2 conditions R2-1..R2-8;
+- the human's §12.1 rulings ("Yes. Anything older than a day goes."), which override R2-3 and R2-4 and drop R2-1's git veto;
+- the human's packaging ruling, which makes the reaper a machine-level `bootstrap/` script that the operator installs in cron;
+- the human's **disk-temp ruling**: HOS temp moves off the RAM-backed `/tmp` to a hidden, per-role disk root, `<clone>/../.tmp/<role>`.
+
+The disk-temp ruling moves the design's centre of gravity, so §0 and §2 are restructured and a new §2A is added.
+
+The "Round-3 revision note" at the end maps every change and lists which architect conditions are superseded or amended. Next step: the architect's round-3 diff check.
+
+Coder status:
+- **Commit 1 (S1) is unchanged** and remains ready for the coder (see §11).
+- Commit 4 (S3, formerly commit 3) is unchanged in content and remains ready.
+- Commits 2 (S2a, disk temp root) and 3 (S2b, reaper) go to the coder only after the architect approves round 3.
+
+§12.1 is fully resolved.
+
+Round-2 architect status: **APPROVED WITH CONDITIONS R2-1..R2-8** (see "Architect review (round 2 of 5)").
+Earlier status: **Round 2 revision (2026-10-09).** Applied the architect's round-1 conditions AC-1..AC-16 and the human rulings of that date (see "Round-2 revision note").
 Issue: #2054 (bug, blocks work). Being fixed in a human-authorized interactive Worker session on 2026-10-09.
-Related: #1616 (sandbox PID namespaces break `kill -0`), #1903 (`--failure-log` in literal /tmp), #1910 (wrapper replica), #314 (decision logic belongs in Python), D41 (one invocation site).
-Change class: **additive**. This adds new config, a new test plugin, a new script and two new call sites. No existing contract field is removed or renamed. There are two behavior changes:
-- The test-environment TMPDIR redirect (D4). The architect accepted it (Q2).
-- A new scheduled deletion path at cron cycle start (D5, §8.2). Its scope is a merge-time human confirmation (§12.1).
+Related: #1616 (sandbox PID namespaces break `kill -0`), #1903 (`--failure-log` in literal /tmp), #1910 (wrapper replica), #1221 (sandbox config generation), #1146 (worker/overseer sandbox), #314 (decision logic belongs in Python), D41 (one invocation site).
+Change class: **additive**, with three human-ruled behavior changes:
+- **Where HOS temp lives.** The launchers export `TMPDIR=<HOS_TMP_ROOT>/<role>`, a 0700 dir on disk (D14, §2A). The sandbox template grants each role only its own dir.
+- **The test-environment TMPDIR redirect** (D4). It now nests under the role dir. The architect accepted it (Q2).
+- **A machine-level deletion script**, `bootstrap/tmp_reaper.py` (D5). It runs from:
+  - a daily operator-installed crontab entry that HOS documents and never installs;
+  - a low-space trigger at `bin/hos-cron` cycle start;
+  - the inner-loop pre-run.
 
 ---
 
-## 0. Headline: a test run cleans up after itself; the reaper is only a backstop
+## 0. Headline: HOS temp lives on disk per role, every test run cleans up after itself, and a reaper backstops both
 
-**Human ruling (2026-10-09, verbatim):** *"We need to clean up the files. Can we make sure that they are normally cleaned up when the test run completes and have a script that cleans anything over 24h just in case?"*
+**Human rulings (2026-10-09, verbatim):**
+- *"We need to clean up the files. Can we make sure that they are normally cleaned up when the test run completes and have a script that cleans anything over 24h just in case?"*
+- *"RAM for pytest results etc is silly."* (`/tmp` here is a 1.7 GB tmpfs with `usrquota`, on a host with 14 GiB of RAM.)
 
-The design has two layers. The order is deliberate.
+The design has three layers. The order is deliberate.
 
-### Layer 1: primary, in-run cleanup (S1)
+### Layer 0: placement. HOS temp is on disk, per role, outside every work tree (S2a, §2A)
 
-Every pytest run that completes removes what it created. "Completes" means the session reaches `pytest_sessionfinish`: green, red, or interrupted by Ctrl-C that pytest handles. Four mechanisms, all inside pytest:
+- `HOS_TMP_ROOT` is a `config.sh` setting chosen at install time.
+  - The default is the hidden `<clone>/../.tmp`, which here is `~/Code/HumanOversightSystem/.tmp`. That matches the sibling `.local/handoff/<role>` and `.config/hos` convention.
+  - Each role gets `$HOS_TMP_ROOT/<role>`, mode 0700.
+- `bin/hos-cron` (worker, overseer), `bin/hos-human` (human) and `run_tests_inner_loop.sh` export `TMPDIR` to that dir. pytest's `pytest-of-<user>`, Python `tempfile` and `mktemp` all follow `TMPDIR`. So pytest results no longer consume RAM or the `/tmp` quota.
+- **Role isolation.** Each role's sandbox may read and write **only** its own `.tmp/<role>`, never a shared writable `.tmp`. The overseer reviews worker artifacts, and cross-role writes would break that separation.
+- **What stays on `/tmp`:**
+  - small agent draft files in `/tmp/claude/…`, because CLAUDE.md mandates those literal paths for allowlisting;
+  - Claude Code's own `/tmp/claude-<uid>`;
+  - the `${TMPDIR:-/tmp}` fallback when no root is configured.
 
-1. **Retention (D1).** A green run deletes its whole `pytest-N` at session end. A red or interrupted run keeps at most the newest failed dir, for inspection (count=1).
-2. **Session TMPDIR redirect (D4).** Anything the run or its subprocesses put in temp space lands inside that run's own `pytest-N`. The same deletion therefore removes it.
-3. **Leak fixes at the source (§7.1, §7.3).** These are the producers of the 960 `tmp.*` files, the 380 empty `tmp*` dirs and the 31 `tmp*.py` files.
-4. **Mandatory guardrail (D6).** A green run that leaves any temp entry behind, or whose footprint exceeds 50 MiB, **fails**. "Cleans up after itself" is therefore enforced on every run, not hoped for.
+### Layer 1: primary, in-run cleanup (S1, unchanged)
 
-### Layer 2: backstop, `scripts/framework/tmp_reaper.py` (S2)
+Every pytest run that completes removes what it created. "Completes" means the session reaches `pytest_sessionfinish`: green, red, or interrupted by a Ctrl-C that pytest handles. There are four mechanisms, all inside pytest, and all now operating inside the role's disk dir:
+
+1. **Retention (D1).** A green run deletes its whole `pytest-N` at session end. A red or interrupted run keeps at most the newest failed dir (count=1).
+2. **Session TMPDIR redirect (D4).** Anything the run or its subprocesses put in temp space lands inside that run's own `pytest-N`, which is now under `$HOS_TMP_ROOT/<role>/pytest-of-<user>/`. The same deletion removes it.
+3. **Leak fixes at the source (§7.1, §7.3).**
+4. **Mandatory guardrail (D6).** A green run that leaves any temp entry behind, or whose basetemp footprint exceeds 50 MiB, **fails**. The footprint is now measured on the disk root, because basetemp lives there.
+
+### Layer 2: backstop, the machine-level script `bootstrap/tmp_reaper.py` (S2b)
 
 The reaper removes what Layer 1 cannot:
-- runs killed by SIGTERM or SIGKILL (cron timeouts, Bash-tool timeouts, ending print mode), where no in-run cleanup code can run;
-- leaks from before this fix;
-- leaks from other repos of the same user (subject to §12.1(a));
-- stale agent scratch trees, such as ad-hoc repo clones under `/tmp/claude/` (for example `/tmp/claude/hos1935`, 548 MB). This is a human ruling that supersedes Q6's "report only": *"We should have the cleanup script zap the large scratch copies if older than 24h"* (D13, §5.7).
+- runs killed by SIGTERM or SIGKILL;
+- leaks from before this fix, including the `/tmp` backlog;
+- leaks from other repos of the same user (§12.1(a));
+- stale class-S trees: agent scratch clones under `/tmp/claude/`, and non-empty `tmp*` dirs (D13, §5.7).
 
-It removes **only entries older than 24 h**. That threshold is uniform for every category it removes: pytest run dirs, `tmp*` regular files, empty `tmp*` dirs, and scratch trees, where age is measured over the whole tree (D11). Age is **never sufficient alone**. Every removal also needs a second, non-age signal that the entry is dead (§5.6): a dead flock, no live `/proc` evidence, no open handle. The reaper runs at the start of every cron cycle (§8.2) and before every inner-loop suite run (§8.1).
+Class S has **no size floor** and does **not** spare unpushed git work (§12.1(d)–(f)). It is **on by default**; `--no-scratch` opts out.
+
+The reaper sweeps `/tmp` **and** every HOS tmp root it is given (`--root`, `--hos-tmp-root`, §5.1). It runs from:
+- a **daily** operator-installed crontab entry (§8.2), which HOS documents and never installs;
+- a **low-space trigger**: at `bin/hos-cron` cycle start, a write probe of the role's `TMPDIR` and of `/tmp` runs the reaper only when a write fails with EDQUOT/ENOSPC (§8.5). `df` is unreliable under `usrquota`;
+- the **inner-loop pre-run**, for classes P and T only (§8.1).
+
+It removes **only entries older than 24 h** (D11). The one exception is that the newest finished failed pytest run is **kept** beyond 24 h (§5.3.2 rule 4). Age is **never sufficient alone**. Every removal also needs liveness evidence that the entry is dead (§5.6):
+- a dead flock;
+- no live process with a cwd, root, exe or open fd under it;
+- no held lock;
+- for class S, a host view of processes and locks, the session-dir exclusions, and the dev/ino re-checks.
+
+**Residual (human item 8).** On a real disk, the failure mode becomes **disk exhaustion** rather than quota exhaustion. That is a worse blast radius, because the root filesystem has no per-user quota. The D6 guardrail (per session), the daily reaper and the low-space trigger all still apply. See §2A.6.
 
 ---
 
@@ -88,6 +138,15 @@ How the fix handles each term:
 - `count=1` keeps at most the most recent failed dir (Layer 1).
 - The reaper (§5) removes killed runs' dirs after 24 h on a definitive "holder is dead" signal, instead of after pytest's 72 h (Layer 2).
 
+### 1.4 Placement: the fourth gap (round 3, disk-temp ruling)
+
+Gaps 1–3 bound *how much* a run leaves behind. The disk-temp ruling adds a fourth gap: *where* it goes. All HOS test temp lands in a 1.7 GB RAM-backed tmpfs shared with every same-user writer, so even a bounded footprint competes with the token mint and the Claude sessions for one small quota. Layer 0 (§2A) moves HOS temp to a per-role disk dir. After that, the `/tmp` quota carries only:
+- drafts and Claude Code's own dirs;
+- the legacy backlog;
+- consumers or tools that have no `TMPDIR`.
+
+Everything in §1.1–§1.3 still applies inside the disk dir, so Layers 1 and 2 are unchanged in purpose.
+
 ---
 
 ## 2. Decisions
@@ -98,7 +157,7 @@ How the fix handles each term:
 | D2 | **Reject `policy = "none"`.** | `none` forces `keep=0`, and with `keep=0` pytest **creates no `.lock`** (architect verified this). A concurrent session's cleanup would then see a live dir as deletable and `rm -rf` it mid-run. Worker, overseer and interactive runs overlap, so `count ≥ 1` is load-bearing. |
 | D3 | A **liveness flock** per session. A root-conftest session fixture opens `<basetemp>/.hos-live`, holds `fcntl.flock(LOCK_EX)` until `pytest_unconfigure`, and records `pid`, `start`, `dev` and `ino` (AC-4). It touches the file at each test start (heartbeat). All per-session state lives in `config.stash` (AC-5). | Kernel flocks belong to the open file description and the inode. They work across PID namespaces and bind mounts of the same tmpfs, and the kernel releases them on holder death, SIGKILL included. The architect verified this in both directions, host↔bwrap and bwrap↔bwrap. The recorded `dev`/`ino` turns the bind-mount assumption into a checked fact. |
 | D4 | **Session TMPDIR redirect.** The fixture sets `os.environ["TMPDIR"]` and `tempfile.tempdir` to `<basetemp>/session-tmp`. Both are restored **inside the tryfirst `pytest_sessionfinish`, right after measuring** (AC-6). `pytest_unconfigure` restores only as a fallback. | Every in-process `tempfile.*` call and every subprocess `mktemp` / `${TMPDIR:-/tmp}` lands in a single-writer dir owned by this session. A completed green run deletes it with basetemp, which is Layer 1. Restoring before pytest deletes the dir means no later hook ever sees a dangling TMPDIR. |
-| D5 | **One reaper script**, `scripts/framework/tmp_reaper.py`. It is Python, stdlib-only and **not** a scheduler. It has exactly two callers: `run_tests_inner_loop.sh`, before the suite, and `bin/hos-cron` at **cycle start**, after the overlap lock and before the usage-pause gate, preflight and auth (AC-8). | Decision logic stays in Python (#314). It lives under `scripts/framework/**`, so a file-deleting tool is itself a protected surface. Cycle start is the only cron site that can recover from a full quota, because a full quota kills the cycle at auth, long before wrap-up. |
+| D5 | **One machine-level reaper script**, `bootstrap/tmp_reaper.py`, shipped with HOS. It is Python and stdlib-only, and it is **not** a scheduler and **not** a per-project cycle step (human ruling 2026-10-09: *"The script will be a script per machine, so it should be shipped with HOS and consumer can install it in cron if needed."*). It has exactly three invocation paths:<br>(1) a **daily operator-installed per-machine crontab entry** (§8.2), documented but **never auto-installed**;<br>(2) `run_tests_inner_loop.sh` before the suite, bounded and best-effort, with `--no-scratch` (§8.1);<br>(3) the **low-space trigger** in `bin/hos-cron` at cycle start, which reaps only when a write probe fails (§8.5, disk-temp ruling).<br>`bin/hos-cron` has no unconditional reap. | Decision logic stays in Python (#314).<br>**Why `bootstrap/`:** it is the repo's copy-to-machine bundle (CLAUDE.md: "the only thing you copy to a machine"), home of the machine-scope tools `hos_bootstrap.sh` and `setup_clis.sh`. `scripts/framework/` holds per-project pipeline and framework-dev tooling, and `bin/` holds the per-project cron launchers. `bootstrap/**` is a protected surface, so a file-deleting tool stays human-gated. It already has a section in `framework_consumer_files.txt`, so consumers receive it.<br>This supersedes the issue's "call it from cron-cycle wrap-up, not as a new scheduler", and AC-8's cycle-start placement: the human wants an operator-installed machine cron entry. A per-machine tool also fits a per-user tmpfs quota, which is machine-wide, better than N per-project cycle hooks. |
 | D6 | **Mandatory guardrail inside pytest** (root `tests/conftest.py`). At `pytest_sessionfinish` (tryfirst), on a run that would otherwise pass: (G-leak) any entry left in `<basetemp>/session-tmp` fails the session; (G-budget) allocated bytes under basetemp above **50 MiB** fail the session. `gc.collect()` runs before measuring. There is no retry, no xfail and no sleep or poll (AC-7). | It runs on every pytest invocation, so it is mandatory by construction. It measures a private single-writer dir, so it is deterministic. The human confirmed 50 MiB (Q4). |
 | D7 | The budget can be **lowered only**, through `HOS_TEST_TMP_BUDGET_MB`. Values above 50, or non-integer values, are ignored with a warning. | Same precedent as #985 and #1718 D3. Raising the budget would recreate #2054. |
 | D8 | Measure **allocated** bytes (`st_blocks × 512`), not apparent size. Count each inode once (hardlinks), and never follow symlinks. | The tmpfs quota counts allocated pages. |
@@ -106,7 +165,138 @@ How the fix handles each term:
 | D10 | Ban direct temp-path creation in tests: `tempfile.mkdtemp`, `tempfile.mkstemp`, and `NamedTemporaryFile(…, delete=False)`. The ban covers every import and alias form (AC-14). A static test enforces it. | This turns the §1.2 leak classes into a deterministic failure. `TemporaryDirectory()` stays allowed. |
 | D11 | **The reaper uses one uniform age threshold: 24 h** (`--min-age-hours`, default 24, **raise-only**; a value < 24 is a usage error). It applies to every category the reaper removes: pytest run dirs (dead-flock, legacy-lock, finished), `garbage-*` dirs, `tmp*` regular files, empty `tmp*` dirs, and class-S scratch trees, where age is taken over the whole tree (D13). **Age is never sufficient alone.** Every removal also needs a non-age signal (§5.6), and a live-process veto applies to all of them (AC-3). | This is the human ruling ("anything over 24h"). It replaces round 1's 2 h `min-age` and its separate `legacy-lock` / `orphan-min-age` knobs. One threshold means one rule to review. Making it raise-only stops a caller from turning the backstop into an aggressive deleter. |
 | D12 | **Class T reaps leaked regular files**, not only empty dirs (Q1, human: YES). | The ~960 `/tmp/tmp.XXXXXXXXXX` files are exactly the backlog the human asked to remove. The source leaks are fixed in S1, so in steady state this is backstop only. The residual risk that the architect noted, a file held open in a namespace the reaper cannot see, is accepted by the ruling and is narrowed by the 24 h age. |
-| D13 | **Class S: stale agent scratch trees are deleted** (human ruling, supersedes Q6 report-only). Scope is limited to directory children of the fixed scratch roots in §5.7. A tree is removed only if **every** §5.7 condition holds: (1) the newest `max(mtime, ctime)` *anywhere in the tree* is ≥ 24 h old, from a bounded walk that skips the tree if truncated; (2) every entry is uid-owned and on the same device, and no symlink is followed; (3) no visible process has a `cwd`, `root` or open fd under the tree; (4) no lock inside the tree is held; (5) the tree is not, and does not contain, a Claude Code session dir or the reaper's own cwd/TMPDIR. Class S runs only when the caller passes `--scratch` (only `bin/hos-cron` does) and the reaper can see the host PID namespace. | The human ruled that large scratch copies must be zapped after 24 h. This is the most destructive operation in the script, a recursive delete of a tree no test created, so it carries the strictest gate: whole-tree age, positive verification that `/proc` is complete (not just an absence of evidence), lock detection, and an explicit caller opt-in. The inner loop may run inside the bwrap sandbox, where host processes are invisible, so it never runs class S. |
+| D13 | **Class S: stale trees are deleted whole** (human rulings: Q6, and §12.1(d)/(e): *"Anything older than a day goes."*). There are two eligible shapes (§5.7.2): directory children of the fixed scratch roots (`<root>/claude/*`, in practice `/tmp/claude/*`), and **non-empty** `tmp*` dirs directly under each reaped root. There is no size floor, and git state is not inspected.<br>A tree is removed only if **every** §5.7 liveness condition holds:<br>(1) the newest `max(mtime, ctime)` *anywhere in the tree* is ≥ 24 h old, from a bounded walk that skips the tree if truncated;<br>(2) every entry is uid-owned and on the same device, and no symlink is followed;<br>(3) no readable process has a `cwd`, `root`, `exe` or open fd under the tree;<br>(4) no lock inside the tree is held;<br>(5) the tree is not, and does not contain, a Claude Code session dir or the reaper's own cwd/TMPDIR;<br>(6) the walked dev/ino identity is unchanged at removal.<br>Class S is **on by default** (`--no-scratch` opts out). It runs only when the reaper has the host PID-namespace view. | This is the most destructive operation in the script: a recursive delete of a tree no test created. "Older than a day" relaxes only the *age and scope* rules; every *liveness* check stays. The host-view requirement is load-bearing, because `/proc/locks` is namespace-filtered. A per-machine crontab runs unsandboxed and has that view. A sandboxed call does not, so class S refuses there. |
+| D14 | **HOS temp moves to disk, per role** (human ruling, 2026-10-09: *"RAM for pytest results etc is silly."*).<br>• `HOS_TMP_ROOT` is a `config.sh` setting chosen at install time. Its default is the hidden `<clone>/../.tmp`.<br>• Each role uses `$HOS_TMP_ROOT/<role>` with mode 0700, where role is one of `worker`, `overseer`, `human` or `local`.<br>• The launchers export `TMPDIR` to that dir (§2A). | `/tmp` is a 1.7 GB RAM-backed tmpfs with `usrquota`, which is the root cause of #2054's EDQUOT. Moving pytest, `tempfile` and `mktemp` output to disk removes HOS test temp from the quota entirely. Layers 1 and 2 still bound growth. Per-role dirs keep the overseer's inputs separate from the worker's outputs. |
+| D15 | **No new sandbox placeholder.**<br>• The template grants `__HOS_ROOT__/.tmp/__ROLE__`, the exact shape the human is adding by hand.<br>• `config.sh` *can* move the root (single-clone fallback or operator override). The sandbox generator therefore **fails closed** when the clone's resolved `HOS_TMP_ROOT` is not `__HOS_ROOT__/.tmp`, or when `__HOS_ROOT__` is not under `__HOME__` (§2A.4).<br>• A placeholder (`__HOS_TMP_ROOT__`) can be added later, by a separate issue, if a sandboxed layout ever needs a moved root. | Today only the `human` role is generatable (#1221; worker and overseer are gated on #1146), and only in the multi-clone layout, where the default is always the right path. A new placeholder would mean a sidecar schema change and migration for no current user. Failing closed means a mismatch can never produce a sandbox that grants the wrong dir. |
+| D16 | **`HOS_TMP_ROOT` is never inside a git work tree, nor inside the clone.** Two places check this:<br>• the resolver (`bootstrap/lib/hos_tmp_root.py`), on every launch; a failed check makes the launcher fall back to `/tmp` with a warning;<br>• `install.sh`, at install time; it refuses the value. | `pytest-of-*` trees hold repo replicas with their own `.git`. Inside a work tree they would be walked by `rg`, `find`, validators, ScanCode and `git status`, and could be self-copied by replica fixtures. Outside every work tree, none of those hazards exist. The check is static (`.git` lookup up the ancestor chain), so the resolver never executes git. |
+
+---
+
+## 2A. Contract: per-role disk temp root (`HOS_TMP_ROOT`) [S2a]
+
+The human's facts and ruling: `/tmp` here is `tmpfs size=1735952k nr_inodes=1048576 usrquota`, on a host with 14 GiB of RAM and 31 GiB of swap. *"RAM for pytest results etc is silly."* The human approved a hidden, per-role disk temp root beside the sibling clones: `~/Code/HumanOversightSystem/.tmp/{worker,overseer,human}`.
+
+### 2A.1 `config.sh` setting
+
+- Key: `HOS_TMP_ROOT`, in `scripts/framework/config.sh`.
+- **Value grammar** (the value is parsed statically and never sourced or executed):
+  - empty or absent → `../.tmp`;
+  - a relative path → resolved against the clone root (`realpath(<repo>)`);
+  - `~/…` → `$HOME/…`, using `pwd.getpwuid(os.getuid()).pw_dir`;
+  - an absolute path.
+
+  A value containing `$`, a backtick, `;`, a newline or a glob metacharacter is a configuration error.
+- **This repo:** commit `export HOS_TMP_ROOT="../.tmp"`, with a comment pointing to §2A. The file is committed and shared by the Human, Worker and Overseer clones; a relative value makes it machine-independent.
+- **Consumer installs (`scripts/framework/install.sh`).** The installer prompts for the value with a computed default:
+  - **Multi-clone layout:** `projects.conf` registers a `<project>_worker_root` or `<project>_overseer_root` whose parent equals the target's parent. Default: `../.tmp`.
+  - **Single-clone layout** (anything else). Default: `~/.local/state/hos/tmp/<project-slug>`. `<project-slug>` is `PROJECT_NAME` lower-cased, with every character outside `[a-z0-9._-]` replaced by `-`.
+    - Why not `../.tmp` here: a lone clone's parent is typically a shared directory such as `~/src`. A hidden `~/src/.tmp/worker` would be shared by every single-clone HOS project under it, mixing their temp files, and `~/src` itself may be a work tree.
+    - `~/.local/state` (XDG state) is per-user, on disk, outside any work tree, and **not** in the sandbox's `__HOME__` re-allow list, unlike `~/.cache`, which every role may write.
+  - The installer refuses a value that §2A.5 rejects. Interactive mode re-prompts. Non-interactive mode exits non-zero with the reason.
+
+### 2A.2 Resolver: `bootstrap/lib/hos_tmp_root.py` (one implementation, D41)
+
+This is stdlib Python under `bootstrap/` (machine-level, protected). It never spawns a process.
+
+- **`resolve --repo <clone> --role <role> [--create]`** prints one line: the absolute per-role dir `<root>/<role>`.
+- **`root --repo <clone>`** prints the root.
+- `<role>` must match `^(worker|overseer|human|local)$`. `local` covers direct terminal runs of the inner loop that no launcher started.
+
+Steps:
+1. Parse the **last** `^\s*(export\s+)?HOS_TMP_ROOT=` line of `<repo>/scripts/framework/config.sh` per §2A.1. Strip one pair of matching quotes. If the file or key is missing, use `../.tmp`.
+2. Expand and normalise the value to an absolute path (`os.path.normpath`, without resolving symlinks yet).
+3. Validate per §2A.5.
+4. With `--create`:
+   - Create any missing components of the root with mode 0700.
+   - Require the root, by lstat, to be a real directory (not a symlink) owned by uid.
+   - Create `<root>/<role>` with mode 0700 and require the same of it.
+   - If an existing role dir has any group or other bits set, `chmod` it to 0700, since it is the user's own dir.
+   - The root dir itself may hold other roles' dirs; it is not chmod-ed beyond creation.
+5. **Exit codes:** `0` OK; `2` usage error; `3` invalid or unusable, with one `hos_tmp_root: <reason>` line on stderr.
+
+The same module exposes `resolve_root(repo) -> Path` and `check_outside_work_tree(path) -> None | str` for in-process use. Those callers are `gen_sandbox_config.py` (§2A.4) and `install.sh`, via `python3 -I … root`.
+
+### 2A.3 Launchers export `TMPDIR`
+
+| Launcher | Placement | Behaviour |
+|---|---|---|
+| `bin/hos-cron` (worker, overseer) | Immediately after the `_audit()` helper definition. That is after the overlap lock and cycle-identity minting, and before the §8.5 low-space trigger, the usage-pause gate, preflight and auth. | `_hos_tmp_dir="$(python3 -I "$REPO_ROOT/bootstrap/lib/hos_tmp_root.py" resolve --repo "$REPO_ROOT" --role "$ROLE" --create)"`. On rc 0: `export TMPDIR="$_hos_tmp_dir"` and `HOS_TMP_ROOT_RESOLVED="$(dirname "$_hos_tmp_dir")"`. On failure: one `$LOG_PREFIX WARN: HOS tmp root unusable (<reason>) — TMPDIR left as-is` line, plus `_audit cycle-tmp-root-fallback "reason=<reason>"`, and the cycle continues. **Never fatal.** The launched Claude session, the inner-loop baseline and every child inherit `TMPDIR`. |
+| `bin/hos-human` (human) | After the token mint, identity guard and repo sync, immediately before `exec claude`. | Same resolve call with `--role human`. On failure, a warning on stderr; the session still starts. Placing it **after** the token mint keeps `get_app_token.sh`'s short-lived token temp file on the RAM-backed `/tmp`, as today, rather than on disk. |
+| `scripts/framework/run_tests_inner_loop.sh` | Top of the script, after `REPO_ROOT`. | If `TMPDIR` is set and non-empty, **inherit it** (the launcher already chose). Otherwise resolve with `--role local --create` and export the result. On failure, warn on stderr and leave `TMPDIR` unset, so `/tmp` is used as before. |
+
+S1 needs no change: pytest's `pytest-of-<user>`, the D4 `session-tmp` redirect and the D6 basetemp measurement all follow `TMPDIR`.
+
+**Coder verification item.** Confirm whether Claude Code places its own temp dir (`claude-<uid>`) under `$TMPDIR` when `TMPDIR` is set. If it does, that dir moves into `.tmp/<role>/`, which the role's sandbox already allows. The reaper never touches `claude-<digits>` names (§5.7.3). Record the observed behaviour in the PR.
+
+### 2A.4 Sandbox template: role isolation (`contract/sandbox-policy.template.json`, protected)
+
+Add exactly these entries, using the existing placeholders. This is the shape the human is adding by hand to the live `settings.local.json`:
+
+| Location | Added entry |
+|---|---|
+| `permissions.additionalDirectories` | `"__HOS_ROOT__/.tmp/__ROLE__"` |
+| `permissions.allow` | `"Read(__HOS_ROOT__/.tmp/__ROLE__/**)"`, `"Edit(__HOS_ROOT__/.tmp/__ROLE__/**)"` |
+| `permissions.allow` | `"Bash(quota *)"`, `"Bash(findmnt *)"`, for quota and free-space checks. `df`, `du` and `stat` are already allowed. |
+| `sandbox.filesystem.allowRead` | `"__HOS_ROOT__/.tmp/__ROLE__"` |
+| `sandbox.filesystem.allowWrite` | `"__HOS_ROOT__/.tmp/__ROLE__"` |
+
+Unchanged:
+- every `/tmp` entry (`additionalDirectories` `/tmp/claude` and `/tmp`; `Read`/`Edit`/`Write(//tmp/**)`; `allowWrite` `/tmp`). Drafts in `/tmp/claude`, Claude Code's `/tmp/claude-<uid>` and the `${TMPDIR:-/tmp}` fallback still need them.
+- `denyRead` `"__HOME__/"`. It already hides the *other* roles' `.tmp/<role>` dirs, because `__HOS_ROOT__` is under `__HOME__` and only the own-role subdir is re-allowed.
+
+**No entry grants `__HOS_ROOT__/.tmp` itself or another role's dir. That is the isolation guarantee.**
+
+`scripts/framework/gen_sandbox_config.py` adds a guard before rendering (D15). It fails closed with `EXIT_USAGE` and a message naming the fix in these cases:
+- `resolve_root(--clone-dir)` ≠ `<HOS_ROOT>/.tmp`, compared as realpath, or by string when the path does not exist yet;
+- `HOS_ROOT` is not under `HOME`. Without that, `denyRead __HOME__/` would not hide sibling role dirs.
+
+The values sidecar is unchanged: no new key, no version bump. Check mode against a live file that does not yet carry the new entries reports them as divergences, which is the intended prompt to update.
+
+**Scope of enforcement, stated plainly.** Only the `human` role is generatable today. Worker and overseer are gated on #1146; `docs/SANDBOX-POLICY.md` §2 records that the autonomous cron roles currently run without a sandbox. For those roles, the per-role dirs give *separation by construction* (each launcher writes only its own dir), and *enforcement* arrives with #1146 through the same template entries.
+
+**`docs/SANDBOX-POLICY.md` updates:**
+- §3 `sandbox.filesystem` gains a paragraph covering:
+  - the per-role `.tmp/__ROLE__` grant;
+  - why the dir is never shared across roles (the overseer must not read or write worker scratch through a common dir);
+  - why `/tmp` stays;
+  - why `denyRead __HOME__/` is what hides sibling role dirs.
+- §3 `permissions` notes `quota` and `findmnt`.
+- §5 gains a note under the table: `.tmp/__ROLE__` is derived from `__HOS_ROOT__` and needs no placeholder of its own, and the generator refuses a clone whose `HOS_TMP_ROOT` is not `__HOS_ROOT__/.tmp` (D15).
+
+### 2A.5 Never inside a git work tree (human item 7)
+
+The resolver and the installer both reject a root that:
+- is inside a git work tree. Walk from the root path (or its nearest existing ancestor) up to `/`. Any ancestor, or the path itself, with an lstat-visible `.git` entry (dir or file) means rejection. This is a static check that never runs git. It also catches a dotfiles repo at `$HOME`, which the operator must then avoid with an explicit value;
+- equals, or is under, `realpath(<repo>)`;
+- is not absolute after expansion.
+
+This replaces any reliance on `.gitignore`: an ignored in-repo dir is still walked by tools.
+
+### 2A.6 Residual: disk exhaustion (human item 8)
+
+On ext4 (`/` here: 501 GB, 354 GB free) the failure mode changes from a 1.7 GB per-user quota to filling the **root filesystem**. That has no per-user limit, so it is a worse blast radius, though one much further away.
+
+Bounds:
+- D6 caps each green session at 50 MiB retained;
+- retention (D1) removes green runs;
+- the daily reaper and the low-space trigger remove stale debris after 24 h.
+
+The low-space probe (§8.5) catches ENOSPC on the disk root as well as EDQUOT on `/tmp`. There is no automatic size cap on the root beyond these. `quota`/`findmnt` are allowed in the sandbox for diagnosis.
+
+### 2A.7 Tests (S2a)
+
+| ID | Asserts |
+|---|---|
+| H1 | `tests/framework/test_hos_tmp_root.py`: config.sh missing or empty → `<repo>/../.tmp`. Relative, `~/` and absolute values resolve as specified. A value with `$`, a backtick, `;` or `*` → exit 3. The last `HOS_TMP_ROOT=` line wins. |
+| H2 | Root inside a work tree: `.git` dir in an ancestor, and `.git` *file* in an ancestor → exit 3. Root equal to or under the repo → exit 3. |
+| H3 | `--create`: creates root and role dir with 0700. Tightens an existing 0755 role dir to 0700. A symlinked root or role dir → exit 3. A role outside the set → exit 2. |
+| H4 | No subprocess: `subprocess` and `os.exec*` are monkeypatched to raise, and resolution succeeds. |
+| G1 | `tests/framework/test_gen_sandbox_config.py`: a rendered `human` config contains exactly the five §2A.4 locations' new entries, with `human` substituted. It contains no `.tmp/worker`, `.tmp/overseer` or bare `.tmp` grant. The `/tmp` entries are unchanged. |
+| G2 | The generator fails closed (`EXIT_USAGE`) when the clone's config.sh moves `HOS_TMP_ROOT` elsewhere, and when `--hos-root` is not under `--home`. |
+| L1 | `tests/automation/test_hos_cron.py`: the launched session's environment has `TMPDIR=<fake parent>/.tmp/worker`, and that dir exists with mode 0700. With the resolver stubbed to fail: one WARN line, a `cycle-tmp-root-fallback` audit event, and the cycle continues with `TMPDIR` unchanged. |
+| L2 | `tests/framework/test_hos_human_launcher.py` (static order check): in `bin/hos-human`, the resolver call and `export TMPDIR` come after the `get_app_token.sh` call and before `exec claude`. |
+| L3 | `tests/framework/test_run_tests_inner_loop.py`: an inherited non-empty `TMPDIR` is kept. An unset `TMPDIR` resolves to `.tmp/local`. A resolver failure gives a WARN and an unset `TMPDIR`. |
+| I1 | `tests/framework/test_install*.py`: the default is `../.tmp` for a multi-clone registry fixture and `~/.local/state/hos/tmp/<slug>` otherwise. A value inside a work tree is refused (non-interactive: non-zero exit). |
 
 ---
 
@@ -231,28 +421,50 @@ About 93 `env={…}` / `env = {…}` sites in `tests/` build child environments 
 
 ---
 
-## 5. Contract: `scripts/framework/tmp_reaper.py` (Layer 2 backstop) [S2]
+## 5. Contract: `bootstrap/tmp_reaper.py` (machine-level Layer 2 backstop) [S2b]
 
 ### 5.1 CLI
 
 ```
-tmp_reaper.py [--tmp-root DIR] [--dry-run] [--measure] [--summary-only]
-              [--scratch] [--min-age-hours H=24] [--max-seconds S=20]
+tmp_reaper.py [--root DIR]... [--hos-tmp-root DIR]... [--if-low-space]
+              [--dry-run] [--measure] [--summary-only] [--no-scratch]
+              [--min-age-hours H=24] [--max-seconds S=20]
 ```
 
-- **`--scratch`** enables class S (§5.7). Without it, class S is not evaluated at all: no walk and no output, and `scratch_trees=-` in the summary. Only `bin/hos-cron` passes it (§8.2); the inner loop does not (§8.1).
+- **Roots (disk-temp ruling; replaces round 2's single `--tmp-root`).** The reaper sweeps a *set* of temp roots. Each root is a directory in the `TMPDIR` sense: it holds `pytest-of-<user>/`, `tmp*` entries and, optionally, a `claude/` scratch root.
+  - **`--root DIR`** (repeatable) adds one root.
+  - **`--hos-tmp-root DIR`** (repeatable) adds every direct child of `DIR` named `^(worker|overseer|human|local)$` that lstats as a real directory owned by uid. Any other child is ignored (`SKIP not-a-role-dir`). `DIR` itself is never a root and never a candidate. This is how an HOS disk temp root (§2A) is swept: one flag covers all its roles.
+  - **No root flag** → one root: `$TMPDIR` if it is set and non-empty, else `/tmp`. This is the round-2 behaviour.
+  - Every root is resolved with `realpath` once and de-duplicated. Each must be an existing directory owned by root or by the current uid. An invalid root is skipped with `SKIP root-invalid <path>`. If **no** valid root remains, exit 3.
+  - Roots are learned **only from flags**. There is no `config.sh` or `projects.conf` discovery, which keeps the tool simple and keeps it from executing project files. The crontab line lists them (§8.2), and `bin/hos-cron` passes its own (§8.5).
+- **`--if-low-space`** (the low-space trigger, §8.5) probes every root before doing anything else.
+  - **Probe:** create `<root>/.hos-space-probe.<pid>.<8 hex>` with `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC`, mode 0600. Write 64 KiB, `fsync`, close, and unlink in a `finally`. Any `OSError` during the probe, including EDQUOT, ENOSPC and EIO, marks that root **low**. `df` is not consulted, because it is unreliable under `usrquota`.
+  - **Output:** one line, `TMP_REAPER_PROBE ok` or `TMP_REAPER_PROBE low roots=<comma-separated low roots>`.
+  - All roots OK → no reaping. Print the summary line with `reaped=0` (listing counts still computed) and exit 0.
+  - Any root low → run a normal reap over **all** given roots. That is still the full 24 h rule plus vetoes, and the age threshold is never lowered.
+  - Probe files start with `.`, so they never match a class-T or class-S pattern. A probe file orphaned by a SIGKILL is a 64 KiB dotfile; it is accepted and never reaped.
+
+- **Class S is on by default** (human ruling §12.1(b); machine policy lives in the script's defaults and flags, not in per-project config).
+  - **`--no-scratch`** disables class S entirely: no walk and no output, and `scratch_trees=-` in the summary.
+  - The per-machine opt-out is simply `--no-scratch` on the operator's crontab line. **No env var and no config file.** The crontab line is already the per-machine configuration, and it is visible where the schedule is defined. An env-var knob would be invisible in `crontab -l`, and a config file would be a second source of truth.
+  - `run_tests_inner_loop.sh` always passes `--no-scratch` (§8.1).
 - **Clock injection (testability).** `main(argv, *, clock=time.time) -> int` is the importable entry point, and `__main__` calls it with the real clock. Every age computation uses `clock()`. Tests run the reaper in process with `clock = lambda: time.time() + 48*3600` to make real-ctime entries "old" without lowering the threshold. A "recent" entry is created by `os.utime`-ing it to `fake_now − 1 h`.
 
-- **`--tmp-root`** defaults to `$TMPDIR` if it is set and non-empty, and to `/tmp` otherwise. It is resolved with `realpath` once. It must be an existing directory owned by root or by the current uid, else exit 3. Tests always pass `--tmp-root <tmp_path>`.
+- Tests always pass explicit `--root`/`--hos-tmp-root` values under `tmp_path`.
 - **`--min-age-hours`** is the single age threshold (D11). It must be a number ≥ 24, else exit 2. There are no other age knobs; round 1's `--legacy-lock-hours` and `--orphan-min-age-hours` are removed. Tests satisfy the threshold by backdating mtimes and ctimes, never by lowering it. ctime cannot be set directly, so a test that needs an old ctime injects `now` through `decide()` (R7) or monkeypatches the clock in-process.
 - **`--dry-run`** makes every decision exactly as a real run would and prints `WOULD-REAP`. It performs **no** unlink, rmdir, rename or rmtree.
 - **`--measure`** deletes nothing. It prints only the summary line, with `user_bytes` computed, plus `WARN large-unowned` lines (AC-10).
 - **`--summary-only`** suppresses per-entry lines except `REAP` and `ERROR`.
-- **`--max-seconds`** is a wall-clock budget covering the `/proc` scan and all candidates. When it is exhausted, the reaper starts no new candidates, finishes the current one, and reports `truncated=1`. The default is 20. Both callers pass 20 explicitly, inside a 30 s outer bound in cron (AC-9). `--measure` users pass a larger value (§9).
+- **`--max-seconds`** is a wall-clock budget covering the `/proc` scan and all candidates. When it is exhausted, the reaper starts no new candidates, finishes the current one, and reports `truncated=1`. The default is 20.
+  - The inner loop passes 20 explicitly (§8.1).
+  - The daily crontab recipe passes 540, inside an outer `timeout --kill-after=10 600` (§8.2).
+  - The `bin/hos-cron` low-space trigger passes 20, inside `_TR_BOUND` = `timeout --kill-after=5 30` (§8.5).
+  - The inner budget is always strictly less than the outer bound. This is AC-9, restated for each caller.
+  - `--measure` users pass a larger value (§9).
 - **Exit codes:**
   - `0` = completed, including skips, per-entry errors and truncation;
   - `2` = usage error;
-  - `3` = invalid tmp-root, or running as root.
+  - `3` = no valid root, or running as root.
   - Callers treat any non-zero as a warning, never as a failure.
 - Stdlib only. It runs under `python3 -I` with no venv. The Python floor is 3.10.
 
@@ -260,7 +472,8 @@ tmp_reaper.py [--tmp-root DIR] [--dry-run] [--measure] [--summary-only]
 
 - `collect_facts(entry, proc_index) -> Facts` performs all I/O: lstat, the safe `.hos-live` open and probe (§5.3.1), and child mtimes.
 - `scan_proc() -> ProcIndex` (§5.3.3) runs at most once per invocation, and **lazily**: only when at least one candidate reaches a pre-veto REAP verdict. Idle cycles therefore cost one directory listing.
-- `decide(facts, now, policy) -> Decision(action, reason)` is **pure**. Class S has its own pure `decide_scratch(tree_facts, now, policy)`; its I/O (the §5.7.4 walk and the `/proc/locks` parse) lives in `collect_scratch_facts()`.
+- `decide(facts, now, policy) -> Decision(action, reason)` is **pure**. Class S has its own pure `decide_scratch(tree_facts, now, policy)`; its I/O (the §5.7.4 walk) lives in `collect_scratch_facts()`. A further pure parser, `parse_proc_locks(text) -> set[(major, minor, ino)]`, raises on any unparseable line (R2-5) and is unit-tested directly. No git parsing exists (§12.1 ruling).
+- **Class order:** P, then T, then S (R2-7). Within each class, roots are taken in the order given. The `--max-seconds` budget is shared across all roots. In §5.3–§5.7, `<root>` means each root in turn.
 - `act(decision)` performs the deletion.
 
 ### 5.3 Candidate class P: pytest run dirs
@@ -313,11 +526,12 @@ Before the table, compute **NEWEST_FINISHED**: the highest-numbered `pytest-N` w
 
 #### 5.3.3 `/proc` index
 
-`scan_proc()` iterates `/proc/[0-9]*`. For each PID it records `readlink` of `cwd`, `root`, `exe` and every `fd/*`, plus `cmdline`, ignoring EACCES/ENOENT/ESRCH. It is built lazily (§5.2), except under `--scratch`, where §5.7.1 requires it up front. It builds a set of resolved target paths.
+`scan_proc()` iterates `/proc/[0-9]*`. For each PID it records `readlink` of `cwd`, `root`, `exe` and every `fd/*`, plus `cmdline`, ignoring EACCES/ENOENT/ESRCH. It is built lazily (§5.2), except when class S is enabled (the default; not `--no-scratch`), where §5.7.1 requires it up front. It builds a set of resolved target paths.
 
 - "At or under the candidate" is a string-prefix test on resolved paths with a trailing `/`.
 - Class T (§5.4) uses the same index for exact-path matches.
-- The scan checks the time budget after each PID. Running out marks the index `complete=False`.
+- The scan checks the time budget after each PID. Running out marks the index `complete=False`. That is the **only** thing `complete` means (R2-6).
+- Per-process `EACCES`/`ENOENT`/`ESRCH` errors are tolerated and counted in `n_unreadable`. They never make the index incomplete.
 
 #### 5.3.4 Deletion procedure for class P REAP verdicts
 
@@ -341,104 +555,158 @@ Each must also be **owned by uid** and **not a symlink**.
 |---|---|
 | empty dir | REAP `empty-dir` via `os.rmdir`. This is atomic: ENOTEMPTY if anything appeared, so contents are never destroyed. |
 | regular file | REAP `file` via `os.unlink` (Q1, human: YES, D12). Re-lstat immediately before and require the same `st_ino`/`st_dev`. |
-| non-empty dir, socket, fifo, device | **SKIP** (reported). Never recursive. |
+| non-empty dir | Not decided by class T, which is never recursive. It is **handed to class S** as a shape-2 candidate (§5.7.2) and judged there by the full whole-tree procedure (human ruling §12.1(d)). With `--no-scratch`, or with class S disabled for the run → `SKIP non-empty`. |
+| socket, fifo, device | **SKIP** (reported). |
 
 - **Age.** `now − max(mtime, ctime) ≥ AGE`.
 - **Open-handle veto.** If the entry is an exact target of any `cwd`, `root` or fd in the §5.3.3 index → **SKIP open**. If the index is incomplete → **SKIP proc-scan-incomplete**. If `/proc` is absent → no veto (accepted residual, D12).
 - **Never touched:** `pytest-of-*`, `claude-*`, `hos-*` (including the #1903 failure logs), `node-compile-cache`, `gh-cli-cache`, `*.sock`, and anything not matching the patterns. This is an allowlist of patterns.
-- **Non-empty `tmp*` dirs are not reaped.** No measured leak class produces them. Recursive deletion of an unknown tree on age alone is the riskiest operation this script could perform. The human ruling asks for leaked files to be removed, which D12 does. §12.1(d) records this as a scope confirmation.
-- **Large-entry warning (AC-10: `--measure` only).** Under `--measure`, any user-owned top-level entry larger than 100 MiB that no class covers produces `WARN large-unowned <path> <bytes>`. The walk is depth-bounded and time-boxed, and **never runs** in default or `--summary-only` mode. Deletion of large *agent scratch trees*, such as `/tmp/claude/hos1935` (548 MB), is no longer report-only. The human ruling that supersedes Q6 moves them to class S (§5.7), which deletes them only under `--scratch` and only when every §5.7 condition holds. Large entries outside the §5.7 scratch roots stay report-only.
+- **Non-empty `tmp*` dirs are deleted only through class S** (human ruling §12.1(d): "Anything older than a day goes"). They are never deleted by an age-only rule. The class-S procedure applies in full: newest-timestamp-in-tree age, ownership, same device, no symlink traversal, host view, the process and lock vetoes, session exclusions, and the rename plus dev/ino re-check.
+- **Large-entry warning (AC-10: `--measure` only).** Under `--measure`, any user-owned top-level entry larger than 100 MiB that no class covers produces `WARN large-unowned <path> <bytes>`. The walk is depth-bounded and time-boxed, and **never runs** in default or `--summary-only` mode. Deletion of large *agent scratch trees*, such as `/tmp/claude/hos1935` (548 MB), is no longer report-only. The human rulings that supersede Q6 move them to class S (§5.7). Class S is on unless `--no-scratch` is given, and deletes them only when every §5.7 liveness condition holds. Large entries that are not class-S candidates stay report-only.
 
 ### 5.5 Output (stable, greppable)
 
 ```
+TMP_REAPER_RUN ts=<ISO-8601 UTC> pid=<pid> roots=<realpaths, comma-separated>     (always first)
+TMP_REAPER_PROBE ok | TMP_REAPER_PROBE low roots=<…>     (--if-low-space only; second line)
 REAP <class> <reason> <path> <bytes>
 WOULD-REAP <class> <reason> <path> <bytes>     (dry-run)
 SKIP <reason> <path>
 ERROR <errno-name> <path>
 WARN large-unowned <path> <bytes>              (--measure only)
-TMP_REAPER root=<root> reaped=<n> freed_bytes=<n> skipped=<n> errors=<n> truncated=<0|1> user_bytes=<n|-> pytest_runs=<n> empty_tmp_dirs=<n> tmp_files=<n> scratch_trees=<n|-> dry_run=<0|1>
+TMP_REAPER roots=<n> reaped=<n> freed_bytes=<n> skipped=<n> errors=<n> truncated=<0|1> user_bytes=<n|-> pytest_runs=<n> empty_tmp_dirs=<n> tmp_files=<n> scratch_trees=<n|-> dry_run=<0|1>
 ```
 
 `<class>` is one of `P`, `T` or `S`.
 
-- `<bytes>` on `REAP` lines covers the candidate itself only. For a class-P dir it is that dir's allocated bytes, which the `act` step measures just before rename (AC-10). For a class-S tree it is the allocated total from the §5.7 walk, so there is no second walk.
-- `scratch_trees` is the number of directory children of the §5.7 scratch roots **remaining** after acting, excluding `garbage-hos-*`. It is `-` when `--scratch` is not given or class S was disabled for the run (§5.7.1).
+- `<bytes>` on `REAP` lines covers the candidate itself only. For a class-P dir it is that dir's allocated bytes, which the `act` step measures just before rename (AC-10). For a class-S tree it is the allocated total from the §5.7 walk, so no second walk is needed.
+- `scratch_trees` is the number of class-S candidates (both §5.7.2 shapes) **remaining** after acting, excluding `garbage-hos-*`. It is `-` when `--no-scratch` is given or class S was disabled for the run (§5.7.1).
+- `roots` in the summary is the number of valid roots swept. Every count (`pytest_runs`, `empty_tmp_dirs`, `tmp_files`, `scratch_trees`, `user_bytes`) is summed over all roots.
 - `user_bytes` is computed **only under `--measure`**. Otherwise it is `-`. Under `--measure` it is `-` if the walk was truncated.
 - `pytest_runs`, `empty_tmp_dirs` and `tmp_files` are counts of entries **remaining** after acting: `pytest-N` children, class-T empty dirs, and class-T regular files. They come from listings, which are cheap in every mode.
 - The summary line always prints, always last, and matches:
-  `^TMP_REAPER root=\S+ reaped=\d+ freed_bytes=\d+ skipped=\d+ errors=\d+ truncated=[01] user_bytes=(\d+|-) pytest_runs=\d+ empty_tmp_dirs=\d+ tmp_files=\d+ scratch_trees=(\d+|-) dry_run=[01]$`
+  `^TMP_REAPER roots=\d+ reaped=\d+ freed_bytes=\d+ skipped=\d+ errors=\d+ truncated=[01] user_bytes=(\d+|-) pytest_runs=\d+ empty_tmp_dirs=\d+ tmp_files=\d+ scratch_trees=(\d+|-) dry_run=[01]$`
 
 ### 5.6 Boundaries
 
-- The reaper never acts on an entry whose realpath parent is not `<root>`, `<root>/pytest-of-<user>`, or a §5.7 scratch root.
-- It never acts on an entry not owned by the current uid.
+- The reaper acts only on an entry whose realpath parent is `<root>`, `<root>/pytest-of-<user>`, or a §5.7.2 scratch root.
+- It never acts on an entry that the current uid does not own.
 - It never runs as root: `os.geteuid() == 0` → exit 3.
-- **Age alone never deletes.** Every REAP needs age ≥ 24 h **and** a non-age signal **and** survival of the live-process veto. The non-age signals are:
-  - dead flock on a verified inode, with `.lock` present (killed run);
-  - legacy `.lock` with no `.hos-live`;
-  - lock-free finished dir that is not the newest;
+- It never spawns a subprocess or calls `exec*` (R2-1, kept). It never runs `git`, and it reads no git metadata.
+- **Age alone never deletes.** "Older than a day" is the age rule. Every REAP needs age ≥ 24 h **and** a non-age liveness signal **and** must survive the live-process veto. The non-age signals are:
+  - a dead flock on a verified inode, with `.lock` present (killed run);
+  - a legacy `.lock` with no `.hos-live`;
+  - a lock-free finished dir that is not the newest;
   - `garbage-` naming;
-  - class-T empty dir or regular file;
-  - class-S: a whole-tree walk that completed, with every entry ≥ 24 h old, uid-owned and on the same device, no held lock, and no session marker, plus a **complete** host-view `/proc` index (§5.7). For class S, absence of evidence is not enough: a missing or incomplete `/proc` disables class S.
+  - a class-T empty dir or regular file;
+  - class S, which needs all of:
+    - a whole-tree walk that completed, with every entry ≥ 24 h old, uid-owned and on the same device;
+    - no held lock (parsed completely from the host-view `/proc/locks`);
+    - no session marker;
+    - an unchanged walked identity;
+    - a host-view `/proc` index that was not cut short (§5.7).
 
-### 5.7 Candidate class S: stale agent scratch trees (`--scratch` only; human ruling supersedes Q6)
+    Class S keeps every liveness check even under "anything older than a day goes". It has **no size floor** and **no git-state check** (human rulings §12.1(d)/(e)). For class S, absence of evidence is not enough: a missing host view, an unparseable `/proc/locks`, or a truncated `/proc` scan disables class S.
 
-The human's words: *"We should have the cleanup script zap the large scratch copies if older than 24h."* The target is ad-hoc repo clones and similar trees that agents create in a shared scratch location, for example `/tmp/claude/hos1935` (548 MB). Class S is evaluated only when `--scratch` is given.
+### 5.7 Candidate class S: stale trees, deleted whole (on by default; `--no-scratch` opts out)
 
-#### 5.7.1 Run-level preconditions (any failure disables class S for the whole run)
+Human rulings:
+- Q6: *"We should have the cleanup script zap the large scratch copies if older than 24h."*
+- §12.1(d)/(e): *"Yes. Anything older than a day goes."*
 
-All of the following must hold. Otherwise print one `SKIP scratch-disabled <reason>` line and set `scratch_trees=-`:
-- `/proc` is readable.
-- **Host PID namespace.** The `NSpid:` line of `/proc/self/status` has exactly one field, **and** `/proc/1/comm` is readable and is not `bwrap`. This is defence in depth: only the unsandboxed `bin/hos-cron` passes `--scratch`. Reason `no-host-view`.
-- `/proc/locks` is readable. Reason `no-locks-view`.
-- The §5.3.3 index is built eagerly when `--scratch` is given and is `complete=True`. Reason `proc-scan-incomplete`.
+The targets are ad-hoc repo clones and similar trees that agents create in a shared scratch location (for example `/tmp/claude/hos1935`, 548 MB), and non-empty leaked top-level `tmp*` dirs. Neither size nor git state matters: a stale tree with unpushed commits is deleted once it is 24 h old. **Every liveness check is kept.** "Older than a day" relaxes the age and scope rules, not the safety rules.
 
-#### 5.7.2 Eligible roots (explicit, closed list)
+Class S is evaluated unless `--no-scratch` is given. When the reaper lacks the host view, class S refuses on its own (§5.7.1). That is the normal outcome for any sandboxed invocation.
 
-- `SCRATCH_ROOTS` is a module constant naming paths relative to `<root>`. In v1 it holds exactly `("claude",)`, i.e. `/tmp/claude/`, the agent scratch convention in `CLAUDE.md` (`/tmp/claude/body.md`, ad-hoc clones).
-- Adding a root is a code change to a protected surface and needs a test. There is no CLI or env override.
-- A scratch root is used only if, by lstat, it is a real directory (not a symlink), owned by uid, with `st_dev` equal to `<root>`'s, and its `realpath` equals `<root>/<name>` exactly. Otherwise: `SKIP scratch-root-invalid <path>`.
-- **Candidates** are the **direct children** of a scratch root that lstat as real directories. Regular files, symlinks and special files directly in a scratch root are never touched: no class S, and no class T, which only scans `<root>`. Arbitrary `/tmp` content is never eligible.
+**Evaluation order (R2-7).** The reaper evaluates the classes in the order **P, then T, then S**, so a long class-S walk that exhausts `--max-seconds` only defers class S. Class T hands its non-empty `tmp*` dirs to class S rather than deciding them itself. A tree that ends in `SKIP walk-truncated` is re-walked on every run. That cost is accepted and is visible in the log.
+
+#### 5.7.1 Run-level preconditions (evaluated in this order; any failure disables class S for the whole run)
+
+On any failure, print one `SKIP scratch-disabled <reason>` line and set `scratch_trees=-`.
+
+1. `/proc` is readable. Reason `no-proc`.
+2. **Host PID namespace.** The `NSpid:` line of `/proc/self/status` has exactly one field, **and** `/proc/1/comm` is readable and is not `bwrap`. Reason `no-host-view`.
+   - This check is **load-bearing**. The architect verified that `/proc/locks` is filtered by PID namespace, so without a host view the lock veto would pass silently.
+   - A per-machine crontab (§8.2) runs unsandboxed and passes. A sandboxed invocation, such as an inner loop run inside bwrap, fails here.
+   - It is evaluated **before** `/proc/locks` is read (R2-5).
+3. **`/proc/locks` parses completely (R2-5).**
+   - Each line's `major:minor:inode` field is parsed with **major and minor in hex** and the **inode in decimal**. Example: `00:26:12345` is `st_dev` major 0, minor 0x26 = 38, inode 12345.
+   - Entries are stored as `(major, minor, ino)`. A walked entry matches when `(os.major(st_dev), os.minor(st_dev), st_ino)` equals a stored triple.
+   - If the file is unreadable → reason `no-locks-view`.
+   - If **any** line cannot be parsed → reason `locks-unparseable`. That line is never skipped while the rest are kept.
+4. **The §5.3.3 index is complete (R2-6).** The index is built eagerly when class S is enabled.
+   - `complete=True` means exactly this: the scan was **not cut short by `--max-seconds`**.
+   - A per-process `EACCES`/`ENOENT`/`ESRCH` is tolerated and counted as `n_unreadable`. When n > 0, print one informational line `SKIP proc-unreadable <n>`.
+   - If the scan was cut short → reason `proc-scan-incomplete`.
+
+#### 5.7.2 Eligible candidates (explicit, closed list; two shapes)
+
+**Shape 1: scratch-root children.**
+- `SCRATCH_ROOTS` is a module constant naming paths relative to `<root>`. In v1 it holds exactly `("claude",)`, i.e. `/tmp/claude/`, the agent scratch convention in `CLAUDE.md`. Adding a root is a code change to a protected surface and needs a test. There is no CLI or env override.
+- A scratch root is used only if, by lstat, it is a real directory (not a symlink), owned by uid, with `st_dev` equal to `<root>`'s, and its `realpath` equals `<root>/<name>` exactly. Otherwise → `SKIP scratch-root-invalid <path>`.
+- Candidates are the **direct children** of a scratch root that lstat as real directories. Regular files, symlinks and special files directly in a scratch root are never touched. That includes the ~37 agent draft files in `/tmp/claude` today.
+- **Other classes' entries are excluded (R2-7).** A scratch-root child named `^pytest-of-`, `^garbage-` (except `^garbage-hos-`, which step 9 handles), `^tmp` or `^hos-` → `SKIP other-class`.
+
+**Shape 2: non-empty top-level `tmp*` dirs (human ruling §12.1(d)).**
+- Candidates are direct children of `<root>` that match a class-T pattern (§5.4), are uid-owned real directories (not symlinks), and are **non-empty**. Class T hands these to class S.
+- Every name class T never touches (`pytest-of-*`, `claude-*`, `hos-*` and the rest of the §5.4 never-touched list) can never be a shape-2 candidate, because none of them matches a class-T pattern.
+
+**Never eligible:** any other `/tmp` content.
 
 #### 5.7.3 Claude Code session dirs: how they are recognised and excluded
 
-Claude Code keeps its per-user session state, task output and scratchpads under `<root>/claude-<uid>/…` (for example `/tmp/claude-1000/<project-slug>/<session-uuid>/scratchpad`). Exclusion is layered, and any one layer suffices:
+Claude Code keeps per-user session state, task output and scratchpads under `<root>/claude-<uid>/…`, for example `/tmp/claude-1000/<project-slug>/<session-uuid>/scratchpad`. Exclusion is layered, and any one layer is enough:
 
-1. **By root.** `<root>/claude-<digits>` is never a scratch root. The §5.7.2 realpath-equality check also stops a `claude` symlink or bind redirect from pointing class S at it.
+1. **By root.** `<root>/claude-<digits>` is never a scratch root, and it never matches a shape-2 pattern. The §5.7.2 realpath-equality check stops a `claude` symlink or bind redirect from pointing class S at it.
 2. **By name.** A scratch-root child named `^claude-\d+$` → `SKIP session-dir`.
-3. **By marker (fail safe, during the walk).** Any directory named `scratchpad`, or any entry at depth ≤ 3 whose name matches a UUID (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`), → `SKIP session-like` for the whole tree. A false positive only keeps a tree.
-4. **Self.** If the tree equals or contains the realpath of the reaper's own `os.getcwd()`, of `$TMPDIR`, or of any absolute-path environment variable value that lies under a scratch root → `SKIP self`.
-5. **Live session.** A running Claude Code session, or any other process, whose `cwd`, `root`, `exe` or open fd is at or under the tree → `SKIP live-proc` (§5.7.4 step 4).
+3. **By marker (fail safe, during the walk).** Either of these → `SKIP session-like` for the whole tree. A false positive only keeps a tree.
+   - any directory named `scratchpad`;
+   - any entry at depth ≤ 3 whose name matches a UUID: `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`.
+4. **Self.** If the tree equals or contains the realpath of the reaper's own `os.getcwd()`, of `$TMPDIR`, or of any absolute-path environment variable value under a candidate parent → `SKIP self`.
+5. **Live session.** If a running Claude Code session, or any other readable process, has its `cwd`, `root`, `exe` or an open fd at or under the tree → `SKIP live-proc` (§5.7.4 step 4).
 
 #### 5.7.4 Per-tree decision, in order (cheap checks first)
 
-1. **Identity.** Real dir, uid-owned, `st_dev` equal to the scratch root's, not `garbage-hos-*` (step 8 handles those). Otherwise `SKIP not-owned-or-foreign-dev`.
-2. **Exclusions.** §5.7.3 layers 2 and 4.
-3. **Top-level pre-filter.** If the dir's own `max(mtime, ctime)` is younger than AGE → `SKIP fresh`. This pre-filter can only skip, never approve.
-4. **Live-process veto.** Any index entry (`cwd`, `root`, `exe`, `fd/*`) at or under the tree → `SKIP live-proc`. The index is complete by §5.7.1.
-5. **Bounded whole-tree walk.** Iterative `os.scandir` with `follow_symlinks=False`; every entry is `lstat`-ed. The walk stops with a SKIP at the first failing entry:
-   - entry `max(mtime, ctime)` younger than AGE (**age = the newest timestamp anywhere in the tree**) → `SKIP fresh-deep`. Exiting early makes active trees cheap.
-   - `st_uid ≠ uid` → `SKIP foreign-owned`.
-   - `st_dev ≠` the tree's dev (a mount point inside) → `SKIP cross-device`.
-   - socket, FIFO or device → `SKIP special`.
-   - directory unreadable (EACCES/EPERM) → `SKIP unreadable`. Unverifiable age is not old.
-   - §5.7.3 layer 3 marker → `SKIP session-like`.
-   - `(st_dev, st_ino)` present in the `/proc/locks` set (flock, POSIX and OFD locks; parsed once per run as `major:minor:inode`) → `SKIP held-lock`.
-   - A regular file whose name matches `*.lock`, `*.lck`, `.hos-live`, `LOCK` or `lock`: probe it as in §5.3.1 (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, `flock(LOCK_EX|LOCK_NB)`, released immediately). EWOULDBLOCK → `SKIP held-lock`; any other error → `SKIP unknown`. This is a second lock signal alongside `/proc/locks`.
-   - Symlinks are counted for age and ownership by `lstat`, but **never followed or descended**.
-   - **Bounds.** At most `SCRATCH_MAX_INODES = 1_000_000` entries per tree, plus the global `--max-seconds` budget. Hitting either → `SKIP walk-truncated`. A tree is never partly judged and never partly deleted.
-   - The walk sums allocated bytes (D8) for the REAP line.
-6. If the walk completes with no SKIP → candidate **REAP scratch-stale**.
-7. **Removal** (same path as class P, §5.3.4):
-   - (a) lstat the tree, record `(st_dev, st_ino)`;
-   - (b) `os.rename(tree, <scratch-root>/garbage-hos-<uuid4>)`, where ENOENT → `SKIP raced`;
-   - (c) lstat the garbage path and require the same `(st_dev, st_ino)`. A mismatch → `ERROR identity-changed`, **no rmtree**, left for a human;
-   - (d) `shutil.rmtree` with the recording error handler (symlink-safe; never follows out of the tree).
+1. **Identity (captured once; R2-2).** The candidate must lstat as a real dir, owned by uid, with `st_dev` equal to its parent's. It must not be `garbage-hos-*`; step 9 handles those.
+   - Otherwise → `SKIP not-owned-or-foreign-dev`.
+   - Record `walked_id = (st_dev, st_ino)` from **this** lstat. Every later identity check compares against it.
+2. **Exclusions.** The §5.7.2 other-class names, then §5.7.3 layers 2 and 4.
+3. **Top-level pre-filter.** If the dir's own `max(mtime, ctime)` is younger than AGE → `SKIP fresh`. This step can only skip a tree, never approve one.
+4. **Live-process veto.** If any index entry (`cwd`, `root`, `exe`, `fd/*`) is at or under the tree → `SKIP live-proc`.
+5. **Bounded whole-tree walk.** Use iterative `os.scandir` with `follow_symlinks=False`, and `lstat` every entry. The walk stops with a SKIP at the first failing entry:
+   - **Age.** An entry whose `max(mtime, ctime)` is younger than AGE → `SKIP fresh-deep`. Age is **the newest timestamp anywhere in the tree**. Exiting early keeps active trees cheap.
+   - **Owner.** `st_uid ≠ uid` → `SKIP foreign-owned`.
+   - **Device.** `st_dev ≠` the tree's dev, i.e. a mount point inside → `SKIP cross-device`.
+   - **Special files.** A socket, FIFO or device → `SKIP special`.
+   - **Readability.** A directory that cannot be read (EACCES/EPERM) → `SKIP unreadable`.
+   - **Session marker.** A §5.7.3 layer-3 marker → `SKIP session-like`.
+   - **Held lock, kernel view.** The entry's `(major, minor, ino)` is in the §5.7.1 lock set → `SKIP held-lock`.
+   - **Held lock, probe.** For a regular file named `*.lock`, `*.lck`, `.hos-live`, `LOCK` or `lock`, probe as in §5.3.1: open with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, call `flock(LOCK_EX|LOCK_NB)`, and release immediately.
+     - EWOULDBLOCK → `SKIP held-lock`.
+     - Any other error → `SKIP unknown`.
+   - **Symlinks** are counted for age and ownership through `lstat`. They are **never followed or descended**.
+   - **Git.** A `.git` entry is an ordinary dir or file to the walk. Nothing in it is parsed, and git is never run (§12.1 ruling; R2-1's no-exec rule is kept).
+   - **Bounds.** At most `SCRATCH_MAX_INODES = 1_000_000` entries per tree, within the global `--max-seconds` budget. Hitting either → `SKIP walk-truncated`. A tree is never partly judged and never partly deleted.
+   - **Size.** The walk sums allocated bytes (D8) for the REAP line only. There is **no size floor** (human ruling §12.1(e); R2-3 is withdrawn).
+6. *(Removed: the R2-3 size floor, withdrawn by human ruling §12.1(e).)*
+7. If the tree reaches this point with no SKIP → candidate **REAP scratch-stale**.
+8. **Removal** (the same path as class P, §5.3.4):
+   - (a) lstat the tree path again. If its `(st_dev, st_ino)` differs from `walked_id` → **`SKIP raced`, and no rename** (R2-2).
+   - (b) `os.rename(tree, <parent>/garbage-hos-<uuid4>)`, where `<parent>` is the scratch root (shape 1) or `<root>` (shape 2). ENOENT → `SKIP raced`.
+   - (c) lstat the garbage path and require `(st_dev, st_ino)` to equal `walked_id`. A mismatch → `ERROR identity-changed`, **no rmtree**, and the tree is left for a human.
+   - (d) `shutil.rmtree` with the recording error handler. It is symlink-safe and never follows a link out of the tree.
    - Under `--dry-run`, print `WOULD-REAP S scratch-stale <path> <bytes>` and stop before (b).
-8. **`garbage-hos-*` children** (a removal that was interrupted): REAP `garbage` if the top-level quiet ≥ AGE and the live-process veto passes. Steps 7(c)–(d) are applied directly.
+9. **`garbage-hos-*` entries** in a scratch root or in `<root>` (left by an interrupted removal): REAP `garbage` when the top-level quiet time is ≥ AGE and the live-process veto passes. Apply steps 8(c)–(d) directly, with `walked_id` taken from this entry's own lstat. (Class T never touches `hos-*` names, so these belong to class S alone.)
 
-**Accepted residual.** Between the walk and the rename (milliseconds), a process could start using the tree. After the rename, path-based access fails. A process that `chdir`-ed in during that window keeps its cwd inode until it exits. This is narrower than class P's residual, because the `/proc` index is required to be complete.
+**Never executes anything (R2-1, kept).** The reaper spawns no subprocess and calls no `exec*`. A machine crontab runs it **unsandboxed**. Running `git` inside a tree that a **sandboxed** agent wrote would execute repo-local `.git/config` hooks (`core.fsmonitor`, `core.pager`, …) on the host, which is a sandbox escape. RS12 enforces this rule.
+
+**Accepted residuals (class S, under the human's "anything older than a day goes"):**
+- **Unpushed git work is deleted.** A clone with local commits not on any remote is deleted once every file in it is ≥ 24 h old. This follows from human ruling §12.1. It is not a liveness question.
+- **Uncommitted working-tree edits** in an idle tree are deleted.
+- **Linked-worktree registrations.** If the deleted tree was the main repo of linked worktrees elsewhere, those worktrees lose their repo. If the deleted tree was itself a linked worktree, its main repo keeps a stale registration, which `git worktree prune` clears.
+- **Small agent draft dirs** idle for more than 24 h are deleted. Draft *files* directly in `/tmp/claude` are never touched.
+- **A narrow race.** A process could `chdir` into the tree in the milliseconds between the step-8(a) recheck and the rename.
+- **Invisible processes.** A non-dumpable same-uid process (R2-6) is invisible to the veto. In practice these are system and session daemons, not agent tools.
 
 ---
 
@@ -510,64 +778,132 @@ Already compliant: unchanged from round 1. These are `bootstrap/*` TOKEN_FILE, `
 
 ---
 
-## 8. Call sites [S2, protected]
+## 8. Invocation, packaging and docs [S2b, protected; §2A.3 launcher exports are S2a]
 
-### 8.1 `scripts/framework/run_tests_inner_loop.sh`
+### 8.1 `scripts/framework/run_tests_inner_loop.sh`: pre-run call (kept)
 
-- **Placement:** the first statement inside `_run_suite()`, **before** `regen_all.sh`, which itself calls `mktemp -d`.
-- Run the reaper only if `"$SCRIPT_DIR/tmp_reaper.py"` exists. Absence happens only in test replicas.
-- **Invocation:** `"$PYTHON" -I "$SCRIPT_DIR/tmp_reaper.py" --summary-only --max-seconds 20` (AC-9). The inner loop does **not** pass `--scratch`, because it may run inside the PID-namespaced sandbox, where live host processes are invisible (D13).
-- **Best-effort:** a non-zero exit prints one `✘ tmp_reaper failed (rc=N) — continuing` line to stderr and never changes the script's exit code. Use the `|| …` form so `set -e` does not trip. Under `--failure-log` the output is teed into the log.
+- **Placement:** the first statement inside `_run_suite()`, **before** `regen_all.sh`, which itself calls `mktemp -d`. A test run can therefore free space before it starts.
+- Run the reaper only if `"$REPO_ROOT/bootstrap/tmp_reaper.py"` exists. `REPO_ROOT` is the script's existing repo-root variable. The file is absent only in test replicas.
+- **Invocation:** `"$PYTHON" -I "$REPO_ROOT/bootstrap/tmp_reaper.py" --summary-only --no-scratch --max-seconds 20 --root "${TMPDIR:-/tmp}" --root /tmp`.
+  - `TMPDIR` has already been inherited or resolved by §2A.3. If it is unset, both flags name `/tmp`, and the reaper de-duplicates them.
+  - The run sweeps the role's own disk dir and `/tmp`, so the `/tmp` backlog of classes P and T shrinks even before an operator installs the crontab.
+- **Why `--no-scratch` is explicit:** a test run frees only test-run debris (classes P and T).
+  - Inside the sandbox, class S would refuse anyway, because it has no host view (§5.7.1).
+  - Unsandboxed, for example a consumer developer or CI running the inner loop directly, a test run must not delete agent scratch trees as a side effect. Deleting those is machine policy, and it belongs to the operator's crontab (§8.2).
+  - The flag makes the behaviour deterministic either way.
+- **Best-effort:**
+  - A non-zero exit prints one `✘ tmp_reaper failed (rc=N) — continuing` line to stderr and never changes the script's exit code. Use the `|| …` form so `set -e` does not trip.
+  - The 20 s inner budget is the bound. No outer `timeout` is added here, matching the script's other best-effort steps.
+  - Under `--failure-log` the output is teed into the log.
 - `--help` gains one line naming the reaper.
 - The runner does **not** gate on reaper output. The gate is D6.
 
-### 8.2 `bin/hos-cron`: cycle start (AC-8, AC-9)
+### 8.2 Per-machine crontab: operator-installed, documented, never auto-installed
 
-- **Placement: exactly one call site.** It goes immediately after the `_audit()` helper definition ("Audit helper" block) and before the "Usage-threshold pause gate (#1944 …)" block.
-  - That point is after the overlap lock is acquired and its EXIT trap is set, after cycle identity is minted, and before the usage-pause gate, `validate_setup`, `get_app_token.sh` and all other preflight.
-  - Consequences:
-    - it runs once per **lock-acquiring** cycle, for both roles, including cycles that later pause, fail preflight or fail auth;
-    - it does **not** run on the suspended exit (a human said stop), which is earlier in the script;
-    - it does **not** run on the lock-held exit (the holder reaps).
-- **No wrap-up call.** The round-1 wrap-up site is removed (one site, D41).
-- **Dedicated bound (AC-9):** a reaper-owned array, for example `_TR_BOUND`, never `_UP_BOUND`.
-  - It is `timeout --kill-after=5 30`, or `gtimeout --kill-after=5 30`, or empty if neither exists.
-  - The inner `--max-seconds 20` is strictly less than the outer 30.
-  - The numbers are named constants beside the array, in the style of the `_UP_CHECK_*` constants.
-- **Invocation:** run only if `"$REPO_ROOT/scripts/framework/tmp_reaper.py"` exists:
-  `${_TR_BOUND[@]+"${_TR_BOUND[@]}"} python3 -I "$REPO_ROOT/scripts/framework/tmp_reaper.py" --summary-only --scratch --max-seconds 20`
-  (`--scratch` is passed here only: a scheduled `bin/hos-cron` cycle runs unsandboxed, per CLAUDE.md, so it sees host processes.)
-  - Capture stdout and rc with `|| _tr_rc=$?`.
-  - Echo each output line prefixed with `$LOG_PREFIX`.
-- **Audit:** emit `_audit cycle-tmp-reap "rc=<rc>" "summary=<TMP_REAPER line or ->"` **only** when rc ≠ 0 or the summary does not contain ` reaped=0 `. Idle cycles add no record (#1803). A timeout (rc 124/137) is therefore always audited.
-- **Never fatal.** The cycle continues to the usage-pause gate whatever the rc. The reaper's output and rc set no variable that later logic reads.
+**Human ruling (2026-10-09, verbatim):** *"The script will be a script per machine, so it should be shipped with HOS and consumer can install it in cron if needed."*
 
-### 8.3 `CLAUDE.md`: "Canonical entry points by task" table
+This supersedes two earlier positions:
+- the issue's "call it from cron-cycle wrap-up, not as a new scheduler";
+- AC-8's unconditional cycle-start call site.
 
-Add one row:
+`bin/hos-cron` makes **no unconditional reap**. It has only the **conditional low-space trigger** (§8.5), which a later disk-temp ruling added. There is no `${PROJECT}_tmp_reap_scratch` key. Machine policy lives in the script's own defaults and flags (§5.1).
 
-> | Reclaiming per-user /tmp space (backstop): stale `pytest-of-$USER/pytest-N` dirs, orphaned `tmp*` files and empty `tmp*` dirs, and (with `--scratch`) agent scratch trees under `/tmp/claude/` whose newest file is older than 24 h. Never touches a live run, a held lock, or Claude Code session dirs; `--dry-run`, `--measure` | `scripts/framework/tmp_reaper.py` |
+**Recipe** (goes into `docs/CRON-SETUP.md`; see §8.4). There is one entry per machine, in the **user's own** crontab (`crontab -e`) and never root's. The reaper refuses to run as root (exit 3). The entry points at any HOS copy on the machine, either the HOS clone or a consumer project's installed `bootstrap/tmp_reaper.py`:
 
-Add one sentence after the table: *"Test runs clean up their own temp files when they complete. The suite enforces zero leaked temp entries and a 50 MiB /tmp budget per session (`tests/conftest.py`, #2054). A red `TMP_HYGIENE FAIL` is a real failure, not flake."*
+```cron
+# HOS per-machine temp reaper (#2054). Daily. Create the log dir once: mkdir -p ~/.hos/logs
+# One --hos-tmp-root per HOS disk temp root on this machine (python3 bootstrap/lib/hos_tmp_root.py root --repo <clone> prints it).
+17 3 * * *  timeout --kill-after=10 600 python3 -I "$HOME/Code/HumanOversightSystem/Worker/bootstrap/tmp_reaper.py" --summary-only --max-seconds 540 --root /tmp --hos-tmp-root "$HOME/Code/HumanOversightSystem/.tmp" >> "$HOME/.hos/logs/tmp-reaper.log" 2>&1
+```
+
+Rules for the recipe, each restated from an architect condition:
+- **Roots.** Pass `--root /tmp` (the RAM-backed tmpfs: drafts, the legacy backlog, `/tmp/claude` scratch clones) **and** one `--hos-tmp-root` for each HOS disk temp root on the machine. The roots are explicit on the line. There is no discovery (§5.1).
+- **AC-9, restated: inner budget below outer bound.** `--max-seconds 540` is strictly less than `timeout 600`, and `--kill-after=10` guarantees termination. On macOS use `gtimeout` (coreutils), as `bin/hos-cron` already does.
+- **Log path is not under `/tmp`.** It goes under `~/.hos/`, the existing HOS state dir (`_HOS_DIR` in `bin/hos-cron`). The log must survive a full quota, and a full quota is exactly when the log is needed. With `--summary-only`, growth is a few MB a year. `bin/hos-trim-logs` only trims `/tmp/hos-*.log`, so the doc tells the operator to rotate the reaper log with `logrotate` if they want to.
+- **Class S is on by default** (§12.1(b)). The per-machine opt-out is `--no-scratch` on this line (§5.1).
+- **No sandbox.** User crontab jobs run unsandboxed, so class S has the host view it requires (§5.7.1). The doc says that if the line is ever run inside a sandbox, class S reports `scratch-disabled no-host-view` and does nothing.
+- **Daily is enough** (the human asked, and the answer is yes). In-run cleanup (Layer 1) removes green runs immediately, and the §8.5 low-space trigger covers a sudden squeeze between daily runs. With the uniform 24 h age, a daily run leaves debris at most about 48 h old. Scheduling stays the operator's choice.
+- **Concurrency is safe.** Concurrent reapers converge without harm (R11), so an overlapping inner-loop pre-run call is harmless.
+- **Record line.** To make the log readable without the `hos-cron` prefix, the reaper prints a first line before anything else: `TMP_REAPER_RUN ts=<ISO-8601 UTC> pid=<pid> roots=<comma-separated realpaths>` (§5.5).
+
+**Discoverability, with no auto-install:**
+- `bootstrap/hos_bootstrap.sh`, at the end of its machine-setup summary, prints a short informational block. It says that a per-machine `/tmp` reaper ships with HOS as `bootstrap/tmp_reaper.py`, that HOS does not schedule it, and where the crontab recipe is in `docs/CRON-SETUP.md`.
+- `bootstrap/hos_install.sh`, in its end-of-install summary, prints one line with the installed path `<target>/bootstrap/tmp_reaper.py` and the same doc pointer.
+- Neither script invokes `crontab` (C2).
+
+**Packaging:**
+- `bootstrap/tmp_reaper.py` is listed in `scripts/framework/framework_consumer_files.txt`, in its `bootstrap/` section, with a `# #2054` comment. The install copy loop and `.hos-manifest` therefore ship and track it in every consumer install.
+- It is **not** added to the release-asset list in `cut_release.sh` (`hos_install.sh`, `hos_bootstrap.sh`, `setup_clis.sh`). Those are the files needed *before* any install exists. The reaper is scheduled against an installed copy, so it does not need to be one.
+- The file is executable (`chmod +x`), with a `#!/usr/bin/env python3` shebang. The recipe still calls it through `python3 -I`, so that `-I` isolation applies.
+
+### 8.3 `CLAUDE.md`
+
+In the **"Canonical entry points by task"** table, add one row:
+
+> | Reclaiming temp space (machine-level backstop) in `/tmp` and the HOS disk temp roots (`<clone>/../.tmp/<role>`): stale `pytest-of-$USER/pytest-N` dirs, orphaned `tmp*` files/dirs, and agent scratch trees under `/tmp/claude/` whose newest file is older than 24 h. Never touches a live process's files, a held lock, or Claude Code session dirs. Install once per machine as a daily crontab entry, using the recipe in `docs/CRON-SETUP.md` (HOS never installs it); `--root`, `--hos-tmp-root`, `--no-scratch`, `--dry-run`, `--measure` | `bootstrap/tmp_reaper.py` |
+>
+> | Resolving this clone's per-role disk temp dir (`HOS_TMP_ROOT`, `TMPDIR`) | `bootstrap/lib/hos_tmp_root.py` |
+
+After the table, add two sentences: *"HOS temp lives on disk in `<clone>/../.tmp/<role>` (`HOS_TMP_ROOT` in `config.sh`); the launchers export `TMPDIR` there. `/tmp/claude/` remains the place for small draft files such as PR and issue bodies. Test runs clean up their own temp files when they complete. The suite enforces zero leaked temp entries and a 50 MiB budget per session (`tests/conftest.py`, #2054), and a red `TMP_HYGIENE FAIL` is a real failure, not flake."*
+
+In the **Repo layout** block, under `bootstrap/`, add one line: `tmp_reaper.py  MACHINE /tmp reaper (#2054); operator installs it in their own crontab`.
+
+`bootstrap/README.md` gets the same one-line entry.
 
 ### 8.4 `docs/CRON-SETUP.md`
 
-Add one paragraph to the cycle-start section (AC-8). It says that every lock-acquiring cycle runs the reaper before the usage-pause gate and auth, bounded at 30 s, with the 24 h rule, including `--scratch` deletion of stale `/tmp/claude/*` scratch trees (§5.7). It names the `cycle-tmp-reap` audit event and its emit condition, and says suspended and lock-held exits do not reap.
+Add a new section, "HOS temp on disk and the per-machine reaper". It contains:
+- **Where temp lives.** `HOS_TMP_ROOT` (§2A), the per-role `TMPDIR` the launchers export, the 0700 dirs, the role isolation, and why `/tmp/claude` drafts stay on `/tmp`.
+- **The daily recipe** (§8.2) and its rules: user crontab only, explicit roots, a log path outside `/tmp`, an inner budget below the outer bound, and `gtimeout` on macOS.
+- **The low-space trigger** (§8.5). A `bin/hos-cron` cycle reaps on its own only when a write probe fails, and that event is audited as `cycle-tmp-reap`.
+- What the reaper removes and what it never touches.
+- That class S is on by default and is disabled with `--no-scratch`.
+- That HOS never installs the crontab entry.
+
+The section also states that it supersedes the issue's original "cron-cycle wrap-up" placement, by human ruling.
+
+### 8.5 `bin/hos-cron`: low-space trigger (disk-temp ruling; AC-8 and AC-9 restored, amended)
+
+**Human ruling (2026-10-09).** At cycle start, `bin/hos-cron` runs a small write probe of its `TMPDIR` and of `/tmp`, catching EDQUOT/ENOSPC. On failure it runs the reaper, bounded, before preflight and auth, with the same 24 h rule.
+
+- **Placement.** Exactly one call site, immediately after the §2A.3 `TMPDIR` export. That is:
+  - after the overlap lock and the `_audit()` helper;
+  - before the usage-pause gate, `validate_setup`, `get_app_token.sh` and all other preflight.
+
+  This is AC-8's placement. It is the only cron site that can recover from a full quota, because a full quota kills the cycle at auth. Consequences:
+  - it runs once per **lock-acquiring** cycle, for both roles, including cycles that later pause or fail preflight or auth;
+  - it does **not** run on the suspended exit or the lock-held exit.
+- **Dedicated bound (AC-9).** `_TR_BOUND` is `timeout --kill-after=5 30`, or `gtimeout --kill-after=5 30`, or empty if neither exists. Its numbers are named constants beside the array, never shared with `_UP_BOUND`. The inner `--max-seconds 20` is less than 30.
+- **Invocation.** Only if `"$REPO_ROOT/bootstrap/tmp_reaper.py"` exists:
+  `${_TR_BOUND[@]+"${_TR_BOUND[@]}"} python3 -I "$REPO_ROOT/bootstrap/tmp_reaper.py" --if-low-space --summary-only --max-seconds 20 --root /tmp ${_tr_hos_root_arg[@]+"${_tr_hos_root_arg[@]}"}`
+  - `_tr_hos_root_arg=(--hos-tmp-root "$HOS_TMP_ROOT_RESOLVED")` is set only when §2A.3 resolved the root. Otherwise it is empty, and only `/tmp` is probed.
+  - Class S stays on (the default). A scheduled `hos-cron` runs unsandboxed and has the host view. If it ever does not, class S refuses on its own (§5.7.1).
+  - Capture stdout and rc with `|| _tr_rc=$?`. Echo each line prefixed with `$LOG_PREFIX`.
+- **The probe is the decision.** All shell-side decision logic stays out of `hos-cron` (#314). The probe, the low/ok verdict and the reap all live in `tmp_reaper.py --if-low-space` (§5.1).
+- **Audit.** Emit `_audit cycle-tmp-reap "rc=<rc>" "probe=<TMP_REAPER_PROBE line or ->" "summary=<TMP_REAPER line or ->"` **only** when rc ≠ 0 or the output contains `TMP_REAPER_PROBE low`. Healthy cycles add no record (#1803). A timeout (rc 124 or 137) is therefore always audited.
+- **Never fatal.** Whatever the rc, the cycle continues to the usage-pause gate. Nothing later reads the trigger's output or rc.
+- **Cost on a healthy cycle.** Two 64 KiB writes plus fsyncs, one listing per root, and no `/proc` scan, because the reap does not run.
 
 ---
 
 ## 9. Acceptance procedure (the coder records the evidence in the PR)
 
-1. `python3 scripts/framework/tmp_reaper.py --measure --max-seconds 600` → record `user_bytes`, `pytest_runs`, `empty_tmp_dirs` and `tmp_files` (M0).
+1. Run `python3 bootstrap/tmp_reaper.py --measure --max-seconds 600 --root /tmp --hos-tmp-root <HOS_TMP_ROOT>`. Record `user_bytes`, `pytest_runs`, `empty_tmp_dirs` and `tmp_files` (M0).
+   - The coder also records `findmnt -no FSTYPE -T <HOS_TMP_ROOT>` (expected: a disk filesystem, not `tmpfs`).
+   - The coder confirms that `pytest-of-<user>` for the inner-loop run appears under `<HOS_TMP_ROOT>/<role>/`, not under `/tmp`.
 2. Run `scripts/framework/run_tests_inner_loop.sh`, then `--measure` (M1). Run the suite again, then `--measure` (M2).
-3. Pass criteria (**Layer 1 evidence**: the runs cleaned up after themselves):
+3. Pass criteria. These are the **Layer 1 evidence** that the runs cleaned up after themselves:
    - `M2.user_bytes − M0.user_bytes ≤ 50 MiB`;
    - `M2.pytest_runs ≤ M0.pytest_runs`, excluding concurrently live runs, which the coder names;
    - `M2.empty_tmp_dirs ≤ M0.empty_tmp_dirs`;
    - `M2.tmp_files ≤ M0.tmp_files`;
    - both runs print `TMP_HYGIENE … leaks=0`.
-   - Note: the inner loop invokes the reaper (§8.1), so M1/M2 may also show backlog removal. Record the reaper's `REAP` count from each run's log separately, so Layer 1 and Layer 2 effects can be told apart.
-4. **Layer 2 evidence:** `python3 scripts/framework/tmp_reaper.py --dry-run --scratch` on the dev host, run by the human or from an unsandboxed shell; inside the sandbox class S reports `scratch-disabled`. For class S, also record each `WOULD-REAP S` path and the `SKIP` reasons for scratch trees that are kept. Record the `WOULD-REAP` counts by class and reason, and confirm that no `WOULD-REAP` names a path younger than 24 h. Never run a real reap of the dev-host backlog from an agent session (§11).
+   
+   The inner loop runs the reaper first (§8.1, classes P/T), so M1 and M2 may also show backlog removal. Record the reaper's `REAP` count from each run's log separately.
+4. **Layer 2 evidence.** The human runs `python3 bootstrap/tmp_reaper.py --dry-run --root /tmp --hos-tmp-root <HOS_TMP_ROOT>` (class S on by default) in an unsandboxed shell. Inside the sandbox, class S reports `scratch-disabled no-host-view`.
+   - Record the `WOULD-REAP` counts by class and reason, and each `WOULD-REAP S` path.
+   - Confirm that no `WOULD-REAP` names a path younger than 24 h.
+   - Never run a real reap of the dev-host backlog from an agent session (§11).
 5. These numbers are not a CI gate (§6.1). The deterministic gates are D6 and the static tests.
 
 ---
@@ -578,54 +914,63 @@ Add one paragraph to the cycle-start section (AC-8). It says that every lock-acq
 
 | ID | Test (file) | Asserts |
 |---|---|---|
-| T1 | `tests/framework/test_tmp_hygiene_plugin.py` | **Retention, sequential only (AC-11).** Generate a mini project in `tmp_path`, with a conftest that loads `tests/tmp_hygiene.py` and the D1 ini values read **from the real `pyproject.toml`**. Run `python -m pytest` with `PYTEST_DEBUG_TEMPROOT=<tmp_path>/root`. (a) green → no `pytest-N`; (b) red → exactly 1; (c) red, green, red → ≤ 1, and it is the newest. No concurrent-retention assertion. |
-| T2 | same | **Leak gate.** A mini test calling `tempfile.mkdtemp()` gives exit 1 and `TMP_HYGIENE FAIL leak` naming the path. The `subprocess.run(["mktemp"])` variant is also caught. A leak reachable only through a `TemporaryDirectory` held in a reference cycle is *not* reported, which proves `gc.collect()` runs (AC-7). |
+| T1 | `tests/framework/test_tmp_hygiene_plugin.py` | **Retention, sequential only (AC-11).** Generate a mini project in `tmp_path`. Its conftest loads `tests/tmp_hygiene.py`, and its D1 ini values are read **from the real `pyproject.toml`**. Run `python -m pytest` with `PYTEST_DEBUG_TEMPROOT=<tmp_path>/root`. (a) Green → no `pytest-N`. (b) Red → exactly 1. (c) Red, green, red → ≤ 1, and it is the newest. There is no concurrent-retention assertion. |
+| T2 | same | **Leak gate.** A mini test calling `tempfile.mkdtemp()` gives exit 1 and a `TMP_HYGIENE FAIL leak` line naming the path. The `subprocess.run(["mktemp"])` variant is also caught. A leak reachable only through a `TemporaryDirectory` held in a reference cycle is *not* reported, which proves `gc.collect()` runs (AC-7). |
 | T3 | same | **Budget gate.** `HOS_TEST_TMP_BUDGET_MB=1` plus a 2 MiB session-scoped dir gives exit 1 with `FAIL budget`. `=500` is ignored with a warning, and the budget stays 50. |
 | T4 | same | **Red run.** A failing test plus a leak gives exit 1 and the report, with no `FAIL leak` escalation. |
-| T5 | same | **flock and record.** While a mini session is running, `flock(LOCK_EX\|LOCK_NB)` on `.hos-live` from the outer process fails. After exit it succeeds. The record's `dev`/`ino` equal `os.stat(.hos-live)` (AC-4). |
-| T6 | same | **In-process nesting and restore (AC-5, AC-6).** Inside an outer test session, run an inner `pytest.main([... , "--basetemp", <tmp_path>/inner])`. Afterwards: the outer stash state (fd, paths) is unchanged; `TMPDIR` and `tempfile.tempdir` equal the outer `session-tmp`; and the outer flock is still held (a fresh fd's `LOCK_NB` probe fails). In a standalone mini session, a session-finish hook registered `trylast` observes `TMPDIR` and `tempfile.tempdir` already restored. |
-| T7 | `tests/framework/test_tmp_hygiene_static.py` | **D10/AC-14.** An AST scan of `tests/**/*.py` fails on `tempfile.mkdtemp`, `tempfile.mkstemp`, and `NamedTemporaryFile` with the keyword `delete=False`. It resolves `import tempfile as t`, `from tempfile import mkdtemp as m`, and `from tempfile import NamedTemporaryFile` aliases. Its own `(path, reason)` allowlist starts empty. It also asserts: (i) the `pyproject.toml` D1 values; (ii) `LEAK_ALLOWLIST` is empty (unconditional, AC-13); (iii) no test sets `TMPDIR` to the literal `"/tmp"` via `monkeypatch.setenv` or `os.environ` (§4.9). |
-| T8 | (existing) full inner loop | green with `leaks=0`; footprint recorded. |
+| T5 | same | **flock and record.** While a mini session runs, `flock(LOCK_EX\|LOCK_NB)` on `.hos-live` from the outer process fails. After exit it succeeds. The record's `dev`/`ino` equal `os.stat(.hos-live)` (AC-4). |
+| T6 | same | **In-process nesting and restore (AC-5, AC-6).** Inside an outer test session, run an inner `pytest.main([... , "--basetemp", <tmp_path>/inner])`. Afterwards the outer stash state (fd, paths) is unchanged, `TMPDIR` and `tempfile.tempdir` equal the outer `session-tmp`, and the outer flock is still held (a fresh fd's `LOCK_NB` probe fails). In a standalone mini session, a `trylast` session-finish hook sees `TMPDIR` and `tempfile.tempdir` already restored. |
+| T7 | `tests/framework/test_tmp_hygiene_static.py` | **D10/AC-14.** An AST scan of `tests/**/*.py` fails on `tempfile.mkdtemp`, `tempfile.mkstemp`, and `NamedTemporaryFile` with the keyword `delete=False`. It resolves aliases: `import tempfile as t`, `from tempfile import mkdtemp as m`, and `from tempfile import NamedTemporaryFile`. Its own `(path, reason)` allowlist starts empty. It also asserts: (i) the `pyproject.toml` D1 values; (ii) `LEAK_ALLOWLIST` is empty, unconditionally (AC-13); (iii) no test sets `TMPDIR` to the literal `"/tmp"` via `monkeypatch.setenv` or `os.environ` (§4.9). |
+| T8 | (existing) full inner loop | Green with `leaks=0`; footprint recorded. |
 | T11 | `tests/framework/test_tmp_hygiene_plugin.py` | `child_env` adds `TMPDIR` when absent and never overrides a caller-set `TMPDIR` (AC-12). |
 
-### S2 (`tests/framework/test_tmp_reaper.py`, every test with `--tmp-root <tmp_path>`; no test touches the real /tmp)
+### S2b (`tests/framework/test_tmp_reaper.py`, every test with `--root`/`--hos-tmp-root` under `tmp_path`; no test touches the real /tmp or a real HOS tmp root)
 
-"Old" means mtimes backdated ≥ 48 h. Where ctime matters, the test uses the pure `decide()` or an injected clock (§5.1).
+"Old" means mtimes backdated ≥ 48 h. Where ctime matters, the test uses the pure `decide()` or the injected clock (§5.1). Class-S tests run in process, with the §5.7.1 host-view preconditions monkeypatched to pass, except where a row says otherwise. They therefore also run inside the sandbox.
 
 | ID | Asserts |
 |---|---|
-| R1 | **A live run is never touched.** A child creates `pytest-of-<user>/pytest-5/.hos-live` with a valid record, plus `.lock`, flocks it, and sleeps. With the dir old, the real and `--dry-run` reapers both print `SKIP live-flock` and the tree is byte-identical. After the holder gets **SIGKILL** → `REAP dead-flock`. |
+| R1 | **A live run is never touched.** A child creates `pytest-of-<user>/pytest-5/.hos-live` with a valid record, plus `.lock`, flocks it, and sleeps. With the dir old, the real and `--dry-run` reapers both print `SKIP live-flock`, and the tree is byte-identical. After the holder gets **SIGKILL** → `REAP dead-flock`. |
 | R2 | Legacy `.lock`, no `.hos-live`: quiet 3 h → `SKIP fresh`; quiet 23 h → `SKIP fresh`; old → `REAP legacy-stale` (uniform 24 h, D11). |
 | R3 | Legacy `.lock` naming a live child whose argv contains `pytest`, old → `SKIP live-proc` (skipped if `/proc` is absent). |
-| R4 | quiet < 24 h beats a dead flock → `SKIP fresh`. |
+| R4 | Quiet < 24 h beats a dead flock → `SKIP fresh`. |
 | R5 | Two old lock-free finished dirs → the newest is KEPT and the older is REAPED. |
 | R6 | **Symlinks.** `pytest-of-<user>` is a symlink → nothing reaped in class P. `pytest-7` is a symlink to an outside dir → the outside dir is intact. A reaped dir containing a symlink to an outside file → the outside file is intact. A dangling `pytest-current` is removed; a valid one is kept. |
 | R7 | `decide()` with synthetic facts: uid mismatch → SKIP; probe error ≠ EWOULDBLOCK → SKIP unknown; absent PID → never REAP by itself; index `complete=False` → SKIP proc-scan-incomplete; a `/proc`-absent index removes the veto but never creates a REAP on its own. |
-| R8 | Class T: old empty `tmpabcd1234` → removed. Non-empty → SKIP. 23 h → SKIP. Old `tmp.AbCdEf1234` file → removed (D12). Old `tmpabcd1234.py` file → removed. File held open by a live child → `SKIP open` (Linux). FIFO → SKIP. Non-matching names untouched. |
+| R8 | Class T: old empty `tmpabcd1234` → removed. Non-empty → handed to class S (RS16), and with `--no-scratch` → `SKIP non-empty`. 23 h → SKIP. Old `tmp.AbCdEf1234` file → removed (D12). Old `tmpabcd1234.py` file → removed. File held open by a live child → `SKIP open` (Linux). FIFO → SKIP. Non-matching names untouched. |
 | R9 | Old `garbage-*` → reaped; 23 h → SKIP. |
 | R10 | `--dry-run` leaves the tree identical (names, inodes, mtimes) and prints `WOULD-REAP`. |
 | R11 | Two concurrent reapers: both exit 0, every candidate is gone, no traceback. |
-| R12 | Root resolution: TMPDIR set → used; unset → `/tmp` (unit-test the resolver only). Missing root → exit 3. `geteuid()==0` (monkeypatched) → exit 3. |
-| R13 | The summary line is last and matches the §5.5 regex. `--measure` deletes nothing and prints a numeric `user_bytes`. |
+| R12 | Root resolution with no flags: TMPDIR set → used; unset → `/tmp` (unit-test the resolver only). All given roots missing → exit 3; one of two missing → `SKIP root-invalid` and the other is swept. `geteuid()==0` (monkeypatched) → exit 3. |
+| R13 | The `TMP_REAPER_RUN` line is first. The summary line is last and matches the §5.5 regex. `--measure` deletes nothing and prints a numeric `user_bytes`. |
 | R14 | `--max-seconds 0` → `truncated=1`, exit 0, and nothing reaped. |
 | R15 | **AC-1.** An old **finished red** dir (unlocked `.hos-live`, no `.lock`) that is NEWEST_FINISHED → KEEP. An older sibling of the same shape → `REAP finished`. |
 | R16 | **AC-4.** `.hos-live` whose record `dev`/`ino` mismatch → `SKIP unknown`. A FIFO named `.hos-live` → `SKIP unknown`, and the reaper returns within the test timeout (no hang). A symlink named `.hos-live` → `SKIP unknown` (`O_NOFOLLOW`). |
 | R17 | **AC-3.** An old lock-free non-newest dir that is the `cwd` of a live child → `SKIP live-proc` (Linux). The same holds for an old dead-flock dir (the stricter rule-2 veto). |
 | R18 | **D11.** `--min-age-hours 2` → exit 2. `--min-age-hours 48` is accepted. |
-| R19 | **AC-10.** Default and `--summary-only` runs print `user_bytes=-` and no `WARN` line, and never call the size-walk function (asserted in process by monkeypatching the walk to raise). Under `--measure`, with the large-entry threshold monkeypatched down to a small value, a user-owned non-candidate tree above it produces one `WARN large-unowned`. |
-| RS1 | **Class S: a stale tree is removed.** In process, with `clock = real + 48 h` and `--scratch`, `<tmp_path>/claude/clone1/a/b/c.txt` → `REAP S scratch-stale`, and the tree is gone (no `garbage-hos-*` left). The §5.7.1 host-view preconditions are monkeypatched to pass, so the test also runs where `/proc/1` is `bwrap`. |
+| R19 | **AC-10.** Default and `--summary-only` runs print `user_bytes=-` and no `WARN` line. They never call the size-walk function, asserted in process by monkeypatching the walk to raise. Under `--measure`, with the large-entry threshold monkeypatched down to a small value, a user-owned non-candidate tree above it produces one `WARN large-unowned`. |
+| RS1 | **Class S: a stale tree is removed.** In process, with default flags (class S on) and `clock = real + 48 h`, the tree holding `<tmp_path>/claude/clone1/a/b/c.txt` → `REAP S scratch-stale`. The tree is gone and no `garbage-hos-*` is left. |
 | RS2 | **One recent deep file keeps the tree.** As RS1, but `a/b/c.txt` is `os.utime`-d to `fake_now − 1 h` → `SKIP fresh-deep`, and the tree is byte-identical. |
 | RS3 | **A tree that is some process's cwd is kept.** A child process `chdir`s into `<tmp_path>/claude/clone2/sub` and sleeps → `SKIP live-proc` (Linux; skipped if `/proc` is absent). After the child is killed → `REAP`. |
-| RS4 | **A held flock keeps the tree.** A child holds `flock(LOCK_EX)` on `<tmp_path>/claude/clone3/x/index.lock` → `SKIP held-lock`. A second variant holds an `fcntl.lockf` POSIX lock on a file **not** named like a lock (`data.bin`), which proves the `/proc/locks` path → `SKIP held-lock`. After release → `REAP`. |
+| RS4 | **A held flock keeps the tree.** A child holds `flock(LOCK_EX)` on `<tmp_path>/claude/clone3/x/index.lock` → `SKIP held-lock`. A second variant holds an `fcntl.lockf` POSIX lock on a file **not** named like a lock (`data.bin`), which proves the `/proc/locks` path → `SKIP held-lock`. That variant also asserts, via a spy on `parse_proc_locks`, that the matched triple came from the **hex** `major:minor` parse (R2-5). After release → `REAP`. The `/proc/locks` variant reads the real file, so it is skipped where the reader lacks the holder's PID namespace. The pure parser tests (RS15) always run. |
 | RS5 | Symlinks: a scratch child that is a symlink → untouched. A tree containing a symlink to an outside dir → reaped, and the outside dir is intact. A `claude` scratch root that is a symlink → `SKIP scratch-root-invalid`, nothing reaped. |
-| RS6 | Session-dir exclusion: `<tmp_path>/claude-1000/...` is never evaluated; a scratch child named `claude-1000` → `SKIP session-dir`; a tree containing a `scratchpad` dir or a UUID-named dir at depth ≤ 3 → `SKIP session-like`; a tree containing the reaper's cwd (in-process `monkeypatch.chdir`) → `SKIP self`. |
+| RS6 | Session-dir exclusion: `<tmp_path>/claude-1000/...` is never evaluated. A scratch child named `claude-1000` → `SKIP session-dir`. A tree containing a `scratchpad` dir, or a UUID-named dir at depth ≤ 3 → `SKIP session-like`. A tree containing the reaper's cwd (in-process `monkeypatch.chdir`) → `SKIP self`. |
 | RS7 | Fail-safe walk: `SCRATCH_MAX_INODES` monkeypatched to 2 → `SKIP walk-truncated`, tree intact. A `chmod 000` subdir → `SKIP unreadable` (skipped as root). A FIFO inside → `SKIP special`. |
-| RS8 | Run-level gating: without `--scratch` → no class-S output, `scratch_trees=-`. With `--scratch` but the NSpid/`bwrap` check failing, `/proc/locks` unreadable, or an incomplete index (each monkeypatched) → one `SKIP scratch-disabled <reason>`, nothing in class S deleted. |
-| RS9 | Removal identity: monkeypatch `os.lstat` so that the post-rename `(st_dev, st_ino)` differs → `ERROR identity-changed`, `shutil.rmtree` is never called (spy), and `garbage-hos-*` remains. `--dry-run` → `WOULD-REAP S` and no rename. |
-| RS10 | `decide_scratch()` (pure) with synthetic facts: foreign uid, cross-device entry, held-lock hit, fresh-deep, and session marker each give the named SKIP. Only the all-clear fact set yields REAP. |
-| C1 | `tests/framework/test_run_tests_inner_loop.py`: with the reaper stub, it runs before `regen_all.sh` with `-I … --summary-only --max-seconds 20`, and **without** `--scratch`. Reaper rc=1 → the suite's exit code is unchanged. Existing tests are unchanged. |
-| C2 | `tests/automation/test_hos_cron.py` (**AC-8**): with the reaper stub installed: (a) invoked **exactly once** per lock-acquiring cycle, with `--scratch` in its argv; (b) still invoked once when the `get_app_token.sh` stub fails (the cycle exits at AUTH FAILED); (c) **not** invoked when the project is suspended; (d) **not** invoked when the lock is held by a live holder; (e) invoked before the usage-pause helper (ordering via a shared stub log); (f) stub rc=1 → cycle exit unchanged and `cycle-tmp-reap` audited; (g) stub `reaped=0` with rc=0 → no audit record; (h) a stub that sleeps past the bound is killed and the cycle continues, if `timeout` is available. |
-| C3 | `tests/framework/test_consumer_framework_files.py`: `scripts/framework/tmp_reaper.py` is listed and exists. |
+| RS8 | Run-level gating: `--no-scratch` → no class-S output, `scratch_trees=-`. With the real preconditions **not** monkeypatched and the NSpid/`bwrap` check made to fail, or `/proc/locks` unreadable, or an incomplete index (each monkeypatched at its source) → one `SKIP scratch-disabled <reason>`, and nothing in class S is deleted. |
+| RS9 | Removal identity (R2-2): (i) between the walk and the rename, swap the tree for a different dir at the same path (a test hook between steps 7 and 8) → `SKIP raced`, `os.rename` never called (spy), and both dirs intact; (ii) monkeypatch `os.lstat` so the post-rename `(st_dev, st_ino)` differs from `walked_id` → `ERROR identity-changed`, `shutil.rmtree` never called (spy), and `garbage-hos-*` remains; (iii) `--dry-run` → `WOULD-REAP S` and no rename. |
+| RS10 | `decide_scratch()` (pure) with synthetic facts: foreign uid, cross-device entry, held-lock hit, fresh-deep, session marker and other-class name each give the named SKIP. Only the all-clear fact set yields REAP. Size and git facts are not inputs. |
+| RS11 | **Git state is not a veto (human ruling §12.1).** The test builds repos under `tmp_path`; the test may run git, the reaper may not. All are old: (a) a clone with an unpushed local commit, (b) a detached unpushed `HEAD`, (c) a linked worktree whose `.git` is a file, and its main repo, (d) a repo with `refs/stash`. Each → `REAP S scratch-stale`. A spy on `open` shows that no file under any `.git` was opened, except lock-name probe targets. |
+| RS12 | **Never executes (R2-1, kept).** Monkeypatch `subprocess.Popen`, `subprocess.run`, `os.system`, `os.posix_spawn`, `os.posix_spawnp`, `os.fork` and every `os.exec*` to raise, then run a full default reap over the RS11 fixtures in process → exit 0, with the expected verdicts and no raise. A static assertion checks that `bootstrap/tmp_reaper.py` imports neither `subprocess` nor `pty`. |
+| RS13 | **No size floor (human ruling §12.1(e)).** A stale tree holding one 4 KiB file → REAP. A stale 1 MiB tree → REAP. |
+| RS14 | **Other classes and order (R2-7).** Scratch-root children `pytest-of-x`, `garbage-abc`, `tmpabcd1234` and `hos-foo`, all old → `SKIP other-class`, untouched. `garbage-hos-…` is still handled by step 9. With an old class-P candidate, an old class-T file and a class-S tree, and `--max-seconds` exhausted by a deliberately slow class-S walk (injected clock), P and T are reaped and the S tree reports `SKIP walk-truncated`. |
+| RS15 | **Preconditions (R2-5, R2-6).** Pure `parse_proc_locks`: `"1: FLOCK  ADVISORY  WRITE 1234 00:26:12345 0 EOF"` → `{(0, 38, 12345)}`. A malformed line anywhere → raises, and a run fed that text prints `SKIP scratch-disabled locks-unparseable`. The NSpid check runs before `/proc/locks` is opened (call-order spy). An index with `n_unreadable=3` and `complete=True` → class S runs and prints `SKIP proc-unreadable 3`. `complete=False` → `scratch-disabled proc-scan-incomplete`. |
+| RS16 | **Shape 2: non-empty top-level `tmp*` dirs (human ruling §12.1(d)).** An old `<tmp_path>/tmpabcd1234/x/y.txt` → `REAP S scratch-stale`, removed via `<tmp_path>/garbage-hos-*`. With one deep file at `fake_now − 1 h` → `SKIP fresh-deep`. With a held flock inside → `SKIP held-lock`. As a live child's cwd → `SKIP live-proc`. With `--no-scratch` → `SKIP non-empty` (class T), intact. A leftover old `<tmp_path>/garbage-hos-…` → reaped by step 9. |
+| RS17 | **Multiple roots (disk-temp ruling).** `--hos-tmp-root <tmp_path>/.tmp` with children `worker/`, `overseer/`, `human/`, `local/`, `junk/`, a file `notes`, and a symlink `evil -> /elsewhere`. Only the four role dirs are swept (`SKIP not-a-role-dir` for the others), and the `.tmp` dir itself is never a candidate. Old killed-run `pytest-N` dirs under `worker/pytest-of-<user>/` and `/tmp`-equivalent `--root` are both reaped in one run. Duplicate roots, given as the same path twice or through a symlinked alias, are swept once. |
+| RS18 | **`--if-low-space`.** (a) Both roots writable → `TMP_REAPER_PROBE ok`, nothing reaped even with old candidates present, exit 0. (b) Monkeypatch `os.write` to raise `OSError(EDQUOT)` for one root's probe fd → `TMP_REAPER_PROBE low roots=<that root>`, then a normal reap over **all** roots: old candidates go, young ones stay. (c) `ENOSPC` is handled the same way. (d) In every case no `.hos-space-probe.*` file remains, and a pre-existing orphan probe dotfile is never reaped. (e) The 24 h rule is unchanged: a 23 h candidate survives a low-space reap. |
+| C1 | `tests/framework/test_run_tests_inner_loop.py`: with the reaper stub placed at `bootstrap/tmp_reaper.py` in the replica, it runs before `regen_all.sh` with `-I … --summary-only --no-scratch --max-seconds 20 --root <TMPDIR> --root /tmp`. Reaper rc=1 → the suite's exit code is unchanged. Existing tests (reaper absent) are unchanged. |
+| C2 | **Low-space trigger, AC-8 restored as amended** (`tests/automation/test_hos_cron.py`, reaper stub installed): (a) invoked **exactly once** per lock-acquiring cycle, with `--if-low-space --summary-only --max-seconds 20 --root /tmp --hos-tmp-root <fake parent>/.tmp`; (b) the `--hos-tmp-root` pair is absent when the §2A.3 resolver is stubbed to fail; (c) still invoked once when the `get_app_token.sh` stub fails; (d) **not** invoked when suspended or lock-held; (e) invoked after `TMPDIR` is exported and before the usage-pause helper (shared stub log); (f) stub output `TMP_REAPER_PROBE ok` with rc 0 → no audit record; (g) stub output `TMP_REAPER_PROBE low …`, or rc 1 → one `cycle-tmp-reap` record, and the cycle exit is unchanged; (h) a stub that sleeps past the bound is killed and the cycle continues (if `timeout` exists). |
+| C4 | **Packaging, static** (new `tests/framework/test_tmp_reaper_packaging.py`): (a) `bin/hos-cron` references `tmp_reaper.py` exactly once, on a line containing `--if-low-space`, and never `tmp_reap_scratch`; (b) `docs/CRON-SETUP.md` contains a recipe line that invokes `bootstrap/tmp_reaper.py` through `timeout --kill-after=`, whose `--max-seconds` value is strictly less than its timeout value, whose `>>` log target does not start with `/tmp`, which passes `--root /tmp` and at least one `--hos-tmp-root`, and which is scheduled daily (numeric minute and hour fields, `*` day fields); (c) `bootstrap/hos_bootstrap.sh` and `bootstrap/hos_install.sh` each mention `tmp_reaper.py`, and neither *invokes* `crontab`: every occurrence of the word is in a comment, or inside an `echo`/`printf` argument or heredoc message; (d) `CLAUDE.md` has the §8.3 row pointing at `bootstrap/tmp_reaper.py`. |
+| C3 | `tests/framework/test_consumer_framework_files.py`: `bootstrap/tmp_reaper.py` is listed in `framework_consumer_files.txt` and exists, and `scripts/framework/tmp_reaper.py` does not exist. |
 
 ### S3
 
@@ -636,19 +981,25 @@ Add one paragraph to the cycle-start section (AC-8). It says that every lock-acq
 
 ---
 
-## 11. Files and slicing: one PR, three ordered commits (AC-15)
+## 11. Files and slicing: one PR, four ordered commits (AC-15, amended by the disk-temp ruling)
 
-One PR. Each commit is green on the inner loop on its own, so the human can review commit by commit, and S1 can be cherry-picked out without a redesign if S2 draws objections.
+One PR. Each commit must pass the inner loop on its own, so the human can review commit by commit, and S1 can be cherry-picked out without a redesign. AC-15 approved three commits. The disk-temp ruling splits round 2's S2 into **S2a** (where temp lives) and **S2b** (the reaper), because the reaper's roots and trigger depend on S2a.
 
 | Commit | Files | Protected? |
 |---|---|---|
-| **1. S1: tests only (Layer 1)** | `pyproject.toml` (pytest ini); `tests/conftest.py`; new `tests/tmp_hygiene.py`; new `tests/framework/test_tmp_hygiene_plugin.py`, `tests/framework/test_tmp_hygiene_static.py`; the ~18 test files of §7.1; the §4.8 `child_env` sites; `tests/automation/test_dimension_sweep_cli.py` and `tests/automation/test_agent_invoke_wrapper.py` (§7.2) | No. **Sole permitted exception:** a script fix that §4.9 requires to keep this commit green. It is limited to TMPDIR correctness or a cleanup trap, and is named in the commit message and the PR body. |
-| **2. S2: reaper and hooks (Layer 2)** | new `scripts/framework/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py`; `scripts/framework/run_tests_inner_loop.sh`; `bin/hos-cron` (cycle-start site); `scripts/framework/framework_consumer_files.txt`; `CLAUDE.md`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py`; `tests/automation/test_hos_cron.py`; regenerated `SCRIPTS-INDEX.md` / CODEOWNERS via `regen_all.sh` | Yes |
-| **3. S3: literal-/tmp script fixes** | `scripts/oversight/run_validators.sh`, `scripts/oversight/gates/secret_scan.sh`, `scripts/oversight/gates/security_scan.sh`, `scripts/framework/validate_agents.sh`, `scripts/framework/validate_scripts.sh`, `bootstrap/hos_install.sh`; new `tests/framework/test_tmp_template_static.py` | Yes |
+| **1. S1: tests only (Layer 1). UNCHANGED by every round-3 ruling.** | `pyproject.toml` (pytest ini); `tests/conftest.py`; new `tests/tmp_hygiene.py`; new `tests/framework/test_tmp_hygiene_plugin.py` and `tests/framework/test_tmp_hygiene_static.py`; the ~18 test files of §7.1; the §4.8 `child_env` sites; `tests/automation/test_dimension_sweep_cli.py` and `tests/automation/test_agent_invoke_wrapper.py` (§7.2) | No. **Sole permitted exception:** a script fix that §4.9 requires to keep this commit green. It is limited to TMPDIR correctness or a cleanup trap, and is named in the commit message and the PR body. |
+| **2. S2a: disk temp root (Layer 0)** | new `bootstrap/lib/hos_tmp_root.py`; `scripts/framework/config.sh` (`HOS_TMP_ROOT="../.tmp"`); `scripts/framework/install.sh` (prompt, default, refusal); `bin/hos-cron` (§2A.3 export only); `bin/hos-human`; `scripts/framework/run_tests_inner_loop.sh` (§2A.3 `TMPDIR` inherit/derive); `contract/sandbox-policy.template.json` (§2A.4); `scripts/framework/gen_sandbox_config.py` (D15 guard); `docs/SANDBOX-POLICY.md`; `scripts/framework/framework_consumer_files.txt` (ship `bootstrap/lib/hos_tmp_root.py`); new `tests/framework/test_hos_tmp_root.py` and `tests/framework/test_hos_human_launcher.py`; `tests/framework/test_gen_sandbox_config.py`; `tests/automation/test_hos_cron.py` (L1); `tests/framework/test_run_tests_inner_loop.py` (L3); `tests/framework/test_install*.py` (I1) | Yes |
+| **3. S2b: machine reaper, triggers and docs (Layer 2)** | new `bootstrap/tmp_reaper.py`; new `tests/framework/test_tmp_reaper.py` and `tests/framework/test_tmp_reaper_packaging.py`; `scripts/framework/run_tests_inner_loop.sh` (§8.1 pre-run); `bin/hos-cron` (§8.5 low-space trigger); `scripts/framework/framework_consumer_files.txt`; `bootstrap/hos_bootstrap.sh` and `bootstrap/hos_install.sh` (informational notes only); `bootstrap/README.md`; `CLAUDE.md`; `docs/CRON-SETUP.md`; `tests/framework/test_run_tests_inner_loop.py` (C1); `tests/automation/test_hos_cron.py` (C2); `tests/framework/test_consumer_framework_files.py`; `SCRIPTS-INDEX.md` and CODEOWNERS regenerated via `regen_all.sh` | Yes |
+| **4. S3: literal-/tmp script fixes. UNCHANGED in content** (all sites become `"${TMPDIR:-/tmp}"`, human item 5) | `scripts/oversight/run_validators.sh`, `scripts/oversight/gates/secret_scan.sh`, `scripts/oversight/gates/security_scan.sh`, `scripts/framework/validate_agents.sh`, `scripts/framework/validate_scripts.sh`, `bootstrap/hos_install.sh` (traps); new `tests/framework/test_tmp_template_static.py` | Yes |
 
-- **The PR as a whole** is protected-surface and human-gated (CODEOWNERS). The combined risk tier is HIGH, because of a scheduled recursive delete. Second review runs at HIGH (agy + codex) over the full diff, with an explicit `--tier HIGH`.
-- In commit 2, the `allocated_bytes()` walk moves out of `tests/tmp_hygiene.py` into `tmp_reaper.py`. The plugin then loads it via `load_module_from_path` (one implementation, D41). Scripts never import from `tests/`.
-- **One-time backlog.** The ~1371 leaked top-level entries on the dev host are removed by the first reaper run after merge, at the next cron cycle start, for every entry older than 24 h. A human may run `--dry-run` first. **Never delete them inline from an agent session.**
+- **The PR as a whole** touches protected surfaces and needs human approval (CODEOWNERS). The combined risk tier is HIGH, for two reasons: a recursive delete, and a change to the shipped sandbox template and every launcher's `TMPDIR`. Second review runs at HIGH (agy + codex) over the full diff, with an explicit `--tier HIGH`.
+- In commit 3, the `allocated_bytes()` walk moves from `tests/tmp_hygiene.py` into `bootstrap/tmp_reaper.py`. The plugin then loads it via `load_module_from_path` (one implementation, D41). Scripts never import from `tests/`.
+- **S1 coder note.** Nothing in S1 changes. S1 must pass whether `TMPDIR` is unset (`/tmp`) or set to a disk role dir, because every S1 mechanism follows `TMPDIR`. T1 and the other mini-project tests already pin `PYTEST_DEBUG_TEMPROOT` under `tmp_path`.
+- **One-time backlog.**
+  - The `/tmp` backlog of class T entries and class P dirs is removed by the first inner-loop run after merge (`--root /tmp`, §8.1), for every entry older than 24 h.
+  - Class S trees are removed by the daily crontab entry once the operator installs it, or by a low-space trigger.
+  - A human may run `--dry-run` first.
+  - **Never delete the backlog inline from an agent session.**
 
 ---
 
@@ -657,52 +1008,76 @@ One PR. Each commit is green on the inner loop on its own, so the human can revi
 | # | For | Question | Resolution |
 |---|---|---|---|
 | Q1 | human | Should class T reap regular files older than 24 h? | **YES** (human ruling, 2026-10-09). D12, §5.4. |
-| Q2 | architect | Session-wide TMPDIR redirect? | **ACCEPTED** with AC-5/6/7/12. Breakage policy in §4.9. |
-| Q3 | architect | Leak allowlist vs holding S1? | **Moot under a single PR.** `LEAK_ALLOWLIST` is empty at merge (AC-13). |
-| Q4 | human | Budget value? | **50 MiB** (human, 2026-10-09), lower-only via env. |
-| Q5 | architect | Reap on hos-cron early-exit paths? | **Moved to cycle start** as the single site (AC-8). Not on the suspended or lock-held exits. |
-| Q6 | human | Large ad-hoc trees such as `/tmp/claude/hos1935`? | **Superseded: DELETE when stale** (later human ruling, 2026-10-09: *"We should have the cleanup script zap the large scratch copies if older than 24h"*). Class S (D13, §5.7), cron-only via `--scratch`, under the full §5.7 safety bar. Large entries outside the scratch roots stay report-only (`--measure`, AC-10). |
+| Q2 | architect | Session-wide TMPDIR redirect? | **ACCEPTED** with AC-5/6/7/12. Breakage policy in §4.9. It now nests under the role's disk dir (§2A). |
+| Q3 | architect | Leak allowlist, or hold S1? | **Moot under a single PR.** `LEAK_ALLOWLIST` is empty at merge (AC-13). |
+| Q4 | human | Budget value? | **50 MiB** (human, 2026-10-09). It can only be lowered, via env. It is measured on basetemp, which now lives on the disk root. |
+| Q5 | architect | Reap on hos-cron early-exit paths? | AC-8 moved the call to cycle start. The packaging ruling removed the unconditional call. The disk-temp ruling **restored a conditional call** at the AC-8 placement: the low-space trigger (§8.5). It still does not run on the suspended or lock-held exits. |
+| Q6 | human | Large ad-hoc trees such as `/tmp/claude/hos1935`? | **Superseded: DELETE when stale** (human rulings, 2026-10-09: *"We should have the cleanup script zap the large scratch copies if older than 24h"* and *"Anything older than a day goes."*). Class S (D13, §5.7) is on by default, has no size floor, and applies the full liveness bar. |
 | Q7 | architect | Legacy `.lock` threshold? | **24 h ACCEPTED.** It is now the uniform D11 threshold. |
 
-### 12.1 Open merge-time human confirmations (AC-16): do not block coding
+### 12.1 Human rulings, 2026-10-09: all RESOLVED
 
-Coding proceeds on the architect's recommended defaults below. The PR body must carry these as explicit checkboxes, and the human ticks them at merge review. If any is answered "no", the change it names is localized: a §5 policy constant or a §8 call site, with no redesign.
+The human's words, verbatim:
+- *"Yes. Anything older than a day goes."*
+- *"The script will be a script per machine, so it should be shipped with HOS and consumer can install it in cron if needed."*
+- *"RAM for pytest results etc is silly."*, with the hidden per-role disk root `<clone>/../.tmp/<role>` approved.
 
-| # | Confirmation | Default implemented |
-|---|---|---|
-| (a) | The cron reaper acts on **all** of the user's `pytest-of-<user>` runs and `tmp*` orphans in the shared tmp root, and on stale class-S scratch trees under `<root>/claude/`, including other repos and projects of the same user. | Yes, all of the user's entries. Safety comes from §5.6 and §5.7, not from repo scoping. |
-| (b) | The reaper ships **default-on to consumers** (`framework_consumer_files.txt` plus the `bin/hos-cron` call with `--scratch`): a new scheduled deletion on every consumer host, including class-S deletion of stale `/tmp/claude/*` trees. | Yes, shipped enabled. The human's class-S ruling was framed for this host; whether consumers get class S on by default is part of this confirmation. |
-| (c) | The reaper runs at **cycle start** (AC-8), not at "cron-cycle wrap-up" as the issue says. | Cycle start. |
-| (d) | (technical-design addition) Non-empty `tmp*` dirs are reported, never reaped (§5.4), even though the ruling says "anything over 24h". | Report only. |
+| # | Question | Human ruling | Where applied |
+|---|---|---|---|
+| (a) | Reap **all** of the user's `pytest-of-<user>` runs, `tmp*` orphans and class-S trees, including other repos'? | **YES.** | §5.3, §5.4, §5.7. Safety comes from the liveness checks, not from repo scoping. |
+| (b) | Ship enabled to consumers? | **YES.** Class S is **on by default**, which overrides R2-4's per-host opt-in. The script ships in every consumer install. The per-machine opt-out is `--no-scratch`. There is no per-project key. | §5.1, §8.2–§8.4 |
+| (c) | Reap at cron cycle start? | **YES, then reshaped.** The packaging ruling removed the unconditional call. The disk-temp ruling restored a *conditional* one, the low-space trigger. The routine sweep is the daily operator crontab. | §8.2, §8.5; Q5 |
+| (d) | Delete non-empty `tmp*` dirs older than 24 h? | **YES**, through the full class-S procedure only. | §5.4, §5.7.2 shape 2, RS16 |
+| (e) | 10 MiB size floor (R2-3)? | **NO.** Anything older than a day goes, whatever its size. | §5.7.4 step 6 removed; RS13 inverted |
+| (f) | Unpushed-git-work veto (R2-1)? | **Dropped.** R2-1's **never-execute-git** rule is **kept**, and no git metadata is read. | §5.6, §5.7.4; RS11 inverted; RS12 kept |
+| (g) | Where does HOS temp live? | **On disk, per role**: `HOS_TMP_ROOT` in `config.sh`, default the hidden `<clone>/../.tmp`, dirs `.tmp/{worker,overseer,human}` at mode 0700. Each role's sandbox gets only its own dir. `/tmp/claude` drafts and `/tmp/claude-<uid>` stay on `/tmp`. | D14–D16, §2A |
+| (h) | How often does the daily cron run, and is a trigger needed? | **Daily** is enough, given in-run cleanup. A **low-space trigger** at `hos-cron` cycle start covers a squeeze between runs. | §8.2, §8.5 |
+
+The PR body records these rulings verbatim. Nothing in §12.1 remains open.
 
 ---
 
 ## 13. Self-flag
 
-RISK: HIGH. A scheduled path (`bin/hos-cron` cycle start, every lock-acquiring cycle) gains a recursive delete under the shared tmp root. It also unlinks regular files (D12), and, with `--scratch`, recursively deletes whole agent scratch trees that no test created (D13, the highest-consequence path). Safety rests on:
-- the uniform 24 h age;
-- a mandatory non-age signal;
-- a live-process veto;
+RISK: HIGH. Four things change:
+1. Where every HOS role writes temp: the launchers' `TMPDIR`, the shipped sandbox template and the sandbox generator all change.
+2. HOS ships a machine-level script that recursively deletes trees under `/tmp` and under every HOS disk temp root. By default that includes whole agent scratch trees (class S), with **no** size floor and **no** git-state protection, as the human ruled.
+3. Three things run that script: a daily operator crontab (unsandboxed, class S active), a low-space trigger in `bin/hos-cron` (unsandboxed, class S active), and the inner-loop pre-run (`--no-scratch`).
+4. On disk, a runaway now fills the root filesystem instead of hitting a per-user quota (§2A.6).
+
+Safety rests on the following, all kept in full:
+- the uniform 24 h age, taken over the whole tree for class S;
+- the host-view requirement and a completely parsed `/proc/locks`;
+- the live-process and held-lock vetoes;
 - kernel flock semantics on a dev/ino-verified inode;
-- ownership and pattern allowlists;
-- the refusal to run as root.
+- the session-dir exclusions;
+- the walked-identity re-checks;
+- the ownership, device and pattern allowlists;
+- explicit roots only, with role-named children only under `--hos-tmp-root`;
+- refusal to run as root;
+- no subprocess or exec;
+- a 0700 per-role temp dir outside every work tree, granted to that role's sandbox only.
 
-A wrong rule could delete a live run's working dir, or a file that a process in an invisible namespace holds open. That fails that run, but it cannot cross users.
+A wrong rule could delete a live run's working dir or an idle agent's scratch work. A wrong sandbox entry could deny a role its own temp dir; that is fail closed, and the launchers fall back to `/tmp`. Neither failure can cross users.
 
-CONFIDENCE: MEDIUM-HIGH.
-- The pytest behavior was read from source, and the architect re-verified it.
-- The cross-namespace flock behavior was verified by experiment.
-- Unverified: the cause of the fifth dir (§1.3 item 4), and the full-suite effect of the redirect (Q2, which the coder verifies).
+CONFIDENCE: MEDIUM.
+- Verified: the pytest behaviour (read from source and re-verified by the architect), and the cross-namespace flock behaviour and `/proc/locks` filtering (by experiment).
+- Unverified: whether Claude Code honours `TMPDIR` for its own `claude-<uid>` dir (§2A.3 verification item), and the full-suite effect of a disk `TMPDIR` (the coder verifies it).
+- The fifth-dir cause (§1.3 item 4) remains unknown.
 
-BLAST RADIUS: every pytest run in this repo (S1); every hos-cron cycle and inner-loop run in this repo and in consumer installs (S2); six gate, validator and installer scripts (S3).
+BLAST RADIUS:
+- S1: every pytest run in this repo.
+- S2a: every HOS launcher invocation (worker, overseer, human); every inner-loop run; the shipped sandbox template and generator; consumer installs via `install.sh` and `config.sh`.
+- S2b: every inner-loop run (classes P and T), every `hos-cron` cycle (the probe; a reap only when low), and every machine whose operator installs the daily entry (all classes).
+- S3: six gate, validator and installer scripts.
 
-Change classification (this revision): **clarifying + additive**. No design or code has been approved against the round-1 body, so no sign-off is orphaned.
+Change classification (this revision): **structural**. The temp location, sandbox grants and slicing all change. Every structural element is **human-ruled** (the disk-temp, packaging and §12.1 rulings), so the CORE rule that "every structural change escalates to a human before writing" is satisfied by those rulings. The architect's round-3 check is still required. No code has been approved against any earlier body. S1, which the coder is building now, is explicitly unchanged, and S3 is unchanged in content. No sign-off is orphaned.
 
 ## Human Review Required
 
-- The PR touches protected surfaces (`bin/**`, `scripts/framework/**`, `scripts/oversight/gates/**`, `scripts/oversight/run_validators.sh`, `bootstrap/**`, `CLAUDE.md`). Human approval is mandatory under CODEOWNERS.
-- Merge-time confirmations §12.1(a)–(d) are open.
-- Q1 and Q4 are answered by the human ruling of 2026-10-09. Q6 is answered by the later human ruling (delete stale scratch trees, class S).
+- The PR touches these protected surfaces: `bin/**` (`hos-cron`, `hos-human`), `bootstrap/**`, `contract/sandbox-policy.template.json`, `scripts/framework/**` (including `config.sh`, `install.sh` and `gen_sandbox_config.py`), `scripts/oversight/gates/**`, `scripts/oversight/run_validators.sh`, `docs/SANDBOX-POLICY.md` and `CLAUDE.md`. Human approval is mandatory under CODEOWNERS.
+- §12.1 is fully resolved by the human rulings of 2026-10-09.
+- The human is already adding the §2A.4 entries to the live Human `settings.local.json` by hand. After merge, `gen_sandbox_config.py --check` must report no divergence for that clone. If it does, the template and the hand edit disagree, and the template wins.
 
 ---
 
@@ -983,3 +1358,79 @@ Requesting the architect's round-2 diff check (round 2 of 5).
 - A non-dumpable same-uid process is invisible to the veto (R2-6).
 
 **Affected sign-offs:** none. No design or code has been approved against the round-2 body. R2-1..R2-8 touch only §0, §5.7, §8.2–§8.4, §10 (RS/C2) and §12.1, so S1/S3 work started now is not orphaned.
+
+---
+
+## Round-3 revision note (technical-design, 2026-10-09)
+
+This revision applies, in order:
+1. the architect's R2-1..R2-8;
+2. the human's §12.1 answers: *"Yes. Anything older than a day goes."*;
+3. the packaging ruling: *"The script will be a script per machine, so it should be shipped with HOS and consumer can install it in cron if needed."*;
+4. the **disk-temp ruling**: *"RAM for pytest results etc is silly."*, with the hidden per-role root `<clone>/../.tmp/<role>` and the exact sandbox entry shape.
+
+**Restructured, not just amended.** The disk-temp ruling moves the design's centre of gravity, from cleaning a RAM tmpfs to placing HOS temp on disk. These sections are therefore rewritten:
+- §0 now has three layers, with **Layer 0: placement**;
+- new §1.4 and §2A;
+- new decisions D14–D16;
+- §5.1, the roots model;
+- §8.2 and the new §8.5;
+- §10 S2a and S2b;
+- §11, now four commits;
+- §12.1 and §13.
+
+**Change classification: structural.** Every structural element is human-ruled.
+
+**Affected sign-offs.** None exist against the earlier bodies.
+- **S1 is unchanged.** The S1 coder working in parallel needs no change.
+- **S3 is unchanged in content.**
+
+**Startup-artifact-gap check.** Should placement have been settled in the initial design? Arguably yes: the TD treated `/tmp`'s tmpfs nature as a given rather than as a decision. That gap was caught before any S2 code existed, and the S1 contract is placement-agnostic. No approved code is orphaned, so no `startup-artifact-gap` issue is needed. The coordinator may file one for the record if it wishes.
+
+### R2 conditions
+
+| Condition | Status | Applied in |
+|---|---|---|
+| **R2-1**: no destruction of unpushed git work; never execute git | **Split by human ruling.** The **git-state veto is dropped** (§12.1(f)): it is not a liveness check. The **never-execute** rule is **kept**, and no git metadata is read at all. | §5.6, §5.7.4 (git bullet), the §5.7 residuals; RS11 inverted (unpushed, stash and worktree trees are reaped, and no `.git` content is opened); RS12 kept |
+| **R2-2**: removal identity = walked identity | **Applied.** `walked_id` is captured at step 1. Step 8(a) re-checks it before the rename (mismatch → `SKIP raced`, no rename), and 8(c) re-checks after the rename. | §5.7.4 steps 1 and 8; RS9(i) |
+| **R2-3**: 10 MiB size floor | **Withdrawn by human ruling** (§12.1(e): "anything older than a day goes"). | §5.7.4 step 6 marked removed; RS13 inverted (stale 4 KiB and 1 MiB trees are reaped) |
+| **R2-4**: class S opt-in per host via `projects.conf` | **Overridden by human ruling** (§12.1(b)). Class S is on by default; the opt-out is `--no-scratch` on the crontab line. The packaging ruling removed the per-project key entirely. | §5.1, §8.2; the C2 key tests are dropped |
+| **R2-5**: `/proc/locks` parsing contract | **Applied.** Hex major:minor and decimal inode. Any unparseable line disables class S. The NSpid check runs first. | §5.7.1 items 2–3; RS4 hex-spy variant; RS15 |
+| **R2-6**: definition of "complete index" | **Applied.** Complete means "not cut short by `--max-seconds`". Per-process EACCES/ENOENT/ESRCH errors are counted, and `SKIP proc-unreadable <n>` is printed. Non-dumpable daemons are an accepted residual. | §5.3.3, §5.7.1 item 4, §5.7 residuals; RS15 |
+| **R2-7**: class S must not swallow other classes' entries, and runs last | **Applied.** Order is P, then T, then S, with a shared budget across roots. Scratch-root children named `pytest-of-*`, `garbage-*` (except `garbage-hos-*`), `tmp*` or `hos-*` → `SKIP other-class`. Truncated walks repeat; that cost is accepted. | §5.2, §5.7 intro, §5.7.2; RS14 |
+| **R2-8**: §0 accuracy | **Applied, then re-stated** for the later rulings. §0 names the single over-24 h exception (newest finished failed run), says class S is on by default (no floor), names the three invocation paths, and names the disk-exhaustion residual. The §8.3 CLAUDE.md row and the §8.4 CRON-SETUP section state the machine-cron, explicit-roots and `--no-scratch` facts. | §0, §8.3, §8.4 |
+
+### Earlier architect conditions superseded or amended by the round-3 human rulings (for the round-3 check)
+
+| Condition | Effect | Where |
+|---|---|---|
+| **AC-8** (single cycle-start call site, not on suspended or lock-held exits) | **Amended twice.** The packaging ruling removed the *unconditional* call. The disk-temp ruling restored a *conditional* call at exactly AC-8's placement: the low-space trigger, which reaps only on a failed write probe. AC-8's "after lock and `_audit`, before usage-pause, preflight and auth; not on suspended or lock-held" holds unchanged for that call. The routine sweep is the daily operator crontab. | §8.2, §8.5; Q5 |
+| **AC-9** (dedicated bound, inner < outer) | **Restated per caller.** The trigger uses `_TR_BOUND` `timeout --kill-after=5 30` with `--max-seconds 20`. The daily cron uses `timeout --kill-after=10 600` with `--max-seconds 540`. The inner loop uses `--max-seconds 20`, unwrapped (best-effort). | §5.1, §8.1, §8.2, §8.5 |
+| **C2** (cron test) | **Restated.** C2 now tests the low-space trigger (placement, args, auth-failure case, suspended and lock-held, audit-only-when-low, bound). The static packaging assertions moved to the new **C4**. The `TMPDIR` export test is **L1**. | §10 |
+| **AC-15** (one PR, three ordered commits) | **Amended: four commits.** S2 splits into S2a (disk temp root) and S2b (reaper and triggers), because S2b's roots and trigger depend on S2a. S1 and S3 are unchanged. | §11 |
+| **AC-10** (per-cycle cost; `user_bytes` only under `--measure`) | **Kept; extended to multiple roots.** Counts are summed over roots. The summary field `root=` becomes `roots=<n>`, and the §5.5 regex is updated. The trigger's healthy-cycle cost is two 64 KiB probes plus listings, with no `/proc` scan. | §5.5, §8.5 |
+| **AC-16** (merge-time human confirmations) | **Resolved** by the human. | §12.1 (a)–(h) |
+| **§5.1 `--tmp-root`** (round 1) | **Replaced** by repeatable `--root` and `--hos-tmp-root`. The no-flag default is unchanged (`$TMPDIR` or `/tmp`). | §5.1; R12, RS17 |
+| **D4 / D6 / Q4** (redirect, guardrail, 50 MiB) | **Unchanged in contract.** They now operate on the disk role dir, because basetemp follows `TMPDIR`. | §0, §2A.3, §12 |
+
+### Disk-temp ruling (human, 2026-10-09; amended to the hidden `.tmp`)
+
+| Requirement | Applied in |
+|---|---|
+| 1. `HOS_TMP_ROOT` in `config.sh`, chosen at install. Default `<clone>/../.tmp`. Single-clone fallback, justified. Per-role dir `$HOS_TMP_ROOT/<role>`. | D14; §2A.1. The fallback is `~/.local/state/hos/tmp/<slug>`: it avoids a shared `~/src/.tmp` mixing projects, and stays out of the sandbox's `~/.cache` re-allow. §2A.2 adds the resolver, which parses the value statically and never sources config. |
+| 2. Launchers export `TMPDIR` and create it 0700 (`hos-cron`, `hos-human`, inner loop). S1 hygiene is kept, nested under the root. | §2A.3 (`hos-human` exports after the token mint, so the token temp file stays on RAM); L1–L3. S1 is unchanged (§11 note). |
+| 3. Role isolation in the sandbox template, with exact entries. | §2A.4: the human's exact shape, `__HOS_ROOT__/.tmp/__ROLE__` in `additionalDirectories`, `allowRead` and `allowWrite`, plus `Read`/`Edit(...)/**` and `Bash(quota *)`/`Bash(findmnt *)`. **No new placeholder** (D15). The generator fails closed if `config.sh` moves the root or if `HOS_ROOT` is not under `HOME`. `/tmp` entries are unchanged. Enforcement for worker and overseer arrives with #1146, which is stated plainly. SANDBOX-POLICY.md §3 and §5 updates are specified. G1, G2. |
+| 4. Keep `/tmp/claude` drafts and `/tmp/claude-<uid>` | §0 Layer 0, §2A.4 (the `/tmp` grants are unchanged), §8.3 CLAUDE.md sentence. Verification item: does Claude Code honour `TMPDIR` for its own dir (§2A.3)? |
+| 5. S3 fixes use `"${TMPDIR:-/tmp}"` | §7.3 (already so); §11 commit 4 |
+| 6. The reaper sweeps `/tmp` and every configured HOS root. Daily cron. Low-space trigger at cycle start. | §5.1 roots, chosen as explicit flags only (no discovery, which keeps the tool simple and non-executing); §8.2 daily recipe with explicit roots; §8.5 trigger via `tmp_reaper.py --if-low-space` (write probe catching EDQUOT/ENOSPC; `df` is not used); RS17, RS18, C2. |
+| 7. `$HOS_TMP_ROOT` is never inside a git work tree; refuse at install. | D16; §2A.5 (static `.git` ancestor walk, plus not-inside-the-clone); the resolver falls back to `/tmp` and warns; `install.sh` refuses; H2, I1. |
+| 8. Residual: disk exhaustion | §0, §2A.6, §13 |
+
+### Choices beyond the rulings, flagged for the architect
+
+- `local` is a fourth role name, for inner-loop runs that no launcher started. It is not granted in any sandbox template; the template is for launcher roles only.
+- The inner loop's pre-run sweeps `--root "${TMPDIR:-/tmp}" --root /tmp`, so it also clears the `/tmp` class-P/T backlog.
+- The trigger reaps **all** roots when **any** probe is low, because one quota or disk is shared.
+- `TMP_REAPER_RUN` first line, and `roots=<n>` in the summary.
+
+Requesting the architect's round-3 diff check (round 3 of 5).
