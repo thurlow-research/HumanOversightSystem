@@ -987,13 +987,18 @@ echo ""
 # ── Finalize machine-readable verdict header ─────────────────────────────────
 # Step 1 (SPEC-331): second_review_logic.py rewrites verdict, highest_severity,
 # and unresolved_findings from the prose/JSON classifier. The module reads
-# $OUTFILE and rewrites it in place.
-python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate --file "$OUTFILE"
+# $OUTFILE and rewrites it in place. It also consults the ledger (#2036), for
+# JSON sections only: a request_changes section whose every blocking finding is
+# ledgered fixed/filed:#N aggregates as approve. Without this, `process` below
+# (which never downgrades, #683) could never converge a step whose only blocking
+# finding was already filed. Prose sections are not ledger-aware.
+python3 "$(dirname "$0")/oversight/second_review_logic.py" aggregate \
+    --file "$OUTFILE" --ledger "$LEDGER_FILE"
 
 # Step 2 (SPEC-78 C1): validation_logic.py process rewrites new_blocking_count
-# (and re-keys verdict) against the step-scoped convergence ledger. This is the
-# only place that reads the ledger — imported from validation_logic.py, never
-# reimplemented here (C1). A missing ledger is treated as empty (zero seen
+# (and re-keys verdict) against the step-scoped convergence ledger. It is
+# imported from validation_logic.py, never reimplemented here (C1); step 1 reuses
+# its ledger helpers the same way. A missing ledger is treated as empty (zero seen
 # fingerprints), so first-run behavior is unchanged.
 #
 # --strict-empty (#1737): every real invocation of this script writes at least

@@ -24,6 +24,7 @@ touches no GitHub state.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -48,8 +49,17 @@ _AGY_APPROVE = (
 )
 
 
-def _run(tmp_path: Path, agy_json: str, score: str) -> subprocess.CompletedProcess:
-    """Drive the real script with a fake `agy` emitting `agy_json` on PATH."""
+def _run(
+    tmp_path: Path, agy_json: str, score: str, ledger_entry: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Drive the real script with a fake `agy` emitting `agy_json` on PATH.
+
+    `ledger_entry`, if given, is written to the step-3 convergence ledger first.
+    """
+    if ledger_entry is not None:
+        ledger_dir = tmp_path / ".claudetmp" / "second-review"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (ledger_dir / "step3-ledger.jsonl").write_text(json.dumps(ledger_entry) + "\n")
     # A real file to review → non-empty DIFF_CONTENT via the `--files` cat fallback
     # (tmp cwd is not a git repo, so `git diff HEAD` fails and the script cats it).
     (tmp_path / "target.py").write_text("def f():\n    return 1\n")
@@ -128,3 +138,46 @@ def test_approve_verdict_still_passes(tmp_path):
     assert r.returncode == 0, f"approve must exit 0, got {r.returncode}\n{r.stderr}"
     fields = _artifact_fields(tmp_path, "3")
     assert fields.get("verdict") == "approve", fields
+
+
+# #2036: aggregate must honour the ledger, or the no-downgrade ratchet in
+# `process` makes a step whose only blocking finding is already filed
+# unconvergeable. The finding below is `blocking` (not critical/high) so the run
+# never shells out to `gh`.
+_AGY_LEDGERABLE = (
+    '{"reviewer":"agy","lens":"correctness",'
+    '"findings":[{"severity":"blocking","file":"target.py","category":"CWE-20",'
+    '"line":1,"finding":"unvalidated input","suggestion":"validate"}],'
+    '"verdict":"request_changes","summary":"one blocking finding"}'
+)
+
+
+def _ledger(disposition: str) -> dict:
+    return {"files": ["target.py"], "class": "CWE-20", "disposition": disposition}
+
+
+def test_ledgered_filed_blocking_finding_converges(tmp_path):
+    r = _run(tmp_path, _AGY_LEDGERABLE, score="0.5", ledger_entry=_ledger("filed:#2032"))
+    assert r.returncode == 0, f"ledgered finding must converge, got {r.returncode}\n{r.stderr}"
+    fields = _artifact_fields(tmp_path, "3")
+    assert fields.get("verdict") == "approve", fields
+    assert fields.get("new_blocking_count") == "0", fields
+
+
+def test_ledgered_fixed_blocking_finding_converges(tmp_path):
+    r = _run(tmp_path, _AGY_LEDGERABLE, score="0.5", ledger_entry=_ledger("fixed"))
+    assert r.returncode == 0, r.stderr
+
+
+def test_unledgered_blocking_finding_still_fails_closed(tmp_path):
+    r = _run(tmp_path, _AGY_LEDGERABLE, score="0.5")
+    assert r.returncode == 2, r.stderr
+
+
+def test_noise_and_residual_dispositions_do_not_converge(tmp_path):
+    for disposition in ("noise", "residual"):
+        case = tmp_path / disposition
+        case.mkdir()
+        r = _run(case, _AGY_LEDGERABLE, score="0.5", ledger_entry=_ledger(disposition))
+        assert r.returncode == 2, f"{disposition} must not resolve: {r.returncode}\n{r.stderr}"
+        assert _artifact_fields(case, "3").get("verdict") == "request_changes"

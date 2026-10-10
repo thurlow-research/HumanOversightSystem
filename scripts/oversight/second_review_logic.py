@@ -33,9 +33,11 @@ verdict precedence are reproduced from the original heredoc exactly.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
+from pathlib import Path
 from typing import TypeGuard
 
 # Severity ordering: lower index = more severe. Unknown severity ranks as "none"
@@ -172,8 +174,50 @@ def _split_sections(content: str) -> list[str]:
     return sections
 
 
-def _aggregate_full(content: str) -> tuple[dict, bool]:
+def _load_validation_logic():
+    """validation_logic.py loaded by path, so this works both as a script and
+    when this module itself was loaded via spec_from_file_location (tests)."""
+    name = "_second_review_validation_logic"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = Path(__file__).resolve().parent / "validation_logic.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _all_blocking_ledgered(data: dict, seen: set[str]) -> bool:
+    """True iff a request_changes JSON review has >=1 blocking item (critical/
+    high/blocking in `findings` or `attacks`) and EVERY one is ledger-resolved
+    (#2036). A non-list `findings`/`attacks` is malformed and never downgrades.
+    Mirrors the ledger test `validation_logic.compute_verdict` applies, so this
+    step and `process` agree on what is NEW."""
+    vl = _load_validation_logic()
+    blocking = []
+    for key in ("findings", "attacks"):
+        items = data.get(key)
+        if items is None and key not in data:
+            continue
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if isinstance(item, dict):
+                sev = str(item.get("severity", "low")).strip().lower()
+                if sev in vl.BLOCKING_SEVERITIES:
+                    blocking.append(item)
+    return bool(blocking) and all(vl.is_ledger_resolved(i, seen) for i in blocking)
+
+
+def _aggregate_full(content: str, seen: set[str] | None = None) -> tuple[dict, bool]:
     """Aggregate reviewer sections → (result_dict, parsed_any_prose).
+
+    `seen` is the already-loaded set of resolving ledger fingerprints (#2036).
+    When given, a JSON request_changes section whose blocking findings are all
+    ledgered counts as approve; None (the default) leaves behaviour unchanged.
 
     result_dict has EXACTLY: verdict, highest_severity, unresolved_findings.
     parsed_any_prose is True if any reviewer section was parsed from prose (the
@@ -270,6 +314,8 @@ def _aggregate_full(content: str) -> tuple[dict, bool]:
                 sev = s
             if s in ("critical", "high"):
                 fc += 1
+        if v == "request_changes" and seen is not None and _all_blocking_ledgered(data, seen):
+            v, fc = "approve", 0  # every blocking finding already resolved (#2036)
         reviewers.append((name, v, sev, fc, "json"))
 
     # Aggregate. Precedence: error > request_changes > unparseable > approve.
@@ -303,7 +349,7 @@ def _aggregate_full(content: str) -> tuple[dict, bool]:
     return result, parsed_any_prose
 
 
-def aggregate_verdicts(content: str) -> dict:
+def aggregate_verdicts(content: str, seen: set[str] | None = None) -> dict:
     """Compute the aggregate second-review verdict from output-file text.
 
     Returns EXACTLY {verdict, highest_severity, unresolved_findings}:
@@ -313,8 +359,10 @@ def aggregate_verdicts(content: str) -> dict:
 
     Pure: takes the full output-file text as a string (binding 2 / spec R2),
     performs no file I/O. The CLI shim handles reading and rewriting the file.
+    `seen` (optional, already-loaded ledger fingerprints) makes JSON sections
+    ledger-aware; see _aggregate_full (#2036).
     """
-    return _aggregate_full(content)[0]
+    return _aggregate_full(content, seen)[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1021,8 +1069,21 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
     # ACCIDENT (a caller that doesn't use `set -e`, or ignores this command's
     # exit code, would ship an artifact stuck at `pending` forever). Catch it
     # explicitly and write a deterministic `error` verdict instead.
+    # #2036: with --ledger, JSON sections whose blocking findings are all
+    # ledgered resolve to approve here. Any ledger-load failure fails closed
+    # (seen=None => no downgrade); it must never produce approve.
+    seen = None
+    if args.ledger:
+        try:
+            seen = _load_validation_logic().load_ledger(args.ledger)
+        except Exception as exc:
+            print(
+                f"second_review_logic aggregate: ledger unreadable ({type(exc).__name__}: "
+                f"{exc}); not applying ledger",
+                file=sys.stderr,
+            )
     try:
-        result, parsed_any_prose = _aggregate_full(content)
+        result, parsed_any_prose = _aggregate_full(content, seen)
     except Exception as exc:
         new_content = re.sub(r"^verdict: pending$", "verdict: error", content, flags=re.M)
         with open(args.file, "w", encoding="utf-8") as fh:
@@ -1204,6 +1265,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Aggregate verdict from an output file and rewrite its header in place.",
     )
     p_agg.add_argument("--file", required=True, help="second-review output file path")
+    p_agg.add_argument(
+        "--ledger",
+        default="",
+        help="optional convergence ledger path (#2036): a JSON request_changes section "
+        "whose blocking findings are all ledgered fixed/filed:#N aggregates as approve",
+    )
     p_agg.set_defaults(func=_cmd_aggregate)
 
     p_salv = sub.add_parser(
