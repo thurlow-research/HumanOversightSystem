@@ -10,6 +10,7 @@ stub records its stdin so the prompt can be inspected. Hermetic.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -27,7 +28,9 @@ _CLEAN_CODEX = (
     '{"reviewer":"codex","lens":"security-adversarial","findings":[],'
     '"verdict":"approve","summary":"no exploitable defect"}'
 )
-_CLEAN_AGY = '{"reviewer":"agy","lens":"correctness","findings":[],"verdict":"approve","summary":"ok"}'
+_CLEAN_AGY = (
+    '{"reviewer":"agy","lens":"correctness","findings":[],"verdict":"approve","summary":"ok"}'
+)
 _CPS_TERMS = ("HOA", "building", "resident", "booking", "TOTP")
 
 
@@ -44,22 +47,36 @@ def _run(tmp_path: Path, *, with_agy: bool = False, config: str = "") -> tuple:
         (cfg / "config.sh").write_text(config)
     stub = _minimal_stub_path(tmp_path)
     for tool in ("realpath",):
-        import shutil
-
+        resolved = shutil.which(tool)
+        assert resolved is not None, f"{tool} not on PATH"
         target = stub / tool
         if not target.exists():
-            target.symlink_to(shutil.which(tool))
+            target.symlink_to(resolved)
     captured = tmp_path / "codex_prompt.txt"
     _exe(
         stub / "codex",
         f"#!/usr/bin/env bash\ncat > {captured}\ncat <<'JSON'\n{_CLEAN_CODEX}\nJSON\n",
     )
     if with_agy:
-        _exe(stub / "agy", f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{_CLEAN_AGY}\nJSON\n")
+        _exe(
+            stub / "agy",
+            f"#!/usr/bin/env bash\ncat > /dev/null\ncat <<'JSON'\n{_CLEAN_AGY}\nJSON\n",
+        )
     env = dict(os.environ)
     env["PATH"] = str(stub)
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--files", "target.py", "--step", "1853", "--tier", "HIGH", "--score", "0.9"],
+        [
+            "bash",
+            str(_SCRIPT),
+            "--files",
+            "target.py",
+            "--step",
+            "1853",
+            "--tier",
+            "HIGH",
+            "--score",
+            "0.9",
+        ],
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
