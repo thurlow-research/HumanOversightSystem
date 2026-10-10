@@ -66,6 +66,7 @@ BLOCKING_SEVERITIES = ("critical", "high", "blocking")
 # clean pass. It counts as a blocking finding and is never dedup-silenced — a
 # timeout has no stable fingerprint and must always gate (fail-closed, #670).
 ERROR_VERDICT = "error"
+_KNOWN_VERDICTS = ("approve", "request_changes", ERROR_VERDICT)
 
 # Verdict ordering for the pre-PR pipeline ratchet (higher = more blocking).
 # `run_second_review.sh` runs `second_review_logic.py aggregate` (which rewrites
@@ -322,7 +323,11 @@ def compute_verdict(
     and may carry a block-level `verdict`. A block whose verdict is "error" (a
     reviewer that timed out / failed to review) counts as one NEW blocking
     finding so the aggregate fails closed rather than silently approving (#670).
-    The ledger at `ledger_path` supplies the seen-fingerprint set.
+    Likewise (#2032), one NEW blocking finding is counted for a malformed block
+    (`findings`/`attacks` present but not a list, or a present `verdict` that is
+    not approve/request_changes/error) and for a `request_changes` block with no
+    dict entries in findings+attacks. `request_changes` blocks that carry dict
+    findings keep fingerprint/ledger semantics. The ledger at `ledger_path` supplies the seen-fingerprint set.
 
     Returns {verdict, highest_severity, blocking_count, new_blocking_count,
     dedup_count}. Does NOT decide pass/fail exit codes and does NOT read the pass
@@ -337,7 +342,36 @@ def compute_verdict(
         # blocking signal in its own right, regardless of its (empty) findings.
         # It always counts as NEW blocking: an operational failure has no stable
         # fingerprint to dedup against, so it must never be silenced (#670).
-        if str(block.get("verdict", "")).lower() == ERROR_VERDICT:
+        has_verdict = "verdict" in block
+        block_verdict = str(block.get("verdict", "")).strip().lower()
+        synthetic_blocking = False
+        if block_verdict == ERROR_VERDICT:
+            synthetic_blocking = True
+        else:
+            # Fail closed on a block whose own verdict is not backed by usable
+            # findings (#2032). `_safe_items` below coerces malformed values to
+            # `[]`, so without this a `{"verdict":"request_changes",
+            # "findings":null}` block aggregated to approve with zero blocking
+            # findings. At most ONE synthetic finding per block; malformed takes
+            # precedence. Like #670 it has no fingerprint, so it is always NEW.
+            #  - malformed: `findings`/`attacks` present but not a list, or a
+            #    present `verdict` outside approve/request_changes/error. An
+            #    ABSENT verdict is legitimate (verdict-less findings blocks).
+            #  - basis-less request_changes: no dict entry in findings+attacks.
+            # request_changes blocks WITH dict findings keep fingerprint/ledger
+            # semantics (convergence below); the `routed_from_verdict` audit
+            # field is deliberately ignored (ADR-2033 AD-8).
+            malformed = (
+                ("findings" in block and not isinstance(block["findings"], list))
+                or ("attacks" in block and not isinstance(block["attacks"], list))
+                or (has_verdict and block_verdict not in _KNOWN_VERDICTS)
+            )
+            basis_less = block_verdict == "request_changes" and not any(
+                isinstance(i, dict)
+                for i in _safe_items(block, "findings") + _safe_items(block, "attacks")
+            )
+            synthetic_blocking = malformed or basis_less
+        if synthetic_blocking:
             blocking_count += 1
             new_blocking_count += 1
             if SEVERITIES.index("blocking") < SEVERITIES.index(highest):
