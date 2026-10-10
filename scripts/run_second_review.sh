@@ -411,8 +411,12 @@ if [[ -n "${THREAT_MODEL_FILE:-}" ]]; then
         _tm_reason="resolves into a dot-path (hidden file or directory)"
     else
         # One bounded read (no separate size check) so the cap cannot be raced.
-        _tm_content=$(head -c "$((THREAT_MODEL_MAX_BYTES + 1))" -- "$_tm_path" 2>/dev/null) || _tm_content=""
-        if [[ $(LC_ALL=C; echo "${#_tm_content}") -gt $THREAT_MODEL_MAX_BYTES ]]; then
+        # The trailing sentinel stops $(...) stripping newlines before the length check.
+        _tm_content=$(head -c "$((THREAT_MODEL_MAX_BYTES + 1))" -- "$_tm_path" 2>/dev/null; printf x)
+        _tm_content=${_tm_content%x}
+        if [[ -z "$_tm_content" ]]; then
+            _tm_reason="empty or unreadable"
+        elif [[ $(LC_ALL=C; echo "${#_tm_content}") -gt $THREAT_MODEL_MAX_BYTES ]]; then
             _tm_reason="larger than ${THREAT_MODEL_MAX_BYTES} bytes"
         else
             THREAT_MODEL_CONTEXT="$_tm_content"

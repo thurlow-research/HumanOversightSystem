@@ -103,6 +103,8 @@ def test_configured_threat_model_replaces_default(tmp_path):
         ("absolute", "/etc/hostname", "resolves outside the repo root"),
         ("symlink", "link.md", "resolves outside the repo root"),
         ("oversize", "big.md", "larger than 16384 bytes"),
+        ("newline_at_cap", "nl.md", "larger than 16384 bytes"),
+        ("empty", "empty.md", "empty or unreadable"),
         ("dotdir", ".claudetmp/tm.md", "resolves into a dot-path (hidden file or directory)"),
         ("dotfile", ".env", "resolves into a dot-path (hidden file or directory)"),
     ],
@@ -122,6 +124,10 @@ def test_invalid_threat_model_falls_back_with_warning(tmp_path, setup, value, re
         (repo / value).write_text("DOT-SECRET")
     if setup == "dotfile":
         (repo / value).write_text("DOT-SECRET")
+    if setup == "newline_at_cap":
+        (repo / "nl.md").write_bytes(b"A" * 16384 + b"\n" + b"B" * 3615)
+    if setup == "empty":
+        (repo / "empty.md").write_text("")
     if setup == "oversize":
         (repo / "big.md").write_text("A" * 16385)
     r, prompt = _run(repo, config=f'export THREAT_MODEL_FILE="{value}"\n')
