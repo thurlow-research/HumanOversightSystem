@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"f652cac3e523ea9381120bfba27c003c10421391","pr":2064,"reason":"#1215 skip: same head, no new comments since HUMAN_REQUIRED escalation; verdict deduped by wrapper; awaiting human DECIDE","tier":"MEDIUM"}
