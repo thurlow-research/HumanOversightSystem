@@ -91,6 +91,7 @@ During the install, you will be prompted for six values. These are saved to `scr
 | `PROJECT_NON_AGENT_TOKENS` | Pipe-separated hostnames/services in your agent files that aren't agent names — the static checker needs these to avoid false positives | `"myserver\|mydb\|staging-host"` |
 | `DESIGN_PACK_PATH` | Path to your design system doc, relative to repo root — included in AI review | `"docs/design-system/DESIGN.md"` or blank if none |
 | `SPEC_FILE` | Path to your primary spec file — substituted into agent files that read the spec directly (`spec-red-team`, `ux-designer`) | `"Specs/SPEC-1.md"` |
+| `THREAT_MODEL_FILE` | Optional. Path (relative to repo root) to a project-owned markdown file describing your threat model; read by the codex security lens in `run_second_review.sh` and sent off-machine to codex. Must be a regular file inside the repo, ≤16 KiB; otherwise a warning is printed and a generic default is used. Set manually in `config.sh` | `"docs/THREAT-MODEL.md"` or blank for the generic default |
 | `DESIGN_PACK_DIR` | Path to your design pack directory — substituted into `ux-designer` | `"Specs/design-pack"` or blank if none |
 
 **Placeholder substitution:** after copying agent files, `install.sh` automatically replaces `{PROJECT_NAME}`, `{SPEC_FILE}`, and `{DESIGN_PACK_DIR}` in every copied agent file with the values you provided. This means agent files work out of the box without manual editing.

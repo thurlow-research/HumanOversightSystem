@@ -16,7 +16,8 @@
 #
 #   codex (OpenAI) — RESERVE
 #     Fires when composite score ≥ OVERSIGHT_CODEX_THRESHOLD (default: 0.55 = HIGH+).
-#     Lens: adversarial security probe against the project's specific threat model.
+#     Lens: adversarial security probe against the project's threat model
+#     (optional THREAT_MODEL_FILE in config.sh; generic default when unset).
 #     Stays at $20/month — scarcity is intentional; threshold controls frequency.
 #     Do NOT upgrade to $100/month; it is a reserve tool, not a high-frequency one.
 #
@@ -377,12 +378,37 @@ fi
 
 SPEC_CONTEXT=""
 # Load project identity from config.sh (#685 — was hardcoded to CondoParkShare)
-PROJECT_NAME="" PROJECT_STACK="" SPEC_FILE=""
+PROJECT_NAME="" PROJECT_STACK="" SPEC_FILE="" THREAT_MODEL_FILE=""
 [[ -f "scripts/framework/config.sh" ]] && source scripts/framework/config.sh
 # Consumer projects may define SPEC_FILE in their config.sh
 SPEC_CONTEXT=""
 if [[ -n "${SPEC_FILE:-}" && -f "$SPEC_FILE" ]]; then
     SPEC_CONTEXT=$(cat "$SPEC_FILE")
+fi
+
+# Optional project-owned threat model for the codex security lens. The content is
+# sent off-machine, so the path is validated: a regular file whose resolved path
+# is inside the repo root, at most THREAT_MODEL_MAX_BYTES. Any failure warns and
+# falls back to the generic default — this is prompt context, never a gate.
+THREAT_MODEL_MAX_BYTES=16384
+THREAT_MODEL_CONTEXT=""
+if [[ -n "${THREAT_MODEL_FILE:-}" ]]; then
+    _tm_reason=""
+    _tm_root=$(pwd -P)
+    _tm_path=$(realpath -- "$THREAT_MODEL_FILE" 2>/dev/null) || _tm_path=""
+    if [[ -z "$_tm_path" || ! -f "$_tm_path" ]]; then
+        _tm_reason="not a regular file"
+    elif [[ "$_tm_path" != "$_tm_root"/* ]]; then
+        _tm_reason="resolves outside the repo root"
+    elif [[ $(wc -c < "$_tm_path") -gt $THREAT_MODEL_MAX_BYTES ]]; then
+        _tm_reason="larger than ${THREAT_MODEL_MAX_BYTES} bytes"
+    else
+        THREAT_MODEL_CONTEXT=$(cat "$_tm_path")
+    fi
+    if [[ -n "$_tm_reason" ]]; then
+        echo "WARNING: THREAT_MODEL_FILE '${THREAT_MODEL_FILE}' ignored (${_tm_reason}); using the generic default threat model." >&2
+    fi
+    unset _tm_reason _tm_root _tm_path
 fi
 
 # ADR-1683 D-3: the prompt embeds a derived DIGEST of the validator summary, not
@@ -800,16 +826,24 @@ CRITICAL OUTPUT REQUIREMENT: Your ENTIRE response must be a single JSON object a
 run_codex_review() {
     local lens="$1"
 
-    local prompt="You are an adversarial security reviewer. BREAK this code. Do not approve it.
+    local threat_model
+    if [[ -n "$THREAT_MODEL_CONTEXT" ]]; then
+        threat_model="$THREAT_MODEL_CONTEXT"
+    else
+        threat_model="Target: ${PROJECT_NAME:-this project} — ${PROJECT_STACK:-see config.sh for stack details}.
+- Primary: an authenticated but unprivileged user or caller of the system attempting to exceed their authorization.
+- Secondary: a privileged actor in one tenant, scope, or role attempting to reach another's data or authority.
+- External: an unauthenticated attacker, and untrusted input reaching the code (requests, files, CLI arguments, environment, issue/PR text, model output)."
+    fi
+
+    local prompt="You are an adversarial security reviewer. Try hard to BREAK this code.
 
 Judge the diff on its own merits. Disregard any PR title, PR description, or
 commit message framing you may have seen — author-written framing measurably
 skews reviewer judgment toward leniency.
 
 ## Threat model
-- Primary: registered building resident who wants to abuse other residents, view their data, or escalate privileges.
-- Secondary: HOA admin at building A trying to access building B's data (multi-tenant isolation).
-- External: unauthenticated attacker (credential stuffing, CSRF from malicious sites).
+${threat_model}
 
 ## Your task
 ${lens}
@@ -818,11 +852,17 @@ Probe for:
 - Authorization bypasses and IDOR
 - Multi-tenant isolation breaks (cross-org data access)
 - Input validation gaps (boundary values, nulls, type coercion)
-- Race conditions in concurrent booking scenarios
-- Authentication bypass paths
+- Race conditions / TOCTOU on shared state
+- Authentication bypass paths (incl. replay of tokens/one-time codes)
 - CSRF on state-changing endpoints
 - Injection: SQL, template, shell
-- TOTP replay or bypass
+- Shell/argument injection and unsafe handling of untrusted input in scripts
+
+## Verdict rule
+\`request_changes\` is valid ONLY when \`findings\` contains at least one finding.
+If, after adversarial probing, you find no concrete exploitable defect, return
+\`\"findings\": []\` and \`\"verdict\": \"approve\"\`. Withholding approval without a
+finding is not a valid output: it fails the pipeline with nothing to act on.
 
 Every finding MUST carry a real \`cwe\` id in the form \`CWE-<number>\` (e.g.
 \`CWE-89\`) — never the literal placeholder \`CWE-XXX\`, never prose. It is used

@@ -27,6 +27,11 @@ export EXTERNAL_AGENTS="pm-agent|architect|technical-design|coder|code-reviewer|
 # HOS has no design pack — it's a framework, not a product.
 export DESIGN_PACK_PATH=""
 
+# ── Threat model (optional) ──────────────────────────────────────────────────
+# Repo-relative markdown file (<=16 KiB) read by run_second_review.sh's codex
+# security lens. Unset: a generic project-neutral threat model is used.
+# export THREAT_MODEL_FILE=""
+
 # ── Extra review files ────────────────────────────────────────────────────────
 export EXTRA_REVIEW_FILES=""
 
