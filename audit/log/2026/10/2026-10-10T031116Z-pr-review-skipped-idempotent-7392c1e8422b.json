@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"dbfef50291b9d50d9490e973e20ae67b93c91553","pr":2063,"reason":"#1215: PROPOSE_ONLY verdict review already posted at this head 02:57Z (HIGH, NO ACTION, server-side gate not detected #1653/#1588); no new commits, comments, reviews, or threads since; no label required"}
