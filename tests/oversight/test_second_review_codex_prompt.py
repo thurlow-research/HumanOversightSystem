@@ -117,7 +117,7 @@ def test_configured_threat_model_replaces_default(tmp_path):
     [
         ("missing", "nope.md", "not a regular file"),
         ("dotdot", "../outside.md", "resolves outside the repo root"),
-        ("absolute", "/etc/hostname", "resolves outside the repo root"),
+        ("absolute", "<abs>", "resolves outside the repo root"),
         ("symlink", "link.md", "resolves outside the repo root"),
         ("oversize", "big.md", "larger than 16384 bytes"),
         ("newline_at_cap", "nl.md", "larger than 16384 bytes"),
@@ -132,7 +132,9 @@ def test_invalid_threat_model_falls_back_with_warning(tmp_path, setup, value, re
     repo.mkdir()
     if setup == "dotdot":
         value = f"../{outside.name}"
-    if setup in ("dotdot", "symlink"):
+    if setup == "absolute":
+        value = str(outside)
+    if setup in ("dotdot", "absolute", "symlink"):
         outside.write_text("OUTSIDE-SECRET")
     if setup == "symlink":
         (repo / "link.md").symlink_to(outside)
