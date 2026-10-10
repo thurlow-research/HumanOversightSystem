@@ -49,6 +49,16 @@ def _ledger(tmp_path) -> str:
         {"verdict": "lgtm", "findings": []},
         {"verdict": "Request_Changes "},
         {"verdict": "approve", "findings": None},
+        {"verdict": "request_changes", "findings": [{}]},
+        {"verdict": "request_changes", "findings": [{"severity": "Major"}]},
+        {"verdict": "request_changes", "findings": [{"severity": ["high"]}]},
+        {"verdict": "request_changes", "findings": [{"severity": None}]},
+        {"verdict": "request_changes", "attacks": []},
+        {"verdict": None, "findings": []},
+        {"verdict": 5, "findings": []},
+        {"verdict": ["approve"], "findings": []},
+        {"verdict": True, "findings": []},
+        {"verdict": "", "findings": []},
     ],
 )
 def test_malformed_or_basisless_block_gates(tmp_path, block):
@@ -140,3 +150,30 @@ def test_second_review_aggregate_parity_null_findings():
         '## codex — Security\n```json\n{"verdict":"request_changes","findings":null}\n```\n\n'
     )
     assert second_review_logic.aggregate_verdicts(content)["verdict"] != "approve"
+
+
+@pytest.mark.parametrize("sev", ["low", "medium", " Low "])
+def test_request_changes_with_explicit_nonblocking_severity_is_a_basis(tmp_path, sev):
+    block = {"verdict": "request_changes", "findings": [{"severity": sev, "files": ["a"]}]}
+    result = compute_verdict([block], _ledger(tmp_path))
+    assert result["verdict"] == "approve"
+    assert result["blocking_count"] == 0
+
+
+def test_attacks_only_request_changes_with_explicit_severity_no_synthetic(tmp_path):
+    block = {"verdict": "request_changes", "attacks": [{"severity": "low", "files": ["a"]}]}
+    result = compute_verdict([block], _ledger(tmp_path))
+    assert result["verdict"] == "approve"
+    assert result["blocking_count"] == 0
+
+
+def test_malformed_block_plus_clean_approve_block_counts_one(tmp_path):
+    blocks = [{"verdict": "approve", "findings": []}, {"verdict": "lgtm", "findings": []}]
+    result = compute_verdict(blocks, _ledger(tmp_path))
+    assert result["verdict"] == "request_changes"
+    assert result["new_blocking_count"] == 1
+
+
+def test_two_malformed_blocks_count_two(tmp_path):
+    blocks = [{"findings": None}, {"verdict": "request_changes"}]
+    assert compute_verdict(blocks, _ledger(tmp_path))["new_blocking_count"] == 2

@@ -325,9 +325,11 @@ def compute_verdict(
     finding so the aggregate fails closed rather than silently approving (#670).
     Likewise (#2032), one NEW blocking finding is counted for a malformed block
     (`findings`/`attacks` present but not a list, or a present `verdict` that is
-    not approve/request_changes/error) and for a `request_changes` block with no
-    dict entries in findings+attacks. `request_changes` blocks that carry dict
-    findings keep fingerprint/ledger semantics. The ledger at `ledger_path` supplies the seen-fingerprint set.
+    not approve/request_changes/error) and for a basis-less `request_changes`
+    block: one with no dict entry in findings+attacks whose `severity` is a
+    string naming a known severity (a placeholder like `{}` is not a basis).
+    `request_changes` blocks with such a finding keep fingerprint/ledger
+    semantics. The ledger at `ledger_path` supplies the seen-fingerprint set.
 
     Returns {verdict, highest_severity, blocking_count, new_blocking_count,
     dedup_count}. Does NOT decide pass/fail exit codes and does NOT read the pass
@@ -338,13 +340,13 @@ def compute_verdict(
     new_blocking_count = 0
 
     for block in findings:
+        has_verdict = "verdict" in block
+        block_verdict = str(block.get("verdict", "")).strip().lower()
+        synthetic_blocking = False
         # A reviewer that failed to review (timeout → verdict "error") is a
         # blocking signal in its own right, regardless of its (empty) findings.
         # It always counts as NEW blocking: an operational failure has no stable
         # fingerprint to dedup against, so it must never be silenced (#670).
-        has_verdict = "verdict" in block
-        block_verdict = str(block.get("verdict", "")).strip().lower()
-        synthetic_blocking = False
         if block_verdict == ERROR_VERDICT:
             synthetic_blocking = True
         else:
@@ -357,7 +359,11 @@ def compute_verdict(
             #  - malformed: `findings`/`attacks` present but not a list, or a
             #    present `verdict` outside approve/request_changes/error. An
             #    ABSENT verdict is legitimate (verdict-less findings blocks).
-            #  - basis-less request_changes: no dict entry in findings+attacks.
+            #  - basis-less request_changes: no dict entry in findings+attacks
+            #    whose `severity` is a str naming a known severity. `{}`,
+            #    `{"severity":"Major"}` and `{"severity":["high"]}` are
+            #    placeholders, not a basis. An explicit low/medium finding IS a
+            #    basis (severity-keyed design; ADR-2033 AD-8 shape).
             # request_changes blocks WITH dict findings keep fingerprint/ledger
             # semantics (convergence below); the `routed_from_verdict` audit
             # field is deliberately ignored (ADR-2033 AD-8).
@@ -368,6 +374,8 @@ def compute_verdict(
             )
             basis_less = block_verdict == "request_changes" and not any(
                 isinstance(i, dict)
+                and isinstance(i.get("severity"), str)
+                and i["severity"].strip().lower() in SEVERITIES
                 for i in _safe_items(block, "findings") + _safe_items(block, "attacks")
             )
             synthetic_blocking = malformed or basis_less
