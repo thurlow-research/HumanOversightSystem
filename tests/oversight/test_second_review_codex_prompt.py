@@ -103,6 +103,8 @@ def test_configured_threat_model_replaces_default(tmp_path):
         ("absolute", "/etc/hostname", "resolves outside the repo root"),
         ("symlink", "link.md", "resolves outside the repo root"),
         ("oversize", "big.md", "larger than 16384 bytes"),
+        ("dotdir", ".claudetmp/tm.md", "resolves into a dot-path (hidden file or directory)"),
+        ("dotfile", ".env", "resolves into a dot-path (hidden file or directory)"),
     ],
 )
 def test_invalid_threat_model_falls_back_with_warning(tmp_path, setup, value, reason):
@@ -115,14 +117,27 @@ def test_invalid_threat_model_falls_back_with_warning(tmp_path, setup, value, re
         outside.write_text("OUTSIDE-SECRET")
     if setup == "symlink":
         (repo / "link.md").symlink_to(outside)
+    if setup == "dotdir":
+        (repo / ".claudetmp").mkdir()
+        (repo / value).write_text("DOT-SECRET")
+    if setup == "dotfile":
+        (repo / value).write_text("DOT-SECRET")
     if setup == "oversize":
         (repo / "big.md").write_text("A" * 16385)
     r, prompt = _run(repo, config=f'export THREAT_MODEL_FILE="{value}"\n')
     assert prompt, r.stderr
     assert f"WARNING: THREAT_MODEL_FILE '{value}' ignored ({reason})" in r.stderr, r.stderr
     assert "OUTSIDE-SECRET" not in prompt
+    assert "DOT-SECRET" not in prompt
     assert "unauthenticated attacker" in prompt
     assert r.returncode == 0, r.stderr
+
+
+def test_file_exactly_at_cap_is_accepted(tmp_path):
+    (tmp_path / "TM.md").write_text("UNIQUE-TM-MARKER " + "A" * (16384 - len("UNIQUE-TM-MARKER ")))
+    r, prompt = _run(tmp_path, config='export THREAT_MODEL_FILE="TM.md"\n')
+    assert "UNIQUE-TM-MARKER" in prompt, r.stderr
+    assert "WARNING: THREAT_MODEL_FILE" not in r.stderr
 
 
 def test_clean_approve_from_both_vendors_passes(tmp_path):
