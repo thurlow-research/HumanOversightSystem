@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import load_module_from_path
+from tests.tmp_hygiene import child_env
 
 _REPO = Path(__file__).resolve().parents[2]
 _GATE = _REPO / "scripts" / "oversight" / "gates" / "secret_scan.sh"
@@ -416,7 +417,7 @@ def _init_repo(tmp_path: Path) -> str:
         "GIT_COMMITTER_EMAIL": "t@example.invalid",
     }
     run = lambda *a: subprocess.run(  # noqa: E731
-        a, cwd=str(tmp_path), check=True, capture_output=True, env=env, timeout=60
+        a, cwd=str(tmp_path), check=True, capture_output=True, env=child_env(env), timeout=60
     )
     run("git", "init", "-q")
     (tmp_path / "seed.txt").write_text("seed\n")
@@ -451,7 +452,7 @@ def _commit_file(repo: Path, name: str, body: str) -> str:
             cwd=str(repo),
             check=True,
             capture_output=True,
-            env=_git_env(),
+            env=child_env(_git_env()),
             timeout=60,
         )
     return subprocess.run(

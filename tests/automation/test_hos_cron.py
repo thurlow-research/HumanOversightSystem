@@ -34,9 +34,12 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
+
+from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 
@@ -197,6 +200,10 @@ class CronEnv:
             # #1434: proves the resolved session-timeout value (flag/env/conf/
             # default precedence) reached the launched session's environment.
             '  echo "max_seconds=${HOS_CRON_MAX_SECONDS:-UNSET}"\n'
+            # #2054: the per-role disk temp dir the launcher exports.
+            '  echo "tmpdir=${TMPDIR:-UNSET}"\n'
+            '  echo "claude_code_tmpdir=${CLAUDE_CODE_TMPDIR:-UNSET}"\n'
+            '  echo "hos_tmp_dir=${HOS_TMP_DIR:-UNSET}"\n'
             f'}} > "{self.claude_log}"\n'
             'exit "${HOS_TEST_CLAUDE_EXIT:-0}"\n',
         )
@@ -443,6 +450,7 @@ class CronEnv:
             "scripts/framework/select_work_candidates.py",
             "scripts/framework/requester_trust.py",
             "scripts/framework/require_human_approval.py",
+            "bootstrap/lib/hos_tmp_root.py",  # #2054: the launcher's temp-dir resolver
         ):
             _dst = self.repo / _rel
             _dst.parent.mkdir(parents=True, exist_ok=True)
@@ -604,6 +612,8 @@ class CronEnv:
             # stub lives in $HOME/.local/bin, which the launcher prepends first.
             "PATH": "/usr/bin:/bin",
             "HOS_STATE_DIR": str(self.state),
+            # #2054: the temp-root resolver's trust registry must stay inside the test.
+            "HOS_TMP_REGISTRY_FILE": str(self.home / ".local" / "state" / "hos" / "tmp-roots.json"),
             "HOS_CRON_JITTER_MAX": "0",  # deterministic: no 0–60s sleep
             "HOS_CRON_MAX_SECONDS": "0",  # don't wrap claude stub in `timeout`
             "HOS_TEST_CLAUDE_LOG": str(self.claude_log),
@@ -631,7 +641,7 @@ class CronEnv:
             text=True,
             timeout=timeout,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def add_agent_files(self, *slugs: str) -> None:
@@ -725,7 +735,7 @@ class CronEnv:
                 slug,
             ],
             cwd=self.repo,
-            env=env,
+            env=child_env(env),
             capture_output=True,
             text=True,
             check=True,
@@ -1373,7 +1383,7 @@ class TestOverlapLock:
         proc_a = subprocess.Popen(
             [BASH, str(HOS_CRON), "--role", "worker", "--project", "hos"],
             cwd=str(cron.repo),
-            env=env,
+            env=child_env(env),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1454,7 +1464,7 @@ class TestOverlapLock:
         proc = subprocess.Popen(
             argv,
             cwd=str(cron.repo),
-            env=env,
+            env=child_env(env),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1862,6 +1872,197 @@ class TestCycleIdentity:
         assert env1["cycle_id"] != env2["cycle_id"]
 
 
+# ───────────── Per-role disk temp dir (#2054, TD §2A.3, test L1) ─────────────
+class TestHosTmpDir:
+    """bin/hos-cron exports TMPDIR, CLAUDE_CODE_TMPDIR and HOS_TMP_DIR, all set
+    to <HOS_TMP_ROOT>/<RoleDir>, into the launched session. The fake repo has no
+    config.sh, so the root is the default <repo>/../.tmp."""
+
+    def _record(self, cron) -> dict:
+        out = {}
+        for line in cron.claude_record().splitlines():
+            key, _, value = line.partition("=")
+            out[key] = value
+        return out
+
+    @pytest.mark.parametrize(
+        "role,role_dir,env_overrides",
+        [
+            ("worker", "Worker", None),
+            ("overseer", "Overseer", {"HOS_TEST_OPEN_PR_NUMS": "856"}),
+        ],
+    )
+    def test_session_gets_the_three_variables_and_a_0700_dir(
+        self, cron, role, role_dir, env_overrides
+    ):
+        r = cron.run(role=role, env_overrides=env_overrides)
+        assert r.returncode == 0, r.stdout + r.stderr
+        expected = cron.repo.parent / ".tmp" / role_dir
+        rec = self._record(cron)
+        assert rec["tmpdir"] == str(expected)
+        assert rec["claude_code_tmpdir"] == str(expected)
+        assert rec["hos_tmp_dir"] == str(expected)
+        assert expected.is_dir()
+        assert (expected.stat().st_mode & 0o777) == 0o700
+
+    def test_resolver_failure_warns_audits_and_continues(self, cron):
+        cron.install_cycle_log()
+        _write_exec(
+            cron.repo / "bootstrap" / "lib" / "hos_tmp_root.py",
+            "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('hos_tmp_root: boom\\n')\nsys.exit(3)\n",
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        warns = [ln for ln in r.stdout.splitlines() if "HOS tmp root unusable" in ln]
+        assert len(warns) == 1, r.stdout
+        assert "boom" in warns[0] and "TMPDIR left as-is" in warns[0]
+        records = cron.audit_records("cycle-tmp-root-fallback")
+        assert len(records) == 1
+        assert "boom" in json.dumps(records[0])
+        rec = self._record(cron)
+        # TMPDIR stays whatever was inherited (the hygiene fixture's session dir here).
+        assert not rec["tmpdir"].endswith("/.tmp/Worker")
+        assert (rec["claude_code_tmpdir"], rec["hos_tmp_dir"]) == (
+            "UNSET",
+            "UNSET",
+        ), "a failed resolve must export none of the three"
+        assert cron.claude_record(), "the cycle must still reach the launched session"
+
+    def test_a_refused_adoption_surfaces_the_remedy_in_the_warning_and_the_audit(self, cron):
+        cron.install_cycle_log()
+        foreign = cron.repo.parent / "otherproj"
+        for sub in (".git", "src"):
+            (foreign / "Worker" / sub).mkdir(parents=True)
+        cfg = cron.repo / "scripts" / "framework" / "config.sh"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(f'export HOS_TMP_ROOT="{foreign}"\n')
+        r = cron.run()
+        assert r.returncode == 0 and cron.claude_ran(), r.stdout + r.stderr
+        line = next(ln for ln in r.stdout.splitlines() if "HOS tmp root unusable" in ln)
+        assert "refusing to adopt" in line and "Remedy:" in line and "--reviewed" in line
+        (record,) = cron.audit_records("cycle-tmp-root-fallback")
+        assert "Remedy:" in json.dumps(record)
+        assert not (foreign / "Worker" / ".hos-tmp-root").exists()
+
+    def test_resolver_reason_is_stripped_of_control_bytes_in_the_log(self, cron):
+        _write_exec(
+            cron.repo / "bootstrap" / "lib" / "hos_tmp_root.py",
+            "#!/usr/bin/env python3\nimport sys\n"
+            "sys.stderr.write('hos_tmp_root: evil\\x1b[31mred\\x07bell\\n')\nsys.exit(3)\n",
+        )
+        r = cron.run()
+        line = next(ln for ln in r.stdout.splitlines() if "HOS tmp root unusable" in ln)
+        assert "evil" in line and not any(ord(c) < 32 for c in line)
+
+
+# ───────────── Low-space trigger (#2054, TD §8.5, test C2) ─────────────
+class TestLowSpaceTrigger:
+    """bin/hos-cron runs `tmp_reaper.py --if-low-space` once per lock-acquiring cycle,
+    after the TMPDIR export and before the usage-pause gate. The reaper is a stub."""
+
+    @pytest.fixture
+    def reaper(self, cron):
+        log = cron.repo.parent / "reaper_calls.log"
+        stub = cron.repo / "bootstrap" / "tmp_reaper.py"
+        _write_exec(
+            stub,
+            "#!/usr/bin/env python3\n"
+            "import os, sys, time\n"
+            f"open({str(log)!r}, 'a').write("
+            "' '.join(sys.argv[1:]) + ' TMPDIR=' + os.environ.get('TMPDIR', '-') + '\\n')\n"
+            "time.sleep(float(os.environ.get('HOS_TEST_REAPER_SLEEP', '0')))\n"
+            "print(os.environ.get('HOS_TEST_REAPER_OUT', 'TMP_REAPER_PROBE ok'))\n"
+            "sys.exit(int(os.environ.get('HOS_TEST_REAPER_RC', '0')))\n",
+        )
+        cron.install_cycle_log()
+        return SimpleNamespace(
+            log=log, calls=lambda: log.read_text().splitlines() if log.exists() else []
+        )
+
+    def test_invoked_once_with_the_documented_arguments(self, cron, reaper):
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        calls = reaper.calls()
+        assert len(calls) == 1
+        expected_root = cron.repo.parent / ".tmp"
+        assert calls[0].startswith(
+            f"--if-low-space --summary-only --max-seconds 20 --root /tmp --hos-tmp-root {expected_root}"
+        )
+        assert f"TMPDIR={expected_root}/Worker" in calls[0], "runs after the TMPDIR export"
+
+    def test_hos_tmp_root_pair_is_absent_when_the_resolver_fails(self, cron, reaper):
+        _write_exec(
+            cron.repo / "bootstrap" / "lib" / "hos_tmp_root.py",
+            "#!/usr/bin/env python3\nimport sys\nsys.stderr.write('hos_tmp_root: boom\\n')\nsys.exit(3)\n",
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert len(reaper.calls()) == 1 and "--hos-tmp-root" not in reaper.calls()[0]
+
+    def test_the_reaper_log_is_bounded_to_200_lines(self, cron, reaper):
+        flood = "\n".join(f"REAP T file /x/{i} 1" for i in range(500))
+        r = cron.run(env_overrides={"HOS_TEST_REAPER_OUT": flood + "\nTMP_REAPER_PROBE ok"})
+        assert r.returncode == 0
+        assert len([ln for ln in r.stdout.splitlines() if " REAP T file /x/" in ln]) <= 200
+
+    def test_still_invoked_when_the_token_mint_fails(self, cron, reaper):
+        _write_exec(cron.repo / "bootstrap" / "get_app_token.sh", "#!/usr/bin/env bash\nexit 1\n")
+        cron.run()
+        assert len(reaper.calls()) == 1
+
+    def test_not_invoked_when_suspended_or_lock_held(self, cron, reaper):
+        cron.suspend_file().parent.mkdir(parents=True, exist_ok=True)
+        cron.suspend_file().write_text(json.dumps({"suspended_at": "2026-06-23T00:00:00Z"}))
+        cron.run()
+        assert reaper.calls() == []
+        cron.suspend_file().unlink()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        r = cron.run()
+        assert "holds the lock" in r.stdout and reaper.calls() == []
+
+    def test_runs_before_the_usage_pause_gate(self, cron, reaper):
+        r = cron.run()
+        out = r.stdout
+        assert out.index("TMP_REAPER_PROBE ok") < out.index("[USAGE-OK]"), out
+
+    def test_a_healthy_probe_adds_no_audit_record(self, cron, reaper):
+        cron.run()
+        assert cron.audit_records("cycle-tmp-reap") == []
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"HOS_TEST_REAPER_OUT": "TMP_REAPER_PROBE low roots=/tmp\nTMP_REAPER roots=1 reaped=3"},
+            {"HOS_TEST_REAPER_RC": "1"},
+        ],
+    )
+    def test_a_low_probe_or_failure_is_audited_and_the_cycle_continues(self, cron, reaper, env):
+        r = cron.run(env_overrides=env)
+        assert r.returncode == 0 and cron.claude_ran(), r.stdout + r.stderr
+        records = cron.audit_records("cycle-tmp-reap")
+        assert len(records) == 1
+        if "HOS_TEST_REAPER_RC" in env:
+            assert records[0]["rc"] == 1
+        else:
+            assert "TMP_REAPER_PROBE low roots=/tmp" in json.dumps(records[0])
+
+    @pytest.mark.skipif(shutil.which("timeout") is None, reason="needs timeout(1)")
+    def test_a_reaper_past_the_bound_is_killed_and_the_cycle_continues(self, cron, reaper):
+        text = HOS_CRON.read_text()
+        assert "_TR_CHECK_TIMEOUT_S=30" in text and "_TR_CHECK_KILL_AFTER_S=5" in text
+        launcher = cron.copy_launcher(with_lib=True)
+        launcher.write_text(
+            launcher.read_text()
+            .replace("_TR_CHECK_TIMEOUT_S=30", "_TR_CHECK_TIMEOUT_S=1")
+            .replace("_TR_CHECK_KILL_AFTER_S=5", "_TR_CHECK_KILL_AFTER_S=1")
+        )
+        launcher.chmod(0o755)
+        r = cron.run(launcher=launcher, env_overrides={"HOS_TEST_REAPER_SLEEP": "30"}, timeout=25)
+        assert r.returncode == 0 and cron.claude_ran(), r.stdout + r.stderr
+        assert len(cron.audit_records("cycle-tmp-reap")) == 1
+
+
 # ───────────────────────────── Thin-env hardening ──────────────────────────
 class TestThinEnv:
     def test_claude_resolved_by_absolute_path_from_minimal_path(self, cron):
@@ -1946,7 +2147,7 @@ class TestGitCredentialsGuard:
             text=True,
             timeout=15,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def test_present_file_sources_normally(self, tmp_path):
@@ -4475,7 +4676,7 @@ def _run_sync(local: Path, env_extra=None) -> subprocess.CompletedProcess:
         text=True,
         timeout=30,
         check=False,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -5114,7 +5315,7 @@ class TestUsagePauseGate:
             capture_output=True,
             text=True,
             check=False,
-            env={"PATH": str(bindir), "HOME": str(tmp_path / "nohome")},
+            env=child_env({"PATH": str(bindir), "HOME": str(tmp_path / "nohome")}),
         )
         assert r.returncode == 0, r.stdout + r.stderr
         assert "[USAGE-OK]" in r.stdout and "THROUGH" in r.stdout

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO / "scripts" / "oversight" / "run_validators.sh"
 
@@ -62,7 +64,7 @@ def _run_filelist(cwd: Path, diff_ref: str) -> dict[str, list[str]]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
     assert res.returncode == 0, res.stderr
     split: dict[str, list[str]] = {

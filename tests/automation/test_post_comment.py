@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POST_COMMENT_SH = REPO_ROOT / "bootstrap" / "post_comment.sh"
@@ -96,7 +98,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
         )
 
     def capture(self) -> str:
@@ -181,11 +187,20 @@ def test_rejects_at_path_literal_body_content(h):
 
 
 def test_happy_path_posts_comment_and_revokes_token(h):
-    result = h.run([
-        "--number", "1154", "--body-file", str(h.body_file), "--app", "overseer",
-    ])
+    result = h.run(
+        [
+            "--number",
+            "1154",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "overseer",
+        ]
+    )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "https://github.com/test-owner/test-repo/issues/999#issuecomment-1"
+    assert (
+        result.stdout.strip() == "https://github.com/test-owner/test-repo/issues/999#issuecomment-1"
+    )
 
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH:--app overseer" in cap

@@ -5,34 +5,38 @@ Style mirrors test_validators_integration.py: import the validator module
 directly (conftest.py puts scripts/oversight/validators/ on sys.path) and
 call main([...]) against real temp files.
 """
+
 import os
-import tempfile
 import textwrap
 
 import pytest
-
 from shell_logic_check import main as sl_main
+
+from tests.tmp_hygiene import make_dir, named_temp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _tmpfile(content: str, suffix: str = ".sh") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+def _tmpfile(tmp_path, content: str, suffix: str = ".sh") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
 
 
-CLEAN_SH = textwrap.dedent("""\
+CLEAN_SH = textwrap.dedent(
+    """\
     #!/usr/bin/env bash
     set -euo pipefail
     echo "hello"
     python3 script.py "$@"
-""")
+"""
+)
 
 # Reproduces the canonical fixed-flag-parsing shape used throughout
 # bootstrap/*.sh (see bootstrap/create_branch.sh lines ~66-74).
-FLAG_PARSE_ONLY_SH = textwrap.dedent("""\
+FLAG_PARSE_ONLY_SH = textwrap.dedent(
+    """\
     #!/usr/bin/env bash
     ISSUE=""
     SLUG=""
@@ -44,13 +48,15 @@ FLAG_PARSE_ONLY_SH = textwrap.dedent("""\
         esac
     done
     echo "$ISSUE $SLUG"
-""")
+"""
+)
 
 # Several genuine decision constructs outside any flag-parsing loop. Includes
 # one single-outcome guard clause (no else — exempt) alongside a real if/else
 # fork, a case, and a while, so the count exercises both the exemption and
 # the constructs it must not swallow.
-LOGIC_HEAVY_SH = textwrap.dedent("""\
+LOGIC_HEAVY_SH = textwrap.dedent(
+    """\
     #!/usr/bin/env bash
     if [[ -z "$FOO" ]]; then
         echo "missing FOO"
@@ -68,24 +74,29 @@ LOGIC_HEAVY_SH = textwrap.dedent("""\
     while read -r line; do
         echo "$line"
     done < input.txt
-""")
+"""
+)
 
 # Guard-clause fixture pair: identical shape, differing only in else presence.
-GUARD_CLAUSE_NO_ELSE_SH = textwrap.dedent("""\
+GUARD_CLAUSE_NO_ELSE_SH = textwrap.dedent(
+    """\
     #!/usr/bin/env bash
     if [[ -z "$x" ]]; then
         err "x required"
     fi
-""")
+"""
+)
 
-GUARD_CLAUSE_WITH_ELSE_SH = textwrap.dedent("""\
+GUARD_CLAUSE_WITH_ELSE_SH = textwrap.dedent(
+    """\
     #!/usr/bin/env bash
     if [[ -z "$x" ]]; then
         a=1
     else
         a=2
     fi
-""")
+"""
+)
 
 
 class TestShellLogicCheck:
@@ -94,8 +105,8 @@ class TestShellLogicCheck:
         assert result["score"] == pytest.approx(0.0)
         assert result["raw_value"]["decision_construct_count"] == 0
 
-    def test_clean_launcher_scores_zero(self):
-        path = _tmpfile(CLEAN_SH)
+    def test_clean_launcher_scores_zero(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_SH)
         try:
             result = sl_main([path])
             assert result["score"] == pytest.approx(0.0)
@@ -103,8 +114,8 @@ class TestShellLogicCheck:
         finally:
             os.unlink(path)
 
-    def test_fixed_flag_parsing_shape_exempted(self):
-        path = _tmpfile(FLAG_PARSE_ONLY_SH)
+    def test_fixed_flag_parsing_shape_exempted(self, tmp_path):
+        path = _tmpfile(tmp_path, FLAG_PARSE_ONLY_SH)
         try:
             result = sl_main([path])
             assert result["score"] == pytest.approx(0.0)
@@ -113,8 +124,8 @@ class TestShellLogicCheck:
         finally:
             os.unlink(path)
 
-    def test_logic_heavy_file_scores_nonzero_with_findings(self):
-        path = _tmpfile(LOGIC_HEAVY_SH)
+    def test_logic_heavy_file_scores_nonzero_with_findings(self, tmp_path):
+        path = _tmpfile(tmp_path, LOGIC_HEAVY_SH)
         try:
             result = sl_main([path])
             # First if is a single-outcome guard clause (no else - exempt).
@@ -126,11 +137,11 @@ class TestShellLogicCheck:
         finally:
             os.unlink(path)
 
-    def test_hos_bootstrap_hard_exempted_regardless_of_content(self):
+    def test_hos_bootstrap_hard_exempted_regardless_of_content(self, tmp_path):
         # Construct a temp file at a path ending in bootstrap/hos_bootstrap.sh
         # (validator checks the path string, not file location) with plenty
         # of decision constructs, and assert it is fully exempted.
-        tmpdir = tempfile.mkdtemp()
+        tmpdir = make_dir(tmp_path)
         bootstrap_dir = os.path.join(tmpdir, "bootstrap")
         os.makedirs(bootstrap_dir)
         path = os.path.join(bootstrap_dir, "hos_bootstrap.sh")
@@ -147,12 +158,20 @@ class TestShellLogicCheck:
             os.rmdir(bootstrap_dir)
             os.rmdir(tmpdir)
 
-    def test_result_envelope(self):
-        path = _tmpfile(CLEAN_SH)
+    def test_result_envelope(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_SH)
         try:
             result = sl_main([path])
-            for key in ("dimension", "score", "raw_value", "weight",
-                        "evidence", "checklist_items", "findings", "error"):
+            for key in (
+                "dimension",
+                "score",
+                "raw_value",
+                "weight",
+                "evidence",
+                "checklist_items",
+                "findings",
+                "error",
+            ):
                 assert key in result
             assert result["dimension"] == "shell_logic"
         finally:

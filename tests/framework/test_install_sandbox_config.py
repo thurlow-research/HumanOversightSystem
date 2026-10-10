@@ -54,14 +54,20 @@ def _call_lib_func(func: str, *args: str) -> subprocess.CompletedProcess:
         'printf "rc=%s\\n" "$rc"\n'
     )
     return subprocess.run(
-        [BASH, "-c", script], capture_output=True, text=True, timeout=10, check=False,
+        [BASH, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
     )
 
 
 def _git(repo: Path, *args, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", str(repo)] + list(args),
-        capture_output=True, text=True, check=check,
+        capture_output=True,
+        text=True,
+        check=check,
     )
 
 
@@ -115,8 +121,8 @@ def clean_root():
     no dot) so paths derived under it satisfy sandbox_paths.sh's
     [A-Za-z0-9/-] charset guard. Removed on teardown.
 
-    tempfile.mkdtemp()'s own random suffix draws from
-    "abcdefghijklmnopqrstuvwxyz0123456789_" — it includes the underscore this
+    tempfile.mkdtemp()'s own random suffix draws from lowercase letters,
+    digits and the underscore — it includes the underscore this
     fixture exists to avoid, so it cannot be used directly here (it produced
     a ~1-in-5 flaky failure in exactly this suite before this fix). Build the
     suffix from a letters+digits-only alphabet instead.
@@ -155,9 +161,9 @@ class TestClaudeProjectState:
     def test_unset_home_rc1(self):
         script = (
             f'source "{LIB}"\n'
-            'unset HOS_TEST_HOME\n'
+            "unset HOS_TEST_HOME\n"
             'out=$(_hos_claude_project_state "$HOS_TEST_HOME" "/a/b/c")\n'
-            'rc=$?\n'
+            "rc=$?\n"
             'printf "%s\\nrc=%s\\n" "$out" "$rc"\n'
         )
         r = subprocess.run([BASH, "-c", script], capture_output=True, text=True, timeout=10)
@@ -256,7 +262,7 @@ def test_non_interactive_no_handoff_warns_and_writes_nothing(tmp_path):
 @pytest.mark.slow
 def test_happy_path_generates_policy_and_check_passes(clean_root):
     target = _git_init_target(clean_root / "target")
-    home = clean_root / "home"
+    home = clean_root  # HOS_ROOT must be under HOME (#2054 D15)
     handoff = clean_root / "handoff"
 
     r = _run_installer(
@@ -281,10 +287,17 @@ def test_happy_path_generates_policy_and_check_passes(clean_root):
 
     check = subprocess.run(
         [
-            "python3", str(REPO_ROOT / "scripts" / "framework" / "gen_sandbox_config.py"),
-            "--role", "human", "--clone-dir", str(target), "--check",
+            "python3",
+            str(REPO_ROOT / "scripts" / "framework" / "gen_sandbox_config.py"),
+            "--role",
+            "human",
+            "--clone-dir",
+            str(target),
+            "--check",
         ],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert check.returncode == 0, check.stdout + check.stderr
 
@@ -292,7 +305,7 @@ def test_happy_path_generates_policy_and_check_passes(clean_root):
 @pytest.mark.slow
 def test_charset_guard_dot_in_target_path_falls_back_to_warn(clean_root):
     target = _git_init_target(clean_root / "tgt.v2")
-    home = clean_root / "home"
+    home = clean_root  # HOS_ROOT must be under HOME (#2054 D15)
     handoff = clean_root / "handoff"
 
     r = _run_installer(
@@ -359,7 +372,7 @@ def test_failing_generator_does_not_abort_install(clean_root):
     <target>/scripts/framework/gen_sandbox_config.py take precedence over the
     real one in HOS_SOURCE, so this needs no changes to the real repo."""
     target = _git_init_target(clean_root / "target")
-    home = clean_root / "home"
+    home = clean_root  # HOS_ROOT must be under HOME (#2054 D15)
     handoff = clean_root / "handoff"
 
     stub_dir = target / "scripts" / "framework"
@@ -381,6 +394,6 @@ def test_failing_generator_does_not_abort_install(clean_root):
 
     assert "Sandbox policy generation failed" in combined
     assert not (target / ".claude" / "settings.local.json").exists()
-    assert (target / ".hos-release").exists(), (
-        "a stub generator failure must not abort the rest of the install"
-    )
+    assert (
+        target / ".hos-release"
+    ).exists(), "a stub generator failure must not abort the rest of the install"

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REVOKE_SH = REPO_ROOT / "bootstrap" / "revoke_app_token.sh"
@@ -49,7 +51,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(REVOKE_SH)],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
         )
 
     def capture(self) -> str:
@@ -139,10 +145,12 @@ def test_already_revoked_404_exits_zero(h):
 
 
 def test_curl_network_failure_exits_zero(h):
-    result = h.run(env_overrides={
-        "GH_TOKEN": "fake-token-abc123",
-        "REVOKE_CURL_EXIT": "1",
-    })
+    result = h.run(
+        env_overrides={
+            "GH_TOKEN": "fake-token-abc123",
+            "REVOKE_CURL_EXIT": "1",
+        }
+    )
     assert result.returncode == 0, result.stderr
 
 

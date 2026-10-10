@@ -22,6 +22,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "oversight" / "run_validators.sh"
 SHIM_SRC = Path(__file__).resolve().parent / "fixtures" / "validator_python_shim.py"
@@ -32,10 +34,9 @@ SPLIT_KEYS = ("ALL_FILES", "PY_FILES", "JS_FILES")
 
 def init_repo(cwd: Path, subject: str = "base") -> None:
     """Initialise a throwaway git repo with one seed commit."""
+
     def _git(*args: str) -> None:
-        subprocess.run(
-            ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
-        )
+        subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
     _git("init", "-q")
     _git("config", "user.email", "t@example.com")
@@ -51,9 +52,7 @@ def commit_files(cwd: Path, files: dict[str, str], subject: str = "add files") -
         path = cwd / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    subprocess.run(
-        ["git", "add", *files], cwd=str(cwd), check=True, capture_output=True, text=True
-    )
+    subprocess.run(["git", "add", *files], cwd=str(cwd), check=True, capture_output=True, text=True)
     subprocess.run(
         ["git", "commit", "-q", "-m", subject],
         cwd=str(cwd),
@@ -71,7 +70,7 @@ def filelist_split(cwd: Path, *script_args: str) -> dict[str, list[str]]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
     assert res.returncode == 0, f"seam run failed:\n{res.stdout}\n{res.stderr}"
     split: dict[str, list[str]] = {k: [] for k in SPLIT_KEYS}
@@ -143,7 +142,7 @@ def hermetic_run(
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
 
 

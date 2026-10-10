@@ -93,6 +93,7 @@ practice regardless of sandboxing.
   `--body "$(…)"`.
 - One command per Bash call.
 - Literal paths — `/tmp/claude/out.json`, never `"$TMPDIR/out.json"`.
+- Large or throwaway scratch (repo copies, `git archive`/clone review copies, test output) goes under `$TMPDIR` — run `mktemp -d` once and reuse the printed literal path. Never put it in `.claudetmp/` (persistent state, never reaped) or `/tmp/claude/` (small command artifacts only). Rules: "Temp and working-state locations" in `contract/OVERSIGHT-CONTRACT.md` §1.
 
 If a command is blocked, **say so and stop.** Never retry with
 `dangerouslyDisableSandbox`, and never route around a boundary you believe is

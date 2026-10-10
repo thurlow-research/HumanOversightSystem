@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUERY_ISSUES_SH = REPO_ROOT / "bootstrap" / "query_issues.sh"
@@ -153,7 +155,7 @@ class Harness:
             text=True,
             timeout=30,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def capture(self) -> str:

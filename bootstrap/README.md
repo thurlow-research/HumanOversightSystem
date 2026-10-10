@@ -9,6 +9,7 @@ by hand.
 |---|---|---|---|
 | `hos_bootstrap.sh` | **machine** — Python, ScanCode, gh, pip pkgs; delegates to `setup_clis.sh` for the agent CLIs | once per machine | may need it |
 | `setup_clis.sh` | **machine** — Node + `claude`/`codex`/`agy` + browser auth (repo-independent) | once per machine (called by `hos_bootstrap.sh`) | no |
+| `tmp_reaper.py` | **machine** — temp reaper (#2054); `hos_bootstrap.sh` copies it to `~/.local/share/hos/`; the operator schedules that copy in their own crontab (`docs/CRON-SETUP.md`) | daily, operator-installed | no |
 | `hos_install.sh` | **project** — fetches a release and scaffolds it into a target repo | once per project (and on release bumps) | **no** |
 
 ## Two-step flow

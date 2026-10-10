@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_SRC = REPO_ROOT / "bootstrap" / "edit_issue_edges.sh"
@@ -276,7 +278,7 @@ class Harness:
             capture_output=True,
             text=True,
             timeout=60,
-            env=env,
+            env=child_env(env),
         )
 
     def edge(self, op, other, number=10, app="worker"):
@@ -924,7 +926,7 @@ def _run_with_env(h, extra_env, *args):
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=child_env(env),
     )
 
 

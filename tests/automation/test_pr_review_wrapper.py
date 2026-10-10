@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import scripts.automation.pr_review_cli as cli
+from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -335,7 +336,7 @@ class Harness:
             text=True,
             timeout=30,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
     def capture(self) -> str:
@@ -638,7 +639,7 @@ def test_w6_token_revoked_exactly_once_on_sigterm(h):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=env,
+        env=child_env(env),
         start_new_session=True,
     )
     try:
@@ -1650,7 +1651,7 @@ def _run_wrapper_capture_argv(h, full_argv):
         text=True,
         timeout=30,
         check=False,
-        env=env,
+        env=child_env(env),
     )
     cap = h.capture()
     minted_app = None

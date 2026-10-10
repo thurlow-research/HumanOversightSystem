@@ -5,14 +5,15 @@ tree-sitter is an in-process library (unlike a subprocess-based linter), so
 these tests exercise the real parser against real temp files rather than
 mocking, matching test_function_metrics_js.py's approach.
 """
+
 import os
-import tempfile
 import textwrap
 
 import pytest
-
 from n1_detector_js import analyse_files as n1js_analyse
 from schema import WEIGHTS
+
+from tests.tmp_hygiene import named_temp
 
 CLEAN_TS = textwrap.dedent(
     """
@@ -73,8 +74,8 @@ AWAIT_OUTSIDE_LOOP_TS = textwrap.dedent(
 GARBAGE_TS = "function broken( {{{ !!! not real syntax at all $$$ ###"
 
 
-def _tmpfile(content: str, suffix: str = ".ts") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+def _tmpfile(tmp_path, content: str, suffix: str = ".ts") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
@@ -86,8 +87,8 @@ class TestN1DetectorJs:
         assert result["score"] == pytest.approx(0.0)
         assert result["dimension"] == "n1_queries"
 
-    def test_clean_batched_code_scores_zero(self):
-        path = _tmpfile(CLEAN_TS)
+    def test_clean_batched_code_scores_zero(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -96,8 +97,8 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_await_inside_for_of_flagged(self):
-        path = _tmpfile(AWAIT_IN_FOR_TS)
+    def test_await_inside_for_of_flagged(self, tmp_path):
+        path = _tmpfile(tmp_path, AWAIT_IN_FOR_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -107,8 +108,8 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_fetch_inside_while_flagged(self):
-        path = _tmpfile(FETCH_IN_WHILE_TS)
+    def test_fetch_inside_while_flagged(self, tmp_path):
+        path = _tmpfile(tmp_path, FETCH_IN_WHILE_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -117,8 +118,8 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_fetch_inside_foreach_callback_flagged(self):
-        path = _tmpfile(FETCH_IN_FOREACH_TS)
+    def test_fetch_inside_foreach_callback_flagged(self, tmp_path):
+        path = _tmpfile(tmp_path, FETCH_IN_FOREACH_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -126,8 +127,8 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_await_after_loop_not_flagged(self):
-        path = _tmpfile(AWAIT_OUTSIDE_LOOP_TS)
+    def test_await_after_loop_not_flagged(self, tmp_path):
+        path = _tmpfile(tmp_path, AWAIT_OUTSIDE_LOOP_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -136,9 +137,9 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_flagged_file_scores_higher_than_clean(self):
-        clean = _tmpfile(CLEAN_TS)
-        flagged = _tmpfile(AWAIT_IN_FOR_TS)
+    def test_flagged_file_scores_higher_than_clean(self, tmp_path):
+        clean = _tmpfile(tmp_path, CLEAN_TS)
+        flagged = _tmpfile(tmp_path, AWAIT_IN_FOR_TS)
         try:
             r_clean = n1js_analyse([clean])
             r_flagged = n1js_analyse([flagged])
@@ -147,8 +148,8 @@ class TestN1DetectorJs:
             os.unlink(clean)
             os.unlink(flagged)
 
-    def test_all_unparseable_excludes_dimension(self):
-        path = _tmpfile(GARBAGE_TS)
+    def test_all_unparseable_excludes_dimension(self, tmp_path):
+        path = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = n1js_analyse([path])
             assert result["error"] is not None
@@ -156,9 +157,9 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_partial_unparseable_keeps_signal_and_flags(self):
-        good = _tmpfile(AWAIT_IN_FOR_TS)
-        bad = _tmpfile(GARBAGE_TS)
+    def test_partial_unparseable_keeps_signal_and_flags(self, tmp_path):
+        good = _tmpfile(tmp_path, AWAIT_IN_FOR_TS)
+        bad = _tmpfile(tmp_path, GARBAGE_TS)
         try:
             result = n1js_analyse([good, bad])
             assert result["error"] is None
@@ -169,7 +170,7 @@ class TestN1DetectorJs:
             os.unlink(good)
             os.unlink(bad)
 
-    def test_astro_extracts_frontmatter_and_script(self):
+    def test_astro_extracts_frontmatter_and_script(self, tmp_path):
         src = textwrap.dedent(
             """\
             ---
@@ -189,7 +190,7 @@ class TestN1DetectorJs:
             </script>
             """
         )
-        path = _tmpfile(src, suffix=".astro")
+        path = _tmpfile(tmp_path, src, suffix=".astro")
         try:
             result = n1js_analyse([path])
             assert result["error"] is None
@@ -197,8 +198,8 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_result_envelope(self):
-        path = _tmpfile(CLEAN_TS)
+    def test_result_envelope(self, tmp_path):
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = n1js_analyse([path])
             for key in (
@@ -215,9 +216,9 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_dimension_and_weight_match_python_sibling(self):
+    def test_dimension_and_weight_match_python_sibling(self, tmp_path):
         # AC-3: same dimension string + WEIGHTS key as n1_detector.py.
-        path = _tmpfile(CLEAN_TS)
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = n1js_analyse([path])
             assert result["dimension"] == "n1_queries"
@@ -225,9 +226,9 @@ class TestN1DetectorJs:
         finally:
             os.unlink(path)
 
-    def test_raw_value_marked_provisional(self):
+    def test_raw_value_marked_provisional(self, tmp_path):
         # ADR-032 D8: raw_value.heuristic must read "provisional".
-        path = _tmpfile(CLEAN_TS)
+        path = _tmpfile(tmp_path, CLEAN_TS)
         try:
             result = n1js_analyse([path])
             assert result["raw_value"]["heuristic"] == "provisional"

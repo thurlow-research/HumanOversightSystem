@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "run_second_review.sh"
 _VENDOR_INVOKE_SH = _REPO_ROOT / "scripts" / "oversight" / "lib" / "vendor_invoke.sh"
@@ -202,7 +204,7 @@ def _run(
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -230,7 +232,9 @@ def _lib(
     if fake_bin is not None:
         e["PATH"] = f"{fake_bin}:{e['PATH']}"
     e.update(env or {})
-    return subprocess.run(["bash", str(snippet)], capture_output=True, text=True, timeout=60, env=e)
+    return subprocess.run(
+        ["bash", str(snippet)], capture_output=True, text=True, timeout=60, env=child_env(e)
+    )
 
 
 def _invoke_snippet(vendor: str, nbytes: int) -> str:

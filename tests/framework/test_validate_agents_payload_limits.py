@@ -26,6 +26,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "framework" / "validate_agents.sh"
 
@@ -52,7 +54,7 @@ fi
 cat <<JSON
 {"reviewer":"agy","lens":"consistency-completeness","findings":[],"verdict":"approve","summary":"stub saw $total chars via add-dir"}
 JSON
-"""
+"""  # noqa: E501
 
 _CODEX_STUB = """#!/usr/bin/env bash
 touch "$CODEX_STUB_INVOKED_MARKER"
@@ -106,9 +108,20 @@ def test_agy_receives_review_package_via_add_dir_not_argv(tmp_path):
     env["AGY_STUB_PROMPT_LOG"] = str(prompt_log)
 
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--agents-dir", str(agents_dir), "--docs-dir", str(docs_dir),
-         "--skip-codex"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=60, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--agents-dir",
+            str(agents_dir),
+            "--docs-dir",
+            str(docs_dir),
+            "--skip-codex",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env(env),
     )
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
 
@@ -139,9 +152,20 @@ def test_agy_prompt_survives_a_payload_larger_than_a_typical_arg_max(tmp_path):
     env["AGY_STUB_PROMPT_LOG"] = str(prompt_log)
 
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--agents-dir", str(agents_dir), "--docs-dir", str(docs_dir),
-         "--skip-codex"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=60, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--agents-dir",
+            str(agents_dir),
+            "--docs-dir",
+            str(docs_dir),
+            "--skip-codex",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env(env),
     )
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
     assert len(prompt_log.read_text()) < 1000
@@ -167,9 +191,20 @@ def test_codex_invokes_normally_under_the_size_cap(tmp_path):
     env["CODEX_STUB_INVOKED_MARKER"] = str(marker)
 
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--agents-dir", str(agents_dir), "--docs-dir", str(docs_dir),
-         "--skip-agy"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=60, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--agents-dir",
+            str(agents_dir),
+            "--docs-dir",
+            str(docs_dir),
+            "--skip-agy",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env(env),
     )
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
     assert marker.exists(), "codex should have been invoked for a small payload"
@@ -189,9 +224,20 @@ def test_codex_oversized_payload_is_rejected_without_invoking_codex(tmp_path):
     env["CODEX_MAX_INPUT_CHARS"] = "100"
 
     r = subprocess.run(
-        ["bash", str(_SCRIPT), "--agents-dir", str(agents_dir), "--docs-dir", str(docs_dir),
-         "--skip-agy"],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=60, env=env,
+        [
+            "bash",
+            str(_SCRIPT),
+            "--agents-dir",
+            str(agents_dir),
+            "--docs-dir",
+            str(docs_dir),
+            "--skip-agy",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env(env),
     )
     assert r.returncode == 1, f"stdout={r.stdout}\nstderr={r.stderr}"
     assert not marker.exists(), "codex must not be invoked once the size cap is exceeded"

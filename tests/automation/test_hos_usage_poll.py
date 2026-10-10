@@ -10,6 +10,7 @@ import time
 import pytest
 
 from tests.automation.usage_support import POLLER, fx, up
+from tests.tmp_hygiene import child_env
 
 SENTINEL = up.GATE_SENTINEL
 FLAGS = up.AUTHORIZED_KEY_FLAGS
@@ -109,7 +110,7 @@ class Rig:
     def run(self, *args, **env):
         return subprocess.run(
             ["bash", str(POLLER), *args],
-            env=self.env(**env),
+            env=child_env(self.env(**env)),
             capture_output=True,
             text=True,
             timeout=120,
@@ -196,7 +197,7 @@ def test_poll_spawn_failed(rig, tmp_path):
             "--stderr",
             str(rig.home / "e"),
         ],
-        env=env,
+        env=child_env(env),
         capture_output=True,
         text=True,
     )
@@ -204,7 +205,7 @@ def test_poll_spawn_failed(rig, tmp_path):
     rig.dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [*lib, "poll-record", "--state-dir", str(rig.state), "--read", "spawn_failed"],
-        env=env,
+        env=child_env(env),
         check=True,
         capture_output=True,
     )
@@ -294,7 +295,7 @@ def test_poll_lib_missing_bash_crash_file(rig, tmp_path):
     script.write_text(POLLER.read_text())
     script.chmod(0o755)
     r = subprocess.run(
-        ["bash", str(script)], env=rig.env(), capture_output=True, text=True, timeout=60
+        ["bash", str(script)], env=child_env(rig.env()), capture_output=True, text=True, timeout=60
     )
     assert r.returncode != 0
     f = rig.reading().fields
@@ -711,7 +712,11 @@ def test_print_setup_claude_not_found_exits_1(rig):
     rig.claude.unlink()
     env = rig.env(PATH="/usr/bin:/bin")
     r = subprocess.run(
-        ["bash", str(POLLER), "--print-setup"], env=env, capture_output=True, text=True, timeout=60
+        ["bash", str(POLLER), "--print-setup"],
+        env=child_env(env),
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     if "claude" in r.stdout and "MISSING" not in r.stdout:
         pytest.skip("a system claude exists on the pinned PATH")
@@ -927,7 +932,7 @@ def test_helper_stderr_reaches_log_and_detail(rig, tmp_path):
     )
     r = subprocess.run(
         ["bash", str(copy / "hos-usage-poll")],
-        env=rig.env(),
+        env=child_env(rig.env()),
         capture_output=True,
         text=True,
         timeout=60,

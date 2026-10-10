@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_SRC = REPO_ROOT / "bootstrap" / "escalate_to_human.sh"
@@ -258,7 +260,7 @@ class Harness:
         if env:
             e.update(env)
         return subprocess.run(
-            [BASH, str(self.script), *args], capture_output=True, text=True, env=e
+            [BASH, str(self.script), *args], capture_output=True, text=True, env=child_env(e)
         )
 
     # -- observations --

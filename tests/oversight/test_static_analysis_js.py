@@ -8,17 +8,19 @@ TestStaticAnalysisMocked in test_validators_mocked.py), and a real-tool
 integration test is included but tolerant of semgrep being unavailable in the
 sandbox (mirroring TestStaticAnalysis in test_validators_integration.py).
 """
+
 from __future__ import annotations
 
 import json
 import os
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from schema import WEIGHTS
-from static_analysis_js import _run_semgrep, analyse_files as saj_analyse
+from static_analysis_js import _run_semgrep
+from static_analysis_js import analyse_files as saj_analyse
+
+from tests.tmp_hygiene import named_temp
 
 
 def _semgrep_result(check_id: str, severity: str, path: str = "test.ts", line: int = 5) -> dict:
@@ -191,23 +193,23 @@ class TestAnalyseFilesMocked:
 class TestStaticAnalysisJsIntegration:
     """Exercises the real semgrep binary + vendored ruleset when available."""
 
-    def _tmpfile(self, content: str, suffix: str = ".js") -> str:
-        f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+    def _tmpfile(self, tmp_path, content: str, suffix: str = ".js") -> str:
+        f = named_temp(tmp_path, suffix=suffix, mode="w")
         f.write(content)
         f.close()
         return f.name
 
-    def test_clean_file(self):
-        path = self._tmpfile("function add(a, b) {\n  return a + b;\n}\n")
+    def test_clean_file(self, tmp_path):
+        path = self._tmpfile(tmp_path, "function add(a, b) {\n  return a + b;\n}\n")
         try:
             result = saj_analyse([path])
             assert 0.0 <= result["score"] <= 1.0
         finally:
             os.unlink(path)
 
-    def test_obvious_issue_detected(self):
+    def test_obvious_issue_detected(self, tmp_path):
         # eval() is flagged by the vendored ruleset's eval-use rule.
-        path = self._tmpfile("result = eval(userInput);\n")
+        path = self._tmpfile(tmp_path, "result = eval(userInput);\n")
         try:
             result = saj_analyse([path])
             # Either finds it (score > 0) or semgrep not installed (error set).

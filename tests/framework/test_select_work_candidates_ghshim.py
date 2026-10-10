@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _FAKE_GH = """#!{python}
@@ -102,7 +104,7 @@ def test_zc2_path_level_fake_gh_sees_exactly_the_three_s2_requests(tmp_path):
             "5",
         ],
         cwd=REPO_ROOT,
-        env=env,
+        env=child_env(env),
         capture_output=True,
         text=True,
         timeout=60,

@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "run_red_team.sh"
 
@@ -113,7 +115,7 @@ def _run(
     return subprocess.run(
         ["bash", str(_SCRIPT), "--milestone", "auth", *extra_args],
         cwd=str(tmp_path),
-        env=env,
+        env=child_env(env),
         capture_output=True,
         text=True,
         timeout=60,

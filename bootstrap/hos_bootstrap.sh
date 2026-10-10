@@ -16,6 +16,7 @@
 #   ./hos_bootstrap.sh --dry-run      # show what would be done, no writes
 #   ./hos_bootstrap.sh --skip-clis    # skip agent CLI (agy/codex) setup
 #   ./hos_bootstrap.sh --no-sudo      # skip steps that require sudo
+#   ./hos_bootstrap.sh --reaper-only  # only (re)install the machine temp reaper
 #   ./hos_bootstrap.sh --help
 #
 # What it installs on the machine:
@@ -31,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=false
 SKIP_CLIS=false
 NO_SUDO=false
+REAPER_ONLY=false
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -38,7 +40,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=true; shift ;;
     --skip-clis) SKIP_CLIS=true; shift ;;
     --no-sudo)   NO_SUDO=true; shift ;;
-    --help|-h)   sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --reaper-only) REAPER_ONLY=true; shift ;;
+    --help|-h)   sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)          echo "Unknown option: $1  (try --help)"; exit 1 ;;
     *)           echo "Unexpected argument: $1  (try --help)"; exit 1 ;;
   esac
@@ -57,8 +60,68 @@ dry_run() { echo -e "  ${YELLOW}[dry]${RESET} $*"; }
 # shellcheck disable=SC2294
 run() { if $DRY_RUN; then dry_run "$@"; else eval "$@"; fi; }
 
+# ── Machine temp reaper helper (#2054, TD 8.2 R3-4; called as step 6) ──────────────────────────────
+# A file copy only: the daily crontab entry (docs/CRON-SETUP.md) runs THIS copy,
+# never a clone's, because ~/.local/share is not writable from agent sandboxes.
+# HOS never installs or edits the crontab. Idempotent and atomic; a missing source
+# (an old bundle) warns and does not fail the bootstrap.
+#
+# RUN THIS FROM A RELEASE BUNDLE, NOT FROM A CLONE. The copy is a file that an
+# UNSANDBOXED daily job with recursive-delete power will execute, so it must be the
+# validated release artifact. A clone's bootstrap/ is a mutable work tree (the worker
+# cron checks out arbitrary branches there). Running from a bundle is the control. The
+# step also (a) does a CORRUPTION check of the copy against the bundle's SHA256SUMS when
+# that file sits next to this script (it catches a damaged download, not a malicious
+# bundle: the sums come from the same place as the file), and (b) warns loudly when this
+# script is inside a git work tree, whether or not SHA256SUMS is present.
+install_tmp_reaper() {
+  local src="$SCRIPT_DIR/tmp_reaper.py"
+  local dest_dir="${HOME}/.local/share/hos"
+  local dest="$dest_dir/tmp_reaper.py"
+  if [[ ! -f "$src" ]]; then
+    warn "tmp_reaper.py not found next to this script — fetch it from the same release as hos_bootstrap.sh (see docs/CRON-SETUP.md)"
+    return 0
+  fi
+  if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+    warn "hos_bootstrap.sh is running from inside a git work tree: the temp reaper copied from here is NOT a validated release artifact (run it from a release bundle)"
+  fi
+  if [[ -f "$SCRIPT_DIR/SHA256SUMS" ]]; then
+    local want got
+    want="$(awk '$2 == "tmp_reaper.py" || $2 == "*tmp_reaper.py" {print $1; exit}' "$SCRIPT_DIR/SHA256SUMS")"
+    if command -v sha256sum &>/dev/null; then got="$(sha256sum "$src" | awk '{print $1}')"
+    else got="$(shasum -a 256 "$src" | awk '{print $1}')"; fi
+    if [[ -z "$want" || "$want" != "$got" ]]; then
+      err "tmp_reaper.py failed the corruption check against the bundle's SHA256SUMS — NOT installing the temp reaper"
+      return 1
+    fi
+  fi
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest" && [[ -x "$dest" ]]; then
+    skip "temp reaper already current: $dest"
+    return 0
+  fi
+  if $DRY_RUN; then
+    dry_run "Would install: $dest"
+    return 0
+  fi
+  local tmp="$dest_dir/tmp_reaper.py.new.$$"
+  if mkdir -p "$dest_dir" && cp "$src" "$tmp" && chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+    ok "temp reaper installed: $dest (HOS does not schedule it — see docs/CRON-SETUP.md)"
+  else
+    rm -f "$tmp" 2>/dev/null || true
+    err "could not install the temp reaper to $dest"
+    return 1
+  fi
+  return 0
+}
+
 ERRORS=0
 fail() { err "$*"; ERRORS=$((ERRORS + 1)); }
+
+if $REAPER_ONLY; then
+  header "Machine temp reaper"
+  install_tmp_reaper || exit 1   # a checksum mismatch or failed copy is an error (a missing source is not)
+  exit 0
+fi
 
 # ── Platform detection ────────────────────────────────────────────────────────
 OS="unknown"; PKG_MGR="none"; SUDO=""
@@ -301,6 +364,13 @@ if [[ -n "$SUDO" ]]; then : ; elif $NO_SUDO; then
   warn "ran with --no-sudo — any system package that needed root was skipped; install those manually if missing above"
 fi
 
+# ── 6. Machine temp reaper (#2054) ─────────────────────────────────────────────
+# Deliberately runs even when the step-5 verification recorded errors: step 5 only
+# counts failures (no early exit), the reaper copy needs none of the verified tools, and
+# a half-bootstrapped machine still wants its temp reclaimed. The summary below exits 1.
+header "6. Machine temp reaper"
+install_tmp_reaper || fail "temp reaper not installed (see above)"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 header "Done"
 echo ""
@@ -321,6 +391,9 @@ if ! $DRY_RUN; then
   mkdir -p ~/.hos/setup-validation 2>/dev/null || true
   touch ~/.hos/setup-validation/bootstrap 2>/dev/null || true
 fi
+echo ""
+echo "  The per-machine temp reaper is at ~/.local/share/hos/tmp_reaper.py. HOS does not"
+echo "  schedule it: add the daily entry yourself (recipe: docs/CRON-SETUP.md)."
 echo ""
 echo -e "  ${BOLD}Next:${RESET} install HOS into a project from a validated release:"
 echo "      ./hos_install.sh /path/to/your/project"

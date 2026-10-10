@@ -405,6 +405,21 @@ This practice directly mirrors the "prompts-as-artifact" governance construct be
 
 ---
 
+## Temp and Working-State Locations
+
+Normative source: `contract/OVERSIGHT-CONTRACT.md` §1.
+
+<!-- TEMP-RULES:BEGIN (#2054; keep identical in contract/OVERSIGHT-CONTRACT.md §1, CLAUDE.md, AGENTS.md) -->
+**Temp and working-state locations.** Every role — Worker, Overseer, Human, and their subagents — follows these four rules.
+
+1. **Throwaway temp goes under `$TMPDIR`.** This covers pytest runs, `mktemp`/`tempfile` output, scratch repo copies, `git archive` or clone copies made for review, and pip/npm caches created for a task. The launchers point `$TMPDIR` at `$HOS_TMP_ROOT/<RoleDir>` (default `<clone>/../.tmp/<RoleDir>`, on disk). In scripts, use `mktemp`/`tempfile` or `${TMPDIR:-/tmp}`; never hard-code `/tmp` for large output. In an agent Bash call, run `mktemp -d` once and reuse the printed literal path. Anything here is reaped once it is more than 24 h old.
+2. **`.claudetmp/` (inside the clone) is persistent working state**: sign-off registers, design-round state, logs that must survive a cycle, and handoff-adjacent notes. It is uncommitted and is **never reaped**. Never put repo copies or other large scratch trees in it.
+3. **`/tmp/claude/…` literal paths are only for small allowlisted command artifacts**: PR, issue and comment bodies, and commit messages, per the sandbox shell rules.
+4. **`.claudetmp/` and `.tmp/` stay separate.** Neither is ever placed inside the other.
+<!-- TEMP-RULES:END -->
+
+---
+
 ## Session Discipline
 
 ### At the Start of Each Session

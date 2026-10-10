@@ -63,7 +63,7 @@ matters most, not least. File the issue first.
    this clone's `HANDOFF_DIR`, configured in `.claude/settings.local.json` —
    see `docs/SANDBOX-POLICY.md` §5) before acting. Do not read
    `.claudetmp/HANDOFF.md`: per `contract/OVERSIGHT-CONTRACT.md` §1,
-   `.claudetmp/` is ephemeral working state (gitignored), not the durable
+   `.claudetmp/` is persistent but uncommitted working state (gitignored), not the
    handoff location, and nothing writes a handoff there.
 
 **This is not an autonomous role.** `bin/hos-cron --role human` is rejected. Do

@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_CREATE_BRANCH = REPO_ROOT / "bootstrap" / "create_branch.sh"
@@ -107,7 +109,7 @@ class Repo:
             text=True,
             timeout=timeout,
             check=False,
-            env=env,
+            env=child_env(env),
         )
 
 
@@ -139,7 +141,7 @@ def _verify(repo: Path, branch: str, cycle_id: str | None) -> subprocess.Complet
         capture_output=True,
         text=True,
         timeout=10,
-        env=env,
+        env=child_env(env),
         check=False,
     )
 
@@ -407,7 +409,7 @@ class TestMissingCycleIdentity:
             capture_output=True,
             text=True,
             timeout=15,
-            env=env,
+            env=child_env(env),
             check=False,
         )
         assert r.returncode != 0
@@ -447,7 +449,7 @@ class TestMissingCycleIdentity:
             capture_output=True,
             text=True,
             timeout=15,
-            env=env,
+            env=child_env(env),
             check=False,
         )
         assert r.returncode != 0

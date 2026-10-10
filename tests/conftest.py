@@ -14,6 +14,16 @@ from types import ModuleType
 
 ROOT = Path(__file__).parent.parent
 
+# #2054 in-run temp hygiene. Importing the hooks and fixture here registers them
+# for every run of this suite; all logic lives in tests/tmp_hygiene.py.
+from tests.tmp_hygiene import (  # noqa: E402,F401
+    _hos_tmp_hygiene,
+    emit_report,
+    pytest_runtest_setup,
+    pytest_sessionfinish,
+    pytest_unconfigure,
+)
+
 
 def load_module_from_path(name: str, path: Path, *, register: bool = False) -> ModuleType:
     """Load a module from a file path for tests that import project scripts
@@ -64,6 +74,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     events and escalating a threshold breach into a filed bug ticket needs
     its own design (state channel, de-dup) and is tracked separately.
     """
+    emit_report(terminalreporter)
+
     from retry_rescue_logic import build_retry_rescue_event, now_iso, rescued_nodeids
 
     rerun_nodeids = [r.nodeid for r in terminalreporter.stats.get("rerun", [])]

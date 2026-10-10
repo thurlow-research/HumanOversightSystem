@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HELPER = REPO_ROOT / "scripts" / "oversight" / "lib" / "detect_stack.sh"
 BASH = shutil.which("bash") or "/bin/bash"
@@ -111,7 +113,7 @@ def _preflight(
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
-        env=full_env,
+        env=child_env(full_env),
     )
 
 

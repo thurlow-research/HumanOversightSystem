@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO / "scripts" / "oversight" / "run_gates.sh"
 _AUDIT_LOG_SH = _REPO / "scripts" / "oversight" / "lib" / "audit_log.sh"
@@ -66,7 +68,7 @@ def _run(cwd: Path, *args: str, resolve_only: bool = True, env_extra: dict | Non
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
 
 
@@ -303,7 +305,7 @@ def test_step_with_no_base_commit_is_fatal(tmp_path):
         ],
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
     )
     assert result.returncode == 0, result.stderr
 

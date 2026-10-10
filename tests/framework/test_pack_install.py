@@ -25,6 +25,8 @@ import pytest
 import regions
 from regions import parse, region_sha
 
+from tests.tmp_hygiene import child_env
+
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = ROOT / "bootstrap" / "hos_install.sh"
 PACK_AGENT = "security-reviewer"  # the agent testpack deepens
@@ -55,7 +57,7 @@ def _run_installer(
         cmd,
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
         input="\n",  # non-interactive stdin so pack-resolution R2 hits the CI path
     )
 
@@ -96,7 +98,6 @@ def _assert_pack_body(target: Path, pack_name: str) -> bytes:
 # --------------------------------------------------------------------------- #
 
 
-
 @pytest.mark.slow
 def test_install_pack_mutual_exclusion(tmp_path):
     """--pack and --no-pack together → usage error exit 1 before any work."""
@@ -110,7 +111,6 @@ def test_install_pack_mutual_exclusion(tmp_path):
 # --------------------------------------------------------------------------- #
 # unknown pack → hard error, nothing written
 # --------------------------------------------------------------------------- #
-
 
 
 @pytest.mark.slow
@@ -133,7 +133,6 @@ def test_install_unknown_pack_hard_error(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-
 @pytest.mark.slow
 def test_install_no_pack_interactive_errors(tmp_path):
     """No --pack, no --no-pack → non-zero exit; message names --pack/--no-pack."""
@@ -143,7 +142,6 @@ def test_install_no_pack_interactive_errors(tmp_path):
     assert r.returncode != 0
     combined = r.stdout + r.stderr
     assert "--pack" in combined or "--no-pack" in combined
-
 
 
 @pytest.mark.slow
@@ -169,7 +167,6 @@ def test_install_no_pack_core_only_warn(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-
 @pytest.mark.slow
 def test_install_with_pack_composes_three_regions(tmp_path):
     """--pack testpack → PACK_AGENT has CORE+PACK:testpack+PROJECT."""
@@ -182,7 +179,6 @@ def test_install_with_pack_composes_three_regions(tmp_path):
     parsed = parse(agent_file.read_bytes())
     ids = [reg.id for reg in parsed.regions]
     assert ids == ["CORE", "PACK:testpack", "PROJECT"], f"unexpected ids: {ids}"
-
 
 
 @pytest.mark.slow
@@ -210,7 +206,6 @@ def test_install_pack_manifest_rows(tmp_path):
     ), f"manifest sha mismatch: expected {expected_sha!r} in {pack_rows[0]!r}"
 
 
-
 @pytest.mark.slow
 def test_install_pack_records_config(tmp_path):
     """--pack testpack → scripts/framework/config.sh contains PACK=\"testpack\"."""
@@ -226,7 +221,6 @@ def test_install_pack_records_config(tmp_path):
 # --------------------------------------------------------------------------- #
 # multi-pack
 # --------------------------------------------------------------------------- #
-
 
 
 @pytest.mark.slow
@@ -253,7 +247,6 @@ def test_install_multipack_warns(tmp_path):
 # --------------------------------------------------------------------------- #
 # PACK conflict advisory (#1081 Option 3, #1117)
 # --------------------------------------------------------------------------- #
-
 
 
 @pytest.mark.slow
@@ -299,7 +292,6 @@ def test_install_pack_conflict_advisory_warns_but_does_not_abort(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-
 @pytest.mark.slow
 def test_upgrade_pack_version_bump_refresh(tmp_path):
     """Install testpack, bump the body in a tmp copy, re-install → PACK REFRESHed."""
@@ -325,7 +317,6 @@ def test_upgrade_pack_version_bump_refresh(tmp_path):
         assert b"v2" in new_body
     finally:
         real_body.write_bytes(backup)
-
 
 
 @pytest.mark.slow
@@ -371,7 +362,6 @@ def test_upgrade_consumer_edited_pack_hardstop(tmp_path):
         real_body.write_bytes(backup)
 
 
-
 @pytest.mark.slow
 def test_pack_switch_drops_old_region(tmp_path):
     """Install testpack (unedited), switch to testpack2 → PACK:testpack dropped."""
@@ -409,7 +399,6 @@ def test_pack_switch_drops_old_region(tmp_path):
 # --------------------------------------------------------------------------- #
 # B1: --no-pack must win over recorded config.sh PACK= (drops PACK region)
 # --------------------------------------------------------------------------- #
-
 
 
 @pytest.mark.slow
@@ -467,7 +456,6 @@ def test_install_no_pack_over_recorded_pack_drops_region(tmp_path):
 # --------------------------------------------------------------------------- #
 # B2: inject failure → nothing written (fail-closed invariant)
 # --------------------------------------------------------------------------- #
-
 
 
 @pytest.mark.slow

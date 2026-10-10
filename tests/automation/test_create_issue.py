@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.tmp_hygiene import child_env
+
 BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CREATE_ISSUE_SH = REPO_ROOT / "bootstrap" / "create_issue.sh"
@@ -64,7 +66,7 @@ if [[ "$1" == "api" ]]; then
     esac
 fi
 exit 1
-"""
+"""  # noqa: E501
 
 CURL_STUB = """#!/usr/bin/env bash
 echo "CURL_CALLED_WITH:$*" >> "$CAPTURE_FILE"
@@ -109,7 +111,11 @@ class Harness:
             env.update(env_overrides)
         return subprocess.run(
             [BASH, str(self.script), *args],
-            capture_output=True, text=True, timeout=30, check=False, env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
         )
 
     def capture(self) -> str:
@@ -168,10 +174,18 @@ def test_rejects_inline_body(h):
 
 
 def test_happy_path_creates_issue_and_revokes_token(h):
-    result = h.run([
-        "--title", "Test issue", "--body-file", str(h.body_file),
-        "--label", "priority:high,needs-ai", "--app", "worker",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "Test issue",
+            "--body-file",
+            str(h.body_file),
+            "--label",
+            "priority:high,needs-ai",
+            "--app",
+            "worker",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "https://github.com/test-owner/test-repo/issues/999"
 
@@ -226,10 +240,18 @@ def test_milestone_omitted_when_not_passed(h):
 
 
 def test_milestone_unambiguous_prefix_resolves_and_passes_full_title(h):
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
-        "--milestone", "v0.7.0",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "worker",
+            "--milestone",
+            "v0.7.0",
+        ]
+    )
     assert result.returncode == 0, result.stderr
     cap = h.capture()
     gh_create_line = [ln for ln in cap.splitlines() if "issue create" in ln][0]
@@ -237,10 +259,18 @@ def test_milestone_unambiguous_prefix_resolves_and_passes_full_title(h):
 
 
 def test_milestone_ambiguous_prefix_aborts_before_create(h):
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
-        "--milestone", "v0.6",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "worker",
+            "--milestone",
+            "v0.6",
+        ]
+    )
     assert result.returncode != 0
     assert "ambiguous" in result.stderr
     cap = h.capture()
@@ -249,17 +279,34 @@ def test_milestone_ambiguous_prefix_aborts_before_create(h):
 
 
 def test_milestone_unknown_prefix_errors(h):
-    result = h.run([
-        "--title", "t", "--body-file", str(h.body_file), "--app", "worker",
-        "--milestone", "v9.9.9",
-    ])
+    result = h.run(
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "worker",
+            "--milestone",
+            "v9.9.9",
+        ]
+    )
     assert result.returncode != 0
     assert "no milestone found" in result.stderr
 
 
 def test_milestone_lookup_failure_still_revokes_token(h):
     result = h.run(
-        ["--title", "t", "--body-file", str(h.body_file), "--app", "worker", "--milestone", "v0.7.0"],
+        [
+            "--title",
+            "t",
+            "--body-file",
+            str(h.body_file),
+            "--app",
+            "worker",
+            "--milestone",
+            "v0.7.0",
+        ],
         env_overrides={"GH_FAIL_MILESTONES": "1"},
     )
     assert result.returncode != 0

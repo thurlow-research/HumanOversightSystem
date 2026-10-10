@@ -32,6 +32,16 @@
 
 set -uo pipefail
 
+# Temp files this script creates; removed on every exit path, including a kill
+# (#2054 S3). The TERM/INT/HUP handlers turn a signal into an exit so the EXIT
+# trap runs.
+_TMP_CLEANUP=()
+_cleanup_tmp() { [[ ${#_TMP_CLEANUP[@]} -gt 0 ]] && rm -rf "${_TMP_CLEANUP[@]}"; return 0; }
+trap _cleanup_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Resolve repo-root-anchored paths so delegation + the committed ledger work
@@ -203,7 +213,8 @@ ${KNOWN}
 ${PKG}
 
 ${JSON_SCHEMA/REVIEWER/$name}"
-    out=$(mktemp /tmp/vscripts_${name}_XXXXXX)
+    out=$(mktemp "${TMPDIR:-/tmp}/vscripts_${name}_XXXXXX")
+    _TMP_CLEANUP+=("$out")
     case "$kind" in
         opus)  printf '%s' "$prompt" | run_capped "$AI_REVIEW_TIMEOUT" "$out" claude -p --model "$MODEL" || rc=$? ;;
         agy)   run_capped "$AI_REVIEW_TIMEOUT" "$out" agy --sandbox -p "$prompt" || rc=$? ;;

@@ -10,19 +10,18 @@ Primary mutation targets:
   - _FunctionRNVisitor: depth tracking, nesting increment application
   - the "provisional-js-reuses-python-weights" calibration flag (D7)
 """
+
 import json
 import os
 import sys
-import tempfile
 import textwrap
 
 import pytest
-
 from rn_calculator_js import (
+    _CALIBRATION,
+    _NESTING_B,
     _NESTING_TABLE,
     _NESTING_W,
-    _NESTING_B,
-    _CALIBRATION,
     _checklist_items,
     _count_logical_ops,
     _FunctionRNVisitor,
@@ -32,9 +31,11 @@ from rn_calculator_js import (
 )
 from schema import WEIGHTS
 
+from tests.tmp_hygiene import named_temp
 
-def _tmpfile(content: str, suffix: str = ".ts") -> str:
-    f = tempfile.NamedTemporaryFile(suffix=suffix, mode="w", delete=False)
+
+def _tmpfile(tmp_path, content: str, suffix: str = ".ts") -> str:
+    f = named_temp(tmp_path, suffix=suffix, mode="w")
     f.write(content)
     f.close()
     return f.name
@@ -62,14 +63,18 @@ def _first_function_node(src: str):
 
 # ── nesting_increment() — identical table to the Python sibling ─────────────
 
+
 class TestNestingIncrement:
-    @pytest.mark.parametrize("depth,expected", [
-        (0, 0.0),
-        (1, 1.0),
-        (2, 3.0),
-        (3, 4.8),
-        (4, 7.1),
-    ])
+    @pytest.mark.parametrize(
+        "depth,expected",
+        [
+            (0, 0.0),
+            (1, 1.0),
+            (2, 3.0),
+            (3, 4.8),
+            (4, 7.1),
+        ],
+    )
     def test_table_values(self, depth, expected):
         assert nesting_increment(depth) == pytest.approx(expected)
 
@@ -88,6 +93,7 @@ class TestNestingIncrement:
 
 
 # ── _count_logical_ops() ──────────────────────────────────────────────────
+
 
 class TestCountLogicalOps:
     def test_simple_if_no_ops(self):
@@ -118,6 +124,7 @@ class TestCountLogicalOps:
 
 
 # ── _FunctionRNVisitor — depth tracking and RN accumulation ─────────────────
+
 
 def _visit(src: str) -> _FunctionRNVisitor:
     node = _first_function_node(src)
@@ -194,18 +201,19 @@ class TestFunctionRNVisitor:
 
 # ── analyse_files() integration — uses actual temp files ────────────────────
 
+
 class TestAnalyseFiles:
-    def test_empty_file_returns_error(self):
-        path = _tmpfile("")
+    def test_empty_file_returns_error(self, tmp_path):
+        path = _tmpfile(tmp_path, "")
         try:
             result = analyse_files([path])
             assert result["score"] == pytest.approx(0.0)
         finally:
             os.unlink(path)
 
-    def test_simple_function_runs_without_error(self):
+    def test_simple_function_runs_without_error(self, tmp_path):
         src = "function greet(name) { if (name) { return name; } return ''; }"
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = analyse_files([path])
             assert result["error"] is None
@@ -213,15 +221,15 @@ class TestAnalyseFiles:
         finally:
             os.unlink(path)
 
-    def test_garbage_returns_error(self):
-        path = _tmpfile("function broken( {{{ !!! not real syntax at all $$$ ###")
+    def test_garbage_returns_error(self, tmp_path):
+        path = _tmpfile(tmp_path, "function broken( {{{ !!! not real syntax at all $$$ ###")
         try:
             result = analyse_files([path])
             assert result["error"] is not None
         finally:
             os.unlink(path)
 
-    def test_nested_function_not_double_counted(self):
+    def test_nested_function_not_double_counted(self, tmp_path):
         src = textwrap.dedent(
             """
             function outer(x) {
@@ -232,7 +240,7 @@ class TestAnalyseFiles:
             }
             """
         )
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = analyse_files([path])
             assert result["error"] is None
@@ -244,7 +252,7 @@ class TestAnalyseFiles:
         finally:
             os.unlink(path)
 
-    def test_high_rn_function_flagged_high_risk(self):
+    def test_high_rn_function_flagged_high_risk(self, tmp_path):
         src = textwrap.dedent(
             """
             function risky(a, b) {
@@ -261,7 +269,7 @@ class TestAnalyseFiles:
             }
             """
         )
-        path = _tmpfile(src)
+        path = _tmpfile(tmp_path, src)
         try:
             result = analyse_files([path])
             assert result["error"] is None
@@ -278,8 +286,8 @@ class TestAnalyseFiles:
 class TestCalibrationFlag:
     """D7: the provisional calibration flag must always be present."""
 
-    def test_calibration_flag_on_success(self):
-        path = _tmpfile("function f(x) { if (x) { return 1; } }")
+    def test_calibration_flag_on_success(self, tmp_path):
+        path = _tmpfile(tmp_path, "function f(x) { if (x) { return 1; } }")
         try:
             result = analyse_files([path])
             assert result["raw_value"]["calibration"] == _CALIBRATION
@@ -295,8 +303,8 @@ class TestCalibrationFlag:
 
 
 class TestDimensionAndWeightMatchPythonSibling:
-    def test_dimension_and_weight(self):
-        path = _tmpfile("function f() {}")
+    def test_dimension_and_weight(self, tmp_path):
+        path = _tmpfile(tmp_path, "function f() {}")
         try:
             result = analyse_files([path])
             assert result["dimension"] == "risk_number"
@@ -364,6 +372,7 @@ class TestMain:
     def test_main_no_files(self, capsys, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["rn_calculator_js.py"])
         from rn_calculator_js import main
+
         main()
         data = json.loads(capsys.readouterr().out)
         assert data["score"] == 0.0
@@ -374,6 +383,7 @@ class TestMain:
         ts.write_text("function f(x) { if (x) { return x; } }")
         monkeypatch.setattr(sys, "argv", ["rn_calculator_js.py", "--files", str(ts)])
         from rn_calculator_js import main
+
         main()
         data = json.loads(capsys.readouterr().out)
         assert "score" in data
@@ -384,6 +394,7 @@ class TestMain:
         ts.write_text("function process(x) { for (const i of x) {} }")
         monkeypatch.setattr(sys, "argv", ["rn_calculator_js.py", str(ts)])
         from rn_calculator_js import main
+
         main()
         data = json.loads(capsys.readouterr().out)
         assert data["error"] is None

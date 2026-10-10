@@ -60,6 +60,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RUN_RELEASE_PANEL = _REPO_ROOT / "scripts" / "run_release_panel.sh"
 _RUN_PANEL = _REPO_ROOT / "scripts" / "run_panel.sh"
@@ -208,7 +210,7 @@ def _run(
     return subprocess.run(
         ["bash", str(root / "scripts" / "run_release_panel.sh"), *args],
         cwd=str(root),
-        env=env,
+        env=child_env(env),
         capture_output=True,
         text=True,
         timeout=60,

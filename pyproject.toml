@@ -15,6 +15,10 @@ extend-ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short -q"
+# #2054: a green run deletes its whole pytest-N; a red one keeps only the newest.
+# Do not set basetemp (a fixed one is wiped at session start, killing concurrent runs).
+tmp_path_retention_count = "1"
+tmp_path_retention_policy = "failed"
 markers = [
     "slow: takes >5s, requires real filesystem or subprocess; runs at release only",
     "integration: hits real external systems (GitHub API, network); runs at release only",

@@ -161,6 +161,75 @@ and would otherwise be able to poison the sidecar `--check` reads back for
 reproducibility. This closes that gap at the OS layer, matching `bin/**`'s
 treatment above.
 
+#### Per-role temp dir (`__HOS_ROOT__/.tmp/__ROLE_DIR__`, #2054)
+
+HOS temp lives on disk, not on the RAM-backed `/tmp` (a small tmpfs with a
+per-user quota). `HOS_TMP_ROOT` in `scripts/framework/config.sh` names the root
+(default `<clone>/../.tmp`), and each role uses `<root>/<RoleDir>`, mode 0700,
+where `<RoleDir>` is `Human`, `Worker` or `Overseer` (matching the clone dirs).
+Each role's sandbox is granted **its own dir only**: `additionalDirectories`,
+`Read(...)`/`Edit(...)` in `permissions.allow`, and `sandbox.filesystem`
+`allowRead` and `allowWrite`.
+
+- **Never shared across roles.** The overseer must not read or write worker
+  scratch through a common dir. No entry grants `.tmp` itself or a sibling
+  role's dir. `denyRead: ["__HOME__/"]` is what hides the sibling dirs, which is
+  why the generator requires `__HOS_ROOT__` to be under `__HOME__`.
+- **`/tmp` stays.** Small draft files in `/tmp/claude/` (CLAUDE.md mandates the
+  literal paths for allowlisting), Claude Code's own `/tmp/claude-<uid>` when no
+  launcher set a temp dir, and the `${TMPDIR:-/tmp}` fallback all still need it.
+- **`CLAUDE_CODE_TMPDIR`.** In sandboxed Bash, Claude Code replaces `TMPDIR` with
+  `CLAUDE_CODE_TMPDIR` (else `/tmp/claude`), so exporting `TMPDIR` alone does not
+  reach sandboxed commands. `bin/hos-cron` and `bin/hos-human` export
+  `TMPDIR`, `CLAUDE_CODE_TMPDIR` and `HOS_TMP_DIR`, all set to the role dir.
+- **Sessions started any other way** (a systemd user unit, `remote-control`, a
+  wrapper script, a plain `claude`) must export `CLAUDE_CODE_TMPDIR` and
+  `TMPDIR` as `$HOS_TMP_ROOT/<RoleDir>` themselves, or sandboxed Bash puts temp
+  back on `/tmp/claude`. For example, in a systemd user unit for the Human role:
+
+  ```ini
+  [Service]
+  Environment=TMPDIR=%h/Code/HumanOversightSystem/.tmp/Human
+  Environment=CLAUDE_CODE_TMPDIR=%h/Code/HumanOversightSystem/.tmp/Human
+  Environment=HOS_TMP_DIR=%h/Code/HumanOversightSystem/.tmp/Human
+  ```
+
+  `python3 bootstrap/lib/hos_tmp_root.py resolve --repo <clone> --role <role> --create`
+  prints (and creates) the right path.
+  For a session started by the systemd unit (`claude-rc.service` -> `bin/claude-role`),
+  which never runs the resolver, also run this once, unsandboxed, so the reaper's
+  registry knows the dir: `python3 -I bootstrap/lib/hos_tmp_root.py resolve --repo
+  <Human clone> --role human --create`. Do not put this in `.envrc`: it is
+  git-tracked and shared by every role.
+- **What this is and is not.** A *temp-dir* separation: no role's sandbox is
+  granted another role's temp dir. It is **not** a role-integrity boundary.
+  Every role's sandbox can already write all three clones, including another
+  clone's `config.sh` (which sets that role's `HOS_TMP_ROOT`) and `bin/hos-cron`.
+  Narrowing that pre-existing grant per role is tracked in #2056, alongside #1146.
+- **The cross-role janitor.** The low-space trigger and the daily reaper
+  (`bootstrap/tmp_reaper.py`, added in S2b) act on every role's dir as unsandboxed machine
+  processes. That is outside the per-role sandbox grants by design: per-role
+  isolation governs agent sessions, and the reaper is a machine janitor.
+- **Enforcement today.** Only the `human` role is generatable (#1146). For
+  worker and overseer, each launcher writes only its own dir (separation by
+  construction); enforcement arrives with #1146 through these same entries. The
+  generator fails closed when the clone's `HOS_TMP_ROOT` is not
+  `__HOS_ROOT__/.tmp` or `__HOS_ROOT__` is not under `__HOME__`.
+- **Residual: disk exhaustion.** A runaway on disk fills the root filesystem
+  instead of hitting a per-user quota. The pytest hygiene guardrail (50 MiB per
+  session) and the reaper bound it. `Bash(quota *)` and `Bash(findmnt *)` are
+  allowed for diagnosis (`df`, `du` and `stat` already were).
+- **Never grant `~/.local/state`.** `~/.local/state/hos/tmp-roots.json` is the
+  machine registry of which role dirs the reaper may delete from; it is trustworthy
+  only while a sandboxed agent can neither read nor edit it. `denyRead __HOME__/`
+  hides it and the template re-allows only `.local/bin` and `.local/share`; adding
+  `.local/state` (or `.local`, or the home dir) to any `allowRead`/`allowWrite`/
+  `additionalDirectories` entry would let a sandboxed agent register a foreign
+  directory as reapable. A test pins this.
+- **Which location to use.** Which location an agent should use is normative in
+  `contract/OVERSIGHT-CONTRACT.md` §1, "Temp and working-state locations"; this
+  section only states what the sandbox *grants*.
+
 ### Arbitrary code execution is intentional, not an oversight
 
 `permissions.allow` grants `Bash(python3 *)`, `Bash(node *)`, `Bash(curl *)`,
@@ -244,7 +313,7 @@ as it exists; it does not pre-empt the design.
      monotonic — importing a live-only allow grants capability no reviewer
      approved).
    - The live config's absolute-path `Read(...)`/`Edit(...)`/`Write(...)` entries
-     are consistently double-slash (e.g. `Read(//home/scott/.../Worker/**)`),
+     are consistently double-slash (e.g. `Read(//home/<user>/.../Worker/**)`),
      while this template's placeholder substitution (`__HOS_ROOT__/Worker/**` →
      a single leading slash) produces single-slash paths. Whether Claude Code's
      permission-glob matcher treats these differently is **unverified** — flag
@@ -276,7 +345,13 @@ substitutes these. Third column per its §3.2 flag table.
 | `__HANDOFF_DIR__` | This role's handoff directory | `--handoff-dir`, **required-explicit — no default** |
 | `__HOME__` | The service account's home directory | `--home`, derived: `$HOME` |
 | `__ROLE__` | `human` \| `worker` \| `overseer` | `--role` (no separate flag of its own); only `human` is generatable — `worker`/`overseer` fail closed naming #1146 |
+| `__ROLE_DIR__` | Capitalised dir name for `__ROLE__` (`human` → `Human`, `worker` → `Worker`, `overseer` → `Overseer`), matching the clone dirs | Derived from `--role`; no flag of its own and no sidecar key |
 | `__CLAUDE_PROJECT_STATE__` | Claude Code's per-project state dir for this clone | `--claude-project-state`, **required-explicit — no default** |
+
+The root `.tmp` is derived from `__HOS_ROOT__` and needs no placeholder of its
+own. The generator refuses a clone whose `HOS_TMP_ROOT` is not
+`__HOS_ROOT__/.tmp` (D15 of the #2054 design); a placeholder can be added by a
+separate issue if a sandboxed layout ever needs a moved root.
 
 ---
 

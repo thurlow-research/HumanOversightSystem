@@ -20,6 +20,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ import pytest
 
 _MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "framework" / "gen_sandbox_config.py"
 _SPEC = importlib.util.spec_from_file_location("gen_sandbox_config", _MOD_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
 gsc = importlib.util.module_from_spec(_SPEC)
 # Registered in sys.modules before exec: gsc's @dataclass(frozen=True)
 # Divergence needs its defining module resolvable via sys.modules for
@@ -37,6 +39,7 @@ sys.modules["gen_sandbox_config"] = gsc
 _SPEC.loader.exec_module(gsc)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_TMP_ROOT_PATH = REPO_ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "sandbox"
 VALIDATE_SETUP = REPO_ROOT / "bootstrap" / "validate_setup.sh"
 REAL_TEMPLATE_PATH = REPO_ROOT / "contract" / "sandbox-policy.template.json"
@@ -49,13 +52,22 @@ def _fixture_values() -> dict:
     """The §7.2 fixture placeholder values — deliberately non-production."""
     return {
         "ROLE": "human",
+        "ROLE_DIR": "Human",
         "HOS_ROOT": "/srv/hos",
         "PROJECT_ROOT": "/srv/hos/Human",
         "CONFIG_DIR": "/srv/hos/.config/hos",
         "HOME": "/home/hosuser",
         "HANDOFF_DIR": "/srv/hos/handoff/human",
-        "CLAUDE_PROJECT_STATE": "/home/hosuser/.claude/projects/-srv-hos-Human",
+        "CLAUDE_PROJECT_STATE": "/srv/hosuser/.claude/projects/-srv-hos-Human",
     }
+
+
+@pytest.fixture(autouse=True)
+def _home_is_tmp_path(tmp_path, monkeypatch):
+    """The generator fails closed unless HOS_ROOT is under HOME (#2054, D15).
+    Every clone here is tmp_path/clone, so HOS_ROOT is tmp_path; make that
+    the home directory so the guard passes without per-call flags."""
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def _clone(tmp_path: Path) -> Path:
@@ -73,7 +85,7 @@ def _gen_args(clone: Path, check: bool = False, **overrides) -> list:
             "--handoff-dir",
             overrides.pop("handoff_dir", "/srv/hos/handoff/human"),
             "--claude-project-state",
-            overrides.pop("claude_project_state", "/home/hosuser/.claude/projects/-srv-hos-Human"),
+            overrides.pop("claude_project_state", "/srv/hosuser/.claude/projects/-srv-hos-Human"),
         ]
     for key, value in overrides.items():
         args += ["--" + key.replace("_", "-"), value]
@@ -144,6 +156,9 @@ def _copy_generator_and_template(repo: Path) -> None:
     dst_contract_dir = repo / "contract"
     dst_contract_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(REAL_TEMPLATE_PATH, dst_contract_dir / "sandbox-policy.template.json")
+    dst_lib_dir = repo / "bootstrap" / "lib"
+    dst_lib_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_TMP_ROOT_PATH, dst_lib_dir / "hos_tmp_root.py")
 
 
 def _run_validate_setup(repo: Path, config_dir: Path, role: str | None = None):
@@ -250,7 +265,7 @@ def test_missing_required_value_is_usage_error(tmp_path, capsys):
         "--clone-dir",
         str(clone),
         "--claude-project-state",
-        "/home/hosuser/.claude/projects/-x",
+        "/srv/hosuser/.claude/projects/-x",
     ]
     rc = gsc.main(args)
     out = capsys.readouterr()
@@ -294,7 +309,14 @@ def test_delta_table_matches_expected():
         f"Edit(/{root}/.claude/hos-sandbox.values)",
     }
     assert removed_deny == set(), "no deny is ever removed (AC4 semantic-superset property)"
-    assert added_allow == set(), "FR-13: permissions.allow is not edited"
+    hos_root = _fixture_values()["HOS_ROOT"]
+    assert added_allow == {
+        # #2054 S2a: the role's own disk temp dir and the quota/free-space probes.
+        f"Read({hos_root}/.tmp/Human/**)",
+        f"Edit({hos_root}/.tmp/Human/**)",
+        "Bash(quota *)",
+        "Bash(findmnt *)",
+    }
     assert removed_allow == {"Bash(claude *)"}
 
 
@@ -872,3 +894,85 @@ def test_compare_object_array_extra_and_missing_elements():
     assert len(findings) == 1
     assert findings[0].kind == "MISSING"
     assert findings[0].path == "a[1]"
+
+
+# ── #2054 S2a: per-role temp dir (TD section 2A.4, tests G1/G2) ─────────────
+
+
+def _generated_policy(tmp_path: Path, capsys) -> tuple[Path, dict]:
+    clone = _clone(tmp_path)
+    assert gsc.main(_gen_args(clone)) == gsc.EXIT_OK
+    capsys.readouterr()
+    live = clone / ".claude" / "settings.local.json"
+    return clone, json.loads(live.read_text())
+
+
+def test_g1_human_policy_grants_exactly_its_own_capitalised_temp_dir(tmp_path, capsys):
+    clone, doc = _generated_policy(tmp_path, capsys)
+    role_dir = f"{tmp_path}/.tmp/Human"
+
+    assert role_dir in doc["permissions"]["additionalDirectories"]
+    assert f"Read({role_dir}/**)" in doc["permissions"]["allow"]
+    assert f"Edit({role_dir}/**)" in doc["permissions"]["allow"]
+    assert "Bash(quota *)" in doc["permissions"]["allow"]
+    assert "Bash(findmnt *)" in doc["permissions"]["allow"]
+    assert role_dir in doc["sandbox"]["filesystem"]["allowRead"]
+    assert role_dir in doc["sandbox"]["filesystem"]["allowWrite"]
+
+    # tmp_path itself may live under .tmp/Worker (a worker/overseer cron baseline sets
+    # TMPDIR there), so judge grant entries only: swap tmp_path for a placeholder first.
+    text = json.dumps(doc).replace(str(tmp_path), "@TMP@")
+    assert set(re.findall(r"@TMP@/\.tmp/([A-Za-z0-9_.-]+)", text)) == {"Human"}
+    for grant in (
+        doc["permissions"]["additionalDirectories"]
+        + doc["sandbox"]["filesystem"]["allowRead"]
+        + doc["sandbox"]["filesystem"]["allowWrite"]
+    ):
+        assert grant != f"{tmp_path}/.tmp", "the bare .tmp root must never be granted"
+    assert "__ROLE_DIR__" not in text
+
+    # The /tmp grants are unchanged.
+    assert "/tmp" in doc["sandbox"]["filesystem"]["allowWrite"]
+    assert "/tmp/claude" in doc["permissions"]["additionalDirectories"]
+    assert "Edit(//tmp/**)" in doc["permissions"]["allow"]
+
+
+def test_g1_role_dir_is_derived_and_leaves_the_sidecar_unchanged(tmp_path, capsys):
+    clone, _doc = _generated_policy(tmp_path, capsys)
+    sidecar = (clone / ".claude" / "hos-sandbox.values").read_text()
+    assert "ROLE_DIR" not in sidecar
+    assert gsc.main(_gen_args(clone, check=True)) == gsc.EXIT_OK
+    assert "ROLE_DIR" not in gsc.PLACEHOLDERS
+    assert "ROLE_DIR" not in gsc.FLAG_NAMES
+
+
+def test_g1_role_dirs_map_matches_the_clone_dir_names():
+    assert gsc.ROLE_DIRS == {"human": "Human", "worker": "Worker", "overseer": "Overseer"}
+    assert set(gsc.ROLE_DIRS) == set(gsc.KNOWN_ROLES), "local is never sandbox-generated"
+
+
+def test_g2_fails_closed_when_config_sh_moves_the_temp_root(tmp_path, capsys):
+    clone = _clone(tmp_path)
+    (clone / "scripts" / "framework").mkdir(parents=True)
+    (clone / "scripts" / "framework" / "config.sh").write_text('HOS_TMP_ROOT="../elsewhere"\n')
+    assert gsc.main(_gen_args(clone)) == gsc.EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "HOS_TMP_ROOT" in err and "../.tmp" in err
+    assert not (clone / ".claude" / "settings.local.json").exists()
+
+
+def test_g2_fails_closed_when_the_temp_root_is_unusable(tmp_path, capsys):
+    clone = _clone(tmp_path)
+    (clone / "scripts" / "framework").mkdir(parents=True)
+    (clone / "scripts" / "framework" / "config.sh").write_text('HOS_TMP_ROOT="$HOME/x"\n')
+    assert gsc.main(_gen_args(clone)) == gsc.EXIT_USAGE
+    assert "unusable" in capsys.readouterr().err
+
+
+def test_g2_fails_closed_when_hos_root_is_not_under_home(tmp_path, capsys):
+    clone = _clone(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    assert gsc.main(_gen_args(clone, home=str(home))) == gsc.EXIT_USAGE
+    assert "not under --home" in capsys.readouterr().err
+    assert not (clone / ".claude" / "settings.local.json").exists()

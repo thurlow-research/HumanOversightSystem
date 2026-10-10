@@ -27,6 +27,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.tmp_hygiene import child_env
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FRAMEWORK_DIR = _REPO_ROOT / "scripts" / "framework"
 _SETUP_SCRIPT = _FRAMEWORK_DIR / "setup_branch_protection.sh"
@@ -250,7 +252,7 @@ def _run_script(
         ["bash", str(script_dir / "setup_branch_protection.sh"), "owner/repo", *args],
         capture_output=True,
         text=True,
-        env=env,
+        env=child_env(env),
         timeout=60,
     )
     return proc, log, capture
