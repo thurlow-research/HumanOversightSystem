@@ -859,6 +859,14 @@ def test_2036_malformed_attacks_never_downgrades(tmp_path):
     assert _agg(body, seen)["verdict"] == "request_changes"
 
 
+def test_2036_explicit_null_findings_or_attacks_never_downgrades(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    for other in ("attacks", "findings"):
+        key = "findings" if other == "attacks" else "attacks"
+        body = json.dumps({"verdict": "request_changes", key: [_blk()], other: None})
+        assert _agg(body, seen)["verdict"] == "request_changes", other
+
+
 def test_2036_prose_request_changes_ignores_ledger(tmp_path):
     seen = _seen(tmp_path, _entry("fixed"))
     prose = "## Critical Issues\nMust fix: a.py CWE-20 unvalidated input\n"

@@ -199,12 +199,17 @@ def _all_blocking_ledgered(data: dict, seen: set[str]) -> bool:
     vl = _load_validation_logic()
     blocking = []
     for key in ("findings", "attacks"):
-        items = data.get(key)
-        if items is None and key not in data:
+        if key not in data:
             continue
+        items = data[key]
+        # A present-but-null/non-list value is malformed: never downgrade. This
+        # matches compute_verdict's #2032 rule (a present non-list findings/attacks
+        # is synthetic blocking), so `process` would re-raise it anyway.
         if not isinstance(items, list):
             return False
         for item in items:
+            # Non-dict entries are ignored, exactly as compute_verdict treats them
+            # (severity "unknown", never blocking), so the two modules agree.
             if isinstance(item, dict):
                 sev = str(item.get("severity", "low")).strip().lower()
                 if sev in vl.BLOCKING_SEVERITIES:
@@ -315,7 +320,10 @@ def _aggregate_full(content: str, seen: set[str] | None = None) -> tuple[dict, b
             if s in ("critical", "high"):
                 fc += 1
         if v == "request_changes" and seen is not None and _all_blocking_ledgered(data, seen):
-            v, fc = "approve", 0  # every blocking finding already resolved (#2036)
+            # Every blocking finding already resolved (#2036). `sev` is kept on
+            # purpose (fail-safe): `process` retains the higher severity too, and a
+            # ledger-deduped approve already reported e.g. highest_severity: high.
+            v, fc = "approve", 0
         reviewers.append((name, v, sev, fc, "json"))
 
     # Aggregate. Precedence: error > request_changes > unparseable > approve.
