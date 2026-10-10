@@ -203,7 +203,7 @@ SCORE="${SCORE:-0}"
 
 # Determine which reviewers fire.
 # Fire on the validated TIER floor OR the composite score — whichever demands
-# more review. The deterministic risk floor raises tier (auth→HIGH, booking/
+# more review. The deterministic risk floor raises tier (e.g. auth→HIGH,
 # payment→CRITICAL) WITHOUT raising the composite score, so a HIGH-by-floor step
 # can have a low score; gating on score alone would silently skip the mandatory
 # cross-vendor review the tier requires. Tier is the ratchet floor here too.
@@ -395,20 +395,33 @@ THREAT_MODEL_CONTEXT=""
 if [[ -n "${THREAT_MODEL_FILE:-}" ]]; then
     _tm_reason=""
     _tm_root=$(pwd -P)
-    _tm_path=$(realpath -- "$THREAT_MODEL_FILE" 2>/dev/null) || _tm_path=""
-    if [[ -z "$_tm_path" || ! -f "$_tm_path" ]]; then
+    _tm_path=""
+    if ! command -v realpath >/dev/null 2>&1; then
+        _tm_reason="realpath not available"
+    else
+        _tm_path=$(realpath -- "$THREAT_MODEL_FILE" 2>/dev/null) || _tm_path=""
+    fi
+    if [[ -n "$_tm_reason" ]]; then
+        :
+    elif [[ -z "$_tm_path" || ! -f "$_tm_path" ]]; then
         _tm_reason="not a regular file"
     elif [[ "$_tm_path" != "$_tm_root"/* ]]; then
         _tm_reason="resolves outside the repo root"
-    elif [[ $(wc -c < "$_tm_path") -gt $THREAT_MODEL_MAX_BYTES ]]; then
-        _tm_reason="larger than ${THREAT_MODEL_MAX_BYTES} bytes"
+    elif [[ "/${_tm_path#"$_tm_root"/}" == */.* ]]; then
+        _tm_reason="resolves into a dot-path (hidden file or directory)"
     else
-        THREAT_MODEL_CONTEXT=$(cat "$_tm_path")
+        # One bounded read (no separate size check) so the cap cannot be raced.
+        _tm_content=$(head -c "$((THREAT_MODEL_MAX_BYTES + 1))" -- "$_tm_path" 2>/dev/null) || _tm_content=""
+        if [[ $(LC_ALL=C; echo "${#_tm_content}") -gt $THREAT_MODEL_MAX_BYTES ]]; then
+            _tm_reason="larger than ${THREAT_MODEL_MAX_BYTES} bytes"
+        else
+            THREAT_MODEL_CONTEXT="$_tm_content"
+        fi
     fi
     if [[ -n "$_tm_reason" ]]; then
         echo "WARNING: THREAT_MODEL_FILE '${THREAT_MODEL_FILE}' ignored (${_tm_reason}); using the generic default threat model." >&2
     fi
-    unset _tm_reason _tm_root _tm_path
+    unset _tm_reason _tm_root _tm_path _tm_content
 fi
 
 # ADR-1683 D-3: the prompt embeds a derived DIGEST of the validator summary, not
