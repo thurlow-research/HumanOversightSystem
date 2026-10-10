@@ -76,7 +76,9 @@ _KNOWN_VERDICTS = ("approve", "request_changes", ERROR_VERDICT)
 # error block, or a reviewer that returned {"verdict":"approve"} alongside a
 # critical finding) but must NEVER DOWNGRADE a blocking verdict already written
 # to approve (#683). Unknown verdicts rank below approve so a known computed
-# verdict wins rather than an unrecognized string sticking.
+# verdict wins rather than an unrecognized string sticking. (The aggregate step
+# is itself ledger-aware for JSON sections since #2036, so a request_changes whose
+# every blocking finding is ledgered is already approve before this ratchet runs.)
 _VERDICT_RANK = {
     "pending": 0,
     "skipped": 0,
@@ -268,6 +270,19 @@ def _is_degenerate(files: list[str], cls: str) -> bool:
     it and a future rule may need it; an empty `files` with a real class is NOT
     degenerate, and stays silence-able exactly as before."""
     return not cls
+
+
+def is_ledger_resolved(item, seen: set[str]) -> bool:
+    """True iff `item` is a finding already RESOLVED in the ledger: a dict with a
+    non-degenerate fingerprint that is in `seen` (the set `load_ledger` returns,
+    which holds resolving dispositions only). Same predicate `compute_verdict`
+    uses to decide a blocking finding is not NEW, exposed so
+    `second_review_logic.py aggregate` agrees with it (#2036)."""
+    if not isinstance(item, dict):
+        return False
+    if _is_degenerate(_files_of(item), _class_of_finding(item)):
+        return False
+    return fingerprint(item) in seen
 
 
 def load_ledger(ledger_path: str) -> set[str]:

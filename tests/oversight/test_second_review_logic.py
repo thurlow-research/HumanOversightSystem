@@ -773,3 +773,154 @@ def test_consumption_non_scalar_vendor_values_are_dropped():
     r = assess_consumption(1000, meta, _T)
     assert r["num_turns"] is None and r["cache_read_tokens"] is None
     assert "`" not in json.dumps(r)
+
+
+# --------------------------------------------------------------------------- #
+# #2036 — ledger-aware aggregation (JSON sections only)                       #
+# --------------------------------------------------------------------------- #
+_validation_logic = second_review_logic._load_validation_logic()
+
+
+def _rc(findings=None, attacks=None, verdict="request_changes") -> str:
+    body: dict = {"verdict": verdict}
+    if findings is not None:
+        body["findings"] = findings
+    if attacks is not None:
+        body["attacks"] = attacks
+    return json.dumps(body)
+
+
+def _blk(file="a.py", cls="CWE-20", severity="high") -> dict:
+    return {"severity": severity, "file": file, "category": cls, "finding": "x"}
+
+
+def _seen(tmp_path, *entries) -> set:
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    return _validation_logic.load_ledger(str(ledger))
+
+
+def _agg(payload: str, seen, name="agy") -> dict:
+    return aggregate_verdicts(_HEADER + _section(name, payload), seen)
+
+
+def _entry(disposition, files=("a.py",), cls="CWE-20") -> dict:
+    return {"files": list(files), "class": cls, "disposition": disposition}
+
+
+def test_2036_ledgered_filed_and_fixed_approve(tmp_path):
+    for disp in ("filed:#2032", "fixed"):
+        seen = _seen(tmp_path, _entry(disp))
+        r = _agg(_rc(findings=[_blk()]), seen)
+        assert r["verdict"] == "approve", disp
+        assert r["unresolved_findings"] == 0
+        assert set(r) == {"verdict", "highest_severity", "unresolved_findings"}
+
+
+def test_2036_noise_and_residual_do_not_resolve(tmp_path):
+    for disp in ("noise", "residual"):
+        seen = _seen(tmp_path, _entry(disp))
+        r = _agg(_rc(findings=[_blk()]), seen)
+        assert r["verdict"] == "request_changes", disp
+        assert r["unresolved_findings"] == 1
+
+
+def test_2036_one_ledgered_one_unledgered_stays_request_changes(tmp_path):
+    seen = _seen(tmp_path, _entry("filed:#1"))
+    r = _agg(_rc(findings=[_blk(), _blk(file="b.py")]), seen)
+    assert r["verdict"] == "request_changes"
+    assert r["unresolved_findings"] == 2
+
+
+def test_2036_degenerate_blocking_finding_never_resolved(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed", files=(), cls=""))
+    r = _agg(_rc(findings=[{"severity": "high", "finding": "x"}]), seen)
+    assert r["verdict"] == "request_changes"
+    # Even a hand-forged `[[], ""]` key in the set must not silence it.
+    forged = {json.dumps([[], ""], sort_keys=True)}
+    assert _agg(_rc(findings=[{"severity": "high"}]), forged)["verdict"] == "request_changes"
+
+
+def test_2036_ledgered_blocking_in_attacks_approves(tmp_path):
+    seen = _seen(tmp_path, _entry("filed:#7"))
+    r = _agg(_rc(attacks=[_blk()]), seen, name="codex")
+    assert r["verdict"] == "approve"
+
+
+def test_2036_findings_and_attacks_both_must_be_ledgered(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    r = _agg(_rc(findings=[_blk()], attacks=[_blk(file="z.py")]), seen)
+    assert r["verdict"] == "request_changes"
+
+
+def test_2036_malformed_attacks_never_downgrades(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    body = json.dumps({"verdict": "request_changes", "findings": [_blk()], "attacks": "oops"})
+    assert _agg(body, seen)["verdict"] == "request_changes"
+
+
+def test_2036_prose_request_changes_ignores_ledger(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    prose = "## Critical Issues\nMust fix: a.py CWE-20 unvalidated input\n"
+    assert _agg(prose, seen)["verdict"] == "request_changes"
+
+
+def test_2036_medium_only_request_changes_unchanged(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    r = _agg(_rc(findings=[_blk(severity="medium")]), seen)
+    assert r["verdict"] == "request_changes"
+
+
+def test_2036_basisless_request_changes_unchanged(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    assert _agg(_rc(findings=[]), seen)["verdict"] == "request_changes"
+
+
+def test_2036_error_section_not_downgraded(tmp_path):
+    seen = _seen(tmp_path, _entry("fixed"))
+    assert _agg(json.dumps({"verdict": "error", "findings": [_blk()]}), seen)["verdict"] == "error"
+
+
+def test_2036_no_seen_is_unchanged(tmp_path):
+    payload = _rc(findings=[_blk()])
+    assert _agg(payload, None)["verdict"] == "request_changes"
+    assert _agg(payload, set())["verdict"] == "request_changes"
+
+
+def _cli_verdict(tmp_path, capsys, ledger_arg: list[str]) -> str:
+    out = tmp_path / "review.md"
+    out.write_text(_HEADER + _section("agy", _rc(findings=[_blk()])))
+    rc = second_review_logic.main(["aggregate", "--file", str(out), *ledger_arg])
+    assert rc == 0
+    capsys.readouterr()
+    return next(
+        line.split(": ", 1)[1]
+        for line in out.read_text().splitlines()
+        if line.startswith("verdict: ")
+    )
+
+
+def test_2036_cli_ledger_flag_downgrades(tmp_path, capsys):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps(_entry("filed:#2032")) + "\n")
+    assert _cli_verdict(tmp_path, capsys, ["--ledger", str(ledger)]) == "approve"
+
+
+def test_2036_cli_without_ledger_flag_unchanged(tmp_path, capsys):
+    assert _cli_verdict(tmp_path, capsys, []) == "request_changes"
+
+
+def test_2036_cli_missing_ledger_file_is_empty(tmp_path, capsys):
+    missing = tmp_path / "nope.jsonl"
+    assert _cli_verdict(tmp_path, capsys, ["--ledger", str(missing)]) == "request_changes"
+
+
+def test_2036_cli_ledger_load_failure_does_not_downgrade(tmp_path, capsys, monkeypatch):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps(_entry("filed:#2032")) + "\n")
+
+    def boom(_path):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(_validation_logic, "load_ledger", boom)
+    assert _cli_verdict(tmp_path, capsys, ["--ledger", str(ledger)]) == "request_changes"
