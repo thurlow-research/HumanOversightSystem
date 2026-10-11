@@ -87,13 +87,19 @@ info "Collecting LOW-tier commits from last ${LOOKBACK_DAYS} days..."
 
 # Get commits with AI-Risk: LOW trailer within the lookback window
 LOW_COMMITS=()
+# Run git log on its own so a failure (bad flag, not a repo) is surfaced instead
+# of silently producing an empty population (#1828). stderr is left attached.
+if ! RECENT_SHAS=$(git log --no-merges -n 200 --since="${LOOKBACK_DAYS}.days" --format="%H"); then
+    echo "run_redteam_sample: git log failed — cannot build the commit population" >&2
+    exit 1
+fi
 while IFS= read -r sha; do
     [[ -z "$sha" ]] && continue
     # Check for AI-Risk: LOW trailer
     if git log -1 --format="%B" "$sha" 2>/dev/null | grep -q "^AI-Risk: LOW"; then
         LOW_COMMITS+=("$sha")
     fi
-done < <(git log --oneline --since="${LOOKBACK_DAYS}.days" --format="%H" --merges=false 2>/dev/null | head -200)
+done <<< "$RECENT_SHAS"
 
 POOL_SIZE=${#LOW_COMMITS[@]}
 info "Found ${POOL_SIZE} LOW-tier commits in pool"

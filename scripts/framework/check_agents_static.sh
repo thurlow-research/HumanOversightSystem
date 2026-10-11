@@ -46,6 +46,13 @@ warn() { $QUIET || echo "  WARN: $1"; }
 ok()   { $QUIET || echo "  OK:   $1"; }
 section() { $QUIET || echo ""; $QUIET || echo "── $1 ──────────────────────────────────────────"; }
 
+# Extract the frontmatter name of an agent file. Prints nothing (and succeeds)
+# when the file has no 'name:' key — a bare grep|sed pipeline would otherwise
+# abort the whole script under pipefail on the first such file (#1828).
+agent_name_of() {
+    { grep -m1 '^name:' "$1" || true; } | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]'
+}
+
 if [[ ! -d "$AGENTS_DIR" ]]; then
     echo "ERROR: agents directory not found: $AGENTS_DIR" >&2; exit 2
 fi
@@ -56,13 +63,13 @@ section "1. Agent file inventory"
 # Collect names into a newline-separated string (bash 3.2 compatible — no -A)
 KNOWN_AGENTS=""
 while IFS= read -r -d '' f; do
-    name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+    name=$(agent_name_of "$f")
     if [[ -n "$name" ]]; then
         KNOWN_AGENTS="${KNOWN_AGENTS}${name}
 "
         ok "$name → $f"
     else
-        warn "No 'name:' frontmatter in $f"
+        fail "No 'name:' frontmatter in $f"
     fi
 done < <(find "$AGENTS_DIR" -name '*.md' -print0)
 
@@ -120,7 +127,8 @@ scripts/framework/config.sh"
 # OK/WARN output verbatim (spec §5: no behavior change). Pure skip cases (http,
 # empty, bare filename, {template}, PROJECT/) are decided entirely in Python.
 while IFS= read -r -d '' f; do
-    agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+    agent_name=$(agent_name_of "$f")
+    agent_name="${agent_name:-$f}"
     while IFS= read -r ref; do
         verdict=$(python3 "$LOGIC_PY" filter-path-ref "$ref")
         [[ "$verdict" == SKIP ]] && continue
@@ -166,7 +174,8 @@ KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-b
 KNOWN_AGENTS_PIPE=$(echo "$KNOWN_AGENTS" | grep -v '^$' | tr '\n' '|' | sed 's/|$//')
 
 while IFS= read -r -d '' f; do
-    agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+    agent_name=$(agent_name_of "$f")
+    agent_name="${agent_name:-$f}"
     while IFS= read -r target; do
         [[ -z "$target" ]] && continue
         verdict=$(python3 "$LOGIC_PY" classify-token \
@@ -230,7 +239,8 @@ section "6. CORE region PROJECT carve-out clause (#291)"
 CARVE_OUT_FINDINGS=0
 while IFS= read -r -d '' f; do
     if grep -q "HOS:CORE:START" "$f"; then
-        agent_name=$(grep -m1 '^name:' "$f" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+        agent_name=$(agent_name_of "$f")
+        agent_name="${agent_name:-$f}"
         if grep -q "PROJECT may NEVER" "$f"; then
             ok "[$agent_name] CORE carve-out clause present"
         else
