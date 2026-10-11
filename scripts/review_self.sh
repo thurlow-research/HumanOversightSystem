@@ -126,11 +126,6 @@ if $DRY_RUN; then
     exit 0
 fi
 
-if ! command -v agy &>/dev/null; then
-    err "agy not found. Install + auth: ./scripts/setup_clis.sh"
-    exit 1
-fi
-
 # ── Build review prompt ────────────────────────────────────────────────────────
 
 SCOPE_INSTRUCTION=""
@@ -280,9 +275,14 @@ REVIEWER_LABEL="$REVIEWER"
 [[ "$REVIEWER" == "agy"   ]] && REVIEWER_LABEL="agy (Gemini)"
 [[ "$REVIEWER" == "codex" ]] && REVIEWER_LABEL="codex (OpenAI)"
 
+# Recorded so reverify_self.sh can resolve its diff base from this review file.
+# Omitted (not fatal) when HEAD cannot be resolved.
+REVIEWED_COMMIT=$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)
+
 {
     printf "# HumanOversightSystem Self-Review\n"
     printf "Timestamp: %s\n" "$TIMESTAMP"
+    [[ -n "$REVIEWED_COMMIT" ]] && printf "Reviewed-Commit: %s\n" "$REVIEWED_COMMIT"
     printf "Reviewer: %s\n" "$REVIEWER_LABEL"
     printf "Context: ~%d tokens\n\n" "$CONTEXT_TOKENS"
     printf '%s\n\n' "---"

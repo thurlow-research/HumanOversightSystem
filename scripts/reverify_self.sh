@@ -12,6 +12,10 @@
 #   ./scripts/reverify_self.sh                  # uses latest review file
 #   ./scripts/reverify_self.sh --dry-run        # show prompt size, no call
 #   ./scripts/reverify_self.sh --review <file>  # specify a review file explicitly
+#   ./scripts/reverify_self.sh --base <ref>     # diff <ref>..HEAD (the reviewed commit)
+#
+# The diff base is --base <ref> if given, else the "Reviewed-Commit: <sha>" line
+# review_self.sh records in the review file; otherwise the script exits non-zero.
 #
 # Prerequisites: agy authenticated
 
@@ -32,13 +36,15 @@ OUT_DIR="$REPO_ROOT/.claudetmp/self-review"
 DRY_RUN=false
 REVIEW_FILE=""
 REVIEWER="agy"   # agy | codex
+BASE_REF=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)       DRY_RUN=true; shift ;;
         --review)        REVIEW_FILE="$2"; shift 2 ;;
+        --base)          BASE_REF="${2:-}"; shift $(( $# >= 2 ? 2 : 1 )) ;;
         --reviewer)      REVIEWER="$2"; shift 2 ;;
-        --help|-h)       sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)       sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) shift ;;
     esac
 done
@@ -68,39 +74,41 @@ fi
 
 ok "Original review: $REVIEW_FILE"
 
-# ── Get the fix diff (bootstrap → post-fix) ───────────────────────────────────
-# Bootstrap commit is the first large commit; fixes are in the next commit
-BOOTSTRAP_SHA=$(git log --oneline | grep "Bootstrap Human Oversight System" | awk '{print $1}')
-FIXES_SHA=$(git log --oneline | grep "Fix all issues found by agy" | awk '{print $1}')
-
-if [[ -z "$BOOTSTRAP_SHA" || -z "$FIXES_SHA" ]]; then
-    # Fallback: diff between HEAD and HEAD~3 (approximate)
-    DIFF_CONTENT=$(git diff HEAD~2..HEAD -- \
-        scripts/oversight/validators/rn_calculator.py \
-        scripts/oversight/validators/schema.py \
-        scripts/oversight/run_validators.sh \
-        scripts/run_second_review.sh \
-        scripts/run_red_team.sh \
-        scripts/run_panel.sh \
-        scripts/framework/install.sh \
-        .claude/agents/oversight-evaluator.md \
-        .claude/agents/risk-assessor.md \
-        contract/OVERSIGHT-CONTRACT.md \
-        2>/dev/null || git diff HEAD~1..HEAD)
-else
-    DIFF_CONTENT=$(git diff "${BOOTSTRAP_SHA}..${FIXES_SHA}" -- \
-        scripts/oversight/validators/rn_calculator.py \
-        scripts/oversight/validators/schema.py \
-        scripts/oversight/run_validators.sh \
-        scripts/run_second_review.sh \
-        scripts/run_red_team.sh \
-        scripts/run_panel.sh \
-        scripts/framework/install.sh \
-        .claude/agents/oversight-evaluator.md \
-        .claude/agents/risk-assessor.md \
-        contract/OVERSIGHT-CONTRACT.md \
-        2>/dev/null)
+# ── Resolve the diff base ─────────────────────────────────────────────────────
+# Precedence: --base <ref>, else the "Reviewed-Commit: <sha>" line that
+# review_self.sh records in the review file, else fail. No HEAD~N guessing.
+BASE_SOURCE="--base"
+if [[ -z "$BASE_REF" ]]; then
+    BASE_REF=$(grep -m1 '^Reviewed-Commit:' "$REVIEW_FILE" | sed 's/^Reviewed-Commit:[[:space:]]*//' | tr -d '[:space:]' || true)
+    BASE_SOURCE="Reviewed-Commit line in $REVIEW_FILE"
 fi
+
+if [[ -z "$BASE_REF" ]]; then
+    echo "Cannot determine the diff base: no --base given and $REVIEW_FILE has no 'Reviewed-Commit:' line." >&2
+    echo "Re-run with: $0 --base <ref>   (the commit that was reviewed)" >&2
+    exit 1
+fi
+
+if [[ "$BASE_REF" == -* ]] || ! BASE_SHA=$(git rev-parse --verify --quiet "${BASE_REF}^{commit}"); then
+    echo "Diff base '$BASE_REF' (from $BASE_SOURCE) does not resolve to a commit in this repository." >&2
+    echo "History may have been rewritten. Re-run with: $0 --base <ref>" >&2
+    exit 1
+fi
+
+ok "Diff base: $BASE_SHA (from $BASE_SOURCE)"
+
+# ── Get the fix diff (base → HEAD) ────────────────────────────────────────────
+DIFF_CONTENT=$(git diff "${BASE_SHA}..HEAD" -- \
+    scripts/oversight/validators/rn_calculator.py \
+    scripts/oversight/validators/schema.py \
+    scripts/oversight/run_validators.sh \
+    scripts/run_second_review.sh \
+    scripts/run_red_team.sh \
+    scripts/run_panel.sh \
+    scripts/framework/install.sh \
+    .claude/agents/oversight-evaluator.md \
+    .claude/agents/risk-assessor.md \
+    contract/OVERSIGHT-CONTRACT.md)
 
 info "Diff size: $(echo "$DIFF_CONTENT" | wc -c) chars"
 
