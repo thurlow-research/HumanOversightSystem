@@ -182,6 +182,9 @@ def _files_of(obj: dict) -> list[str]:
 
 
 _CWE_RE = re.compile(r"^cwe[-_ ]?(\d+)\b")
+_CWE_CANON_RE = re.compile(r"^cwe-\d+$")
+_SUMMARY_KEYS = ("finding", "title", "description", "why")
+_SUMMARY_MAX = 160
 
 
 def _normalize_class(cls) -> str:
@@ -217,10 +220,21 @@ def _class_of_finding(finding: dict) -> str:
     to file granularity (#1770). `type` is retained ahead of `cwe` for any
     producer that does send it. `tests/oversight/test_ledger_class_linkage.py`
     pins this chain against the schemas the script really sends, so the same
-    drift cannot recur silently."""
-    return _normalize_class(
-        finding.get("category") or finding.get("type") or finding.get("cwe") or ""
-    )
+    drift cannot recur silently.
+
+    A class sourced from the `cwe` field (i.e. `category` and `type` are both
+    empty) must normalise to canonical `cwe-<digits>`; anything else — the
+    placeholder `CWE-XXX`, `CWE-N/A`, `n/a`, a bare `79` — resolves to "" so
+    `_is_degenerate` treats the finding as unsilenceable and it always counts as
+    NEW blocking. Without this, `CWE-XXX` was a live, file-wide collision key
+    that one `filed:#N` disposition could use to silence unrelated findings
+    (#1799). `category`/`type` are free-form taxonomy slots and are not
+    constrained here."""
+    explicit = finding.get("category") or finding.get("type")
+    if explicit:
+        return _normalize_class(explicit)
+    cls = _normalize_class(finding.get("cwe") or "")
+    return cls if _CWE_CANON_RE.match(cls) else ""
 
 
 def fingerprint(finding: dict) -> str:
@@ -324,6 +338,18 @@ def load_ledger(ledger_path: str) -> set[str]:
     return seen
 
 
+def _summarize(item: dict) -> str:
+    """One-line summary of a finding for the silenced-findings report (#1799):
+    first non-empty string among `_SUMMARY_KEYS`, whitespace collapsed, capped at
+    `_SUMMARY_MAX` chars with a trailing ellipsis when truncated."""
+    for key in _SUMMARY_KEYS:
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            text = " ".join(val.split())
+            return text if len(text) <= _SUMMARY_MAX else text[:_SUMMARY_MAX] + "…"
+    return ""
+
+
 # ── Verdict aggregation (bindings 2, 3, 7) ────────────────────────────────────
 def compute_verdict(
     findings: list[dict],
@@ -347,12 +373,15 @@ def compute_verdict(
     semantics. The ledger at `ledger_path` supplies the seen-fingerprint set.
 
     Returns {verdict, highest_severity, blocking_count, new_blocking_count,
-    dedup_count}. Does NOT decide pass/fail exit codes and does NOT read the pass
+    dedup_count, silenced}. `silenced` lists one {fingerprint, severity, summary}
+    per blocking finding counted in `dedup_count`, so the audit trail records
+    WHICH finding the ledger suppressed (#1799). Does NOT decide pass/fail exit codes and does NOT read the pass
     counter — the shell owns the cap (binding 3)."""
     seen = load_ledger(ledger_path)
     highest = "none"
     blocking_count = 0
     new_blocking_count = 0
+    silenced: list[dict] = []
 
     for block in findings:
         has_verdict = "verdict" in block
@@ -431,6 +460,14 @@ def compute_verdict(
                     or fingerprint(item) not in seen
                 ):
                     new_blocking_count += 1
+                else:
+                    silenced.append(
+                        {
+                            "fingerprint": fingerprint(item),
+                            "severity": sev,
+                            "summary": _summarize(item),
+                        }
+                    )
 
     # Verdict keyed on NEW (un-ledgered) blocking findings: convergence is "zero
     # non-noise", not zero findings (external review is non-deterministic).
@@ -447,6 +484,7 @@ def compute_verdict(
         "blocking_count": blocking_count,
         "new_blocking_count": new_blocking_count,
         "dedup_count": blocking_count - new_blocking_count,
+        "silenced": silenced,
     }
 
 
@@ -548,6 +586,20 @@ def _cmd_process(args: argparse.Namespace) -> int:
     )
     with open(args.file, "w", encoding="utf-8") as fh:
         fh.write(new_content)
+
+    silenced = result["silenced"]
+    if silenced:
+        print(
+            f"validation_logic process: ledger silenced {len(silenced)} blocking "
+            f"finding(s) — verify each disposition actually covers it (#1799):",
+            file=sys.stderr,
+        )
+        for entry in silenced:
+            print(
+                f"  silenced [{_safe_log(entry['severity'])}] "
+                f"{_safe_log(entry['fingerprint'])} — {_safe_log(entry['summary'])}",
+                file=sys.stderr,
+            )
 
     print(
         f"  verdict={verdict} highest_severity={highest} " f"blocking={blocking} new={new_blocking}"
