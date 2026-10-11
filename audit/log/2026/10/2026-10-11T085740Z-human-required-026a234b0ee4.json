@@ -1,0 +1,1 @@
+{"cid":"1839","event":"human-required","head_sha":"e7c1d479df0ce93db56c9f3527bf31afd18b975a","pr":2069,"reason_category":"GATE_UNSATISFIED","summary":"Protected-surface + CODEOWNERS-human-owned path (.claude/agents/overseer.md, @ScottThurlow) with no human approval on head e7c1d479; content checks green; verdict posted as comment (no evaluator PROCEED recorded).","tier":"MEDIUM"}
