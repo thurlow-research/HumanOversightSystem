@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Generated file** | `.claude/agents/overseer.md` (+ `bootstrap/overseer-cron-prompt.md`) |
-| **Description** | CI terminal-state precheck: overseer defers review until required checks finish (#1971) |
-| **Date** | 2026-10-05 |
+| **Generated file** | `.claude/agents/overseer.md` |
+| **Description** | Record the #1839 ruling: the #761 `prior_overseer_decision` guard stays dead (settled, not pending) |
+| **Date** | 2026-10-11 |
 | **Model** | claude-opus-5-5 |
 | **Risk level** | MEDIUM |
 | **Human review status** | ⬜ Pending |
@@ -14,69 +14,57 @@
 ## Prompt
 
 Autonomous worker cycle (bin/hos-cron --role worker). The selector's first
-candidate was #1971 (priority:critical, needs-ai). The operative instruction is
-the issue's own "Fix" section, implemented per spec:
+candidates were #1944 (reserved for interactive sessions) and #1816 (on human
+hold pending #1936). The next candidate was #1839, which carries a human ruling
+(2026-10-02) in its thread:
 
 ```
-In overseer.md, before running the review chain (risk recompute, gate re-run,
-merits spot-check, executive summary): check every CI-required status check's
-status field (not just conclusion) — if any required check is in_progress or
-queued, stop. Post nothing (or a minimal one-line "CI still running, deferring
-to next cycle" note, no full review) and let the next cron cycle re-check.
+Q1: Do not revive. [...] Leave the guard dead.
+Q2: Moot given Q1.
+Per this issue's own acceptance criteria: update the in-file note added by
+#1657 (ARCH-7) to say this is now a settled decision, not a pending one.
 ```
 
-The issue scopes this as an instruction-level stopgap; the deterministic
-code-level checker is a separate child of #1643 and is out of scope here.
+The matching acceptance criterion: "If the guard stays dead, the in-file note
+added by #1657 (ARCH-7) is updated to say that is now a settled decision rather
+than a pending one."
 
 Authored directly by the top-level worker session (CLAUDE.md § "Agent-definition
 edits (HOS source repo only)") — not delegated to `coder`.
 
 ## Constraints Specified
 
-- Instruction-level only: no new script, no change to `merge_authority.py`.
-- Judge on `status`, never `conclusion` alone.
-- Post nothing on deferral.
+- Text-only: the guard stays dead; no change to `merge_authority.py` or to the
+  `prior_overseer_decision` derivation instructions.
+- The note must say the decision is settled, not pending.
 
 ## Design choices made by the authoring session (not in the issue text)
 
-1. **Placement** — new step 2a in §What you do, after the failure-cap check and
-   before step 3 (Read PR state), so no review work of any kind precedes it.
-   The cron prompt's Step 1 gains a short pointer to step 2a.
-2. **Meta-gate exclusion** — `require-human-approval`, `require-overseer-approval`,
-   `require-tier-ceiling` are excluded. They are moved by the overseer's own
-   review/approval; waiting on them before reviewing would deadlock. This
-   mirrors `_META_GATE_CHECKS` in `merge_authority.py` (step 4c).
-3. **Absent check = non-terminal** — a required context with no run yet on the
-   head SHA is treated as not finished (a fresh push often has queued workflows
-   that have not created check runs yet).
-4. **Stall guard** — the issue's "let the next cycle re-check" could defer
-   forever if a check never finishes or never reports. After 2 hours the
-   overseer stops deferring and reviews normally, naming the stalled checks in
-   the executive summary; branch protection still blocks merge until they
-   complete. (Iteration 1 escalated via `escalate_to_human.sh`, but that
-   script refuses PR numbers — code-review MUST_FIX.)
-5. **Already-red carve-out** — if a terminal required check has already
-   failed, proceed so step 4c can bounce immediately rather than after the
-   remaining checks finish.
-6. **Reads** — `gh api` with `{owner}/{repo}` placeholders (static,
-   allowlistable). No wrapper exists for check-run reads
-   (`bootstrap/query_issues.sh` has no check-runs mode;
-   `merge_authority_cli.py` has no required-checks subcommand) — searched
-   `scripts/`, `bootstrap/`, `bin/`, `scripts/automation/lib/`.
+1. **Scope** — only the ARCH-7 "knowingly NOT wired" paragraph is edited. The
+   derivation instructions below it and the `**Decision: HUMAN_REQUIRED**`
+   marker paragraph (which says the #761 guard scans for the marker) are left
+   alone. Both are still literally accurate: the derivation still runs and the
+   guard still exists in `merge_authority.py`. It just never matches.
+2. **Revival path** — the note says reviving the guard needs a new human ruling
+   that supersedes #1839. That replaces "until that is answered", which no
+   longer has an answer to wait for.
+3. **Rationale** — one clause from the ruling (rubber-stamping degradation on
+   the highest-volume, lowest-risk PR class) is quoted, so a reader does not
+   have to open #1839 to see why.
+4. **No new test** — #1839's acceptance criteria require a pinning test only on
+   the revival path.
 
 ## Refinement iterations
 
 1 — initial authoring.
-2 — code-review round 1: stall guard reworked (above); null `started_at`
-    fallback; protection 404/403 → skip; backslash-free `@tsv` jq; note that
-    deferral cannot cost a human-approval merge.
-3 — overseer review of PR #1987 (MUST_FIX, human instruction "Worker: Address
-    the comments from Overseer"): the overseer App gets 403 on the classic
-    branch-protection endpoint in this repo (required checks come from
-    rulesets), so the 404/403 → skip branch always fired. Step 2a now reads
-    `rules/branches/<default_branch>` (`required_status_checks` rules) as well
-    and takes the union; it skips only when both reads give no contexts. The
-    cron-prompt pointer matches. Non-blocking finding also applied: the most
-    recent run per context is the highest `id`, not list position. The
-    `Validation stamps current` failure was an uncommitted stamp; the stamp
-    for the final agent content is now committed.
+2 — code-review round 1 (CHANGES_REQUESTED, 1 SHOULD_FIX + 2 NITs). No text
+    change:
+    - SHOULD_FIX "unsourced rationale clause": a false positive. The
+      reviewer's prompt quoted the ruling in abbreviated form. The full #1839
+      ruling says: "a human-approval requirement that fires on the
+      highest-volume, lowest-risk PR class is exactly the
+      rubber-stamping-degradation pattern this needs to avoid". The clause
+      paraphrases that sentence.
+    - NIT "new human ruling supersedes #1839": kept (design choice 2).
+    - NIT "pointer from the derivation instructions": declined (design
+      choice 1, scope).

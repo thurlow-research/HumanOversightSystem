@@ -363,13 +363,15 @@ For each PR found:
 
    **One scan is knowingly NOT wired to this union: the `prior_overseer_decision`
    derivation below (#761, #1839).** It still reads `/issues/{n}/comments` alone,
-   and therefore still matches nothing. That is deliberate, not an oversight.
-   Wiring it would revive a dormant merge gate that then requires a human
-   approval on the *current* head SHA for any PR that recorded
-   `**Decision: HUMAN_REQUIRED**` on an earlier cycle — a new human gate on the
-   LOW/MEDIUM non-protected path, which is a product decision rather than a
-   repair. Whether to revive it, and what clears it if so, is #1839. Until that
-   is answered, do not "fix" this scan.
+   and therefore still matches nothing. That is a **settled decision**, not an
+   oversight and not a pending question. Wiring it would revive a dormant merge
+   gate that then requires a human approval on the *current* head SHA for any
+   PR that recorded `**Decision: HUMAN_REQUIRED**` on an earlier cycle — a new
+   human gate on the LOW/MEDIUM non-protected path. The human ruled on #1839
+   (2026-10-02): **do not revive the guard** — a human-approval gate on the
+   highest-volume, lowest-risk PR class degrades into rubber-stamping; the
+   clearing-path question is moot. Do not "fix" this scan; reviving the guard
+   needs a new human ruling that supersedes #1839.
 
    **`prior_overseer_decision`** — scan the PR's issue comments for an earlier HUMAN_REQUIRED
    decision by this overseer:
