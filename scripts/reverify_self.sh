@@ -80,9 +80,10 @@ ok "Original review: $REVIEW_FILE"
 BASE_SOURCE="--base"
 if [[ -z "$BASE_REF" ]]; then
     # Header only (lines before the first '---' that review_self.sh writes), so a
-    # findings-body line can never be taken as the base.
-    BASE_REF=$(awk '/^---$/ {found=1; exit} {print} END {if (!found) exit 1}' "$REVIEW_FILE" \
-        | { grep -m1 '^Reviewed-Commit:' || true; } | sed 's/^Reviewed-Commit:[[:space:]]*//' | tr -d '[:space:]') || true
+    # findings-body line can never be taken as the base. awk buffers the header and
+    # prints it only once the delimiter is seen: no delimiter => no base.
+    BASE_REF=$(awk '/^---$/ {printf "%s", buf; exit} {buf = buf $0 "\n"}' "$REVIEW_FILE" \
+        | { grep -m1 '^Reviewed-Commit:' || true; } | sed 's/^Reviewed-Commit:[[:space:]]*//' | tr -d '[:space:]')
     BASE_SOURCE="Reviewed-Commit line in $REVIEW_FILE"
 fi
 

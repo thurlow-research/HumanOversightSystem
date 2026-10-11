@@ -303,3 +303,10 @@ def test_reverify_ignores_reviewed_commit_in_body(tmp_path):
     result = _reverify(repo, tmp_path, "--review", str(review))
     assert result.returncode != 0
     assert "--base" in result.stderr
+
+
+def test_reverify_delimiterless_review_file_yields_no_base(tmp_path):
+    repo, review, _ = _reverify_repo(tmp_path, "# Self-Review\nReviewed-Commit: @FIRST@\nbody\n")
+    result = _reverify(repo, tmp_path, "--review", str(review))
+    assert result.returncode != 0
+    assert "--base" in result.stderr
