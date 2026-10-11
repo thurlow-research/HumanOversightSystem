@@ -186,7 +186,9 @@ def test_reverify_option_like_base_is_rejected(tmp_path):
 
 
 def test_reverify_recorded_commit_resolves(tmp_path):
-    repo, review, first = _reverify_repo(tmp_path, "# Self-Review\nReviewed-Commit: @FIRST@\n")
+    repo, review, first = _reverify_repo(
+        tmp_path, "# Self-Review\nReviewed-Commit: @FIRST@\n---\nbody\n"
+    )
     result = _reverify(repo, tmp_path, "--review", str(review))
     assert result.returncode == 0, result.stdout + result.stderr
     assert first in result.stdout
@@ -194,7 +196,9 @@ def test_reverify_recorded_commit_resolves(tmp_path):
 
 
 def test_reverify_recorded_commit_gone_fails(tmp_path):
-    repo, review, _ = _reverify_repo(tmp_path, "# Self-Review\nReviewed-Commit: " + "0" * 40 + "\n")
+    repo, review, _ = _reverify_repo(
+        tmp_path, "# Self-Review\nReviewed-Commit: " + "0" * 40 + "\n---\nbody\n"
+    )
     result = _reverify(repo, tmp_path, "--review", str(review))
     assert result.returncode != 0
     assert "0" * 40 in result.stderr
@@ -202,7 +206,7 @@ def test_reverify_recorded_commit_gone_fails(tmp_path):
 
 def test_reverify_explicit_base_overrides_recorded(tmp_path):
     repo, review, first = _reverify_repo(
-        tmp_path, "# Self-Review\nReviewed-Commit: " + "0" * 40 + "\n"
+        tmp_path, "# Self-Review\nReviewed-Commit: " + "0" * 40 + "\n---\nbody\n"
     )
     result = _reverify(repo, tmp_path, "--review", str(review), "--base", first)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -238,7 +242,9 @@ def test_review_self_codex_does_not_require_agy(tmp_path):
     assert "agy not found" not in result.stdout + result.stderr
     reviews = list((repo / ".claudetmp" / "self-review").glob("review-*.md"))
     assert len(reviews) == 1
-    assert f"Reviewed-Commit: {head}\n" in reviews[0].read_text()
+    text = reviews[0].read_text()
+    assert f"Reviewed-Commit: {head}\n" in text
+    assert text.index("Reviewed-Commit:") < text.index("\n---\n")
 
 
 def test_review_self_dry_run_needs_no_reviewer_cli(tmp_path):
@@ -288,3 +294,12 @@ def test_check_agents_static_missing_name_is_finding_not_crash(tmp_path):
     assert "No 'name:' frontmatter in .claude/agents/a-nameless.md" in result.stdout
     # the script kept going past section 1 to the end-of-run summary
     assert "finding(s) require attention" in result.stdout
+
+
+def test_reverify_ignores_reviewed_commit_in_body(tmp_path):
+    repo, review, _ = _reverify_repo(
+        tmp_path, "# Self-Review\nTimestamp: x\n---\nReviewed-Commit: @FIRST@\n"
+    )
+    result = _reverify(repo, tmp_path, "--review", str(review))
+    assert result.returncode != 0
+    assert "--base" in result.stderr

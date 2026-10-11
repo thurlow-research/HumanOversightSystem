@@ -89,11 +89,10 @@ info "Collecting LOW-tier commits from last ${LOOKBACK_DAYS} days..."
 LOW_COMMITS=()
 # Run git log on its own so a failure (bad flag, not a repo) is surfaced instead
 # of silently producing an empty population (#1828). stderr is left attached.
-if ! RECENT_SHAS=$(git log --no-merges --since="${LOOKBACK_DAYS}.days" --format="%H"); then
+if ! RECENT_SHAS=$(git log --no-merges -n 200 --since="${LOOKBACK_DAYS}.days" --format="%H"); then
     echo "run_redteam_sample: git log failed — cannot build the commit population" >&2
     exit 1
 fi
-RECENT_SHAS=$(printf '%s\n' "$RECENT_SHAS" | head -200)
 while IFS= read -r sha; do
     [[ -z "$sha" ]] && continue
     # Check for AI-Risk: LOW trailer

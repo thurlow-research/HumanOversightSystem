@@ -79,7 +79,10 @@ ok "Original review: $REVIEW_FILE"
 # review_self.sh records in the review file, else fail. No HEAD~N guessing.
 BASE_SOURCE="--base"
 if [[ -z "$BASE_REF" ]]; then
-    BASE_REF=$(grep -m1 '^Reviewed-Commit:' "$REVIEW_FILE" | sed 's/^Reviewed-Commit:[[:space:]]*//' | tr -d '[:space:]' || true)
+    # Header only (lines before the first '---' that review_self.sh writes), so a
+    # findings-body line can never be taken as the base.
+    BASE_REF=$(awk '/^---$/ {found=1; exit} {print} END {if (!found) exit 1}' "$REVIEW_FILE" \
+        | { grep -m1 '^Reviewed-Commit:' || true; } | sed 's/^Reviewed-Commit:[[:space:]]*//' | tr -d '[:space:]') || true
     BASE_SOURCE="Reviewed-Commit line in $REVIEW_FILE"
 fi
 
