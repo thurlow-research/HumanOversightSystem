@@ -375,8 +375,8 @@ def compute_verdict(
     Returns {verdict, highest_severity, blocking_count, new_blocking_count,
     dedup_count, silenced}. `silenced` lists one {fingerprint, severity, summary}
     per blocking finding counted in `dedup_count`, so the audit trail records
-    WHICH finding the ledger suppressed (#1799). Does NOT decide pass/fail exit codes and does NOT read the pass
-    counter — the shell owns the cap (binding 3)."""
+    WHICH finding the ledger suppressed (#1799). Does NOT decide pass/fail exit
+    codes and does NOT read the pass counter — the shell owns the cap (binding 3)."""
     seen = load_ledger(ledger_path)
     highest = "none"
     blocking_count = 0

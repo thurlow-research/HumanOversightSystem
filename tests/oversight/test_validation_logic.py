@@ -21,13 +21,9 @@ import importlib.util
 import json
 from pathlib import Path
 
-_MOD_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "scripts"
-    / "oversight"
-    / "validation_logic.py"
-)
+_MOD_PATH = Path(__file__).resolve().parents[2] / "scripts" / "oversight" / "validation_logic.py"
 _spec = importlib.util.spec_from_file_location("validation_logic", _MOD_PATH)
+assert _spec is not None and _spec.loader is not None
 validation_logic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validation_logic)
 
@@ -124,11 +120,15 @@ def test_high_not_collapsed_to_blocking(tmp_path):
 
 def test_highest_picks_most_severe(tmp_path):
     ledger = str(tmp_path / "ledger.jsonl")
-    blocks = [{"findings": [
-        {"severity": "warning", "files": ["a"], "type": "x"},
-        {"severity": "critical", "files": ["b"], "type": "y"},
-        {"severity": "low", "files": ["c"], "type": "z"},
-    ]}]
+    blocks = [
+        {
+            "findings": [
+                {"severity": "warning", "files": ["a"], "type": "x"},
+                {"severity": "critical", "files": ["b"], "type": "y"},
+                {"severity": "low", "files": ["c"], "type": "z"},
+            ]
+        }
+    ]
     result = compute_verdict(blocks, ledger)
     assert result["highest_severity"] == "critical"
 
@@ -149,9 +149,7 @@ def test_seen_finding_does_not_gate(tmp_path):
     # (fixed) is deduped and does not gate (#983: only resolving dispositions
     # silence).
     ledger = tmp_path / "ledger.jsonl"
-    ledger.write_text(
-        json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"}) + "\n"
-    )
+    ledger.write_text(json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"}) + "\n")
     blocks = [{"findings": [{"severity": "blocking", "files": ["a"], "type": "x"}]}]
     result = compute_verdict(blocks, str(ledger))
     assert result["verdict"] == "approve"
@@ -169,10 +167,14 @@ def test_attacks_list_also_counted(tmp_path):
 
 def test_non_blocking_severities_ignored_for_count(tmp_path):
     ledger = str(tmp_path / "ledger.jsonl")
-    blocks = [{"findings": [
-        {"severity": "warning", "files": ["a"], "type": "x"},
-        {"severity": "low", "files": ["b"], "type": "y"},
-    ]}]
+    blocks = [
+        {
+            "findings": [
+                {"severity": "warning", "files": ["a"], "type": "x"},
+                {"severity": "low", "files": ["b"], "type": "y"},
+            ]
+        }
+    ]
     result = compute_verdict(blocks, ledger)
     assert result["blocking_count"] == 0
     assert result["verdict"] == "approve"
@@ -249,10 +251,12 @@ def test_load_ledger_skips_malformed_lines(tmp_path):
     # entries contribute silencing keys (#983 gates non-resolving dispositions).
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"}) + "\n"
+        json.dumps({"files": ["a"], "class": "x", "disposition": "fixed"})
+        + "\n"
         + "not json\n"
         + "\n"
-        + json.dumps({"files": ["b"], "class": "y", "disposition": "filed:#42"}) + "\n"
+        + json.dumps({"files": ["b"], "class": "y", "disposition": "filed:#42"})
+        + "\n"
     )
     seen = load_ledger(str(ledger))
     assert len(seen) == 2
@@ -291,12 +295,15 @@ def test_noise_disposition_does_not_silence(tmp_path):
     # must NOT silence a later blocking finding with the same (files, class).
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"files": ["views.py"], "class": "security", "disposition": "noise"})
-        + "\n"
+        json.dumps({"files": ["views.py"], "class": "security", "disposition": "noise"}) + "\n"
     )
-    blocks = [{"findings": [
-        {"severity": "critical", "files": ["views.py"], "category": "security"},
-    ]}]
+    blocks = [
+        {
+            "findings": [
+                {"severity": "critical", "files": ["views.py"], "category": "security"},
+            ]
+        }
+    ]
     result = compute_verdict(blocks, str(ledger))
     assert result["new_blocking_count"] == 1
     assert result["verdict"] == "request_changes"
@@ -305,8 +312,7 @@ def test_noise_disposition_does_not_silence(tmp_path):
 def test_residual_disposition_does_not_silence(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "residual"})
-        + "\n"
+        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "residual"}) + "\n"
     )
     blocks = [{"findings": [{"severity": "high", "files": ["a.py"], "type": "bug"}]}]
     result = compute_verdict(blocks, str(ledger))
@@ -326,8 +332,7 @@ def test_missing_disposition_does_not_silence(tmp_path):
 def test_filed_disposition_silences(tmp_path):
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(
-        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "filed:#123"})
-        + "\n"
+        json.dumps({"files": ["a.py"], "class": "bug", "disposition": "filed:#123"}) + "\n"
     )
     blocks = [{"findings": [{"severity": "high", "files": ["a.py"], "type": "bug"}]}]
     result = compute_verdict(blocks, str(ledger))
@@ -343,9 +348,13 @@ def test_gaming_preemptive_noise_does_not_silence_unrelated_finding(tmp_path):
         {"files": ["views.py"], "class": "security", "disposition": "noise"},
         str(ledger),
     )
-    blocks = [{"attacks": [
-        {"severity": "critical", "files": ["views.py"], "category": "security"},
-    ]}]
+    blocks = [
+        {
+            "attacks": [
+                {"severity": "critical", "files": ["views.py"], "category": "security"},
+            ]
+        }
+    ]
     result = compute_verdict(blocks, str(ledger))
     assert result["new_blocking_count"] == 1
     assert result["verdict"] == "request_changes"
@@ -355,9 +364,7 @@ def test_degenerate_resolving_entry_never_silences(tmp_path):
     # Even a RESOLVING entry with no files and no class is degenerate ([[], ""]):
     # it must not silence a class-less/file-less blocking finding (#983/#670).
     ledger = tmp_path / "ledger.jsonl"
-    ledger.write_text(
-        json.dumps({"files": [], "class": "", "disposition": "fixed"}) + "\n"
-    )
+    ledger.write_text(json.dumps({"files": [], "class": "", "disposition": "fixed"}) + "\n")
     blocks = [{"findings": [{"severity": "blocking"}]}]
     result = compute_verdict(blocks, str(ledger))
     assert result["new_blocking_count"] == 1
@@ -371,7 +378,7 @@ def test_is_resolving_predicate():
     assert _is_resolving("filed:#7")
     assert not _is_resolving("noise")
     assert not _is_resolving("residual")
-    assert not _is_resolving("filed:#")   # no issue number
+    assert not _is_resolving("filed:#")  # no issue number
     assert not _is_resolving("")
     assert not _is_resolving(None)
 
@@ -381,23 +388,31 @@ def test_cmd_process_preserves_request_changes_with_medium_findings(tmp_path):
     """A reviewer's explicit request_changes (medium findings only) must not be
     laundered into approve by compute_verdict's new_blocking_count==0 logic.
     regression test for #683."""
-    import importlib.util as _ilu
-    import sys as _sys
     vl = validation_logic  # already imported at module level
 
     ledger = str(tmp_path / "ledger.jsonl")
     # Simulate the second-review output file AFTER second_review_logic.py aggregate
     # has already set verdict: request_changes for a medium-only reviewer response.
-    reviewer_json = json.dumps({
-        "reviewer": "agy",
-        "verdict": "request_changes",
-        "findings": [{"severity": "medium", "file": "foo.py", "line": 1,
-                      "finding": "medium issue", "why": "why", "suggestion": "fix"}],
-    })
+    reviewer_json = json.dumps(
+        {
+            "reviewer": "agy",
+            "verdict": "request_changes",
+            "findings": [
+                {
+                    "severity": "medium",
+                    "file": "foo.py",
+                    "line": 1,
+                    "finding": "medium issue",
+                    "why": "why",
+                    "suggestion": "fix",
+                }
+            ],
+        }
+    )
     content = (
         "# Second Review — Step 3\n"
         "Score: 0.35 | Timestamp: 20260623T000000\n"
-        "verdict: request_changes\n"   # already set by aggregate
+        "verdict: request_changes\n"  # already set by aggregate
         "reviewed_range: abc..def\n"
         "highest_severity: medium\n"
         "unresolved_findings: 0\n"
@@ -412,6 +427,7 @@ def test_cmd_process_preserves_request_changes_with_medium_findings(tmp_path):
 
     # Call _cmd_process via the CLI shim (argparse namespace).
     import argparse
+
     args = argparse.Namespace(
         file=str(outfile),
         ledger=ledger,
@@ -434,11 +450,13 @@ def test_cmd_process_does_not_preserve_approve_when_compute_agrees(tmp_path):
     the approve verdict is preserved unchanged (#683 — no regression on clean path)."""
     vl = validation_logic
     ledger = str(tmp_path / "ledger.jsonl")
-    reviewer_json = json.dumps({
-        "reviewer": "agy",
-        "verdict": "approve",
-        "findings": [],
-    })
+    reviewer_json = json.dumps(
+        {
+            "reviewer": "agy",
+            "verdict": "approve",
+            "findings": [],
+        }
+    )
     content = (
         "# Second Review — Step 3\n"
         "Score: 0.35 | Timestamp: 20260623T000000\n"
@@ -455,8 +473,12 @@ def test_cmd_process_does_not_preserve_approve_when_compute_agrees(tmp_path):
     outfile = tmp_path / "step3-review.md"
     outfile.write_text(content)
     import argparse
+
     args = argparse.Namespace(
-        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+        file=str(outfile),
+        ledger=ledger,
+        strict_empty=False,
+        func=vl._cmd_process,
     )
     rc = vl._cmd_process(args)
     assert rc == 0
@@ -476,16 +498,26 @@ def test_cmd_process_upgrades_approve_to_request_changes_on_hidden_blocking(tmp_
     (#982)."""
     vl = validation_logic
     ledger = str(tmp_path / "ledger.jsonl")
-    reviewer_json = json.dumps({
-        "reviewer": "agy",
-        "verdict": "approve",  # reviewer said approve …
-        "findings": [{"severity": "critical", "file": "views.py", "line": 1,
-                      "finding": "SQL injection", "why": "unsanitized", "suggestion": "param"}],
-    })  # … but shipped a CRITICAL finding
+    reviewer_json = json.dumps(
+        {
+            "reviewer": "agy",
+            "verdict": "approve",  # reviewer said approve …
+            "findings": [
+                {
+                    "severity": "critical",
+                    "file": "views.py",
+                    "line": 1,
+                    "finding": "SQL injection",
+                    "why": "unsanitized",
+                    "suggestion": "param",
+                }
+            ],
+        }
+    )  # … but shipped a CRITICAL finding
     content = (
         "# Second Review — Step 3\n"
         "Score: 0.70 | Timestamp: 20260716T000000\n"
-        "verdict: approve\n"          # already rewritten by aggregate
+        "verdict: approve\n"  # already rewritten by aggregate
         "reviewed_range: abc..def\n"
         "highest_severity: critical\n"  # aggregate DID record the severity
         "unresolved_findings: 1\n"
@@ -498,8 +530,12 @@ def test_cmd_process_upgrades_approve_to_request_changes_on_hidden_blocking(tmp_
     outfile = tmp_path / "step3-review.md"
     outfile.write_text(content)
     import argparse
+
     args = argparse.Namespace(
-        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+        file=str(outfile),
+        ledger=ledger,
+        strict_empty=False,
+        func=vl._cmd_process,
     )
     rc = vl._cmd_process(args)
     assert rc == 0
@@ -535,8 +571,12 @@ def test_cmd_process_error_verdict_upgrades_approve(tmp_path):
     outfile = tmp_path / "step3-review.md"
     outfile.write_text(content)
     import argparse
+
     args = argparse.Namespace(
-        file=str(outfile), ledger=ledger, strict_empty=False, func=vl._cmd_process,
+        file=str(outfile),
+        ledger=ledger,
+        strict_empty=False,
+        func=vl._cmd_process,
     )
     assert vl._cmd_process(args) == 0
     result_text = outfile.read_text()
