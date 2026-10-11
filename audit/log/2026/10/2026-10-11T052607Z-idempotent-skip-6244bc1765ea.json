@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"012802db852152e54090fc01886fbdcb75150d29","pr":2068,"reason":"#1215 skip: HUMAN_REQUIRED verdict already posted at this head SHA (review 5481994155); no new commits, comments, or human reviews since; needs-human label present"}
