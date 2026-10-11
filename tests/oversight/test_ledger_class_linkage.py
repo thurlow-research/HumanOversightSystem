@@ -105,8 +105,10 @@ def test_class_keys_list_matches_the_implementation():
     """Guards the guard: if `_class_of_finding` grows or drops a key without
     CLASS_KEYS following, the linkage test above silently stops covering it."""
     for key in CLASS_KEYS:
+        # `cwe` must be a canonical CWE id to count as a class (#1799).
+        probe, expected = ("CWE-703", "cwe-703") if key == "cwe" else ("probe-value",) * 2
         assert (
-            _class_of_finding({key: "probe-value"}) == "probe-value"
+            _class_of_finding({key: probe}) == expected
         ), f"{key!r} is in CLASS_KEYS but _class_of_finding does not read it"
     assert _class_of_finding({"unrelated_key": "v"}) == ""
 
