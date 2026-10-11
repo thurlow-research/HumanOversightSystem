@@ -663,7 +663,7 @@ def test_summary_key_precedence_and_missing(tmp_path):
 def _run_process(tmp_path, ledger, finding):
     import argparse
 
-    block = {"verdict": "approve", "findings": [finding]}
+    block = {"verdict": "approve", "findings": finding if isinstance(finding, list) else [finding]}
     outfile = tmp_path / "review.md"
     outfile.write_text(
         "verdict: pending\nhighest_severity: none\nblocking_count: 0\n"
@@ -733,3 +733,44 @@ def test_placeholder_cwe_ledger_entry_does_not_silence(tmp_path):
     assert result["dedup_count"] == 0
     assert result["silenced"] == []
     assert result["verdict"] == "request_changes"
+
+
+def _many_silenced(tmp_path, n):
+    ledger = tmp_path / "ledger.jsonl"
+    findings = []
+    with ledger.open("w") as fh:
+        for i in range(n):
+            fh.write(json.dumps({"files": [f"f{i}"], "class": "x", "disposition": "fixed"}) + "\n")
+            findings.append({"severity": "high", "files": [f"f{i}"], "type": "x"})
+    return str(ledger), findings
+
+
+def test_cmd_process_truncates_long_fingerprint_in_stderr(tmp_path, capsys):
+    long_path = "p" * 5000
+    ledger = _ledger_with(tmp_path, [long_path], "x")
+    _run_process(tmp_path, ledger, {"severity": "high", "files": [long_path], "type": "x"})
+    line = capsys.readouterr().err.splitlines()[1]
+    assert "p" * 150 in line
+    assert "p" * 201 not in line
+    assert " — " in line and "…" in line
+    result = compute_verdict(
+        [{"findings": [{"severity": "high", "files": [long_path], "type": "x"}]}], ledger
+    )
+    assert long_path in result["silenced"][0]["fingerprint"]
+
+
+def test_cmd_process_caps_listed_entries(tmp_path, capsys):
+    ledger, findings = _many_silenced(tmp_path, 53)
+    _run_process(tmp_path, ledger, findings)
+    lines = capsys.readouterr().err.splitlines()
+    assert "silenced 53 blocking" in lines[0]
+    assert len(lines) == 1 + 50 + 1
+    assert lines[-1] == "  … and 3 more silenced finding(s) not listed"
+
+
+def test_cmd_process_exactly_cap_has_no_more_line(tmp_path, capsys):
+    ledger, findings = _many_silenced(tmp_path, 50)
+    _run_process(tmp_path, ledger, findings)
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 51
+    assert not any("more silenced" in ln for ln in lines)

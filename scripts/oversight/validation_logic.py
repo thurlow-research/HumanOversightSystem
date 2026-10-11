@@ -185,6 +185,10 @@ _CWE_RE = re.compile(r"^cwe[-_ ]?(\d+)\b")
 _CWE_CANON_RE = re.compile(r"^cwe-\d+$")
 _SUMMARY_KEYS = ("finding", "title", "description", "why")
 _SUMMARY_MAX = 160
+# Bounds on the stderr silenced-findings report (CWE-400): fingerprints embed
+# reviewer-supplied file paths and the entry count is reviewer-influenced.
+_REPORT_FP_MAX = 200
+_REPORT_MAX_ENTRIES = 50
 
 
 def _normalize_class(cls) -> str:
@@ -594,10 +598,19 @@ def _cmd_process(args: argparse.Namespace) -> int:
             f"finding(s) — verify each disposition actually covers it (#1799):",
             file=sys.stderr,
         )
-        for entry in silenced:
+        for entry in silenced[:_REPORT_MAX_ENTRIES]:
+            fp = _safe_log(entry["fingerprint"])
+            if len(fp) > _REPORT_FP_MAX:
+                fp = fp[:_REPORT_FP_MAX] + "…"
             print(
-                f"  silenced [{_safe_log(entry['severity'])}] "
-                f"{_safe_log(entry['fingerprint'])} — {_safe_log(entry['summary'])}",
+                f"  silenced [{_safe_log(entry['severity'])}] {fp} "
+                f"— {_safe_log(entry['summary'])}",
+                file=sys.stderr,
+            )
+        if len(silenced) > _REPORT_MAX_ENTRIES:
+            print(
+                f"  … and {len(silenced) - _REPORT_MAX_ENTRIES} more silenced "
+                "finding(s) not listed",
                 file=sys.stderr,
             )
 
