@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"c475b7cba7b48b4434dbc25bb7bd1bec483681f7","pr":2071,"reason":"#1215/#1657: PROPOSE_ONLY verdict already posted 2026-10-11T23:42Z on this head; decide_merge_authority re-run live still PROPOSE_ONLY; submit-verdict wrapper skipped identical body; no new commits or human activity since"}
