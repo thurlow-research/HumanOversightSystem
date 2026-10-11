@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"2a31de1d635928470e6215d4143b79da5be172df","pr":2070,"reason":"#1215: verdict already posted 2026-10-11T17:12Z on this head; needs-human applied; no new commits or human activity since"}
