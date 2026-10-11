@@ -37,6 +37,8 @@ _CONSUMER_FILES = _FRAMEWORK_DIR / "framework_consumer_files.txt"
 _INSTALLER = _REPO_ROOT / "bootstrap" / "hos_install.sh"
 _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_INVENTORY_DOC = _REPO_ROOT / "docs" / "CI-EXECUTION-INVENTORY.md"
+_INVENTORY_JOB_RE = re.compile(r"\(job: `([^`]+)`\)")
 
 
 def _core_contexts() -> list[str]:
@@ -197,6 +199,39 @@ def test_rerun_gate_checks_not_a_required_context():
         "rerun-gate-checks must not be a required status check — it only "
         "fires on review events, so it would stay permanently 'expected' on "
         "any PR without a review yet and block every merge (#737)."
+    )
+
+
+def test_inventory_doc_does_not_call_required_gates_advisory():
+    """#1837/#1830: a CI-EXECUTION-INVENTORY.md row whose job is a required
+    context must say "required", never "advisory". A stale "advisory" row led
+    two reviewers to treat a red required check as non-blocking on PR #1830.
+    """
+    matched: list[str] = []
+    stale: list[str] = []
+    required = set(_required_contexts())
+    for line in _INVENTORY_DOC.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        m = _INVENTORY_JOB_RE.search(cells[2])
+        if not m or m.group(1) not in required:
+            continue
+        job = m.group(1)
+        matched.append(job)
+        status = cells[1].lower()
+        if "advisory" in status or "required" not in status:
+            stale.append(f"row {cells[0]} (job {job}): status {cells[1]!r}")
+    assert "oversight-gate-lint" in matched, (
+        "no inventory row matched job `oversight-gate-lint`; the doc format "
+        "changed and this guard would be vacuous (#1837)"
+    )
+    assert not stale, (
+        f"docs/CI-EXECUTION-INVENTORY.md marks required gate(s) as not required: {stale}. "
+        "scripts/framework/setup_branch_protection.sh is the authority for "
+        "required contexts (#1837, #1830)."
     )
 
 

@@ -26,8 +26,8 @@ for the debt baseline and promotion rationale.
 | Gate | Status | Workflow | Reason |
 |---|---|---|---|
 | `secret_scan.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-secret-scan`) | Deterministic, file-scoped, no network. Low debt: 15 findings — audit-log JSON idempotency-dedup false positives plus one `Secret Keyword` flag in `scripts/oversight/suspension_manager.py:66` (#1571) — not yet promoted. |
-| `lint_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-lint`) | Deterministic, file-scoped, no network. Severe debt: isort/black fails on nearly every .py file — reformat is its own PR per #1571 item 4; promote only after that lands and `--all` is clean. |
-| `type_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-type-check`) | Deterministic, file-scoped, no network. Severe debt: dozens of pre-existing mypy errors repo-wide, found via `--all` baseline 2026-09-11 — not previously tracked by #1571's own table. Needs its own cleanup pass before promotion, same treatment as lint_check. |
+| `lint_check.sh` | Wired, **required** | `oversight-gates.yml` (job: `oversight-gate-lint`) | Deterministic, file-scoped, no network. Promoted to required 2026-09-14 under the ratchet-principle human override (#1567/#1642/#1641). Because the gate is file-scoped, a PR is gated only on files it touches, so pre-existing findings in a touched file are the PR's to fix (the trigger for organic cleanup, not an exemption). The batch reformat (#1585) remains open as organic cleanup, not a promotion precondition; re-verified 2026-09-14 debt was 3 findings in 2 files (a human must still run `setup_branch_protection.sh` for the live GitHub setting to take effect). |
+| `type_check.sh` | Wired, **required** | `oversight-gates.yml` (job: `oversight-gate-type-check`) | Deterministic, file-scoped, no network. Promoted to required 2026-09-14 under the ratchet-principle human override (#1567/#1642/#1641). Because the gate is file-scoped, a PR is gated only on files it touches, so pre-existing findings in a touched file are the PR's to fix (the trigger for organic cleanup, not an exemption). Remaining mypy debt is tracked in #1642 (re-verified 2026-09-14: ~20 errors, one repeated importlib.util pattern across 9 test files) (a human must still run `setup_branch_protection.sh` for the live GitHub setting to take effect). |
 | `bash_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-bash-check`) | Deterministic, file-scoped, no network. Low debt: 2 files use Bash-4+ constructs (#1571) — not yet promoted. |
 | `portability_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-portability`) | Deterministic, file-scoped, no network. Low debt: 4 test-fixture false positives (hardcoded home-directory paths) (#1571) — not yet promoted. |
 | `template_refs_check.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-gate-template-refs`) | Deterministic, file-scoped, no network. SKIPs cleanly on this (non-Django) repo — zero debt, but file-scoped rather than repo-scoped, so kept as its own advisory job rather than folded into `oversight-gate-repo-scoped` (#1571). |
@@ -129,8 +129,9 @@ these were never attestation for execution in the first place.
 - Everything else in #1216's acceptance criteria (inventory, CI-portable
   items wired, `pytest` required, stamp scope) is complete as of this
   document.
-- `type_check.sh`'s severe mypy debt (found via #1571's re-baseline, not
-  previously tracked) needs its own cleanup pass before promotion.
+- `type_check.sh` was promoted to required on 2026-09-14 under the
+  ratchet-principle human override; its remaining mypy debt (#1642) is
+  cleaned up organically as files are touched.
 - `oversight-validators.yml`'s dimensions now have the same kind of `--all`
   debt baseline #1571 item 1 did for the gates — done in #1571 item 2
   (2026-09-12): split into five per-scope jobs, four promoted to required
