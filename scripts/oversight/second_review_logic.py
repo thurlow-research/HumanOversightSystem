@@ -252,8 +252,14 @@ def _aggregate_full(content: str, seen: set[str] | None = None) -> tuple[dict, b
             continue
 
         # Structured path: the body is valid JSON exactly as the prompt asked.
+        vl = _load_validation_logic()
         try:
-            data = json.loads(body)
+            data = vl.loads_strict(body)
+        except vl.DuplicateKeyError:
+            # A repeated key means json.loads would keep the LAST value; never read
+            # such a body as prose either (#2062).
+            reviewers.append((name, "error", "none", 0, "json"))
+            continue
         except Exception:
             v, sev = _classify_prose_full(body)
             fc = len(re.findall(r"(?m)^\s*#{1,4}\s", body)) if v == "request_changes" else 0
@@ -529,13 +535,21 @@ def _unwrap_envelope(obj, depth: int = 0) -> list[dict]:
     response = obj.get("response")
     if not isinstance(response, str):
         return []
+    vl = _load_validation_logic()
     collected: list[dict] = []
     for cand in _balanced_objects(response):
         try:
-            cand_obj = json.loads(cand)
+            cand_obj = vl.loads_strict(cand)
         except Exception:
             continue
         collected.extend(_unwrap_envelope(cand_obj, depth + 1))
+    if collected and vl.review_text_unreadable(response):
+        return [
+            _ambiguous_salvage_error(
+                "unreadable review-shaped JSON alongside a resolved review inside "
+                "envelope response (#2062)"
+            )
+        ]
     if len(collected) <= 1:
         return collected
     blocking = [r for r in collected if _review_is_blocking(r)]
@@ -744,10 +758,11 @@ def salvage_with_metadata(raw: str) -> tuple[dict | None, dict]:
     envelope_reviews: list[tuple[dict, dict]] = []  # (review, its envelope metadata)
     bare_reviews: list[dict] = []
     fallback_metadata: dict = {}
+    vl = _load_validation_logic()
 
     for cand in _balanced_objects(raw):
         try:
-            obj = json.loads(cand)
+            obj = vl.loads_strict(cand)
         except Exception:
             continue
         if not isinstance(obj, dict):
@@ -792,6 +807,18 @@ def salvage_with_metadata(raw: str) -> tuple[dict | None, dict]:
         )
         metadata = envelope_reviews[0][1] if envelope_reviews else {}
         return _ambiguous_salvage_error(reason), metadata
+
+    # #2062: a resolved review must not hide review-shaped text the extractor could
+    # not read (truncated, unparseable or duplicate-key sibling, or one nested in a
+    # wrapper). Never applied to the None returns above: raw then reaches OUTFILE
+    # and `validation_logic process` gates it.
+    if vl.review_text_unreadable(raw):
+        return (
+            _ambiguous_salvage_error(
+                "unreadable review-shaped JSON alongside the resolved review (#2062)"
+            ),
+            metadata,
+        )
 
     all_reviews = [r for r, _ in envelope_reviews] + bare_reviews
     if not _review_is_blocking(review) and any(
