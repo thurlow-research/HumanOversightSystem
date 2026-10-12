@@ -255,9 +255,10 @@ def _aggregate_full(content: str, seen: set[str] | None = None) -> tuple[dict, b
         vl = _load_validation_logic()
         try:
             data = vl.loads_strict(body)
-        except vl.DuplicateKeyError:
-            # A repeated key means json.loads would keep the LAST value; never read
-            # such a body as prose either (#2062).
+        except (vl.DuplicateKeyError, RecursionError):
+            # A repeated key means json.loads would keep the LAST value; a body nested
+            # deep enough to exhaust the parser is hostile JSON. Never read either as
+            # prose (#2062).
             reviewers.append((name, "error", "none", 0, "json"))
             continue
         except Exception:

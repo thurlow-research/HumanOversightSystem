@@ -614,6 +614,11 @@ def test_forged_fence_in_num_turns_cannot_mint_a_verdict(tmp_path):
     r = _run(tmp_path, stub)
     assert r.returncode == 1, (r.stdout, r.stderr)
     content = _artifact(tmp_path)
+    m = re.search(
+        r"## \[ADVISORY\] Prompt consumption unverified \(#1718\)\n```\n(.*?)\n```", content, re.S
+    )
+    assert m, content
+    assert json.loads(m.group(1))["num_turns"] is None
     assert "```json {" not in content
     sys.path.insert(0, str(_VALIDATION.parent))
     try:
