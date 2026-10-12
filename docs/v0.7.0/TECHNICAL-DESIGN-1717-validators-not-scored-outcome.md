@@ -1,6 +1,6 @@
 # TECHNICAL-DESIGN-1717 — Validators "not scored" outcome
 
-Issue: #1717 (v0.7.0). Author: technical-design. Date: 2026-10-12. Round: 6. Security-reviewer round 2 APPROVED; its advisories are applied, marked `[SEC-N1..N3]`. Architect round 4 (`[SEC-M1]`) is in the body. Code-reviewer round 2 APPROVED (TD HEAD 53665ee65); its four SHOULD_FIX items are applied, marked `[CR2-1..4]`. Architect round 2 APPROVED WITH CONDITIONS, with C-5 and C-6 folded in (marked `[C-5]`, `[C-6]`) and AQ-4 accepted. Architect APPROVED WITH CONDITIONS in round 1; C-1..C-4 and the four agy second-review findings are folded into the body (each change is marked `[C-n]` or `[agy-n]`). Round 3 applies code-reviewer M-1 and S-1..S-3 (marked `[CR-M1]`, `[CR-S1..S3]`). `[CR-S1]` is a proposed D6 tightening that awaits an architect ruling (AQ-4). The architect's review is kept verbatim at the end.
+Issue: #1717 (v0.7.0). Author: technical-design. Date: 2026-10-12. Round: 9. The agy round-3 findings are applied, marked `[agy3-1/2]`. The §2.4 fail-closed reasons now use stable `FC_*` codes, and the body and tests cite those codes, not position numbers. Position numbers inside the verbatim review sections refer to earlier rounds. Security-reviewer round 2 APPROVED; its advisories are applied, marked `[SEC-N1..N3]`. Architect round 4 (`[SEC-M1]`) is in the body. Code-reviewer round 2 APPROVED (TD HEAD 53665ee65); its four SHOULD_FIX items are applied, marked `[CR2-1..4]`. Architect round 2 APPROVED WITH CONDITIONS, with C-5 and C-6 folded in (marked `[C-5]`, `[C-6]`) and AQ-4 accepted. Architect APPROVED WITH CONDITIONS in round 1; C-1..C-4 and the four agy second-review findings are folded into the body (each change is marked `[C-n]` or `[agy-n]`). Round 3 applies code-reviewer M-1 and S-1..S-3 (marked `[CR-M1]`, `[CR-S1..S3]`). `[CR-S1]` is a proposed D6 tightening that awaits an architect ruling (AQ-4). The architect's review is kept verbatim at the end.
 Inputs (binding): `REQUIREMENTS-1717-validators-not-scored-tier.md`, `ADR-1717-validators-not-scored-outcome.md` (D1–D9) `[CR3-5]`.
 Scope: **S1a coder-ready**. S1b/S2/S3/S4 outlined only (§9).
 
@@ -65,7 +65,7 @@ Value rule: numeric (not `bool`), finite and `> 0` → `True`. Exactly `0`/`0.0`
 
 ### 2.4 `decide_zero_weight_outcome(results: Sequence[object], weights: Mapping[str, float], skipped_names: Sequence[str] = (), *, path_facts: Mapping[str, str] | None) -> RunDecision` `[SEC-M1]`
 `path_facts` is keyword-only and has **no default**, so every caller must state it. It maps each changed path to one `PATH_*` kind (§2.1a). `None` or an empty mapping means there is no proof about the paths, so the run is `fail_closed`.
-`RunDecision` is a frozen dataclass with these fields: `outcome: str` (`RUN_NOT_SCORED` | `RUN_FAIL_CLOSED`), `validator_outcomes: dict[str, str]`, `reason: str`, `not_applicable_weighted: tuple[str, ...]` (sorted).
+`RunDecision` is a frozen dataclass with these fields: `outcome: str` (`RUN_NOT_SCORED` | `RUN_FAIL_CLOSED`), `validator_outcomes: dict[str, str]`, `reason: str`, `reason_code: str` (`[agy3-1]`; one of the `FC_*` codes below, or `"ok"`), `not_applicable_weighted: tuple[str, ...]` (sorted).
 
 Contract precondition, documented for S2: call it **only** inside the legacy fail-closed branch (`total_w == 0 or not successful`, `run_validators.sh:468`). Runs that take the scored path never consult it, which is what keeps REQ-04 byte-identical.
 
@@ -82,7 +82,7 @@ Naming `[agy-2]`: compute `dim = result.get("dimension") if isinstance(result, d
    - I chose "any skipped" rather than "skipped weighted-or-floor-bearing". The runner's names do not match `WEIGHTS` keys (for example `complexity` vs `cyclomatic`), and there is no registry of which dimensions bear floors. A per-dimension rule would have to guess, and a script-absent validator is an install defect, not a measurement.
    - Skipped names are still recorded as `"skipped"` in `validator_outcomes` (D3).
    - If the architect rules against condition 5, delete it and restore `test_decide_skipped_names_do_not_block_and_are_recorded`.
-6. **`[SEC-M1]` (architect round 4; ADR D6/D9):** `path_facts` is a non-empty mapping. **`[SEC-N2]`** Every key must be a `str`, and every value must be exactly one of the four `PATH_*` strings; any other key or value (`"deleted"`, `"PRESENT"`, `None`, `1`, a non-str key) is a catch-all `fail_closed` (reason 2a). No value may be `PATH_UNRESOLVED`. An unresolved path is a changed path that is not in the working tree and is not a confirmed deletion: a wrong checkout, a git-quoted name, or an explicit-list path that does not exist. It is unreadable evidence, so it is treated like errored. `[CR3-4]` This reconciles with the REQ definition ("an unresolved path is Errored, never N/A"): the error is recorded at **run level**. A validator whose argv paths were all unresolved still classifies as `not_applicable` in `validator_outcomes`, because its self-report really was "no input files". The **run**, however, is `fail_closed` with reason 3, which names the paths. So an unresolved path can never produce `not_scored` (REQ-1717-21), and no per-validator outcome is rewritten.
+6. **`[SEC-M1]` (architect round 4; ADR D6/D9):** `path_facts` is a non-empty mapping. **`[SEC-N2]`** Every key must be a `str`, and every value must be exactly one of the four `PATH_*` strings; any other key or value (`"deleted"`, `"PRESENT"`, `None`, `1`, a non-str key) is a catch-all `fail_closed` (`FC_INVALID_PATH_FACTS`). No value may be `PATH_UNRESOLVED`. An unresolved path is a changed path that is not in the working tree and is not a confirmed deletion: a wrong checkout, a git-quoted name, or an explicit-list path that does not exist. It is unreadable evidence, so it is treated like errored. `[CR3-4]` This reconciles with the REQ definition ("an unresolved path is Errored, never N/A"): the error is recorded at **run level**. A validator whose argv paths were all unresolved still classifies as `not_applicable` in `validator_outcomes`, because its self-report really was "no input files". The **run**, however, is `fail_closed` with `FC_UNRESOLVED`, which names the paths. So an unresolved path can never produce `not_scored` (REQ-1717-21), and no per-validator outcome is rewritten.
 7. **`[SEC-M1]`:** every value in `path_facts` is `PATH_DELETED_DOCS`.
    - The weighted validators report N/A **only** when none of their argv paths exist (`migration_scorer.py:184`, `issue_query.py:240`, `ip_check.py:516`). So in the zero-weight branch the only legitimate shape is a deletion-only diff.
    - A `PATH_PRESENT` path here is an anomaly: a present file should have scored.
@@ -90,18 +90,37 @@ Naming `[agy-2]`: compute `dim = result.get("dimension") if isinstance(result, d
 
 Reason strings (exact formats; these are tested):
 - not_scored `[SEC-M1]`: `f"no weighted dimension applied: deletion-only docs diff ({n} path(s)); not applicable: " + ", ".join(sorted(na_weighted))`
-- fail_closed, first match wins:
-  1. `"no validator results"`;
-  2. `"no path facts"` `[SEC-M1]` (`None`, an empty mapping, or anything that is not a `Mapping`);
-  2a. `"invalid path facts (unknown kind or non-string path): " + _paths(bad)` `[SEC-N2]`. Here `bad` holds each offending key: the key itself if it is a `str`, otherwise `repr(key)`. This is the catch-all, so the helper never assumes a kind it does not define. It is numbered 2a so that the reason numbers 3-9 cited in the tests and in S2 stay stable;
-  3. `"unresolved changed paths (not in working tree, not a deletion): " + _paths(unresolved)` `[SEC-M1]`;
-  4. `"errored: " + ", ".join(sorted(errored))`;
-  5. `"skipped: " + ", ".join(sorted(skipped_names))` `[CR-S1]`;
-  6. `"weighted dimension scored but total weight was zero: " + ", ".join(sorted(scored_weighted))` `[agy-4]` (`scored_weighted` = the keys of results that are both `scored` and `is_weighted`);
-  7. `"no weighted dimension was not applicable"`;
-  8. `"changed paths present but no weighted dimension scored: " + _paths(present)` `[SEC-M1]`;
-  9. `"deletion-only diff touches non-docs or protected paths: " + _paths(deleted_other)` `[SEC-M1]`.
-  - `[agy2-2]` Present is now checked **before** deleted_other (the round-6 order swapped). Because unresolved paths are already excluded by reason 3, reason 9 is reached only when every path is `deleted_docs` or `deleted_other`, so "deletion-only" is then literally true. A mixed diff with present files and non-docs deletions reports reason 8 (present), not a false "deletion-only".
+- fail_closed: the first match wins, in this order. `[agy3-1]` **This is the final order.** Each reason has a stable code, which is exported as a module constant and stored in the new `RunDecision.reason_code: str` field (`"ok"` on not_scored). Tests and S2 cite the **codes**, never position numbers, so a later reorder cannot silently invalidate a reference.
+
+  | # | Code | Reason string | Failed D6 condition |
+  |---|---|---|---|
+  | 1 | `FC_NO_RESULTS` | `"no validator results"` | 1 |
+  | 2 | `FC_NO_PATH_FACTS` | `"no path facts"` (`None`, empty, or not a `Mapping`) `[SEC-M1]` | 6 |
+  | 3 | `FC_INVALID_PATH_FACTS` | `"invalid path facts (unknown kind or non-string path): " + _paths(bad)`. `bad` holds each offending key: the key if it is a `str`, else `repr(key)`. This is the catch-all `[SEC-N2]` | 6 |
+  | 4 | `FC_UNRESOLVED` | `"unresolved changed paths (not in working tree, not a deletion): " + _paths(unresolved)` `[SEC-M1]` | 6 |
+  | 5 | `FC_ERRORED` | `"errored: " + ", ".join(sorted(errored))` | 3 |
+  | 6 | `FC_SKIPPED` | `"skipped: " + ", ".join(sorted(skipped_names))` `[CR-S1]` | 5 |
+  | 7 | `FC_ZERO_TOTAL_WEIGHT` | `"weighted dimension scored but total weight was zero: " + ", ".join(sorted(scored_weighted))` `[agy-4]` | 2 |
+  | 8 | `FC_PRESENT` | `"changed paths present but no weighted dimension scored: " + _paths(present)` `[SEC-M1]` | 7 |
+  | 9 | `FC_DELETED_OTHER` | `"deletion-only diff touches non-docs or protected paths: " + _paths(deleted_other)` `[SEC-M1]` | 7 |
+  | 10 | `FC_NO_WEIGHTED_NA` | `"no weighted dimension was not applicable"` | 4 |
+
+  `scored_weighted` = the keys of results that are both `scored` and `is_weighted`.
+
+  Why this order:
+  - **Evidence-quality failures** (rows 1-6) come first, because they say the inputs are unreadable.
+  - Then the weight anomaly (row 7).
+  - Then **path shape** (rows 8-9), which is the accurate cause whenever the diff is not a pure docs deletion.
+  - `FC_NO_WEIGHTED_NA` comes **last**. `[agy3-1]` The weighted validators report N/A only when none of their argv paths exist. So a diff with present paths usually has an empty `na_weighted`, and with `FC_NO_WEIGHTED_NA` ahead of it `FC_PRESENT` was unreachable in practice. The same held for a non-docs deletion routed to no weighted validator.
+  - `[agy2-2]` holds: `FC_DELETED_OTHER` is reached only after `FC_UNRESOLVED` and `FC_PRESENT` are excluded. Every path is then `deleted_docs` or `deleted_other`, so "deletion-only" is literally true.
+
+  **Reachability (self-consistency pass, round 9).**
+  - Every code is reachable with a minimal fixture:
+    - `FC_PRESENT`: one present path, weight-0 results only;
+    - `FC_DELETED_OTHER`: a deleted `.py` with weighted N/A;
+    - `FC_NO_WEIGHTED_NA`: all `deleted_docs`, with only weight-0 results.
+  - Each D6 condition 1-7 maps to at least one code, so first-match is total. When no code matches, the run is `not_scored` with `reason_code == "ok"`.
+  - None of the three outcome-changing items (`FC_PRESENT`, `FC_DELETED_OTHER`, `FC_NO_WEIGHTED_NA`) can mask a lower-numbered evidence failure.
 - `_paths(xs)` = the sorted paths, each rendered with `json.dumps(path, ensure_ascii=True)` so control characters cannot reach the console. The list is capped at 20, then `f" (+{k} more)"`.
 
 ### 2.5 Summary readers
@@ -121,7 +140,7 @@ Reason strings (exact formats; these are tested):
   - `not_scored` and `validate_not_scored(...)` returns an error (that error is returned).
 - `derive_scoring_outcome(summary: object) -> str | None`
   - A `scoring_outcome` key is present: return it if it is one of the three RUN_ values, else `None`.
-  - The key is absent (legacy): `tier == NOT_SCORED` → `not_scored`. `tier == "CRITICAL"` with a non-empty `str` top-level `error` (the legacy marker, `:476`) → `fail_closed`. Any other tier in `TIERS` → `scored`. Anything else → `None`.
+  - The key is absent (legacy): `tier == NOT_SCORED` → `not_scored`. `tier == "CRITICAL"` with a non-empty `str` top-level `error` (the legacy marker, `:476`) → `fail_closed`. `[agy3-2]` Every other exact `TIERS` value → `scored`. That **includes** `"CRITICAL"` with no top-level `error`, or with an `error` that is not a non-empty `str` (a legacy scored run whose composite was ≥ 0.78). It also includes `"LOW"`, `"MEDIUM"` and `"HIGH"`, whatever `error` holds. Anything else → `None`.
 - `is_not_scored(summary: object) -> bool` `[C-5]` (this is the single definition): `True` iff `isinstance(summary, dict)` and (**any** `v` in `(summary.get(k) for k in LEGACY_TIER_KEYS)` satisfies `isinstance(v, str) and v.upper() == NOT_SCORED`, **or** `summary.get("scoring_outcome") == RUN_NOT_SCORED`).
   - Detection uses the legacy readers' own `.upper()` normalisation `[C-3]`. `validate_not_scored` stays **exact**, so any non-canonical spelling or key resolves to `CRITICAL`. N/A error text (`classify` row 2) stays exact under REQ-01.
   - Readers route on `needs_helper`, not on this predicate `[CR-M1]`. `is_not_scored` only selects the not-scored display and validation sub-path inside the helper branch.
@@ -266,23 +285,24 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 | `test_classify_falsy_non_none_error_is_errored` (param: `""`, `False`, `0`, `[]`) | row 5 | 01 |
 | `test_is_weighted_table` (param over §2.3: 0.12, 0, absent with diff_size→0, unknown dim, `"0"`, `True`, -1, NaN, non-str dimension) | each row | D6 |
 | `test_decide_docs_deletion_only_is_not_scored` `[SEC-M1]` (fixture: historical_density/ip_check/migration_risk N/A + diff_size scored, weight 0; `path_facts` all `deleted_docs`) | `not_scored`, exact reason, sorted names | 02, 15 |
-| `test_decide_path_facts_none_or_empty_fail_closed` `[SEC-M1]` | `"no path facts"` | D9 |
-| `test_decide_unresolved_path_fail_closed` `[SEC-M1]` (param: one unresolved among deleted_docs; all unresolved; a quoted name `"\\303\\251.py"`) | reason 3; ranked before `errored` | D6-6, D9 |
-| `test_decide_deleted_other_fail_closed` `[SEC-M1]` (param: deleted `.py`, deleted `.github/workflows/x.yml`, deleted protected `.claude/agents/a.md`, deleted `requirements.txt`) | reason 9 `[agy2-2]` | D6-7 |
-| `test_decide_present_path_in_zero_weight_branch_fail_closed` `[SEC-M1]` | reason 8 `[agy2-2]` | D6-7 |
-| `test_decide_mixed_present_and_deleted_other_reports_present` `[agy2-2]` (a present `.py` plus a deleted `.py`) | reason 8, and the reason text does not contain `"deletion-only"` | D6-7 |
+| `test_decide_path_facts_none_or_empty_fail_closed` `[SEC-M1]` | `FC_NO_PATH_FACTS` | D9 |
+| `test_decide_unresolved_path_fail_closed` `[SEC-M1]` (param: one unresolved among deleted_docs; all unresolved; a quoted name `"\\303\\251.py"`) | `FC_UNRESOLVED`; ranked before `FC_ERRORED` | D6-6, D9 |
+| `test_decide_deleted_other_fail_closed` `[SEC-M1]` (param: deleted `.py`, deleted `.github/workflows/x.yml`, deleted protected `.claude/agents/a.md`, deleted `requirements.txt`; each both with and without a weighted N/A result `[agy3-1]`) | `FC_DELETED_OTHER` | D6-7 |
+| `test_decide_present_path_in_zero_weight_branch_fail_closed` `[SEC-M1]` (param: with a weighted N/A result; with **no** weighted N/A, weight-0 results only `[agy3-1]`) | `FC_PRESENT`, never `FC_NO_WEIGHTED_NA` | D6-7 |
+| `test_decide_mixed_present_and_deleted_other_reports_present` `[agy2-2]` (a present `.py` plus a deleted `.py`) | `FC_PRESENT`, and the reason text does not contain `"deletion-only"` | D6-7 |
 | `test_decide_paths_rendering_capped_and_escaped` `[SEC-M1]` (25 paths; a path with `\n`) | 20 shown + `(+5 more)`; no raw newline | D9 |
 | `test_classify_path_table` `[SEC-M1]` (param over §2.1a: present; deleted `.md`; deleted `.MD`; deleted `.rst`; deleted `.txt`; deleted protected `.md`; neither) | each row | D9 |
-| `test_decide_unknown_path_kind_fail_closed` `[SEC-N2]` (param: value `"deleted"`, `"PRESENT"`, `None`, `1`; a non-str key `5`; `path_facts` a `list`, which gives reason 2) | reason 2a (or 2 for a non-Mapping), never `not_scored`; ranked before `unresolved` | D9 |
+| `test_decide_unknown_path_kind_fail_closed` `[SEC-N2]` (param: value `"deleted"`, `"PRESENT"`, `None`, `1`; a non-str key `5`; `path_facts` a `list`, which gives `FC_NO_PATH_FACTS`) | `FC_INVALID_PATH_FACTS` (or `FC_NO_PATH_FACTS` for a non-Mapping), never `not_scored`; ranked before `FC_UNRESOLVED` | D9 |
 | `test_decide_requires_path_facts_keyword` `[SEC-M1]` (call without `path_facts` → `TypeError`) | there is no default, so it cannot silently opt out | D9 |
-| `test_decide_all_errored_fail_closed` | `fail_closed`, reason `errored: …` | 03, 16 |
-| `test_decide_na_plus_weighted_errored_fail_closed` | `fail_closed` | 03, 16, D6 |
-| `test_decide_na_plus_zero_weight_errored_fail_closed` | `fail_closed` (stricter than REQ) | D6 |
-| `test_decide_only_zero_weight_scored_fail_closed` | condition 4 fails | D6 |
-| `test_decide_empty_results_fail_closed` | `"no validator results"` | 03 |
+| `test_decide_all_errored_fail_closed` | `FC_ERRORED`, reason `errored: …` | 03, 16 |
+| `test_decide_na_plus_weighted_errored_fail_closed` | `FC_ERRORED` | 03, 16, D6 |
+| `test_decide_na_plus_zero_weight_errored_fail_closed` | `FC_ERRORED` (stricter than REQ) | D6 |
+| `test_decide_only_zero_weight_scored_fail_closed` | `FC_NO_WEIGHTED_NA` (condition 4) | D6 |
+| `test_decide_empty_results_fail_closed` | `FC_NO_RESULTS` | 03 |
 | `test_decide_unknown_weight_na_counts_as_weighted` | `not_scored` | D6 |
-| `test_decide_zero_weight_na_only_fail_closed` | condition 4 fails | D6 |
-| `test_decide_any_skipped_forces_fail_closed` (param: skipped `diff_size`; skipped weighted `ip_check`; skipped unknown name) `[CR-S1]`, AQ-4 accepted, replacing round 2's `test_decide_skipped_names_do_not_block_and_are_recorded` | `fail_closed`, reason `skipped: …`; `"skipped"` still in the map | D3, D4, AQ-4 |
+| `test_decide_zero_weight_na_only_fail_closed` | `FC_NO_WEIGHTED_NA` (condition 4) | D6 |
+| `test_decide_reason_order_table` `[agy3-1]` | Param: one minimal fixture per `FC_*` code asserts that code is reachable, plus adjacent-pair fixtures where two conditions both fail: unresolved+errored → `FC_UNRESOLVED`; errored+present → `FC_ERRORED`; skipped+deleted_other → `FC_SKIPPED`; present+no-weighted-N/A → `FC_PRESENT`; deleted_other+no-weighted-N/A → `FC_DELETED_OTHER`. Also asserts the exported `FC_*` tuple equals the §2.4 table order | `reason_code` equals the earlier row each time; the not_scored fixture gives `"ok"` | D6, D9 |
+| `test_decide_any_skipped_forces_fail_closed` (param: skipped `diff_size`; skipped weighted `ip_check`; skipped unknown name) `[CR-S1]`, AQ-4 accepted, replacing round 2's `test_decide_skipped_names_do_not_block_and_are_recorded` | `FC_SKIPPED`, reason `skipped: …`; `"skipped"` still in the map | D3, D4, AQ-4 |
 | `test_decide_outcome_map_total_and_valid` (incl. duplicate and missing dimension keys) | every result and skipped name keyed; values in the four-set | 06, D3 |
 | `test_effective_tier_scored_unchanged_no_floor_fold` (param over the four tiers; LOW + floor HIGH → LOW) | unchanged | 04, D7 |
 | `test_effective_tier_not_scored_interim_is_critical` | `CRITICAL` | D7 |
@@ -291,9 +311,9 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 | `test_effective_tier_malformed_is_critical` (param: non-dict, no tier, tier 3, `"SAFE"`, `"low"`, NOT_SCORED+numeric composite, NOT_SCORED+outcome `scored`, HIGH+outcome `not_scored`, bogus outcome, `{"tier":"LOW","scoring_outcome":"fail_closed"}` `[C-4]`, lowercase `"not_scored"` tier `[C-3]`) | `CRITICAL`, no exception | 07, 13 |
 | `test_is_not_scored_detection_case_folds_tier` (param: `"NOT_SCORED"`, `"not_scored"`, `"Not_Scored"` → True; non-str tier → False; `scoring_outcome:"not_scored"` alone → True) `[C-3]` | detection normalises; `validate_not_scored` still rejects the non-canonical spellings | 07, C-3 |
 | `test_decide_naming_never_raises` (results: `[None, [], {"score":0.1}, {"dimension":5}, {"dimension":""}]`) `[agy-2]` | keys `<result-0>`..`<result-4>`, no exception | 01, D6 |
-| `test_decide_zero_total_weight_reason_sorted` (two weighted `scored` results given in reverse order) `[agy-4]` | exact reason string with names sorted | 03 |
+| `test_decide_zero_total_weight_reason_sorted` (two weighted `scored` results given in reverse order) `[agy-4]` | `FC_ZERO_TOTAL_WEIGHT`; exact reason string with names sorted | 03 |
 | `test_signoff_gate_has_no_tier_or_composite_dependency` (AST over `scripts/oversight/signoff_gate.py`: no `json` import; no string constant equal to `"tier"`, `"composite_score"` or `"summary.json"`) `[agy-1]` | §3.6 stays true | 13 |
-| `test_derive_scoring_outcome_legacy` | scored / fail_closed (legacy `error` marker) / None | D1 |
+| `test_derive_scoring_outcome_legacy` (param `[agy3-2]`: CRITICAL with no `error` → scored; CRITICAL + `error: None` / `""` / `5` → scored; CRITICAL + `error: "…"` → fail_closed; HIGH + `error: "…"` → scored; NOT_SCORED → not_scored; `"bogus"` → None) | as listed | D1 |
 | `test_validate_not_scored_each_rule` (param over §2.5 rules 1-7) | expected first error, else `None` | 06 |
 | `test_not_scored_base_tier_interim_pin` | `== "CRITICAL"` and in `TIERS` (S4 updates it) | D7 |
 | `test_constants_pinned` | `NOT_APPLICABLE_ERROR == "no input files"`; `NOT_SCORED not in TIERS` | D1, D2 |
@@ -317,10 +337,10 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 | `tests/oversight/test_second_review_logic.py` | `test_digest_tier1_not_scored_carries_reason_and_null_composite`; `test_digest_tier3_not_scored_carries_reason`; `test_digest_scored_byte_identical_golden`; `test_cmd_digest_validators_not_scored_exit0`; `test_digest_inconsistent_outcome_shows_effective_critical` `[CR-M1]` | 13, 19 |
 | `tests/oversight/test_gate_compliance.py` | `test_nn17_not_scored_summary_does_not_trip`; `test_nn17_scored_critical_still_trips` (control) | 13, 19 |
 
-Total: **46 helper + 3 pin + 48 reader = 97 named tests** (`[agy2-2]` +1 helper, `[agy2-3]` +1 pr_readiness; `[agy2-1]` extends an existing parametrization) `[CR3-1]`. These are recounted from the table rows: the helper table has 45. Round-by-round deltas below are kept for history, and earlier helper subtotals were stale.
+Total: **47 helper + 3 pin + 48 reader = 98 named tests**. Round 9: `[agy3-1]` adds `test_decide_reason_order_table`; `[agy3-2]` extends an existing parametrization. Before that: (`[agy2-2]` +1 helper, `[agy2-3]` +1 pr_readiness; `[agy2-1]` extends an existing parametrization) `[CR3-1]`. These are recounted from the table rows: the helper table has 45. Round-by-round deltas below are kept for history, and earlier helper subtotals were stale.
 - `[CR3-2]` **Fixture `VALID_DOCS_DELETION_FACTS`** = `{"docs/old-guide.md": PATH_DELETED_DOCS}`, a module-level constant in `test_validator_outcome.py`.
   - Every `test_decide_*` test whose subject is **not** path facts must pass `path_facts=VALID_DOCS_DELETION_FACTS`. That includes the errored, skipped, unknown-weight, zero-weight, naming, outcome-map and sorted-reason tests, among others.
-  - Without it, those tests would stop at reason 2 ("no path facts") and never reach the reason they test.
+  - Without it, those tests would stop at `FC_NO_PATH_FACTS` and never reach the reason they test.
   - The path-fact tests (`*_path_facts_*`, `*_unresolved_*`, `*_deleted_other_*`, `*_present_path_*`, `*_unknown_path_kind_*`, `*_requires_path_facts_*`) build their own facts.
 - Round 6 adds 1: `[SEC-N2]` in the helper. The `[SEC-N2]` S2 completeness test is an S2 test and is not counted here.
 - Round 5 adds 2: `[CR2-1]` in require_tier_ceiling and `[CR2-3]` in release.
@@ -410,7 +430,7 @@ Nothing else needs to be added for shipping: `scripts/oversight/` is installed b
     - Every summary (scored, not_scored, fail_closed) gains the additive key `unresolved_paths` (a sorted list, possibly empty). On scored runs it is informational only, so REQ-04 holds. Tier consequence: follow-up F-5.
     - **`[SEC-N3]`** `unresolved_paths` stays informational on scored runs (F-5). The security reviewer judged that acceptable once collection is `-z`/`core.quotepath=false` hardened.
     - **`[SEC-N1]`** `DOCS_CLASS_SUFFIXES` (`.md`/`.rst`) is a suffix test, not a docs-class proxy. See the S4 precondition below. S2 may ship the suffix rule as-is, because under the interim `CRITICAL` base a deletion-only docs diff is still CRITICAL.
-    - S2 tests: deletion-only docs → not_scored; deletion-only `.py` → fail_closed (reason 9, `[agy2-2]` renumbered); a wrong checkout (listed paths absent, not deleted) → fail_closed (reason 3); a non-ASCII added `.py` → now scored, not N/A; a new `.md` → scored (premise correction).
+    - S2 tests: deletion-only docs → not_scored; deletion-only `.py` → fail_closed (`FC_DELETED_OTHER`); a wrong checkout (listed paths absent, not deleted) → fail_closed (`FC_UNRESOLVED`); S2 tests assert `reason_code`, never position numbers `[agy3-1]`; a non-ASCII added `.py` → now scored, not N/A; a new `.md` → scored (premise correction).
   - Tests: REQ-15..18 regressions, an AC-3 counts/verdict consistency test, and a scored byte-identity fixture. Update `docs/OVERSIGHT-RUNBOOK.md`.
   - **Merge only after S1a and S1b.**
 - **S3 (3 protected files, CODEOWNERS gate):** `overseer.md` step 3b plus the exec-summary clause "Composite not scored: <reason>" (REQ-14), `risk-assessor.md:102` and `oversight-evaluator.md`. Each obtains the tier through `validator_outcome.py effective-tier` / `describe`.
