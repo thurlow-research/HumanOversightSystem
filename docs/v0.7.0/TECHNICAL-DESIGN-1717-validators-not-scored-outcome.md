@@ -99,8 +99,9 @@ Reason strings (exact formats; these are tested):
   5. `"skipped: " + ", ".join(sorted(skipped_names))` `[CR-S1]`;
   6. `"weighted dimension scored but total weight was zero: " + ", ".join(sorted(scored_weighted))` `[agy-4]` (`scored_weighted` = the keys of results that are both `scored` and `is_weighted`);
   7. `"no weighted dimension was not applicable"`;
-  8. `"deletion-only diff touches non-docs or protected paths: " + _paths(deleted_other)` `[SEC-M1]`;
-  9. `"changed paths present but no weighted dimension scored: " + _paths(present)` `[SEC-M1]`.
+  8. `"changed paths present but no weighted dimension scored: " + _paths(present)` `[SEC-M1]`;
+  9. `"deletion-only diff touches non-docs or protected paths: " + _paths(deleted_other)` `[SEC-M1]`.
+  - `[agy2-2]` Present is now checked **before** deleted_other (the round-6 order swapped). Because unresolved paths are already excluded by reason 3, reason 9 is reached only when every path is `deleted_docs` or `deleted_other`, so "deletion-only" is then literally true. A mixed diff with present files and non-docs deletions reports reason 8 (present), not a false "deletion-only".
 - `_paths(xs)` = the sorted paths, each rendered with `json.dumps(path, ensure_ascii=True)` so control characters cannot reach the console. The list is capped at 20, then `f" (+{k} more)"`.
 
 ### 2.5 Summary readers
@@ -113,11 +114,11 @@ Reason strings (exact formats; these are tested):
   A legacy summary (no `scoring_outcome`, real tier), or an S2 summary with `scoring_outcome: "scored"`, returns `False` and keeps the reader's byte-identical legacy path.
 - `check_consistency(summary: object) -> str | None` `[CR-M1]` returns `None` iff the summary is internally consistent for its derived outcome, else the first reason:
   - not a dict;
+  - a sentinel found under `risk_tier` or `Tier` while `tier` is not the sentinel (`"sentinel under non-canonical key"`). `[agy2-1]` This check comes **second**, before `derive_scoring_outcome`. Otherwise a summary with `tier` absent and the sentinel only under `risk_tier`/`Tier` would derive `None` and report `"unrecognised scoring_outcome or tier"`, and the specified reason would be unreachable. The effective tier is CRITICAL either way;
   - `derive_scoring_outcome` is `None` (`"unrecognised scoring_outcome or tier"`);
   - `scored` and `tier` not exactly in `TIERS`;
   - `fail_closed` and `tier != "CRITICAL"`;
-  - `not_scored` and `validate_not_scored(...)` returns an error (that error is returned);
-  - a sentinel found under `risk_tier` or `Tier` while `tier` is not the sentinel (`"sentinel under non-canonical key"`).
+  - `not_scored` and `validate_not_scored(...)` returns an error (that error is returned).
 - `derive_scoring_outcome(summary: object) -> str | None`
   - A `scoring_outcome` key is present: return it if it is one of the three RUN_ values, else `None`.
   - The key is absent (legacy): `tier == NOT_SCORED` → `not_scored`. `tier == "CRITICAL"` with a non-empty `str` top-level `error` (the legacy marker, `:476`) → `fail_closed`. Any other tier in `TIERS` → `scored`. Anything else → `None`.
@@ -210,6 +211,10 @@ Malformed or unknown values in a **present** summary are *not* treated as before
 - `[CR-M1]` Gap check:
   - REQ-W-03 is a freshness check and never reads `tier`, so a LOW-as-fail_closed summary cannot pass it *as LOW*. But it would pass as "current" while being internally contradictory.
   - So for both branches: if `needs_helper(summary)` and not `is_not_scored(summary)`, and `check_consistency(summary)` returns an error → fail with `f"{path} summary inconsistent: {err}"`.
+  - `[agy2-3]` Guard: all helper checks in §3.3 (`is_not_scored`, `validate_not_scored`, `needs_helper`, `check_consistency`) run **only when the `_read_json` result is not `None`**.
+    - `_read_json` returns `None` for an absent, unparseable or non-dict file (`:196-205`).
+    - In the committed branch this already holds, because everything sits inside `if committed is not None:` (`:375`).
+    - In the ephemeral fallback, a `None` read skips the helper and falls through to the existing `load_composite_score` path and its existing message (`:392-398`). Otherwise `needs_helper(None)` → True and `check_consistency(None)` → `"not a dict"` would replace the existing missing-summary failure.
   - A consistent `fail_closed` summary (CRITICAL, numeric composite) keeps today's pass text exactly.
 - A `null` composite *without* the sentinel keeps today's failure text. REQ-W-08 (tier from `--risk-tier`) is unchanged. S3 makes agents pass the helper's effective tier.
 
@@ -263,8 +268,9 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 | `test_decide_docs_deletion_only_is_not_scored` `[SEC-M1]` (fixture: historical_density/ip_check/migration_risk N/A + diff_size scored, weight 0; `path_facts` all `deleted_docs`) | `not_scored`, exact reason, sorted names | 02, 15 |
 | `test_decide_path_facts_none_or_empty_fail_closed` `[SEC-M1]` | `"no path facts"` | D9 |
 | `test_decide_unresolved_path_fail_closed` `[SEC-M1]` (param: one unresolved among deleted_docs; all unresolved; a quoted name `"\\303\\251.py"`) | reason 3; ranked before `errored` | D6-6, D9 |
-| `test_decide_deleted_other_fail_closed` `[SEC-M1]` (param: deleted `.py`, deleted `.github/workflows/x.yml`, deleted protected `.claude/agents/a.md`, deleted `requirements.txt`) | reason 8 | D6-7 |
-| `test_decide_present_path_in_zero_weight_branch_fail_closed` `[SEC-M1]` | reason 9 | D6-7 |
+| `test_decide_deleted_other_fail_closed` `[SEC-M1]` (param: deleted `.py`, deleted `.github/workflows/x.yml`, deleted protected `.claude/agents/a.md`, deleted `requirements.txt`) | reason 9 `[agy2-2]` | D6-7 |
+| `test_decide_present_path_in_zero_weight_branch_fail_closed` `[SEC-M1]` | reason 8 `[agy2-2]` | D6-7 |
+| `test_decide_mixed_present_and_deleted_other_reports_present` `[agy2-2]` (a present `.py` plus a deleted `.py`) | reason 8, and the reason text does not contain `"deletion-only"` | D6-7 |
 | `test_decide_paths_rendering_capped_and_escaped` `[SEC-M1]` (25 paths; a path with `\n`) | 20 shown + `(+5 more)`; no raw newline | D9 |
 | `test_classify_path_table` `[SEC-M1]` (param over §2.1a: present; deleted `.md`; deleted `.MD`; deleted `.rst`; deleted `.txt`; deleted protected `.md`; neither) | each row | D9 |
 | `test_decide_unknown_path_kind_fail_closed` `[SEC-N2]` (param: value `"deleted"`, `"PRESENT"`, `None`, `1`; a non-str key `5`; `path_facts` a `list`, which gives reason 2) | reason 2a (or 2 for a non-Mapping), never `not_scored`; ranked before `unresolved` | D9 |
@@ -294,7 +300,7 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 | `test_cli_effective_tier_exit_codes` (valid → 0; missing → 3 + CRITICAL; non-JSON → 3 + CRITICAL; no args → 2) | stdout and exit codes | 10, 13 |
 | `test_cli_describe_fields` | exact key set (`validation_error` = `check_consistency` result) | 06 |
 | `test_needs_helper_table` `[CR-M1, CR-S2, CR-S3]` | param → expected: legacy LOW, no outcome → F; `scoring_outcome:"scored"` + LOW → F; `"fail_closed"` + LOW → T; `"fail_closed"` + CRITICAL → T; bogus outcome → T; outcome `None` → T; outcome `1` → T; `risk_tier:"NOT_SCORED"` → T; `Tier:"not_scored"` → T; a list / `None` / `5` → T | 07, 13 |
-| `test_check_consistency_table` `[CR-M1]` | param: consistent scored / fail_closed / not_scored → `None`; LOW+fail_closed, HIGH+not_scored, NOT_SCORED+scored, bogus outcome, sentinel under `risk_tier` only → the named error | 07, 13 |
+| `test_check_consistency_table` `[CR-M1]` | param: consistent scored / fail_closed / not_scored → `None`; LOW+fail_closed, HIGH+not_scored, NOT_SCORED+scored, bogus outcome, sentinel under `risk_tier` only (both with `tier:"LOW"` and with `tier` **absent** `[agy2-1]`) → `"sentinel under non-canonical key"`; plus `effective_tier` CRITICAL for both | 07, 13 |
 | `test_module_is_stdlib_only` (AST: every import is in `sys.stdlib_module_names`; nothing from `validators`) | trusted-base safe | §2 |
 
 **`tests/oversight/test_validator_outcome_emitter_pin.py` (new; see AQ-1).** These tests scan `scripts/oversight/validators/*.py` with AST, without importing anything.
@@ -307,11 +313,11 @@ Result: a not-scored artifact cannot change its verdict. One pin test, placed in
 |---|---|---|
 | `tests/framework/test_require_tier_ceiling.py` | `test_summary_not_scored_returns_effective_tier_not_none`; `test_summary_not_scored_floor_high_with_medium_base` (monkeypatch); `test_compute_tier_docs_only_not_scored_is_not_structural_low` (plus `main` → exit 1 when overseer-approved); `test_present_summary_unknown_tier_is_critical` (param: `"SAFE"`, `"bogus"`, missing key, `3`) `[C-6]`, replacing `test_unknown_non_sentinel_tier_still_none`; `test_scored_outcome_with_sentinel_tier_is_critical` `[C-6]`; `test_scored_outcome_with_unknown_tier_is_critical` `[C-6]`; `test_legacy_selected_tier_is_validated` (param: `{"tier":"bogus","Tier":"LOW"}` → CRITICAL; `{"tier":"","Tier":"LOW"}` → LOW) `[CR2-1]`; `test_helper_load_failure_is_critical`; `test_inconsistent_not_scored_is_critical`; `test_lowercase_sentinel_routes_to_helper_and_is_critical` `[C-3]`; `test_fail_closed_outcome_with_low_tier_is_critical` `[CR-M1]`; `test_bogus_scoring_outcome_is_critical` `[CR-M1]`; `test_risk_tier_key_sentinel_is_critical` `[CR-S2]`; `test_present_unusable_summary_is_critical` (param: non-JSON, JSON list, JSON number) `[CR-S3]`; `test_absent_summary_still_none` (CI-path control) `[CR-S3]` | 07, 13, 19 |
 | `tests/oversight/test_release_artifact_logic.py` | `test_integrity_valid_not_scored`; `test_integrity_not_scored_numeric_composite_rejected`; `test_integrity_not_scored_missing_reason_rejected`; `test_integrity_null_composite_scored_tier_unchanged_message`; `test_sweep_not_scored_interim_warns_and_passes`; `test_sweep_not_scored_blocking_findings_escalates`; `test_sweep_not_scored_medium_base_not_high_plus` / `..._floor_high_is_high_plus` (monkeypatch); `test_audit_event_scored_entries_byte_identical`; `test_audit_event_not_scored_entry_fields`; `test_cli_summary_prints_not_scored_step_without_typeerror` `[C-1]`; `test_sweep_fail_closed_low_tier_is_critical_high_plus` `[CR-M1]`; `test_sweep_bogus_outcome_is_critical_high_plus` `[CR-M1]`; `test_sweep_consistent_fail_closed_verdict_unchanged` `[CR-M1]`; `test_helper_load_failure_any_artifact_is_parse_error` (param: legacy scored artifact; `fail_closed` artifact; not-scored artifact; helper monkeypatched to raise) `[CR2-3]`; `test_non_object_artifact_is_parse_error_not_raise` (param: list, number, `null`) `[CR-S3]` | 09, 13, 17, 19 |
-| `tests/automation/test_pr_readiness.py` | `test_req_w03_committed_not_scored_passes_with_reason`; `test_req_w03_committed_not_scored_stale_head_fails`; `test_req_w03_committed_not_scored_invalid_fails`; `test_req_w03_null_composite_without_sentinel_unchanged`; `test_req_w03_ephemeral_not_scored_passes`; `test_req_w03_scored_message_byte_identical`; `test_req_w03_inconsistent_outcome_fails` (LOW+fail_closed; bogus outcome) `[CR-M1]`; `test_req_w03_consistent_fail_closed_message_unchanged` `[CR-M1]`; `test_req_w03_sentinel_only_under_risk_tier_fails` `[C-6]` (the gate half is covered by `test_risk_tier_key_sentinel_is_critical`) | 13, 19 |
+| `tests/automation/test_pr_readiness.py` | `test_req_w03_committed_not_scored_passes_with_reason`; `test_req_w03_committed_not_scored_stale_head_fails`; `test_req_w03_committed_not_scored_invalid_fails`; `test_req_w03_null_composite_without_sentinel_unchanged`; `test_req_w03_ephemeral_not_scored_passes`; `test_req_w03_scored_message_byte_identical`; `test_req_w03_inconsistent_outcome_fails` (LOW+fail_closed; bogus outcome) `[CR-M1]`; `test_req_w03_consistent_fail_closed_message_unchanged` `[CR-M1]`; `test_req_w03_absent_summaries_keep_existing_message` `[agy2-3]` (no committed and no ephemeral summary → the exact existing "neither … has a composite_score" text, not "summary inconsistent"); `test_req_w03_sentinel_only_under_risk_tier_fails` `[C-6]` (the gate half is covered by `test_risk_tier_key_sentinel_is_critical`) | 13, 19 |
 | `tests/oversight/test_second_review_logic.py` | `test_digest_tier1_not_scored_carries_reason_and_null_composite`; `test_digest_tier3_not_scored_carries_reason`; `test_digest_scored_byte_identical_golden`; `test_cmd_digest_validators_not_scored_exit0`; `test_digest_inconsistent_outcome_shows_effective_critical` `[CR-M1]` | 13, 19 |
 | `tests/oversight/test_gate_compliance.py` | `test_nn17_not_scored_summary_does_not_trip`; `test_nn17_scored_critical_still_trips` (control) | 13, 19 |
 
-Total: **45 helper + 3 pin + 47 reader = 95 named tests** `[CR3-1]`. These are recounted from the table rows: the helper table has 45. Round-by-round deltas below are kept for history, and earlier helper subtotals were stale.
+Total: **46 helper + 3 pin + 48 reader = 97 named tests** (`[agy2-2]` +1 helper, `[agy2-3]` +1 pr_readiness; `[agy2-1]` extends an existing parametrization) `[CR3-1]`. These are recounted from the table rows: the helper table has 45. Round-by-round deltas below are kept for history, and earlier helper subtotals were stale.
 - `[CR3-2]` **Fixture `VALID_DOCS_DELETION_FACTS`** = `{"docs/old-guide.md": PATH_DELETED_DOCS}`, a module-level constant in `test_validator_outcome.py`.
   - Every `test_decide_*` test whose subject is **not** path facts must pass `path_facts=VALID_DOCS_DELETION_FACTS`. That includes the errored, skipped, unknown-weight, zero-weight, naming, outcome-map and sorted-reason tests, among others.
   - Without it, those tests would stop at reason 2 ("no path facts") and never reach the reason they test.
@@ -404,7 +410,7 @@ Nothing else needs to be added for shipping: `scripts/oversight/` is installed b
     - Every summary (scored, not_scored, fail_closed) gains the additive key `unresolved_paths` (a sorted list, possibly empty). On scored runs it is informational only, so REQ-04 holds. Tier consequence: follow-up F-5.
     - **`[SEC-N3]`** `unresolved_paths` stays informational on scored runs (F-5). The security reviewer judged that acceptable once collection is `-z`/`core.quotepath=false` hardened.
     - **`[SEC-N1]`** `DOCS_CLASS_SUFFIXES` (`.md`/`.rst`) is a suffix test, not a docs-class proxy. See the S4 precondition below. S2 may ship the suffix rule as-is, because under the interim `CRITICAL` base a deletion-only docs diff is still CRITICAL.
-    - S2 tests: deletion-only docs → not_scored; deletion-only `.py` → fail_closed (reason 8); a wrong checkout (listed paths absent, not deleted) → fail_closed (reason 3); a non-ASCII added `.py` → now scored, not N/A; a new `.md` → scored (premise correction).
+    - S2 tests: deletion-only docs → not_scored; deletion-only `.py` → fail_closed (reason 9, `[agy2-2]` renumbered); a wrong checkout (listed paths absent, not deleted) → fail_closed (reason 3); a non-ASCII added `.py` → now scored, not N/A; a new `.md` → scored (premise correction).
   - Tests: REQ-15..18 regressions, an AC-3 counts/verdict consistency test, and a scored byte-identity fixture. Update `docs/OVERSIGHT-RUNBOOK.md`.
   - **Merge only after S1a and S1b.**
 - **S3 (3 protected files, CODEOWNERS gate):** `overseer.md` step 3b plus the exec-summary clause "Composite not scored: <reason>" (REQ-14), `risk-assessor.md:102` and `oversight-evaluator.md`. Each obtains the tier through `validator_outcome.py effective-tier` / `describe`.
