@@ -55,3 +55,23 @@ def test_aggregate_dup_key_body_is_error_not_prose():
 def test_plain_and_fenced_review_unchanged():
     assert srl.salvage_review_json(A) == json.loads(A)
     assert srl.salvage_review_json("```json\n" + A + "\n```") == json.loads(A)
+
+
+DEEP = '{"verdict":"request_changes","findings":' + "[" * 100_000 + "]" * 100_000 + "}"
+
+
+def test_aggregate_recursion_deep_body_is_error_not_prose():
+    body = '{"verdict":"approve","findings":' + "[" * 100_000 + "]" * 100_000 + "}"
+    content = "verdict: pending\n\n## agy\n```json\n" + body + "\n```\n"
+    assert srl.aggregate_verdicts(content)["verdict"] == "error"
+
+
+def test_salvage_approve_plus_deep_rc_cannot_soft_pass():
+    found = srl.salvage_review_json(A + "\n" + DEEP)
+    assert found is None or found["verdict"] != "approve"
+
+
+def test_envelope_response_approve_plus_deep_rc_cannot_soft_pass():
+    raw = json.dumps({"status": "SUCCESS", "response": A + "\n" + DEEP})
+    found = srl.salvage_review_json(raw)
+    assert found is None or found["verdict"] != "approve"

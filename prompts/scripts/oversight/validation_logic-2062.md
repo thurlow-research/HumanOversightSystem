@@ -42,6 +42,13 @@ exceed 5% of previously-approved files or any flip is unexplained, STOP.
 
 v1: implementation per the design and architect conditions C1-C5, plus a C3 corpus replay.
 
+v2 (review round 2): `_aggregate_full` in second_review_logic.py now routes `RecursionError` from `loads_strict` to the same error branch as `DuplicateKeyError`, so a deeply nested `verdict: approve` body can no longer fall into the prose classifier. The other two `loads_strict` call sites (envelope unwrap, salvage) skip the candidate but are covered by `review_text_unreadable`; regression tests added to test_second_review_extraction_2062.py. Round-2 prompt: "Route RecursionError to the same error branch as DuplicateKeyError; restore the num_turns sanitizer assertion; record the test edit and deviations in this artifact."
+
+## Disclosed Deviations and Test Edits
+
+- tests/oversight/test_vendor_prompt_consumption_guard.py::test_forged_fence_in_num_turns_cannot_mint_a_verdict was edited. The forged-num_turns case previously expected approve (exit 0) with only the genuine review; the forged nested `verdict` is review-shaped unreadable text outside the genuine review, so the extractor now fails closed: expectation changed approve -> error (exit 1, `verdict: error`). The CWE-74 assertion that the advisory block's `num_turns` is sanitized to None is retained (the advisory is still emitted on the error path).
+- Same-length masking: the unreadable-text detector masks spans with same-length replacements so offsets stay stable. This differs from a literal removal reading of the design and is a disclosed deviation.
+
 ## Human Review Notes
 
 <!-- After human review, record findings here:
