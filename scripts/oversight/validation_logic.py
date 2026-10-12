@@ -23,8 +23,9 @@ ARCHITECT BINDINGS (SPEC-334):
      module's `record` subcommand. --reset stays in the shell.
   5. The fingerprint checks BOTH `category` (agy) AND `type` (codex), preferring
      whichever is present (AC-2).
-  6. The robust string-aware brace extractor from validate_agents.sh is the
-     single extractor for both scripts.
+  6. One string-aware brace extractor serves every caller. The shell extractor
+     this binding named was removed; `extract_json_objects` is the sole
+     implementation (#2062).
   7. No-blocks-parsed behavior is flag-controlled (--strict-empty): set → "error"
      verdict; unset → "approve"/exit 0. Default OFF, but this default is a pure
      module-API fallback, not something any caller currently relies on: every
@@ -103,18 +104,95 @@ def _severity_rank(severity: str) -> int:
 
 
 # ── JSON extraction (binding 6) ───────────────────────────────────────────────
-def _brace_objects(text: str) -> list[dict]:
-    """String-aware extraction of every balanced {...} that parses as JSON —
-    tolerant of prose the model emits inside/around the ```json fence (agy and
-    codex both prepend commentary), and of braces inside JSON strings."""
-    out: list[dict] = []
-    n, i = len(text), 0
+class DuplicateKeyError(ValueError):
+    """A JSON object repeated a key. `json.loads` keeps the LAST duplicate, so a
+    reviewer-authored `{"verdict":"request_changes","verdict":"approve"}` would
+    silently read as approve (#2062); the strict loader refuses it instead."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    out: dict = {}
+    for key, value in pairs:
+        if key in out:
+            raise DuplicateKeyError(f"duplicate JSON key {key!r}")
+        out[key] = value
+    return out
+
+
+def loads_strict(s: str):
+    """`json.loads` that raises DuplicateKeyError on a repeated key at any depth."""
+    return json.loads(s, object_pairs_hook=_reject_duplicate_keys)
+
+
+_REVIEW_KEYS = frozenset({"verdict", "findings", "attacks"})
+
+# A quoted token followed by `:` — in valid JSON that can only be an object KEY
+# (a `"` inside a string value is escaped and consumed by the `\\.` branch). The
+# {1,64} bound keeps the match linear. Candidates are decoded before comparing, so
+# an escaped spelling such as "verdict" is caught too (#2062 C2).
+REVIEW_KEY_RE = re.compile(r'"((?:[^"\\\n]|\\.){1,64})"\s*:')
+
+# Work budget for _scan: every character step of every inner brace walk counts.
+_SCAN_BUDGET_MIN = 1_000_000
+_SCAN_BUDGET_PER_CHAR = 64
+
+
+def _is_review_dict(obj) -> bool:
+    """The single reviewer-shape predicate: a dict carrying verdict, findings or
+    attacks. Equals second_review_logic._is_review_shaped."""
+    return isinstance(obj, dict) and not _REVIEW_KEYS.isdisjoint(obj)
+
+
+def _first_review_key_offset(residue: str) -> int | None:
+    """Offset of the first decoded review key in `residue`, else None."""
+    for m in REVIEW_KEY_RE.finditer(residue):
+        try:
+            decoded = json.loads('"' + m.group(1) + '"')
+        except ValueError:
+            continue
+        if decoded.casefold() in _REVIEW_KEYS:
+            return m.start()
+    return None
+
+
+def _has_nested_review(block: dict) -> bool:
+    """True if a review-shaped dict sits anywhere below the top level of `block`.
+    Iterative (explicit stack): attacker-controlled depth must not recurse."""
+    stack = [v for v in block.values()]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if _is_review_dict(item):
+                return True
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+def _scan(text: str) -> tuple[list[dict], str | None]:
+    """One pass over the whole of `text` (fences are ignored; a fence's content
+    is a substring, so every fenced object is visited exactly once).
+
+    Returns (accepted review blocks in text order, failure reason or None). The
+    reason is set when review-shaped text exists that the extractor did not read:
+    an unparseable/duplicate-key/truncated review candidate or one wrapped in a
+    non-review object (residue still carries a decoded review key), a review
+    nested inside an accepted block, or an exhausted work budget (#2062)."""
+    n = len(text)
+    budget = max(_SCAN_BUDGET_MIN, _SCAN_BUDGET_PER_CHAR * n)
+    steps = 0
+    spans: list[tuple[int, int, dict]] = []
+    budget_ok = True
+    i = 0
     while i < n:
         if text[i] != "{":
             i += 1
             continue
+        end = min(n, i + (budget - steps))
         depth, in_str, esc, j = 0, False, False, i
-        while j < n:
+        closed = False
+        while j < end:
             c = text[j]
             if in_str:
                 if esc:
@@ -130,34 +208,73 @@ def _brace_objects(text: str) -> list[dict]:
             elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        out.append(json.loads(text[i : j + 1]))
-                    except Exception:
-                        pass
+                    closed = True
                     break
             j += 1
-        i = j + 1
-    return out
+        if closed:
+            steps += j - i + 1
+            try:
+                obj = loads_strict(text[i : j + 1])
+            except (ValueError, RecursionError):
+                obj = None
+            if isinstance(obj, dict):
+                spans.append((i, j + 1, obj))
+            i = j + 1
+        elif end < n:
+            budget_ok = False  # budget exhausted mid-walk
+            break
+        else:
+            steps += j - i
+            i += 1  # unbalanced to EOF: a stray `{` must not hide what follows
+
+    accepted = [(a, b, o) for a, b, o in spans if _is_review_dict(o)]
+    blocks = [o for _, _, o in accepted]
+    if not budget_ok:
+        return blocks, "scan-budget-exceeded"
+
+    residue_parts: list[str] = []
+    pos = 0
+    for a, b, _ in accepted:
+        residue_parts.append(text[pos:a])
+        residue_parts.append(" " * (b - a))  # same length: offsets stay valid
+        pos = b
+    residue_parts.append(text[pos:])
+    hit = _first_review_key_offset("".join(residue_parts))
+    if hit is not None:
+        return blocks, f"unreadable-review-candidate at offset {hit}"
+
+    for a, _, o in accepted:
+        if _has_nested_review(o):
+            return blocks, f"nested-review-object at offset {a}"
+    return blocks, None
+
+
+def review_text_unreadable(text: str) -> bool:
+    """True if `text` holds review-shaped content the extractor could not read."""
+    return _scan(text)[1] is not None
 
 
 def extract_json_objects(text: str) -> list[dict]:
-    """Extract reviewer JSON blocks from `text`.
+    """Extract reviewer JSON blocks from `text`, failing closed (#2062).
 
-    Fence-first: pull balanced objects from inside each ```json … ``` fence,
-    keeping those that look like reviewer output (have findings/attacks/verdict).
-    If the fenced pass yields nothing, fall back to a bare scan of the whole text,
-    keeping objects with findings or attacks. Mirrors validate_agents.sh's
-    extract_objects exactly (binding 6)."""
-    objs: list[dict] = []
-    for m in re.finditer(r"```json(.*?)```", text, re.DOTALL):
-        objs.extend(
-            o
-            for o in _brace_objects(m.group(1))
-            if "findings" in o or "attacks" in o or "verdict" in o
+    Scans the whole text once (fences are not special) and returns every balanced
+    object that strictly parses (no duplicate keys at any depth) and is
+    review-shaped (has verdict, findings or attacks). Review-shaped text that was
+    NOT read this way — truncated, unparseable, duplicate-keyed, inside a
+    non-review wrapper object, nested inside an accepted block, or beyond the work
+    budget — appends exactly one synthetic
+    `{"verdict": "error", "findings": [], "extraction_error": <reason>}` block,
+    which compute_verdict counts as one NEW, unsilenceable blocking finding. The
+    reason carries a character offset only, never reviewer text (CWE-117).
+
+    This is the sole extractor: the shell extractor binding 6 once named was
+    removed."""
+    blocks, reason = _scan(text)
+    if reason is not None:
+        blocks.append(
+            {"verdict": ERROR_VERDICT, "findings": [], "extraction_error": f"{reason} (#2062)"}
         )
-    if not objs:
-        objs.extend(o for o in _brace_objects(text) if "findings" in o or "attacks" in o)
-    return objs
+    return blocks
 
 
 # ── Fingerprinting (binding 5) ────────────────────────────────────────────────
@@ -543,6 +660,14 @@ def _cmd_process(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 0
+
+    for block in blocks:
+        if "extraction_error" in block:
+            print(
+                f"validation_logic process: reviewer text not fully readable — "
+                f"{_safe_log(block['extraction_error'])}",
+                file=sys.stderr,
+            )
 
     verdict = result["verdict"]
     highest = result["highest_severity"]
