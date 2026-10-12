@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #2062: reviewer-JSON extraction fails closed
 
-Status: DRAFT, awaiting architect review. Follows #2032 (PR #2063) and #2036 (PR #2064).
+Status: APPROVED WITH CONDITIONS (architect, 2026-10-12; see §10 — conditions C1–C6 amend §2.2, §2.3, §3, §5). Follows #2032 (PR #2063) and #2036 (PR #2064).
 Change class: **additive** (new extraction contract; `compute_verdict` unchanged).
 
 RISK: MEDIUM. This changes what the verdict gate reads in four callers.
@@ -45,6 +45,9 @@ This replaces `_brace_objects` and the fence logic. **Fences are ignored.** The 
 4. **Work budget:** count every character step of the inner walk. Stop when the count exceeds `max(1_000_000, 64 * len(text))`. On exhaustion, return the blocks found so far and the reason `"scan-budget-exceeded"`. The budget bounds the O(n²) worst case that step 3 allows (for example 10⁵ unbalanced `{`).
 5. **Accepted blocks** are the recorded objects with `_is_review_dict` true, in text order. **Residue** is `text` with each accepted span replaced by one space, so that tokens either side of a mask cannot join into a match. Parsed non-review objects are **not** masked.
 6. The reason is `"unreadable-review-candidate"` if `REVIEW_KEY_RE.search(residue)` matches, otherwise `None`. The budget reason takes precedence.
+   - **[Architect C2]** Key detection is on the **decoded** key, not the raw spelling. JSON decodes `"verdict"` to `verdict`, so a raw-spelling regex misses an escaped-key candidate that `loads_strict` would read. Implement as: match `"((?:[^"\\\n]|\\.){1,64})"\s*:` over the residue, `json.loads('"' + g + '"')` each group (decode failure ⇒ not a key), and hit when `decoded.casefold()` is in `{verdict, findings, attacks}`. The `{1,64}` bound keeps it linear. This replaces `REVIEW_KEY_RE` in §2.2 (keep the name for the compiled pattern).
+7. **[Architect C1 — nested review inside an accepted block]** For each accepted block, walk its parsed value **iteratively** (explicit stack, never recursion) and give reason `"nested-review-object"` if any dict at depth ≥ 1 satisfies `_is_review_dict`. Precedence: budget > unreadable > nested. This is part of `_scan`'s reason, so `review_text_unreadable` (and §4 Change A/B) inherits it. Verified no legitimate producer nests one: `agent_invoke_cli.py` docs nest only `input`/`observability` (`audit_record` is a path string), and `_escalate_to_blocking`/`_ambiguous_salvage_error` (`second_review_logic.py:592-635`) are flat.
+8. **[Architect C4 — diagnostic]** The reason string carries the character offset of the first hit (e.g. `"unreadable-review-candidate at offset 1234 (#2062)"`). No excerpt of reviewer text goes into the block or the log line (CWE-117). `_cmd_process` prints one stderr line when an accepted block carries `extraction_error`.
 
 ### 2.4 `extract_json_objects(text) -> list[dict]` (public signature unchanged)
 - Returns the accepted blocks.
@@ -75,7 +78,7 @@ This replaces `_brace_objects` and the fence logic. **Fences are ignored.** The 
 - Amend module binding 6 (L26-27) to say: "the shell extractor this binding named was removed; `extract_json_objects` is the sole implementation (#2062)."
 
 ## 3. Boundaries
-- Shape 3 is **not** detected when the nested `request_changes` sits inside an accepted review-shaped outer, e.g. `{"verdict":"approve","findings":[],"x":{"verdict":"request_changes"}}`. The outer is authoritative, which matches salvage's `_is_review_shaped` early return (L527). This is recorded in the docstring as a known boundary (OQ-2).
+- ~~Shape 3 is **not** detected when the nested `request_changes` sits inside an accepted review-shaped outer.~~ **Superseded by architect ruling C1 (§2.3 step 7):** a review-shaped dict nested anywhere inside an accepted block now fails closed (`nested-review-object`), detect-not-lift as for shape 3. Salvage needs no change for this: it returns the outer whole (L527) and re-serializes it into OUTFILE (`second_review_logic.py:1187`), where `process` sees the nested dict; Change A also catches it at salvage.
 - JSON inside string values is never parsed. Example: an agy envelope `response` given raw to validate_agents. This is unchanged.
 - Verdict-inert sections (the #1718 advisory, ADR-2033 `[CONTEXT]`/`[COVERAGE]`) **must not** contain an unescaped review key. Today that is a convention (`run_second_review.sh:951-955`, ADR-2033 L485). After this change, breaking it fails closed instead of forging a verdict.
   - Update the comment at `run_second_review.sh:952-954`: "extract_json_objects scans the whole file, fences included; a stray review key here now gates (#2062)". This is a comment-only edit.
@@ -118,6 +121,10 @@ New file `tests/oversight/test_validation_logic_extraction_2062.py`. Load the mo
 | `test_ledgered_rc_still_converges` | fenced RC + ledger `fixed` for its fingerprint | `approve` (#2036 / #2032 parity) |
 | `test_cli_process_strict_empty_dup_key` | `main(["process",…,"--strict-empty"])` on an OUTFILE with shape 1 | header `verdict: request_changes` |
 | `test_validate_self_single_doc_unchanged` | one `json.dumps` of an invoke_agent-style doc with nested `input`/`observability` dicts | exactly 1 block, no `extraction_error` |
+| `test_nested_rc_inside_accepted_approve_blocks` (C1) | `{"verdict":"approve","findings":[],"x":{"verdict":"request_changes","findings":[]}}` | `request_changes`, reason `nested-review-object` |
+| `test_nested_review_in_findings_list_blocks` (C1) | A whose `findings` holds `{"severity":"low","verdict":"x"}` | `request_changes` |
+| `test_unicode_escaped_key_residue_blocks` (C2) | fenced A + `{"verdict":"request_changes",}` | `request_changes` |
+| `test_extraction_error_has_offset_no_excerpt` (C4) | shape 2c | reason contains `offset`; no reviewer text in it |
 
 New file `tests/oversight/test_second_review_extraction_2062.py`:
 | Test | Input | Expected |
@@ -150,6 +157,10 @@ The prompts' schema examples are valid JSON (`validate_scripts.sh:199-200`). A p
 
 An unreadable-residue block is unsilenceable, so a lane that persistently produces one cannot converge. It reaches a human, the same as #670.
 
+A further accepted false-positive class: prose braces that balance **around** a fenced review (`{ … ```json A``` … }`). The span fails to parse, `i` jumps past it (step 2), A is not accepted, and its keys hit the residue. Do not "fix" this by rescanning at `i+1` after a parse failure: that would lift a review out of an unparseable non-review wrapper, which §2.5 forbids.
+
+**[Architect C3 — measured, not estimated]** Before opening the PR, replay the new `extract_json_objects` + `compute_verdict` (empty ledger) over every retained output file in `.claudetmp/second-review/` and `.claudetmp/framework/` (255 files at review time; read-only, never committed). Report old vs new verdict counts in the PR body, and list every approve→blocking flip with its reason. If more than 5% of previously-approve files flip, or any flip is not explained by shapes 1–3, OQ-1's §6 classes, or C1/C2, stop and return to the architect before merging.
+
 ## 7. Slice: one PR, 6 files (cap 15)
 1. `scripts/oversight/validation_logic.py`
 2. `scripts/oversight/second_review_logic.py`
@@ -170,3 +181,18 @@ Should this have been settled up front? Yes. #2032's design fixed `compute_verdi
 - **OQ-1 (architect):** Accept §6. Balanced-unparseable and quoted review keys in prose fail closed, and an unreadable residue can never be ledgered to convergence.
 - **OQ-2 (architect):** Accept the §3 boundary that nested review keys inside an accepted review-shaped outer are not inspected.
 - **Observation, outside scope:** `_unwrap_envelope`'s status gate (L524-526) drops a review-shaped `{"status":"ERROR","verdict":"request_changes",…}` candidate. If a bare approve sits next to it, salvage returns approve (L784). This is a fourth masking shape that predates #2062. A follow-up issue is recommended. It is not fixed here.
+
+## 10. Architect review — APPROVED WITH CONDITIONS (2026-10-12, round 1)
+
+Verified against code: `validation_logic.py:106-160` (fence-first L158, divergent predicates L156/L159, `i=j+1` EOF drop L139, `json.loads` last-wins L134), `compute_verdict` L398-399 (#670) and L418-429 (#2032), `second_review_logic.py:256/535/750` (`json.loads`), L782-794 (resolution), L1187 (re-serialize; the TD cites 1186), `run_second_review.sh:951-955` (the TD cites 952-954), `validate_self.sh:436-480` (one-block rule; a synthetic block makes the count 2, so `__PARSE_ERROR__` fails closed).
+
+**Rulings**
+- **Mechanism: sound.** Here is the invariant that makes it fail closed. The result is `approve` only if every decoded review key in the text lies inside an accepted, strictly parsed, review-shaped span, and every such span reaches `compute_verdict`. Every mis-scan (prose-brace desync, a jump past a block, a parse failure) leaves keys in the residue, so it errors rather than approves. One synthetic block per text is correct, because a count could be inflated by the attacker and buys nothing.
+- **`error`, not the #2032 malformed shape: correct.** No block exists to call malformed. The fact being reported is "a reviewer answered and we could not read it", which is #670 / `--strict-empty` semantics. It ranks highest in the `process` ratchet, and both branches are unsilenceable. `compute_verdict` stays unchanged.
+- **Work budget: approved.** It must be one global counter across all inner walks in a single `_scan`, not a per-walk counter. The parse, the C1 walk and the C2 regex are linear and stay outside it.
+- **ADR-2033 / #2036 non-regression: holds.** Chunked blocks are disjoint accepted spans. Ledger semantics are untouched because real findings still flow through fingerprints. Only synthetic blocks are unsilenceable.
+- **second_review_logic: correct and minimal.** `loads_strict` goes at L256/L535/L750, with `DuplicateKeyError` caught before the prose path at L256. Changes A and B apply only on a resolved review, so the None-pinned tests stand. Escaped envelope keys cannot match the C2 pattern either (`\"` is consumed as an escape).
+- **OQ-1: ACCEPTED.** Fail-closed to a human is the correct direction on an attacker-influenceable gate, with #670 as precedent. It is conditional on C3 measuring the real rate.
+- **OQ-2: REJECTED as a boundary. It must be inspected (C1).** The cost is linear, no legitimate producer nests a review, and leaving it open keeps exactly the shape-3 masking this issue exists to close.
+
+**Conditions (binding on the coder):** C1 nested inspection (§2.3 step 7). C2 decoded-key detection (§2.3 step 6). C3 corpus replay with the 5% stop rule (§6). C4 offset-only diagnostic (§2.3 step 8). C5: the tests added to §5 are required. C6: the worker files the status-gate follow-up (fourth masking shape, above) and the `startup-artifact-gap` annotation per §8. The architect files neither. The §8 sign-off analysis stands.
