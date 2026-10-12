@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"387ef6fc4fad70e5f9bf65d51d5f800c1fba112f","pr":2082,"reason":"#1215: CONDITIONAL_PROCEED/DECIDE verdict already posted 2026-10-12T22:13Z on this head; needs-human applied; no new commits, comments, reviews or human activity since"}
