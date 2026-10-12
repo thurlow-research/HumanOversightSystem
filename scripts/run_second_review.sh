@@ -950,8 +950,9 @@ Return JSON only:
 # ── #1718: unverified-consumption advisory ───────────────────────────────────
 # Non-reviewer block: the heading does not start with agy/codex so the aggregator
 # ignores it, and the JSON is in a PLAIN fence — never ```json — because
-# validation_logic.py extract_json_objects scans every json fence file-wide. The
-# payload must never carry the keys verdict/findings/attacks/error. Verdict-inert.
+# validation_logic.py extract_json_objects scans the whole file, fences included; a
+# stray review key here now gates (#2062). The payload must never carry the keys
+# verdict/findings/attacks/error. Verdict-inert.
 append_consumption_advisory() {
     local payload="${1//\`/}"
     {
