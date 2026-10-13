@@ -1,6 +1,10 @@
 # TECHNICAL DESIGN — #1660/#1662 slice S1: `scripts/framework/review_state.py` (the shared review-state definition, the trust test, "acted-on" detection, the `route` CLI) and the shared fixtures
 
-**Status:** DRAFT-1, awaiting `architect` review (round 1 of 5).
+**Status:** DRAFT-1. **Architect round 1: APPROVED_WITH_EDITS** (see § "Architect review — round 1" at the
+end; its RE-1 to RE-9 govern the body).
+- **Next:** `technical-design` folds RE-1 to RE-9 into the body, mechanically. No architect round 2 is
+  needed unless the fold-in deviates.
+- **Then:** `coder`.
 **Date:** 2026-10-13
 **Author:** technical-design
 **Baseline:** `HEAD` = **`66c7dc58626c192921ffcb36c060f5ab65ee731d`** (the ADR commit). Every file:line below is
@@ -951,3 +955,207 @@ merge-authority evaluation, because both consume this module's outstanding-CR li
 - **TD-Q1–TD-Q7** need the architect's rulings before `coder` handoff. TD-Q3 and TD-Q4 touch the ADR's
   security note and trust test.
 - The protected-surface CODEOWNER gate applies to the S1 PR (`scripts/framework/**`).
+
+---
+
+## Architect review — round 1 (2026-10-13)
+
+**Verdict: APPROVED_WITH_EDITS.** Round 1 of 5.
+
+The design is faithful to the ADR, and in several places it is stricter than the ADR in the right
+direction:
+- the typed `ReviewList`/`CommitList` make a partial list unrepresentable;
+- a full page with no further page fetched is `read-failed`, not complete;
+- `_printable` is applied to library callers too, so the consumers cannot disagree;
+- a commits failure is decided after a head-current CR;
+- the static tests pin the boundary (TF-1).
+
+TF-1, the protected-to-unprotected import rule, is correct, and I adopt it as binding on S2 and T3.0b.
+§0.1's search is complete.
+
+The one substantive change is **TD-Q3**. It splits the trust tag in two, which amends ADR D4, AM-1 and
+AM-2 (see the ADR's "Amendment A1"). Edits **RE-1 to RE-9** below are binding. **This section governs
+where it conflicts with the body.**
+
+**Coder readiness.** S1 goes to `coder` once `technical-design` has folded RE-1 to RE-9 into §2, §3, §6
+and §7. The fold-in is mechanical. It needs **no architect round 2** unless it deviates from this
+section, in which case it comes back to me. S1 has no ESC dependency.
+
+### Rulings
+
+**TD-Q1 (`HUMAN_REVIEWER` source): confirmed, and generalized (RE-2).**
+- **No CLI flag.**
+  - `bin/hos-cron` does not read `machine-accounts.env` today.
+  - A flag would let the *caller* choose whose CR counts, which is an identity decision made in bash.
+  - Identity stays in protected Python, read from the protected file, through the existing parser
+    (`require_tier_ceiling.load_env`, ADR-1357 AD-9).
+- **Make the resolver public.** It becomes `resolve_machine_accounts(repo_root) -> MachineAccounts(
+  human_reviewer: Optional[str], bot_accounts: Optional[frozenset[str]])`.
+  - It returns *both* identity keys from one read (RE-2).
+  - `bot_accounts` is `None` iff the file is unreadable or the `BOT_ACCOUNTS` key is absent.
+  - A present but empty key is `frozenset()`, which is resolved.
+- **For E18 (T3.0b).**
+  - The classifier calls `review_state.resolve_machine_accounts`.
+  - T3.0b TD §2.1's "reads no configuration file" gets a narrow carve-out: identity keys only, through
+    this one function. It never touches the bound.
+  - The rule's purpose was that "the bound cannot be raised by env/config" (REQ-C25), and identity keys
+    cannot raise the bound.
+  - Passing `None` is **not** acceptable for T3.0b. Under RE-1, an unresolved `bot_accounts` makes every
+    trusted CR `unknown`.
+  - Record this in the T3.0b revision under Erratum 3 E18.
+
+**TD-Q2 (`urls` key): confirmed.** Rebuilding the URL in bash would duplicate a format, and the URL is
+validated in exactly one place (`_printable`). The ADR §3 key list gains `urls` (Amendment A1).
+
+**TD-Q3 (machine accounts): ruled. Routing and merge hold use different predicates, from one tagged
+list (RE-1).**
+
+The two consumers fail safe in **opposite** directions:
+- **routing** fails safe by *trusting less*: the worker reads the CR text and acts on it (AM-2's
+  injection rationale);
+- **merge authority** fails safe by *holding more*.
+
+One predicate cannot be the safe choice for both, and the draft's single `trusted_human` is unsafe for
+routing. A collaborator PAT machine account, or a `type: "Bot"` account without the suffix, would steer
+the worker. And per D4 as written, the same single predicate drops holds that GitHub itself enforces.
+
+So each `OutstandingCR` carries **two** tags, and replaces `trusted_human` with them:
+
+- **`holds_merge`** is true iff either:
+  - `author_association` ∈ `TRUSTED_ASSOCIATIONS`, with **no login or bot condition** (a ghost or a
+    `[bot]` with a trusted association holds); or
+  - the login equals `human_reviewer` (case-insensitive).
+
+  It mirrors GitHub, where a write-access CR blocks merge under required reviews. That is stricter than
+  D4, and no pipeline identity posts CRs (ADR §0), so in practice it adds nothing but correctness.
+- **`routes_worker`** is true iff `holds_merge` **and** the author is **not a machine**:
+  - not a ghost;
+  - `scripts.framework.require_human_approval.is_bot_reviewer(login, user_type, bot_accounts)` is false.
+    That function is reused, not re-stated. It is protected-to-protected, so TF-1 permits it. It covers
+    `user.type == "Bot"`, the `[bot]` suffix and `BOT_ACCOUNTS`, case-insensitively.
+  - A `user.type` that is present but not a `str` counts as a machine.
+
+  The `HUMAN_REVIEWER` match does **not** override a machine verdict. If `HUMAN_REVIEWER` is in
+  `BOT_ACCOUNTS`, the config contradicts itself, and the fail-safe for routing is "machine".
+
+**TD-Q4 (GHES / EMU): split.**
+- **Logins: widen** `OUTPUT_LOGIN_RE` and `HUMAN_REVIEWER_RE` to allow `_` (`[A-Za-z0-9_-]`).
+  - `_` contains no space, `=`, quote or newline, so S3's `case` parse stays total.
+  - The security note's purpose is unchanged.
+  - `AUTHOR_RE` is unchanged.
+- **URL host: keep `github.com` only** for S1. Accept the fail-closed `cr-field-invalid` on GHES as a
+  stated limit.
+  - Deriving the host needs `gh`'s host config, which is another input to trust.
+  - Follow-up **F-4** (ADR Amendment A1) widens it, with host derivation from the PR's own API object.
+- T-RD6's EMU row flips to determinate. A login of `alice_acme` is printable.
+
+**TD-Q5 (`branch=none`): confirmed.** S3 emits `_audit cycle-routing-cr` iff `branch != none` or
+`untrusted > 0`. That includes `superseded`, which REQ-CR-15 names.
+
+**TD-Q6 (unknown states fail the list): confirmed.** An unrecognized state may be state-bearing, and
+failing toward `unknown` is the governing constraint. The cost is visible (`reviews-unparseable`, one
+cause line per PR) and is fixed by a one-line constant change.
+
+**TD-Q7 (head-current before commits read): confirmed.**
+- Both outcomes block new work.
+- `needs-fix` is a positive read and spends no request.
+- `crs` still lists **every** routing-trusted CR, so the worker sees the other CR too.
+- The ADR's D9 table is read with this order (Amendment A1).
+
+### Binding edits
+
+- **RE-1 (§2.3, §2.6, §2.9, §3.6, §6, §7: TD-Q3).**
+  - **Types and trust functions.**
+    - `OutstandingCR.trusted_human` is replaced by `holds_merge: bool` and `routes_worker: bool`.
+    - `association_trusted(review)` keeps its name but drops its login and `[bot]` conditions.
+    - `is_trusted_human` is replaced by `holds_merge(review, human_reviewer)` and
+      `routes_worker(review, accounts: MachineAccounts)`.
+  - **§2.9 `decide_route`.**
+    - D-2: `trusted` becomes the `routes_worker` subset, and `untrusted` counts the rest. This includes
+      a `holds_merge`-only machine CR.
+    - D-3 is restated as follows. If `accounts.bot_accounts is None` and some CR in `all_crs` has
+      `holds_merge`, a non-`None` login, a `str` `user.type` other than `Bot`, and no `[bot]` suffix,
+      the result is `unknown`, cause **`bot-accounts-unresolved`**. Its routing trust depends on the
+      missing list.
+    - D-3 also keeps the existing `human-reviewer-unresolved` rule, which now applies when
+      `human_reviewer is None` and some CR's `holds_merge` would depend on it (association untrusted,
+      login non-`None`, not a machine).
+    - D-5's `superseded` test uses `routes_worker`.
+  - **§2.2 cause tokens:** add `bot-accounts-unresolved`.
+  - **§6.1 schema:**
+    - `expect.outstanding` items carry both tags;
+    - a new case key, `bot_accounts` (a list, or `null` = unresolved), defaults to
+      `["hos-worker-hos[bot]","hos-overseer-hos[bot]","scottthurlow-claude[bot]","copilot[bot]"]`;
+    - the CLI harness writes it into the temp `machine-accounts.env`.
+  - **T-FX1 merge consistency:** `hold` iff some item has `holds_merge`.
+  - **Fixture changes:**
+    - **m**: `helper[bot]`/`MEMBER` now gives `holds_merge=true`, `routes_worker=false`. The route is
+      unchanged (none / none / 2), but **merge becomes `hold`**.
+    - **p**: `user: null` with `"NONE"` gives no hold, as before.
+  - **New cases:**
+    - **x-machine**: login `hos-svc`, `type: "User"`, `COLLABORATOR`, `bot_accounts` includes
+      `hos-svc`. Route none / none / 1, merge hold.
+    - **x-typebot**: login `alice`, `type: "Bot"`, `MEMBER`. Route none / none / 1, merge hold.
+    - **x-bots-unresolved**: H (`OWNER`, `type: "User"`) CR on head, `bot_accounts: null`. Route
+      unknown, `bot-accounts-unresolved`, merge hold.
+    - **x-ghost-owner**: `user: null`, `OWNER`. Route none / none / 1, merge hold.
+  - **Tests:**
+    - **T-TR7** flips: `type: "Bot"` gives `routes_worker=false`, `holds_merge=true`.
+    - Add **T-TR8**: `BOT_ACCOUNTS` membership, case-insensitive.
+    - Add **T-TR9**: `HUMAN_REVIEWER` listed in `BOT_ACCOUNTS` gives `routes_worker=false`.
+    - Add **T-TR10**: a non-`str` `user.type` gives `routes_worker=false`.
+    - Add **T-RD9**: `bot-accounts-unresolved`.
+- **RE-2 (§3.3, TD-Q1).**
+  - `_resolve_human_reviewer` becomes public `resolve_machine_accounts(repo_root) -> MachineAccounts`,
+    with one `load_env` call. Its error handling is unchanged.
+  - `BOT_ACCOUNTS` is split on whitespace, with empty tokens dropped.
+  - The WARN line names whichever key is unresolved.
+  - `decide_route` and `commits_needed` take `accounts: MachineAccounts` in place of `human_reviewer`.
+  - The `MachineAccounts` dataclass is part of the public surface that S2 and T3.0b import.
+- **RE-3 (§2.1, T-ST1).** The permitted non-stdlib imports are exactly:
+  - `scripts.framework.require_tier_ceiling.load_env`, lazy, inside `resolve_machine_accounts`;
+  - `scripts.framework.require_human_approval.is_bot_reviewer`, lazy or top-level. That module has no
+    import-time side effects, verified.
+
+  Update T-ST1.
+- **RE-4 (§2.2, TD-Q4).** `OUTPUT_LOGIN_RE = ^[A-Za-z0-9_-]{1,39}(\[bot\])?$` and
+  `HUMAN_REVIEWER_RE = ^[A-Za-z0-9_-]{1,39}$`. In T-RD6, the `alice_acme` row moves to an expected
+  determinate result. Keep the other-host row (`cr-field-invalid`).
+- **RE-5 (§3.6).** Replace the "untrusted" wording with "not `routes_worker`" throughout. The `crs`/`urls`
+  lists hold `routes_worker` CRs only. A machine account's login and URL are **never printed**, even
+  when it `holds_merge`. Merge evidence for those is S2's `hold-directive` payload, not routing stdout.
+- **RE-6 (§6.3, test count).**
+  - The S2 note on x-hr-unresolved stays.
+  - Add one line: S2's parity run supplies `bot_accounts` from `merge_config`. `holds_merge` does not
+    depend on it, so S2 has no `bot-accounts-unresolved` path.
+  - Recount §7.5.
+- **RE-7 (§3.2, S3 obligation).** Keep it, and add one sentence: S3 must not pass `--head` from any
+  source other than the same PR detail read that produced the `mergeable_state` it routed on. One read,
+  one snapshot. This keeps the head and the mergeable state from coming from different moments.
+- **RE-8 (§2.4, minor correctness).** Step 4's second bullet ("a full last page with fewer than
+  `max_pages` pages fetched gives `read-failed`") is correct. Add a docstring sentence saying that this
+  is the *only* way the fetcher contract can be observed as violated without a `FetchFailure`, so that
+  a future fetcher that stops early fails closed instead of reading as complete. Pin it with T-AP9's
+  existing row.
+- **RE-9 (Status line).** Applied directly above.
+
+### What I checked and found correct (so a reviewer can check it, not trust it)
+
+- **§2.5's order key is total and fail-safe.**
+  - A CR with a missing timestamp sorts last (band 2), and an APPROVED with one sorts first (band 0).
+  - The id tiebreak is unique after §2.4's step 5.
+  - Residual risk: a GitHub `submitted_at` with sub-second skew between a reviewer's two reviews. The
+    tiebreak covers only exact ties, which is acceptable. GitHub timestamps are per-second, and an equal
+    second resolves toward the CR.
+- **§2.7's ancestor walk.** It is bounded by the visited set, and *A* includes the CR commit. A parent
+  outside *S* stops the walk, which is correct: main's commits are not in *S*.
+- **§2.9 D-4 applied to library callers is right.** Without it, S2 would hold on a CR that S3 routes as
+  unknown. Both still block, but the fixture parity would break.
+- **The x-body case and T-CLI8 pin the injection boundary for stdout and stderr.** RE-5 extends the same
+  property to machine-account CRs.
+
+### Sign-off impact
+
+None. This is the first TD round, and no S1 code exists. The ADR change (Amendment A1) touches D4,
+AM-1, AM-2, D8's field names and fixture (m)'s merge expectation. **No S2 or S3 artifact exists yet**,
+so nothing is orphaned.

@@ -12,7 +12,7 @@ framed. Three questions, one signal, one shared definition is the right shape. E
 (AM-1..AM-11, §6) fix internal contradictions, a trust gap and an under-specified definition. None of
 them changes the intent.
 
-**Status: Accepted (technical).** ESC-1, ESC-3, ESC-5 and ESC-6 are ruled here as architecture. ESC-2 is
+**Status: Accepted (technical), as amended by Amendment A1 (2026-10-13, at the end of this document), which governs where it conflicts with the body.** ESC-1, ESC-3, ESC-5 and ESC-6 are ruled here as architecture. ESC-2 is
 split: its routing and merge halves are ruled, and its bound-counting half stays with the human as
 **ESC-2b**. **ESC-4** stays with the human. S1, S2 and S3 can be coded now (§5).
 
@@ -481,3 +481,60 @@ be combined with S3 in one PR if the file count allows.
 - **F-3.** An overseer `decide` subcommand on `merge_authority.sh`, so that the matrix itself is a shell
   command and not a prose Python call. This is the #1357 lesson. Until it exists, D3's fail-closed
   default is what makes the CR guard robust to the prose drifting.
+
+---
+
+## Amendment A1 (2026-10-13): S1 technical-design review, round 1
+
+Raised by the architect's round-1 review of `TECHNICAL-DESIGN-1660-1662-S1-review-state.md` (TD-Q1 to TD-Q7).
+**Where this amendment conflicts with the text above, this amendment governs.**
+
+- **A1-1 (D4, AM-1, AM-2: one tag becomes two).**
+  - **The problem.** Routing and merge authority fail safe in opposite directions:
+    - routing fails safe by trusting less, because the worker acts on the CR text;
+    - merge authority fails safe by holding more.
+
+    D4's single `trusted_human` predicate let a collaborator machine account (a PAT user in
+    `BOT_ACCOUNTS`, or a `user.type == "Bot"` account with no `[bot]` suffix) steer the worker. It also
+    dropped holds that GitHub itself enforces.
+  - **The fix.** `outstanding_crs` tags every item with two values:
+    - **`holds_merge`**: `author_association` ∈ {OWNER, MEMBER, COLLABORATOR}, whatever the login, bot
+      status or ghost status; **or** the login equals `HUMAN_REVIEWER`.
+    - **`routes_worker`**: `holds_merge` **and** the author is not a ghost **and**
+      `require_human_approval.is_bot_reviewer(login, user.type, BOT_ACCOUNTS)` is false. A `user.type`
+      that is not a `str` counts as a machine.
+  - **Consumers.**
+    - D3's hold condition is "≥ 1 outstanding CR with `holds_merge`".
+    - D9 and E14–E16 use `routes_worker` wherever they say "trusted".
+    - D8's `cr_outstanding` items carry both tags in place of `trusted_human`.
+    - The routing CLI never prints a CR that is not `routes_worker`.
+  - **Effect.** This is stricter for merge: a write-access bot CR now holds, mirroring GitHub. It is
+    stricter for routing: machine accounts never steer the worker. No pipeline identity posts CRs (§0),
+    so the practical effect today is nil.
+  - **Fixture changes.**
+    - (m) changes its merge expectation to `hold` for `helper[bot]`/`MEMBER`. Its route is unchanged.
+    - New fixtures: x-machine, x-typebot, x-bots-unresolved, x-ghost-owner (TD RE-1).
+- **A1-2 (D1, §3: identity resolution).**
+  - `review_state.resolve_machine_accounts(repo_root)` is public, and it is the only reader of
+    `HUMAN_REVIEWER` and `BOT_ACCOUNTS` for routing. It reads them through `require_tier_ceiling.load_env`.
+  - There is no CLI flag.
+  - An unresolved `BOT_ACCOUNTS` (unreadable file, or the key absent) routes a CR whose `routes_worker`
+    depends on it as `unknown`, cause `bot-accounts-unresolved`.
+  - **E18 is extended.** T3.0b's classifier calls this resolver. That is a narrow carve-out from T3.0b
+    TD §2.1's "reads no configuration file": identity keys only, never the bound.
+- **A1-3 (§3 security note).**
+  - The login regex allows `_` (EMU logins): `^[A-Za-z0-9_-]{1,39}(\[bot\])?$`.
+  - The URL host stays `github.com` only. On GHES, a routing CR is `unknown` (`cr-field-invalid`),
+    which is a stated limit.
+- **A1-4 (§3 CLI keys).**
+  - The CLI prints six keys: `cr_route`, `branch`, `crs`, `urls`, `untrusted`, `cause`.
+  - `branch` gains `none`.
+  - S3 audits iff `branch != none` or `untrusted > 0`.
+- **A1-5 (D9 row order within one PR).** A head-current routing CR decides `needs-fix` before, and without,
+  the commits read. A review state outside GitHub's five known values makes the list
+  `reviews-unparseable`.
+- **A1-6 (follow-up).** **F-4:** widen the URL host check for GHES, deriving the host from the PR's own API
+  object.
+
+**Affected sign-offs.** None are orphaned: no S1, S2 or S3 code exists. The S1 TD's round-1 approval is
+already made against this amendment.
