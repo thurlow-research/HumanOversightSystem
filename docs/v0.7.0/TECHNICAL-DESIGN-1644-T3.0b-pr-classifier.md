@@ -4,6 +4,14 @@
 (§9A). **`coder` handoff is BLOCKED** on the human's answer to **ARCH-ESC-1R** (ADR-1644 Erratum 2, which
 replaces §9 H-1). Under ARCH-ESC-1R's recommended answers, the design needs no further change. Under
 Q1(b) or Q3(b), it returns to `technical-design` for revision.
+> **Superseded in part (2026-10-13), by ADR-1644 Erratum 3 =
+> `ADR-1660-1662-changes-requested-semantics.md` §4.1 (E14–E18).** These parts are replaced:
+> - §2.5 R, the CR rule, including "a full page containing a CR is a determination";
+> - the §2.6 C5/C6 rows, and the CR handling in C7/C8;
+> - fixtures C5 and T-FC10.
+>
+> Before `coder` handoff, this TD must be revised to match those items. That revision is in addition
+> to the ARCH-ESC-1R gate.
 **Date:** 2026-10-02
 **Author:** technical-design
 **Baseline:** `HEAD` = **`0eabb86852a64ebb1610177aeb23861d595f503f`**. Every `file:line` below refers to

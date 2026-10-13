@@ -1357,3 +1357,15 @@ issue:
 - **E6a, E7, E12:** corrections to wording and tests. No sign-off is affected.
 - **E8 to E11:** stricter bindings in an unbuilt slice. No sign-off is affected.
 - **E13:** a forward constraint on unbuilt slices. No sign-off is affected.
+
+## Erratum 3 (2026-10-13): CHANGES_REQUESTED semantics (#1660, #1662) — pointer
+
+Items **E14 to E18** live in `docs/v0.7.0/ADR-1660-1662-changes-requested-semantics.md` §4.1, which
+governs where it conflicts with Erratum 2 or the T3.0b TD. In short:
+- T3.0b §2.5 R ("any CR", "a full page with a CR is a determination") is withdrawn;
+- CR facts come from `scripts/framework/review_state.py`, filtered to trusted humans;
+- a PR with outstanding CRs that have all been acted on is `awaiting-human-cr`, never `needs-fix` and never carrier (b);
+- whether it is a human-pending carrier (c) waits on **ESC-2b**.
+
+T3.0b `coder` handoff now also requires a TD revision that incorporates E14 to E17.
+Re-opened sign-offs: only the T3.0b TD rows E14 to E17 name. No code is orphaned.
