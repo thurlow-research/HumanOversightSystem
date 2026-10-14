@@ -287,3 +287,27 @@ def test_d7_gate_does_not_quote_the_retired_faberix_wording():
         "wording — the E2 replacement is what the #1426 bypass's own rationale "
         "rests on (#1657)"
     )
+
+
+def test_propose_only_applies_no_needs_ai_label():
+    """#1557 — the PROPOSE_ONLY bullet must not instruct applying `needs-ai`.
+
+    `bin/hos-cron` routes any open non-draft bot PR carrying `needs-ai` (without
+    `needs-human`) to `needs-fix`. PROPOSE_ONLY has nothing for the worker to fix
+    (Expected action `NO ACTION`), so labelling it `needs-ai` sent every
+    PROPOSE_ONLY PR's worker cycle a false "fix and push" directive. The code
+    producer (`merge_authority.py`) already applies no label on this path; this
+    pins the prose producer to match.
+    """
+    body = _step6_bullets()["PROPOSE_ONLY"]
+    # Any label command on this path is wrong, not just a `needs-ai` one.
+    assert "--add-label" not in body, (
+        "PROPOSE_ONLY bullet instructs an `--add-label` — `needs-ai` misroutes "
+        "the worker cron into a false needs-fix (#1557)"
+    )
+    assert (
+        "Label `needs-ai`" not in body
+    ), "PROPOSE_ONLY bullet instructs labelling `needs-ai` (#1557)"
+    # Absence alone would pass against a bullet that dropped the topic, leaving
+    # the old habit to creep back in; pin the explicit instruction.
+    assert "Apply no label" in body, "PROPOSE_ONLY bullet no longer says to apply no label (#1557)"
