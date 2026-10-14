@@ -1,0 +1,1 @@
+{"event":"human-required","head_sha":"f313981b60e803ff4e037c338548920825d3a68d","pr":2094,"reason_category":"OTHER","review_id":5512183496,"summary":"NG3b release classifier matched release-range in the title of a docs-only design PR; human must confirm it is not a release action","tier":"HIGH"}
