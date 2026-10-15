@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","decision":"PROPOSE_ONLY","event":"propose-only-review-skipped","head_sha":"f8d82ea5e1ae333270f21ac8440a7abc358ab7dd","pr":2103,"prior_review_id":5529746137,"reason":"Head unchanged, no new comments/labels, decision re-derived live as PROPOSE_ONLY; submit-verdict wrapper suppressed identical verdict","tier":"HIGH"}
