@@ -156,6 +156,7 @@ excluded.
 - `scripts/oversight/run_with_retry.sh` — shared timeout + retry wrapper for validators and gates.
 - `scripts/oversight/second_review_logic.py` — reviewer selection + verdict aggregation for second review.
 - `scripts/oversight/secret_scan_logic.py` — finding-level suppression for the secret-scan gate (#1754).
+- `scripts/oversight/security_scan_logic.py` — advisory-level exemptions for the pip-audit gate (#1776).
 - `scripts/oversight/sign_off.sh` — write a validation-suite sign-off stamp.
 - `scripts/oversight/signoff_gate.py` — validation-suite sign-off gate (HOS framework script).
 - `scripts/oversight/smoke_test.sh` — one-shot health check for every dependency a HOS session relies on: agent CLIs, oversight venv scanners, the IP/provenance scanner, and the validator orchestrator.

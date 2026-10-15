@@ -24,6 +24,8 @@
 /scripts/oversight/gates/                  @ScottThurlow
 /scripts/oversight/run_validators.sh       @ScottThurlow
 /scripts/oversight/validators/schema.py    @ScottThurlow
+/scripts/oversight/secret_scan_logic.py    @ScottThurlow
+/scripts/oversight/security_scan_logic.py  @ScottThurlow
 /.github/CODEOWNERS                        @ScottThurlow
 /.github/workflows/                        @ScottThurlow
 /PROJECT/hos-coordination.yaml             @ScottThurlow
