@@ -1,6 +1,9 @@
 # REQUIREMENTS-2017: Measure what vendors actually consume, prove receipt exactly, and check the claude path
 
-**Status:** DRAFT for architect. **Change classification: STRUCTURAL.** Two of the three parts add
+**Status:** Architect-reviewed 2026-10-17: **APPROVED WITH AMENDMENTS**
+(`docs/v0.7.0/ADR-2017-vendor-consumption-probe.md`). Amendments are applied in place and tagged
+`[AR-n]`. Where a tagged amendment conflicts with untagged text, the tagged text governs.
+**Change classification: STRUCTURAL.** Two of the three parts add
 new behavior:
 - F3 adds a new fail-closed condition (a missing or wrong nonce) to the mandatory pre-PR second
   review. That is a new decision point in a gate.
@@ -26,6 +29,8 @@ with conditions, and S1a is **not yet on `main`** (`scripts/oversight/chunk_logi
 F2 or F3 as scoped here. F4 reads `bootstrap/invoke_agent.sh` and changes nothing unless a gap is
 found (REQ-F4-3). If enforcement of REQ-F2-2 needs `.claude/settings*` or `.github/workflows/**`,
 that slice touches a protected surface (TD-O2).
+**[AR-16]** TD-O2 is answered: no settings deny rule, so no slice as designed touches a protected
+surface. The only exception is the conditional S0 (ADR-2017 ARCH-ESC-1).
 
 ---
 
@@ -140,6 +145,13 @@ consumption check after each agy call. Three things are still missing:
   - Add `scripts/oversight/probe_vendor_consumption.sh`. Any decision logic goes in a Python
     module (#314). The probe sends filler prompts bracketed by sentinels to a named vendor
     (`--vendor agy|codex`) at stepped sizes.
+  - **[AR-3]** The path is instead `scripts/dev/probe_vendor_consumption.sh`, with logic in
+    `scripts/dev/vendor_probe_logic.py`. `scripts/oversight/` is rsynced wholesale to every
+    consumer (ADR-1683 fact 1), and `scripts/dev/` is neither shipped nor protected.
+  - **[AR-2]** The probe sends with production's exact vendor argv
+    (`agy --sandbox --output-format json`, `codex exec`), on stdin, through `with_timeout`, with
+    cwd = the repo root, as `run_second_review.sh` does. A hermetic parity test asserts that the
+    stub-recorded argv is identical for both callers.
   - Per call, it records:
     - the vendor;
     - the CLI version (from `--version`, captured at run time);
@@ -163,9 +175,15 @@ consumption check after each agy call. Three things are still missing:
   - For (a), the probe uses at least two filler densities, for example dense code-like content and
     prose. A byte cap and a token cap predict different truncation points across densities, so a
     single density cannot tell them apart.
+  - **[AR-6]** A missing sentinel counts as `truncated` only when it is corroborated. For agy, the
+    envelope `usage` must show a shortfall consistent with the loss. For codex, the same sentinel
+    must be missing on every repeat, and the codex repeat count is at least 2. Otherwise the call
+    is `recall_miss` or `inconclusive`. The instruction to list sentinels goes at the **start** of
+    the prompt.
   - *AC:* a hermetic test with stub `agy`/`codex` binaries runs the probe with `--confirm-spend`
     (REQ-F2-2), with the CI and cron markers cleared and the TTY check satisfied through a test
-    seam. It checks four things:
+    seam. **[AR-4]** The test supplies a real pty (`os.openpty`/`pty`), not a test seam. No env var,
+    flag or file may satisfy the TTY check. It checks four things:
     1. A stub that cuts off at a fixed **byte** offset yields (a) = `byte_cap`.
     2. A stub that cuts off at a fixed **token-equivalent** count (bytes ÷ density) yields
        `token_cap`.
@@ -173,6 +191,8 @@ consumption check after each agy call. Three things are still missing:
        `input_tokens` unchanged, yields (b) = `inclusive`. A stub whose `input_tokens` drops by the
        cached amount yields `exclusive`.
     4. A codex stub that drops the end sentinel at 600 KB yields `truncated` for that size.
+       **[AR-6]** It does so only when the drop repeats on every repeat. A single drop yields
+       `inconclusive`.
 
 - **REQ-F2-2 (never runs in the inner loop, CI or an autonomous cycle; enforced three ways).**
   - **(i) Runtime refusal.** The probe refuses, with exit 2 and one stderr line naming the reason,
@@ -184,6 +204,11 @@ consumption check after each agy call. Three things are still missing:
 
     `--confirm-spend` is not readable from env. No env var or config switch replaces it, so it
     cannot be set once and forgotten.
+
+    **[AR-4]** The flag is `--confirm-spend <plan_id>`. `--dry-run` prints `plan_id`, a short hash
+    over vendor, sizes, densities, repeats and the probe's git SHA. A missing or different value
+    refuses. `HOS_CYCLE_TOKEN` is added to the cron markers. A plan over a cap is also a refusal
+    condition.
   - **(ii) Static non-reference test.** An inner-loop test fails if the probe's path or filename
     appears in any of these:
     - `.github/workflows/**`;
@@ -193,6 +218,13 @@ consumption check after each agy call. Three things are still missing:
     - `.claude/agents/**`, any `*-cron-prompt.md`, or `.claude/settings*.json` allowlists.
 
     Documentation files (`*.md` outside `.claude/`) and the probe's own tests are exempt.
+
+    **[AR-5]** This is replaced by a stricter, simpler rule. **No tracked file** may reference the
+    probe's filename, except:
+    - the probe itself and `scripts/dev/vendor_probe_logic.py`;
+    - the probe's tests;
+    - `SCRIPTS-INDEX.md`;
+    - `*.md` files outside `.claude/`.
   - **(iii) Hermetic tests only.** No test invokes a real vendor binary. Every probe test puts
     stubs first on a minimal PATH and asserts that the stub, not a real binary, was launched.
   - *AC:* each of the four refusal conditions in (i) exits 2, launches no stub (marker file
@@ -223,6 +255,20 @@ consumption check after each agy call. Three things are still missing:
     - the lower-only clamp (`_vendor_invoke_resolve_ceiling`) is unchanged;
     - the existing #1718 tests pass unmodified.
   - How the probe reaches the binaries is ESC-1 (a product boundary) and TD-O1 (mechanism).
+  - **[AR-1]** Resolved: ESC-1 (a). The probe launches the binaries itself. There is no internal
+    unclamped function and no base-argv accessor in `vendor_invoke.sh`, whose logic is unchanged
+    (comments only). The pm's "exactly one exempt file" test is replaced: no agy/codex launch-site
+    rule is enforced today, and four direct launchers already exist. In its place, a new
+    `tests/framework/test_vendor_launch_sites.py` asserts an **equality** ledger of prompt-carrying
+    agy/codex launch sites:
+    - `vendor_invoke.sh`;
+    - `bootstrap/setup_clis.sh` (permanent);
+    - `scripts/framework/validate_agents.sh` and `validate_scripts.sh` (until F5);
+    - the probe (permanent).
+
+    The same test asserts that no file except `vendor_invoke.sh` assigns
+    `_VENDOR_INVOKE_DEFAULT_MAX_BYTES_*` / `_VENDOR_INVOKE_CEILING*`, and it includes
+    guard-the-guard fixtures (ADR-2017 AD-1).
   - *AC:* the #1718 test file `tests/oversight/test_vendor_prompt_consumption_guard.py` passes with
     no edits. A test asserts that `vendor_invoke` still refuses 180,001 B for agy whatever the
     environment, including any variable the probe uses.
@@ -234,6 +280,9 @@ consumption check after each agy call. Three things are still missing:
   - It also writes a short human summary.
   - The probe never edits any ceiling constant, threshold or code. Its output is evidence only.
   - Where results are kept, and whether they are committed, is ESC-3.
+  - **[AR-15/AD-3]** The probe writes into `.claudetmp/vendor-probe/` only. Under ESC-3's default,
+    a human copies results into `docs/evidence/vendor-consumption/` in a normal PR. The probe never
+    writes a tracked path.
   - *AC:* the result file validates against the schema in a hermetic test, and carries
     `cli_version` and `probe_sha`.
 
@@ -247,7 +296,15 @@ consumption check after each agy call. Three things are still missing:
       value.
 
     Lowering a constant needs no citation.
-  - *AC:* a test passes on the current constants. It fails when a fixture raises the agy constant
+  - **[AR-7]** Margin. The new value V must not exceed either of:
+    - the largest size measured `full` at the densest class;
+    - 0.85 × the smallest size measured `truncated` or `rejected_loudly` at any density.
+
+    The cited file must be git-tracked under `docs/evidence/vendor-consumption/`. Until ADR-2017
+    ARCH-ESC-1 protects `vendor_invoke.sh` and this test, the rule is a reviewer-visible tripwire,
+    not a control.
+  - *AC:* a test passes on the current constants. **[AR-7]** It also fails on a raise above
+    0.85 × the cited truncation point. It fails when a fixture raises the agy constant
     with no citation, or with a citation whose measured size is below the new value. It passes
     when a fixture citation supports the raise.
 
@@ -277,9 +334,23 @@ consumption check after each agy call. Three things are still missing:
     are known, and a diff or spec that contains a candidate value cannot match a fresh random one.
   - The prose-retry suffix comes after the nonce and reuses the **same** nonce. The retry is the
     same prompt plus a suffix (VF-5).
+  - **[AR-8]** The nonce form is `HOS-RCPT-<32 lowercase hex>`: 128 bits from
+    `secrets.token_hex(16)`, a fixed 41 bytes.
+    - It is minted and rendered by pure functions in `scripts/oversight/second_review_logic.py`:
+      `mint_receipt_nonce`, and `render_receipt`, which substitutes one `@@HOS_RECEIPT@@`
+      placeholder and re-mints on a collision. The shell never composes or compares the nonce.
+    - The echo instruction goes right after the READ-ONLY paragraph, before the risk context, the
+      spec and the diff. It contains a fixed instruction sentence that appears nowhere else.
+    - It also tells a prose answer to carry the line `receipt_nonce: <value>`.
   - *AC:* a test renders the agy and codex prompts with a fixed test nonce (seam). It asserts the
     nonce occurs exactly once, at a byte offset greater than the diff body's last byte, and that
     the echo instruction comes before the diff. Two real runs produce different nonces.
+  - **[AR-9]** There is **no** nonce hook (env var, flag or file) in shipped code. A known nonce
+    lets a diff pre-plant the echo.
+    - The fixed nonce is a function argument in Python unit tests only.
+    - Shell-level tests use stubs that extract the `HOS-RCPT-…` token from their own stdin.
+    - Goldens normalise the token.
+    - A static test asserts that the receipt path reads no environment variable.
 
 - **REQ-F3-2 (the check, and its states).** After salvage, the response's echoed value is compared
   exactly with the expected nonce. The result is one of:
@@ -293,6 +364,14 @@ consumption check after each agy call. Three things are still missing:
 
   For a prose answer (no salvageable JSON), the raw text is searched for the exact nonce string:
   found → `echoed`, absent → `missing`.
+
+  **[AR-10]** The check reads the model's **answer only**, never whole vendor stdout:
+  - **JSON:** the `receipt_nonce` field of the exact object that salvage selected and will emit.
+  - **agy prose:** only the envelope's `response` text.
+  - **codex prose:** stdout. This stands only because the S2 PR records one live `codex exec` run
+    showing that stdout carries no prompt transcript. If it does carry one, codex prose → `missing`.
+  - **Contamination rule:** if the answer text contains the echo-instruction sentence verbatim,
+    the state is `missing` with `contaminated: true`, never `echoed`.
   *AC:* unit tests cover each state, including prose with and without the nonce, and a value with
   surrounding whitespace (→ `mismatch`, no trimming; ESC-4 can relax this).
 
@@ -308,6 +387,11 @@ consumption check after each agy call. Three things are still missing:
   - This is the same replacement rule #1718 uses for `prompt_not_consumed` (`:803-817`). A review
     of an unproven prompt must never surface as `approve`, `request_changes` or `unparseable`.
   - The run then exits 1 through the existing "runtime reviewer error" block. No new exit code.
+  - **[AR-11]** The receipt check can also fail as a harness defect: its CLI crashes, or the
+    expected-nonce file is missing or unreadable. That case fails closed with detail
+    `receipt_check_failed`, class `harness`, the same pattern as `consumption_check_failed`.
+  - **[ARCH-ESC-2]** When enforcement starts is a human decision: at S2 merge, or after a shadow
+    soak driven by a reviewed code constant `RECEIPT_ENFORCE`, with no env switch.
   - **No retry.** Truncation is deterministic (#1718 §6). A second attempt that "passes" after a
     miss would be a quota-spending way to dodge the check.
   - Why `missing` must fail closed: under truncation the reviewer never saw the nonce. Omitting
@@ -332,6 +416,9 @@ consumption check after each agy call. Three things are still missing:
   | `unverified` (any reason) | `echoed` | Review stands. The existing `[ADVISORY] Prompt consumption unverified` block is still written, plus `"receipt": "echoed"`. Whether an `echoed` nonce may suppress the advisory is ESC-6; the default is no change. |
   | codex lanes (no usage) | `echoed` | Review stands. The `codex_no_usage_envelope` advisory is still written, with `"receipt": "echoed"` added. |
   | codex lanes | `missing` / `mismatch` | Fail closed (REQ-F3-3). |
+  | **[AR-12]** any non-failing consumption, **prose** answer | `echoed` | Prose stands: `unparseable` → CONDITIONAL, as today. |
+  | **[AR-12]** any non-failing consumption, **prose** answer | `missing` (including contaminated) | Fail closed, `receipt_nonce_not_echoed`. Prose is the expected symptom of a kept-prefix truncation, because the trailing schema is lost first. |
+  | **[AR-11]** any launched answer | check crashed / nonce file unreadable | Fail closed, `receipt_check_failed`, harness. |
 
   Rules:
   - The nonce check can only **add** failures. It never turns an existing failure into a pass.
@@ -374,6 +461,16 @@ consumption check after each agy call. Three things are still missing:
     lands **second** owns the integration: it re-baselines the `n = 1` golden through the fixed
     test-nonce seam, as a named, reviewed change that cites this requirement. It is never a silent
     golden refresh. Sequencing is ESC-7.
+  - **[AR-13]** ESC-7 is resolved: F3 is built first. Under #2014, `chunk_logic plan` renders
+    each chunk's receipt nonce (via `render_receipt`) **into the planned `chunk-NNN.prompt`**, so
+    TD-2014 AR-8's planned-prompt hash holds.
+    - The fixed 41-byte nonce line counts in `T`.
+    - The expected nonces go to a mode-0600 sidecar, `<report>.chunks/receipts.json`, which is
+      never a prompt input.
+    - The chunk outcome is `receipt_failed`.
+    - If F3 lands first, #2014 S2's golden is created with the nonce normalised, so no re-baseline
+      is needed. #2014 S2's one-implementation test then also asserts that `chunked_review.sh`
+      carries the receipt check.
   - *AC (after both land):* a 3-chunk hermetic run gives 3 distinct nonces. A stub that echoes
     chunk 1's nonce in chunk 2 fails the lane with exit 1. The `n = 1` golden matches the
     fixed-nonce rendering.
@@ -413,6 +510,15 @@ consumption check after each agy call. Three things are still missing:
     printed first, dry-run available.
   - Whether this is a `--vendor claude` mode of the F2 probe, or a separate script, is ESC-8. The
     ADR-1683 D-7 boundary rules out routing it through `vendor_invoke`.
+  - **[AR-14]** ESC-8 is resolved: a `--vendor claude` mode of the probe.
+    - It launches `bash bootstrap/invoke_agent.sh` with `validate_self.sh:355`'s exact argv
+      (`--agent self-reviewer --posture review-read-only --dimension self-review --lens
+      self-review`, plus the recorded `--timeout`/`--model`). That is the only production caller.
+    - No new agent is needed (AD-3), no T4.1 exemption is added, and no `claude -p` appears.
+    - The raw envelope is captured by a pass-through `claude` tee-shim on `PATH` in the probe's
+      temp dir, preserving rc. `agent_invoke_cli.py` and `invoke_agent.sh` are not changed.
+    - Sentinel echo is advisory for claude. The decision evidence is envelope `usage` against bytes
+      sent, plus the primitive's `outcome` above the window.
   - Sizes: stepped up to and past the model's documented context window. The test records both
     the envelope (`is_error`, `terminal_reason`, `usage`) and the primitive's result document.
   - *AC:* the measurement record holds at least one size above the context window, with the
@@ -489,7 +595,25 @@ consumption check after each agy call. Three things are still missing:
 5. **S5 — F4 investigation** (REQ-F4-1..3). The measurement is human-run and needs ESC-8. The only
    code output is the `no_gap` regression test.
 
+**[AR-15]** These slices are superseded by ADR-2017 §4:
+- **S0** (only if ARCH-ESC-1 = a): protect `vendor_invoke.sh` and the citation test. Protected.
+- **S1 — F2 probe + launch-site ledger + citation test.** MEDIUM. Not protected. Gated on
+  ESC-2/3.
+- **S2 — F3 receipt nonce in today's code.** HIGH. Not protected. Gated on ESC-4/5 and
+  ARCH-ESC-2.
+- **S3 — F3 × #2014 integration**, carried by whichever lands second. HIGH.
+- **S4a — F4 claude mode.** MEDIUM. Not protected.
+- **S4b — F4 finding + `no_gap` test.** LOW.
+
 ## 6. Escalations for the human (defaults are pm-agent proposals, not rulings)
+
+**[AR-1/AR-13/AR-14] Architect disposition (ADR-2017 §7):**
+- **Resolved by architecture:** ESC-1 → (a) plus the launch-site ledger; ESC-6 → no
+  suppression; ESC-7 → F3 first; ESC-8 → claude mode via `invoke_agent.sh --agent
+  self-reviewer`; ESC-9 → out of scope.
+- **Still need a human:** ESC-2, ESC-3, ESC-4 and ESC-5. The architect concurs with each default.
+- **New architect items:** ARCH-ESC-1 (protect the ceiling definition) and ARCH-ESC-2 (F3
+  enforcement start).
 
 - **ESC-1. How the probe exceeds the production ceiling (REQ-F2-4, VF-1).**
   - *Default:* the probe launches the vendor binaries itself, outside `vendor_invoke`. This is a
@@ -545,6 +669,22 @@ consumption check after each agy call. Three things are still missing:
     differs from the version cited by the latest probe result.
 
 ## 7. Open technical questions for TD (not product questions)
+
+**[AR-1/AR-16/AR-17/AR-3] Architect answers:**
+- **TD-O1** is answered by AR-1 (ADR-2017 AD-1).
+- **TD-O2:** no deny rule (AR-16).
+- **TD-O3** is answered by ADR-2017 AD-2:
+  - sentinels are `PROBE-<k>-<32 hex>`, CSPRNG-generated per run;
+  - filler is seed-deterministic, in ≥ 2 densities.
+- **TD-O4** is partly answered (AR-17):
+  - `validation_logic.fingerprint` (`:361`) is per finding, and `_is_review_dict` tests for key
+    presence, so a top-level `receipt_nonce` does not disturb dedup or the ledger;
+  - the TD verifies only how `loads_strict` handles a duplicate `receipt_nonce` key, which should
+    fail closed.
+- **TD-O5** is answered by AR-3:
+  - `run_second_review.sh` (`hos_install.sh:1858`) and `second_review_logic.py` ship, so F3 ships;
+  - the probe, in `scripts/dev/`, does not ship.
+- **TD-O6** stands as written: the value travels by file.
 
 - **TD-O1:** the mechanism for ESC-1's exemption, and how the "exactly one exempt file" test is
   written alongside ADR-1683's existing invocation checks.
