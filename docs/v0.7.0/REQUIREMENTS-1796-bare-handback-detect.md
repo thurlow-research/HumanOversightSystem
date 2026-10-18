@@ -1,6 +1,6 @@
 # REQUIREMENTS-1796: Detect and report, once, when a human removes `needs-human` from a worker PR and leaves no routing label behind
 
-**Status:** Draft for architect review.
+**Status:** Architect-reviewed, APPROVED WITH CHANGES (`ADR-1796-bare-handback-detect.md`). Amendments AM-1 to AM-8 are applied in place below and tagged `[AM-n]`.
 **Change classification: STRUCTURAL.** It adds new behavior: a deterministic detector, a
 one-time report comment, a new audit event, and a rule that the overseer withholds a label write it
 makes today. The **direction** is already human-ruled. On 2026-10-02 the human chose option (a),
@@ -161,8 +161,12 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
   4. That event's actor is **not** a bot under the VF-5 layered denylist.
   5. No `labeled` event for `needs-ai` or `needs-human`, by any actor, occurs after that
      `unlabeled` event.
-  6. This cycle's `decide_merge_authority()` result is HUMAN_REQUIRED. That is the "outstanding
-     blocking condition".
+  6. ~~This cycle's `decide_merge_authority()` result is HUMAN_REQUIRED.~~ **[AM-1]** The
+     disposition is not a detector clause. `decide_merge_authority()` has no mechanical
+     invocation today (ADR-1796 AF-1), so the overseer passes its disposition and reason as
+     inputs to the `finalize` wrapper. Label suppression applies on `BARE_REMOVAL` for every
+     overseer `needs-human`/`needs-ai` add on a worker PR, whatever the disposition. The REQ-5
+     report requires disposition HUMAN_REQUIRED, which is the "outstanding blocking condition".
 
   A PR that never carried `needs-human` is `NOT_BARE`. A removal by a bot actor is `NOT_BARE`,
   and normal behavior applies.
@@ -170,16 +174,23 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
   *AC:* table-driven unit tests cover each clause flipping the result on its own. They include:
   never labelled; removed by `hos-overseer-hos[bot]`; removed by `github-actions[bot]`; removed by
   a PAT machine user listed in `BOT_ACCOUNTS`; removed by a human and later re-added by a human;
-  removed by a human and then `needs-ai` added by anyone; draft; and decision AUTO_MERGE.
+  removed by a human and then `needs-ai` added by anyone; draft. **[AM-1]** The "decision
+  AUTO_MERGE / non-HUMAN_REQUIRED" cases are `finalize` tests (withhold without a report), not
+  detector tests.
 
 - **REQ-2 (complete evidence, or no determination).** The label history comes from the issue
   events API (`repos/{repo}/issues/{n}/events`), read page by page to the end, with a stated page
-  bound. GitHub returns events oldest first, so only a **complete** read proves which event is
+  bound. **[AM-2]** The bound is a 100-page runaway tripwire (10,000 records) for events and for
+  comments (#1923 guidance: no practical cap). The read is a strict per-page fetch over
+  `github._run_gh`, in which a 404 or `None` is a failure. `github.list_issue_comments` is not used,
+  because it treats a 404 as end-of-list and is unbounded. GitHub returns events oldest first, so only a **complete** read proves which event is
   the most recent. The function returns `UNDETERMINED` when:
   - any events page fails, or returns a non-list;
   - the page bound is reached before a short page (`BOUND-REACHED` is not a determination here,
     unlike the selector);
   - the PR's labels or state cannot be read;
+  - **[AM-2]** the head commit (for its committer date, REQ-7) cannot be read, or the removing
+    event has no actor;
   - the labels and the events disagree. For example, the last `needs-human` event is `labeled`
     but the label is absent, which is eventual-consistency lag.
 
@@ -202,8 +213,12 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
 
 - **REQ-4 (never override the removal, never infer intent).** While a PR is `BARE_REMOVAL`:
   - the overseer does **not** add `needs-human`;
-  - no automated writer adds `needs-ai`. This covers the overseer, `merge_authority.py`'s
-    `labels_to_add`, and `record_pr_bounce()`;
+  - no automated writer adds `needs-ai`. This covers the overseer and `merge_authority.py`'s
+    `labels_to_add`. `labels_to_add` has no code consumer, so it is satisfied by the prose
+    routing. **[AM-3]** Enforcement is one wrapper, `bootstrap/bare_handback.sh finalize`, which
+    replaces the four `overseer.md` label-add sites (`:466`, `:468`, `:469`, `:711`).
+    `record_pr_bounce()` is removed from this list: a DIRTY bounce is the overseer's own merits
+    disposition with its own comment, not an inference of intent (ADR-1796 AF-6, R-3);
   - the verdict review (`pr_review.sh submit-verdict`) and its own dedup run unchanged
     (`overseer.md:434-443`);
   - `decide_merge_authority()` is not changed, and the merge block it returns stands (VF-3). The
@@ -246,13 +261,22 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
 
     It must not offer `/approve`, `/decline` or `/handoff`, which are issue-only (VF-4);
   - a hidden marker of the form
-    `<!-- hos-bare-handback v=1 pr=<n> removed_at=<ISO-8601 of the unlabeled event> -->`. The
-    exact encoding is technical-design's.
+    `<!-- hos-bare-handback v=1 pr=<n> removed_at=<ISO-8601 of the unlabeled event> head=<sha> -->`.
+    `head` is informational and not part of the idempotency key. The exact encoding is
+    technical-design's;
+  - **[AM-4]** as its first line, the canonical `**Decision: HUMAN_REQUIRED**` header, so that the
+    unchanged #1215 precheck treats the report as the overseer's own latest HUMAN_REQUIRED entry and
+    does not re-post the escalation thread on the next cycle (ADR-1796 AF-3).
+
+  **[AM-4] Reason gate.** The reason must match a closed table of `decide_merge_authority()`
+  reason templates, pinned by an AST drift test. An unrecognized reason means no report and no
+  label, and the cause is logged.
 
   **Idempotency.** Before posting, the PR's comments are read through the existing paginated
   path. If a **trusted** marker for the same `removed_at` exists, nothing is posted. A marker is
   trusted only if it is in an unedited comment authored by the overseer App login, using the same
-  rule as REQUIREMENTS-2102 REQ-4. If that comment read fails, nothing is posted this cycle.
+  rule as REQUIREMENTS-2102 REQ-4. **[AM-4]** The overseer login is `BOT_OVERSEER_USERNAME`,
+  and the comment must have `user.type == "Bot"` and `updated_at == created_at`. If that comment read fails, nothing is posted this cycle.
 
   **Re-arming.** A later human removal starts a new episode, with a new `removed_at`, and gets one
   new report.
@@ -269,15 +293,19 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
   writer (`audit_write_event`, `scripts/oversight/lib/audit_log.sh:39-48`) once per report, after
   the post is confirmed. It records the PR, head SHA, `removed_at`, removing actor, the
   `decide_merge_authority()` reason and the comment URL. `UNDETERMINED` writes a
-  `bare-handback-undetermined` event at most once per (PR, head SHA, cause). It must not append an
+  `bare-handback-undetermined` event at most once per (PR, head SHA, cause). **[AM-5]** The
+  deduplication state is `.claudetmp/bare-handback/undetermined-seen.json`, and it also covers the
+  no-report causes `reason-unrecognized`, `comments-failed` and `actor-malformed`. It must not append an
   identical event every cycle, which is the #1215 no-idempotency class. *AC:* tests assert the
   event fields, one event per report, no event on a failed post, and deduplication of the
   undetermined event across two cycles.
 
 - **REQ-7 (episode end).** An episode ends, and normal overseer behavior resumes, on any of these:
   - a `labeled` event for `needs-human` or `needs-ai`, by any actor;
-  - the PR closing or merging;
-  - a new head SHA pushed after the removal (ESC-1, default yes).
+  - the PR closing, merging **[AM-6]** or being converted to draft;
+  - a new head SHA pushed after the removal (ESC-1, default yes). **[AM-6]** "After" means the
+    head commit's committer date is later than `removed_at`. This is the `head_committed_at`
+    the #1215 precheck already uses.
 
   *AC:* one test per end condition. Each shows `NOT_BARE` and resumed default label behavior
   where applicable.
@@ -335,12 +363,17 @@ AI, and I forgot the label". The ruling is to **report the state once and guess 
 ## 5. Suggested slices
 
 - **S1. Detector, report renderer and tests** (REQ-1 to REQ-3, REQ-5 rendering and marker logic,
-  REQ-10). This is not protected if it is placed under `scripts/automation/lib/`.
+  REQ-10). This is not protected if it is placed under `scripts/automation/lib/`. **[AM-7]** It is
+  L1 `scripts/automation/lib/bare_handback.py` + L2 `scripts/automation/bare_handback_cli.py` +
+  `github.add_issue_labels`, inert, with no caller.
 - **S2. Overseer wiring** (REQ-4 to REQ-7 and REQ-9 in `.claude/agents/overseer.md`, plus the
   prompt-contract tests and the REQ-8 routing test). This is a protected surface and is
-  human-gated.
+  human-gated. **[AM-7]** It also adds the protected L3 `bootstrap/bare_handback.sh`.
 
 ## 6. Escalations for the human (defaults are pm-agent proposals, not rulings)
+
+**[AM-8]** The architect concurs with all three defaults (ADR-1796 §7), and they are adopted. No
+residual human ESC remains. The human may overturn any of them at the S2 CODEOWNER review.
 
 - **ESC-1. Does a new head SHA end the episode (REQ-7)?**
   - **(A)** Yes. A new head is new evidence, the overseer re-reviews it, and if it is still
