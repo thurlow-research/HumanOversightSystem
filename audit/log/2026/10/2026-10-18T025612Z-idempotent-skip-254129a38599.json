@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"f9095125f2942bbf7c65ef6168bf9eea3f1ddd75","pr":2109,"prior_event":"pr-review","prior_review_id":5561151689,"reason":"1215 precheck: PROPOSE_ONLY verdict posted on this head at 02:42Z; no new commits, comments, reviews or threads since"}
