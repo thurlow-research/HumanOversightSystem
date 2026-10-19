@@ -232,6 +232,14 @@ file** (`~/.hos/<repo-id>/ACTIVE`) and the **halt file** (`hos-halt`). If either
 check fails — or at any heartbeat (≤15m) — the agent self-terminates. Removing
 or disabling the halt file is outside the overseer's authority.
 
+The overseer's validator-artifact check (`overseer.md` §3b) runs only when the PR's
+step is configured in `contract/step-manifest.yaml`, that is, when
+`merge_authority_cli register` reports `gate_evaluable: true`. In a repo with no
+manifest on either the PR head or the default branch (the HOS source repo itself),
+the check is recorded as NOT EVALUABLE, never as a pass. If a manifest is present
+but the step does not resolve, the PR goes to `HUMAN_REQUIRED` and is never
+auto-merged. Any error while deciding which case applies fails closed (#1652).
+
 Handoff between the layers and the human runs entirely through the
 `needs-human` ⇄ `needs-ai` label protocol (see [Human handoff
 protocol](#human-handoff-protocol--needs-human--needs-ai)): the worker labels
