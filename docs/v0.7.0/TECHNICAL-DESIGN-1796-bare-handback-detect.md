@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #1796 slice S1: bare `needs-human` removal detector (L1 `bare_handback.py` + L2 `bare_handback_cli.py`)
 
-**Status:** DRAFT, round 1. Waiting on architect review. Do not hand this to `coder` until the architect approves it (technical-design CORE).
+**Status:** ARCHITECT APPROVED WITH CHANGES (round 1, 2026-10-19). Required changes RC-1 to RC-6 are applied in place and tagged `[RC-n]`. The OQ rulings are in §13, and the review is in §14. S1 may go to `coder`. ESC-1 (from OQ-1) does not block S1. It must be answered before the S2 PR merges.
 **Change class:** **additive.** S1 adds two new, inert modules with no caller, one new `github.py` helper, and one backward-compatible keyword on an existing helper. Nothing that runs today changes behaviour until S2 wires `finalize` into `overseer.md`.
 **Date:** 2026-10-19
 **Author:** technical-design (autonomous worker cycle; no human present)
@@ -190,7 +190,8 @@ The returned `Classification` has `head_sha = pr.head_sha`, and every removal fi
 3a. **Shape check** (TD refinement of step 3; it is part of REQ-2's "no determination from unusable evidence").
    - Any item that is not a dict → `UNDETERMINED (events-malformed)`.
    - A **relevant** event is a dict whose `event` is `"labeled"` or `"unlabeled"` and whose `label.name`, casefolded, is in `ROUTING_LABELS`. Every relevant event must have an `int` `id` and a `created_at` matching `TS_RE`. If any does not → `UNDETERMINED (events-malformed)`.
-   - Irrelevant dict events are ignored, whatever their fields.
+   - **[RC-1]** A dict whose `event` is `"labeled"` or `"unlabeled"` but whose `label` is not a dict, or whose `label.name` is not a non-empty `str` → `UNDETERMINED (events-malformed)`. Such an event may be a `needs-human` event that cannot be seen. Ignoring it as "irrelevant" could hide the true last event, and that fails open.
+   - Irrelevant dict events are ignored, whatever their fields. An event is irrelevant when its `event` is not `"labeled"`/`"unlabeled"`, or when it is one of those and its well-formed `label.name` is not a routing label.
 
    Sort the relevant events ascending by `(created_at, id)`. `TS_RE` is fixed-width UTC, so lexical order equals time order. The classifier never trusts page order (AD-2).
 
@@ -306,9 +307,11 @@ Scan `comments` in the order given and return the first comment `c` that satisfi
 2. `str(c.user.login).casefold() == overseer_login.casefold()`;
 3. `c.user.type == "Bot"` (exact);
 4. `c.created_at` and `c.updated_at` are both `str` and are equal;
-5. some line `L` of `str(c.body)`, from `splitlines()` with no other stripping, satisfies `MARKER_RE.fullmatch(L)`, with `int(m["pr"]) == pr_number` and `m["removed_at"] == removed_at`.
+5. some line `L` of `str(c.body)`, from **`str(c.body).split("\n")`** with no other stripping, satisfies `MARKER_RE.fullmatch(L)`, with `int(m["pr"]) == pr_number` and `m["removed_at"] == removed_at`.
 
 `head` is ignored (informational, AM-4). Return `None` if no comment qualifies.
+
+**[RC-2]** Lines are split on `"\n"` only, never with `splitlines()`. That is exact parity with `escalate_to_human.sh:227` (jq `split("\n")`). `splitlines()` also breaks on `\r`, `\x0b`, `\x0c`, `\x1c`-`\x1e`, `\x85`, U+2028 and U+2029. That would make the "whole line" test looser than the rule it claims to copy: `"x\r<!-- hos-bare-handback … -->"` would count as a whole-line marker. The §5.5 C7 confirm uses the same split. T-REP adds `inline-after-cr` to `test_marker_untrusted`.
 
 ### 3.10 Strict fetch (I/O; AD-6)
 
@@ -388,13 +391,17 @@ bare_handback_cli.py finalize --pr <N> --app <worker|overseer|human> --label <ne
 - `--app` accepts all three roles on both subcommands, so that the refusal on `finalize` (exit 3) is distinguishable from a usage error (exit 2).
 - No other flags exist: no `--force`, no `--head-sha`, no `--dry-run`, no `--repo-root`.
 
-**`--reason-file` contract** (checked before any network call; a violation is exit 2):
-- the file exists and is readable;
-- it decodes as UTF-8 (strict);
-- it is at most 1000 bytes;
-- after removing **one** optional trailing `"\n"`, it contains no `"\n"` or `"\r"` and is non-empty.
+**`--reason-file` contract** (checked before any network call; a violation is exit 2). **[RC-3]** The contract depends on `--disposition`:
+- **`HUMAN_REQUIRED`:**
+  - the file exists and is readable;
+  - it decodes as UTF-8 (strict);
+  - it is at most 1000 bytes;
+  - after removing **one** optional trailing `"\n"`, it contains no `"\n"` or `"\r"` and is non-empty.
 
-The resulting string is `reason`. It is passed through unmodified, with no `.strip()`.
+  The resulting string is `reason`. It is passed through unmodified, with no `.strip()`. Every HUMAN_REQUIRED `reason=` in `decide_merge_authority` is a single line by construction (§3.6), so a violation means the overseer misused the wrapper. Exit 2 is the loud, correct outcome.
+- **`PROPOSE_ONLY` and `MERGE_FAILED`:** the file must exist and be a regular file. Its **content is not read, not validated, not stored and not logged**, and `reason` is `None`. These reasons are free text by construction. `Server-side gate not detected ({gate.reason})` embeds `Protection API read failed: {exc}` (`merge_authority.py:252`), and a merge-failure line embeds `gh` error text. Either can be multi-line or longer than 1000 bytes. No code path in S1 uses a non-HUMAN_REQUIRED reason, because §5.5 C1 exits before `match_reason`. Validating it would turn a routine `NOT_BARE` label add into an exit-2 halt over a field that nothing reads.
+
+Why: under the single contract in the round-1 draft, a PROPOSE_ONLY PR whose gate-read exception text contained a newline could never be labelled `needs-ai`. That is a regression against today on the `NOT_BARE` path, which REQ-4 says must be unchanged. Tests: `test_reason_file_contract_exit2[...]` runs with `--disposition HUMAN_REQUIRED`. New `test_reason_file_free_text_ignored_for_non_human_required[propose_only-multiline, merge_failed-5000-bytes, non-utf8]` asserts that a `NOT_BARE` PR gets the label, exit 0, and that the content does not appear in stdout, stderr or any event. New `test_reason_file_missing_exit2_any_disposition`.
 
 ### 5.3 Preamble order (both subcommands; the first failure wins)
 
@@ -442,7 +449,7 @@ This is today's behaviour, now with verification (AD-3).
 4. If `find_trusted_marker(comments.items, pr_number=n, removed_at=c.removed_at, overseer_login=config.overseer_handle)` returns a comment, then `report: "already"`, `comment_url` set to that comment's `html_url`, exit 0. No event.
 5. `body = render_report(n, c, reason, row)`.
 6. **Post.** `github.post_comment(o, r, n, body, verify=True, retries=0)`. A `GitHubError`, or a response with no `int` `id`, → exit 1, `report: "none"`, no event.
-7. **Confirm** (AD-4 ordering step 2). `rc = read_comment(o, r, id)`. If `rc is None`, or `rc.user.login` (casefolded) is not `config.overseer_handle` (casefolded), or no line of `rc.body` equals `marker_line(n, c.removed_at, c.head_sha)` → exit 1, `report: "none"`, `comment_url` set from the POST response, no event.
+7. **Confirm** (AD-4 ordering step 2). `rc = read_comment(o, r, id)`. If `rc is None`, or `rc.user.login` (casefolded) is not `config.overseer_handle` (casefolded), or no line of `str(rc.body).split("\n")` [RC-2] equals `marker_line(n, c.removed_at, c.head_sha)` → exit 1, `report: "none"`, `comment_url` set from the POST response, no event.
 8. **Audit.** Write `bare-handback-reported` (§7.1). Failure → exit 1, `report: "posted"`. The next cycle reports `already` and the event is a known gap (AD-4).
 9. `report: "posted"`, exit 0.
 
@@ -522,7 +529,7 @@ L2 writes the exact `summary` string to **stderr** and also includes it in the r
 3. Write the `bare-handback-undetermined` event (§7.2). Failure → exit 1. The state is not updated.
 4. **Prune, then add the key.** Prune rules (OQ-7):
    - (a) drop every key for this `pr` whose `head_sha` differs from the current one, when the current one is non-null;
-   - (b) if the PR snapshot exists and `state != "open"`, drop every key for this `pr`;
+   - (b) if the PR snapshot exists and `state != "open"`, drop every key for this `pr`. **[RC-6]** Through `finalize` this rule is unreachable: a closed PR is `NOT_BARE (out-of-population)` at §3.4a step 1 and never reaches `record_undetermined`. Keep it as a defensive rule. The docstring must say it is unreachable through `finalize` today, and `test_state_prune_rules` must exercise it by calling `record_undetermined`'s prune helper directly, not through `main`. Do not add a PR read to make it reachable. In practice the only bound on stale keys is the 1000-key cap in (c);
    - (c) if more than 1000 keys remain, drop the oldest by `first_seen` until 1000 remain.
 5. **Write atomically.** Write the JSON to a temp file in the same directory (`tempfile.NamedTemporaryFile(dir=..., delete=False)`), `flush` and `os.fsync`, then `os.replace` onto the target. Failure → exit 1, with `undetermined_event: "written"` (the event exists). The next cycle may repeat the event once per key, which the ADR accepts ("a lost or corrupt file causes at most one repeat event per key").
 
@@ -625,7 +632,8 @@ Overseer cycles are serialized by the cron lock, so a single writer is assumed. 
 | `test_episode_end_relabel` / `_closed` / `_merged` / `_draft` / `_new_head` | each → `NOT_BARE` with its cause | REQ-7 |
 | `test_rearm_second_removal_new_removed_at` | removed → re-added → removed again gives `BARE_REMOVAL` with the second `removed_at` | REQ-5 re-arming |
 | `test_performed_via_app_recorded_not_bot` | a human actor with non-null `performed_via_github_app` gives `BARE_REMOVAL` and `via_app` set | REQ-1, OQ-6 |
-| `test_classify_is_pure` | with `github._run_gh`, `time.monotonic`, `datetime` and `os.environ` access monkeypatched to raise, `classify` still returns | REQ-3 |
+| `test_classify_is_pure` | **[RC-4]** With `github._run_gh`, `bare_handback.time.time` and `bare_handback.time.monotonic` patched to raise, the module-level name `bare_handback.datetime` replaced by a `datetime` subclass whose `now`/`utcnow`/`today` raise (so `fromisoformat` still works; step 8 needs it), and `os.environ` replaced by a mapping that raises on access, `classify` still returns. Do not patch `datetime` wholesale. `classify` legitimately calls `fromisoformat`, and the C type's attributes cannot be monkeypatched. The test must still pass if `bare_handback` is reloaded. | REQ-3 |
+| `test_events_malformed_label_on_label_event[labeled-no-label, unlabeled-label-not-dict, unlabeled-empty-name]` | **[RC-1]** `events-malformed`. A `review_requested` event with no `label` is still ignored. | REQ-2 |
 | `test_population_settles_without_events` | `classify_population` returns non-None for labelled, closed, draft and foreign-author PRs | REQ-2 |
 
 ### 10.2 `test_bare_handback_fetch.py`
@@ -655,7 +663,7 @@ Overseer cycles are serialized by the cron lock, so a single writer is assumed. 
 | `test_last_line_is_marker_and_roundtrips` | `MARKER_RE.fullmatch(last_line)`; the groups equal the inputs | REQ-5 |
 | `test_render_preconditions_raise` | each §3.8 precondition violated alone raises `ValueError` | REQ-5 |
 | `test_trusted_marker_found` | an overseer, `type` Bot, unedited comment with a matching line is returned | REQ-5 |
-| `test_marker_untrusted[wrong-author,human-type,edited,other-pr,other-removed_at,inline-not-whole-line,author-case-variant-accepted]` | ignored in each case, except the case variant, which is accepted | REQ-5 |
+| `test_marker_untrusted[wrong-author,human-type,edited,other-pr,other-removed_at,inline-not-whole-line,inline-after-cr,author-case-variant-accepted]` ([RC-2]) | ignored in each case, except the case variant, which is accepted | REQ-5 |
 | `test_marker_head_differs_still_trusted` | `head` is not part of the key | REQ-5 AM-4 |
 | `test_reason_table_drift_every_reason_has_one_row` | **AST drift test** (below) | REQ-5 AM-4 |
 | `test_reason_table_no_dead_rows` | every row matches at least one rendered sample | AM-4 |
@@ -756,7 +764,7 @@ Overseer cycles are serialized by the cron lock, so a single writer is assumed. 
 ## 12. Startup-gap check and affected sign-offs
 
 - **Should this have been settled in the initial technical design?** No. This is the first technical design for #1796, and the ADR records "startup gap: no" (ADR §6).
-- **Affected sign-offs:** none. No code exists against any prior #1796 contract. The `github.post_comment` keyword (§4.2) is additive with an unchanged default, so the sign-offs on existing callers (`merge_authority.record_pr_bounce`, `pr_review_cli`) stand. A test pins the default.
+- **Affected sign-offs:** none. No code exists against any prior #1796 contract. The `github.post_comment` keyword (§4.2) is additive with an unchanged default, so the sign-offs on existing callers stand. A test pins the default. **[RC-5]** The existing callers are `merge_authority.route_embargo` (`merge_authority.py:816`) and `merge_authority.record_pr_bounce` (`:1292`). `pr_review_cli` does not call `post_comment`, and the round-1 draft named it in error. Neither caller passes `retries`, so both keep `retries=3`.
 
 ---
 
@@ -776,6 +784,23 @@ Overseer cycles are serialized by the cron lock, so a single writer is assumed. 
 - **OQ-7 (architect).** AD-6 says to prune "to keys whose PR is still open". Taken literally, that needs a PR read per stored key. The TD uses read-free rules instead (§6 (a), (b), (c)). The worst case is a stale key for a PR that closed without another `finalize` run, bounded by the 1000-key cap.
 - **ESC: none.** Each point above is a technical call inside the 2026-10-02 ruling. OQ-1 becomes an ESC only if the architect and `pm-agent` judge option (a) to be outside that ruling.
 
+### 13.1 Architect rulings (2026-10-19, binding on S1)
+
+- **OQ-1 → ESC-1 for the human. S1 default: (c). S1 is not blocked.**
+  - **The premise is verified.** At `bin/hos-cron:1222`, `needs-ai` routes to `needs-fix` only when `needs-human` is absent. `overseer.md:468` (5) re-adds `needs-human` every cycle on any HUMAN_REQUIRED PR, and nothing exempts a PR that carries a human-applied `needs-ai`. The advertised handback therefore survives only if a worker cycle runs before the next overseer cycle.
+  - **This defect predates #1796 and is wider than it.** The documented resume signal (remove `needs-human`, add `needs-ai`; `docs/OVERSIGHT-RUNBOOK.md` "Intervening" #1) is undone the same way on *every* still-HUMAN_REQUIRED worker PR today, bare or not. REQUIREMENTS-1796 VF-4 states that the code honours this action. That is only partly true.
+  - **Why this is not mine to settle alone.** (a) changes `NOT_BARE` behaviour, which REQ-4 pins as "unchanged". It also changes what users see on PRs that were never in a bare episode, so it is a requirements change with a product consequence (CORE product-boundary checkpoint) and is outside the 2026-10-02 ruling, which covers bare removals only. (b) removes an action that REQ-5 lists by name. (c) keeps REQ-5 as written, but the report then advertises an action that the overseer can silently undo. All three options amend or knowingly accept a gap in a pm-verified requirement, so the choice goes to the human. The S2 CODEOWNER review is the natural point to answer it.
+  - **S1 builds (c).** The template stays as §3.8 specifies. Changing to (b) later means deleting one template line and one test assertion. Changing to (a) means adding one `finalize` branch. Neither choice changes the S1 contracts (enum, record, marker), so building S1 now orphans no work.
+  - **Lag sub-case.** A `labeled needs-ai` event that is present while the label list does not yet show it gives `NOT_BARE (relabelled)`, as ADR AD-2 step 7 says. I accept this, because it matches today's behaviour. It belongs to the same class as ESC-1 and is resolved by whichever ESC-1 answer the human picks.
+- **OQ-2 → APPROVED.** `post_comment` gains a keyword-only `retries: int = 3`, applied to the POST only, and `bare_handback_cli` passes `retries=0`. This is within AD-4's intent: REQ-5's "exactly one" cannot hold if the transport retries an ambiguous non-idempotent POST. The `submit_pull_review` MUST_FIX D precedent (`github.py:486-498`) is the right model. I verified at `github.py:38-156` that `_run_gh` retries the "no status, rc≠0" connection-reset case. Two notes for the coder:
+  - `post_comment(verify=True)` raises `GitHubError` when its *read-back* fails, and by then the comment has landed. §5.5 C6 maps that to exit 1, `report: none`, no event. That is correct: the next cycle's trusted-marker read finds the comment and reports `already`. `comment_url` is unavailable on that path, so record it as `null`.
+  - The new keyword is a signature change to a shared helper. Pin the default with `test_post_comment_default_retries_unchanged`, as the TD already does.
+- **OQ-3 → APPROVED.** stdout carries exactly one JSON record. The human line goes to stderr and into the record's `summary` field. In S2 the overseer echoes `summary`. This satisfies both AD-3 sentences without a second stdout line that would break machine parsing.
+- **OQ-4 → APPROVED: `requested-reviewer-761` stays `other`.** AD-4's category rule is grounded in our code (`decide_merge_authority` or `overseer.md` step 6), not in GitHub platform behaviour. Omitting the approve line is the safe direction, because the report never advertises an action the code does not back. **Residual R-7 (for the S2 TD):** step 6 (1) `request-reviewer` makes the overseer itself create the review request, so on later cycles `decide_merge_authority` can return the `requested-reviewer-761` reason, which comes earlier in its order, instead of the underlying protected-surface or #757 reason. On such PRs the report quotes the review-request reason and leaves out the approve line, even though an approval is exactly what would unblock the PR. The S2 TD must state this in the overseer prose. It must not "fix" it by reordering the matrix, which REQ-4 does not allow.
+- **OQ-5 → APPROVED: `FETCH_WALL_CLOCK_BUDGET_SECONDS = 180` per `fetch_all`, as a module constant and not a flag.** Without a wall-clock bound, a 100-page tripwire is not a time bound. Failing to `events-failed`/`comments-failed` is the REQ-2 direction. The budget is soft: a `Retry-After` sleep inside `_run_gh` can push one page past it. The worst case for one `finalize` (PR + events + commit + comments + post + confirm) is on the order of 10 to 15 minutes. That is acceptable only because it requires pathological GitHub behaviour, and the per-cycle backstop is `HOS_CRON_MAX_SECONDS` (#1146). `reliability-reviewer` must confirm this arithmetic against the configured cycle cap.
+- **OQ-6 → APPROVED.** `performed_via_github_app` is recorded in `via_app` and does not enter the bot test. Our own Apps act as `*[bot]` actors with `type: "Bot"`, so `is_bot_reviewer` classifies them by identity without the field. A human acting through a third-party app is still a human act, and treating it as a bot removal would re-apply over it, which REQ-4 forbids. The live probe (file 10) must record how the field appears for (i) the web UI, (ii) `gh` with a personal token and (iii) an App installation token. If (iii) ever shows a *human* `actor` with an App in `performed_via_github_app` for one of **our** Apps, stop and escalate. Do not adjust the classifier inside S1.
+- **OQ-7 → APPROVED: read-free pruning with rules (a) and (c), and (b) as a defensive rule ([RC-6]).** AD-6's "prune to keys whose PR is still open" is hereby refined: no PR read is spent on pruning. A stale key costs a few bytes and can at worst suppress one repeat event for a PR that is no longer evaluated. It can never change a label or a report decision, because the store gates only the event (§6, last paragraph).
+
 ---
 
 ## Escalation flag (CORE self-flag)
@@ -790,3 +815,64 @@ Change classification: additive.
 - No human gate applies to S1: the surface is unprotected and the slice is inert. The architect review of this TD is the next gate.
 - OQ-1 must be resolved before the S2 PR (CODEOWNER-gated) merges. It decides whether the report's "apply `needs-ai`" action can be silently undone by the overseer's next cycle.
 - REQ-2, REQ-4 and REQ-5 are not waivable, and nothing here relaxes them.
+
+---
+
+## 14. Architect review (round 1, 2026-10-19)
+
+**Verdict: APPROVED WITH CHANGES.** RC-1 to RC-6 are applied in place. With them, the design is sound for S1, and it may go to `coder`. Round count: 1 of 5. No loop state is carried forward.
+
+### 14.1 Claims verified against the tree (`76b367795`)
+
+- **`github._run_gh` (`github.py:38-156`).**
+  - A 404 returns `None` (`:136-137`), and so does an empty body (`:148-149`).
+  - 403 and 429 retry, then raise `RateLimitError`, a subclass of `GitHubError` (`:23`).
+  - A "no status, rc≠0" result is retried, which is the connection-reset-after-send case. That is why OQ-2 is required, not cosmetic.
+  - Per-attempt timeout 30 s, with 4 attempts and backoff 1+2+4. The TD's ~127 s per page is correct, excluding `Retry-After`.
+  - `json.loads("[]")` gives a list, so the full-page-then-empty-page COMPLETE case holds.
+- **`list_issue_comments` (`:215-238`)** breaks on a falsy batch and has no bound. The rejection (AF-4) stands.
+- **`post_comment` (`:418-461`)** has no `retries` parameter today. Its read-back raises after the POST has landed. Both behaviours are handled (§13.1 OQ-2).
+- **`get_commit` (`:405-415`)** returns the raw commit, and `commit.committer.date` is the right field.
+- **`merge_authority.decide_merge_authority` (`:498-743`).** Every `reason=` cited in §3.6 is at the stated line. Each pattern matches its source literal, including the implicit string concatenation at `:576-579`, `:590-593`, `:608-611` and `:726-729`, which `ast` folds into one `JoinedStr`. The `FormattedValue` set is exactly `label_str`, `human_reviewer`, `oversight_verdict`, `risk_tier.name`, `overseer_ceiling.name`, `pr_author` and `gate.reason`, which matches the `SAMPLES` keys. `RiskTier` names are SAFE, LOW, MEDIUM, HIGH and CRITICAL (`:293-298`), which matches `TIER`.
+- **Category assignments.** Each one meets the AD-4 rule.
+  - `security-relevant` (`:657-673`), `protected-surface` (`:679-695`) and `universal-approval-757` (`:713-731`) consult `_find_human_approval`.
+  - `prior-decision-761` (`:573`) consults it as well. It is unwired (#1839), so it is unreachable today, but the category is correct.
+  - `tier-ceiling-critical` is backed by `overseer.md:467` (3), "merge immediately" on a CODEOWNER approval. Note that the CRITICAL path applies no label today (ADR AD-5), so this row is reachable through `finalize` only if S2 routes the CRITICAL path through it. That is the S2 TD's call.
+  - Every other row does not consult reviews.
+- **Trusted-marker rule** (`escalate_to_human.sh:21-25,223-227`): case-insensitive login, `type == "Bot"`, `updated_at == created_at`, whole line via `split("\n")`. The TD matched this except for the line split, which RC-2 fixes.
+- **`is_bot_reviewer` (`require_human_approval.py:140-159`)** and **`load_bot_accounts` (`requester_trust.py:301-322`)** behave as the TD uses them. The baseline is unioned with the environment. L2 uses `load_bot_accounts`, not `merge_config`'s `bot_accounts`, which is strictly stricter and therefore correct.
+- **`merge_config`** imports `merge_authority.RiskTier`. That import is L2-only, so T-CLI-IMPORTS (L1 only) is unaffected, and AD-1 constrains only L1. Correct.
+- **`audit_log.write_event` (`audit_log.py:126-157`)** takes its filename timestamp from `event["timestamp"]`. The §7 events supply it, so the shard path comes from the L2 clock exactly once. Correct.
+
+### 14.2 Required changes (applied)
+
+| RC | Where | Failure mode in the round-1 draft | Change |
+|---|---|---|---|
+| RC-1 | §3.4b step 3a; §10.1 | A `labeled`/`unlabeled` event with a missing or malformed `label` was "irrelevant" and silently skipped. If it was the true last `needs-human` event, the classifier would answer from incomplete evidence. That fails open and violates REQ-2. | Such an event → `events-malformed`. New test. |
+| RC-2 | §3.9 cond. 5; §5.5 C7 | `splitlines()` splits on `\r` and other separators that jq's `split("\n")` does not, so the "same rule" claim was false and the whole-line test was looser. | `split("\n")`. New untrusted case `inline-after-cr`. |
+| RC-3 | §5.2 | The single-line, ≤1000-byte reason contract applied to every disposition. PROPOSE_ONLY and MERGE_FAILED reasons embed exception and `gh` text (`merge_authority.py:252,710`), so a multi-line reason would exit 2 and block a `NOT_BARE` label that is applied today. That is a REQ-4 "NOT_BARE unchanged" regression. | The contract is enforced for HUMAN_REQUIRED only. For other dispositions the file must exist, and its content is never read. New tests. |
+| RC-4 | §10.1 `test_classify_is_pure` | "`datetime` access monkeypatched to raise" would break `fromisoformat`, which step 8 requires. The test as written was either unimplementable or vacuous. | Patch only the clock entry points through a module-level subclass. |
+| RC-5 | §12 | The affected-sign-off list named `pr_review_cli` as a `post_comment` caller, which it is not, and left out `route_embargo` (`merge_authority.py:816`). | Citation corrected. The conclusion (sign-offs stand) is unchanged. |
+| RC-6 | §6 rule (b) | The prune rule is unreachable through `finalize` (a closed PR is `out-of-population`), so the test as written would pass vacuously. | Kept as a defensive rule. Documented, and tested directly. |
+
+### 14.3 What is right, and what could still go wrong
+
+- **The purity boundary and the single `_run_gh` seam (§2)** are right. Every fail-closed claim becomes testable with one fake. *Risk:* a coder writes `from scripts.automation.lib.github import _run_gh`, which bypasses the patch so tests hit the network or pass vacuously. T-CLI-IMPORTS should also assert that no `from … github import _run_gh` appears in L1 or L2. The coder should add that assertion; it is a one-line extension of an existing test, not a design change.
+- **The label-write site (§2 rule 4, T-CLI-LABELPLAN)** is right. It is the mechanical half of REQ-4. *Risk:* none in S1. R-1, the prose routing, is S2's.
+- **The `(created_at, id)` sort and `TS_RE` lexical ordering** are right for GitHub's fixed-width `Z` timestamps. *Risk:* GitHub changes the timestamp format. `TS_RE` then rejects every relevant event, and the result is `events-malformed`, which fails closed. That is the correct direction.
+- **Strict `>` at step 8** is right. A same-second commit does not end the episode, so the failure direction is to keep withholding, which is safe (R-2).
+- **The reason table** is right, and the AST drift test is the correct guard. *Risk:* `test_reason_table_drift` passes, but someone edits a literal so that it still matches a *different* row. That is caught by "exactly one row" plus `test_reason_row_decision_matches_source`.
+- **Report rendering.** The precondition `match_reason(reason) is row` is an identity check. It works only because `REASON_TABLE` rows are module singletons. The coder must not rebuild rows per call.
+
+### 14.4 Escalations for the human
+
+- **ESC-1 (from OQ-1). Should the report keep advertising "apply `needs-ai`", given that the next overseer cycle can silently undo it?** S1 is not blocked by this. Answer it before or at the S2 CODEOWNER review.
+  - **(a)** `finalize` also withholds `needs-human` when `needs-ai` is present and its latest `labeled` event is by a non-bot actor. This fixes the general resume-signal race (bare or not). It changes `NOT_BARE` behaviour (REQ-4 amendment) and is user-visible.
+  - **(b)** Drop the `needs-ai` line from the report. The report is then honest, but the human loses the one-click handback it advertises (REQ-5 amendment).
+  - **(c)** Keep REQ-5 as written. The race stays as it is today, and the report advertises an action that holds only if a worker cycle runs before the overseer's next one.
+  - **Architect recommendation:** (c) for #1796, plus a separate requirements issue (via `pm-agent`) for the general defect "overseer re-adds `needs-human` over a human-applied `needs-ai`", with (a) as its likely design. The defect predates this issue and is wider than it, so fixing it inside #1796 would widen a human-ruled, purely additive change. S1 builds (c) either way, and switching later is a one-branch or one-line change.
+
+### 14.5 Startup-gap and affected sign-offs
+
+- **Startup gap: no.** These rulings refine the ADR's own open items (AD-4 categories, AD-6 pruning) or correct the TD. No prior decision is superseded.
+- **Affected sign-offs: none.** No code exists against this TD. The ADR-1796 approval stands. The AD-6 pruning wording is refined by the OQ-7 ruling, not reversed.
