@@ -88,6 +88,7 @@ workflow's own header comment).
 | Check | Status | Workflow | Reason |
 |---|---|---|---|
 | `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s required contexts (the script's core three plus the HOS-only `scripts/framework/hos_required_contexts.txt`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
+| `scripts/framework/check_agents_static.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-agents-static`) | Deterministic, repo-scoped, no network, stdlib-only; zero findings on a clean HEAD export 2026-10-19. Runs on every PR with no paths filter because it cross-references file paths repo-wide (a script rename can break an agent-file reference). Not promoted to required — same human-ruling requirement as the shellcheck row (#1606). |
 
 ## Subscription-CLI-dependent — local-only by design (D5), not attempted in CI
 
