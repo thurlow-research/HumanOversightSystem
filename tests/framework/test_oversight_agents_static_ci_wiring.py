@@ -27,9 +27,7 @@ def test_job_runs_check_agents_static_unconditionally():
     matching = [
         s
         for s in job["steps"]
-        if s.get("run", "").strip().startswith(
-            "bash scripts/framework/check_agents_static.sh"
-        )
+        if s.get("run", "").strip().startswith("bash scripts/framework/check_agents_static.sh")
     ]
     assert matching
     for step in matching:
