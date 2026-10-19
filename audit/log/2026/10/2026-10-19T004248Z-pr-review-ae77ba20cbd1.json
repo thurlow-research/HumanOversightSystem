@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","composite":0.0112,"decision":"PROPOSE_ONLY","event":"pr-review","head_sha":"aaa476428a4efc8b29a8162f3e3af1c275608015","pr":2112,"reason":"Server-side gate not detected (DEP[#152-followup]); all other gates clear; needs-ai withheld per #1557","review_id":5565887374,"tier":"HIGH","verdict_event":"comment"}
