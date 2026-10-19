@@ -21,10 +21,20 @@ def test_job_exists():
     assert _JOB in _load()["jobs"]
 
 
-def test_job_runs_check_agents_static():
-    steps = _load()["jobs"][_JOB]["steps"]
-    runs = [s.get("run", "") for s in steps]
-    assert any("scripts/framework/check_agents_static.sh" in r for r in runs)
+def test_job_runs_check_agents_static_unconditionally():
+    job = _load()["jobs"][_JOB]
+    assert "if" not in job
+    matching = [
+        s
+        for s in job["steps"]
+        if s.get("run", "").strip().startswith(
+            "bash scripts/framework/check_agents_static.sh"
+        )
+    ]
+    assert matching
+    for step in matching:
+        assert "if" not in step
+        assert "continue-on-error" not in step
 
 
 def test_pull_request_trigger_has_no_paths_filter():

@@ -40,6 +40,14 @@ name: Oversight gates
 #                                  touched, rather than waiting for #1642 to
 #                                  land first and risking fresh debt
 #                                  accruing again in the gap.
+#   oversight-gate-lint          — re-verified 2026-09-14 against a fresh
+#                                  origin/main worktree: 3 findings in 2 files
+#                                  (codeowners.py, pr_readiness.py) — far
+#                                  smaller than #1571's original "nearly every
+#                                  .py file" baseline note, improved since
+#                                  without that note being updated. Same
+#                                  PROMOTED / ratchet-override rationale and
+#                                  date as oversight-gate-type-check above.
 #   oversight-agents-static      — zero debt (verified 2026-10-19 on a clean
 #                                  `git archive HEAD` export, #1606). Advisory:
 #                                  NOT promoted to a required status check.
@@ -49,14 +57,6 @@ name: Oversight gates
 #                                  one real run (the #737 failure mode: a
 #                                  required context with no producing job
 #                                  blocks every merge).
-#   oversight-gate-lint         — re-verified 2026-09-14 against a fresh
-#                                  origin/main worktree: 3 findings in 2 files
-#                                  (codeowners.py, pr_readiness.py) — far
-#                                  smaller than #1571's original "nearly every
-#                                  .py file" baseline note, improved since
-#                                  without that note being updated. Same
-#                                  PROMOTED / ratchet-override rationale and
-#                                  date as oversight-gate-type-check above.
 #
 # Two gate groups, run differently (unchanged from before the split):
 #
