@@ -98,3 +98,9 @@ This connects the finding to `reviewer-agents-file-confident-non-reproducing-rep
 - `cross-vendor-review-finds-real-bugs.md` — tooling reliability is a prerequisite for the findings in that document
 - `unenforceable-rules-need-verification-mechanisms.md` — the "always diagnose" rule is itself an example of a governance rule requiring an enforcement mechanism
 - `reviewer-agents-file-confident-non-reproducing-reports.md` and `orchestrator-absorbs-roles-pipeline-bypassed-by-default.md` — the other two "looks reviewed, wasn't" failure modes (reviewer wrong / pipeline unused); this is the third (reviewer never invoked)
+
+## Further evidence (2026-10-20): an auto-update removed a flag and took down the human's channel
+
+The human-proxy session runs as a systemd user service that starts `claude remote-control` with a fixed set of flags. On 2026-10-20 the Claude Code CLI auto-updated (2.1.295 → 2.1.304). The new version rejects the `--sandbox` flag on `remote-control` (the flag "had no effect and was removed"). After the next reboot the service crash-looped. The errors went to a service log the operator rarely reads, not to the journal. **From inside the session nothing indicated the service was dead**; the human found it only because the session did not come back. Sandboxing was unaffected, since it is configured in settings and not by that flag.
+
+This is the same drift as the 2026-06 case (a CLI changed its flag surface under a pinned invocation), and the scope is wider: an unattended auto-update reaches the human's own oversight channel and the cron roles, not only a reviewer. The follow-ups are #2136 (log the CLI version per cycle, smoke-test after an update, pause and alert on failure, and decide an update policy) and #2135 (document the service, its log location and log rotation).
