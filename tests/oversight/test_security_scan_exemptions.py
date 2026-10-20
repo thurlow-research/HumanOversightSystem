@@ -599,28 +599,32 @@ def _tracked_files(*paths: str) -> list[Path]:
         capture_output=True,
         text=True,
         check=True,
+        timeout=30,
     )
     return [_REPO / p for p in res.stdout.split("\0") if p and (_REPO / p).is_file()]
 
 
 def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
-    bad = []
+    bad, unreadable = [], []
     for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
         try:
             text = path.read_text()
         except UnicodeDecodeError:
+            unreadable.append(str(path.relative_to(_REPO)))
             continue
         if _SERVE_MCP.search(text):
             bad.append(str(path.relative_to(_REPO)))
+    assert not unreadable, f"cannot scan {unreadable} for `semgrep mcp`: {_PREMISE_59951}"
     assert not bad, f"{bad} run `semgrep mcp`: {_PREMISE_59951}"
 
 
 def test_pr5_no_tracked_python_file_imports_mcp():
-    bad = []
+    bad, unparsed = [], []
     for path in _tracked_files("*.py"):
         try:
             tree = ast.parse(path.read_text())
         except (SyntaxError, UnicodeDecodeError):
+            unparsed.append(str(path.relative_to(_REPO)))
             continue
         for node in ast.walk(tree):
             names = []
@@ -631,6 +635,7 @@ def test_pr5_no_tracked_python_file_imports_mcp():
             if any(n == "mcp" or n.startswith("mcp.") for n in names):
                 bad.append(str(path.relative_to(_REPO)))
                 break
+    assert not unparsed, f"cannot parse {unparsed} to check for mcp imports: {_PREMISE_59951}"
     assert not bad, f"{bad} import mcp: {_PREMISE_59951}"
 
 
