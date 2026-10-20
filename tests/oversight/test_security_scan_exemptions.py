@@ -716,6 +716,16 @@ def test_g4b_override_is_noted_and_named_in_the_pass_line(tmp_path):
     assert "pip-audit binary overridden" in last
 
 
+@_needs_gate
+def test_g4g_non_executable_override_fails_closed_never_skips(tmp_path):
+    missing = tmp_path / "no-such-pip-audit"
+    res = _gate(tmp_path, _clean_py(tmp_path), stub=missing)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert f"GATE FAIL: HOS_PIP_AUDIT_BIN={missing} is not an executable file" in res.stdout
+    assert "GATE PASS" not in res.stdout
+    assert "SKIP: pip-audit" not in res.stdout
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 def test_g5_empty_changeset_never_invokes_pip_audit(tmp_path):
     marker = tmp_path / "invoked"

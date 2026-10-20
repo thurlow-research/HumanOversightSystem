@@ -143,7 +143,9 @@ AUDIT_STATUS=0
 # HOS_PIP_AUDIT_BIN overrides the resolution below — off by default, inert in the
 # real pipeline, present only so a test can point this gate at a stub binary
 # (same seam as HOS_DETECT_SECRETS_BIN in secret_scan.sh). There is deliberately
-# no way to override the audit PAYLOAD.
+# no way to override the audit PAYLOAD. An override that is not an executable file
+# FAILS the gate: an env var must never be a route to silently disabling the
+# dependency audit (the SKIP branch below is reserved for the unset default).
 PIP_AUDIT="${HOS_PIP_AUDIT_BIN:-$VENV_BIN/pip-audit}"
 if [[ -n "${HOS_PIP_AUDIT_BIN:-}" ]]; then
     echo "NOTE: pip-audit binary overridden by HOS_PIP_AUDIT_BIN=$HOS_PIP_AUDIT_BIN"
@@ -211,6 +213,10 @@ if [[ -x "$PIP_AUDIT" ]]; then
     rm -f "$PIP_AUDIT_TMP"
     unset -f _run_pip_audit
     unset _PIP_AUDIT_UNPARSEABLE
+elif [[ -n "${HOS_PIP_AUDIT_BIN:-}" ]]; then
+    echo "GATE FAIL: HOS_PIP_AUDIT_BIN=$HOS_PIP_AUDIT_BIN is not an executable file — an override that disables the dependency audit is never a pass."
+    AUDIT_STATE="override-invalid"
+    ERRORS=$((ERRORS + 1))
 else
     echo "SKIP: pip-audit not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
     AUDIT_STATE="skipped"
