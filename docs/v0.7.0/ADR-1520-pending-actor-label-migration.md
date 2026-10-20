@@ -320,6 +320,14 @@ change. T3.0b's TD gets a delta re-check, not invalidation (§5).
   code. **This replaces T3.1's "provisioning script, conformance test" contents** (§5).
 - **The tool.** `scripts/framework/labels_cli.py` (L2, protected) and `bootstrap/provision_labels.sh` (L3,
   fixed argv, pass-through exit codes, per ADR-1643 AD-1/AD-1a).
+  > **Erratum (2026-10-20, S1 TD review, TD-1520-S1 §18.2/§18.4).** "Per ADR-1643 AD-1/AD-1a" over-cites
+  > the ADR. ADR-1643 §10.4 scopes AD-1a to `invoke_agent.sh`. The wrapper mints and revokes its own App
+  > token in the `pr_review.sh` shape, and adopts AD-1a's other rules: the interpreter ladder, no stdout, no
+  > JSON, pass-through exit codes. It differs from `pr_review.sh` in one way: it unsets the inherited
+  > `GH_TOKEN`, `GITHUB_TOKEN`, `HOS_BOT_LOGIN`, `HOS_EXPECTED_BOT_LOGIN` and
+  > `HOS_LABELS_TOKEN_MINT_FAILED` before minting, so it never revokes or uses a caller's token (#2117).
+  > Separately, "the installer ships it" (the data bullet above) is wrong for S1: the `_REGISTRY_KINDS`
+  > row handles `pack-*.yaml` layers only. S6b ships `core.yaml` and the tooling (TD-1520-S1 §18.3).
   - **`check`** is read-only. It lists repo labels (paginated, bounded) and reports `missing`, and
     `present-unprovisioned` (it exists, but the description or color differs, as an auto-created label
     would per VF-12). Exit codes: 0 when everything is present, 1 when something is missing, 2 on error.
@@ -404,6 +412,11 @@ The tool is `labels_cli.py migrate`, with the L3 wrapper `bootstrap/migrate_labe
    `check` output and the consumer's open-`needs-ai` count (`migrate --dry-run` summary) into the upgrade
    PR body, with the migration steps. The installer mutating consumer GitHub state is a product-boundary
    item: **ARCH-ESC-1**. S6b waits for it.
+   > **Erratum (2026-10-20, S1 TD review, TD-1520-S1 §18.3).** S1's `_REGISTRY_KINDS` row does **not**
+   > ship `contract/labels/`. It mirrors pack layers only. S6b ships every file consumers need:
+   > `contract/labels/core.yaml` (with its manifest row and `.gitattributes` line), `label_registry.py`,
+   > `labels_cli.py`, `provision_labels.sh`, the package `__init__.py` markers, and the shared engine
+   > modules, unless #1643 W7 has already shipped them. S6b does not wait for W7.
 2. **At merge.** The consumer's code dual-reads. Un-migrated `needs-ai` issues stay selectable and
    authorized, so the queue never goes silently empty. If provisioning was skipped or failed, the
    preflight (AD-7) says so on every cycle. A `labels=needs-worker` query on a missing label returns
@@ -456,7 +469,7 @@ entries, so it passes the CODEOWNERS human gate. Each slice shrinks `[pending]` 
 
 | # | Slice | Files (complete list) | Depends on | Prot. | Human input needed to *code* |
 |---|---|---|---|---|---|
-| **S1** | **Registry kind, provisioning tool (`check`/`provision`), conformance test, `KNOWN_LABELS` fix. No behavior change. THE FIRST SLICE.** | `contract/labels/core.yaml` (new); `scripts/automation/lib/label_registry.py` (new); `scripts/automation/lib/dimension_registry.py` (one `KINDS` row); `bootstrap/hos_install.sh` (one `_REGISTRY_KINDS` row only); `scripts/framework/labels_cli.py` (new); `bootstrap/provision_labels.sh` (new); `scripts/framework/label_literal_allowlist.txt` (new); `tests/framework/test_labels_cli.py` (new); `tests/framework/test_label_conformance.py` (new); `tests/framework/test_install_registry_data.py` (only if T5.44 needs a fixture update); `docs/LABELS.md`; `scripts/framework/check_agents_static.sh`; `tests/oversight/test_agents_static_logic.py`; `SCRIPTS-INDEX.md` (regenerated) | nothing | yes | **None.** `needs-worker`/`needs-overseer` are `planned`, and `needs-ai` is `active`. |
+| **S1** | **Registry kind, provisioning tool (`check`/`provision`), conformance test, `KNOWN_LABELS` fix. No behavior change. THE FIRST SLICE.** | `contract/labels/core.yaml` (new); `scripts/automation/lib/label_registry.py` (new); `scripts/automation/lib/dimension_registry.py` (one `KINDS` row); `bootstrap/hos_install.sh` (one `_REGISTRY_KINDS` row only); `scripts/framework/labels_cli.py` (new); `bootstrap/provision_labels.sh` (new); `scripts/framework/label_literal_allowlist.txt` (new); `tests/framework/test_labels_cli.py` (new); `tests/framework/test_label_conformance.py` (new); `tests/framework/test_install_registry_data.py` (only if T5.44 needs a fixture update); `docs/LABELS.md`; `scripts/framework/check_agents_static.sh`; `tests/oversight/test_agents_static_logic.py`; `SCRIPTS-INDEX.md` (regenerated) | nothing | yes | **None.** `needs-worker`/`needs-overseer` are `planned`, and `needs-ai` is `active`. **Erratum (2026-10-20, S1 TD review):** the file list also needs `tests/automation/test_dimension_registry.py` (T5.43 pins `registered_schemas()`), and `test_install_registry_data.py` is not needed. The binding list is `TECHNICAL-DESIGN-1520-S1-label-registry.md` §2 (14 files). |
 | H-1 | **Human:** provision this repo | Run `bootstrap/provision_labels.sh --apply`, then post the `check` output on #1520 | S1 merged | — | Human act. It gates the **merge** of S2a and later slices, not their coding. |
 | **S2a** | Issue-side dual-read and the authorization alias | `scripts/framework/pending_actor_labels.py` (new); `scripts/framework/requester_trust.py`; `scripts/framework/select_work_candidates.py`; `scripts/automation/lib/probe.py`; `tests/framework/test_requester_trust.py`; `tests/framework/test_select_work_candidates.py`; `tests/framework/test_select_work_candidates_ghshim.py`; `tests/framework/test_select_work_candidates_native.py`; `tests/framework/test_selection_call_sites.py`; `tests/automation/test_probe.py`; `contract/labels/core.yaml` (`needs-worker` becomes `active` as a reader); `scripts/framework/label_literal_allowlist.txt`; `docs/LABELS.md` | S1; H-1 before merge | yes | None. Trust-gate change: **security-reviewer is mandatory**, plus cross-vendor second review at tier. T-A1 to T-A5 and T-A7. |
 | **S2b** | PR-side dual-read and legacy measurement in `bin/hos-cron` | `bin/hos-cron` (`:1203-1224` mapping per AD-4; context and directive text at `:2076-2078` and `:2094`; logging and audit of `legacy_label_records`); `tests/automation/test_hos_cron.py`; `scripts/framework/label_literal_allowlist.txt`; `docs/LABELS.md`. If T3.0b has landed: `scripts/framework/classify_worker_prs.py` and its test, instead of the bash block. | S2a | yes | None |
