@@ -1,0 +1,1 @@
+{"agent":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"e97d8b4aa4a556de9f1a475aa8e81dfab9f43fa4","pr":2118,"reason":"1215 precheck: HUMAN_REQUIRED verdict already posted at this head (03:29Z), needs-human applied, no new human activity"}
