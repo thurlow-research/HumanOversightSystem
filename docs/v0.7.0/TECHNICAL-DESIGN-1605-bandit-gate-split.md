@@ -1658,7 +1658,7 @@ After any `undelivered`, the module re-writes the hold file with `alert.status`,
 
 ~~`git ls-files --error-unmatch` on the checked-out tree~~ *(replaced, security round 1, M-2: it failed open on any git error and could be disabled by a branch that deletes the workflow)*. Binding, under `LC_ALL=C`:
 
-1. `git -C "$REPO_ROOT" rev-parse --verify --quiet 'origin/main^{commit}'` must exit 0. Otherwise **`check_error`**.
+1. ~~`git -C "$REPO_ROOT" rev-parse --verify --quiet 'origin/main^{commit}'` must exit 0. Otherwise **`check_error`**.~~ *(Architect ruling 2026-10-20, ADR AD-18 "missing-ref case": as written, this held every consumer whose default branch is not `main`.)* `git -C "$REPO_ROOT" show-ref --verify --quiet refs/remotes/origin/main`. rc 0 continues to step 2. **rc 1** means not configured: the same `not configured` line and `_BUILD_HOLD=0` as below. Any other rc is **`check_error`**. Residual R-13 (deleting the local ref turns the hold off until the next sync) is disclosed. Test: TC-K1c (no `origin/main` ref → not configured, the fake consumer is not invoked).
 2. `git -C "$REPO_ROOT" cat-file -e 'origin/main:.github/workflows/dependency-audit.yml'`, with stderr captured:
    - rc 0 → configured; invoke the consumer.
    - rc 128 **and** stderr is exactly one line equal to `fatal: path '.github/workflows/dependency-audit.yml' does not exist in 'origin/main'` (measured 2026-10-20 on git 2.x) → not configured: `echo "$LOG_PREFIX [DEPENDENCY-AUDIT] not configured for this project (#1605)"`, `_BUILD_HOLD=0`, directive unchanged.
@@ -1750,6 +1750,7 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 | TC-P17 | *(L-2)* verdict 1: (a) stub filter prints the header `GATE FAIL: 2 …` and two kept lines while the projection keeps one; (b) same counts but a different id; (c) header N ≠ kept-line count; (d) no header | `projection-mismatch` ×4 |
 | TC-P18 | *(L-3(b))* a projection `first` of `x\ny` (stub `project` writing a crafted summary) | all seven GITHUB_OUTPUT values are the safe defaults; rc 1 |
 | TC-P19 | *(L-3(c))* stub filter stdout contains `::error::forged` and `##[group]x` | those texts appear only between one `::stop-commands::<t>` line and `::<t>::`, each prefixed with two spaces; `<t>` is 32 hex and differs between two runs |
+| TC-W7 | *(architect 2026-10-20, AD-16 transport bound)* the worst-case record (every field at maximum; 100 ids of 65 bytes each, matching `VULN_ID_RE`; `more=1`) built by the extracted `outcome` script is at most 8192 bytes and is accepted by `parse_record` | — |
 | TC-P20 | *(G-4)* 101 distinct kept ids | `ids` has 100 sorted entries and `more=1`; 3 kept ids incl. one malformed → `ids=<a>,<b>,unattributable` sorted |
 | TC-P16 | argv dispatch: `measure`/`project` vs the §9.7 argv | the existing CLI cases still pass; `--pip-audit-json` alone is never treated as `measure` |
 
@@ -1798,7 +1799,7 @@ Consumer (TC-C\*):
 | TC-C8 | no runs, and only non-qualifying runs → `stale` |
 | TC-C9 | `HOS_DEPENDENCY_AUDIT_MAX_AGE_HOURS` ∈ {167, 337, abc, "", 0168x} → `config-invalid` and no reads; 168 and 336 are accepted |
 | TC-C10 | a newer `workflow_dispatch` run on a non-main branch carrying a forged `clean` is ignored; `push` events are ignored; a path mismatch is ignored |
-| TC-C11 | `record-invalid` for: zero matching annotations; two; `sha ≠ head_sha`; non-ASCII; 513 bytes; `clean kept=1`; `finding first=-`; level `warning`; zero or two outcome jobs; a foreign `check_run_url` host |
+| TC-C11 | `record-invalid` for: zero matching annotations; two; `sha ≠ head_sha`; non-ASCII; 8193 bytes; a valid record cut short anywhere (→ `sub=record-truncated`, held; architect 2026-10-20); `clean kept=1`; `finding first=-`; level `warning`; zero or two outcome jobs; a foreign `check_run_url` host |
 | TC-C12 | conclusion `cancelled`, `timed_out` or `null` → `run-incomplete` |
 | TC-C13 | read failure with a 5 h 59 m cache → cached reading used (`reading=cached:<age>`); with a 6 h 1 s cache, or no cache → `read-failed`; `READ_FAILED_HOLDS=False` → run |
 | TC-C14 | corrupt own file → `state-corrupt` hold and file rewritten; a corrupt `pipeline-blocked.json` → `[HELD-BUILD] … state-corrupt` and the file untouched; a valid `pipeline-blocked.json` plus a clean dependency run → decision hold, that file untouched |
@@ -2019,7 +2020,7 @@ Source: `security-reviewer`, ADR §2b + TD §15 @ `0a94eb9c6` (CHANGES_REQUESTED
 | L-5 | §15.8 directive + prompt bullet: docs-only = `docs/` + `DECISIONS.md` | — | TC-K9 |
 | G-4 | §15.2 (`ids`, `more` outputs), §15.3 (outcome carries them), §15.4 (record `ids=`/`more=`, 8192-byte bound), §15.6 (`alerted_ids`, `alerted_more`, `kept_at_alert`, set-based re-alert, `dependency-advisory-realert` event), §15.13 ruling box, Human Review item 21 | Overflow case also re-alerts on count growth; residual R-11 disclosed | TC-C19, TC-C20, TC-P20 |
 
-New sub tokens (extends TD-D5-1): `run-invalid`. New residuals: R-11, R-12 (§14).
+New sub tokens (extends TD-D5-1): `run-invalid`; *(architect 2026-10-20)* `record-truncated`, which is §15.5 rule 4 with exactly one `notice` annotation whose message starts with `hos-dependency-audit/1 ` but fails the full match. It holds exactly as `record-invalid` does, and the runbook's sub-token table (§15.10 (iv)) names its remedy: lower the `ids` cap. New residuals: R-11, R-12 (§14).
 
 **ADR text changes this needs (not made here; for the architect):** (1) AD-16's record grammar gains `ids=<…> more=<0|1>`, and its "at most 512 bytes" becomes 8192 (G-4). (2) AD-18 "where the consumer lives": the consumer runs from an `origin/main` extraction, not the checkout, and the scope predicate reads `origin/main` (H-1, M-2). (3) AD-18 state: the `check_error` throttle marker lives in `~/.hos/build-hold-alert/`, not in the hold directory (M-3). (4) AD-20: the notifier gets an allowlisted environment without `GH_TOKEN` (L-4). (5) AD-19: "docs-only" is `docs/` + `DECISIONS.md` (L-5).
 
