@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"ac9a20a09b72283321d97315655f16c9cdb7d7ea","pr":2140,"reason":"1215 duplicate-verdict precheck: prior HUMAN_REQUIRED verdict review 5590917170 + escalation thread on same head; no new commits, comments, reviews, or label changes since; submit-verdict deduped (identical_comment_verdict_on_head)"}
