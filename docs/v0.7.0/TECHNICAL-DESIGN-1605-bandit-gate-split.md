@@ -1246,6 +1246,8 @@ No approved design or code elsewhere in the repo was built against a decision th
 - **R-7 (AD-19, accepted).** The hold is enforced by a directive that the worker agent obeys. Nothing mechanically stops a non-docs PR while held. The backstop belongs with #2123.
 - **R-8 (AD-15 / M-1, accepted).** A compromised `audit` job can emit a forged `MEASURE … verdict=0` and so a forged `clean`. This is AD-10's M-1 residual extended to the verdict. The compromised job can already forge the pip-audit JSON.
 - **R-9 (D-2 pin).** The record's `sha=` is `github.sha`, but `audit` checks out the default branch when the job starts. If main moves in between, the measured tree is newer than `sha`. The consumer checks only `sha == head_sha`, which still holds. The next run corrects any difference. Accepted.
+- **R-11 (G-4 overflow, accepted).** With more than 100 distinct kept advisories, the record carries only the first 100 sorted ids, so a swap wholly beyond them does not re-alert (§15.6). The tracking issue's delta comment still shows it.
+- **R-12 (H-1 remainder, accepted).** `notify_human.sh` and `escalate_to_human.sh` run from the working tree. An unmerged edit to them can affect alert delivery, never the hold (§15.8).
 - **R-10 (day one, by design).** Once Part 3 merges, the hold is configured (§15.8 predicate) before any run exists, so the first worker cycles read `sub=stale` and are **held** until someone dispatches the workflow. This is AC-38 working as specified, not a defect. The runbook (§15.10) and the PR body tell the operator to dispatch immediately after merge.
 
 ---
@@ -1335,8 +1337,8 @@ python3 -m scripts.automation.dependency_audit_report measure \
 | 5 | **Run pip-audit, and accept output whatever the rc (TV-15).** Up to 3 attempts, sleeping `--retry-sleep-seconds` between them. Each attempt deletes `<tmp>/raw.json`, then runs `<venv-bin>/pip-audit --progress-spinner off --format json -o <tmp>/raw.json` with the attempt timeout. stderr is captured and only its last 20 lines are kept. An attempt is **accepted** only if rc ∈ {0,1} **and** `raw.json` is a regular non-symlink file of at most `MAX_INPUT_BYTES` **and** `json.loads` of it gives a dict. | an attempt is accepted | After exhaustion, these are checked in order. A file over `MAX_INPUT_BYTES` on any attempt gives `oversized`. Otherwise, any attempt with rc ∈ {0,1} and no acceptable file gives `unparseable`, and this is sticky across later timeouts (main's CWE-636 rule). Otherwise, all attempts timing out gives `timeout`. Otherwise `pip-audit-failed`. |
 | 6 | **Verdict = filter rc (AC-32).** Run `PYTHONSAFEPATH=1 <venv-bin>/python <logic-path> filter < raw.json` with a 60 s timeout, capturing stdout and stderr (each capped at 64 KiB) | rc ∈ {0,1} | rc 2 with stderr starting `GATE FAIL: exemption roster invalid` gives `roster-invalid`. rc 2 with stderr starting `GATE FAIL: could not parse pip-audit output` gives `unparseable`. Any other rc 2, any other rc, or a timeout gives `filter-error`. |
 | 7 | **Skip count (TV-14, AD-21).** Done inside `project` (step 8) as `len(parse_audit(doc).skipped)`, using the module's own parser, never a re-implementation | — | see step 9 |
-| 8 | **Projection.** Run `<venv-bin>/python -m scripts.automation.dependency_audit_report project --raw raw.json --out <out-json>` with a 60 s timeout | rc 0, and exactly one stdout line full-matching `^PROJECT kept=(0\|[1-9][0-9]{0,5}) skipped=(0\|[1-9][0-9]{0,5}) first=(-\|unattributable\|<VULN_ID_RE>) deps=([0-9]{1,6})$` | `filter-error` |
-| 9 | **Consistency and partial audit.** If verdict is 0, then `kept` must be 0. If verdict is 1, then `kept` must be at least 1. | consistent | `projection-mismatch`. If it is consistent, verdict is 0 and `skipped > 0`, the result is `partial-audit` (AD-21). If verdict is 1 and `skipped > 0`, the result is a **finding** with `partial=1` (TD-D5-2). |
+| 8 | **Projection.** Run `<venv-bin>/python -m scripts.automation.dependency_audit_report project --raw raw.json --out <out-json> --summary <tmp>/summary.json` with a 60 s timeout | rc 0; exactly one stdout line that `re.fullmatch`es `PROJECT kept=(0\|[1-9][0-9]{0,5}) skipped=(0\|[1-9][0-9]{0,5}) first=(-\|unattributable\|<VULN_ID_RE>) deps=([0-9]{1,6})`; and `summary.json` parses to exactly `{"kept": int, "skipped": int, "first": str, "deps": int, "kept_ids": [str, ...]}` with the same four scalars as the line and `len(kept_ids) == kept` *(security round 1, L-2/L-3)* | `filter-error` |
+| 9 | **Consistency and partial audit.** If verdict is 0, then `kept` must be 0, and the filter's stdout must contain no `GATE FAIL:` line. If verdict is 1: *(security round 1, L-2; two-sided)* the filter's stdout must contain exactly one header line that `re.fullmatch`es `GATE FAIL: ([1-9][0-9]{0,5}) dependency advisory\(ies\) not covered by an exemption:`; the lines after it, up to the next line not starting with two spaces, contain the per-advisory **kept lines** (`render` prints them as two spaces, then `<package> <version> [<id>] fix: …`; a note line starts with four spaces and is skipped); a kept line `re.fullmatch`es `  (\S+) (\S+) \[([^\]\x00-\x1f\x7f]{1,200})\] fix: .*`. The header's N, the number of kept lines, and the projection's `kept` must all be equal, and the **multiset** of kept-line ids must equal the multiset `summary.kept_ids`. | consistent | `projection-mismatch`. If it is consistent, verdict is 0 and `skipped > 0`, the result is `partial-audit` (AD-21). If verdict is 1 and `skipped > 0`, the result is a **finding** with `partial=1` (TD-D5-2). |
 
 **`project` mode (pure core plus thin I/O):**
 
@@ -1346,15 +1348,19 @@ python3 -m scripts.automation.dependency_audit_report measure \
 - The pure function is `project_audit(document, rules, active, today, logic) -> tuple[dict, ProjectionSummary]`.
 - **Output document:** `{"dependencies": [...]}`. For each dependency entry of the raw document that has **no** `skip_reason` key, it emits `{"name", "version", "vulns": [the raw vuln dicts whose (canonical package, version, id) is in the kept set]}`. Dependencies with no kept vuln are emitted with `"vulns": []`. Skip entries are dropped, because a skip entry has no `version` (TV-14) and `normalize` would reject it. Raw vuln dicts are copied verbatim, so `normalize` (§9.3) still applies SEC-S4 to every value. A kept **malformed** advisory has no raw dict that matches cleanly. It is emitted as its raw dict when one can be identified by position, and otherwise it is counted but not emitted. `normalize` may then reject the document, which gives a `report-failed` finding (§15.3). The hold stands, so this fails closed.
 - `first`: the kept advisories are sorted by `(advisory.key, advisory.advisory_id)`. `first` is the first `advisory_id` that full-matches `VULN_ID_RE`. If no kept id matches, `first` is `unattributable`. With no kept advisories, `first` is `-`.
-- It writes `--out` atomically (temp file plus `os.replace`), mode 0644, then prints the one `PROJECT` line and exits 0. Any exception means exit 2, with the cause on stderr.
+- `kept_ids` *(security round 1, L-2)*: the `advisory_id` of every `decision.kept` item, in `decision.kept` order, duplicates kept, no validation (step 9 compares them to the filter's lines byte for byte).
+- It writes `--out` and `--summary` atomically (temp file plus `os.replace`), mode 0644, then prints the one `PROJECT` line and exits 0. Any exception means exit 2, with the cause on stderr.
 
 **Why the artifact is the projection (TD-D5-7, D-5 item 3).** `report` installs nothing and so cannot import `security_scan_logic`. If it were handed the raw document, the tracking issue would list black and mcp, which the human has exempted. Then a clean run (verdict 0) would sit next to an open issue full of "findings". The projection makes the issue's finding set equal the roster-filtered kept set. On a clean run it is empty, so `report` closes the issue (§9.5). This is a change to *what* `report` reads. `report`'s code, allowlists, bounds and decision table are unchanged.
 
 **Output of `measure` (binding).**
 
 - **Log lines.** It prints the filter's stdout lines to its own stdout **only when** the result is clean or a finding. On every `NOT_RUN` cause it prints `dependency audit: filter output withheld — this run is NOT_RUN (<cause>); nothing here is a pass`. This is because the filter prints an `OK:` line on a partial audit (TV-14), and AC-33 forbids an `OK` line on a non-clean outcome. pip-audit's captured stderr tail is printed prefixed `  pip-audit stderr: `.
-- **Final stdout line**, always: `MEASURE verdict=<0|1|-> cause=<-|sub token> kept=<n> first=<id|unattributable|-> skipped=<n|-> partial=<0|1>`.
-- **`--github-output`**: it appends exactly five lines: `verdict=<0|1|->`, `cause=<…>`, `kept=<n>`, `first=<…>`, `partial=<0|1>`. They are written **before** exit on every path, including failures. If writing them fails, the exit is 1 and the outcome becomes `audit-failed`.
+- **Workflow-command neutralisation** *(security round 1, L-3(c), binding)*. Every line `measure` echoes that came from a subprocess (filter stdout, filter stderr, pip stderr, pip-audit stderr) goes through one function, `_echo_untrusted(lines)`. That function (i) prints `::stop-commands::<token>` first, where `<token>` is `secrets.token_hex(16)` generated per call; (ii) prints each line with C0 controls and DEL replaced by `?`, prefixed with two spaces; (iii) prints `::<token>::` last. No other code path prints subprocess text. The `MEASURE` line is printed after the region is closed. The `report` step's `cat "$RUNNER_TEMP/report.out"` is replaced by the same pattern in bash: `T="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"`, `echo "::stop-commands::$T"`, `sed 's/^/  /' "$RUNNER_TEMP/report.out"`, `echo "::$T::"`.
+- **Final stdout line**, always: `MEASURE verdict=<0|1|-> cause=<-|sub token> kept=<n> first=<id|unattributable|-> skipped=<n|-> partial=<0|1> ids=<n_ids> more=<0|1>`.
+- **`--github-output`**: it appends exactly seven lines: `verdict=<0|1|->`, `cause=<…>`, `kept=<n>`, `first=<…>`, `partial=<0|1>`, `ids=<-|comma list>`, `more=<0|1>`. They are written **before** exit on every path, including failures. If writing them fails, the exit is 1 and the outcome becomes `audit-failed`.
+  - *(Security round 1, L-3(b), binding.)* Each value is written only after `re.fullmatch` against that key's pattern: `verdict` `[01-]`; `cause` `-\|[a-z][a-z0-9_-]{0,31}`; `kept` `0\|[1-9][0-9]{0,5}`; `first` `-\|unattributable\|<VULN_ID_RE>`; `partial` `[01]`; `ids` §15.4's `IDS` group; `more` `[01]`. On any mismatch, all seven are written as the safe defaults `verdict=-`, `cause=audit-output-invalid`, `kept=0`, `first=-`, `partial=0`, `ids=-`, `more=0`, and `measure` exits 1. No free text is ever written there.
+  - *(G-4.)* `ids` is the **sorted, de-duplicated** (bytewise) set of kept ids that full-match `VULN_ID_RE`, plus the token `unattributable` once if any kept id does not, truncated to the first 100 entries; `more=1` iff the set had more than 100 entries. On every non-finding path `ids=-` and `more=0`.
 - **Exit:** 0 for a clean result or a finding (verdict 0 or 1, consistent). 1 for every `NOT_RUN` cause. 2 for a usage error. No path prints `SKIP`, `GATE PASS`, `PASS` or a leading `OK:` unless the result is clean (TC-H1, TC-P*).
 
 **Cause table (AC-33 → sub tokens; every row is `outcome=not_run cause=environment-broken`):**
@@ -1414,6 +1420,7 @@ outcome:
              VERDICT: ${{ needs.audit.outputs.verdict }}, CAUSE: ${{ needs.audit.outputs.cause }},
              KEPT: ${{ needs.audit.outputs.kept }}, FIRST: ${{ needs.audit.outputs.first }},
              PARTIAL: ${{ needs.audit.outputs.partial }}, ISSUE: ${{ needs.report.outputs.issue }},
+             IDS: ${{ needs.audit.outputs.ids }}, MORE: ${{ needs.audit.outputs.more }},
              SHA: ${{ github.sha }} }
       run: <the mapping script below; no ${{ }} inside it>
 ```
@@ -1428,7 +1435,9 @@ The job has no `uses:`, no checkout and no setup-python. Its single `run:` is a 
    - `FIRST` must be empty, `-`, `unattributable` or the record's id pattern (§15.4);
    - `PARTIAL` ∈ {0, 1, empty};
    - `ISSUE` must be empty, `-` or `^[1-9][0-9]{0,8}$`;
-   - `SHA` must match `^[0-9a-f]{40}$`.
+   - `SHA` must match `^[0-9a-f]{40}$`;
+   - *(G-4)* `IDS` must be empty, `-` or §15.4's `IDS` group; `MORE` ∈ {0, 1, empty};
+   - *(security round 1, L-3(a))* before any pattern test, every input containing a newline, carriage return or other C0/DEL character is invalid (`[[ $v == *[[:cntrl:]]* ]]`).
 
    An invalid `SHA` exits 1 with no record, which the consumer reads as `record-invalid`. Any other invalid input gives `outcome=not_run`, `sub=audit-output-invalid`.
 2. **Maps the inputs, first matching row wins:**
@@ -1436,19 +1445,20 @@ The job has no `uses:`, no checkout and no setup-python. Its single `run:` is a 
    | Condition | outcome | cause | sub | first | kept | issue |
    |---|---|---|---|---|---|---|
    | `AUDIT_RESULT != success` | not_run | environment-broken | `CAUSE` if valid and not `-`/empty, else `audit-failed` | - | 0 | - |
-   | `VERDICT=1` and `KEPT≥1` and `FIRST∉{-,empty}` | finding | dependency-advisory | `report-failed` if `REPORT_RESULT != success`; else `partial-audit` if `PARTIAL=1`; else `-` | `FIRST` | `KEPT` | `ISSUE` if numeric, else - |
+   | `VERDICT=1` and `KEPT≥1` and `FIRST∉{-,empty}` and `IDS∉{-,empty}` | finding | dependency-advisory | `report-failed` if `REPORT_RESULT != success`; else `partial-audit` if `PARTIAL=1`; else `-` | `FIRST` | `KEPT` | `ISSUE` if numeric, else - |
    | `VERDICT=0` and `KEPT=0` and `REPORT_RESULT=success` | clean | - | - | - | 0 | `ISSUE` if numeric, else - |
    | `VERDICT=0` and `KEPT=0` and `REPORT_RESULT != success` | not_run | environment-broken | report-failed | - | 0 | - |
    | anything else | not_run | environment-broken | audit-output-invalid | - | 0 | - |
-3. Builds the record (§15.4) and prints it exactly once as `echo "::notice::${RECORD}"`. No other `::notice`, `::warning` or `::error` command is printed.
+3. Builds the record (§15.4; `ids=`/`more=` are `IDS`/`MORE` for a finding and `-`/`0` otherwise) and prints it exactly once as `echo "::notice::${RECORD}"`. No other `::notice`, `::warning` or `::error` command is printed.
 4. Exits 0 if the outcome is `clean`, and 1 otherwise, so a finding or a `NOT_RUN` shows as a red run (TD-D5-9). The consumer reads the record whatever the run's conclusion (§15.5).
 
 ### 15.4 Record grammar (binding; ADR AD-16)
 
-One line, ASCII only, at most 512 bytes, full-matching:
+One line, ASCII only, no control characters, at most **8192** bytes *(raised from 512 for G-4; ADR AD-16 text change listed in the round-1 report)*, matched with Python `re.fullmatch` on the exact string *(security round 1, L-3(a); the `^…$` below is notation, and `$` is never relied on)*:
 
 ```
-^hos-dependency-audit/1 outcome=(clean|finding|not_run) cause=(-|dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) first=(-|unattributable|ID) kept=(0|[1-9][0-9]{0,5}) issue=(-|[1-9][0-9]{0,8}) sha=([0-9a-f]{40})$
+hos-dependency-audit/1 outcome=(clean|finding|not_run) cause=(-|dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) first=(-|unattributable|ID) kept=(0|[1-9][0-9]{0,5}) issue=(-|[1-9][0-9]{0,8}) ids=(IDS) more=(0|1) sha=([0-9a-f]{40})
+IDS = -|IDTOK(,IDTOK){0,99}      IDTOK = unattributable|ID
 ```
 
 Here `ID` is §9.2's `VULN_ID_RE`, verbatim. It is defined once, in `dependency_audit_report.py`, and `dependency_pause.py` imports that constant. The bash in `outcome` cannot import it, so it carries a literal copy, and TC-W6 asserts the two are equal.
@@ -1456,7 +1466,8 @@ Here `ID` is §9.2's `VULN_ID_RE`, verbatim. It is defined once, in `dependency_
 **Semantic rules** (the consumer checks them after the regex; any violation is `record-invalid`):
 
 - `clean` ⇒ `cause=- sub=- first=- kept=0`;
-- `finding` ⇒ `cause=dependency-advisory`, `first≠-` and `kept≥1`;
+- `finding` ⇒ `cause=dependency-advisory`, `first≠-`, `kept≥1`, `ids≠-`, the `ids` list strictly increasing bytewise (sorted, no duplicates), its length ≤ `kept`, and, when `more=0`, `first` ∈ `ids` *(G-4)*;
+- `clean` and `not_run` ⇒ `ids=- more=0` *(G-4)*;
 - `not_run` ⇒ `cause=environment-broken`, `sub≠-`, `first=-` and `kept=0`.
 
 ### 15.5 The read path: three `github.py` read helpers, plus selection (Part 3; ADR AD-16)
@@ -1494,12 +1505,13 @@ def list_check_run_annotations(owner, repo, check_run_id, *, per_page=50, retrie
    - No qualifying run gives `stale`.
    - A qualifying run with `conclusion ∉ {success, failure}` (cancelled, timed_out, startup_failure, skipped, neutral, action_required, or null) gives `not_run`, `sub=run-incomplete`.
    - An unqualified run is ignored, and is **never** trusted (AD-16).
+   - *(Security round 1, L-3(d).)* If the selected run's `run_started_at` is later than `now + 300 s`, the result is `not_run`, `sub=run-invalid`. A future start is never read as "age negative, so fresh".
 2. **Staleness** (AD-17) is checked **before** the record is read:
    - `now - run_started_at > max_age` gives `stale`. Equal to `max_age` is not stale.
    - `max_age` comes from `HOS_DEPENDENCY_AUDIT_MAX_AGE_HOURS`: unset means 216, and a value full-matching `[0-9]{1,4}` within [168, 336] is used as is.
    - Any other value gives held, `sub=config-invalid`, before any read.
 3. **Jobs.** Exactly one job must have `name == "dependency-audit-outcome"`, `status == "completed"` and a `check_run_url` full-matching `https://api\.github\.com/repos/<owner>/<repo>/check-runs/([1-9][0-9]{0,15})`, with `<owner>/<repo>` compared case-insensitively to `--repo-slug`. Otherwise the result is `record-invalid`.
-4. **Annotations.** The candidates are annotations whose `annotation_level == "notice"`, whose `message` is a `str` of at most 512 bytes once encoded as UTF-8, ASCII only, and which full-match §15.4.
+4. **Annotations.** The candidates are annotations whose `annotation_level == "notice"`, whose `message` is a `str` of at most 8192 bytes once encoded as UTF-8, ASCII only, free of control characters, and which `re.fullmatch` §15.4.
    - Exactly one candidate is required, and its `sha` must equal the run's `head_sha`. Otherwise the result is `record-invalid`.
    - Then the §15.4 semantic rules apply.
 5. **Retries.** The consumer calls every helper with `retries=1` (TD-D5-6). That keeps the worst case at 3 × (30 s + 2 s + 30 s), which is under hos-cron's 240 s bound (§15.8).
@@ -1510,7 +1522,8 @@ def list_check_run_annotations(owner, repo, check_run_id, *, per_page=50, retrie
 - A **complete** read, meaning one where selection reached a decision (including `stale`, `run-incomplete` and `record-invalid`), is cached at `<hold-dir>/dependency-audit.reading`. The file has no `.json` suffix so the hold reader (§15.6) never parses it.
   - Cache format: JSON `{"schema": "hos-dependency-audit-reading/1", "read_at": <iso>, "run": {"id", "run_started_at", "html_url", "conclusion", "head_sha"} | null, "record": <str|null>, "selection_sub": <token|null>, "last_issue": <int|null>}`.
   - `last_issue` *(architect R-B, 2026-10-20)* is the most recent numeric `issue=` from any valid record this consumer has read. It is carried forward from the previous cache when the current record has `issue=-`, and it is never cleared by a clean run. It feeds only the §15.7 fallback target. It never affects the outcome, the fingerprint or the hold.
-  - It is written 0600 and atomically.
+  - It is written 0600 and atomically, through the §15.6 `dir_fd` + `O_NOFOLLOW` path.
+  - *(Security round 1, M-3(a), binding.)* On every read, the cache gets the same file checks as a hold file (§15.6) and a strict schema: the key set is exactly the eight above; `schema` equals the constant; `read_at` is ISO-8601 `Z` and not later than `now + 300 s`; `run` is null or has exactly its five keys with `id` an int > 0, `run_started_at` ISO `Z`, `html_url` full-matching `https://github\.com/<owner>/<repo>/actions/runs/<id>`, `conclusion` null or `[a-z_]{1,32}`, `head_sha` 40 hex; `record` is null or is **re-validated through §15.4** on use; `selection_sub` null or a sub token; `last_issue` null or an int in 1..999999999. Any violation means held, `sub=state-corrupt` (never "no cache").
 - On a read failure, the cache is used **only if** it parses and `now - read_at ≤ 6 h` (21,600 s). The cached reading is then **re-evaluated** at `now`, so staleness keeps advancing.
 - Otherwise the result is `not_run`, `sub=read-failed`.
 - The summary line reports `reading=fresh`, `reading=cached:<age_s>` or `reading=none` (§15.6). If the human rejects I-7 (Q-D5-6), the only change is `READ_FAILED_HOLDS = False`, a module constant that maps `read-failed` to `run` and logs it.
@@ -1533,9 +1546,10 @@ python3 -m scripts.automation.dependency_pause check \
 
 **State (binding schema `hos-build-hold/1`).**
 
-- **Directory:** `<state-dir>/build-hold/<project>/`, created 0700 with each component created as needed.
-  - If the directory exists but is a symlink, is not a directory, or is not owned by `os.geteuid()`, the result is held with `sub=state-corrupt`, and nothing is written there.
-- **Own file:** `<dir>/dependency-audit.json`, mode 0600. The write sequence is `os.open(tmp, O_WRONLY|O_CREAT|O_EXCL, 0o600)` on `.dependency-audit.json.tmp-<pid>`, then write, `fsync`, and `os.replace`.
+- **Directory:** `<state-dir>/build-hold/<project>/`.
+  - *(Security round 1, M-3(a), binding.)* Every component from `<state-dir>` down (`<state-dir>`, `build-hold`, `<project>`) is checked with `os.lstat`: it must not be a symlink, must be a directory, must have `st_uid == os.geteuid()`, and must have `st_mode & 0o022 == 0`. A missing `build-hold` or `<project>` component is created with `os.mkdir(name, 0o700, dir_fd=<parent fd>)`. Each component is then opened with `os.open(name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW, dir_fd=<parent fd>)` and re-checked with `os.fstat` (same four rules), so a swap between check and open is caught. All later file access uses the final directory fd. Any violation means held, `sub=state-corrupt`, and nothing is written.
+  - Every file (hold files, the cache) is opened with `os.open(name, O_RDONLY | O_NOFOLLOW, dir_fd=dfd)` and must `fstat` as a regular file with `st_uid == euid` and `st_mode & 0o077 == 0`. Otherwise it is corrupt.
+- **Own file:** `<dir>/dependency-audit.json`, mode 0600. The write sequence is `os.open(".dependency-audit.json.tmp-<pid>", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600, dir_fd=dfd)`, then write, `fsync`, and `os.replace(tmp, final, src_dir_fd=dfd, dst_dir_fd=dfd)`. Deletion is `os.unlink(name, dir_fd=dfd)`.
 - **Fields** (all required, `null` where shown):
 
 ```json
@@ -1547,18 +1561,22 @@ python3 -m scripts.automation.dependency_pause check \
  "clear_act":"<fixed sentence below>",
  "alert":{"status":"sent|undelivered|pending","reason":"<token>|null","at":"<iso Z>|null",
           "fallback":"posted|failed|not-applicable|disabled"},
- "detail":{"held_since":"<iso Z>","first":"<id>|null","kept":<int>,"reading":"fresh|cached|none"}}
+ "detail":{"held_since":"<iso Z>","first":"<id>|null","kept":<int>,"reading":"fresh|cached|none",
+           "alerted_ids":["<IDTOK>", ...],"alerted_more":0|1,"kept_at_alert":<int>}}
 ```
 
 - **Fingerprint (AC-41):**
   - a finding is `dependency-audit:dependency-advisory:<first>`;
   - a `not_run` is `dependency-audit:environment-broken:<sub>`.
+  - The fingerprint identifies the **hold only**. It is not the alert trigger (AC-41 as amended by pm-agent's G-4 ruling, commit `ebadd5397`). Re-alerting is decided by `alerted_ids` (below).
+- **`detail.alerted_ids` / `detail.alerted_more` (G-4, binding).** `alerted_ids` is the record's `ids` set at the moment the most recent `dependency-advisory` alert was **attempted** (sent or undelivered): a JSON list of at most 100 `IDTOK` strings, strictly increasing bytewise, each validated by `re.fullmatch`. `alerted_more` is that record's `more`. For an `environment-broken` hold both are `[]` and `0`. A list that is not a list, is longer than 100, is unsorted, has duplicates, or has an invalid token makes the file corrupt (state-corrupt).
 - **`clear_act`** is exactly: `Record a time-boxed exemption in the #1776 roster (scripts/oversight/security_scan_logic.py) or land a dependency bump, then run "Dependency audit (scheduled)" on main via workflow_dispatch. The hold clears only on the next clean run.` (AC-37; Q-D5-3 pending, recommendation clean-run only.)
 
 **Shared reader `read_holds(dir)`.**
 
-- It reads every entry whose name full-matches `[a-z][a-z0-9-]{0,31}\.json`, and ignores all others. That ignores the cache file, temp files and `check-error.alerted` (§15.8).
+- It reads every entry whose name full-matches `[a-z][a-z0-9-]{0,31}\.json`, and ignores all others. That ignores the cache file and temp files. (The `check_error` throttle marker is not in this directory at all, §15.8.)
 - A file that cannot be read, is over 64 KiB, is not JSON, or lacks `schema == "hos-build-hold/1"` and `source == <stem>` gives `Hold(source=<stem>, cause="environment-broken", sub="state-corrupt", corrupt=True)`. It is never "absent".
+- *(Security round 1, M-1(a), binding.)* `read_holds` validates **every field it uses, of every file, own or other**, with `re.fullmatch` after rejecting control characters: `source` = the stem; `cause` and `sub` `[a-z][a-z0-9_-]{0,31}` (`sub` may be null); `issue` null or an `int` (not `bool`) in 1..999999999; `since` ISO-8601 `YYYY-MM-DDTHH:MM:SSZ`; `alert.status` ∈ {sent, pending, undelivered}; `alert.reason` null or `[a-z0-9-]{1,32}`; `alert.fallback` ∈ {posted, failed, not-applicable, disabled}. For the own file, every other schema field is validated too (types, ISO times, `run_url` full-matching `https://github\.com/<owner>/<repo>/actions/runs/[1-9][0-9]{0,15}`, `fingerprint` per AC-41, the G-4 fields). Any failure makes that file corrupt. The `[HELD-*]` lines are **re-rendered** from the validated fields by one formatter. File text is never echoed, and `clear_act` is never read by anyone but a human (hos-cron uses its own constant, §15.8).
 - **Other sources' files are read-only to this module.** They are never written or deleted, even on a clean dependency run. That is the #2123 seam.
 
 **`evaluate(reading, now, max_age) -> Evaluation(outcome, cause, sub, first, kept, issue, run_url)`.** Pure. It applies §15.5 rules 1–4. A `finding` keeps the record's `sub` (`report-failed` or `partial-audit` or `-`).
@@ -1568,24 +1586,27 @@ python3 -m scripts.automation.dependency_pause check \
 | Own file | Evaluation | Plan |
 |---|---|---|
 | absent | clean | nothing; no event |
-| absent | not clean | write a new file: `since = held_since = now`, `alert.status = "pending"`. Event `dependency-pause-set`. Alert. |
-| valid, same fingerprint | not clean | keep `since`, `held_since` and `alert`. Update `last_evaluated`, `issue`, `run_url` and `detail.reading`. No event. Re-send the alert only if `alert.status == "undelivered"` and `now - alert.at ≥ 3600 s`. |
-| valid, different fingerprint | not clean | `since = now`, keep `detail.held_since`, `alert.status = "pending"`. Event `dependency-pause-set` with `previous_fingerprint`. Alert. (TD-D5-4) |
+| absent | not clean | write a new file: `since = held_since = now`, `alert.status = "pending"`, and (finding) `alerted_ids`/`alerted_more`/`kept_at_alert` from this record. Event `dependency-pause-set`. Alert. |
+| valid, same fingerprint | not clean | keep `since`, `held_since` and `alert`. Update `last_evaluated`, `issue`, `run_url` and `detail.reading`. No event. **G-4 re-alert:** if the evaluation is a `finding` and `new = set(record.ids) − set(detail.alerted_ids)` is non-empty, **or** `record.more == 1` and `record.kept > detail.kept_at_alert` (see below), then: event `dependency-advisory-realert`, `alert.status = "pending"`, alert, and set `alerted_ids`/`alerted_more`/`kept_at_alert` from this record. An unchanged or shrinking set (`new` empty) does **not** re-alert. Otherwise, re-send only if `alert.status == "undelivered"` and `now - alert.at ≥ 3600 s`. |
+| valid, different fingerprint | not clean | `since = now`, keep `detail.held_since`, `alert.status = "pending"`, and reset `alerted_ids`/`alerted_more`/`kept_at_alert` from this record (`[]`/0/0 for `environment-broken`). Event `dependency-pause-set` with `previous_fingerprint`. Alert. (TD-D5-4) |
 | valid | clean | delete the file. Event `dependency-pause-cleared` with `duration_s = now - detail.held_since` (whole seconds), plus `fingerprint` and `run_url`. |
 | corrupt | any | held this cycle, `sub=state-corrupt`, fingerprint `dependency-audit:environment-broken:state-corrupt`. Overwrite the file with that hold (`since = held_since = now`). Event `dependency-pause-set`. Alert. The next cycle re-derives normally (TD-D5-5). |
 
 Deleting the file by hand achieves nothing: the next not-clean evaluation rewrites it (AD-18).
+
+**G-4 resolution (pm-agent ruling, REQUIREMENTS AC-34/AC-41/AC-43 at `ebadd5397`; binding).** The comparison is **set-based, not count-based**: the swap case (one advisory clears, another arrives, `kept` unchanged) gives a non-empty `new` and re-alerts. `detail` gains `kept_at_alert` (int, 0..999999). It is used only in the overflow case (`more=1`, more than 100 distinct kept ids): there the record lists only the first 100 sorted ids, so an id beyond them is invisible; the rule then also re-alerts when `kept` grows past `kept_at_alert`. **Residual R-11:** with more than 100 distinct kept advisories, a swap entirely beyond the first 100 ids is not detected. It is disclosed in the Part 3 PR body. A `not_run` evaluation never changes `alerted_ids`, because it carries no id information. A re-alert under an unchanged fingerprint does not reset `since`.
 
 **stdout contract** (exit 0 whenever the final line is printed):
 
 - `EVENT dependency-pause-set fingerprint=<fp> cause=<c> sub=<s|-> issue=<n|-> run_url=<url|-> [previous_fingerprint=<fp>]`
 - `EVENT dependency-pause-cleared fingerprint=<fp> duration_s=<n> run_url=<url|->`
 - `EVENT alert-undelivered cause=<c> reason=<r> fingerprint=<fp>`
-- `[HELD-DEPENDENCY] cause=<c> sub=<s|-> issue=<#n|-> since=<iso> alert=<sent|pending|undelivered:<reason>>`, one line if the own source is held
+- `EVENT dependency-advisory-realert fingerprint=<fp> cause=dependency-advisory issue=<n|->` *(G-4)*
+- `[HELD-DEPENDENCY] cause=<c> sub=<s|-> issue=<#n|-> since=<iso> alert=<sent|pending|undelivered:<reason>>[ fallback=<f>]`, one line if the own source is held
 - `[HELD-BUILD] source=<s> cause=<c> sub=<s|-> issue=<#n|-> since=<iso|-> alert=<…|->`, one line per other held source, sorted by source
 - `DEPENDENCY-PAUSE decision=<run|hold> holds=<n> reading=<fresh|cached:<age_s>|none>`, last, exactly once
 
-Every value is a token without spaces, and URLs are validated `https://github.com/…` strings. EVENT lines are printed only on transitions (AD-19). An unhandled exception gives exit 1, and hos-cron reads that as `check_error`.
+Every value is a token without spaces, and URLs are validated `https://github.com/…` strings. *(Security round 1, L-1, binding.)* EVENT keys are restricted to exactly {`fingerprint`, `cause`, `sub`, `issue`, `run_url`, `previous_fingerprint`, `duration_s`, `reason`}; the module never prints another key. Values per key: `fingerprint`/`previous_fingerprint` `dependency-audit:(dependency-advisory|environment-broken):(unattributable|<VULN_ID_RE>|[a-z][a-z0-9_-]{0,31})`; `cause` the two causes; `sub` `-` or a sub token; `issue` `-` or `[1-9][0-9]{0,8}`; `run_url` `-` or the validated run URL; `duration_s` `[0-9]{1,10}`; `reason` `[a-z0-9-]{1,32}`. EVENT lines are printed only on transitions (AD-19). An unhandled exception gives exit 1, and hos-cron reads that as `check_error`.
 
 ### 15.7 The alert (Part 3; ADR AD-20, AC-39, AC-40)
 
@@ -1603,6 +1624,8 @@ When `issue` is null, `--issue <n>` is replaced by `--url <run_url>`. When `run_
 **Body file.** The body is written 0600 into `tempfile.mkdtemp()` (which honours `$TMPDIR`) and removed afterwards. It contains the cause, sub, fingerprint, tracking issue or URL, `since`, and the `clear_act` sentence. It is plain ASCII with no `@`, and the token values have already been validated.
 
 **Invocation.** It runs through `Deps.run_notifier(argv, timeout=30)`: `subprocess.run`, `stdin=DEVNULL`, output captured and discarded except a 2 KiB tail kept for the log.
+
+**Subprocess environment** *(security round 1, L-4, binding)*. Neither runner inherits the consumer's environment. Both pass `env=` built from an allowlist: `PATH`, `HOME`, `LANG`, `LC_ALL`, `TMPDIR`, and every `HOS_*` name **except** any whose name contains `TOKEN`, `SECRET`, `KEY` or `PASSWORD`; plus, when #2125 lands, the variables its header documents, added by name (none today). `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` are never passed to `notify_human.sh`. `run_escalation` gets the same allowlist **plus** `GH_TOKEN`, because `escalate_to_human.sh` writes to GitHub. hos-cron's own `check_error` notifier call (§15.8) uses `env -i` with the same allowlist.
 
 **Results:**
 
@@ -1633,32 +1656,42 @@ After any `undelivered`, the module re-writes the hold file with `alert.status`,
 
 **Predicate (scope, AD-18).**
 
-```
-if git -C "$REPO_ROOT" ls-files --error-unmatch -- .github/workflows/dependency-audit.yml >/dev/null 2>&1; then <invoke>
-else echo "$LOG_PREFIX [DEPENDENCY-AUDIT] not configured for this project (#1605)"; fi
-```
+~~`git ls-files --error-unmatch` on the checked-out tree~~ *(replaced, security round 1, M-2: it failed open on any git error and could be disabled by a branch that deletes the workflow)*. Binding, under `LC_ALL=C`:
 
-When the project is not configured, `_BUILD_HOLD=0` and the directive is unchanged.
+1. `git -C "$REPO_ROOT" rev-parse --verify --quiet 'origin/main^{commit}'` must exit 0. Otherwise **`check_error`**.
+2. `git -C "$REPO_ROOT" cat-file -e 'origin/main:.github/workflows/dependency-audit.yml'`, with stderr captured:
+   - rc 0 → configured; invoke the consumer.
+   - rc 128 **and** stderr is exactly one line equal to `fatal: path '.github/workflows/dependency-audit.yml' does not exist in 'origin/main'` (measured 2026-10-20 on git 2.x) → not configured: `echo "$LOG_PREFIX [DEPENDENCY-AUDIT] not configured for this project (#1605)"`, `_BUILD_HOLD=0`, directive unchanged.
+   - Anything else → **`check_error`** (held).
+
+The checked-out branch never decides whether the hold applies.
 
 **Invocation.**
 
+- *(Security round 1, M-3(b).)* **First**, before any path is built from it, hos-cron checks `[[ "$PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]`. On mismatch: `check_error`, the consumer is not invoked, no marker file is used, and the notifier is called (at most once per cycle).
 - A bound array `_BH_BOUND` is built exactly as `_UP_BOUND` is: `timeout --kill-after=10 240`, or `gtimeout`, or empty if neither exists.
-- The call is `_BH_OUT="$( (cd "$REPO_ROOT" && ${_BH_BOUND[@]+"${_BH_BOUND[@]}"} python3 -m scripts.automation.dependency_pause check --project "$PROJECT" --repo-slug "$_REPO_SLUG" --state-dir "$_HOS_DIR" --repo-root "$REPO_ROOT") )"`, wrapped in the usage-pause `if …; then _BH_RC=0; else _BH_RC=$?; fi` shape.
-- `-I` is **not** used. `-m` must resolve from the checkout (TV-3), which is the `select_work_candidates` precedent.
+- *(Security round 1, H-1, binding; stricter than the finding's conditional form.)* **The consumer never runs from the working tree.** hos-cron always runs it from main's code:
+  1. `_BH_CODE="$(mktemp -d)"` (under `$TMPDIR`, on disk), removed on every exit path of the block.
+  2. `git -C "$REPO_ROOT" archive --format=tar origin/main -- "${_BH_CODE_PATHS[@]}" | tar -x -C "$_BH_CODE"` with `set -o pipefail`, where `_BH_CODE_PATHS=(scripts/__init__.py scripts/automation/__init__.py scripts/automation/lib scripts/automation/dependency_pause.py scripts/automation/dependency_audit_report.py)` is a constant. This extracts exactly main's committed bytes for the consumer and everything it imports. Uncommitted edits, untracked files and the checked-out branch cannot reach it. Because the extraction directory contains nothing else, a branch-added root module (for example a `json.py`) cannot shadow the stdlib either.
+  3. Failure of `mktemp`, `archive` or `tar` (for example `origin/main` lacks the module) → **`check_error`**. The working-tree copy is never used as a fallback.
+  4. The call is `_BH_OUT="$( (cd "$_BH_CODE" && ${_BH_BOUND[@]+"${_BH_BOUND[@]}"} python3 -E -s -m scripts.automation.dependency_pause check --project "$PROJECT" --repo-slug "$_REPO_SLUG" --state-dir "$_HOS_DIR" --repo-root "$REPO_ROOT") )"`, wrapped in the usage-pause `if …; then _BH_RC=0; else _BH_RC=$?; fi` shape. `-E` ignores `PYTHON*` variables and `-s` drops user site-packages. `-I` is still not used, because `-m` must resolve from the cwd (TV-3).
+  - `--repo-root "$REPO_ROOT"` still locates `bootstrap/notify_human.sh` and `bootstrap/escalate_to_human.sh`. Those run from the working tree. **Residual R-12:** an unmerged branch's edit to those two scripts runs, but it cannot release a hold: the hold file is written before either runs (§15.7 ordering), and release only follows a qualifying clean run read by main's code.
+  - A static test (TC-C18) asserts that every `scripts.` import reachable from `dependency_pause` resolves inside `_BH_CODE_PATHS`, so a new import cannot silently fall outside the extracted set.
 
 **Parse (strict, `LC_ALL=C`).**
 
 1. The last line must full-match `^DEPENDENCY-PAUSE decision=(run|hold) holds=([0-9]{1,2}) reading=(fresh|cached:[0-9]{1,6}|none)$`.
 2. Every other line must full-match one of:
-   - `^EVENT (dependency-pause-set|dependency-pause-cleared|alert-undelivered)( [a-z_]{1,24}=[!-~]{1,300}){1,7}$`
-   - `^\[HELD-DEPENDENCY\] [ -~]{1,400}$`
-   - `^\[HELD-BUILD\] [ -~]{1,400}$`
+   - `^EVENT (dependency-pause-set|dependency-pause-cleared|alert-undelivered|dependency-advisory-realert)( (fingerprint|cause|sub|issue|run_url|previous_fingerprint|duration_s|reason)=[!-~]{1,300}){1,7}$` *(security round 1, L-1: the key alternation is the allowlist; any other key, including `event`, `role`, `project`, `cycle_id` or `timestamp`, fails the parse and is `check_error`; a key repeated in one line is also `check_error`)*
+   - *(Security round 1, M-1(b): exact grammars replace `[ -~]{1,400}`.)* `^\[HELD-DEPENDENCY\] cause=(dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) issue=(#[1-9][0-9]{0,8}|-) since=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z alert=(sent|pending|undelivered:[a-z0-9-]{1,32})( fallback=(posted|failed|not-applicable|disabled))?$`
+   - `^\[HELD-BUILD\] source=[a-z][a-z0-9-]{0,31} cause=[a-z][a-z0-9_-]{0,31} sub=(-|[a-z][a-z0-9_-]{0,31}) issue=(#[1-9][0-9]{0,8}|-) since=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z|-) alert=(sent|pending|undelivered:[a-z0-9-]{1,32}|-)( fallback=(posted|failed|not-applicable|disabled))?$`
+   - Bash `=~` is ERE without `REG_NEWLINE`, so `$` anchors the end of the string. Lines are split on `\n` first, and any line still containing `\r` or another control character fails.
 3. The number of `[HELD-*]` lines must equal `holds`, and `decision=hold` ⇔ `holds ≥ 1`.
 
 If `_BH_RC ≠ 0`, or any check fails, the result is **`check_error`**. Then:
 
 - `_BUILD_HOLD=1`, `_BUILD_HOLD_LINES="[HELD-DEPENDENCY] cause=environment-broken sub=check_error issue=- since=<cycle start iso> alert=<…>"`.
-- The cron notifier runs in-line: `"$REPO_ROOT/bootstrap/notify_human.sh" --cause environment-broken --url "https://github.com/$_REPO_SLUG/actions/workflows/dependency-audit.yml" --since <iso> --priority high --body-file <mktemp file>`. It runs **only if** `$_HOS_DIR/build-hold/$PROJECT/check-error.alerted` is absent or older than 3600 s. After the call, that marker is touched. Its result is mapped to `sent` or `undelivered:<absent|not-executable|exit-N|timeout>` with the §15.7 rules.
+- The cron notifier runs in-line: `"$REPO_ROOT/bootstrap/notify_human.sh" --cause environment-broken --url "https://github.com/$_REPO_SLUG/actions/workflows/dependency-audit.yml" --since <iso> --priority high --body-file <mktemp file>`. *(Security round 1, M-3(b), binding.)* The throttle marker is `$_HOS_DIR/build-hold-alert/$PROJECT.alerted` (only after `$PROJECT` validated). hos-cron creates `$_HOS_DIR/build-hold-alert` itself with `mkdir -p` then `chmod 0700`, and uses it only if `[[ -d $d && ! -L $d && -O $d ]]`. The notifier runs **only if** the marker is absent or older than 3600 s, and the marker is touched after the call. If the directory cannot be created or fails the check, the notifier is called without the throttle, at most once per cycle, and `$LOG_PREFIX WARN: build-hold alert throttle unavailable` is logged. With an invalid `$PROJECT`, no marker is used at all. Its result is mapped to `sent` or `undelivered:<absent|not-executable|exit-N|timeout>` with the §15.7 rules.
 - The marker is removed on the next valid verdict.
 - `_audit cycle-build-hold-check-error "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" "rc=$_BH_RC"`.
 
@@ -1679,13 +1712,15 @@ The cycle **continues** either way. The hold changes the directive. It does not 
 ```
 NEW WORK: DOCS/DESIGN ONLY
 Reason: build hold — <each [HELD-*] line, joined by "; ">.
-Allowed this cycle: Step 0 triage; a docs-only or design-only step (no change outside docs/, *.md design artifacts, DECISIONS.md); any step on the tracking issue named above, on #1504, or that records a dependency exemption or lands a dependency bump that clears the hold.
-Not allowed: starting any other build (code) step. Clear act: <clear_act sentence, §15.6>.
+Allowed this cycle: Step 0 triage; a docs-only or design-only step (changes only under docs/ and to DECISIONS.md; agent definitions, prompts and every other path are never docs-only); any step on the tracking issue named above, on #1504, or that records a dependency exemption or lands a dependency bump that clears the hold.
+Not allowed: starting any other build (code) step. Clear act: <constant from _BH_CLEAR_ACT, by source>.
 ```
+
+*(Security round 1, L-5 and M-1(c), binding.)* "Docs-only" means paths under `docs/` plus `DECISIONS.md`, and nothing else. `.claude/agents/*.md`, `AGENTS.md`, `bootstrap/*.md` and any other `*.md` are not docs-only. The clear-act sentence is a **constant table in hos-cron**, `_bh_clear_act()`, a `case` on the validated `source`: `dependency-audit` → the §15.6 `clear_act` sentence, verbatim; anything else → `See the tracking issue for this hold; hos-cron has no clear act for source <source> yet.` It is never read from a hold file or from the consumer's output. TC-K9 pins this.
 
 - Else the existing `NEW WORK: ALLOWED` is printed.
 
-**Prompt (Part 3, G-2).** `bootstrap/worker-cron-prompt.md` gains one bullet after `:73`: *"`NEW WORK: DOCS/DESIGN ONLY` → a build hold is active (#1605 D-5). Step 0 triage runs. Proceed to Step 2 only for an issue whose next step is docs-only or design-only, or one the directive's `Allowed this cycle` line names. Never start a code step. If no such issue exists, STOP. Do not try to clear the hold yourself, except through an issue the directive names. Any `NEW WORK:` value other than `ALLOWED` means: do not start a code step."* (The last sentence is architect G-2 condition (ii).) The directive is also self-describing, which covers the agent-definition parity gap (G-2) for this release.
+**Prompt (Part 3, G-2).** `bootstrap/worker-cron-prompt.md` gains one bullet after `:73`: *"`NEW WORK: DOCS/DESIGN ONLY` → a build hold is active (#1605 D-5). Step 0 triage runs. Proceed to Step 2 only for an issue whose next step is docs-only or design-only (changes only under `docs/` and to `DECISIONS.md`), or one the directive's `Allowed this cycle` line names. Never start a code step. If no such issue exists, STOP. Do not try to clear the hold yourself, except through an issue the directive names. Any `NEW WORK:` value other than `ALLOWED` means: do not start a code step."* (The last sentence is architect G-2 condition (ii).) The directive is also self-describing, which covers the agent-definition parity gap (G-2) for this release.
 
 **Residual (R-7, AD-19).** The hold is directive-level. Nothing in `submit_pr.sh` blocks a code PR while held. #2123 owns the backstop.
 
@@ -1697,7 +1732,7 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 
 | ID | Case | Asserts |
 |---|---|---|
-| TC-P1 | stub `python` prints `[3, 11, true]` | rc 1; `cause=interpreter-wrong`; the five GITHUB_OUTPUT lines are present |
+| TC-P1 | stub `python` prints `[3, 11, true]` | rc 1; `cause=interpreter-wrong`; the seven GITHUB_OUTPUT lines are present |
 | TC-P2 | no `pip-audit` in venv-bin, and a stub `pip` that would report `install` non-empty (the realistic state, since pip-audit is a listed requirement) | rc 1; `cause=pip-audit-absent`; `pip` is never invoked; no stdout or stderr line matches `(?i)\b(GATE PASS\|PASS\|SKIP)\b\|^OK:` |
 | TC-P3 | (pip-audit stub present in every sub-case, since step 3 now precedes the venv-match step) (a) `pip` exits 1; (b) `pip` rc 0 with a report where `install` is non-empty; (c) `pip` absent | `venv-mismatch` ×3 |
 | TC-P4 | `--venv-build-outcome failure` | `venv-build-failed`; `pip-audit` is never invoked |
@@ -1712,6 +1747,10 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 | TC-P13 | TV-14 skip entry plus a clean audit | rc 1; `partial-audit`; the filter output is withheld; no `OK:` line |
 | TC-P14 | skip entry plus a new advisory | rc 0; `verdict=1 partial=1` |
 | TC-P15 | stub logic exits 0 while the projection keeps 1 | `projection-mismatch` |
+| TC-P17 | *(L-2)* verdict 1: (a) stub filter prints the header `GATE FAIL: 2 …` and two kept lines while the projection keeps one; (b) same counts but a different id; (c) header N ≠ kept-line count; (d) no header | `projection-mismatch` ×4 |
+| TC-P18 | *(L-3(b))* a projection `first` of `x\ny` (stub `project` writing a crafted summary) | all seven GITHUB_OUTPUT values are the safe defaults; rc 1 |
+| TC-P19 | *(L-3(c))* stub filter stdout contains `::error::forged` and `##[group]x` | those texts appear only between one `::stop-commands::<t>` line and `::<t>::`, each prefixed with two spaces; `<t>` is 32 hex and differs between two runs |
+| TC-P20 | *(G-4)* 101 distinct kept ids | `ids` has 100 sorted entries and `more=1`; 3 kept ids incl. one malformed → `ids=<a>,<b>,unattributable` sorted |
 | TC-P16 | argv dispatch: `measure`/`project` vs the §9.7 argv | the existing CLI cases still pass; `--pip-audit-json` alone is never treated as `measure` |
 
 **Workflow static (extends §7.3; PyYAML).**
@@ -1720,7 +1759,7 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 |---|---|
 | TC-W1 | three jobs exist (`audit`, `report`, `outcome`); `report.needs == "audit"` and `report` has no `if` |
 | TC-W2 | the `audit` step with `id: venv` has `continue-on-error: true`; `measure` has `if: always()`; the `measure` `run` contains `--python-version` equal to setup-python's version; the upload step's `if` is `steps.measure.outcome == 'success'` |
-| TC-W3 | the `audit` outputs are the five names; `report.outputs.issue` references `steps.reconcile.outputs.issue` |
+| TC-W3 | the `audit` outputs are the seven names; `report.outputs.issue` references `steps.reconcile.outputs.issue` |
 | TC-W4 | the workflow text contains none of `--logic-path`, `--attempt-timeout-seconds`, `--retry-sleep-seconds`, `HOS_PIP_AUDIT_BIN` |
 | TC-W5 | `outcome`: `permissions == {}`, `needs == ["audit", "report"]`, `if == "always()"`, no step has `uses`, the single `run` has no `${{`, and exactly one `::notice::` occurs in it |
 | TC-W6 | the `ID` alternation in `outcome`'s script equals `dependency_audit_report.VULN_ID_RE` |
@@ -1732,6 +1771,7 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 | TC-O1..TC-O5 | one per §15.3 mapping row. Asserts the exact record line printed after `::notice::` and the exit code (0 only for clean). |
 | TC-O6 | invalid `FIRST` (`x y`), invalid `KEPT` (`-1`) → `sub=audit-output-invalid` |
 | TC-O7 | invalid `SHA` → exit 1 with no `::notice::` |
+| TC-O9 | *(L-3(a), G-4)* `FIRST` containing a newline; `IDS` with a space or an unsorted list is passed through only if it matches the `IDS` pattern (sortedness is the consumer's check) | control char → `audit-output-invalid`; the record carries `ids=`/`more=` for a finding and `-`/`0` otherwise |
 | TC-O8 | `AUDIT_RESULT=failure CAUSE=pip-audit-absent` → `sub=pip-audit-absent`; `AUDIT_RESULT=cancelled` with empty `CAUSE` → `sub=audit-failed` |
 
 **`tests/automation/test_dependency_pause.py` (new).** All cases use fake `Deps`.
@@ -1764,6 +1804,14 @@ Consumer (TC-C\*):
 | TC-C14 | corrupt own file → `state-corrupt` hold and file rewritten; a corrupt `pipeline-blocked.json` → `[HELD-BUILD] … state-corrupt` and the file untouched; a valid `pipeline-blocked.json` plus a clean dependency run → decision hold, that file untouched |
 | TC-C15 | fingerprint change → new `since`, `held_since` kept, `previous_fingerprint` in the EVENT, notifier called again |
 | TC-C16 | hold dir is a symlink, or owned by another uid (monkeypatched `geteuid`) → `state-corrupt`, with no write |
+| TC-C18 | *(H-1)* static: every `scripts.` import reachable from `dependency_pause` (AST walk) resolves to a file inside hos-cron's `_BH_CODE_PATHS` | — |
+| TC-C19 | *(G-4, re-alert while held)* held on `first=CVE-A`, `alerted_ids=[CVE-A]`; next record `ids=CVE-A,CVE-B` (same fingerprint) | `EVENT dependency-advisory-realert`; one notifier call `--cause dependency-advisory`; `since` unchanged; `alerted_ids=[CVE-A,CVE-B]` |
+| TC-C20 | *(G-4, swap)* `alerted_ids=[CVE-A,CVE-B]`, kept 2; next record `ids=CVE-A,CVE-C`, kept 2 | re-alert (count unchanged, set changed); then a record `ids=CVE-A` (shrink) and a repeat of `CVE-A,CVE-C` → no notifier call; overflow `more=1` with `kept` growing past `kept_at_alert` → re-alert |
+| TC-C21 | *(M-3(a))* each of `<state-dir>`, `build-hold`, `<project>` in turn: a symlink; group-writable (0o775); owned by another uid (monkeypatched); the own file a symlink to a valid hold; the cache a FIFO or group-readable; a cache with an extra key, a future `read_at`, or a `record` failing §15.4 | `state-corrupt` in every case; nothing written through the bad component; a missing `build-hold` is created 0700 |
+| TC-C22 | *(M-1(a))* a `pipeline-blocked.json` with `cause` = `x; rm -rf /`, `issue` = `"12"` (string) or `true`, `since` with a newline, or `alert.reason` 33 chars | `[HELD-BUILD] source=pipeline-blocked cause=environment-broken sub=state-corrupt …` re-rendered; no byte of the bad value in stdout |
+| TC-C23 | *(L-3(d))* selected run `run_started_at` = now + 301 s; and = now + 299 s | `run-invalid`; second is read normally |
+| TC-C24 | *(L-1)* the stdout of every TC-C case | every EVENT key is in the allowlist; no key repeats |
+| TC-A6 | *(L-4)* consumer env holds `GH_TOKEN`, `GITHUB_TOKEN`, `HOS_APP_KEY`, `HOS_PROJECT` | the notifier's `env` has none of the first three and has `HOS_PROJECT`, `PATH`, `HOME`; the escalation's `env` has `GH_TOKEN` and not `GITHUB_TOKEN` |
 | TC-C17 | stdout contract: every line matches §15.8's parse regexes; the last line is the summary |
 
 Alert (TC-A\*):
@@ -1776,7 +1824,7 @@ Alert (TC-A\*):
 | TC-A4 | undelivered at T; a cycle at T+59 m → no call; T+60 m → exactly one call |
 | TC-A5 | fallback (Q-D5-5 = a): undelivered with issue 77 → `escalate_to_human.sh` argv exact, once per fingerprint; (R-B) a `not_run` record with `issue=-` and a cache `last_issue=77` → escalation on 77; no issue and no `last_issue` → `fallback=not-applicable` in the file and the held line, no call; a second cycle makes no call; a failed fallback leaves the hold unchanged; `FALLBACK_ENABLED=False` → `disabled`, no call |
 
-**`tests/automation/test_hos_cron.py` (modify; TC-K\*).** These cases use the file's existing harness. The fake consumer is a `scripts/automation/dependency_pause.py` written into the test's fake `REPO_ROOT`, which is a real module path, not an env seam. It prints a scripted stdout and exit code.
+**`tests/automation/test_hos_cron.py` (modify; TC-K\*).** These cases use the file's existing harness. The fake consumer is a `scripts/automation/dependency_pause.py` **committed** in the test's fake `REPO_ROOT` git repo and pointed to by `refs/remotes/origin/main` (`git update-ref`), together with the workflow file where the case needs it, because hos-cron extracts the consumer from `origin/main` (H-1). It is a real module path, not an env seam. It prints a scripted stdout and exit code.
 
 | ID | Asserts |
 |---|---|
@@ -1786,13 +1834,17 @@ Alert (TC-A\*):
 | TC-K4 | fake prints `decision=run` → `NEW WORK: ALLOWED` and `[DEPENDENCY-AUDIT] decision=run` |
 | TC-K5 | open PR plus hold → `NEW WORK: BLOCKED` text unchanged, plus `Build hold also active:` |
 | TC-K6 | `ROLE=overseer` → the fake is never invoked; no `NEW WORK:` line (the existing assertion holds) |
+| TC-K1b | *(M-2)* (a) `origin/main` ref missing; (b) `.git/index.lock` held and a corrupt object for the workflow blob; (c) the workflow present on `origin/main` but deleted on the checked-out branch | (a), (b) → `sub=check_error`, `DOCS/DESIGN ONLY`, fake not invoked; (c) → configured, fake invoked |
+| TC-K8 | *(H-1)* checked-out branch whose working-tree `dependency_pause.py` (modified, uncommitted; and separately committed on the branch) prints `decision=run` and touches a marker, while `origin/main`'s prints a hold | the branch copy is **never** invoked (marker absent); the `origin/main` copy's hold is used. Variant: `origin/main` lacks the module → fake not invoked, `sub=check_error`. Variant: a branch-added root `json.py` that touches a marker → marker absent |
+| TC-K9 | *(M-1(c), L-5)* fake prints a `[HELD-BUILD] source=pipeline-blocked …` line | directive's `Clear act:` is the constant for unknown sources, not any text from the fake; the `Allowed this cycle` line says changes only under `docs/` and to `DECISIONS.md` |
+| TC-K10 | *(M-1(b), L-1, M-3(b))* fake prints a `[HELD-DEPENDENCY]` line with an extra field, a `[HELD-BUILD]` line with `cause=Bad`, an EVENT with key `role=x`, or `\r`; separately `PROJECT=../x` | `check_error` each time; for `../x` no path under `$_HOS_DIR` containing `..` is created and the notifier is called once |
 | TC-K7 | EVENT lines become `_audit` records with those names |
 
 **Human acceptance tests (mandatory; AC-33, AC-43).**
 
 - **TC-H1: pip-audit absent ⇒ NOT_RUN, pause set, alert fired, no pass line.** One test function chains the three real components offline:
   1. `measure` with a venv-bin lacking `pip-audit` → rc 1, `MEASURE verdict=- cause=pip-audit-absent …`, GITHUB_OUTPUT `cause=pip-audit-absent`.
-  2. The extracted `outcome` script with `AUDIT_RESULT=failure` and those outputs → the record `hos-dependency-audit/1 outcome=not_run cause=environment-broken sub=pip-audit-absent first=- kept=0 issue=- sha=<40 hex>`, exit 1.
+  2. The extracted `outcome` script with `AUDIT_RESULT=failure` and those outputs → the record `hos-dependency-audit/1 outcome=not_run cause=environment-broken sub=pip-audit-absent first=- kept=0 issue=- ids=- more=0 sha=<40 hex>`, exit 1.
   3. `dependency_pause.main` with fake reads returning one qualifying run (head_sha = that sha), one outcome job, and that record as a notice annotation, plus a recording notifier → the hold file is written with fingerprint `dependency-audit:environment-broken:pip-audit-absent`; the notifier is invoked once with `--cause environment-broken … --priority high`; stdout has `[HELD-DEPENDENCY] cause=environment-broken sub=pip-audit-absent` and `decision=hold`.
   4. Across all captured stdout and stderr of steps 1–3: **no** line matches `(?i)\bGATE PASS\b|\bPASS\b|\bSKIP\b|^OK:`.
 
@@ -1800,7 +1852,7 @@ Alert (TC-A\*):
 - **TC-H2: new advisory ⇒ issue + pause + `dependency-advisory` alert.**
   1. TC-P12's measure.
   2. The artifact is fed to `dependency_audit_report` CLI `--dry-run` with the recording writer → the planned issue body lists `CVE-2099-0001` and **not** black or mcp.
-  3. `outcome` with `REPORT_RESULT=success ISSUE=77` → `finding … first=CVE-2099-0001 kept=1 issue=77`.
+  3. `outcome` with `REPORT_RESULT=success ISSUE=77` → `finding … first=CVE-2099-0001 kept=1 issue=77 ids=CVE-2099-0001 more=0`.
   4. Consumer → hold; notifier `--cause dependency-advisory --issue 77`.
 
 **AC-43 coverage:**
@@ -1912,7 +1964,7 @@ Both PRs touch protected surfaces, so both need human approval for merge regardl
 |---|---|---|
 | AC-32 | §15.2 steps 6–9 (filter rc is the verdict; `project` loads the module by path; consistency check) | TC-P10, TC-P11, TC-P12, TC-P15 |
 | AC-33 | §15.2 cause table; §15.3 mapping; §15.6; §15.7 | TC-H1, TC-H1b, TC-P1–TC-P9, TC-O8 |
-| AC-34 | §15.3 (`report` runs on verdict 1; `finding` record); §15.6; §15.7 | TC-H2, TC-C1, TC-C2 |
+| AC-34 | §15.3 (`report` runs on verdict 1; `finding` record); §15.6 incl. "G-4 resolution" (set-based re-alert); §15.7 | TC-H2, TC-C1, TC-C2, TC-C19, TC-C20 |
 | AC-35 | §15.6 host state under `~/.hos/build-hold/`; §15.8 call site every worker cycle | TC-C\*, TC-K1–TC-K7 |
 | AC-36 | §15.8 directive + prompt bullet | TC-K2 (directive-level; R-7) |
 | AC-37 | §15.6 `plan_transition` clean row; `clear_act` | TC-C5, TC-C6 |
@@ -1941,13 +1993,37 @@ Both PRs touch protected surfaces, so both need human approval for merge regardl
 
 ### 15.13 Gaps returned to the architect
 
-> **Ruled 2026-10-20 (ADR §2b, "Architect rulings on TD §15.13").** G-1: decided, no shed exists, and a 16th file is a human waiver. G-2: deferral accepted, on two conditions: a follow-up issue linked in the Part 3 PR body, and the prompt bullet's fail-closed sentence (§15.8). G-3: both removals confirmed. G-4: a human/product question (ADR §6 item 9). §15.6 implements AC-41 as written until it is answered. G-5: aligned, no change. The review also produced two findings, both edited into this TD. R-A: the presence check now runs ahead of the venv-match step (§15.2). R-B: the fallback falls back to `last_issue` (§15.5, §15.7), with the residual in ADR §6 item 8.
+> **Ruled 2026-10-20 (ADR §2b, "Architect rulings on TD §15.13").** G-1: decided, no shed exists, and a 16th file is a human waiver. G-2: deferral accepted, on two conditions: a follow-up issue linked in the Part 3 PR body, and the prompt bullet's fail-closed sentence (§15.8). G-3: both removals confirmed. G-4: ~~a human/product question (ADR §6 item 9). §15.6 implements AC-41 as written until it is answered.~~ **Resolved by pm-agent's ruling (REQUIREMENTS AC-34/AC-41/AC-43, commit `ebadd5397`) and implemented in §15.6 "G-4 resolution" (set-based `alerted_ids`; TC-C19, TC-C20).** G-5: aligned, no change. The review also produced two findings, both edited into this TD. R-A: the presence check now runs ahead of the venv-match step (§15.2). R-B: the fallback falls back to `last_issue` (§15.5, §15.7), with the residual in ADR §6 item 8.
 
 - **G-1 (ADR AD-23 shed step 1 cannot apply).** `SCRIPTS-INDEX.md` is pinned by `tests/framework/test_scripts_index.py`. Both Part 3 automation modules are under `scripts/**`, so it must be regenerated in Part 3 and cannot become a follow-up. Part 3 is therefore at exactly 15 with **no** shed headroom. Request: amend AD-23's shed order to name the real first shed, if any, or record that the next file over is a human waiver question. §15.11 already states the latter.
 - **G-2 (the directive's readers).** AD-23's Part 3 list omits `bootstrap/worker-cron-prompt.md`, which enumerates the directive values (`:73–76`). Without it, a third value is undefined behaviour for the agent. It is added as file 9. `.claude/agents/worker.md` (`:321–346`) also enumerates them. It is an agent definition, and CLAUDE.md says those edits are authored by the top-level session, not `coder`. Adding it would also make 16 files. The design makes the directive self-describing (§15.8) and defers `worker.md` parity to a follow-up. Request: the architect confirms the deferral, or rules that `worker.md` must ship with Part 3. The second option is a human waiver (16 files).
 - **G-3 (protected-surface mirror).** AD-18 adds an exact-path protected surface. The #1776 precedent (`test_t3`) shows `docs/AGENT-IDENTITY.md` §9 mirrors exact-path entries, so it is added as file 12. `DECISIONS.md` (prospective in Part 2) and `CRON-SETUP.md` (folded into the runbook) leave Part 3 to keep the count at 15. Request: confirm both removals.
-- **G-4 (fingerprint granularity, product-adjacent).** AC-41 fixes the fingerprint to the **first** kept advisory id. A second new advisory that arrives while held, sorting after the first, does not change the fingerprint, so it does not re-alert. The tracking issue still gets `report`'s delta comment (AC-22), so it is visible but not pushed. Request: confirm this is acceptable, or route to pm-agent to widen AC-41. Changing it is a one-function change (`fingerprint`).
+- **G-4 (fingerprint granularity, product-adjacent). RESOLVED — see the ruling box above and §15.6 "G-4 resolution".** AC-41 fixes the fingerprint to the **first** kept advisory id. A second new advisory that arrives while held, sorting after the first, does not change the fingerprint, so it does not re-alert. The tracking issue still gets `report`'s delta comment (AC-22), so it is visible but not pushed. Request: confirm this is acceptable, or route to pm-agent to widen AC-41. Changing it is a one-function change (`fingerprint`).
 - **G-5 (I-7 cache window).** AD-17's 6 h cache means a GitHub outage longer than 6 h holds build work (Q-D5-6). Nothing to change unless the human rejects I-7. This is noted so the architect's Q-D5-6 disposition and §15.5's `READ_FAILED_HOLDS` constant stay aligned.
+
+
+### 15.14 Security review round 1 (2026-10-20) and G-4: disposition record
+
+Source: `security-reviewer`, ADR §2b + TD §15 @ `0a94eb9c6` (CHANGES_REQUESTED, iteration 1); pm-agent G-4 ruling @ `ebadd5397`. Every finding's required text is applied verbatim or stricter, in place, marked *(security round 1, <id>)*.
+
+| Finding | Applied in | Stricter than required? | Tests added |
+|---|---|---|---|
+| H-1 | §15.8 Invocation | Yes: the consumer **always** runs from a `git archive` extraction of `origin/main` (a superset of the "throwaway worktree" path), never from the working tree; extraction failure is `check_error`; `python3 -E -s` | TC-K8, TC-C18 |
+| M-1 | §15.6 shared reader (validate every field, re-render); §15.8 parse (exact grammars); §15.8 directive (`_bh_clear_act()` constant table) | — | TC-C22, TC-K9, TC-K10 |
+| M-2 | §15.8 Predicate (`rev-parse` + `cat-file -e` on `origin/main`; only the exact no-such-path stderr is "not configured") | — | TC-K1b |
+| M-3 | §15.6 Directory (lstat + fstat every component, `dir_fd`, `O_NOFOLLOW`, 0700 on create, file mode `& 0o077 == 0`); §15.5 cache strict schema; §15.8 `$PROJECT` validated first, throttle marker in hos-cron-created `build-hold-alert/` | Files also must have no group/other bits | TC-C21, TC-K10 |
+| L-1 | §15.6 stdout contract (key allowlist + per-key value patterns); §15.8 parse (key alternation; repeated key rejected) | — | TC-C24, TC-K10 |
+| L-2 | §15.2 step 8 (`--summary` with `kept_ids`), step 9 (two-sided: header N = kept-line count = projection kept; id multisets equal). The filter **does** print per-advisory kept lines (`render`, two-space indent), so the line comparison applies. | — | TC-P17 |
+| L-3 | (a) §15.4, §15.5 rule 4, §15.8 parse, §15.3 outcome validation: `re.fullmatch`, control characters rejected; (b) §15.2 `--github-output` per-key validation with safe defaults; (c) §15.2 `_echo_untrusted` stop-commands region + report step; (d) §15.5 rule 1 `run-invalid` | (c) uses both the stop-commands token **and** the two-space prefix plus control-char replacement | TC-P18, TC-P19, TC-O9, TC-C23 |
+| L-4 | §15.7 Subprocess environment; §15.8 `env -i` for hos-cron's call | Also drops any `HOS_*` name containing TOKEN/SECRET/KEY/PASSWORD | TC-A6 |
+| L-5 | §15.8 directive + prompt bullet: docs-only = `docs/` + `DECISIONS.md` | — | TC-K9 |
+| G-4 | §15.2 (`ids`, `more` outputs), §15.3 (outcome carries them), §15.4 (record `ids=`/`more=`, 8192-byte bound), §15.6 (`alerted_ids`, `alerted_more`, `kept_at_alert`, set-based re-alert, `dependency-advisory-realert` event), §15.13 ruling box, Human Review item 21 | Overflow case also re-alerts on count growth; residual R-11 disclosed | TC-C19, TC-C20, TC-P20 |
+
+New sub tokens (extends TD-D5-1): `run-invalid`. New residuals: R-11, R-12 (§14).
+
+**ADR text changes this needs (not made here; for the architect):** (1) AD-16's record grammar gains `ids=<…> more=<0|1>`, and its "at most 512 bytes" becomes 8192 (G-4). (2) AD-18 "where the consumer lives": the consumer runs from an `origin/main` extraction, not the checkout, and the scope predicate reads `origin/main` (H-1, M-2). (3) AD-18 state: the `check_error` throttle marker lives in `~/.hos/build-hold-alert/`, not in the hold directory (M-3). (4) AD-20: the notifier gets an allowlisted environment without `GH_TOKEN` (L-4). (5) AD-19: "docs-only" is `docs/` + `DECISIONS.md` (L-5).
+
+**Startup-gap check.** H-1, M-1..M-3 and L-1..L-5 should have been in the initial §15. They were caught by design review before any code was written against §15, so no sign-off is orphaned beyond those already listed in §14 "D-5": the architect's §15 approval and the security-reviewer's review are re-run on this revision. No `startup-artifact-gap` issue is needed, since nothing was built.
 
 ---
 
@@ -1999,4 +2075,4 @@ Nothing here required a human before `coder` built the original ten commits. Ite
 18. **Cross-issue requirements, to be disclosed in the Part 3 PR body.** #2125: add the two causes and accept `--url`. #2123: B4 fingerprinting and adopting the shared hold directory. Neither is implemented here.
 19. **`.claude/agents/worker.md` parity is deferred (G-2).** Only the cron prompt learns the third directive value in Part 3. The directive describes itself. A follow-up, authored by the top-level session, brings `worker.md` in line.
 20. **H-D5-7 (ADR §6 item 8): until #2125 lands, a hold with no tracking issue ever seen pushes no alert, and a fallback on a closed tracking issue may not surface.** Accept and disclose (recommended), or choose Q-D5-5 (c), or authorise an anchor issue.
-21. **G-4 (ADR §6 item 9): does a second new advisory while held need a pushed alert?** Recommendation: re-alert when `kept` increases under the same fingerprint.
+21. ~~**G-4 (ADR §6 item 9): does a second new advisory while held need a pushed alert?** Recommendation: re-alert when `kept` increases under the same fingerprint.~~ **Resolved by pm-agent (AC-34/AC-41, `ebadd5397`): yes, per new advisory, set-based (§15.6).** The count-based recommendation was insufficient (swap case). Residual R-11 (more than 100 distinct kept advisories) is disclosed.
