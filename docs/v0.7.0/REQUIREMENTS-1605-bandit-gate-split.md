@@ -8,6 +8,7 @@
 **Consumers:** `architect` → `technical-design` → `coder`.
 **Scope note:** This document says WHAT and WHY. It names no file layout, no flag spelling, no algorithm. Where it appears to, the text is marked NON-BINDING.
 **Amendment 2026-10-14 (pm-agent) — PENDING HUMAN CLEARANCE:** AC-20, AC-20a (new), AC-26 and I-4 carry proposed amendments that align them with ADR-1605 AD-12a/AD-12b (label-authenticated tracking issue; CWE-345/CWE-863). This is a **STRUCTURAL** change: a new repo label and a new operator obligation. It takes effect only on explicit human clearance in the PR thread (ADR §6 item 3; §5 below). Until then, the original text of AC-20/AC-26 remains the approved requirement, and the implementation's use of the label is an open, disclosed discrepancy against it. **Merge gate (clarified 2026-10-14):** human clearance of AD-12a/AD-12b gates the merge of the **Part 2 implementation PR**, not this design PR. Until a human records that clearance in the implementation PR's thread, the implementation PR MUST NOT merge; disclosing the discrepancy in its body is required but is not sufficient to merge (ADR §6 item 3; TD merge-gate banner).
+**Amendment D-5 (2026-10-20, pm-agent, from the human's scope ruling relayed on #1605) — HUMAN-ISSUED, BINDING:** The scheduled pip-audit run is no longer report-only. A new uncovered advisory, or a run that could not complete, **pauses new build work and alerts a human**. It never ends in a silent skip. New: §2F (AC-32..AC-43), I-7, Q-D5 open questions (§5). The 2026-10-14 banner above is partly resolved: Q3 approved the label (see the AC-26 note). The merge-gate status is Q-D5-4. Amended: S-2, S-6 waiver (Q2 granted), AC-25, AC-26, AC-31, non-goal 9. Also recorded: Q1=A (the agy lane is disclosed as not run).
 
 ---
 
@@ -45,6 +46,8 @@ Four reasons, in ascending weight:
 
 The pip-audit lane carries an identical `|| echo "0"` shape on `VULN_COUNT`. Since that lane's *reporting* behaviour is being rewritten as a scheduled workflow, the requirement attaches to the new artefact (AC-23) rather than generating a second fix to code that is about to change. The locally-retained pip-audit gate keeps its current behaviour otherwise.
 
+> **Amended D-5 (2026-10-20):** on the **scheduled** path the construction requirement is stronger. The scheduled path has no fail-open class at all. `security_scan.sh`'s current `SKIP: pip-audit not in oversight venv` and `NOT CHECKED … required=false` branches (exit 0) MUST NOT exist on it (AC-33). The **local** `run_gates.sh` dependency half is unchanged by D-5. Its per-change blocking status belongs to #2132 (v0.7.1).
+
 ### S-3 — Promotion of the new bandit job to a **required** status check is **DEFERRED** to a follow-up. Not in this PR.
 
 V-6 says it is promotable, and the #1571 ratchet argument applies cleanly. I still defer, because: (i) #1605 asks to *wire*, not to *promote* — #1571 deliberately separates those two acts; (ii) promotion changes what blocks a merge for every future PR, which is a control change deserving its own visible decision rather than a line inside a refactor PR; (iii) the precedent promotions (type-check, lint) are recorded as **human overrides**, so the pattern is that a human decides promotion. Wiring alone is useful without it: the job runs, is visible on the PR, and the overseer reads check status.
@@ -78,6 +81,8 @@ My estimate is 13–14 files, which is tight. If the implementation runs over, s
 > - the implementation PR body discloses the 11-commit count and links the human's authorization.
 >
 > If this is not authorized, the amendment commit MUST NOT be made, and the worker escalates instead of improvising (for example by squashing, or by splitting the amendments out against the architect's ordering).
+>
+> **Human ruling 2026-10-20 (Q2 = yes): AUTHORIZED** on the terms above. Exactly one 11th commit on Part 2, containing only the security design amendments; files ≤15; the PR body discloses the count and links the ruling on #1605. The waiver does **not** cover D-5 work. See Q-D5-1.
 >
 > **Sequencing (corrected 2026-10-14, architect C6(b)):** the authorization MUST be obtained **before** the 11th commit is made. It MUST NOT wait for the AD-12a/AD-12b clearance. That clearance is recorded in the Part 2 implementation PR's thread, and that PR cannot be complete until the 11th commit already exists, so pairing the two would require making the commit first. The authorization is obtained in one of two places: a `needs-human` issue, as `docs/PR-SIZE-POLICY.md` prescribes for exceeding the limit ("file a `needs-human` issue … and await explicit human authorization before exceeding the limit"), or this design PR's thread. **This design PR's body MUST list the S-6 commit-budget waiver as an explicit human decision item**, separate from the AD-12a/AD-12b clearance. The waiver is not implied by that clearance, and that clearance is not implied by the waiver.
 
@@ -162,12 +167,15 @@ Each is independently testable. "MUST" is binding; "SHOULD" is rebuttable by the
 **AC-24 — Findings return after closure → reopen the same issue.** The workflow MUST reopen and update the existing marked issue, never create a second one. This is what makes AC-20's "exactly one, ever" hold across the full lifecycle.
 
 **AC-25 — Execution failure MUST NOT be read as zero findings.** If pip-audit times out, hits a network error, or emits unparseable output, the workflow run MUST fail visibly, and MUST NOT close the issue, edit its body, or post a comment. This is AC-4's rule applied to the second artefact (S-2) — and it is the single most likely way this workflow silently rots, since a permanent network failure would otherwise read as "all vulnerabilities fixed" and auto-close the issue. *(Clarified 2026-10-14, security review S-4:)* pip-audit output whose fields do not match the technical design's strict allowlist patterns counts as unparseable here — it MUST be rejected as malformed with the same fail-visible, zero-writes outcome (patterns and exit code are the TD's).
+> **Amended D-5 (2026-10-20):** "fail visibly" is no longer enough on its own. An execution failure is a **`NOT_RUN`**, and it pauses and alerts per AC-33. The tracking-issue prohibitions still hold: no close, no replacement of the finding body, no delta comment. Whether a `NOT_RUN` *status* may be written to the tracking issue is Q-D5-2.
 
 **AC-26 — No new label.** The tracking issue MUST NOT require a label absent from `docs/LABELS.md` / `KNOWN_LABELS`. It SHOULD carry no pending-actor label at all: it is a reporting artefact, not queued work, and `needs-ai` would route the worker into #1504's territory autonomously. Its body MUST cross-reference #1504.
 
 > **Proposed amendment (2026-10-14, pending human clearance — ADR AD-12a/AD-12b):** ~~No new label. The tracking issue MUST NOT require a label absent from `docs/LABELS.md` / `KNOWN_LABELS`.~~ This clause is **superseded by AD-12a**. The tracking issue carries exactly one label, `dependency-audit`, which is its authenticator (AC-20, AC-20a). This is a **new repo label** and needs explicit human clearance (ADR §6 item 3). The rest of AC-26 still holds unchanged: the issue carries **no pending-actor label** (no `needs-ai`, because it is a reporting artefact and not queued work), and its body MUST cross-reference #1504. Two consequences follow:
 > - **Registry deferral:** the `docs/LABELS.md` / `KNOWN_LABELS` row for `dependency-audit` is deferred to **#1812 item 12** (the implementation PR is at 14 of 15 files and the registry row touches two files — `docs/LABELS.md` and `KNOWN_LABELS` in `scripts/framework/check_agents_static.sh` — which would make 16). Until it lands, the label exists in the repo but not in the registry.
 > - **New operator obligation:** do not hand-remove the label from the tracking issue. Removing it makes the next run treat the issue as absent and create a duplicate.
+>
+> **Cleared 2026-10-20 (human ruling Q3, relayed on #1605): the new `dependency-audit` label is APPROVED.** The amendment above replaces the original AC-26 "no new label" and is now binding. Whether Q3 also counts as the AD-12a/AD-12b clearance that gates the Part 2 merge is Q-D5-4.
 
 **AC-27 — Issue bodies MUST NOT be passed via `@path` expansion.** No `-f body=@file` / `--field body=@path` (#752, #1155) — that posts the literal string. Body content goes via a mechanism verified to transmit file contents.
 
@@ -180,6 +188,53 @@ Each is independently testable. "MUST" is binding; "SHOULD" is rebuttable by the
 **AC-30 — The retired rationale is explicitly retired.** `docs/CI-EXECUTION-INVENTORY.md`'s `security_scan.sh` row currently reads "CI-portable, deferred" *because of pip-audit*. It MUST be replaced by rows reflecting the split, not left alongside them.
 
 **AC-31 — A DECISIONS.md entry, appended at the bottom under a dated header**, recording: the split, the fail-open defect and V-2's duration trigger, the V-6 baseline with its measurement method, and the S-3 deferral of promotion.
+> **Amended D-5 (2026-10-20):** the entry MUST also record the scope refinement. The "checks are mandatory and deterministic, never advisory" principle applies to **diff-scoped** checks. **Environment and external-input** checks are scheduled and reported, and they pause and alert. This is the first instance. The general rule is #2132 (v0.7.1) and #2127 (v0.7.10). The entry MUST cite both issues and MUST NOT state the general rule as already enforced.
+
+### F. Pause-and-alert on the scheduled run (Amendment D-5, 2026-10-20)
+
+**Terms.** A *clean run* means pip-audit completed, its output parsed, and every advisory is suppressed by a current exemption. A *finding* is any advisory that `security_scan_logic.py`'s `partition` keeps. That includes `EXEMPTION EXPIRED`, `FIX NOW AVAILABLE` and `PREMISE BROKEN`. A *`NOT_RUN`* is any run that is neither of those. *The pause* is a persisted state that the worker cycle honours before it starts build work.
+
+**AC-32 — The scheduled run reads the #1776 exemption roster.** It MUST decide findings with the same roster and the same partition logic as `scripts/oversight/security_scan_logic.py` on main. It MUST NOT use a copy. Testable: a fixture that contains only the currently exempted advisories (black ×2, mcp CVE-2026-59951) gives a clean run, with no pause and no alert. The same fixture with an exemption past its `expires` date gives a finding.
+
+**AC-33 — Cannot run = `NOT_RUN` + pause + alert. No skip path.** Each of the following MUST produce `NOT_RUN` with a named cause, set the pause, and fire the alert with cause `environment-broken`:
+- pip-audit is absent from the venv;
+- the venv does not match `requirements.txt`;
+- the interpreter is wrong;
+- retries are exhausted on a timeout or network error;
+- the output is unparseable or fails the allowlist (AC-25);
+- the roster is invalid (`run_filter` exit 2).
+
+No outcome of the scheduled path may print `SKIP`, `OK`, a pass, or exit 0 unless it is a clean run. **Mandatory test (human acceptance item):** with pip-audit absent from the venv, the run reports `NOT_RUN`, the pause is set, the alert is invoked, and no pass or OK line is printed.
+
+**AC-34 — New finding = tracking issue + pause + alert.** A finding MUST do three things together: open or update the tracking issue (AC-20..AC-24, unchanged), set the pause, and fire the alert with cause `dependency-advisory`. AC-21's zero-writes rule still governs the **issue**. An unchanged finding set writes nothing to the issue, but the pause stays set.
+
+**AC-35 — The pause takes effect where cycles run.** The pause MUST be honoured by every worker cycle on the host, before build work starts. The scheduled workflow runs in GitHub Actions (AC-17, AC-18) and cannot write the host's `~/.hos/`, so the workflow alone cannot satisfy this AC. The pause MUST be held in host state under `~/.hos/`, in the same family as `~/.hos/usage-pause/` (`bin/lib/usage_pause.py`) and `~/.hos/timeout-breaker/` (`bin/hos-cron`). It is coordinated with #2123. The host-side consumer MUST read the latest scheduled-run outcome. If it cannot read that outcome, it MUST treat this as `NOT_RUN` (AC-33). NON-BINDING: how the outcome gets from Actions to the host is the technical design's call.
+
+**AC-36 — The pause holds build work only.** While paused, the worker MUST NOT start new build work. Triage, docs-only steps and design-only steps MAY continue. So may work on the tracking issue, #1504, or an exemption or bump that clears the pause. This is the same carve-out as #2123 item 2. Testable: a docs-only step proceeds while paused, and a code step does not start.
+
+**AC-37 — Clearing.** The pause clears **only** on a clean run, either the next scheduled run or a manual `workflow_dispatch`. The human's clearing act is to record a time-boxed exemption (the #1776 roster) or land a bump, and then let a run re-evaluate. The pause MUST state that act and link the tracking issue. Clearing records `dependency-pause-cleared` with the pause's duration. *(Whether a human act on the issue can clear the pause without a clean run is Q-D5-3.)*
+
+**AC-38 — A stale schedule is `NOT_RUN`.** If there is no completed scheduled run within the cadence plus a grace period, the consumer MUST treat this as `NOT_RUN` (cause `environment-broken`, sub-cause stale). Examples are a schedule GitHub disabled after a period of repo inactivity, or a workflow that has never run. A silently stopped schedule otherwise reads as "nothing new", which is the defect AC-25 prohibits. The grace period is the technical design's call and MUST be stated.
+
+**AC-39 — Never silent, and the alert never gates the pause.** Setting the pause MUST NOT depend on the alert being delivered. If `bootstrap/notify_human.sh` (#2125) is absent, not executable, or exits non-zero, the pause is still set. An `alert-undelivered` audit event (cause, reason) is still emitted. **Every** paused cycle's log carries a line naming the cause, the tracking issue, the time the pause started, and `alert=undelivered:<reason>` when that applies. The minimum fallback channel when the alert is undelivered is Q-D5-5. Testable: with the notifier absent, the pause is set, the event is emitted, and the log line is present.
+
+**AC-40 — The alert seam is #2125's interface.** The alert MUST be sent as one call to `bootstrap/notify_human.sh --cause <dependency-advisory|environment-broken> --issue <tracking issue> --since <iso> --priority high --body-file <path>`. It MUST NOT be a second Pushover client. Dedup and rate limiting belong to #2125. Until #2125 lands, the call resolves to "absent" and AC-39 governs. The two causes are additions to #2125's closed trigger list (#2125 item 2). The Part 2/3 PR body MUST disclose this as a cross-issue requirement on #2125.
+
+**AC-41 — The pause stands alone, and #2123 can adopt it.** If #2123 has not landed, #1605 MUST deliver a self-sufficient pause (AC-35..AC-38). It MUST NOT be a no-op that waits for #2123. The pause MUST expose a fingerprint, `dependency-audit:<cause>:<first advisory id | NOT_RUN cause>`, in a form #2123 can consume. **Cross-issue requirement on #2123 (human ruling B4):** the breaker treats "gate could not run" the same as "gate failed" for fingerprinting. The PR body MUST disclose this. #1605 does not implement it inside #2123.
+
+**AC-42 — Day-one is clean, or the PR says so.** Before the pause is enabled, the Part 2/3 PR MUST show one run against the current roster: clean, or listing the exact findings that would pause the pipeline on merge. A pause that trips on merge without that disclosure is a defect.
+
+**AC-43 — Tests for D-5, without network.** At minimum:
+- AC-33's absent-pip-audit test;
+- a new uncovered advisory → issue write + pause + `dependency-advisory` alert;
+- a roster-only fixture → no pause;
+- an expired exemption → pause;
+- a clean run clears the pause;
+- the notifier absent → AC-39;
+- a stale schedule → `NOT_RUN`;
+- a docs-only step proceeds while paused.
+
+AC-28's testability rule applies to the pause-decision logic as well.
 
 ---
 
@@ -193,7 +248,7 @@ Each is independently testable. "MUST" is binding; "SHOULD" is rebuttable by the
 6. **Any change to `run_gates.sh`** (S-4).
 7. **A general-purpose GitHub issue CRUD library** (F-3). Build only what the workflow needs.
 8. **Changing suspension infrastructure** — no `AUTO_CHECKABLE_GATES` entry, no new suspension machinery.
-9. **Auto-remediation of dependencies** — no Dependabot-style PR opening. Report only.
+9. **Auto-remediation of dependencies** — no Dependabot-style PR opening. ~~Report only.~~ *(Amended D-5:)* Report, pause and alert (§2F). Never auto-bump.
 10. **Consumer-side artefacts.** `contract/gate-suspension.md` does not exist in this repo; do not create it here.
 
 ---
@@ -211,6 +266,8 @@ Each is independently testable. "MUST" is binding; "SHOULD" is rebuttable by the
 **I-5 — Weekly over nightly (SHOULD, AC-17).** Dependency advisories do not arrive at a cadence that rewards daily polling, and AC-21's zero-write property means a nightly cadence costs nothing in noise — but it does cost seven times the Actions minutes and seven times the exposure to the AC-25 failure path. Weekly unless the architect has a reason.
 
 **I-6 — I am not ruling on whether the workflow uses `gh` directly or `scripts/automation/lib/github.py`.** That is a technical-design question. The binding constraints are AC-18 (no App token minting), AC-27 (no `@path`), and AC-28 (unit-testable logic). CLAUDE.md's "use the code, don't roll it yourself" rule and the `label-swap.yml` plain-`gh` precedent point in different directions here; the tie-breaker is which one satisfies AC-28, and that is the designer's to assess.
+
+**I-7 (D-5) — Which run is "scheduled".** The human's ruling names one run, the scheduled one. I read it as the AC-17 Actions workflow together with its host-side consumer (AC-35). The consumer is part of "the scheduled path", so the ruling's "cannot run" covers it too: a consumer that cannot read the outcome is a `NOT_RUN`. This is a reading of the ruling, not a new rule. Q-D5-6 asks the human to confirm it.
 
 ---
 
@@ -235,3 +292,16 @@ Nothing here requires a human before `architect` proceeds; S-1's reversal would 
 **Process note, disclosed:** the implementation adopted the label on 2026-09-22 to close a HIGH security finding, before any spec document was amended. pm-agent is not ratifying that after the fact. On the requirements merits I support the change: AC-20's own purpose ("exactly one tracking issue, ever") cannot hold against a deliberate decoy under marker-only identity. As ADR §6 item 3 notes, the alternative to the label is author pinning (#1812 item 5), not "no label", because "no label" reopens the HIGH. But the decision is the human's.
 
 **Effect on the 2026-09-22 process sign-off:** AC-20 and AC-26 stay orphaned (ADR §5) until a human clears this amendment. Until then, the implementation PR MUST NOT claim AC-26 conformance and MUST list this as an open discrepancy in its body. **Disclosure alone does not permit merge (clarified 2026-10-14):** human clearance of AD-12a/AD-12b gates the merge of the Part 2 implementation PR — it MUST NOT merge until that clearance is recorded in its PR thread. This design PR is not gated by that clearance (ADR §6 item 3; TD merge-gate banner). All other ACs are unaffected.
+
+### Amendment D-5 (2026-10-20) — pause-and-alert (§2F; S-2, AC-25, AC-26, AC-31, non-goal 9, S-6, I-7)
+
+**RISK: HIGH — CONFIDENCE: MEDIUM**
+**Change classification: STRUCTURAL, human-issued.** D-5 adds a new pipeline state (the pause), a new obligation on a human (clearing), and two new alert causes. It also turns a report-only artefact into one that holds build work. pm-agent did not originate any of this. It transcribes the human's ruling into testable criteria. Where the criteria go beyond the literal ruling, the extrapolation is marked (I-7, AC-38, AC-42), and anything that is a product choice is left as an open question below. **Architect and technical-design: an ADR/TD revision is required.** The AC-35 host-side consumer has no counterpart in ADR-1605.
+
+**Open questions for the human (Q-D5):**
+1. **Budget and vehicle.** D-5 needs a host-side consumer (`bin/hos-cron` or `bin/lib/`, a protected surface), state, audit events and tests. That does not fit Part 2's 14/15 files or the single authorized 11th commit. Recommendation: use S-6 shed step 3. Move the scheduled workflow out whole into a Part 3 PR that carries D-5. Part 2 then ships the bandit split only, so no report-only scheduled workflow ever lands. Is that approved, or is a larger waiver preferred?
+2. **`NOT_RUN` on the tracking issue.** AC-25 forbids issue writes on failure. Should a `NOT_RUN` *status* (not a finding change) be written to the tracking issue so the pause has a visible record there, or should it stay in the run, the log and the alert only?
+3. **Clearing without a clean run.** Ruling B3 says the pause clears "when a run completes cleanly **or** a human records the exemption/fix on the tracking issue". Does a human act on the issue (a comment or label) clear the pause by itself, or only after a clean re-run? AC-37 currently requires a clean run.
+4. **Merge gate.** Does Q3 (label approved) also count as the AD-12a/AD-12b clearance that the header says gates the Part 2 merge, or does that clearance still have to be recorded in the Part 2 PR thread?
+5. **Fallback when the alert is undelivered.** Until #2125 lands, the only remaining channel is GitHub. Is the fallback (a) a `needs-human` escalation on the tracking issue via `bootstrap/escalate_to_human.sh`, which relaxes AC-26's SHOULD (no pending-actor label) for this case, (b) cycle log plus audit only, or (c) holding D-5 until #2125 lands? Ruling B3 ("never silent") points away from (b).
+6. **Consumer read failure.** Confirm I-7: if the host cannot read the scheduled-run outcome (for example during a GitHub outage), that is `NOT_RUN` and pauses build work.
