@@ -589,7 +589,7 @@ _PREMISE_59951 = (
     "MCP) — remove the exemption (upgrade mcp once semgrep unpins it, #2120) "
     "rather than editing this test"
 )
-_SERVE_MCP = re.compile(r"""\bsemgrep["']?\s*,?\s*["']?mcp\b""")
+_SERVE_MCP = re.compile(r"""\bsemgrep\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+mcp\b""")
 
 
 def _tracked_files(*paths: str) -> list[Path]:
@@ -602,6 +602,24 @@ def _tracked_files(*paths: str) -> list[Path]:
         timeout=30,
     )
     return [_REPO / p for p in res.stdout.split("\0") if p and (_REPO / p).is_file()]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("semgrep mcp", True),
+        ("semgrep --quiet mcp", True),
+        ("semgrep --metrics=off -v mcp -t streamable-http", True),
+        ('["semgrep", "mcp"]', True),
+        ('["semgrep", "--quiet", "mcp"]', True),
+        ("semgrep pins mcp==1.29.0", False),
+        ("semgrep-mcp", False),
+        ("semgrep's MCP subcommand", False),
+        ("semgrep --config auto --json --quiet file.py", False),
+    ],
+)
+def test_pr4b_serve_mcp_pattern_covers_flag_forms(text, expected):
+    assert bool(_SERVE_MCP.search(text)) is expected
 
 
 def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
