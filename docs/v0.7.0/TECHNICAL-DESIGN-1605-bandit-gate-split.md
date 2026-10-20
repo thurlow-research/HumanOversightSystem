@@ -2,7 +2,7 @@
 
 **Status:** BINDING on `coder`, `unit-test`, `system-test` for issue #1605. Everything below is a contract, not a suggestion. Where this document narrows or corrects the ADR it says so explicitly and gives the measurement that forced it (§1.4).
 
-**Date:** 2026-09-22 (realigned 2026-10-14 to AD-12a/b; amended 2026-10-14 by the security design review)
+**Date:** 2026-09-22 (realigned 2026-10-14 to AD-12a/b; amended 2026-10-14 by the security design review; amended 2026-10-20 for D-5 and AD-22, §15)
 **Author:** technical-design
 **Issue:** #1605 (v0.7.0, `priority:high`). Parent #1567; per-check job pattern #1571; the vulnerabilities themselves #1504.
 **Inputs:**
@@ -35,6 +35,17 @@
 > TC-S15…TC-S18 (§7.1), the `normalize`-allowlist, bounds and workflow-static groups
 > (§7.3). Amendment record and affected sign-offs: §14.
 
+> **AMENDED 2026-10-20 for D-5 (ADR AD-15..AD-23, REQUIREMENTS §2F AC-32..AC-43) and AD-22.**
+> New §15 is binding. It specifies the scheduled run's pause-and-alert path. It also
+> re-cuts Part 2 on current main, because Part 2 predates #1776 (AD-22, binding). The
+> file lists in §15.11 assume AD-23's recommendation: **Part 2** is the gate split only,
+> and **Part 3** is the scheduled workflow, the report and all of D-5. That vehicle is
+> pending the human (Q-D5-1). Where §15 contradicts an earlier section, §15 governs, and
+> the earlier section carries a pointer. The most important supersessions are these.
+> §4.4–§4.5, §6.2 and TC-D1–TC-D5 are replaced: `dependency_audit.sh` now carries main's
+> pip-audit lane verbatim (§15.1). §10.2's two-job YAML becomes three jobs (§15.3).
+> §12 is replaced by §15.11. Gaps returned to the architect: §15.13.
+
 **Scope note:** S-1 (fail-open fix in scope), S-3 (promotion deferred), I-1 (two scripts), AD-1…AD-14 are not re-litigated here. This document says *how*, at the level of exact function decomposition, exact output strings, exact signatures and exact file edits.
 
 ---
@@ -57,6 +68,10 @@ Run on this branch, `scripts/oversight/.venv/bin/bandit` (bandit 1.9.4), `script
 | TV-10 | *(2026-10-14, security review)* `bandit -f json -lll -o o.json -- --baseline=x.py é.py` → **rc 1, both files scanned and both HIGH findings reported** (`./--baseline=x.py`, `./é.py`). Without `--`, `bandit … --baseline=x.py` → **rc 2** (consumed as the `--baseline` option). | bandit 1.9.4 honours `--`; it is the correct separator (§3.6). Without it, a file named like an option becomes an option. |
 | TV-11 | *(2026-10-14)* `git diff --name-only` under the default `core.quotepath=true` prints `é.py` as `"\303\251.py"` (the quotes are part of the output). `-c core.quotepath=false` or `-z` prints `é.py`. | The quoted form ends in `"`, fails the `*.py` kind filter (§3.4), and is silently SKIPped as non-Python. The CI listing must be unquoted (§10.1). |
 | TV-12 | *(2026-10-14)* `scripts/oversight/lib/changeset.sh` rejects a `-*` token **only on explicit argv** (`hos_changeset_parse`'s `-*)` arm, exit 2, before any tool runs). Names that come from git through `--diff`/`--step`/`--staged` (`_hcs_resolve_via_diff` → `_hcs_apply_rex`) are **not** checked for a leading `-`, and that path also reads `git diff --name-only` with the default quotepath. | On the explicit-argv path (the CI job, §10.1) an option-like filename fails closed: a red gate, not a bypass. On the git-sourced selectors (local `run_gates.sh --diff/--step/--staged`) it reaches bandit's argv unchecked today, so `--` is **load-bearing there**, not only defence-in-depth. The changeset.sh quotepath and `-*` gaps are in a no-touch file and are recorded as R-6 (§14). |
+| TV-13 | *(2026-10-20, D-5; pip-audit 2.10.1, Python 3.14 local venv)* A full `pip-audit --format json -o` run of the oversight venv gives **rc 1**: 116 dependencies, **0 `skip_reason` entries**, and 4 raw advisories (black ×3 raw / 2 distinct, mcp CVE-2026-59951). `security_scan_logic.py filter` on that JSON gives **rc 0**: 3 suppressed, "116 dependencies read". | AD-21's precondition is met locally: there are no skipped entries to bring back to the architect. Day-one is clean on this venv. The CI venv also installs project requirements (AV-9) and is not this venv, so AC-42 still needs its own run (§15.10). |
+| TV-14 | *(2026-10-20)* A dependency that does not exist on PyPI (a fake `dist-info` audited via `--path`) gives pip-audit **rc 0** and "No known vulnerabilities found". The entry is `{"name": …, "skip_reason": "Dependency not found on PyPI and could not be audited: …"}`, with **no `version` key**. `filter` on that JSON gives **rc 0**, with `NOT CHECKED` and "1 NOT CHECKED" in the OK line. | AD-21's premise is confirmed: a partial audit reads as a pass through both tools. The scheduled path must count skips itself (§15.2 step 7). |
+| TV-15 | *(2026-10-20)* `pip-audit --strict` on the same input gives **rc 1** (the "vulnerabilities found" code) and **writes no output file**. Separately, pip-audit gives **rc 1** with a traceback when it cannot open its `-o` path. | rc 1 does not mean "vulnerabilities found" unless the output file parses. `--strict` is not used. Every scheduled-path attempt requires a parseable output file whatever the rc (§15.2 step 5). |
+| TV-16 | *(2026-10-20)* `pip install --dry-run --no-index --quiet -r scripts/oversight/requirements.txt --report <f>` on the venv gives **rc 0** with `install: []`. For an unsatisfied pin (`black==99.0`) it gives **rc 1** and writes no report. `--no-index` makes this offline by construction. | This is AC-33's "venv does not match requirements.txt" check, using pip's own resolver rather than new comparison code (§15.2 step 3). |
 
 ---
 
@@ -113,6 +128,8 @@ The worker's 14-file list = the ADR's 15 minus `tests/oversight/test_security_sc
 
 ## 2. File manifest (14) — what each file must contain
 
+> **Superseded for file counting by §15.11 (D-5, AD-22, AD-23).** The table below remains the per-file content reference. Under AD-23, rows 4, 5, 6 and 8 move to Part 3. Part 2 gains `tests/oversight/test_security_scan_exemptions.py` (AD-22). Row 2's content is replaced by §15.1.
+
 | # | File | Action | Owns |
 |---|---|---|---|
 | 1 | `scripts/oversight/gates/security_scan.sh` | modify | bandit-only, file-scoped; `-o` acquisition; fail-closed verdict; Python kind filter; `HOS_BANDIT_BIN` |
@@ -137,6 +154,12 @@ The worker's 14-file list = the ADR's 15 minus `tests/oversight/test_security_sc
 ---
 
 ## 3. `scripts/oversight/gates/security_scan.sh` (modify)
+
+> **AD-22 rebase (2026-10-20, binding).** Apply §3 to **current main's** `security_scan.sh`, as modified by #1776 at `4d5b8cff5`. Do not apply it to the file at `b9c342559`. Main differs in four ways, and each is settled here:
+> 1. **Temp files** go through main's `_TMP_CLEANUP` array and `trap _cleanup_tmp EXIT` / HUP / INT / TERM block (#2054 S3), created with `mktemp "${TMPDIR:-/tmp}/bandit_json_XXXXXX"` and `…/bandit_log_XXXXXX`. This replaces §3.6's "explicit `rm -f` on every exit path" and its literal `/tmp`. The trap covers the inline `exit 1` of the exhaustion branch.
+> 2. **Main's bandit parse-failure line** (`GATE FAIL: bandit output could not be parsed — nothing was decided; …`) is replaced by §3.6's rc-65 message. No test pins main's string; this was grepped across `tests/`.
+> 3. **`NOT_PERFORMED` and the whole pip-audit lane are deleted** (lines 135–227 on main), and so is the AUDIT_STATUS tail check (lines 229–232). They move to `dependency_audit.sh` (§15.1). The final tail keeps only `GATE FAIL: $ERRORS security check(s) failed` and `GATE PASS: no blocking security issues`.
+> 4. **bandit absent:** §3.5 governs (`SKIP: …`, then `exit 0` directly, with no `GATE PASS`). Main's `NOT_PERFORMED+=("bandit SKIPPED — not installed")` plus `GATE PASS (…)` naming is withdrawn for this gate. Once pip-audit is gone, that would be a pass line for a run that checked nothing. Test `g6` is rewritten accordingly (§15.1.3). This **tightens** #1776's architect A2 ("a pass line must name what did not run"): no pass line is reachable at all. code-reviewer must confirm it (§14 D-5).
 
 ### 3.1 Header
 
@@ -261,6 +284,8 @@ No change to the severity threshold (non-goal 3), to the `--all` enumeration, to
 ---
 
 ## 4. `scripts/oversight/gates/dependency_audit.sh` (new)
+
+> **AD-22 (2026-10-20, binding): §4.1 items 3–5, §4.4 and §4.5 are SUPERSEDED by §15.1.** The pip-audit lane moves **as it is on main**. It keeps the `security_scan_logic.py filter` roster, the `GATE FAIL` / filter-exit-2 semantics, the `NOT CHECKED … GATE PASS (… NOT CHECKED — see above)` naming, the invalid-override `GATE FAIL`, and stdout capture rather than `-o`. §4.2 (preamble, AD-2a skip) and §4.3 (announcement lines) still govern. §4.1 items 1, 2 and 6 still govern.
 
 ### 4.1 Header
 
@@ -390,6 +415,8 @@ A stub is a short `bash` script written into `tmp_path`, `chmod 0755`, pointed a
 
 ### 6.2 pip-audit stubs
 
+> **SUPERSEDED by AD-22 (§15.1.3).** PB-1…PB-4 assume the `-o` lane and the `GATE NOT RUN` vocabulary, which main does not have. The pip-audit gate stubs are the stdout-JSON stubs (`_stub`, `_counting_stub`) of `tests/oversight/test_security_scan_exemptions.py`, retargeted to `dependency_audit.sh`. The table below is kept for history only.
+
 Argv shape `--progress-spinner off --format json -o <path>`; same `-o`-parsing requirement.
 
 | ID | Stub behaviour | Required assertions |
@@ -424,24 +451,28 @@ New cases:
 | TC-S16 | SEC-M2 (git-sourced selector, `--` is load-bearing) | stub SB-9; tmp git repo, commit 1 = a `.py` file, commit 2 adds `--baseline=x.py`; run `security_scan.sh --diff HEAD~1` → the recorded argv contains `--`, every option appears **before** it, and `--baseline=x.py` appears **after** it as a file (never as an option token before `--`); rc 0 with `OK: … (1 file(s) scanned, 0 unscannable)` |
 | TC-S17 | SEC-M2 (non-ASCII Python name is Python) | stub SB-9; explicit argv `é.py` (raw UTF-8, file present) → the recorded argv after `--` contains `é.py`; **no** `SKIP — 0 of 1 changeset file(s) are Python` line. Companion negative: the quoted form `"\303\251.py"` (TV-11's literal output) is what the kind filter would skip, which is why §10.1 must never produce it |
 | TC-S18 | SEC-M2, SEC-S1 (workflow static) | parse `.github/workflows/oversight-gates.yml` with PyYAML from the oversight venv (the `test_gate_checkout_pinned_base.py` precedent) and inspect the `oversight-gate-security-scan` job: the job's file listing uses `git diff -z --name-only` and `mapfile -t -d ''`; a step runs `test -x scripts/oversight/.venv/bin/bandit` **after** the venv build and **before** `security_scan.sh`; the string `HOS_BANDIT_BIN` does not appear anywhere in the workflow file |
-| TC-D1..TC-D4 | AC-10, AD-6 | one per pip-audit stub PB-1…PB-4 (§6.2) |
-| TC-D5 | AD-6 inertness | seam unset → the gate resolves the venv binary (assert the SKIP line when absent, else that a real run completes). Skip-guarded; marked `slow`/network-tolerant, since it is the one case that may touch the network |
+| ~~TC-D1..TC-D4~~ | AC-10, AD-6 | **Superseded by AD-22.** Covered by the retargeted `g1`–`g4h` cases in `test_security_scan_exemptions.py` (§15.1.3). Do not add PB-based duplicates. |
+| ~~TC-D5~~ *(superseded: covered by the retargeted `g4b`, which names the override in the pass line; the unset-seam inertness is main's existing behaviour)* | AD-6 inertness | seam unset → the gate resolves the venv binary (assert the SKIP line when absent, else that a real run completes). Skip-guarded; marked `slow`/network-tolerant, since it is the one case that may touch the network |
 | TC-D6 | AC-9 | tmp git repo + `contract/gate-suspension.md` containing `SUSPENDED: dependencies`, cwd=tmp_path (TV-9): `dependency_audit.sh` prints `GATE SUSPENDED: dependencies` and exits 0, **while `security_scan.sh` in the same tree still scans** a planted HIGH file |
 | TC-D7 | AC-9 (converse) | same, with `SUSPENDED: security`: `security_scan.sh` is suspended, `dependency_audit.sh` (stubbed) still reports its findings |
 | TC-D8 | AC-7 | `"security" not in AUTO_CHECKABLE_GATES and "dependencies" not in AUTO_CHECKABLE_GATES` (import the map, do not re-implement it) |
 
 All stub-driven cases run with `GATE_TIMEOUT=20`, `GATE_RETRIES=1` (existing `_run` helper) and must not touch the network.
 
+*(AD-22.)* TC-D6 and TC-D7 keep their assertions, but their pip-audit stub is a stdout-JSON stub in the `test_security_scan_exemptions.py::_stub` shape (`cat <payload>; exit <rc>`), not PB-1. Under main's lane, TC-D7's "still reports its findings" means rc 1 and the advisory line `  <pkg> <ver> [<id>] fix: …` from `filter`.
+
 ### 7.2 `tests/oversight/test_gate_arg_grammar.py` (modify)
 
 1. `KIND_FILTER_GATES` gains `"security_scan": "Python"` (AD-5). `FILE_LIST_GATES` and `DEFAULTING_STRING_GATES` are **unchanged**.
 2. Module docstring: the paragraph explaining that assertions avoid depending on pip-audit's network result for `security_scan.sh` must be rewritten — after #1605 that gate is offline and deterministic; the caveat now applies to nothing in this file. Say so, and say why (the network half moved to `dependency_audit.sh`, which is not in `FILE_LIST_GATES`).
-3. **TC-G9 — `dependency_audit.sh` ignores its argv, except `--empty-changeset`** (the TC-G8 `collection_integrity` precedent, and the pin on TD-1 as narrowed by AD-2a). With `HOS_PIP_AUDIT_BIN` pointed at stub PB-2 so the case is offline and deterministic, run in a tmp git repo with one committed `.py`:
+3. **TC-G9 — `dependency_audit.sh` ignores its argv, except `--empty-changeset`** (the TC-G8 `collection_integrity` precedent, and the pin on TD-1 as narrowed by AD-2a). With `HOS_PIP_AUDIT_BIN` pointed at ~~stub PB-2~~ *(AD-22)* a stdout-JSON stub that prints `{"dependencies":[{"name":"anyio","version":"4.4.0","vulns":[]}]}` and exits 0, so the case is offline and deterministic. The roster lines that `filter` prints are date-dependent but identical within one test run. Run in a tmp git repo with one committed `.py`:
    - baseline (no args) vs `--diff HEAD~1` vs `a.py b.py` vs `--nope`: assert **identical stdout and identical rc** across these four. `--nope` producing the same output pins "no argv parsing beyond the one token" (no exit 2).
    - `--empty-changeset`, asserted separately: rc 0; stdout **differs** from the baseline; stdout contains `dependency_audit: NOT CHECKED — empty changeset (nothing was checked; this is not a pass)`; no `GATE PASS`. ~~`--empty-changeset` producing the same output as the baseline is the explicit pin on TD-1.~~ *(Withdrawn by AD-2a. The same-output assertion would now fail, and correctly.)* The no-network half of AD-2a (the stub is never invoked) is pinned in §4.2's two cases, not here. The as-built test at `a979a4605` matches.
 4. **TC-G10 — auto-discovery (AC-8).** Run the runner's own discovery expression (`find scripts/oversight/gates -maxdepth 1 -name '*.sh' -not -name 'check_suspension.sh'`) and assert both `security_scan.sh` and `dependency_audit.sh` are in the result. This pins that a new gate file is picked up with no `run_gates.sh` edit. The companion assertion — that `run_gates.sh` has no diff — is a PR-level check (§12), not a unit test.
 
 ### 7.3 `tests/automation/test_dependency_audit_report.py` (new)
+
+> *(D-5/AD-23: Part 3.)* The "workflow static" row below is extended by §15.9's three-job assertions. The new `github.py` read helpers are tested in `test_dependency_pause.py` (§15.9), not here.
 
 Imports `from scripts.automation.dependency_audit_report import (...)` (repo-root conftest makes this work). **No network, no `gh`, no live GitHub anywhere in this file** (AC-28).
 
@@ -472,6 +503,8 @@ Mock at `subprocess.run` for the helper tests (the existing `test_github.py::_ma
 ---
 
 ## 8. `scripts/automation/lib/github.py` (modify) — exactly three additions
+
+> *(D-5, AD-16; Part 3.)* "Exactly three" now means three **write** helpers. Part 3 also adds the three narrow **read** helpers in §15.5. The file then has six #1605 additions in total and no others.
 
 Placed after `get_commit` and before `post_comment`, under a new section comment `# --- REST-by-id issue writes (added for #1605's scheduled dependency audit) ---`. ~~No other line of the file changes.~~ *(Amended 2026-10-14, ADR AD-12a "Lookup bound": the label validation and encoding need two stdlib imports the file does not have today, which were re-measured on this branch as `json`, `subprocess`, `time` and `typing` only.)* The only other change is the addition of `import re` and `import urllib.parse` to the existing import block. No other line of the file changes. Each docstring must name #1605 as the single consumer and say that Search remains excluded by design.
 
@@ -763,6 +796,8 @@ python3 -m scripts.automation.dependency_audit_report \
 
 Every non-zero path must print the cause to stderr and must not be reachable after a `close` write.
 
+**Tracking-issue line (D-5, AD-16; Part 3).** On exit 0 only, and excluding `--dry-run`, `main()` prints exactly one final stdout line: `dependency_audit_report: tracking_issue=<N|none>`. `N` is the number of the issue that `reconcile` created or wrote to, or that the lookup adopted on a `noop`. `none` means no issue exists (the empty-set `noop`). The `report` job turns this line into its `issue` output (§15.3). The `outcome` job cannot look the issue up itself, because it holds no token scope. Test: one CLI case per decision-table row asserts the line, and `--dry-run` prints no such line.
+
 **Oversized is not malformed (stderr wording, for ops).** `main()` catches `OversizedAuditJSON` **before** `MalformedAuditJSON` and prints `dependency_audit_report: oversized pip-audit input: <which bound> exceeded (limit <N>)`, naming the bound constant (`MAX_INPUT_BYTES`, `MAX_FINDINGS`, `MAX_FIX_VERSIONS` or `MAX_BODY_CHARS`). That line must **not** contain the word "malformed". An operator reading a red run must be able to tell "the advisory set grew past a bound" (raise the bound, a design change per §9.2) from "the input is broken or hostile" (investigate the `audit` job). The exit code (2) and the zero-write guarantee are unchanged, and every other `MalformedAuditJSON` keeps today's `malformed pip-audit JSON:` prefix. The `MAX_INPUT_BYTES` refusal happens before `json.loads`, so it raises `OversizedAuditJSON` directly from the bounded read.
 
 ---
@@ -791,6 +826,8 @@ Every non-zero path must print the cause to stderr and must not be reachable aft
 **Edit 3 — header, the deliberately-not-wired paragraph.** Replace the `security_scan (pip-audit against the CI venv's …) and collection_integrity …` sentence with:
 
 > `dependency_audit` (pip-audit against the CI venv's installed dependency versions, not the PR's changed files — network-dependent, and dependency posture is not a property of a diff) and `collection_integrity` (duplicates `tests.yml`'s own pytest collection) are deliberately not wired in here. `dependency_audit` runs weekly in `dependency-audit.yml` instead (#1605); see DECISIONS.md's 2026-09-10/11 #1216 entries for the original classification.
+>
+> *(AD-23, Part 2.)* Until Part 3 lands, `dependency-audit.yml` does not exist. Part 2 writes the sentence as `… runs on a schedule in a separate workflow instead (#1605, Part 3) …`. It must not name a file that is not on main. Part 3 does not edit this header again, because the sentence is still true.
 
 **Edit 4 — the new job**, inserted **after `oversight-gate-template-refs` and before `oversight-gate-repo-scoped`** so the diff is one contiguous insertion and no existing job moves. It follows the other file-scoped jobs' #1571 step shape (AC-12) and differs only in the two names, the final command, and the two security-review amendments listed beneath the block: the scanner-presence step (SEC-S1) and the `-z` listing (SEC-M2).
 
@@ -841,6 +878,8 @@ Binding details: `HOS_SKIP_PROJECT_REQUIREMENTS: "1"` (#1380 — the PR head is 
 Known inherited residual, **not** introduced here and **not** to be fixed in this PR: a PR whose diff is entirely deletions makes every file-scoped job exit 3 (#1759 RISK-1 / D5). The new job inherits it.
 
 ### 10.2 `.github/workflows/dependency-audit.yml` (new)
+
+> **AMENDED by D-5 (§15.3); Part 3.** The `audit` job's `Run pip-audit` step below is replaced by §15.3's `venv` and `measure` steps, and the job gains `outputs:`. `report` gains an `id`'d step and an `issue` output. A third job, `outcome`, is added. Every binding property below **still holds**: the trust split, SEC-M1 isolation, SEC-S5, the D-2 pin, `needs: audit` with no `if:` on `report`, no App token, and no PR trigger. §15.3 adds properties and removes none.
 
 ```yaml
 name: Dependency audit (scheduled)
@@ -968,6 +1007,8 @@ No other line of the spec changes. (The table's pre-existing omission of `bash_c
 
 ### 11.2 `docs/OVERSIGHT-RUNBOOK.md` — four edits
 
+> *(AD-23 split.)* Edits (a), (b) and (c) are **Part 2**. Edit (d), on the label and tracking issue, is **Part 3**, together with the new edit (e) in §15.10.
+
 **(a) Gate name reference table (~:149).** Insert after the `security_scan.sh` row:
 
 ```
@@ -1009,6 +1050,8 @@ No code change is needed for any of this.
 
 ### 11.3 `docs/CI-EXECUTION-INVENTORY.md` — replace one row with two (AC-30)
 
+> *(AD-23 split.)* **Part 2** replaces the row with two rows, as below, but writes the `dependency_audit.sh` row as: Status `Local-only (by design)`; Workflow `— (not oversight-gates.yml)`; Reason: the first two sentences of the row below, then *"A scheduled run that pauses and alerts is #1605 Part 3 and is not yet on main."* **Part 3** rewrites that one row to the text below, and appends: *"A new uncovered advisory, or a run that could not complete, holds new build work and alerts a human (D-5, ADR-1605 AD-15..AD-21)."* AC-30 is satisfied by Part 2.
+
 Delete the existing `| security_scan.sh | CI-portable, deferred | — | Its pip-audit sub-check … |` row entirely — the rationale is retired, not amended — and insert, keeping the table's existing ordering (after `template_refs_check.sh`, before `django_check.sh`):
 
 | Gate | Status | Workflow | Reason |
@@ -1017,6 +1060,8 @@ Delete the existing `| security_scan.sh | CI-portable, deferred | — | Its pip-
 | `dependency_audit.sh` | Local-only (by design), plus a scheduled report | `dependency-audit.yml` (jobs: `dependency-audit-scan`, `dependency-audit-report`) — **not** `oversight-gates.yml` | Repo-scoped and network-dependent: it audits the installed dependency set against a live advisory database, which is not a property of a PR's diff. Deliberately absent from `oversight-gates.yml` (deterministic, offline-only). Runs weekly instead and reconciles a single label-authenticated tracking issue (`dependency-audit` label + first-line marker, AD-12a); it can never fail a PR check. The vulnerabilities themselves are #1504. |
 
 ### 11.4 `DECISIONS.md` — one appended, dated entry (AC-31)
+
+> *(D-5/AD-23.)* The entry ships in **Part 2**, dated on the day it is written. The D-5 scope refinement that AC-31 now also requires is the 2026-10-20 DECISIONS.md entry added by the ADR amendment on this design branch (commit `bef59f92d`). Part 2 is cut on main after this design PR merges, so that entry is on main by then. *(Corrected 2026-10-20: it is not on main today.)* So this entry cross-references it and must not restate it. Item 6 is reworded to main's lane semantics (§15.1): execution failure gives `NOT CHECKED` named in the `GATE PASS` line, and an unparseable completed scan or an undecidable roster gives `GATE FAIL`. It no longer says `GATE NOT RUN`. Item 8 (AD-12a/AD-12b) is recorded **prospectively**: the human approved the label on 2026-10-20 (Q3), and the code that applies it ships in Part 3. This is what removes `DECISIONS.md` from Part 3's file list (§15.11).
 
 Appended at the bottom, `## 2026-09-22 — <title> (#1605)`, following the existing entry shape (bold lead-ins, a closing **Scope.** paragraph). It must record, at minimum:
 
@@ -1034,9 +1079,13 @@ Appended at the bottom, `## 2026-09-22 — <title> (#1605)`, following the exist
 
 Regenerate only: `bash scripts/framework/gen_scripts_index.sh`. Never hand-edit. Expected delta: one new line for `scripts/oversight/gates/dependency_audit.sh` (sorting **before** `django_check.sh` under `LC_ALL=C`), one new line for `scripts/automation/dependency_audit_report.py`, and a changed description for `scripts/oversight/gates/security_scan.sh`. Pinned by `tests/framework/test_scripts_index.py::test_index_matches_generator_output`, so this is **not** sheddable despite S-6 listing it first — the worker's constraint B governs.
 
+*(AD-23 split.)* In Part 2 the delta is the two gate lines only. In Part 3 it is `scripts/automation/dependency_audit_report.py` plus `scripts/automation/dependency_pause.py`. `gen_scripts_index.sh` indexes `scripts/**`, so both parts must regenerate. This is why AD-23's Part 3 shed step 1 ("SCRIPTS-INDEX becomes a follow-up") cannot be applied (§15.13 G-1).
+
 ---
 
 ## 12. Commit decomposition (planned 9 of 10; as built 10, plus one security-amendment commit = 11, which needs a human-authorized one-commit S-6 waiver)
+
+> **SUPERSEDED by AD-22 and §15.11 (2026-10-20).** Part 2 is re-cut on current main, so the ten commits through `b9c342559` are not preserved. The "do not squash or rewrite" rule below existed to protect re-confirmations pinned to `b9c342559`. AD-22 orphans those re-confirmations anyway (ADR §5 D-5). The security amendments now land **inside** the re-cut commits rather than as an 11th commit: SEC-M2 and SEC-S1 in Part 2; SEC-M1, SEC-S4, SEC-S5 and the lookup bound in Part 3. If the re-cut Part 2 is at or under 10 commits, the S-6 waiver goes unused, and it does not transfer to Part 3 (AD-23 corollary). The text below is history.
 
 | # | Message | Files | ACs |
 |---|---|---|---|
@@ -1098,6 +1147,19 @@ Files touched by the amendment commit: `gates/security_scan.sh` (§3.6 `--`), `.
 | AC-29 every gate→key table updated | §11.1, §11.2, §11.3, §11.5 | `test_scripts_index.py` + review |
 | AC-30 retired rationale explicitly retired | §11.3 (row **replaced**, not amended) | review |
 | AC-31 DECISIONS entry | §11.4 | review |
+| AC-25 *(amended D-5)* execution failure = `NOT_RUN`, plus hold and alert | §15.2 (`measure` exits 1 on every cause), §15.3 (`report` is skipped when `audit` fails; `outcome` maps the result to `not_run`), §15.6 | TC-P1…TC-P9, TC-O* |
+| AC-32 same roster and partition, not a copy | §15.2 steps 6–8 (`filter` subprocess rc is the verdict; the projection imports `security_scan_logic`) | TC-P10, TC-P11, TC-P12 |
+| AC-33 cannot run = `NOT_RUN` + hold + alert; no skip path | §15.2 (cause table), §15.3, §15.6, §15.7 | **TC-H1 (mandatory human item)**, TC-P1…TC-P9 |
+| AC-34 finding = issue + hold + `dependency-advisory` alert | §15.3 (`report` runs on verdict 1), §15.6 | TC-H2 |
+| AC-35 the hold is host state, read every cycle | §15.6 (state file), §15.8 (hos-cron call site) | TC-C*, TC-K1…TC-K6 |
+| AC-36 build work only | §15.8 directive `NEW WORK: DOCS/DESIGN ONLY` + the prompt bullet | TC-K2 (directive-level only; AD-19 residual) |
+| AC-37 clears only on a clean run; `dependency-pause-cleared` with duration | §15.6 decide/apply | TC-C5 |
+| AC-38 stale = `NOT_RUN`; grace stated (216 h, configurable in [168, 336]) | §15.5 rule 2 (staleness) | TC-C7…TC-C9 |
+| AC-39 never silent; the alert never gates the hold | §15.7 ordering and undelivered; §15.8 log line | TC-A1…TC-A5, TC-K3 |
+| AC-40 one `notify_human.sh` call, #2125's interface | §15.7 argv | TC-A1 |
+| AC-41 fingerprint `dependency-audit:<cause>:<id\|sub>` | §15.6 schema | TC-C2, TC-C3 |
+| AC-42 day-one run disclosed | §15.10 procedure + PR body | PR-body review |
+| AC-43 tests without network | §15.9 | all of §15.9 |
 
 **Security design review amendments (2026-10-14) — not ACs, binding on the Part 2 implementation:**
 
@@ -1162,6 +1224,16 @@ Files touched by the amendment commit: `gates/security_scan.sh` (§3.6 `--`), `.
   - **404→raise is preserved.** §8's `[]`-vs-raise contract is untouched. Only a genuine HTTP 200 `[]` is empty.
   - **Not restored or replaced by this revision.** It does not restore the orphaned reliability, unit-test or ops sign-offs. It does not replace the security-reviewer design re-review or the code re-reviews of the amendment commit. It does not clear the AD-12a/AD-12b human merge gate or the S-6 waiver. The cross-vendor second review must be re-run on this delta for a recorded disposition. The agy lane's `prompt_too_large` failure (#1718) is a human restructuring decision and is not resolved here.
 
+- **D-5 and AD-22 amendment (2026-10-20), §15.**
+  - *Should this have been settled in the initial TD?* **No for D-5.** It is a new human scope ruling. **No for AD-22** either. It is a sequencing gap: #1776 merged after this TD was approved. **Partly yes for three implementation facts this revision corrects in the ADR** (§15.13 G-1, G-2, G-3). The ADR's Part 3 list is missing the worker prompt, which actually reads the directive, and `AGENT-IDENTITY.md` §9. Its shed step 1 also cannot run, because SCRIPTS-INDEX is test-pinned. Those are planning omissions of the D-5 ADR revision, found in this cycle before any code was written. No `startup-artifact-gap` is opened for them: nothing was built against them. The worker decides whether to annotate one.
+  - *Classification:* **structural** for D-5 (a new pipeline state, a host read path, a cycle-start step in `bin/hos-cron`). The human issued D-5 and pm-agent and architect have already escalated it (REQUIREMENTS §5; ADR Human Review). This TD **adds no structural change of its own** beyond that ruling. The departures in §15.12 are clarifying or additive. AD-22 is **clarifying** for the code: it restores main's behaviour.
+  - **Affected sign-offs (adopting ADR §5 "D-5", plus these):**
+    - **Orphaned (code).** Every code sign-off on `security_scan.sh`, `dependency_audit.sh`, `test_scan_gates_empty_args.py` and `test_gate_arg_grammar.py` at `b9c342559` is orphaned and re-reviewed against the re-cut branch. code-reviewer must also confirm §3's rebase item 4: the `g6` rewrite, where bandit absent prints no pass line.
+    - **Orphaned (design), this TD.** The architect's approval is orphaned for §2, §3, §4, §6.2, §7.1, §7.2, §10.1 Edit 3, §10.2, §11, §12 and §13 until it re-reviews §15.
+    - **New reviews.** security-reviewer: §15.3 `outcome` job, §15.4 record grammar and §15.5 read path. reliability-reviewer: §15.5 staleness and cache, §15.6 state, and §15.7 alert. ops-reviewer: §15.8 log lines and the events in §15.6/§15.7. There is no `TELEMETRY-SPEC.md` in this repo; the runbook (§15.10) is the operator record.
+    - **Moved to Part 3 (AD-23).** The pending re-confirmations on `dependency_audit_report.py`, `github.py` and the two workflows.
+    - **Stand.** #1776's sign-offs: AD-22 relocates its lane verbatim, and its roster and module are untouched. The bandit-half design: §3 content, apart from the rebase. REQUIREMENTS-1605 as amended.
+
 No approved design or code elsewhere in the repo was built against a decision this document revises.
 
 **Residual risks carried, not fixed:**
@@ -1171,6 +1243,707 @@ No approved design or code elsewhere in the repo was built against a decision th
 - **R-4 (SEC-M1, accepted).** A *compromised* `audit` job can upload a valid report: an empty one that closes the tracking issue, or a fabricated finding set. `needs: audit` fails closed only against an honest `audit` failure. SEC-S4 bounds what such a report can write (no mentions, no markup, no forged state block, bounded size), but it cannot detect the forgery. The out-of-band check is that #1504 tracks the same vulnerabilities independently, so a false all-clear contradicts it visibly. This is accepted as residual: no in-workflow design can authenticate a report against the job that produced it.
 - **R-5 (SEC-M2 follow-up, #1812).** The other six file-scoped jobs in `oversight-gates.yml` still list changed files with quotepath-quoted `git diff --name-only`, so their gates skip a non-ASCII filename as the wrong kind. The fix is repo-wide and out of this PR. The worker appends it to #1812.
 - **R-6 (SEC-M2 follow-up, no-touch file).** `scripts/oversight/lib/changeset.sh`'s git-sourced selectors (`--diff`/`--step`/`--staged`) read `git diff --name-only` with the default quotepath. A non-ASCII path then fails `_hcs_apply_rex`'s `-e` existence test and is misclassified as missing. These selectors also never check git-sourced names for a leading `-` (TV-12). §3.6's `--` neutralises the `-` half for `security_scan.sh`, and every other `FILE_LIST_GATES` tool invocation has the same question to answer. `changeset.sh` is on this PR's no-touch list, so this is a follow-up for the worker to file or append to #1812 (or to #1759's successor), not a change here.
+- **R-7 (AD-19, accepted).** The hold is enforced by a directive that the worker agent obeys. Nothing mechanically stops a non-docs PR while held. The backstop belongs with #2123.
+- **R-8 (AD-15 / M-1, accepted).** A compromised `audit` job can emit a forged `MEASURE … verdict=0` and so a forged `clean`. This is AD-10's M-1 residual extended to the verdict. The compromised job can already forge the pip-audit JSON.
+- **R-9 (D-2 pin).** The record's `sha=` is `github.sha`, but `audit` checks out the default branch when the job starts. If main moves in between, the measured tree is newer than `sha`. The consumer checks only `sha == head_sha`, which still holds. The next run corrects any difference. Accepted.
+- **R-10 (day one, by design).** Once Part 3 merges, the hold is configured (§15.8 predicate) before any run exists, so the first worker cycles read `sub=stale` and are **held** until someone dispatches the workflow. This is AC-38 working as specified, not a defect. The runbook (§15.10) and the PR body tell the operator to dispatch immediately after merge.
+
+---
+
+## 15. D-5 pause-and-alert, and the AD-22 re-cut (amendment 2026-10-20) — BINDING
+
+**Inputs:** REQUIREMENTS-1605 §2F (AC-32..AC-43), I-7, Q-D5-1..6 (commit `4d0d2d161`); ADR-1605 §2b, AD-15..AD-23 (commit `bef59f92d`); TV-13..TV-16 (§0). AD-1..AD-23 are not re-litigated here. Where §15 and an earlier section disagree, §15 governs.
+
+**Main facts re-verified for this section (2026-10-20, `origin/main` = `4d5b8cff5`):**
+
+- `scripts/oversight/gates/security_scan.sh`: the temp-file trap block is at `:24–30` (`_TMP_CLEANUP`, `trap _cleanup_tmp EXIT`, HUP/INT/TERM). `NOT_PERFORMED=()` is at `:81`. The bandit-absent branch appends `NOT_PERFORMED+=("bandit SKIPPED — not installed")` at `:132`. The pip-audit lane runs from `:135` to `:227`, the `AUDIT_STATUS` tail check is at `:229–232`, and the `GATE FAIL`/`GATE PASS` tail is at `:233–247`.
+- `scripts/oversight/security_scan_logic.py`: the CLI is `filter` only, reading stdin. Exit **0** means clean, **1** means kept advisories, and **2** means the audit could not be read, the roster is invalid, `packaging` is missing or the module crashed. Public pure functions used here: `parse_audit(document) -> AuditDoc` (with `.advisories`, `.skipped`, `.dependency_count`), `partition(advisories, rules, today) -> Decision` (with `.kept: list[Kept]` and `Kept.advisory`), `roster_mode(root) -> RosterMode` (with `.active`), and `SUPPRESSIONS`. `scripts/oversight/` has **no** `__init__.py`, so the module is loaded by path.
+- `bin/hos-cron`: the usage-pause gate is at `:432–487`, with the bound array `_UP_BOUND`, the `if X="$(…)"; then rc=0; else rc=$?` capture and a strict verdict regex. `_REPO_SLUG` is set at `:943`, and the App token is minted at `:957`. The #1395 actionable-work gate starts at `:1126`. `_build_context` is at `:2030`, and its New work directive is at `:2068–2091`, printing only `NEW WORK: BLOCKED` or `NEW WORK: ALLOWED`. `_audit` is at `:368`. `_HOS_DIR="${HOS_STATE_DIR:-${HOME}/.hos}"` is at `:253`. `bin/**` is already a protected surface.
+- `bootstrap/notify_human.sh` **does not exist** on main. #2125 has not landed. This section designs against the interface that AC-40 quotes from #2125 and that ADR AD-20 extends with `--url`. Until #2125 lands, every alert resolves to `undelivered:absent` (AC-39).
+- `bootstrap/escalate_to_human.sh` exists, with usage `--number <N> --body-file <path> --reason <token> --app <role>`. It is idempotent per (issue, reason, body).
+- The directive values are read by `bootstrap/worker-cron-prompt.md` (`:73–76`) **and** `.claude/agents/worker.md` (`:321–346`). See G-2.
+- `docs/AGENT-IDENTITY.md` §9 mirrors `protected_surfaces.txt`'s exact-path entries (`:180`, `security_scan_logic.py`). `tests/oversight/test_security_scan_exemptions.py::test_t3` pins that mirror for #1776's module. See G-3.
+- HOS has no root `requirements*.txt` or `requirements/*.txt`, so in this repo `ensure_venv.sh`'s project-requirements install adds nothing.
+- No local `python3.12` exists on this host (`python3` is 3.14.4). This matters for AC-42 (§15.10).
+
+### 15.1 `scripts/oversight/gates/dependency_audit.sh` carries main's pip-audit lane verbatim (Part 2; replaces §4.4, §4.5 and §4.1 items 3–5)
+
+**15.1.1 File layout (binding, in this order):**
+
+1. Header: §4.1 items 1, 2 and 6, plus these replacement items. 3′: *"Blocking on findings. The verdict comes from `security_scan_logic.py filter` and its time-boxed exemption roster (#1776). A scan whose output cannot be read, or a roster that cannot be decided, is `GATE FAIL`. An execution failure (timeout or network) after retries is `NOT CHECKED`, named in the `GATE PASS` line, and is non-blocking locally."* 4′: exit codes. 0 means clean, suspended, `--empty-changeset`, pip-audit not installed (`SKIP`) or `NOT CHECKED`. 1 means a kept advisory, unparseable output, an undecidable roster, or an invalid override. 5′: `HOS_PIP_AUDIT_BIN` is main's seam text, verbatim.
+2. Preamble: §4.2, unchanged, including the AD-2a skip. Then main's trap block (`security_scan.sh:24–30`) **verbatim**. Then `ERRORS=0` and `NOT_PERFORMED=()`.
+3. Announcement lines: §4.3, unchanged.
+4. **The lane:** main's `security_scan.sh:141–227`, **byte-for-byte**. That runs from `AUDIT_STATE="not-run"` to the `case "$AUDIT_STATE"` block. The `echo "=== pip-audit (dependency vulnerabilities) ==="` and blank-line echoes at `:139–140` are not copied, because §4.3 prints the header. The lane's comment block at `:135–138` is copied too. Only three kinds of edit are permitted:
+   - (a) `$GATES_DIR` becomes `$_GATES_DIR`, the variable §4.2 defines. The `security_scan_logic.py` path stays `"$_GATES_DIR/../security_scan_logic.py"`.
+   - (b) Variables the lane reads must be defined identically before it: `VENV_BIN`, `OVERSIGHT_PYTHON`, `GATE_TIMEOUT` (default 120), `GATE_RETRIES` (default 2), plus `with_timeout` and `run_with_retry`. They come from `ensure_venv.sh` and whatever main's `security_scan.sh` sources for them. The coder copies the **same** `source` lines main uses, and adds no new ones.
+   - (c) Nothing else. No rewording, no `-o`, no `GATE NOT RUN`.
+5. The `AUDIT_STATUS` tail check, main's `:229–232`, verbatim.
+6. **The tail (new wording, binding):**
+   - `ERRORS > 0` → `GATE FAIL: dependency audit failed` and exit 1.
+   - Otherwise, with `NOT_PERFORMED` non-empty → `GATE PASS: no blocking dependency vulnerabilities (<entries joined by "; ">)` and exit 0.
+   - Otherwise → `GATE PASS: no blocking dependency vulnerabilities` and exit 0.
+   - The join loop is main's `:237–241`. The nouns change from main's because `security_scan.sh` keeps `GATE PASS: no blocking security issues`. In `run_gates.sh` output, two different gates must not print the same pass line.
+
+`|| echo "0"` must not appear (S-2). Bash 3.2 and shellcheck rules are unchanged (TD-2).
+
+**15.1.2 `security_scan.sh` after the move.** This is §3's rebase item 3. The file contains no `pip-audit`, `PIP_AUDIT`, `AUDIT_STATE`, `AUDIT_STATUS`, `NOT_PERFORMED` or `security_scan_logic` token, and that is a static test (TC-S19). Its header line 4 loses "and pip-audit for dependency vulnerabilities" (§3.1 governs the exact header).
+
+**15.1.3 `tests/oversight/test_security_scan_exemptions.py` (modify, Part 2): retarget, don't duplicate.**
+
+| Item | Change |
+|---|---|
+| `_GATE` | → `_REPO / "scripts" / "oversight" / "gates" / "dependency_audit.sh"` |
+| new `_BANDIT_GATE` | → `…/security_scan.sh`, used only by `g6` and `g7` |
+| `_needs_gate` | Drop the `bandit` requirement. It becomes bash plus `_VENV_BIN / "python3"`, because `dependency_audit.sh` never runs bandit. Reason string: `"oversight venv python3 or bash unavailable"`. |
+| `g1`, `g3`, `g4c`–`g4h`, `g5` | Unchanged except through `_GATE`. They still pass a `.py` argument, which `dependency_audit.sh` ignores (TD-1). That makes the arg-ignoring a side effect of these tests, which is intended. |
+| `g2` | Expected line → `GATE PASS: no blocking dependency vulnerabilities (pip-audit binary overridden)` |
+| `g4` | Expected last line → `GATE PASS: no blocking dependency vulnerabilities (pip-audit binary overridden; pip-audit NOT CHECKED — see above)` |
+| `g4b` | Unchanged (it asserts a substring) |
+| `g6` | **Rewritten**, renamed `test_g6_bandit_absent_prints_no_pass_line_statically`. On `_BANDIT_GATE`'s text: (i) the index of `echo "SKIP: bandit not in oversight venv` is followed within 120 characters by `exit 0`; (ii) `NOT_PERFORMED` does not occur in the file; (iii) the string `GATE PASS: no blocking security issues (` does not occur. This pins §3 rebase item 4 and the §3.5 shape. |
+| new `g7` | `test_g7_security_scan_has_no_pip_audit_lane`: TC-S19's token list, asserted on `_BANDIT_GATE`. It lives here, not in `test_scan_gates_empty_args.py`, so the #1776 file owns the "lane moved, not lost" pair (g7 here, g1–g5 on the new gate). |
+| `t1` | Unchanged (through `_GATE`) |
+| `t2`, `t3`, `t4`, `r*`, `s*`, `x*`, `f*`, `p*`, `m*`, `pr*` | Unchanged. They test the module, not a gate. |
+| module docstring | One sentence: the gate half moved to `dependency_audit.sh` in #1605 (AD-22), and the module and roster are untouched. |
+
+TC-S19 is listed in §7.1 numbering for traceability, but it is **implemented as g7** above. It is not added a second time.
+
+### 15.2 The scheduled measurement procedure (Part 3)
+
+**Location (TD-D5-3).** The procedure lives in `scripts/automation/dependency_audit_report.py`, as two argv modes that dispatch **only** when `argv[0]` is the literal `measure` or `project`. Every other argv goes to the existing §9.7 parser, unchanged. No new file is created (Part 3 is at 15, §15.11). `measure` is stdlib-only and runs under the job's `python3`, which setup-python provides as 3.12. `project` runs under the **venv** interpreter, as a child of `measure`, because it imports `packaging` through `security_scan_logic`.
+
+```
+python3 -m scripts.automation.dependency_audit_report measure \
+    --venv-bin <dir> --python-version <M.m> --requirements <file> [--requirements <file> ...] \
+    --venv-build-outcome <success|failure|cancelled|skipped> \
+    --out-json <path> --github-output <path> \
+    [--attempt-timeout-seconds <n, default 300>] [--retry-sleep-seconds <n, default 30>] \
+    [--logic-path <path, default scripts/oversight/security_scan_logic.py>]
+<venv-bin>/python -m scripts.automation.dependency_audit_report project \
+    --raw <path> --out <path> [--logic-path <path>]
+```
+
+`--logic-path`, `--attempt-timeout-seconds` and `--retry-sleep-seconds` exist **for tests only**. The workflow must not pass any of them (workflow-static test TC-W4). `--logic-path` never makes the production path use a copy: the default is the checked-out module (AC-32).
+
+**Steps (binding order; each failure sets `cause` and stops):**
+
+| Step | Action | Pass condition | Failure → `cause` (`sub`) |
+|---|---|---|---|
+| 1 | Check `--venv-build-outcome` | `== success` | `venv-build-failed` |
+| 2 | Run `<venv-bin>/python -c "import json,sys; print(json.dumps([sys.version_info[0], sys.version_info[1], sys.prefix != sys.base_prefix]))"` with a 30 s timeout | rc 0, and stdout parses to exactly `[M, m, true]` from `--python-version` | `interpreter-wrong` (this includes a missing python, rc≠0, a timeout and a mismatch) |
+| 3 | **Venv matches requirements (TV-16).** Run `<venv-bin>/pip install --dry-run --no-index --quiet` then `-r <f>` for each `--requirements`, then `--report <tmp>/pip-report.json`, with a 120 s timeout | rc 0, the report parses, and `report["install"] == []` | `venv-mismatch` (this includes pip being absent) |
+| 4 | **pip-audit present** | `<venv-bin>/pip-audit` is a regular file and executable | `pip-audit-absent` |
+| 5 | **Run pip-audit, and accept output whatever the rc (TV-15).** Up to 3 attempts, sleeping `--retry-sleep-seconds` between them. Each attempt deletes `<tmp>/raw.json`, then runs `<venv-bin>/pip-audit --progress-spinner off --format json -o <tmp>/raw.json` with the attempt timeout. stderr is captured and only its last 20 lines are kept. An attempt is **accepted** only if rc ∈ {0,1} **and** `raw.json` is a regular non-symlink file of at most `MAX_INPUT_BYTES` **and** `json.loads` of it gives a dict. | an attempt is accepted | After exhaustion, these are checked in order. A file over `MAX_INPUT_BYTES` on any attempt gives `oversized`. Otherwise, any attempt with rc ∈ {0,1} and no acceptable file gives `unparseable`, and this is sticky across later timeouts (main's CWE-636 rule). Otherwise, all attempts timing out gives `timeout`. Otherwise `pip-audit-failed`. |
+| 6 | **Verdict = filter rc (AC-32).** Run `PYTHONSAFEPATH=1 <venv-bin>/python <logic-path> filter < raw.json` with a 60 s timeout, capturing stdout and stderr (each capped at 64 KiB) | rc ∈ {0,1} | rc 2 with stderr starting `GATE FAIL: exemption roster invalid` gives `roster-invalid`. rc 2 with stderr starting `GATE FAIL: could not parse pip-audit output` gives `unparseable`. Any other rc 2, any other rc, or a timeout gives `filter-error`. |
+| 7 | **Skip count (TV-14, AD-21).** Done inside `project` (step 8) as `len(parse_audit(doc).skipped)`, using the module's own parser, never a re-implementation | — | see step 9 |
+| 8 | **Projection.** Run `<venv-bin>/python -m scripts.automation.dependency_audit_report project --raw raw.json --out <out-json>` with a 60 s timeout | rc 0, and exactly one stdout line full-matching `^PROJECT kept=(0\|[1-9][0-9]{0,5}) skipped=(0\|[1-9][0-9]{0,5}) first=(-\|unattributable\|<VULN_ID_RE>) deps=([0-9]{1,6})$` | `filter-error` |
+| 9 | **Consistency and partial audit.** If verdict is 0, then `kept` must be 0. If verdict is 1, then `kept` must be at least 1. | consistent | `projection-mismatch`. If it is consistent, verdict is 0 and `skipped > 0`, the result is `partial-audit` (AD-21). If verdict is 1 and `skipped > 0`, the result is a **finding** with `partial=1` (TD-D5-2). |
+
+**`project` mode (pure core plus thin I/O):**
+
+- It loads `security_scan_logic` from `--logic-path` with `importlib.util.spec_from_file_location`, under a fixed module name, `hos_security_scan_logic_1605`.
+- It computes `mode = roster_mode(<repo root>)`, `rules = SUPPRESSIONS if mode.active else ()` and `today = datetime.now(timezone.utc).date()`. These are the exact three expressions in `security_scan_logic.main()`. A comment must say so, and must say that step 9's consistency check is what detects any drift.
+- It then computes `doc = parse_audit(json.loads(raw))` and `decision = partition(doc.advisories, rules, today)`.
+- The pure function is `project_audit(document, rules, active, today, logic) -> tuple[dict, ProjectionSummary]`.
+- **Output document:** `{"dependencies": [...]}`. For each dependency entry of the raw document that has **no** `skip_reason` key, it emits `{"name", "version", "vulns": [the raw vuln dicts whose (canonical package, version, id) is in the kept set]}`. Dependencies with no kept vuln are emitted with `"vulns": []`. Skip entries are dropped, because a skip entry has no `version` (TV-14) and `normalize` would reject it. Raw vuln dicts are copied verbatim, so `normalize` (§9.3) still applies SEC-S4 to every value. A kept **malformed** advisory has no raw dict that matches cleanly. It is emitted as its raw dict when one can be identified by position, and otherwise it is counted but not emitted. `normalize` may then reject the document, which gives a `report-failed` finding (§15.3). The hold stands, so this fails closed.
+- `first`: the kept advisories are sorted by `(advisory.key, advisory.advisory_id)`. `first` is the first `advisory_id` that full-matches `VULN_ID_RE`. If no kept id matches, `first` is `unattributable`. With no kept advisories, `first` is `-`.
+- It writes `--out` atomically (temp file plus `os.replace`), mode 0644, then prints the one `PROJECT` line and exits 0. Any exception means exit 2, with the cause on stderr.
+
+**Why the artifact is the projection (TD-D5-7, D-5 item 3).** `report` installs nothing and so cannot import `security_scan_logic`. If it were handed the raw document, the tracking issue would list black and mcp, which the human has exempted. Then a clean run (verdict 0) would sit next to an open issue full of "findings". The projection makes the issue's finding set equal the roster-filtered kept set. On a clean run it is empty, so `report` closes the issue (§9.5). This is a change to *what* `report` reads. `report`'s code, allowlists, bounds and decision table are unchanged.
+
+**Output of `measure` (binding).**
+
+- **Log lines.** It prints the filter's stdout lines to its own stdout **only when** the result is clean or a finding. On every `NOT_RUN` cause it prints `dependency audit: filter output withheld — this run is NOT_RUN (<cause>); nothing here is a pass`. This is because the filter prints an `OK:` line on a partial audit (TV-14), and AC-33 forbids an `OK` line on a non-clean outcome. pip-audit's captured stderr tail is printed prefixed `  pip-audit stderr: `.
+- **Final stdout line**, always: `MEASURE verdict=<0|1|-> cause=<-|sub token> kept=<n> first=<id|unattributable|-> skipped=<n|-> partial=<0|1>`.
+- **`--github-output`**: it appends exactly five lines: `verdict=<0|1|->`, `cause=<…>`, `kept=<n>`, `first=<…>`, `partial=<0|1>`. They are written **before** exit on every path, including failures. If writing them fails, the exit is 1 and the outcome becomes `audit-failed`.
+- **Exit:** 0 for a clean result or a finding (verdict 0 or 1, consistent). 1 for every `NOT_RUN` cause. 2 for a usage error. No path prints `SKIP`, `GATE PASS`, `PASS` or a leading `OK:` unless the result is clean (TC-H1, TC-P*).
+
+**Cause table (AC-33 → sub tokens; every row is `outcome=not_run cause=environment-broken`):**
+
+| AC-33 condition | `sub` |
+|---|---|
+| pip-audit absent from the venv | `pip-audit-absent` |
+| venv does not match `requirements.txt` | `venv-mismatch`; `venv-build-failed` if `ensure_venv.sh` itself failed |
+| wrong interpreter | `interpreter-wrong` |
+| retries exhausted, on timeout or network | `timeout`, `pip-audit-failed` |
+| output unparseable, or failing the allowlist (AC-25) | `unparseable`, `oversized`; an allowlist failure in `report` is `report-failed` (§15.3) |
+| roster invalid (`run_filter` exit 2) | `roster-invalid`; other exit-2 cases are `filter-error` |
+| partial audit (AD-21) | `partial-audit` |
+| internal inconsistency | `projection-mismatch` |
+
+### 15.3 `.github/workflows/dependency-audit.yml`: three jobs (Part 3; amends §10.2)
+
+Everything in §10.2's binding list still holds. These are the deltas (exact YAML is the coder's, and the properties are binding and test-pinned by TC-W*):
+
+**`audit` job.**
+
+- It gains `outputs:` `verdict`, `cause`, `kept`, `first` and `partial`, each `${{ steps.measure.outputs.<name> }}`.
+- Step `Build oversight venv` gets `id: venv` and `continue-on-error: true`. It still runs `bash scripts/oversight/ensure_venv.sh`.
+- Step `Measure` gets `id: measure` and `if: always()`. Its `env:` is `VENV_OUTCOME: ${{ steps.venv.outcome }}` and nothing else. Its `run:` is:
+  ```
+  set -uo pipefail
+  python3 -m scripts.automation.dependency_audit_report measure \
+    --venv-bin scripts/oversight/.venv/bin --python-version 3.12 \
+    --requirements scripts/oversight/requirements.txt \
+    --venv-build-outcome "$VENV_OUTCOME" \
+    --out-json "$RUNNER_TEMP/pip-audit.json" --github-output "$GITHUB_OUTPUT"
+  ```
+  - `--python-version` must equal the `setup-python` `python-version` in the same job (TC-W2).
+  - The `--requirements` list is the file set `ensure_venv.sh` installs. For HOS that is the one oversight file. A comment must say that a project with root `requirements*.txt` adds each one here.
+- Step `Run pip-audit` (§10.2) is **deleted**.
+- `upload-artifact` gets `if: steps.measure.outcome == 'success'` and `path: ${{ runner.temp }}/pip-audit.json`. Name, `if-no-files-found: error` and retention are unchanged.
+- The job fails whenever `measure` exits non-zero, so `report` is skipped. AC-25's structure is unchanged.
+
+**`report` job.** `needs: audit`, with no `if:` (unchanged).
+
+- It gains `outputs: issue: ${{ steps.reconcile.outputs.issue }}`.
+- The reconcile step gets `id: reconcile`. After the existing guard, it runs the module with stdout redirected to `"$RUNNER_TEMP/report.out"`, then `cat`s that file. It then extracts the **last** line, which must full-match `^dependency_audit_report: tracking_issue=([1-9][0-9]{0,8}|none)$`. It writes `issue=<N>`, or `issue=-` for `none`, to `$GITHUB_OUTPUT`. If there is no matching last line, it exits 1. Under `set -euo pipefail`, a module exit≠0 fails the step before extraction.
+
+**`outcome` job (new).**
+
+```
+outcome:
+  name: dependency-audit-outcome        # the consumer selects the job by this exact name (§15.5)
+  needs: [audit, report]
+  if: always()
+  runs-on: ubuntu-latest
+  timeout-minutes: 5
+  permissions: {}
+  steps:
+    - name: Publish the outcome record
+      env: { AUDIT_RESULT: ${{ needs.audit.result }}, REPORT_RESULT: ${{ needs.report.result }},
+             VERDICT: ${{ needs.audit.outputs.verdict }}, CAUSE: ${{ needs.audit.outputs.cause }},
+             KEPT: ${{ needs.audit.outputs.kept }}, FIRST: ${{ needs.audit.outputs.first }},
+             PARTIAL: ${{ needs.audit.outputs.partial }}, ISSUE: ${{ needs.report.outputs.issue }},
+             SHA: ${{ github.sha }} }
+      run: <the mapping script below; no ${{ }} inside it>
+```
+
+The job has no `uses:`, no checkout and no setup-python. Its single `run:` is a bash script with `set -euo pipefail` and `LC_ALL=C`. That script:
+
+1. **Validates every input** with `[[ =~ ]]` full-match patterns:
+   - `AUDIT_RESULT` and `REPORT_RESULT` ∈ {success, failure, cancelled, skipped};
+   - `VERDICT` ∈ {0, 1, -, empty};
+   - `CAUSE` must be empty, `-` or `^[a-z][a-z0-9_-]{0,31}$`;
+   - `KEPT` must be empty or `^(0|[1-9][0-9]{0,5})$`;
+   - `FIRST` must be empty, `-`, `unattributable` or the record's id pattern (§15.4);
+   - `PARTIAL` ∈ {0, 1, empty};
+   - `ISSUE` must be empty, `-` or `^[1-9][0-9]{0,8}$`;
+   - `SHA` must match `^[0-9a-f]{40}$`.
+
+   An invalid `SHA` exits 1 with no record, which the consumer reads as `record-invalid`. Any other invalid input gives `outcome=not_run`, `sub=audit-output-invalid`.
+2. **Maps the inputs, first matching row wins:**
+
+   | Condition | outcome | cause | sub | first | kept | issue |
+   |---|---|---|---|---|---|---|
+   | `AUDIT_RESULT != success` | not_run | environment-broken | `CAUSE` if valid and not `-`/empty, else `audit-failed` | - | 0 | - |
+   | `VERDICT=1` and `KEPT≥1` and `FIRST∉{-,empty}` | finding | dependency-advisory | `report-failed` if `REPORT_RESULT != success`; else `partial-audit` if `PARTIAL=1`; else `-` | `FIRST` | `KEPT` | `ISSUE` if numeric, else - |
+   | `VERDICT=0` and `KEPT=0` and `REPORT_RESULT=success` | clean | - | - | - | 0 | `ISSUE` if numeric, else - |
+   | `VERDICT=0` and `KEPT=0` and `REPORT_RESULT != success` | not_run | environment-broken | report-failed | - | 0 | - |
+   | anything else | not_run | environment-broken | audit-output-invalid | - | 0 | - |
+3. Builds the record (§15.4) and prints it exactly once as `echo "::notice::${RECORD}"`. No other `::notice`, `::warning` or `::error` command is printed.
+4. Exits 0 if the outcome is `clean`, and 1 otherwise, so a finding or a `NOT_RUN` shows as a red run (TD-D5-9). The consumer reads the record whatever the run's conclusion (§15.5).
+
+### 15.4 Record grammar (binding; ADR AD-16)
+
+One line, ASCII only, at most 512 bytes, full-matching:
+
+```
+^hos-dependency-audit/1 outcome=(clean|finding|not_run) cause=(-|dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) first=(-|unattributable|ID) kept=(0|[1-9][0-9]{0,5}) issue=(-|[1-9][0-9]{0,8}) sha=([0-9a-f]{40})$
+```
+
+Here `ID` is §9.2's `VULN_ID_RE`, verbatim. It is defined once, in `dependency_audit_report.py`, and `dependency_pause.py` imports that constant. The bash in `outcome` cannot import it, so it carries a literal copy, and TC-W6 asserts the two are equal.
+
+**Semantic rules** (the consumer checks them after the regex; any violation is `record-invalid`):
+
+- `clean` ⇒ `cause=- sub=- first=- kept=0`;
+- `finding` ⇒ `cause=dependency-advisory`, `first≠-` and `kept≥1`;
+- `not_run` ⇒ `cause=environment-broken`, `sub≠-`, `first=-` and `kept=0`.
+
+### 15.5 The read path: three `github.py` read helpers, plus selection (Part 3; ADR AD-16)
+
+Placed directly after §8's three write helpers, under the section comment `# --- Actions-run reads (added for #1605's dependency hold; single consumer: scripts/automation/dependency_pause.py) ---`. Each docstring names #1605 and the single consumer.
+
+```python
+def list_workflow_runs(owner, repo, workflow_file, *, branch, status="completed", per_page=20, retries=3) -> list[dict]
+    # GET /repos/{o}/{r}/actions/workflows/{workflow_file}/runs?branch={branch}&status={status}&per_page={per_page}
+    # returns payload["workflow_runs"]; ONE page, never paginated.
+def list_run_jobs(owner, repo, run_id, *, per_page=50, retries=3) -> list[dict]
+    # GET /repos/{o}/{r}/actions/runs/{run_id}/jobs?filter=latest&per_page={per_page}; returns payload["jobs"].
+def list_check_run_annotations(owner, repo, check_run_id, *, per_page=50, retries=3) -> list[dict]
+    # GET /repos/{o}/{r}/check-runs/{check_run_id}/annotations?per_page={per_page}; returns the list.
+```
+
+**Contract:**
+
+- **Inputs are validated before any call, with `ValueError` on failure:**
+  - `workflow_file` full-matches `[A-Za-z0-9._-]{1,100}\.ya?ml`;
+  - `branch` full-matches `[A-Za-z0-9._/-]{1,100}` and is URL-encoded with `urllib.parse.quote(branch, safe="")`;
+  - `status` ∈ {completed};
+  - the ids are `int` (not `bool`) and > 0;
+  - `per_page` is in 1..100.
+- **Calls** all go through `_run_gh([...], retries=retries)`.
+- **Response shape:**
+  - The payload must be a dict holding the named list, or for annotations a list. Otherwise the helper raises `GitHubError("<helper>: unexpected response shape")`.
+  - A genuine 200 with an empty list returns `[]`.
+  - §8's 404→raise is preserved.
+
+**Selection rules** live in `dependency_pause.py` as pure functions over the helper results:
+
+1. **Runs.** A run qualifies if `head_branch == "main"` (`DEFAULT_BRANCH`, a module constant, TD-D5-10), `event ∈ {"schedule", "workflow_dispatch"}`, `path == ".github/workflows/dependency-audit.yml"` and `status == "completed"`.
+   - The newest qualifying run wins, by `run_started_at` (ISO-8601 Z, parsed strictly), ties broken by the larger `id`. Its `conclusion` does not matter here.
+   - No qualifying run gives `stale`.
+   - A qualifying run with `conclusion ∉ {success, failure}` (cancelled, timed_out, startup_failure, skipped, neutral, action_required, or null) gives `not_run`, `sub=run-incomplete`.
+   - An unqualified run is ignored, and is **never** trusted (AD-16).
+2. **Staleness** (AD-17) is checked **before** the record is read:
+   - `now - run_started_at > max_age` gives `stale`. Equal to `max_age` is not stale.
+   - `max_age` comes from `HOS_DEPENDENCY_AUDIT_MAX_AGE_HOURS`: unset means 216, and a value full-matching `[0-9]{1,4}` within [168, 336] is used as is.
+   - Any other value gives held, `sub=config-invalid`, before any read.
+3. **Jobs.** Exactly one job must have `name == "dependency-audit-outcome"`, `status == "completed"` and a `check_run_url` full-matching `https://api\.github\.com/repos/<owner>/<repo>/check-runs/([1-9][0-9]{0,15})`, with `<owner>/<repo>` compared case-insensitively to `--repo-slug`. Otherwise the result is `record-invalid`.
+4. **Annotations.** The candidates are annotations whose `annotation_level == "notice"`, whose `message` is a `str` of at most 512 bytes once encoded as UTF-8, ASCII only, and which full-match §15.4.
+   - Exactly one candidate is required, and its `sha` must equal the run's `head_sha`. Otherwise the result is `record-invalid`.
+   - Then the §15.4 semantic rules apply.
+5. **Retries.** The consumer calls every helper with `retries=1` (TD-D5-6). That keeps the worst case at 3 × (30 s + 2 s + 30 s), which is under hos-cron's 240 s bound (§15.8).
+
+**Read failure and the cache (AD-17).**
+
+- Any `GitHubError`, `RateLimitError`, `ValueError` from shape validation, or `subprocess.TimeoutExpired` from any of the three reads is a read failure.
+- A **complete** read, meaning one where selection reached a decision (including `stale`, `run-incomplete` and `record-invalid`), is cached at `<hold-dir>/dependency-audit.reading`. The file has no `.json` suffix so the hold reader (§15.6) never parses it.
+  - Cache format: JSON `{"schema": "hos-dependency-audit-reading/1", "read_at": <iso>, "run": {"id", "run_started_at", "html_url", "conclusion", "head_sha"} | null, "record": <str|null>, "selection_sub": <token|null>}`.
+  - It is written 0600 and atomically.
+- On a read failure, the cache is used **only if** it parses and `now - read_at ≤ 6 h` (21,600 s). The cached reading is then **re-evaluated** at `now`, so staleness keeps advancing.
+- Otherwise the result is `not_run`, `sub=read-failed`.
+- The summary line reports `reading=fresh`, `reading=cached:<age_s>` or `reading=none` (§15.6). If the human rejects I-7 (Q-D5-6), the only change is `READ_FAILED_HOLDS = False`, a module constant that maps `read-failed` to `run` and logs it.
+
+### 15.6 `scripts/automation/dependency_pause.py`: state, decide and apply (Part 3; ADR AD-18)
+
+**Module shape.** The module is a pure core (`select_run`, `parse_record`, `evaluate`, `fingerprint`, `plan_transition`) plus an I/O shell (`read_holds`, `write_hold`, `delete_hold`, `send_alert`, `main`). All I/O is injected through a `Deps` dataclass: `now()`, the three read callables, `run_notifier(argv, timeout)`, `run_escalation(argv, timeout)`, `env` and `state_root`. No test touches the network or `~` (AC-28, AC-43).
+
+**CLI:**
+
+```
+python3 -m scripts.automation.dependency_pause check \
+    --project <name> --repo-slug <owner/repo> --state-dir <dir> --repo-root <dir>
+```
+
+- `--project` full-matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+- `--repo-slug` full-matches `[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}`.
+- Anything else is exit 2 (usage), with no state write. hos-cron reads that as `check_error`.
+- The notifier path is `<repo-root>/bootstrap/notify_human.sh`, and the fallback path is `<repo-root>/bootstrap/escalate_to_human.sh`. Neither is an argument, so there is no seam that redirects the alert.
+
+**State (binding schema `hos-build-hold/1`).**
+
+- **Directory:** `<state-dir>/build-hold/<project>/`, created 0700 with each component created as needed.
+  - If the directory exists but is a symlink, is not a directory, or is not owned by `os.geteuid()`, the result is held with `sub=state-corrupt`, and nothing is written there.
+- **Own file:** `<dir>/dependency-audit.json`, mode 0600. The write sequence is `os.open(tmp, O_WRONLY|O_CREAT|O_EXCL, 0o600)` on `.dependency-audit.json.tmp-<pid>`, then write, `fsync`, and `os.replace`.
+- **Fields** (all required, `null` where shown):
+
+```json
+{"schema":"hos-build-hold/1","source":"dependency-audit",
+ "cause":"dependency-advisory|environment-broken","sub":"<token>|null",
+ "fingerprint":"dependency-audit:<cause>:<first|sub>",
+ "since":"<iso Z>","last_evaluated":"<iso Z>",
+ "issue":<int>|null,"run_url":"<https url>"|null,
+ "clear_act":"<fixed sentence below>",
+ "alert":{"status":"sent|undelivered|pending","reason":"<token>|null","at":"<iso Z>|null",
+          "fallback":"posted|failed|not-applicable|disabled"},
+ "detail":{"held_since":"<iso Z>","first":"<id>|null","kept":<int>,"reading":"fresh|cached|none"}}
+```
+
+- **Fingerprint (AC-41):**
+  - a finding is `dependency-audit:dependency-advisory:<first>`;
+  - a `not_run` is `dependency-audit:environment-broken:<sub>`.
+- **`clear_act`** is exactly: `Record a time-boxed exemption in the #1776 roster (scripts/oversight/security_scan_logic.py) or land a dependency bump, then run "Dependency audit (scheduled)" on main via workflow_dispatch. The hold clears only on the next clean run.` (AC-37; Q-D5-3 pending, recommendation clean-run only.)
+
+**Shared reader `read_holds(dir)`.**
+
+- It reads every entry whose name full-matches `[a-z][a-z0-9-]{0,31}\.json`, and ignores all others. That ignores the cache file, temp files and `check-error.alerted` (§15.8).
+- A file that cannot be read, is over 64 KiB, is not JSON, or lacks `schema == "hos-build-hold/1"` and `source == <stem>` gives `Hold(source=<stem>, cause="environment-broken", sub="state-corrupt", corrupt=True)`. It is never "absent".
+- **Other sources' files are read-only to this module.** They are never written or deleted, even on a clean dependency run. That is the #2123 seam.
+
+**`evaluate(reading, now, max_age) -> Evaluation(outcome, cause, sub, first, kept, issue, run_url)`.** Pure. It applies §15.5 rules 1–4. A `finding` keeps the record's `sub` (`report-failed` or `partial-audit` or `-`).
+
+**`plan_transition(own_state, evaluation, now) -> Plan`** (pure; this is decide/apply):
+
+| Own file | Evaluation | Plan |
+|---|---|---|
+| absent | clean | nothing; no event |
+| absent | not clean | write a new file: `since = held_since = now`, `alert.status = "pending"`. Event `dependency-pause-set`. Alert. |
+| valid, same fingerprint | not clean | keep `since`, `held_since` and `alert`. Update `last_evaluated`, `issue`, `run_url` and `detail.reading`. No event. Re-send the alert only if `alert.status == "undelivered"` and `now - alert.at ≥ 3600 s`. |
+| valid, different fingerprint | not clean | `since = now`, keep `detail.held_since`, `alert.status = "pending"`. Event `dependency-pause-set` with `previous_fingerprint`. Alert. (TD-D5-4) |
+| valid | clean | delete the file. Event `dependency-pause-cleared` with `duration_s = now - detail.held_since` (whole seconds), plus `fingerprint` and `run_url`. |
+| corrupt | any | held this cycle, `sub=state-corrupt`, fingerprint `dependency-audit:environment-broken:state-corrupt`. Overwrite the file with that hold (`since = held_since = now`). Event `dependency-pause-set`. Alert. The next cycle re-derives normally (TD-D5-5). |
+
+Deleting the file by hand achieves nothing: the next not-clean evaluation rewrites it (AD-18).
+
+**stdout contract** (exit 0 whenever the final line is printed):
+
+- `EVENT dependency-pause-set fingerprint=<fp> cause=<c> sub=<s|-> issue=<n|-> run_url=<url|-> [previous_fingerprint=<fp>]`
+- `EVENT dependency-pause-cleared fingerprint=<fp> duration_s=<n> run_url=<url|->`
+- `EVENT alert-undelivered cause=<c> reason=<r> fingerprint=<fp>`
+- `[HELD-DEPENDENCY] cause=<c> sub=<s|-> issue=<#n|-> since=<iso> alert=<sent|pending|undelivered:<reason>>`, one line if the own source is held
+- `[HELD-BUILD] source=<s> cause=<c> sub=<s|-> issue=<#n|-> since=<iso|-> alert=<…|->`, one line per other held source, sorted by source
+- `DEPENDENCY-PAUSE decision=<run|hold> holds=<n> reading=<fresh|cached:<age_s>|none>`, last, exactly once
+
+Every value is a token without spaces, and URLs are validated `https://github.com/…` strings. EVENT lines are printed only on transitions (AD-19). An unhandled exception gives exit 1, and hos-cron reads that as `check_error`.
+
+### 15.7 The alert (Part 3; ADR AD-20, AC-39, AC-40)
+
+**Ordering (binding).** `write_hold` completes, including `os.replace`, **before** `send_alert` is called. TC-A2 asserts that the hold file exists when the fake runner is invoked.
+
+**Argv (AC-40), exactly:**
+
+```
+<repo-root>/bootstrap/notify_human.sh --cause <dependency-advisory|environment-broken> --issue <n> \
+    --since <since> --priority high --body-file <path>
+```
+
+When `issue` is null, `--issue <n>` is replaced by `--url <run_url>`. When `run_url` is also null (as for `stale`, `read-failed`, `config-invalid` and `state-corrupt`), the URL is `https://github.com/<repo-slug>/actions/workflows/dependency-audit.yml`. Whether #2125 accepts `--url` is a cross-issue requirement on #2125 and must be disclosed in the PR body (AD-20).
+
+**Body file.** The body is written 0600 into `tempfile.mkdtemp()` (which honours `$TMPDIR`) and removed afterwards. It contains the cause, sub, fingerprint, tracking issue or URL, `since`, and the `clear_act` sentence. It is plain ASCII with no `@`, and the token values have already been validated.
+
+**Invocation.** It runs through `Deps.run_notifier(argv, timeout=30)`: `subprocess.run`, `stdin=DEVNULL`, output captured and discarded except a 2 KiB tail kept for the log.
+
+**Results:**
+
+| Result | `alert.status` / reason |
+|---|---|
+| rc 0 | `sent` |
+| path missing | `undelivered` / `absent` |
+| exists, but not a regular file or not `os.access(X_OK)` | `undelivered` / `not-executable` |
+| rc ≠ 0 | `undelivered` / `exit-<rc>` |
+| `TimeoutExpired` | `undelivered` / `timeout` |
+| `OSError` on spawn | `undelivered` / `spawn-error` |
+
+After any `undelivered`, the module re-writes the hold file with `alert.status`, `reason` and `at`, and prints `EVENT alert-undelivered`. Nothing else changes: the hold stands (AC-39).
+
+**Fallback (Q-D5-5, PENDING THE HUMAN; designed for recommendation (a)).**
+
+- On `undelivered` with a numeric `issue`, the module calls `Deps.run_escalation([<repo-root>/bootstrap/escalate_to_human.sh, --number, <issue>, --body-file, <path>, --reason, dependency-audit-alert-undelivered, --app, worker], timeout=60)` **once per fingerprint**. That happens when `alert.fallback` is not already `posted`.
+- The body is stable for the fingerprint: it contains no `at` or `last_evaluated`. The script's own idempotency key therefore also dedups.
+- The results are rc 0 = `posted` and anything else = `failed`. A failed fallback is retried with the hourly alert retry. With no numeric issue, the fallback is `not-applicable`.
+- **If the human answers (b)**, the coder sets the module constant `FALLBACK_ENABLED = False` (status `disabled`). **If the human answers (c)**, Part 3 does not start until #2125 lands. **Part 3 coding must not start before Q-D5-5 is answered.**
+
+**No Pushover client and no credential in this path** (AD-20).
+
+### 15.8 `bin/hos-cron`: call site, predicate, directive and log line (Part 3; ADR AD-18, AD-19)
+
+**Call site.** A new block, `# ── Build-hold gate (#1605 D-5) ──`, goes **after** the App-token mint (`:957` and its success check) and **before** the #1395 actionable-work gate (`:1126`). It runs for `ROLE == worker` only. The overseer is never held, and the overseer's cycle never invokes the consumer (TC-K6). Placing it before #1395 means every worker cycle that passes the usage gate logs its hold line, including cycles #1395 later skips as idle. A usage-paused cycle exits at `:484` first and logs `[PAUSED-USAGE]` instead.
+
+**Predicate (scope, AD-18).**
+
+```
+if git -C "$REPO_ROOT" ls-files --error-unmatch -- .github/workflows/dependency-audit.yml >/dev/null 2>&1; then <invoke>
+else echo "$LOG_PREFIX [DEPENDENCY-AUDIT] not configured for this project (#1605)"; fi
+```
+
+When the project is not configured, `_BUILD_HOLD=0` and the directive is unchanged.
+
+**Invocation.**
+
+- A bound array `_BH_BOUND` is built exactly as `_UP_BOUND` is: `timeout --kill-after=10 240`, or `gtimeout`, or empty if neither exists.
+- The call is `_BH_OUT="$( (cd "$REPO_ROOT" && ${_BH_BOUND[@]+"${_BH_BOUND[@]}"} python3 -m scripts.automation.dependency_pause check --project "$PROJECT" --repo-slug "$_REPO_SLUG" --state-dir "$_HOS_DIR" --repo-root "$REPO_ROOT") )"`, wrapped in the usage-pause `if …; then _BH_RC=0; else _BH_RC=$?; fi` shape.
+- `-I` is **not** used. `-m` must resolve from the checkout (TV-3), which is the `select_work_candidates` precedent.
+
+**Parse (strict, `LC_ALL=C`).**
+
+1. The last line must full-match `^DEPENDENCY-PAUSE decision=(run|hold) holds=([0-9]{1,2}) reading=(fresh|cached:[0-9]{1,6}|none)$`.
+2. Every other line must full-match one of:
+   - `^EVENT (dependency-pause-set|dependency-pause-cleared|alert-undelivered)( [a-z_]{1,24}=[!-~]{1,300}){1,7}$`
+   - `^\[HELD-DEPENDENCY\] [ -~]{1,400}$`
+   - `^\[HELD-BUILD\] [ -~]{1,400}$`
+3. The number of `[HELD-*]` lines must equal `holds`, and `decision=hold` ⇔ `holds ≥ 1`.
+
+If `_BH_RC ≠ 0`, or any check fails, the result is **`check_error`**. Then:
+
+- `_BUILD_HOLD=1`, `_BUILD_HOLD_LINES="[HELD-DEPENDENCY] cause=environment-broken sub=check_error issue=- since=<cycle start iso> alert=<…>"`.
+- The cron notifier runs in-line: `"$REPO_ROOT/bootstrap/notify_human.sh" --cause environment-broken --url "https://github.com/$_REPO_SLUG/actions/workflows/dependency-audit.yml" --since <iso> --priority high --body-file <mktemp file>`. It runs **only if** `$_HOS_DIR/build-hold/$PROJECT/check-error.alerted` is absent or older than 3600 s. After the call, that marker is touched. Its result is mapped to `sent` or `undelivered:<absent|not-executable|exit-N|timeout>` with the §15.7 rules.
+- The marker is removed on the next valid verdict.
+- `_audit cycle-build-hold-check-error "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" "rc=$_BH_RC"`.
+
+**On a valid verdict:**
+
+- each `EVENT <name> k=v…` line becomes `_audit <name> "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" <k=v…>`, each pair one argument;
+- each `[HELD-*]` line is echoed as `"$LOG_PREFIX <line>"` (AC-39: every held cycle);
+- the summary is echoed as `"$LOG_PREFIX [DEPENDENCY-AUDIT] decision=… holds=… reading=…"`;
+- `_BUILD_HOLD=1` iff `decision=hold`, and `_BUILD_HOLD_LINES` holds the `[HELD-*]` lines.
+
+The cycle **continues** either way. The hold changes the directive. It does not exit the cycle, because triage and docs work proceed (AC-36).
+
+**Directive (in `_build_context`, worker branch).**
+
+- If `_OPEN_PR_NUMS` is non-empty, the existing `NEW WORK: BLOCKED` text is printed unchanged. When `_BUILD_HOLD=1`, one more line follows: `Build hold also active: <each [HELD-*] line, joined by "; ">`.
+- Else if `_BUILD_HOLD=1`, it prints exactly:
+
+```
+NEW WORK: DOCS/DESIGN ONLY
+Reason: build hold — <each [HELD-*] line, joined by "; ">.
+Allowed this cycle: Step 0 triage; a docs-only or design-only step (no change outside docs/, *.md design artifacts, DECISIONS.md); any step on the tracking issue named above, on #1504, or that records a dependency exemption or lands a dependency bump that clears the hold.
+Not allowed: starting any other build (code) step. Clear act: <clear_act sentence, §15.6>.
+```
+
+- Else the existing `NEW WORK: ALLOWED` is printed.
+
+**Prompt (Part 3, G-2).** `bootstrap/worker-cron-prompt.md` gains one bullet after `:73`: *"`NEW WORK: DOCS/DESIGN ONLY` → a build hold is active (#1605 D-5). Step 0 triage runs. Proceed to Step 2 only for an issue whose next step is docs-only or design-only, or one the directive's `Allowed this cycle` line names. Never start a code step. If no such issue exists, STOP. Do not try to clear the hold yourself, except through an issue the directive names."* The directive is also self-describing, which covers the agent-definition parity gap (G-2) for this release.
+
+**Residual (R-7, AD-19).** The hold is directive-level. Nothing in `submit_pr.sh` blocks a code PR while held. #2123 owns the backstop.
+
+### 15.9 Test plan for D-5 (Part 3, except where marked Part 2; AC-43)
+
+All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no network.
+
+**`tests/automation/test_dependency_audit_report.py`, measure and project.** `measure` is driven with a fake `--venv-bin` in `tmp_path`: `python` is a symlink to the oversight venv interpreter (skip-guarded like `_needs_gate`), and stub `pip` and `pip-audit` scripts print payloads, write files and record calls. `--attempt-timeout-seconds 2 --retry-sleep-seconds 0`.
+
+| ID | Case | Asserts |
+|---|---|---|
+| TC-P1 | stub `python` prints `[3, 11, true]` | rc 1; `cause=interpreter-wrong`; the five GITHUB_OUTPUT lines are present |
+| TC-P2 | no `pip-audit` in venv-bin | rc 1; `cause=pip-audit-absent`; no stdout or stderr line matches `(?i)\b(GATE PASS\|PASS\|SKIP)\b\|^OK:` |
+| TC-P3 | (a) `pip` exits 1; (b) `pip` rc 0 with a report where `install` is non-empty; (c) `pip` absent | `venv-mismatch` ×3 |
+| TC-P4 | `--venv-build-outcome failure` | `venv-build-failed`; `pip-audit` is never invoked |
+| TC-P5 | `pip-audit` sleeps 5 s on every attempt | `timeout`; 3 invocations recorded |
+| TC-P6 | (a) rc 1 and no `-o` file (TV-15); (b) rc 0 with a garbage file; (c) unparseable, then a timeout | `unparseable` ×3 |
+| TC-P7 | (a) rc 3; (b) a file over `MAX_INPUT_BYTES` | `pip-audit-failed`; `oversized` |
+| TC-P8 | `--logic-path` stub exits 2 with stderr `GATE FAIL: exemption roster invalid — x` | `roster-invalid` |
+| TC-P9 | stub exits 2 with another stderr; stub sleeps past 60 s (monkeypatched timeout) | `filter-error` ×2 |
+| TC-P10 | **AC-32, roster only:** black ×2 + mcp CVE-2026-59951 at the roster versions, real logic | rc 0; `verdict=0 kept=0`; the artifact has no vulns; the filter's `OK:` line is echoed |
+| TC-P11 | **AC-32, expired:** `project_audit` in-process, same fixture, `today = expiry + 1 day` | kept ≥ 1 (black); `first` is a black id |
+| TC-P12 | **new advisory:** `requests 2.0.0 CVE-2099-0001` plus the roster fixture, real logic | rc 0; `verdict=1 kept=1 first=CVE-2099-0001`; the artifact contains only `CVE-2099-0001` |
+| TC-P13 | TV-14 skip entry plus a clean audit | rc 1; `partial-audit`; the filter output is withheld; no `OK:` line |
+| TC-P14 | skip entry plus a new advisory | rc 0; `verdict=1 partial=1` |
+| TC-P15 | stub logic exits 0 while the projection keeps 1 | `projection-mismatch` |
+| TC-P16 | argv dispatch: `measure`/`project` vs the §9.7 argv | the existing CLI cases still pass; `--pip-audit-json` alone is never treated as `measure` |
+
+**Workflow static (extends §7.3; PyYAML).**
+
+| ID | Asserts |
+|---|---|
+| TC-W1 | three jobs exist (`audit`, `report`, `outcome`); `report.needs == "audit"` and `report` has no `if` |
+| TC-W2 | the `audit` step with `id: venv` has `continue-on-error: true`; `measure` has `if: always()`; the `measure` `run` contains `--python-version` equal to setup-python's version; the upload step's `if` is `steps.measure.outcome == 'success'` |
+| TC-W3 | the `audit` outputs are the five names; `report.outputs.issue` references `steps.reconcile.outputs.issue` |
+| TC-W4 | the workflow text contains none of `--logic-path`, `--attempt-timeout-seconds`, `--retry-sleep-seconds`, `HOS_PIP_AUDIT_BIN` |
+| TC-W5 | `outcome`: `permissions == {}`, `needs == ["audit", "report"]`, `if == "always()"`, no step has `uses`, the single `run` has no `${{`, and exactly one `::notice::` occurs in it |
+| TC-W6 | the `ID` alternation in `outcome`'s script equals `dependency_audit_report.VULN_ID_RE` |
+
+**Outcome mapping (TC-O\*, in the same file).** The `outcome` job's `run` script is extracted with PyYAML and executed with `bash` and an explicit `env`, with no network.
+
+| ID | Asserts |
+|---|---|
+| TC-O1..TC-O5 | one per §15.3 mapping row. Asserts the exact record line printed after `::notice::` and the exit code (0 only for clean). |
+| TC-O6 | invalid `FIRST` (`x y`), invalid `KEPT` (`-1`) → `sub=audit-output-invalid` |
+| TC-O7 | invalid `SHA` → exit 1 with no `::notice::` |
+| TC-O8 | `AUDIT_RESULT=failure CAUSE=pip-audit-absent` → `sub=pip-audit-absent`; `AUDIT_RESULT=cancelled` with empty `CAUSE` → `sub=audit-failed` |
+
+**`tests/automation/test_dependency_pause.py` (new).** All cases use fake `Deps`.
+
+Read helpers (TC-R\*), with `_run_gh` mocked as in `test_github.py`:
+
+| ID | Asserts |
+|---|---|
+| TC-R1 | each helper's exact endpoint string and the `retries=` it is passed |
+| TC-R2 | a 200 empty list returns `[]`; a wrong shape raises `GitHubError` |
+| TC-R3 | bad inputs (a `bool` id, 0, a branch with a space, `x.txt`) raise `ValueError` with **no** `_run_gh` call |
+
+Consumer (TC-C\*):
+
+| ID | Asserts |
+|---|---|
+| TC-C1 | finding record, no file → file 0600 in a 0700 dir, every schema field present, `EVENT dependency-pause-set`, decision hold |
+| TC-C2 | finding fingerprint `dependency-audit:dependency-advisory:CVE-2099-0001` |
+| TC-C3 | not_run fingerprint `dependency-audit:environment-broken:pip-audit-absent` |
+| TC-C4 | same fingerprint on the next cycle → `since` unchanged, no EVENT, no notifier call |
+| TC-C5 | clean record → file deleted, `EVENT dependency-pause-cleared duration_s=<now − held_since>`, decision run |
+| TC-C6 | file deleted by hand, record still a finding → rewritten, with a new `since` |
+| TC-C7 | newest qualifying run started 216 h + 1 s ago → `stale`; at exactly 216 h → not stale |
+| TC-C8 | no runs, and only non-qualifying runs → `stale` |
+| TC-C9 | `HOS_DEPENDENCY_AUDIT_MAX_AGE_HOURS` ∈ {167, 337, abc, "", 0168x} → `config-invalid` and no reads; 168 and 336 are accepted |
+| TC-C10 | a newer `workflow_dispatch` run on a non-main branch carrying a forged `clean` is ignored; `push` events are ignored; a path mismatch is ignored |
+| TC-C11 | `record-invalid` for: zero matching annotations; two; `sha ≠ head_sha`; non-ASCII; 513 bytes; `clean kept=1`; `finding first=-`; level `warning`; zero or two outcome jobs; a foreign `check_run_url` host |
+| TC-C12 | conclusion `cancelled`, `timed_out` or `null` → `run-incomplete` |
+| TC-C13 | read failure with a 5 h 59 m cache → cached reading used (`reading=cached:<age>`); with a 6 h 1 s cache, or no cache → `read-failed`; `READ_FAILED_HOLDS=False` → run |
+| TC-C14 | corrupt own file → `state-corrupt` hold and file rewritten; a corrupt `pipeline-blocked.json` → `[HELD-BUILD] … state-corrupt` and the file untouched; a valid `pipeline-blocked.json` plus a clean dependency run → decision hold, that file untouched |
+| TC-C15 | fingerprint change → new `since`, `held_since` kept, `previous_fingerprint` in the EVENT, notifier called again |
+| TC-C16 | hold dir is a symlink, or owned by another uid (monkeypatched `geteuid`) → `state-corrupt`, with no write |
+| TC-C17 | stdout contract: every line matches §15.8's parse regexes; the last line is the summary |
+
+Alert (TC-A\*):
+
+| ID | Asserts |
+|---|---|
+| TC-A1 | argv exactly AC-40 with `--issue 77`; with no issue, `--url <run_url>`; with no run either, the workflow URL |
+| TC-A2 | **notifier absent (AC-39):** the hold file exists when the fake runner is checked; `alert=undelivered:absent` appears in the file and in the `[HELD-DEPENDENCY]` line; `EVENT alert-undelivered` |
+| TC-A3 | not executable; `exit-3`; `timeout`; `spawn-error` → those reasons |
+| TC-A4 | undelivered at T; a cycle at T+59 m → no call; T+60 m → exactly one call |
+| TC-A5 | fallback (Q-D5-5 = a): undelivered with issue 77 → `escalate_to_human.sh` argv exact, once per fingerprint; a second cycle makes no call; a failed fallback leaves the hold unchanged; `FALLBACK_ENABLED=False` → `disabled`, no call |
+
+**`tests/automation/test_hos_cron.py` (modify; TC-K\*).** These cases use the file's existing harness. The fake consumer is a `scripts/automation/dependency_pause.py` written into the test's fake `REPO_ROOT`, which is a real module path, not an env seam. It prints a scripted stdout and exit code.
+
+| ID | Asserts |
+|---|---|
+| TC-K1 | workflow not tracked → the fake is never invoked; `[DEPENDENCY-AUDIT] not configured for this project (#1605)`; directive `NEW WORK: ALLOWED` |
+| TC-K2 | **AC-36:** fake prints a hold → context contains `NEW WORK: DOCS/DESIGN ONLY`, the `Allowed this cycle:` line naming docs-only/design-only steps, and `Not allowed: starting any other build (code) step`; the log has the `[HELD-DEPENDENCY]` line. This is directive-level only (R-7). |
+| TC-K3 | the fake exits 1, prints garbage, or prints no summary; and (separately) the bound kills it → `sub=check_error` in the log, `DOCS/DESIGN ONLY`, `_audit cycle-build-hold-check-error`, `alert=undelivered:absent` with the notifier absent; a second run inside an hour makes no notifier call |
+| TC-K4 | fake prints `decision=run` → `NEW WORK: ALLOWED` and `[DEPENDENCY-AUDIT] decision=run` |
+| TC-K5 | open PR plus hold → `NEW WORK: BLOCKED` text unchanged, plus `Build hold also active:` |
+| TC-K6 | `ROLE=overseer` → the fake is never invoked; no `NEW WORK:` line (the existing assertion holds) |
+| TC-K7 | EVENT lines become `_audit` records with those names |
+
+**Human acceptance tests (mandatory; AC-33, AC-43).**
+
+- **TC-H1: pip-audit absent ⇒ NOT_RUN, pause set, alert fired, no pass line.** One test function chains the three real components offline:
+  1. `measure` with a venv-bin lacking `pip-audit` → rc 1, `MEASURE verdict=- cause=pip-audit-absent …`, GITHUB_OUTPUT `cause=pip-audit-absent`.
+  2. The extracted `outcome` script with `AUDIT_RESULT=failure` and those outputs → the record `hos-dependency-audit/1 outcome=not_run cause=environment-broken sub=pip-audit-absent first=- kept=0 issue=- sha=<40 hex>`, exit 1.
+  3. `dependency_pause.main` with fake reads returning one qualifying run (head_sha = that sha), one outcome job, and that record as a notice annotation, plus a recording notifier → the hold file is written with fingerprint `dependency-audit:environment-broken:pip-audit-absent`; the notifier is invoked once with `--cause environment-broken … --priority high`; stdout has `[HELD-DEPENDENCY] cause=environment-broken sub=pip-audit-absent` and `decision=hold`.
+  4. Across all captured stdout and stderr of steps 1–3: **no** line matches `(?i)\bGATE PASS\b|\bPASS\b|\bSKIP\b|^OK:`.
+
+  Variant **TC-H1b**: the same chain with the notifier absent → `alert=undelivered:absent`, `EVENT alert-undelivered`, and the hold is still set.
+- **TC-H2: new advisory ⇒ issue + pause + `dependency-advisory` alert.**
+  1. TC-P12's measure.
+  2. The artifact is fed to `dependency_audit_report` CLI `--dry-run` with the recording writer → the planned issue body lists `CVE-2099-0001` and **not** black or mcp.
+  3. `outcome` with `REPORT_RESULT=success ISSUE=77` → `finding … first=CVE-2099-0001 kept=1 issue=77`.
+  4. Consumer → hold; notifier `--cause dependency-advisory --issue 77`.
+
+**AC-43 coverage:**
+
+| AC-43 item | Test |
+|---|---|
+| absent pip-audit | TC-H1 |
+| new advisory | TC-H2 |
+| roster only, no pause | TC-P10 + TC-O3 + TC-C5 (clean record) |
+| expired, pause | TC-P11 + TC-C2 |
+| clean clears | TC-C5 |
+| notifier absent | TC-A2, TC-H1b |
+| stale | TC-C7, TC-C8 |
+| docs-only proceeds while paused | TC-K2 |
+
+**Part 2 test deltas:** §15.1.3 (g2, g4, g6 rewrite, g7), and §7.1/§7.2 as annotated.
+
+### 15.10 Runbook and the AC-42 day-one check (Part 3)
+
+**`docs/OVERSIGHT-RUNBOOK.md` edit (e)** is a new subsection, "Build hold from the scheduled dependency audit (#1605 D-5)". It states:
+
+- (i) what holds, and where the state lives (`~/.hos/build-hold/<project>/dependency-audit.json`);
+- (ii) that deleting the file does nothing;
+- (iii) the clear act (§15.6);
+- (iv) the sub-token table from §15.2 and §15.5, each with its operator action;
+- (v) the 216 h staleness rule and the env override range;
+- (vi) **the token precondition** (folded in from `CRON-SETUP.md`, AD-23 shed step 2): the Worker App needs `actions: read` and `checks: read`, and without them every cycle holds with `read-failed`. Granting them is a human act;
+- (vii) **"dispatch immediately after merge"** (R-10);
+- (viii) that the overseer is never held;
+- (ix) that until #2125 lands, alerts show `undelivered:absent`, and the Q-D5-5 fallback is the visible channel.
+
+**AC-42 day-one procedure (binding on the worker before the Part 3 PR is marked ready).** The workflow cannot be dispatched before it is on main (AD-11: no non-default ref). Day one is therefore measured locally, through the **same** code path:
+
+1. Search first: `bootstrap/`, `scripts/` and `bin/` for an existing way to provision Python 3.12 (for example `uv`). If one exists, create a **fresh** venv with Python 3.12 under `mktemp -d`. Install `scripts/oversight/requirements.txt` with `pip install -r`, which needs network. Then run `python3 -m scripts.automation.dependency_audit_report measure --venv-bin <fresh>/bin --python-version 3.12 --requirements scripts/oversight/requirements.txt --venv-build-outcome success --out-json <tmp>/a.json --github-output <tmp>/o.txt`.
+2. If no Python 3.12 is available (this host has only 3.14.4), run step 1 with the newest available interpreter and its `--python-version`. **Disclose** in the PR body that CI resolves under 3.12 and that resolution can differ by interpreter markers.
+3. Paste into the PR body: the `MEASURE` line, the filter's roster lines, and either "clean: no hold on merge except R-10's `stale` until the first dispatch" or the exact kept advisories that would hold the pipeline on merge.
+4. After merge: the operator dispatches the workflow, and the PR thread records the first worker cycle's `[DEPENDENCY-AUDIT]` line. A `read-failed` there means the token precondition, item (vi).
+
+TV-13 (this venv, 3.14, 116 dependencies, 0 skipped, clean through `filter`) is the evidence that the roster covers today's advisories. It is not a substitute for step 3.
+
+### 15.11 Part 2 and Part 3: file lists and commit plans (AD-22, AD-23; replaces §12)
+
+**The vehicle is pending the human (Q-D5-1).** These lists implement AD-23's recommendation. If the human instead picks one larger Part 2, these lists merge into one, roughly 26 files, which needs an explicit size waiver. That is not designed further here.
+
+**Part 2: the gate split, re-cut on current main. 11 files (≤15).**
+
+| # | File | Section |
+|---|---|---|
+| 1 | `scripts/oversight/gates/security_scan.sh` | §3 + rebase box, §15.1.2 |
+| 2 | `scripts/oversight/gates/dependency_audit.sh` (new) | §4.1–§4.3, §15.1.1 |
+| 3 | `.github/workflows/oversight-gates.yml` | §10.1 (Edit 3 per AD-23 note) |
+| 4 | `tests/oversight/test_scan_gates_empty_args.py` | §7.1 (TC-D1–D5 superseded) |
+| 5 | `tests/oversight/test_gate_arg_grammar.py` | §7.2 |
+| 6 | `tests/oversight/test_security_scan_exemptions.py` | §15.1.3 |
+| 7 | `docs/specs/SPEC-375-deterministic-gate-invariant.md` | §11.1 |
+| 8 | `docs/OVERSIGHT-RUNBOOK.md` | §11.2 (a)–(c) |
+| 9 | `docs/CI-EXECUTION-INVENTORY.md` | §11.3 (Part 2 wording) |
+| 10 | `DECISIONS.md` | §11.4 (with the D-5/AD-23 note) |
+| 11 | `SCRIPTS-INDEX.md` (regenerated) | §11.5 (two gate lines) |
+
+Part 2 commits (≤10; planned 6). Each commit leaves `run_tests_inner_loop.sh` green.
+
+1. `fix(#1605): bandit's verdict comes from the file it wrote, never the stream it decorated`. Covers `security_scan.sh`: the bandit lane, kind filter, seam and `--`, plus rebase items 1, 2 and 4. The pip-audit lane is still present. Also `test_scan_gates_empty_args.py` (TC-S1–S17 bandit cases), `test_gate_arg_grammar.py` (the `KIND_FILTER_GATES` row) and `test_security_scan_exemptions.py` (the g6 rewrite).
+2. `feat(#1605): dependency_audit.sh carries main's pip-audit lane, with the #1776 roster, verbatim`. Covers the new gate, the lane removed from `security_scan.sh` (rebase item 3), the `test_security_scan_exemptions.py` retarget and g7, `test_scan_gates_empty_args.py` (AD-2a cases, TC-D6–D8) and `test_gate_arg_grammar.py` (TC-G9, TC-G10, docstring).
+3. `ci(#1605): oversight-gate-security-scan job (file-scoped, wired, not required)`. Covers `oversight-gates.yml` (Edits 1–4, SEC-M2, SEC-S1) and the TC-S18 static test in `test_scan_gates_empty_args.py`.
+4. `docs(#1605): gate→key registries for the split`. Covers SPEC-375, the runbook (a)–(c) and the CI inventory.
+5. `docs(#1605): DECISIONS entry for the gate split`.
+6. `chore(#1605): regenerate SCRIPTS-INDEX`.
+
+The S-6 waiver goes unused, and it does not transfer (AD-23 corollary).
+
+**Part 3: scheduled audit plus D-5. 15 files (= the ceiling; no shed possible, G-1).**
+
+| # | File | Section |
+|---|---|---|
+| 1 | `.github/workflows/dependency-audit.yml` (new) | §10.2 + §15.3 |
+| 2 | `scripts/automation/dependency_audit_report.py` (new) | §9 + §9.7 tracking line + §15.2 |
+| 3 | `scripts/automation/lib/github.py` | §8 + §15.5 |
+| 4 | `tests/automation/test_dependency_audit_report.py` (new) | §7.3 + TC-P\*, TC-W\*, TC-O\*, TC-H2 |
+| 5 | `scripts/automation/dependency_pause.py` (new) | §15.5–§15.7 |
+| 6 | `tests/automation/test_dependency_pause.py` (new) | TC-R\*, TC-C\*, TC-A\*, TC-H1 |
+| 7 | `bin/hos-cron` | §15.8 |
+| 8 | `tests/automation/test_hos_cron.py` | TC-K\* |
+| 9 | `bootstrap/worker-cron-prompt.md` | §15.8 prompt bullet (G-2) |
+| 10 | `scripts/framework/protected_surfaces.txt` | exact-path `scripts/automation/dependency_pause.py` (AD-18) |
+| 11 | `.github/CODEOWNERS` (regenerated by `gen_codeowners.sh`) | — |
+| 12 | `docs/AGENT-IDENTITY.md` | §9 list gains `scripts/automation/dependency_pause.py  (build-hold release path, #1605)` (G-3) |
+| 13 | `docs/OVERSIGHT-RUNBOOK.md` | §11.2 (d) + §15.10 (e) |
+| 14 | `docs/CI-EXECUTION-INVENTORY.md` | §11.3 Part 3 row rewrite |
+| 15 | `SCRIPTS-INDEX.md` (regenerated) | §11.5 (two automation lines) |
+
+Not in Part 3: `DECISIONS.md` (prospective in Part 2, §11.4) and `docs/CRON-SETUP.md` (folded into the runbook (vi), AD-23 shed step 2). TC-H1 sits in file 6 and carries its own few-line PyYAML extractor for the `outcome` script. Test files do not import each other, and no conftest is added. **If the inner-loop suite shows that any further file must change** (for example a workflow registry test), that is a 16th file. The worker stops and escalates to the human as a waiver question (AD-23). It does not split Part 3.
+
+Part 3 commits (≤10; planned 7):
+
+1. `feat(#1605): github.py REST-by-id issue writes and Actions-run reads`. Covers `github.py` and the write-helper tests in `test_dependency_audit_report.py`.
+2. `feat(#1605): dependency_audit_report — reconcile, measure and project`. Covers the module and its tests (§7.3, TC-P\*).
+3. `ci(#1605): scheduled dependency audit — audit, report, outcome`. Covers the workflow and TC-W\*/TC-O\*/TC-H2.
+4. `feat(#1605): dependency_pause — host build hold, derived from the scheduled outcome`. Covers the module, `test_dependency_pause.py` (TC-R\*, TC-C\*, TC-A\*, TC-H1), `protected_surfaces.txt`, CODEOWNERS and AGENT-IDENTITY.
+5. `feat(#1605): hos-cron honours the build hold (DOCS/DESIGN ONLY)`. Covers `bin/hos-cron`, `test_hos_cron.py` and `worker-cron-prompt.md`.
+6. `docs(#1605): runbook and CI inventory for the scheduled audit and hold`.
+7. `chore(#1605): regenerate SCRIPTS-INDEX`.
+
+Both PRs touch protected surfaces, so both need human approval for merge regardless of tier. Part 3's merge also carries the Q-D5-4 clearance question (ADR Q-D5 dispositions).
+
+### 15.12 Traceability (AC-32..AC-43) and the departures this section makes
+
+| AC | Design element | Tests |
+|---|---|---|
+| AC-32 | §15.2 steps 6–9 (filter rc is the verdict; `project` loads the module by path; consistency check) | TC-P10, TC-P11, TC-P12, TC-P15 |
+| AC-33 | §15.2 cause table; §15.3 mapping; §15.6; §15.7 | TC-H1, TC-H1b, TC-P1–TC-P9, TC-O8 |
+| AC-34 | §15.3 (`report` runs on verdict 1; `finding` record); §15.6; §15.7 | TC-H2, TC-C1, TC-C2 |
+| AC-35 | §15.6 host state under `~/.hos/build-hold/`; §15.8 call site every worker cycle | TC-C\*, TC-K1–TC-K7 |
+| AC-36 | §15.8 directive + prompt bullet | TC-K2 (directive-level; R-7) |
+| AC-37 | §15.6 `plan_transition` clean row; `clear_act` | TC-C5, TC-C6 |
+| AC-38 | §15.5 rule 2 (216 h; [168, 336]; `config-invalid`) | TC-C7, TC-C8, TC-C9 |
+| AC-39 | §15.7 ordering and undelivered; §15.8 log line and `check_error` alert | TC-A2–TC-A5, TC-K3, TC-H1b |
+| AC-40 | §15.7 argv | TC-A1 |
+| AC-41 | §15.6 fingerprint; the shared reader for #2123 | TC-C2, TC-C3, TC-C14 |
+| AC-42 | §15.10 procedure + PR body | PR-body review |
+| AC-43 | §15.9 coverage table | all of §15.9 |
+| AC-25 (amended) | §15.2 (`measure` exits 1 on every cause); §15.3 | TC-P\*, TC-O\* |
+
+**Departures** (all additive or clarifying; none reverses AD-15..AD-23):
+
+| ID | Kind | Departure | Reason |
+|---|---|---|---|
+| TD-D5-1 | additive | sub tokens beyond the ADR's list: `venv-build-failed`, `interpreter-wrong`, `pip-audit-absent`, `venv-mismatch`, `timeout`, `pip-audit-failed`, `oversized`, `filter-error`, `projection-mismatch`, `run-incomplete`, `config-invalid`, `audit-output-invalid`, `state-corrupt` | each AC-33 condition needs a named cause |
+| TD-D5-2 | clarifying | a finding with skipped dependencies stays a `finding` (with `partial-audit`), not a `not_run` | downgrading it would skip `report` and hide a real advisory's issue write. The hold is set either way, so AD-21 still holds: a partial audit is never `clean`. |
+| TD-D5-3 | additive | the measurement is `measure`/`project` modes of `dependency_audit_report.py`, not a new file | budget (§15.11); a copy of the logic is still forbidden |
+| TD-D5-4 | clarifying | `since` resets on a fingerprint change, and `detail.held_since` keeps the hold start | AD-18 says `since` is kept "while the fingerprint is unchanged". The cleared duration must cover the whole hold (AC-37). |
+| TD-D5-5 | additive | a corrupt own file holds for one cycle, then is re-derived | AD-18's "corrupt means held", made finite for a file this module owns |
+| TD-D5-6 | clarifying | the consumer calls the read helpers with `retries=1` | keeps the 240 s hos-cron bound |
+| TD-D5-7 | additive | the artifact is the roster-filtered projection | D-5 item 3; otherwise a clean run sits next to an issue listing exempted advisories |
+| TD-D5-8 | clarifying | `.claude/agents/worker.md` parity is not in Part 3 | G-2 |
+| TD-D5-9 | additive | the `outcome` job exits 1 on non-clean | a visible red run; the consumer ignores the conclusion for record selection |
+| TD-D5-10 | clarifying | `DEFAULT_BRANCH = "main"` is a constant, not a 4th read | only HOS tracks the workflow (AD-18 scope); any other default branch reads `stale`, which is loud |
+
+### 15.13 Gaps returned to the architect
+
+- **G-1 (ADR AD-23 shed step 1 cannot apply).** `SCRIPTS-INDEX.md` is pinned by `tests/framework/test_scripts_index.py`. Both Part 3 automation modules are under `scripts/**`, so it must be regenerated in Part 3 and cannot become a follow-up. Part 3 is therefore at exactly 15 with **no** shed headroom. Request: amend AD-23's shed order to name the real first shed, if any, or record that the next file over is a human waiver question. §15.11 already states the latter.
+- **G-2 (the directive's readers).** AD-23's Part 3 list omits `bootstrap/worker-cron-prompt.md`, which enumerates the directive values (`:73–76`). Without it, a third value is undefined behaviour for the agent. It is added as file 9. `.claude/agents/worker.md` (`:321–346`) also enumerates them. It is an agent definition, and CLAUDE.md says those edits are authored by the top-level session, not `coder`. Adding it would also make 16 files. The design makes the directive self-describing (§15.8) and defers `worker.md` parity to a follow-up. Request: the architect confirms the deferral, or rules that `worker.md` must ship with Part 3. The second option is a human waiver (16 files).
+- **G-3 (protected-surface mirror).** AD-18 adds an exact-path protected surface. The #1776 precedent (`test_t3`) shows `docs/AGENT-IDENTITY.md` §9 mirrors exact-path entries, so it is added as file 12. `DECISIONS.md` (prospective in Part 2) and `CRON-SETUP.md` (folded into the runbook) leave Part 3 to keep the count at 15. Request: confirm both removals.
+- **G-4 (fingerprint granularity, product-adjacent).** AC-41 fixes the fingerprint to the **first** kept advisory id. A second new advisory that arrives while held, sorting after the first, does not change the fingerprint, so it does not re-alert. The tracking issue still gets `report`'s delta comment (AC-22), so it is visible but not pushed. Request: confirm this is acceptable, or route to pm-agent to widen AC-41. Changing it is a one-function change (`fingerprint`).
+- **G-5 (I-7 cache window).** AD-17's 6 h cache means a GitHub outage longer than 6 h holds build work (Q-D5-6). Nothing to change unless the human rejects I-7. This is noted so the architect's Q-D5-6 disposition and §15.5's `READ_FAILED_HOLDS` constant stay aligned.
 
 ---
 
@@ -1203,3 +1976,21 @@ Nothing here required a human before `coder` built the original ten commits. Ite
 **2026-10-14 ADR AD-12a "Lookup bound" mirror (architect T1–T12): RISK: MEDIUM, CONFIDENCE: HIGH. Classification: ADDITIVE (one keyword on `list_issues`, with a backward-compatible default) plus CLARIFYING. Nothing is STRUCTURAL** (§14). It changes the HTTP request of a workflow holding `issues: write`, but never what is adopted: the in-code label-and-marker predicate is unchanged and still decides identity. Confidence is high because the failure directions were checked. If the filter is ignored, the lookup falls back to the old fail-closed-at-cap behaviour. If the filter is refused for a missing label, the run goes red with zero writes. If the filtered view is stale, the worst case is one duplicate and one red run. None of these is silent. A human may want to look at:
 
 9. **The lookup is now label-filtered, and two of its properties are unverified until the first live run (§9.6, §11.2(d)).** (i) If GitHub answers 404/422 to a filter on a label that does not exist yet, the first run goes red with `list_issues: no usable response for page 1`, zero writes and no issue. The fix is to create the label (clean-up step 1). (ii) If the filtered view were ever stale, one duplicate would be created and the next run would go red on ambiguity. Watch the first scheduled run for either. **The S-6 waiver's scope** (§12): the single amendment commit now also carries this lookup-bound fix in `github.py` and the consumer test file. The file and commit counts are unchanged, but the waiver terms pm-agent escalated say "only the security design amendments and their tests". The human authorizing the waiver should be told it covers this fix too. pm-agent owns the REQUIREMENTS-1605 §1 wording, and I have not edited it.
+
+**2026-10-20 D-5 / AD-22 amendment (§15): RISK: HIGH, CONFIDENCE: MEDIUM. Classification: STRUCTURAL, human-issued.** D-5 is the human's ruling: a new pipeline state, a host read path, and a cycle-start step in `bin/hos-cron`. pm-agent and the architect have already escalated it. This TD adds no structural change of its own. Its departures (§15.12, TD-D5-1..10) are additive or clarifying, and AD-22 is clarifying, since it restores main's behaviour. Confidence is medium, not high, for three reasons. #2125's notifier does not exist, so the alert is designed against a quoted interface. The Actions-API record path (§15.5) has not been run against live GitHub. The day-one run cannot use CI's Python 3.12 on this host (§15.10). Each of these fails toward a hold that someone can see, never toward a silent pass.
+
+**Open questions for the human. Each one gates the step named in it:**
+
+10. **Q-D5-1, vehicle.** §15.11 implements AD-23's recommendation: Part 2 is the gate split (11 files), and Part 3 is the scheduled audit plus D-5 (15 files, at the ceiling with no shed left, G-1). The alternative is one PR of about 26 files, which needs a size waiver. **This gates Part 2's re-cut.**
+11. **Q-D5-2, writing `NOT_RUN` to the tracking issue.** The design follows the recommendation: no. AC-25's zero-writes rule stands, and the hold file, the log line, the run and the alert are the record. A "yes" would add a write path to `report`, which `report` never reaches on an `audit` failure. It would have to be redesigned on the host side.
+12. **Q-D5-3, clearing without a clean run.** The design follows the recommendation: clean run only (§15.6 `clear_act`). An escape hatch, if wanted, is a host-side, human-run, time-boxed override. That is a loosening, and it needs your explicit choice.
+13. **Q-D5-4, does Q3 count as the AD-12a/b merge clearance?** Under AD-23 the label code ships in Part 3, so the answer attaches to **Part 3's merge**.
+14. **Q-D5-5, fallback when the alert is undelivered.** §15.7 is designed for (a): `escalate_to_human.sh` on the tracking issue, once per fingerprint. (b) means setting one constant. (c) means waiting for #2125. **Part 3 coding must not start before this is answered.**
+15. **Q-D5-6, does a read failure hold?** The design follows the recommendation and I-7: yes, after 6 h of cached-reading tolerance. A "no" is one constant (`READ_FAILED_HOLDS`).
+
+**Also for the human (not questions):**
+
+16. **The token permission precondition.** The Worker App needs `actions: read` and `checks: read`. Without them, every worker cycle after Part 3 merges holds with `read-failed`. Granting them is a human act (ADR §6 item 4; runbook §15.10 (vi)).
+17. **Day one holds by design (R-10).** After Part 3 merges, the worker holds with `stale` until someone dispatches the workflow on main. Dispatch it immediately.
+18. **Cross-issue requirements, to be disclosed in the Part 3 PR body.** #2125: add the two causes and accept `--url`. #2123: B4 fingerprinting and adopting the shared hold directory. Neither is implemented here.
+19. **`.claude/agents/worker.md` parity is deferred (G-2).** Only the cron prompt learns the third directive value in Part 3. The directive describes itself. A follow-up, authored by the top-level session, brings `worker.md` in line.
