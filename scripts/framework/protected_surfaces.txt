@@ -29,6 +29,10 @@ scripts/framework/**
 scripts/oversight/gates/**
 scripts/oversight/run_validators.sh
 scripts/oversight/validators/schema.py
+# Finding/advisory-level suppression for blocking gates (#1754, #1776; ADR-1935 P3).
+# Exact paths, not a *_logic.py glob: ADR-1935 classifies scripts/oversight/ per file.
+scripts/oversight/secret_scan_logic.py
+scripts/oversight/security_scan_logic.py
 .github/CODEOWNERS
 .github/workflows/**
 

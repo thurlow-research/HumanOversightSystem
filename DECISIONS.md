@@ -1150,3 +1150,66 @@ agy was measured silently truncating an oversized prompt (a 793 KB prompt reache
 - **Missing usage is `unverified`, not a failure** (codex and the agy prose path have never carried usage), and is recorded as a visible `## [ADVISORY] Prompt consumption unverified (#1718)` block in a plain (non-json) fence with none of the keys verdict/findings/attacks/error, so it is verdict-inert (AR-5).
 - **Policy: refuse and escalate, no chunking** in this slice (F1). The `prompt_too_large` summary deliberately does not advise `--files` / sub-range `--diff` narrowing: the evaluator requires `reviewed_range` to equal the step's register range (AR-2).
 - **Accepted, visible break (human product-boundary clearance AR-9 required before merge):** release gate Phases 3 and 4 (`validate_docs.sh`, `validate_spec_compliance.sh`; ≈660/730 KB to agy) will refuse on the agy lane and block `cut_release.sh` until F1 covers them; up to ≈8% of MEDIUM+ steps will fail the pre-PR second review closed and need a human; `review_self.sh` / `reverify_self.sh` refuse on agy (codex still works). `validate_agents.sh` / `validate_scripts.sh` bypass `vendor_invoke` and keep the exposure (F5). No exemption was added to `vendor_invoke`: a per-caller bypass would recreate #1718 where it is known to be live.
+
+## 2026-10-06 — `security_scan` gets time-boxed, visible advisory exemptions; PyJWT gets a floor (#1776)
+
+`security_scan.sh` ran pip-audit against the oversight venv and blocked on any reported
+advisory, so it was permanently red (DECISIONS.md:787 had recorded that as accepted debt).
+After the 2026-10-03 consolidation, two advisories remain that HOS cannot clear by an
+ordinary bump. Two human rulings on #1776 govern the shape: 2026-10-02 (time-boxed,
+individually-justified, visible exemptions in the #1754 shape; anything new fails closed)
+and 2026-10-03 ("Human authorizing timebox approach" for black; PyJWT by floor plus up to one
+exemption). Technical design: `docs/v0.7.0/TECHNICAL-DESIGN-1776-security-scan-exemptions.md`.
+
+**The records** (in `scripts/oversight/security_scan_logic.py`, all expiring 2027-01-31):
+black `PYSEC-2026-2120` (fixed_in 26.3.0) and `PYSEC-2026-2121` (fixed_in 26.3.1), tracked in
+#1961 (the black 26 upgrade and 117-file reformat, blocked by the deliberate `black<25` pin
+of #103). **Two records, not three:** the PyJWT `PYSEC-2026-4146` record was dropped at
+implementation (architect ruling, design doc section 15 B1). OSV gives that advisory
+`introduced 2.11.0, last_affected 2.13.0` (affects 2.11.0-2.13.0 only); pip-audit's empty
+`fix_versions` at 2.13.0 reflects a `last_affected` bound, not "no fix exists". The new
+`pyjwt>=2.15.0` floor in `requirements.txt` clears all 13 PyJWT advisories, so the record could
+never change an outcome and its "no fixed release" justification was false. Shipping zero
+PyJWT exemptions is narrower than the "up to one" the human authorized. Keying is canonical package name + advisory id + version bound + expiry; any other
+id on black or PyJWT, and any other package, still fails the gate.
+
+**The no-fix key.** A record with `fixed_in=None` applies only while the deduplicated
+advisory's `fix_versions` is empty. When any source reports a fix the record goes inert and
+the gate says `FIX NOW AVAILABLE`. No shipped record uses this key; it is kept
+(reviewed, fails closed) and covered by tests through a test-only record. No upper version
+bound; expiry is the time box.
+
+**Parse rule (B2).** `fix_versions` is decision-bearing: missing, or present but not a list
+of strings, makes the advisory malformed (`UNATTRIBUTABLE`, kept, never exempted, named by its
+id). Coercing it to "no fix" would let a corrupted record satisfy the no-fix key. `[]` stays
+valid; `aliases` stays lenient because it is display-only.
+
+**Scope (H2 default, pending human confirmation).** The roster is active only in the HOS
+source repository (`.hos-release` absent and `bootstrap/hos_install.sh` present); any
+ambiguity means an empty roster, i.e. the previous behaviour. An installed consumer's gate
+stays red on black until a consumer-owned roster exists. **Expiry (H3 default, pending human
+confirmation):** 2027-01-31, `EXPIRING SOON` from 14 days out, and a dated test (TC-X5) turns
+the required `tests` check red from 2027-02-01 — a deliberate forcing function. #1961 is
+`priority:low`, so black will likely need a renewal decision in January.
+
+**Side effects.** The floor forces semgrep 1.178.0 -> 1.179.0 (1.178.0 pins `pyjwt~=2.13.0`;
+the pin is the only metadata difference). Fail-opens removed: bandit's `|| echo "0"` and
+pip-audit's `|| echo "0"` are gone; an unreadable audit is exit 2; pip-audit not completing
+or bandit/pip-audit not being installed is still non-blocking but is named in the closing
+`GATE PASS` line.
+
+**Protected surface.** `scripts/oversight/security_scan_logic.py` and
+`scripts/oversight/secret_scan_logic.py` are added as two exact entries (not a
+`scripts/oversight/*_logic.py` glob: ADR-1935, accepted 2026-10-05, classifies
+`scripts/oversight/` per file and rules `prompt_audit_logic.py` and `retry_rescue_logic.py`
+unprotected). ADR-1935 §3.5/§4 is amended with the new module. This is a small, deliberate
+increase in human-approval load ahead of ADR-1935's ESC-1.
+
+**Amendment 2026-10-20 (mcp).** The roster is now three records (black x2, mcp x1). Human
+ruling (Option M, #1776): mcp 1.29.0 CVE-2026-59951 is exempted on the same 2027-01-31 timebox,
+tracked in #2120. Rationale: the flaw is a Streamable HTTP MCP *server* leaking session state;
+HOS never serves MCP, and mcp reaches the venv only as a hard pin of semgrep (`mcp==1.29.0`, also
+in the latest 1.181.0), so no fixed combination is installable. The ruling's wording "HOS does not
+import mcp" was checked and corrected: semgrep's CLI imports mcp modules on every invocation, so
+the record states the accurate premise (HOS never imports mcp directly and never starts an MCP
+server) and tests PR4/PR5 enforce it. Design doc section 17.

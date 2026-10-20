@@ -292,6 +292,7 @@ P = PROTECTED, U = UNPROTECTED. The rule column cites §2.
 | `run_with_retry.sh` | P | P2 | Sourced by gates. Owns the retry and exit path. |
 | `second_review_logic.py`, `validation_logic.py` | P | P1 | Reviewer selection and verdict aggregation. |
 | `secret_scan_logic.py` | P | P3 | Finding-level suppression for `secret_scan.sh`. |
+| `security_scan_logic.py` | P | P3 | Advisory-level suppression for `security_scan.sh` (#1776). |
 | `signoff_gate.py` | P | P1 | Sign-off gate. |
 | `suspension_manager.py` | P | P3 | Gate-suspension state, read inside `run_gates.sh`. |
 | `audit_conditional_proceed.sh` | U | N3 | Read-only retroactive audit. |
@@ -441,6 +442,7 @@ scripts/oversight/run_validators.sh
 scripts/oversight/run_with_retry.sh
 scripts/oversight/second_review_logic.py
 scripts/oversight/secret_scan_logic.py
+scripts/oversight/security_scan_logic.py
 scripts/oversight/signoff_gate.py
 scripts/oversight/suspension_manager.py
 scripts/oversight/validation_logic.py
