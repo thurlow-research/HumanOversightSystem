@@ -79,7 +79,7 @@ def test_the_guard_passes_when_the_real_registry_is_unreadable(tmp_path):
         before = guard.registry_fingerprint(str(target))
         assert before == guard.NOT_OBSERVABLE
         assert guard.registry_changes(before, guard.registry_fingerprint(str(target))) is None
-        assert guard.registry_changes({"present": False}, before) is None
+        assert guard.registry_changes({"present": False}, before)
     finally:
         locked.chmod(0o700)
 
@@ -130,7 +130,7 @@ def test_sessionfinish_fails_the_session_when_the_real_path_changed(tmp_path):
     assert plugin.started in plugin.failure and ".." in plugin.failure
 
 
-def test_sessionfinish_passes_when_unchanged_or_not_observable(tmp_path):
+def test_sessionfinish_passes_when_unchanged_or_not_observable(tmp_path, monkeypatch):
     stand_in = tmp_path / "tmp-roots.json"
     unchanged = guard._RegistryIsolation(
         str(stand_in), guard.registry_fingerprint(str(stand_in)), None
@@ -139,11 +139,57 @@ def test_sessionfinish_passes_when_unchanged_or_not_observable(tmp_path):
     unchanged.pytest_sessionfinish(session)
     assert unchanged.failure is None and session.exitstatus == 0
 
+    monkeypatch.setattr(guard, "registry_fingerprint", lambda path: guard.NOT_OBSERVABLE)
     unobservable = guard._RegistryIsolation(str(stand_in), guard.NOT_OBSERVABLE, None)
-    stand_in.write_text("{}")
     unobservable.pytest_sessionfinish(session)
     assert unobservable.failure is None and session.exitstatus == 0
 
 
 def test_the_private_tmp_path_factory_attribute_still_exists(pytestconfig):
     assert hasattr(pytestconfig, "_tmp_path_factory")
+
+
+def test_a_move_between_observable_and_not_observable_is_a_change():
+    seen = {"present": False}
+    assert guard.registry_changes(seen, guard.NOT_OBSERVABLE)
+    assert guard.registry_changes(guard.NOT_OBSERVABLE, seen)
+    assert guard.registry_changes(guard.NOT_OBSERVABLE, guard.NOT_OBSERVABLE) is None
+    assert guard.registry_changes(seen, dict(seen)) is None
+
+
+def test_an_unreadable_file_keeps_its_lstat_metadata(tmp_path, monkeypatch):
+    target = tmp_path / "tmp-roots.json"
+    target.write_text("{}")
+    readable = guard.registry_fingerprint(str(target))
+
+    def deny(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(guard.os, "open", deny)
+    unreadable = guard.registry_fingerprint(str(target))
+    assert unreadable != guard.NOT_OBSERVABLE
+    assert unreadable["sha256"] == guard.UNREADABLE
+    assert {k: v for k, v in unreadable.items() if k != "sha256"} == {
+        k: v for k, v in readable.items() if k != "sha256"
+    }
+    assert guard.registry_changes(readable, unreadable)
+
+
+def test_a_multi_chunk_read_gives_the_same_fingerprint(tmp_path, monkeypatch):
+    target = tmp_path / "tmp-roots.json"
+    target.write_bytes(b"x" * 1000)
+    whole = guard.registry_fingerprint(str(target))
+    real_read = os.read
+    monkeypatch.setattr(guard.os, "read", lambda fd, n: real_read(fd, min(n, 7)))
+    assert guard.registry_fingerprint(str(target)) == whole
+
+
+def test_content_past_the_read_cap_is_recorded_as_truncated(tmp_path, monkeypatch):
+    target = tmp_path / "tmp-roots.json"
+    target.write_bytes(b"a" * 20 + b"b")
+    monkeypatch.setattr(guard, "_REGISTRY_READ_CAP", 20)
+    first = guard.registry_fingerprint(str(target))
+    assert first["truncated"] is True
+    assert first == guard.registry_fingerprint(str(target))
+    target.write_bytes(b"a" * 20)
+    assert "truncated" not in guard.registry_fingerprint(str(target))

@@ -48,13 +48,32 @@ def real_registry_path() -> str:
             os.environ[REGISTRY_ENV] = saved
 
 
+UNREADABLE = "unreadable"
+
+
+def _read_capped(fd: int) -> tuple[bytes, bool]:
+    """Up to the cap, reading until EOF; the flag says whether more content remained."""
+    chunks: list[bytes] = []
+    remaining = _REGISTRY_READ_CAP
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            return b"".join(chunks), False
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks), bool(os.read(fd, 1))
+
+
 def registry_fingerprint(path: str) -> dict | str:
-    """lstat presence, inode, mtime, size and sha256 of ``path``; NOT_OBSERVABLE if unreadable.
+    """lstat presence, inode, mtime, size and sha256 of ``path``.
 
     Read-only: it never creates the file or its directory. An absent file is a
-    legitimate observable state (a later appearance is a change); any other failure to
-    look is not observable. A legitimate concurrent write by a real launcher or cron cycle
-    during a long run trips the guard by design (AD-10: fail on any change).
+    legitimate observable state (a later appearance is a change). NOT_OBSERVABLE is
+    reserved for lstat itself failing with anything but ENOENT. If lstat works but the
+    content cannot be read, the metadata is kept and sha256 is UNREADABLE. Content past
+    the read cap is fingerprinted as its capped prefix with ``truncated`` set. A
+    legitimate concurrent write by a real launcher or cron cycle during a long run trips
+    the guard by design (AD-10: fail on any change).
     """
     try:
         info = os.lstat(path)
@@ -70,23 +89,29 @@ def registry_fingerprint(path: str) -> dict | str:
         "sha256": None,
     }
     if stat.S_ISREG(info.st_mode):
+        fp["sha256"] = UNREADABLE
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         except OSError:
-            return NOT_OBSERVABLE
+            return fp
         try:
-            fp["sha256"] = hashlib.sha256(os.read(fd, _REGISTRY_READ_CAP)).hexdigest()
+            data, truncated = _read_capped(fd)
+            fp["sha256"] = hashlib.sha256(data).hexdigest()
+            if truncated:
+                fp["truncated"] = True
         except OSError:
-            return NOT_OBSERVABLE
+            pass
         finally:
             os.close(fd)
     return fp
 
 
 def registry_changes(before: dict | str, after: dict | str) -> str | None:
-    """A description of the change between two fingerprints, or None if the guard passes."""
-    if before == NOT_OBSERVABLE or after == NOT_OBSERVABLE:
-        return None
+    """A description of the change between two fingerprints, or None if the guard passes.
+
+    Any difference is a change, including a move between observable and not observable.
+    Both sides NOT_OBSERVABLE (the sandboxed case) are equal, so they pass.
+    """
     if before == after:
         return None
     return f"before={before} after={after}"
