@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #1520 S1: label registry kind, `check`/`provision` tool, conformance test, `KNOWN_LABELS` fix
 
-Status: **DRAFT — round 1, awaiting architect review** (§17). Do not hand to `coder` until the architect approves.
+Status: **APPROVED_WITH_CHANGES — architect, round 1, 2026-10-20** (§18). The architect's edits are inline and marked "(architect R1)". Hand to `coder`. Every architect edit and ruling in §18 is binding.
 Binds to: `docs/v0.7.0/ADR-1520-pending-actor-label-migration.md` (ACCEPTED FOR DESIGN), AD-7, AD-8, AD-12, and slice row S1 (§3).
 Verified against: `c48c8ddd0` (`HEAD` of `worker-1520-s1-td-label-registry-*`, which equals `origin/main` plus nothing).
 Change class: **additive**. S1 adds new files and one row each to two existing tables. It does not change the control flow of any existing path and it mutates no GitHub state. The only edit to an existing behavior is the `KNOWN_LABELS` spelling fix, and that check still exits 0 on today's tree (§9).
@@ -11,7 +11,7 @@ CONFIDENCE: HIGH on the registry, loader, CLI and wrapper contracts. All of them
 ## Human Review Required
 - **CODEOWNERS gate.** S1 touches `contract/**`, `bootstrap/**` and `scripts/framework/**`. It needs the human approval gate, as every S1 PR does (ADR §3, "Prot.").
 - **New write tool, not run in S1.** `bootstrap/provision_labels.sh provision --apply` creates labels in a GitHub repo. S1 ships it but never invokes it. Its first use is H-1, which is a human act (§7.4).
-- **TD-ESC-1** asks the architect to confirm that this wrapper mints its own token. That follows the `merge_authority.sh`/`pr_review.sh` precedent, not AD-1a's no-mint clause (§16).
+- **TD-ESC-1** asked the architect to confirm that this wrapper mints its own token. **Ruled (§18.2):** yes, under the `pr_review.sh` precedent, with one added binding condition: scrub the inherited credentials before the mint (§7.1 step 3a).
 
 ---
 
@@ -204,7 +204,7 @@ Purity, as in the engine: no argparse, no `os.environ`, no network, no subproces
 |---|---|---|
 | LR-0 | Every doc has `owner == "core"` (label names are fixed literals, ADR AD-7) | `core_only` |
 | LR-1 | `labels` is a non-empty list | `core_empty` (absent or `[]`), `unknown_item_key` (not a list) |
-| LR-2 | Each item is a mapping. Keys ⊆ {name, status, color, description, writers, readers, provision}. name, status, color and description are present and are `str` | `unknown_item_key` |
+| LR-2 | Each item is a mapping. Keys ⊆ {name, status, color, description, writers, readers, provision}. name, status, color and description are present. name, status and description are `str`. **The type of `color` is LR-6's to judge, not LR-2's (architect R1).** Otherwise LR-2 would claim the `000000` YAML-int case that LR-2's test expects as `bad_color` | `unknown_item_key` |
 | LR-3 | `name` matches `^[a-z0-9][a-z0-9:._-]*$` and has length ≤ 50 | `bad_label_name` |
 | LR-4 | No two names are equal under `str.casefold()` (GitHub names are case-insensitive) | `duplicate_id` |
 | LR-5 | `status` ∈ `STATUSES` | `bad_status` |
@@ -216,6 +216,8 @@ Purity, as in the engine: no argparse, no `os.environ`, no network, no subproces
 | LR-11 | No static `name` starts with any family prefix | `family_collision` |
 | LR-12 | For each family in prefix order: import the module, get the attribute, and call `provider(ctx)`. It must return a `list`/`tuple` of mappings. Each mapping passes LR-2..LR-9 under the same codes, and its name starts with the family's prefix. Any exception other than `RegistryError` becomes `family_provider_failed` | `family_provider_failed` |
 | LR-13 | No family-supplied name casefold-equals any static name or another family's name | `duplicate_id` |
+
+**Evaluation order, made exact (architect R1).** LR-0 and LR-1 run first. Then the per-item rules (LR-2, LR-3, LR-5, LR-6, LR-7, LR-8, LR-9) run item by item, in list order. Each item runs all of them before the next item starts. LR-4 runs once, after every item has passed. LR-10 to LR-13 follow, in that order. Every LR-2 test fixture holds exactly one defect, so this order decides no test. It exists so that two coders produce the same first error.
 
 **Why the provider path is restricted:** `core.yaml` is CORE-only and protected, but it is still data that names code to import. LR-10 confines it to first-party `scripts.automation.lib.*`, so the most a registry edit can do is call a reviewed module function. T3.1's `stage` provider is expected there (ADR AD-7).
 
@@ -262,6 +264,12 @@ labels_cli.py provision --app <worker|overseer|human> [--repo <owner/name>] [--a
 - `--repo` is optional. Its default is parsed from `git -C <repo_root> remote get-url origin`: strip `git@github.com:`, `https://github.com/` and a trailing `.git`. Both explicit and parsed values must match `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`.
 - `--apply` is valid only on `provision`. Without it, `provision` is a dry run.
 - There are no other flags and no `migrate` (S6a). Unknown subcommands or flags are usage errors.
+- **The grammar must match the wrapper's extraction exactly (architect R1).** L3 decides whether to mint, and for which role, by reading `$1` and `--app` (§7.1 step 2). L2 must accept nothing that L3 would read differently:
+  - The subcommand is `argv[0]`. `--app`, `--repo` and `--apply` are defined on the **subparsers only**, never on the top-level parser. `--app worker check` is therefore a usage error.
+  - Every parser, including each subparser (through `parser_class=_Parser`), sets `allow_abbrev=False`. `--ap worker` is a usage error.
+  - A repeated `--app` is a usage error, whichever of the `--app x` and `--app=x` forms is used. Detect it with a custom action or a count. Do not rely on argparse's default, which is last-wins.
+  - The `--repo` value additionally fails if either segment is `.` or `..`. The regex alone admits `../..`, which would put a path traversal into the `repos/{o}/{r}/…` endpoint.
+- Import bootstrap: follow `scripts/automation/dimension_registry_cli.py:33-38`. Insert the repo root into `sys.path` only if it is absent, then do `from scripts.automation.lib import …`. That is not I/O, and the no-I/O-on-import rule still holds.
 
 Module skeleton (seams for tests; the names are binding):
 
@@ -284,13 +292,14 @@ def _now_iso() -> str                                # UTC, "YYYY-MM-DDTHH:MM:SS
 1. Parse argv → `usage` on failure.
 2. `env.get("HOS_LABELS_TOKEN_MINT_FAILED") == "1"` → `token_mint_failed`.
 3. `env.get("GH_TOKEN")` is empty or absent → `no_token`. There is deliberately no fallback to ambient `gh` auth, which would act under a personal login.
-4. Resolve `--repo` → `repo_unresolved` if the default cannot be parsed or a value fails the regex.
+4. Resolve `--repo` → `repo_unresolved` if the default cannot be parsed or a value fails the regex. **The error message never contains the raw `origin` URL (architect R1).** A remote URL can carry an embedded credential. Name the failure, for example "origin remote is not a github.com owner/name URL", and do not echo the value.
 5. `label_registry.load(repo_root)` → `registry:<RegistryError.code>`, with the message and path.
 
 ### 6.3 Listing repo labels (shared by both commands)
 
 `GET /repos/{o}/{r}/labels?per_page=100&page=N` for N = 1.., with `retries=3`. The listing stops at the first page with fewer than 100 items.
-- A `None` result on page 1 (404, or no access) → `repo_not_found`.
+- A `None` result on page 1 (404, or no access) → `repo_not_found`. A `None` result on any later page → `label_list_failed`. A past-the-end page returns `[]`, not `None`, so `None` there is an anomaly and is never read as "end of list" (architect R1).
+- Every list and confirm call is a plain GET with no `--input`. The create call passes `--method POST` explicitly. Never rely on `gh api` inferring the method from `--input` (architect R1).
 - `GitHubError`/`RateLimitError` → `label_list_failed`.
 - A non-list body → `label_list_failed`.
 - Reaching page `LABEL_PAGE_BOUND` while it still holds 100 items → `label_list_truncated`. The run fails closed: it never claims "missing" over a partial list.
@@ -366,10 +375,15 @@ The script does the following, in order:
    - an idempotent `revoke_token` that deletes the token file and calls `bash "$SCRIPT_DIR/revoke_app_token.sh"`;
    - `trap revoke_token EXIT`;
    - INT/TERM handlers that revoke and then re-raise the signal.
+3a. **Scrub the inherited credentials, unconditionally and before the mint decision is acted on (architect R1, binding; §18.2).** Run `unset GH_TOKEN GITHUB_TOKEN HOS_BOT_LOGIN HOS_EXPECTED_BOT_LOGIN HOS_LABELS_TOKEN_MINT_FAILED`. This step is **not** in `pr_review.sh`, and leaving it out is a defect there. Without it, two things go wrong:
+   - **The caller's token gets revoked.** `revoke_app_token.sh` revokes whatever `GH_TOKEN` it inherits. On a no-mint or failed-mint path, that is the caller's own token. S3a will call this wrapper from inside `bin/hos-cron`'s cycle, so the cycle's working token would be revoked mid-cycle by a read-only preflight.
+   - **Ambient auth gets used, and the audit lies.** Any argv that L3 reads differently from L2 (no mint, but L2 still parses) would run L2 under an inherited token, and the audit's `bot_login` would be the caller's, not this run's.
+
+   After this step, the mint is the **only** source of `GH_TOKEN` and `HOS_BOT_LOGIN`, which is what §7.3 claims. It is environment hygiene for the token this wrapper owns, so it falls under the minting carve-out in §18.2, not AD-1a's "mutate its environment" clause.
 4. Mint: `TOKEN_FILE="$(mktemp)"`, then `bash "$SCRIPT_DIR/get_app_token.sh" --app "$APP_ROLE" > "$TOKEN_FILE"`.
    - On success, source the file.
    - On failure, `export HOS_LABELS_TOKEN_MINT_FAILED=1` and write one stderr warning line.
-   - Either way, `rm -f` the file at once. A stale inherited `HOS_LABELS_TOKEN_MINT_FAILED` is `unset` before the mint attempt.
+   - Either way, `rm -f` the file at once. A stale inherited `HOS_LABELS_TOKEN_MINT_FAILED` has already been cleared by step 3a.
 5. Interpreter ladder (copied from `invoke_agent.sh`, without its override variable):
    - use `"$REPO_ROOT/scripts/oversight/.venv/bin/python"` if it is executable;
    - otherwise `python3` if it is on PATH;
@@ -568,6 +582,12 @@ tests/framework/test_selection_call_sites.py
 tests/oversight/test_agents_static_logic.py
 ```
 
+**Files that must not contain `needs-ai` (architect R1).** These new or edited files are in neither `[legacy-readers]` nor `[pending]`, so P4 fails if any of them contains the literal, including in a comment, docstring or usage block:
+- `bootstrap/provision_labels.sh`;
+- `scripts/automation/lib/label_registry.py` and `scripts/framework/labels_cli.py` (C-10 already covers these two);
+- `tests/automation/test_dimension_registry.py`;
+- `SCRIPTS-INDEX.md`. This one is generated from the new scripts' header lines, so keep those lines free of label names.
+
 If `test_labels_cli.py`'s fixtures do not contain `needs-ai`, it may stay in `[legacy-readers]`, because P4 rule 3 only requires existence. This design does **not** require the CLI tests to use `needs-ai`: their fixture registry may use any names.
 
 ---
@@ -607,6 +627,7 @@ This replaces `needs-coordination` with `hos-coordination` and adds `needs-worke
    - The §7.4 commands.
    - The meaning of `present-unprovisioned` (reported, never modified).
    - The allowlist ratchet (one sentence each on `[historical]`, `[legacy-readers]` and `[pending]`).
+   - **No table in this section, or anywhere after the label table, may have a row that starts with `` | ` `` (architect R1).** P2's split-table guard would fail on it. Write the status vocabulary as a bullet list.
 6. **"Known gaps":**
    - Delete the "No idempotent provisioning path" and "No conformance test" bullets. Replace them with one bullet: "Consumer installs do not yet receive the registry or the tool (ADR-1520 S6b, ARCH-ESC-1)."
    - Keep the rename bullet, but update "~65 files" to point at `label_literal_allowlist.txt` `[pending]` as the live count.
@@ -635,7 +656,7 @@ All CLI tests run in-process through `labels_cli.main(argv, repo_root=tmp_root, 
 | LR-5 | `to_json` is deterministic. The digest changes when any field changes and is stable across key order in the YAML. |
 | LR-6 | `provisionable()` excludes `provision: false` and `retired`, and includes `planned` and `legacy-read`. |
 | LR-7 | `dimension_registry.registered_schemas() == ("hos.dimension-registry", "hos.label-registry")`. |
-| LR-8 | Installed tree: `.hos-release` present and `contract/labels/core.yaml` without a `.hos-manifest` row → `installed_drift` (the engine's L31 applies to the new kind unchanged). |
+| LR-8 | Installed tree: `.hos-release` present and `contract/labels/core.yaml` without a `.hos-manifest` row → `installed_drift`, with `path == "contract/labels/core.yaml"` (the engine's L31 applies to the new kind unchanged). The fixture **must** give `contract/resolved-packs.txt` a valid WHOLE row. L31 checks that file first, so without the row the test would pass on the wrong path (architect R1). |
 
 **CLI (`test_labels_cli.py`, LC-\*/LP-\*)**
 
@@ -648,7 +669,7 @@ All CLI tests run in-process through `labels_cli.main(argv, repo_root=tmp_root, 
 | LC-5 | List `GitHubError` → exit 2 `label_list_failed`. Page-1 `None` → `repo_not_found`. 10 full pages → `label_list_truncated`. |
 | LC-6 | Corrupt registry → exit 2, `error.code == "registry:bad_color"` (for example), zero GitHub calls. |
 | LC-7 | No `GH_TOKEN` → `no_token`. `HOS_LABELS_TOKEN_MINT_FAILED=1` → `token_mint_failed`. Both make zero GitHub calls. |
-| LC-8 | Usage: no subcommand, `migrate`, `--apply` on `check`, `--app robot`, `--repo a/b/c` → exit 2 `usage`, zero calls, no audit record. |
+| LC-8 | Usage: no subcommand, `migrate`, `--apply` on `check`, `--app robot`, `--repo a/b/c`, `--repo ../..` → exit 2 `usage`, zero calls, no audit record. Also (architect R1): `--app worker check` (flag before subcommand), `check --ap worker` (abbreviation), `check --app worker --app=human` (repeated) → `usage`. |
 | LC-9 | `--repo` default parsed from `git@github.com:o/r.git` and `https://github.com/o/r`. Unparseable → `repo_unresolved`. |
 | LC-10 | Parametrized over every path above: stdout parses as exactly one JSON object, with `exit_code` equal to the return value. |
 | LP-1 | `provision` dry run with 3 missing → exit 0, `to_create` sorted, **zero POSTs**. |
@@ -672,6 +693,8 @@ All CLI tests run in-process through `labels_cli.main(argv, repo_root=tmp_root, 
 | LW-5 | A failing mint → the stub L2 sees `HOS_LABELS_TOKEN_MINT_FAILED=1`. An inherited `=1` with a successful mint is cleared. |
 | LW-6 | Ladder: a fixture `scripts/oversight/.venv/bin/python` (symlink to `sys.executable`) is preferred over `python3`. |
 | LW-7 | Static: the wrapper source contains no `jq`, no `exec "$PYTHON"`, no `echo`/`printf` to stdout, and the only `case` is the mint decision. `labels_cli.py` is referenced exactly once. |
+| LW-8 | (architect R1) The caller exports `GH_TOKEN=sentinel-inherited` and `HOS_BOT_LOGIN=someone`. On each of the no-mint path (`bogus --app worker`) and the failed-mint path, the stub L2 sees **no** `GH_TOKEN` and **no** `HOS_BOT_LOGIN`. The stub `revoke_app_token.sh` records the `GH_TOKEN` it was given, and that record is never `sentinel-inherited`. On the successful-mint path, both the stub L2 and the stub revoke see only the stub-minted value. |
+| LW-9 | (architect R1) Static: the `unset` of §7.1 step 3a appears before the first `get_app_token.sh` reference, and it names all five variables. |
 
 **Conformance (`test_label_conformance.py`)**
 
@@ -739,7 +762,7 @@ No `startup-artifact-gap` issue is opened. The ADR is days old and unbuilt, so t
 
 ## 16. Escalations (TD-ESC)
 
-**TD-ESC-1 (to `architect`; non-blocking: default stated).**
+**TD-ESC-1 (to `architect`; non-blocking: default stated). RULED in §18.2: the default is adopted, with one added binding condition.**
 - ADR-1520 AD-7 calls for `provision_labels.sh` "per ADR-1643 AD-1/AD-1a". But AD-1a's text forbids an L3 to "read or branch on any element of `$@`" or "mint or revoke a token".
 - ADR-1643 §10.4 scopes AD-1a to `invoke_agent.sh`, and explicitly leaves `merge_authority.sh`'s token-minting L3 unamended. ADR-1520 AD-5 also says the S6a tool mints "using the `edit_issue.sh` pattern", which mints in bash.
 - **Default this design takes:**
@@ -747,7 +770,7 @@ No `startup-artifact-gap` issue is opened. The ADR is days old and unbuilt, so t
   - follow `pr_review.sh`'s precedent for minting: extract `--app` without validating it, mint, revoke on exit and on signal.
 - **Alternative if the architect rules otherwise:** L2 invokes `get_app_token.sh` itself as a subprocess and parses its export lines. I advise against this. It re-implements the sourced-file contract in Python, and it puts token handling in a module that otherwise has no secrets.
 
-**TD-ESC-2 (to `architect`; non-blocking for S1; blocks the S6b TD).**
+**TD-ESC-2 (to `architect`; non-blocking for S1; blocks the S6b TD). RULED in §18.3: S6b ships what it needs itself, and does not wait for #1643 W7.**
 - The ADR's consumer path (AD-10 step 1) assumes the `_REGISTRY_KINDS` row ships the registry. It does not (§15 item 2).
 - S6b must also ship `scripts/automation/lib/{dimension_registry,label_registry,posture}.py`, `scripts/framework/labels_cli.py`, `bootstrap/provision_labels.sh` and `contract/labels/core.yaml` (with a `.hos-manifest` WHOLE row and a `contract/labels/** -text` `.gitattributes` line, so the engine's L31 holds).
 - Today `framework_consumer_files.txt:16` withholds the registry modules until #1643 W7. **Question:** does S6b depend on #1643 W7, or does S6b ship the modules itself? This is an architecture sequencing call, and it does not concern S1's code.
@@ -766,3 +789,110 @@ Please review, in particular:
 - TD-ESC-1 and TD-ESC-2.
 
 On approval, change Status to APPROVED and hand the design to `coder`.
+
+---
+
+## 18. Architect review (round 1 of 5): APPROVED_WITH_CHANGES
+
+Reviewer: `architect`, 2026-10-20. Reviewed against ADR-1520 (merged `c48c8ddd0`) and ADR-1643 §10.1/§10.4/§10.5, at `a6459b847`. The changes are inline, marked "(architect R1)". No round 2 is needed: every change is a stated fix, not an open question.
+
+### 18.1 Fidelity to ADR slice S1
+
+**Verdict: faithful.** I re-measured the TD's claims rather than accepting them.
+
+**The measured claims all reproduce.**
+- **P1.** A prototype of exactly §8.3's ten shapes, over the §8.1 live-code scope at `a6459b847`, gives exactly the 15 names §8.3 lists. `needs-coordination` is the only non-registry name.
+- **P3.** Every `writers`/`readers` path in §3.2 exists and contains its label.
+- **P4.** `git grep -l needs-ai` returns 126 files, because this TD adds one historical file. Of those, 38 fall outside `[historical]`. They are exactly §1's list.
+- **C-9.** `check_agents_static.sh` exits 0 today, in about 7 s.
+- **No runtime iteration of `KINDS`.** No code in `scripts/`, `bin/` or `bootstrap/` iterates `KINDS` or calls `registered_schemas()`. The new row is inert to every existing path.
+
+**No behavior change holds.** The slice adds four things, and none of them changes an existing path:
+- the `KINDS` row, which is inert as shown above;
+- the installer row. Its copy step and its prune step are both no-ops for the new kind, as I read at `hos_install.sh:2146-2183`;
+- the `KNOWN_LABELS` value, a classifier skip-list whose new entries appear in no agent file today;
+- a CLI that nothing calls.
+
+`dimension_registry_cli.py resolve --schema hos.label-registry` starts working as a side effect. That is harmless, and it is the engine's designed extension.
+
+**The file cap holds: 14 of 15.** I accept both departures.
+- **Adding `tests/automation/test_dimension_registry.py`: accepted, and required.** `:737` pins `registered_schemas() == (SCHEMA,)`. A second row cannot land without editing it. The new expected tuple is correct, because `registered_schemas()` sorts its output and `"hos.dimension-registry" < "hos.label-registry"`. My ADR file list missed this file. That is my error (§18.4).
+- **Dropping `tests/framework/test_install_registry_data.py`: accepted.** The ADR listed it "only if T5.44 needs a fixture update". T5.44 compares the installer rows with `KINDS` as a set (`:159-166`), so it follows the new row on its own. The `.gitattributes` assertion at `:32` concerns `contract/dimensions/**` only, and S1 adds no installer `ensure_line`.
+
+**What is correct, and what could still go wrong**, for the points §17 asked about:
+- **§4.3 LR-10/LR-12 (the provider import named by data).** This is correct. It is confined to `scripts.automation.lib.*`, and `core.yaml` is CORE-only and protected. Residual risk: importing a module runs its import-time code. The defense is that the target set is reviewed first-party code. It is not a sandbox. Security-reviewer should confirm that no `scripts/automation/lib` module has import-time side effects beyond definitions.
+- **§4.3 had one real defect, now fixed.** LR-2 type-checked `color` and returned `unknown_item_key`, which made LR-2's own `000000` → `bad_color` test unsatisfiable. I also pinned the evaluation order (§4.3, the "Evaluation order" paragraph).
+- **§6.4 (`present-unprovisioned` does not change the exit code).** This is correct, and it is what ADR AD-7 says: exit 0 when everything is present, and existing labels are never modified. Residual risk: an auto-created label (VF-12) passes `check` silently, except in the report. That is acceptable. S3a's preflight exists to detect *missing* labels, and fixing a recoloured label would break the never-modify rule.
+- **§8.3 (the unquoted-name heuristic).** This is correct as measured. P6's negatives cover the prose cases. Residual risk: a future unquoted single-word label such as `--label bug` in live code is dropped silently. `bug` has no hyphen, so the heuristic discards it. Today no live-code label lacks a hyphen except `wontfix`, which is quoted where it appears. I accept that risk for S1. If a hyphen-free label ever gets a live writer, the slice that adds it must quote it or add a shape.
+- **§3.2 (spec-stage names as `planned` with `provision: false`).** This is correct. `planned` keeps P5 honest, because they have only `catalog` hits. `provision: false` stops a repo from presenting unimplemented labels as live. `hos-halt` as `active` with `provision: false` is also correct.
+
+### 18.2 TD-ESC-1 ruling: the wrapper mints its own token (binding)
+
+**Ruling: adopt the TD's default.** `bootstrap/provision_labels.sh` mints and revokes its own App token in the `pr_review.sh` shape. It adopts AD-1a's other rules: the interpreter ladder, no stdout, no JSON, no validating or defaulting of arguments, no added flags, pass-through exit codes, and not `exec`.
+
+**Reasoning.** ADR-1643 §10.4 states AD-1a over `invoke_agent.sh` only, and it leaves the token-minting L3 family (`merge_authority.sh`, `pr_review.sh`) explicitly unamended. My ADR-1520 AD-7 phrase "per ADR-1643 AD-1/AD-1a" over-cited it. The intended meaning was the layering and the launch rules, not the no-mint clause.
+
+The alternative fails on its own terms. Having L2 run `get_app_token.sh` and parse its `export` lines re-implements the sourced-file contract in Python. It would also put a live secret into a module whose audit record and stdout are serialised wholesale, which is a worse place for it.
+
+AD-5 already prescribes the bash-mint pattern for the S6a sibling (`edit_issue.sh`). One rule for both tools is better than two.
+
+**Binding condition added (§7.1 step 3a).** Unset `GH_TOKEN`, `GITHUB_TOKEN`, `HOS_BOT_LOGIN`, `HOS_EXPECTED_BOT_LOGIN` and `HOS_LABELS_TOKEN_MINT_FAILED` before the mint. Tests LW-8 and LW-9 enforce it.
+
+I verified the defect this prevents in the precedent. `pr_review.sh`'s `revoke_token` calls `revoke_app_token.sh` unconditionally (`pr_review.sh:192`), and that script revokes whatever `GH_TOKEN` it inherits (`revoke_app_token.sh:43-53`). So on the no-mint and failed-mint paths, `pr_review.sh` revokes **its caller's** token. Copying that shape verbatim into a wrapper that S3a will call once per `bin/hos-cron` cycle would let a read-only preflight revoke the cycle's working token. The scrub also makes §7.3's claim true: the App mint becomes the only `GH_TOKEN` source.
+
+**L2 grammar tightened to match L3's extraction (§6.1, LC-8).**
+- Subcommand-first.
+- Flags on the subparsers only.
+- `allow_abbrev=False`.
+- A repeated `--app` is a usage error.
+
+With the scrub in place, a mismatch between the two layers can no longer reach ambient auth. The tightened grammar also keeps the audit's `app` field equal to the role that was minted.
+
+**The ladder exit code `1` collides with `check`'s "missing" exit `1`.** I accept this. The ladder's `1` comes with empty stdout (ADR-1643 TD-D23 P0). L2's `1` always comes with a JSON document. S3a's preflight treats 1 and 2 the same way, as loud and non-halting. Any caller that must tell them apart checks whether stdout is empty.
+
+**ADR-1643 §10.5 P0.** `labels_cli.py` has no module-level third-party import. PyYAML is reached only through the engine's lazy import, which surfaces as `registry:yaml_unavailable`, exit 2, a document with an `error`, and no claimed outcome. That satisfies P0's intent. The coder must keep every import of `labels_cli.py`, `label_registry.py`, `github.py` and `audit_log.py` at module level stdlib-only. Today all four are.
+
+### 18.3 TD-ESC-2 ruling: the consumer shipping path (binding on the S6b TD; S1 unaffected)
+
+**Ruling.** The S1 `_REGISTRY_KINDS` row is correct as designed. It is the pack-layer mirror and nothing more. **S6b owns every row that ships the labels kind to consumers.** S6b does **not** wait for #1643 W7.
+
+**What S6b must ship:**
+- `contract/labels/core.yaml`, through `framework_consumer_files.txt`, plus a `.hos-manifest` WHOLE row and an `ensure_line ".gitattributes" "contract/labels/** -text"`, so L31 holds;
+- `scripts/automation/lib/label_registry.py`;
+- `scripts/framework/labels_cli.py`;
+- `bootstrap/provision_labels.sh`;
+- the shared engine modules `scripts/automation/lib/dimension_registry.py` and `posture.py`, **if #1643 W7 has not already shipped them when S6b is coded**;
+- the package markers `scripts/__init__.py`, `scripts/automation/__init__.py` and `scripts/automation/lib/__init__.py`. None of them is in `framework_consumer_files.txt` today, and without them the `scripts.automation.lib.*` imports fail in a consumer;
+- `github.py` and `scripts/oversight/lib/audit_log.py`, unless the S6b TD shows they already reach consumers.
+
+**If W7 lands first**, S6b adds only the label-specific rows. Either way, exactly one row per file ever exists. The S6b TD must re-check the list against `main` at the time it is written. `framework_consumer_files.txt:16`'s comment is about `run_post_change_sweep.sh`, and it stays withheld. Shipping the engine early does not ship the sweep.
+
+**Why S6b does not wait for W7.**
+- W7 is human-blocked on unrelated #1643 questions.
+- AD-12 makes S6b part of the window-open release (H-3). Chaining H-3 to W7 would couple the label migration window to an unrelated escalation, and nothing technical needs it: the engine is stdlib plus lazily-loaded PyYAML.
+
+**Two sequencing consequences, recorded for later slices:**
+- **The S3a TD.** `bin/hos-cron` ships to consumers, and its S3a preflight will call `bootstrap/provision_labels.sh`. In a consumer that took S3a before S6b, that file is absent, so the call fails with exit 127. The S3a TD must classify any non-0/1/2 exit as "unprovisioned (tool unavailable)": loud, audited, non-halting, per AD-7. It must never treat that exit as success.
+- **H-3** must carry S6b. AD-12 already requires this.
+
+**Human input.** None new. Shipping files to consumers through the existing installer is the installer's ordinary job. The product-boundary item, the installer *mutating consumer GitHub state*, is already ARCH-ESC-1, which still blocks S6b.
+
+### 18.4 Startup-gap recovery and affected sign-offs
+
+*Should this have been settled in the initial architecture review?* **Yes, for all three items, and the gap is mine.** ADR-1520 has three misstatements:
+1. **AD-7: "per ADR-1643 AD-1/AD-1a".** AD-1a's no-mint and no-argv clauses do not apply to a token-minting L3 (§18.2).
+2. **AD-7 ("the installer ships it") and AD-10 step 1 ("`hos_install.sh` ships `contract/labels/` (S1's `_REGISTRY_KINDS` row)").** That row ships pack layers only (§18.3).
+3. **§3, the S1 file list.** It omits `tests/automation/test_dimension_registry.py` (§18.1).
+
+The generalisable rule is the same one ADR-1643 §10.6 recorded: **when an ADR cites a landed mechanism, it must state what that mechanism actually does, not what its name suggests.** I read `_REGISTRY_KINDS`'s comment ("Mirrors dimension_registry.KINDS") and not its loop body.
+
+**Affected sign-offs.** No design or code has been built or approved against the superseded wording, except this TD, and this TD corrects all three items. **No sign-off is orphaned.** ADR-1520's acceptance stands, because no decision changes. These are corrections of fact and of citation. ADR §5's cross-ADR analysis (T3.0b, TD-1604, TD-1540 S2) is unaffected.
+
+**Actions for the worker.** I am barred from GitHub and from editing other files in this task, so the worker does these:
+- (a) Annotate #1520, or the existing `startup-artifact-gap` issue, with items 1-3 and the rule above.
+- (b) In the S1 PR, or a docs follow-up, add an erratum note to ADR-1520 at AD-7, at AD-10 step 1 and at the §3 S1 row, each pointing to this §18.
+- (c) File a follow-up issue: "`bootstrap/pr_review.sh` revokes the caller's inherited `GH_TOKEN` on its no-mint and failed-mint paths". The fix is §7.1 step 3a's scrub. Check `merge_authority.sh` and any other mint-in-wrapper for the same shape.
+
+### 18.5 Reviewer set
+
+§14 stands. Security-reviewer must check §7.1 step 3a, LW-8 and LW-9 specifically, as well as the LR-10/LR-12 import surface.
