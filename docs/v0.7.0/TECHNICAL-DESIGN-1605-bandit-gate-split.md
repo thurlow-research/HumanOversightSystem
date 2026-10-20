@@ -631,7 +631,12 @@ VERSION_RE = r"[A-Za-z0-9](?:[A-Za-z0-9.!+_-]{0,62}[A-Za-z0-9])?"   # PEP 440-is
 VULN_ID_RE = (r"GHSA(?:-[0-9a-z]{4}){3}"                          # GitHub advisory
               r"|CVE-\d{4}-\d{4,7}"                               # CVE
               r"|PYSEC-\d{4}-\d{1,7}"                             # PyPA advisory DB
-              r"|[A-Z][A-Z0-9]{1,15}-[A-Za-z0-9-]{1,48}")         # OSV-style PREFIX-ID (OSV-, GO-, RUSTSEC-, …)
+              r"|(?!(?:GHSA|CVE|PYSEC)-)[A-Z][A-Z0-9]{1,15}-[A-Za-z0-9-]{1,48}")  # OSV-style PREFIX-ID (OSV-, GO-, RUSTSEC-, …)
+# Security round 2, N-1: the OSV-style branch excludes the GHSA/CVE/PYSEC prefixes, so no string matches two
+# branches. The four branches are therefore non-overlapping: GHSA-, CVE- and PYSEC- are literal and mutually
+# exclusive, and the OSV-style prefix [A-Z][A-Z0-9]{1,15} contains no '-', so its first '-' is fixed.
+# A malformed CVE-/GHSA-/PYSEC- string no longer falls through to the OSV branch. It is rejected (SEC-S4 fails
+# closed: a red run, never a silent one).
 MAX_FINDINGS     = 500
 MAX_FIX_VERSIONS = 32          # per finding; each entry must match VERSION_RE
 MAX_INPUT_BYTES  = 8 * 1024 * 1024
@@ -1247,7 +1252,7 @@ No approved design or code elsewhere in the repo was built against a decision th
 - **R-8 (AD-15 / M-1, accepted).** A compromised `audit` job can emit a forged `MEASURE … verdict=0` and so a forged `clean`. This is AD-10's M-1 residual extended to the verdict. The compromised job can already forge the pip-audit JSON.
 - **R-9 (D-2 pin).** The record's `sha=` is `github.sha`, but `audit` checks out the default branch when the job starts. If main moves in between, the measured tree is newer than `sha`. The consumer checks only `sha == head_sha`, which still holds. The next run corrects any difference. Accepted.
 - **R-11 (G-4 overflow, accepted).** With more than 100 distinct kept advisories, the record carries only the first 100 sorted ids, so a swap wholly beyond them does not re-alert (§15.6). The tracking issue's delta comment still shows it.
-- **R-12 (H-1 remainder, accepted).** `notify_human.sh` and `escalate_to_human.sh` run from the working tree. An unmerged edit to them can affect alert delivery, never the hold (§15.8).
+- **R-12 (H-1 remainder, accepted; security round 2 judgement: acceptable).** `notify_human.sh` and `escalate_to_human.sh` run from the working tree. An unmerged edit to them can affect alert delivery, never the hold (§15.8). That includes making the held line print `alert=sent` falsely, because the host cannot verify delivery. Optional hardening: add both scripts and every file they source to `_BH_CODE_PATHS` once #2125 lands.
 - **R-10 (day one, by design).** Once Part 3 merges, the hold is configured (§15.8 predicate) before any run exists, so the first worker cycles read `sub=stale` and are **held** until someone dispatches the workflow. This is AC-38 working as specified, not a defect. The runbook (§15.10) and the PR body tell the operator to dispatch immediately after merge.
 
 ---
@@ -1360,6 +1365,7 @@ python3 -m scripts.automation.dependency_audit_report measure \
 - **Final stdout line**, always: `MEASURE verdict=<0|1|-> cause=<-|sub token> kept=<n> first=<id|unattributable|-> skipped=<n|-> partial=<0|1> ids=<n_ids> more=<0|1>`.
 - **`--github-output`**: it appends exactly seven lines: `verdict=<0|1|->`, `cause=<…>`, `kept=<n>`, `first=<…>`, `partial=<0|1>`, `ids=<-|comma list>`, `more=<0|1>`. They are written **before** exit on every path, including failures. If writing them fails, the exit is 1 and the outcome becomes `audit-failed`.
   - *(Security round 1, L-3(b), binding.)* Each value is written only after `re.fullmatch` against that key's pattern: `verdict` `[01-]`; `cause` `-\|[a-z][a-z0-9_-]{0,31}`; `kept` `0\|[1-9][0-9]{0,5}`; `first` `-\|unattributable\|<VULN_ID_RE>`; `partial` `[01]`; `ids` §15.4's `IDS` group; `more` `[01]`. On any mismatch, all seven are written as the safe defaults `verdict=-`, `cause=audit-output-invalid`, `kept=0`, `first=-`, `partial=0`, `ids=-`, `more=0`, and `measure` exits 1. No free text is ever written there.
+  - *(Security round 2, N-1.)* `measure` validates its own `ids` value with §15.4's split-and-match rule before writing it, never with one regex over the list.
   - *(G-4.)* `ids` is the **sorted, de-duplicated** (bytewise) set of kept ids that full-match `VULN_ID_RE`, plus the token `unattributable` once if any kept id does not, truncated to the first 100 entries; `more=1` iff the set had more than 100 entries. On every non-finding path `ids=-` and `more=0`.
 - **Exit:** 0 for a clean result or a finding (verdict 0 or 1, consistent). 1 for every `NOT_RUN` cause. 2 for a usage error. No path prints `SKIP`, `GATE PASS`, `PASS` or a leading `OK:` unless the result is clean (TC-H1, TC-P*).
 
@@ -1436,7 +1442,7 @@ The job has no `uses:`, no checkout and no setup-python. Its single `run:` is a 
    - `PARTIAL` ∈ {0, 1, empty};
    - `ISSUE` must be empty, `-` or `^[1-9][0-9]{0,8}$`;
    - `SHA` must match `^[0-9a-f]{40}$`;
-   - *(G-4)* `IDS` must be empty, `-` or §15.4's `IDS` group; `MORE` ∈ {0, 1, empty};
+   - *(G-4; security round 2, N-1)* `IDS` must be empty, `-`, or pass §15.4's split-and-match rule using the `IFS=',' read -ra` loop: at most 7000 characters, at most 100 parts, and each part matched alone against `IDTOK` (the bash copy of `VULN_ID_RE` implements the OSV branch's exclusion as "if the part starts with `GHSA-`, `CVE-` or `PYSEC-`, it must match that branch; otherwise it must match the OSV-style branch", because ERE has no lookahead). `MORE` ∈ {0, 1, empty}. With `MORE=1` there must be exactly 100 parts and `KEPT ≥ 101`;
    - *(security round 1, L-3(a))* before any pattern test, every input containing a newline, carriage return or other C0/DEL character is invalid (`[[ $v == *[[:cntrl:]]* ]]`).
 
    An invalid `SHA` exits 1 with no record, which the consumer reads as `record-invalid`. Any other invalid input gives `outcome=not_run`, `sub=audit-output-invalid`.
@@ -1457,9 +1463,13 @@ The job has no `uses:`, no checkout and no setup-python. Its single `run:` is a 
 One line, ASCII only, no control characters, at most **8192** bytes *(raised from 512 for G-4; ADR AD-16 text change listed in the round-1 report)*, matched with Python `re.fullmatch` on the exact string *(security round 1, L-3(a); the `^…$` below is notation, and `$` is never relied on)*:
 
 ```
-hos-dependency-audit/1 outcome=(clean|finding|not_run) cause=(-|dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) first=(-|unattributable|ID) kept=(0|[1-9][0-9]{0,5}) issue=(-|[1-9][0-9]{0,8}) ids=(IDS) more=(0|1) sha=([0-9a-f]{40})
-IDS = -|IDTOK(,IDTOK){0,99}      IDTOK = unattributable|ID
+hos-dependency-audit/1 outcome=(clean|finding|not_run) cause=(-|dependency-advisory|environment-broken) sub=(-|[a-z][a-z0-9_-]{0,31}) first=(-|unattributable|ID) kept=(0|[1-9][0-9]{0,5}) issue=(-|[1-9][0-9]{0,8}) ids=([!-~]{1,7000}) more=(0|1) sha=([0-9a-f]{40})
+IDTOK = unattributable|ID
 ```
+
+*(Security round 2, N-1.)* The record regex captures `ids` only as an opaque `[!-~]{1,7000}`. That character class excludes space, so the capture is linear and stops at ` more=`. The captured value is then validated by the split-and-match rule below. "The `IDS` group" anywhere in this document means that rule, not a regex.
+
+**IDS split-and-match rule (security round 2, N-1, CWE-1333; binding wherever `ids` or `alerted_ids` is validated: §15.2 `measure`, §15.3 `outcome`, §15.4/§15.5 rule 4 consumer, §15.6 `alerted_ids`).** IDS is never matched with a single regex over the whole list. Every validator first rejects the field if `len(field) > 7000` or it contains a control character. If the field is `-`, it is the empty set. Otherwise it does `parts = field.split(',')`, rejects the field if `len(parts) > 100` or any part is empty, and then runs `re.fullmatch(IDTOK, part)` on each part individually. In the bash copy in `outcome`, the loop is `IFS=',' read -ra _parts <<< "$IDS"`, a length check, and a per-part `[[ $part =~ ^(IDTOK)$ ]]`. It never uses one ERE over the list. For `alerted_ids` (a JSON list), the same per-element check applies, with the same 100-element bound and a 65-character bound per element.
 
 Here `ID` is §9.2's `VULN_ID_RE`, verbatim. It is defined once, in `dependency_audit_report.py`, and `dependency_pause.py` imports that constant. The bash in `outcome` cannot import it, so it carries a literal copy, and TC-W6 asserts the two are equal.
 
@@ -1468,6 +1478,7 @@ Here `ID` is §9.2's `VULN_ID_RE`, verbatim. It is defined once, in `dependency_
 - `clean` ⇒ `cause=- sub=- first=- kept=0`;
 - `finding` ⇒ `cause=dependency-advisory`, `first≠-`, `kept≥1`, `ids≠-`, the `ids` list strictly increasing bytewise (sorted, no duplicates), its length ≤ `kept`, and, when `more=0`, `first` ∈ `ids` *(G-4)*;
 - `clean` and `not_run` ⇒ `ids=- more=0` *(G-4)*;
+- *(Security round 2, N-1.)* `more=1` requires exactly 100 ids and `kept ≥ 101`; `more=0` requires `len(ids) ≤ kept`;
 - `not_run` ⇒ `cause=environment-broken`, `sub≠-`, `first=-` and `kept=0`.
 
 ### 15.5 The read path: three `github.py` read helpers, plus selection (Part 3; ADR AD-16)
@@ -1514,6 +1525,7 @@ def list_check_run_annotations(owner, repo, check_run_id, *, per_page=50, retrie
 4. **Annotations.** The candidates are annotations whose `annotation_level == "notice"`, whose `message` is a `str` of at most 8192 bytes once encoded as UTF-8, ASCII only, free of control characters, and which `re.fullmatch` §15.4.
    - Exactly one candidate is required, and its `sha` must equal the run's `head_sha`. Otherwise the result is `record-invalid`.
    - Then the §15.4 semantic rules apply.
+   - *(Security round 2, N-1.)* The `ids` capture is validated by §15.4's split-and-match rule, never by one regex over the list. Any failure is `record-invalid`.
 5. **Retries.** The consumer calls every helper with `retries=1` (TD-D5-6). That keeps the worst case at 3 × (30 s + 2 s + 30 s), which is under hos-cron's 240 s bound (§15.8).
 
 **Read failure and the cache (AD-17).**
@@ -1569,7 +1581,7 @@ python3 -m scripts.automation.dependency_pause check \
   - a finding is `dependency-audit:dependency-advisory:<first>`;
   - a `not_run` is `dependency-audit:environment-broken:<sub>`.
   - The fingerprint identifies the **hold only**. It is not the alert trigger (AC-41 as amended by pm-agent's G-4 ruling, commit `ebadd5397`). Re-alerting is decided by `alerted_ids` (below).
-- **`detail.alerted_ids` / `detail.alerted_more` (G-4, binding).** `alerted_ids` is the record's `ids` set at the moment the most recent `dependency-advisory` alert was **attempted** (sent or undelivered): a JSON list of at most 100 `IDTOK` strings, strictly increasing bytewise, each validated by `re.fullmatch`. `alerted_more` is that record's `more`. For an `environment-broken` hold both are `[]` and `0`. A list that is not a list, is longer than 100, is unsorted, has duplicates, or has an invalid token makes the file corrupt (state-corrupt).
+- **`detail.alerted_ids` / `detail.alerted_more` (G-4, binding).** `alerted_ids` is the record's `ids` set at the moment the most recent `dependency-advisory` alert was **attempted** (sent or undelivered): a JSON list of at most 100 `IDTOK` strings, strictly increasing bytewise, each validated individually by `re.fullmatch(IDTOK, element)` under §15.4's split-and-match rule (security round 2, N-1; never by joining and matching the list). `alerted_more` is that record's `more`. For an `environment-broken` hold both are `[]` and `0`. A list that is not a list, is longer than 100, is unsorted, has duplicates, or has an invalid token makes the file corrupt (state-corrupt).
 - **`clear_act`** is exactly: `Record a time-boxed exemption in the #1776 roster (scripts/oversight/security_scan_logic.py) or land a dependency bump, then run "Dependency audit (scheduled)" on main via workflow_dispatch. The hold clears only on the next clean run.` (AC-37; Q-D5-3 pending, recommendation clean-run only.)
 
 **Shared reader `read_holds(dir)`.**
@@ -1675,7 +1687,7 @@ The checked-out branch never decides whether the hold applies.
   2. `git -C "$REPO_ROOT" archive --format=tar origin/main -- "${_BH_CODE_PATHS[@]}" | tar -x -C "$_BH_CODE"` with `set -o pipefail`, where `_BH_CODE_PATHS=(scripts/__init__.py scripts/automation/__init__.py scripts/automation/lib scripts/automation/dependency_pause.py scripts/automation/dependency_audit_report.py)` is a constant. This extracts exactly main's committed bytes for the consumer and everything it imports. Uncommitted edits, untracked files and the checked-out branch cannot reach it. Because the extraction directory contains nothing else, a branch-added root module (for example a `json.py`) cannot shadow the stdlib either.
   3. Failure of `mktemp`, `archive` or `tar` (for example `origin/main` lacks the module) → **`check_error`**. The working-tree copy is never used as a fallback.
   4. The call is `_BH_OUT="$( (cd "$_BH_CODE" && ${_BH_BOUND[@]+"${_BH_BOUND[@]}"} python3 -E -s -m scripts.automation.dependency_pause check --project "$PROJECT" --repo-slug "$_REPO_SLUG" --state-dir "$_HOS_DIR" --repo-root "$REPO_ROOT") )"`, wrapped in the usage-pause `if …; then _BH_RC=0; else _BH_RC=$?; fi` shape. `-E` ignores `PYTHON*` variables and `-s` drops user site-packages. `-I` is still not used, because `-m` must resolve from the cwd (TV-3).
-  - `--repo-root "$REPO_ROOT"` still locates `bootstrap/notify_human.sh` and `bootstrap/escalate_to_human.sh`. Those run from the working tree. **Residual R-12:** an unmerged branch's edit to those two scripts runs, but it cannot release a hold: the hold file is written before either runs (§15.7 ordering), and release only follows a qualifying clean run read by main's code.
+  - `--repo-root "$REPO_ROOT"` still locates `bootstrap/notify_human.sh` and `bootstrap/escalate_to_human.sh`. Those run from the working tree. **Residual R-12:** an unmerged branch's edit to those two scripts runs, but it cannot release a hold: the hold file is written before either runs (§15.7 ordering), and release only follows a qualifying clean run read by main's code. *(Security round 2.)* It **can** make the held line print `alert=sent` falsely. The host cannot verify delivery, so the alert leg is only as trustworthy as the checked-out tree. hos-cron already runs working-tree bootstrap scripts (token mint, branch creation, sync), so this is not a new class. **Optional hardening (non-blocking):** once #2125 lands, add `bootstrap/notify_human.sh`, `bootstrap/escalate_to_human.sh` and every file they source to `_BH_CODE_PATHS`, and run them from the extraction.
   - A static test (TC-C18) asserts that every `scripts.` import reachable from `dependency_pause` resolves inside `_BH_CODE_PATHS`, so a new import cannot silently fall outside the extracted set.
 
 **Parse (strict, `LC_ALL=C`).**
@@ -1772,6 +1784,7 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 | TC-O1..TC-O5 | one per §15.3 mapping row. Asserts the exact record line printed after `::notice::` and the exit code (0 only for clean). |
 | TC-O6 | invalid `FIRST` (`x y`), invalid `KEPT` (`-1`) → `sub=audit-output-invalid` |
 | TC-O7 | invalid `SHA` → exit 1 with no `::notice::` |
+| TC-O10 | *(N-1)* `IDS` = 100 `GHSA-…` tokens plus a trailing `!`, run through the extracted `outcome` script | `audit-output-invalid` in under 1 s; the script text contains `IFS=',' read -ra` and no ERE with a repetition over `,` (static assertion) |
 | TC-O9 | *(L-3(a), G-4)* `FIRST` containing a newline; `IDS` with a space or an unsorted list is passed through only if it matches the `IDS` pattern (sortedness is the consumer's check) | control char → `audit-output-invalid`; the record carries `ids=`/`more=` for a finding and `-`/`0` otherwise |
 | TC-O8 | `AUDIT_RESULT=failure CAUSE=pip-audit-absent` → `sub=pip-audit-absent`; `AUDIT_RESULT=cancelled` with empty `CAUSE` → `sub=audit-failed` |
 
@@ -1812,6 +1825,7 @@ Consumer (TC-C\*):
 | TC-C22 | *(M-1(a))* a `pipeline-blocked.json` with `cause` = `x; rm -rf /`, `issue` = `"12"` (string) or `true`, `since` with a newline, or `alert.reason` 33 chars | `[HELD-BUILD] source=pipeline-blocked cause=environment-broken sub=state-corrupt …` re-rendered; no byte of the bad value in stdout |
 | TC-C23 | *(L-3(d))* selected run `run_started_at` = now + 301 s; and = now + 299 s | `run-invalid`; second is read normally |
 | TC-C24 | *(L-1)* the stdout of every TC-C case | every EVENT key is in the allowlist; no key repeats |
+| TC-C25 | *(N-1, CWE-1333)* a record whose `ids` is 100 distinct valid `GHSA-xxxx-xxxx-xxxx` tokens followed by a trailing `!`; plus a 7001-character `ids`; plus 101 parts; plus `more=1` with 99 ids or with `kept=100`; plus an `alerted_ids` list of the same 100 tokens with the last given a trailing `!` | `record-invalid` (and `state-corrupt` for the hold-file case), each case completing in **under 1 s** (asserted with `time.monotonic()`). The VULN_ID_RE exclusion is also asserted: `GHSA-abcd-efgh-ijk!` and `CVE-20X6-1` match no branch, and `OSV-2026-1` matches only the OSV branch |
 | TC-A6 | *(L-4)* consumer env holds `GH_TOKEN`, `GITHUB_TOKEN`, `HOS_APP_KEY`, `HOS_PROJECT` | the notifier's `env` has none of the first three and has `HOS_PROJECT`, `PATH`, `HOME`; the escalation's `env` has `GH_TOKEN` and not `GITHUB_TOKEN` |
 | TC-C17 | stdout contract: every line matches §15.8's parse regexes; the last line is the summary |
 
@@ -2019,6 +2033,8 @@ Source: `security-reviewer`, ADR §2b + TD §15 @ `0a94eb9c6` (CHANGES_REQUESTED
 | L-4 | §15.7 Subprocess environment; §15.8 `env -i` for hos-cron's call | Also drops any `HOS_*` name containing TOKEN/SECRET/KEY/PASSWORD | TC-A6 |
 | L-5 | §15.8 directive + prompt bullet: docs-only = `docs/` + `DECISIONS.md` | — | TC-K9 |
 | G-4 | §15.2 (`ids`, `more` outputs), §15.3 (outcome carries them), §15.4 (record `ids=`/`more=`, 8192-byte bound), §15.6 (`alerted_ids`, `alerted_more`, `kept_at_alert`, set-based re-alert, `dependency-advisory-realert` event), §15.13 ruling box, Human Review item 21 | Overflow case also re-alerts on count growth; residual R-11 disclosed | TC-C19, TC-C20, TC-P20 |
+| N-1 *(round 2)* | §9.2 `VULN_ID_RE` (the OSV branch excludes the GHSA/CVE/PYSEC prefixes, so the branches are non-overlapping); §15.4 (opaque `ids` capture plus the split-and-match rule; `more=1` ⇒ exactly 100 ids and `kept ≥ 101`); §15.5 rule 4; §15.6 `alerted_ids`; §15.2 `measure`; §15.3 `outcome` (`IFS=',' read -ra` loop) | Also bounds each `alerted_ids` element to 65 characters | TC-C25, TC-O10 |
+| R-12 wording *(round 2)* | §14 R-12 and §15.8: a false `alert=sent` is possible; optional hardening after #2125 | — | — |
 
 New sub tokens (extends TD-D5-1): `run-invalid`; *(architect 2026-10-20)* `record-truncated`, which is §15.5 rule 4 with exactly one `notice` annotation whose message starts with `hos-dependency-audit/1 ` but fails the full match. It holds exactly as `record-invalid` does, and the runbook's sub-token table (§15.10 (iv)) names its remedy: lower the `ids` cap. New residuals: R-11, R-12 (§14).
 
