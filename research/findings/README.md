@@ -55,6 +55,9 @@ The synthesis *over* these — the high-level observations each evidences — li
 - `human-gate-enforcement-limits.md` — the human gate is behavioral-only until identities are separable.
 - `actor-identity-vs-determination-honesty.md` — forge-proof needs separate identity + server-side enforcement.
 - `cost-gating-autonomous-oversight-loops.md` — the human drew the deploy line the loop couldn't.
+- `a-proxys-draft-of-the-humans-ruling-is-mistaken-for-the-humans-act.md` — the human gate also needs the *authorizer* to know which acts are theirs when an AI proxy drafts in their voice.
+
+*Not yet mapped to an observation (proposed for Scott):* `an-escalation-channel-shared-with-parking-loses-its-meaning.md` and `buried-disclosure-fails-like-no-disclosure.md` together suggest a new observation along the lines of "a disclosed escalation is not a delivered one; the channel's semantics and salience are part of the oversight loop."
 
 ### O7 — Re-derive, never trust; ratchet (automation tightens, only a human relaxes). `[core]`
 - `ratchet-principle.md` — the invariant was already implicit in three independently built mechanisms.
@@ -78,6 +81,7 @@ The synthesis *over* these — the high-level observations each evidences — li
 - `ai-agent-scope-drift-mirrors-human-dev-behavior.md` — scope creep, definition-of-done drift, batch-over-incremental PRs.
 - `autonomous-worker-restacks-redundant-work.md` — the worker re-proposes already-merged work (the rebase reflex a human has, the loop lacks); #850/#880.
 - *(#901 — lowest-issue-number work selection bias, fixed with explicit priority; not yet a standalone finding.)*
+- `a-blocked-gate-redirects-autonomous-work-instead-of-stopping-it.md` — told to "make progress", the worker routed around a blocked gate into design work; throughput looked healthy while merged code was zero (2026-10).
 
 ### O10 — An autonomous loop needs an exhaustive enumeration of what to check, not a concept. `[signal]`
 - `agent-misses-pr-feedback-without-explicit-review-read.md` — checked mergeable, not review bodies (#411/#414).
@@ -106,6 +110,9 @@ These are experiences referenced by the observations that do **not** yet have a 
 
 | File | Role | One-line description |
 |---|---|---|
+| `a-blocked-gate-redirects-autonomous-work-instead-of-stopping-it.md` | oversight-mechanism | An environment-scoped gate red on every code PR did not stop the worker; it substituted design work (12 of 13 merged PRs were documents, ~45 code branches parked) and raised human escalation load while merged code was zero. |
+| `a-proxys-draft-of-the-humans-ruling-is-mistaken-for-the-humans-act.md` | oversight-mechanism | A relay comment quoting the human's paste-ready ruling made the human believe they had posted it; relays must carry no ruling text, and "done" must be verified against the human's own-account comment. (Single incident.) |
+| `an-escalation-channel-shared-with-parking-loses-its-meaning.md` | oversight-mechanism | `needs-human` meant both "answer this" and "do not work this"; it passed 100 items, notified nobody, and hid a 9-day idle worker. Split parking into its own label, then summon by tiers (assignee, re-ping, narrow push). |
 | `a-gate-must-not-confuse-unreadable-with-unsafe.md` | oversight-mechanism | A gate has four outcomes (approve/request-changes/unparseable/error); collapsing "unparseable" into "fail-closed" discards real independent judgment (a Postgres NULL-sort bug). |
 | `actor-identity-vs-determination-honesty.md` | oversight-mechanism | A forge-proof human gate needs two guarantees — actor identity (separate account) *and* determination honesty (server-side enforcement); machine accounts close only the first. |
 | `autonomous-worker-restacks-redundant-work.md` | both | A standing autonomous worker re-proposes work already in main/a sibling PR (the rebase reflex the loop lacks); needs a fail-closed pre-PR "is this already done?" check (git-cherry patch-id + open-PR SHA overlap). |
