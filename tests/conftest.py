@@ -89,7 +89,8 @@ def registry_fingerprint(path: str) -> dict | str:
 
     Read-only: it never creates the file or its directory. An absent file is a
     legitimate observable state (a later appearance is a change); any other failure to
-    look is not observable.
+    look is not observable. A legitimate concurrent write by a real launcher or cron cycle
+    during a long run trips the guard by design (AD-10: fail on any change).
     """
     try:
         info = os.lstat(path)
@@ -177,8 +178,11 @@ def pytest_configure(config):
     saved = os.environ.get(REGISTRY_ENV)
     # A caller-set override is kept only when it is not the real path (a fixture-style
     # value such as a test rig's own file); otherwise the session-owned path under the
-    # run's basetemp (deleted with the run's pytest-N dir) replaces it.
+    # run's basetemp (pytest keeps the last few basetemps; tmp_reaper reclaims older
+    # ones) replaces it.
     if not saved or os.path.realpath(saved) == os.path.realpath(real):
+        # Private pytest API: there is no public configure-time alternative, and a pytest
+        # that drops it fails loudly here with AttributeError.
         basetemp = config._tmp_path_factory.getbasetemp()
         os.environ[REGISTRY_ENV] = str(basetemp / "hos-registry" / "tmp-roots.json")
     config.pluginmanager.register(

@@ -25,7 +25,10 @@ def test_the_session_override_is_set_and_is_not_the_real_path():
 
 def test_the_real_path_is_computed_without_the_override(monkeypatch, tmp_path):
     monkeypatch.setenv(guard.REGISTRY_ENV, str(tmp_path / "x.json"))
-    assert guard.real_registry_path().endswith("/.local/state/hos/tmp-roots.json")
+    relpath = guard.load_module_from_path(
+        "hos_tmp_root_relpath", guard.ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
+    ).REGISTRY_RELPATH
+    assert guard.real_registry_path().endswith("/" + relpath)
     assert os.environ[guard.REGISTRY_ENV] == str(tmp_path / "x.json")
 
 
@@ -110,3 +113,39 @@ def test_a_from_scratch_env_through_child_env_sees_the_session_override():
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == os.environ[guard.REGISTRY_ENV]
     assert r.stdout.strip() != guard.real_registry_path()
+
+
+class _Session:
+    exitstatus = 0
+
+
+def test_sessionfinish_fails_the_session_when_the_real_path_changed(tmp_path):
+    stand_in = tmp_path / "tmp-roots.json"
+    plugin = guard._RegistryIsolation(
+        str(stand_in), guard.registry_fingerprint(str(stand_in)), None
+    )
+    stand_in.write_text("{}")
+    session = _Session()
+    plugin.pytest_sessionfinish(session)
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+    assert str(stand_in) in plugin.failure
+    assert plugin.started in plugin.failure and ".." in plugin.failure
+
+
+def test_sessionfinish_passes_when_unchanged_or_not_observable(tmp_path):
+    stand_in = tmp_path / "tmp-roots.json"
+    unchanged = guard._RegistryIsolation(
+        str(stand_in), guard.registry_fingerprint(str(stand_in)), None
+    )
+    session = _Session()
+    unchanged.pytest_sessionfinish(session)
+    assert unchanged.failure is None and session.exitstatus == 0
+
+    unobservable = guard._RegistryIsolation(str(stand_in), guard.NOT_OBSERVABLE, None)
+    stand_in.write_text("{}")
+    unobservable.pytest_sessionfinish(session)
+    assert unobservable.failure is None and session.exitstatus == 0
+
+
+def test_the_private_tmp_path_factory_attribute_still_exists(pytestconfig):
+    assert hasattr(pytestconfig, "_tmp_path_factory")
