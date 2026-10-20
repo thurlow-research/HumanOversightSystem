@@ -151,7 +151,7 @@ if [[ -n "${HOS_PIP_AUDIT_BIN:-}" ]]; then
     echo "NOTE: pip-audit binary overridden by HOS_PIP_AUDIT_BIN=$HOS_PIP_AUDIT_BIN"
     NOT_PERFORMED+=("pip-audit binary overridden")
 fi
-if [[ -x "$PIP_AUDIT" ]]; then
+if [[ -f "$PIP_AUDIT" && -x "$PIP_AUDIT" ]]; then
     PIP_AUDIT_TMP=$(mktemp "${TMPDIR:-/tmp}/pip_audit_XXXXXX")
     _TMP_CLEANUP+=("$PIP_AUDIT_TMP")
     # Unit of work: run pip-audit under the configured timeout, capture JSON.

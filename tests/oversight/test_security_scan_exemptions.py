@@ -726,6 +726,17 @@ def test_g4g_non_executable_override_fails_closed_never_skips(tmp_path):
     assert "SKIP: pip-audit" not in res.stdout
 
 
+@_needs_gate
+def test_g4h_directory_override_fails_closed_never_skips(tmp_path):
+    a_dir = tmp_path / "a-dir"
+    a_dir.mkdir()
+    res = _gate(tmp_path, _clean_py(tmp_path), stub=a_dir)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert f"GATE FAIL: HOS_PIP_AUDIT_BIN={a_dir} is not an executable file" in res.stdout
+    assert "GATE PASS" not in res.stdout
+    assert "NOT CHECKED" not in res.stdout
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash unavailable")
 def test_g5_empty_changeset_never_invokes_pip_audit(tmp_path):
     marker = tmp_path / "invoked"
