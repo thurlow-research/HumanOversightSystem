@@ -48,6 +48,15 @@ name: Oversight gates
 #                                  without that note being updated. Same
 #                                  PROMOTED / ratchet-override rationale and
 #                                  date as oversight-gate-type-check above.
+#   oversight-agents-static      — zero debt (verified 2026-10-19 on a clean
+#                                  `git archive HEAD` export, #1606). Advisory:
+#                                  NOT promoted to a required status check.
+#                                  Promotion is a separate human step via
+#                                  scripts/framework/setup_branch_protection.sh,
+#                                  only after this job has produced at least
+#                                  one real run (the #737 failure mode: a
+#                                  required context with no producing job
+#                                  blocks every merge).
 #
 # Two gate groups, run differently (unchanged from before the split):
 #
@@ -60,6 +69,11 @@ name: Oversight gates
 # - Repo-scoped (django_check, astro_check, expensive_gates_stub, grouped
 #   into oversight-gate-repo-scoped): take no file args — each gate resolves
 #   its own applicability. Always run, independent of the diff.
+#
+# oversight-agents-static is repo-scoped like the repo-scoped group (no file
+# args, runs on every PR) but is kept as its own job because it is a framework
+# structural check (scripts/framework/check_agents_static.sh), not a
+# scripts/oversight/gates/ gate (#1606).
 #
 # security_scan (pip-audit against the CI venv's installed dependency
 # versions, not the PR's changed files) and collection_integrity (duplicates
@@ -313,3 +327,23 @@ jobs:
             echo ""
           done
           exit $RC
+
+  oversight-agents-static:
+    name: oversight-agents-static
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No oversight venv: check_agents_static.sh's Python helper
+      # (agents_static_logic.py) imports only the stdlib.
+      - name: Run check_agents_static
+        run: bash scripts/framework/check_agents_static.sh

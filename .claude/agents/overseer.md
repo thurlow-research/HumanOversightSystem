@@ -247,7 +247,51 @@ For each PR found:
 3a. **PR size check** — count the changed files and commits before proceeding. Apply the limits from `docs/PR-SIZE-POLICY.md` (#450):
 3b. **Validator artifact check (#555, updated #880)** — read `signoffs/validators/step{N}/summary.json` from the PR branch (where N is the step number from the cid or step manifest). Verify using an ancestry-based algorithm rather than exact HEAD equality (the exact-equality check was broken by non-code tail commits such as audit-log syncs):
 
-   **Algorithm:**
+   **Applicability precondition (#1652) — evaluate first.** Run
+   `python3 -m scripts.automation.merge_authority_cli register --app overseer --step <N>`
+   and read `gate_evaluable`. This mirrors how `register` itself reports "not
+   configured for this step" rather than failing.
+   - **Command exits nonzero, or `gate_evaluable` is missing or not the JSON boolean
+     `false`** (null, a string, anything else) → treat it as `true` (fail closed).
+   - **`true`** → apply the algorithm and fail-close rules below.
+   - **`false`** (no `required_signoffs` resolve for step N from
+     `contract/step-manifest.yaml`) → §3b is **not applicable** to this PR: skip the
+     algorithm and fail-close rules below. Before proceeding to step 4, probe for the
+     manifest on both refs (one command per Bash call):
+     1. `git fetch origin <default_branch>`
+     2. `git rev-parse --verify --quiet <pr_head_sha>^{commit}` and
+        `git rev-parse --verify --quiet origin/<default_branch>^{commit}`
+     3. `git cat-file -e <pr_head_sha>:contract/step-manifest.yaml` and
+        `git cat-file -e origin/<default_branch>:contract/step-manifest.yaml`
+
+     The manifest is **absent** only when the fetch (1) and both ref checks (2) exit
+     0 **and** both probes (3) exit nonzero. `git cat-file -e` exits nonzero for a
+     bad ref as well as a missing path, so the probes in (3) mean "missing" only
+     once (2) has confirmed both refs resolve. Any other outcome — a failed fetch,
+     a ref that does not resolve, or a probe that exits 0 — counts as **present**.
+     - **Absent** (the step is not configured) → record
+       `§3b: NOT EVALUABLE (gate_evaluable: false, step <N> unconfigured)` in the
+       executive summary and proceed to step 4.
+     - **Present on either ref** (present-but-unresolved: malformed, block-style
+       list, or no entry for step N) → record
+       `§3b: NOT EVALUABLE (manifest present, step <N> unresolved)` and route the PR
+       HUMAN_REQUIRED with that as a decisive merits-type reason — never AUTO_MERGE
+       on it.
+
+   Neither NOT EVALUABLE record is ever reported as a pass. Every other gate (step 4
+   onward) still applies unchanged.
+
+   *Why:* this is the case for the HOS source repo's own self-hosted PRs, which ship no
+   `contract/step-manifest.yaml`. Its `signoffs/validators/step1/summary.json` is a
+   shared checkpoint on `main` that ages past its last manual refresh, so applying the
+   algorithm literally fail-closes every PR for reasons unrelated to the PR (human
+   ruling on #1652, 2026-09-15). *Revisit:* if this repo's self-hosted flow is given a
+   step-manifest entry for its step, `gate_evaluable` becomes `true` and §3b applies
+   again automatically. At that point the checkpoint needs a refresh mechanism (e.g.
+   CI-driven), not manual "refresh validator artifact" commits, or every PR will fail
+   it.
+
+   **Algorithm** (only when `gate_evaluable` is `true`):
    1. The file exists (artifact present).
    2. Find `artifact_commit` — the commit that last wrote the artifact file:
       `git log -1 --format="%H" -- signoffs/validators/step{N}/summary.json`
