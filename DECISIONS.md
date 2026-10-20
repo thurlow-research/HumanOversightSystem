@@ -1213,3 +1213,41 @@ in the latest 1.181.0), so no fixed combination is installable. The ruling's wor
 import mcp" was checked and corrected: semgrep's CLI imports mcp modules on every invocation, so
 the record states the accurate premise (HOS never imports mcp directly and never starts an MCP
 server) and tests PR4/PR5 enforce it. Design doc section 17.
+
+## 2026-10-20 — "Mandatory and deterministic, never advisory" governs diff-scoped checks; environment and external-input checks are scheduled, reported, and pause-and-alert (#1605 D-5)
+
+**The scope refinement.** The principle that a check is mandatory and deterministic, and never
+advisory, applies to **diff-scoped** checks: checks whose verdict is a property of the change
+under review and that reproduce offline (lint, types, bandit-HIGH, secrets). It does not fit
+**environment** and **external-input** checks, whose verdict depends on the state of the world
+rather than on the diff, and which change with no commit at all. pip-audit is one: a new
+advisory published upstream changes its answer without anyone changing anything. Making such
+a check block every PR punishes changes for news they did not cause, or else teaches people
+to ignore it. Demoting it to "advisory" makes it silent. Neither is acceptable.
+
+**The rule for that class.** It runs on a schedule, reports to a single tracking surface, and
+**pauses and alerts** when either of these is true:
+
+- it finds something not covered by a current, time-boxed exemption;
+- it cannot run. A missing tool, a mismatched environment, exhausted retries, unparseable output, an invalid roster and a stale schedule all count, and each yields `NOT_RUN` with a named cause.
+
+It is never a silent skip, and never a pass inferred from a failure. The pause holds new build
+work only, so docs and design work continues. It clears on a clean run. The alert never gates
+the pause: if the alert cannot be delivered, the pause still stands and every held cycle says
+so.
+
+**First instance: the scheduled pip-audit run for #1605**, by human ruling D-5 (2026-10-20,
+relayed on #1605). Design: ADR-1605 §2b (AD-15..AD-23) and REQUIREMENTS-1605 §2F
+(AC-32..AC-43).
+
+- The `dependency-audit.yml` workflow measures, and decides with #1776's `security_scan_logic.py` roster (the same module, not a copy).
+- An install-free `outcome` job publishes one strict record.
+- A host-side consumer called from `bin/hos-cron` reads that record through `lib/github.py`. It sets or clears a hold under `~/.hos/build-hold/<project>/`, which is the directory #2123's breaker will share, and calls #2125's `notify_human.sh`.
+
+The ship vehicle (Q-D5-1) and five other questions are pending the human.
+
+**Not yet general, and not yet enforced.** This entry records the refinement and its first
+instance only. The general rule is #2132 (v0.7.1: the per-change status of environment checks
+in the local `run_gates.sh`, including the local `dependency_audit.sh` half, which D-5 leaves
+unchanged) and #2127 (v0.7.10). Until those land, no other check is bound by it. The local
+pip-audit gate keeps its current blocking behaviour (ADR-1605 AD-6).

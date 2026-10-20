@@ -2,6 +2,8 @@
 
 **Status:** ACCEPTED FOR DESIGN — binding on `technical-design`, `coder`, `unit-test`, `system-test` for issue #1605. Nothing below is advisory. Items 1–2 are **flagged for the overseer/human in the PR body** rather than gated. Item 3 (AD-12a/AD-12b: a new label and a new operator obligation) is a product-boundary item and **gates the merge of the implementation PR** on explicit human clearance.
 
+**Amendment D-5 (2026-10-20, architect), from the human's scope ruling D-5 on #1605:** the scheduled run now pauses and alerts. It is no longer report-only. New decisions **AD-15..AD-23** are in §2b. AD-10 and AD-12 gain notes; no existing AD is renumbered. AD-22 is a new **binding sequencing finding**: Part 2 predates #1776 and must carry #1776's exemption roster. AD-23 (the ship vehicle, Q-D5-1) is a **recommendation pending the human, not a decision**. The new human items are §6 items 4–7. The affected sign-offs are in §5 under "D-5".
+
 **Date:** 2026-09-22
 **Author:** architect
 **Issue:** #1605 (v0.7.0, `priority:high`). Parent #1567; per-check job pattern #1571; the vulnerabilities themselves #1504.
@@ -242,6 +244,7 @@ jobs:
 - **`report`** downloads the artifact and runs the reporting module with `GH_TOKEN: ${{ github.token }}`. It is **stdlib-only plus the preinstalled `gh`**: no `pip install` runs in the job that holds `issues: write`.
 - **The artifact is inert data, or the split protects nothing** *(amended 2026-10-14, security design review M-1)*. The artifact is produced by the job that executed third-party wheel code, so it is untrusted input to the job that holds `issues: write`. `report` downloads it to a dedicated directory **outside the checked-out workspace** (never the default `path:`, never the repo root or any directory on `sys.path` / the module's cwd), and reads **exactly one file from it, the pip-audit JSON, by its fixed name**, as data. Nothing in the artifact is executed, sourced, imported or extracted over the tree. A download into the workspace would let the artifact overwrite tracked code or shadow a module that `python -m` then imports: code execution with the write token, i.e. the single-job hazard reinstated through the back door.
 - `cancel-in-progress: false` (AC-19): cancelling a run that is mid-write is precisely how a body update lands without its comment.
+- *(Note, D-5, 2026-10-20.)* The workflow gains a third job, `outcome`, and the `audit` job also computes the roster verdict. AD-15 and AD-16 govern both. Nothing above changes: the trust split, the artifact rule and the `needs:` edge all stand.
 
 **Why two jobs and not one.** `pull_request_target`'s hazard is not the trigger name; it is *write-scoped token + attacker-influenced code in one job*. A `schedule` trigger avoids the second half only as long as nothing untrusted enters the job — and `pip install -r requirements*.txt` executes third-party build backends from PyPI. One job would put arbitrary wheel code in the same process tree as an `issues: write` token. Splitting confines dependency execution to a read-only-token job and confines the write token to a job that installs nothing — **provided** the artifact crossing between them is handled as inert data (bullet above). It also makes **AC-25 hold for an honest failure without relying on `report`'s own logic**: if `audit` fails for any reason (network, timeout, unparseable output), `report` never runs, so a permanent *honest* failure can never read as "all vulnerabilities fixed" and auto-close the issue. Cost: one artifact round-trip.
 
@@ -289,6 +292,7 @@ Tests inject a **recording fake writer** and assert AC-21 as *zero recorded call
   The invariant: an interrupted run must leave the *state block stale*, never the *notification missing*. A stale block re-fires the same delta next week (one duplicate comment); a missing comment is a permanently lost signal. Duplicate-notification is the safe direction.
 - **Title** (cosmetic, never matched): `Dependency vulnerabilities — pip-audit (scheduled report)`. ~~**No labels** (AC-26)~~ **SUPERSEDED by AD-12a/AD-12b:** the issue carries exactly one label, `dependency-audit`, applied on create and verified. Still **no pending-actor label** (AC-26's `needs-ai` concern stands). Body cross-references #1504 (unchanged).
 - **Unparseable input** ⇒ exit non-zero, zero writes (defence in depth behind AD-10's job split).
+- *(Note, D-5, 2026-10-20.)* The report module is **unchanged by D-5**. The tracking issue still holds the **full** normalized set, exempted advisories included (AC-20..AC-24 unchanged, as pm-agent ruled). Hold decisions use the **partitioned** set (AD-15). The two sets differ on purpose. While any exempted advisory is reported, the issue stays open and the pipeline is not held. That is correct, because black and mcp are still vulnerabilities, tracked in #1961 and #2120. On a `NOT_RUN`, the module makes zero writes, as before (AC-25). Whether it should write a status is Q-D5-2, and AD-15 is built so that either answer fits without a redesign.
 
 ### AD-12a — AMENDMENT: the `dependency-audit` label is the **authenticator**. Adoption requires label AND first-line marker.
 
@@ -413,6 +417,199 @@ update_issue(owner, repo, number, *, title=None, body=None, state=None) -> dict 
 
 ---
 
+## 2b. Amendment D-5 (2026-10-20): the scheduled run pauses and alerts. AD-15..AD-23.
+
+**Inputs:** REQUIREMENTS-1605 §2F (AC-32..AC-43), I-7 and Q-D5-1..6 (pm-agent, commit `4d0d2d161`); #2123 and #2125 (both unbuilt, read 2026-10-20).
+
+**Searched first (CLAUDE.md item 1).** I searched `bin`, `scripts` and `bootstrap` for `usage-pause|timeout-breaker|usage_pause`, and read `scripts/automation/lib/github.py`. Findings:
+
+- `bin/lib/usage_pause.py` together with its `bin/hos-cron` gate (`:461`) is the closest pattern. A crash, a timeout or garbled output there means pause.
+- `~/.hos/timeout-breaker/<role>-<project>` is a per-project state file.
+- The cycle context's "New work directive (#1198)" (`bin/hos-cron` `_build_context`) is the single place where the worker is told whether to start work.
+- `github.py` has `list_check_runs_for_ref` but **no** Actions-runs reader. `scripts/framework/rerun_gate_checks.py` reads `actions/runs`, but it runs in CI with its own `_gh_api`, not through `github.py`.
+- `scripts/automation/lib/breakers.py` keeps repo-local `.ai-local/` state, which is the wrong family for this.
+- `bootstrap/notify_human.sh` does not exist.
+- `security_scan_logic.py filter` already has the tri-state this needs: rc **0** clean, **1** kept advisories, **2** unreadable audit, invalid roster, missing `packaging` or a crash.
+
+### AD-15 — Three parties. Actions measures and decides, an install-free job publishes, and the host holds.
+
+| Party | Where | Does | Never |
+|---|---|---|---|
+| `audit` job | Actions, `contents: read` | pip-audit → JSON. Then **`python scripts/oversight/security_scan_logic.py filter < audit.json`**, the same module on the same checkout of main, never a copy (AC-32). Its rc is the verdict. Exits non-zero, with a cause output set first, on every AC-33 cause. | hold a write token |
+| `report` job | Actions, `issues: write` | AD-12, unchanged | install anything |
+| **`outcome` job (new)** | Actions, `permissions: {}`, `needs: [audit, report]`, `if: always()` | maps the `needs` results to **one strict record** (AD-16) and emits it as a single annotation | install, check out third-party code, or put `${{ }}` inside `run:` (inputs go through `env:` and are re-validated) |
+| host consumer | `scripts/automation/dependency_pause.py`, called from `bin/hos-cron` (AD-18) | reads the record, sets or clears the hold, fires the alert | be the source of truth for findings |
+
+**Why the verdict is computed in `audit` and not in `report`:** `security_scan_logic.py` imports `packaging`. `report` installs nothing (AD-10), and that rule is not relaxed. Computing the verdict in `audit` adds **no new trust**. `audit` is already where the measurement happens, and a compromised `audit` can already fake a clean pip-audit JSON. That is AD-10's accepted M-1 residual, unchanged.
+
+**Outcome mapping (binding):**
+
+| `audit` | verdict | `report` | Outcome | Cause |
+|---|---|---|---|---|
+| success | 0 | success | `clean` | — |
+| success | 1 | any | `finding` | `dependency-advisory` (if `report` failed, `sub=report-failed` is added; the hold is unaffected) |
+| success | 0 | not success | `not_run` | `environment-broken`, `sub=report-failed` |
+| not success | — | — | `not_run` | `environment-broken`, `sub=<audit cause output if valid, else audit-failed>` |
+| verdict rc 2 | — | — | `not_run` | `environment-broken`, `sub=roster-invalid` or `unparseable` |
+
+A clean audit whose issue write failed is `not_run`, not `clean`. The scheduled path did not complete, and D-5 forbids that outcome being silent. **This is a product-visible choice:** it holds build work while dependencies are in fact clean. It is listed in §6 item 5.
+
+### AD-16 — Transport: three REST reads, no artifact download, no issue channel.
+
+The consumer reads the following through **three new narrow read helpers in `lib/github.py`**, which inherit retry, backoff, rate-limit handling and the 30 s timeout:
+
+1. `GET /repos/{o}/{r}/actions/workflows/dependency-audit.yml/runs?branch=main&status=completed&per_page=20`;
+2. `GET /actions/runs/{id}/jobs`, to find the `outcome` job's `check_run_url`;
+3. `GET /check-runs/{id}/annotations`.
+
+Selection rules:
+
+- A run qualifies only if `head_branch == main` (the default branch), `event ∈ {schedule, workflow_dispatch}` and `path == .github/workflows/dependency-audit.yml`. The newest qualifying completed run by `run_started_at` wins, **whatever its conclusion**. A cancelled or timed-out run, or one with no record, is `not_run`.
+- A dispatch on a non-default branch is **ignored, not trusted**. It runs that branch's copy of the workflow, which could emit a forged `clean`.
+
+**Record grammar (binding shape; the TD fixes exact patterns).** Exactly one annotation from the `outcome` job whose message fully matches:
+
+`hos-dependency-audit/1 outcome=<clean|finding|not_run> cause=<-|dependency-advisory|environment-broken> sub=<token|-> first=<advisory-id|-> kept=<int> issue=<int|-> sha=<40 hex>`
+
+- The record is ASCII only, one line of at most 512 bytes, and the advisory id comes from a bounded allowlist.
+- No match, more than one match, or a `sha` different from the run's `head_sha` gives `not_run` with `sub=record-invalid`.
+- `issue=` is filled when `report` resolved the tracking issue. The `outcome` job never looks the issue up itself, since it holds no token scope.
+
+**Precondition.** The Worker App token needs `actions: read` and `checks: read`. If either is missing, the read fails, which gives `not_run` (`read-failed`) on the first cycle. That is loud, and AC-42's day-one run surfaces it before the hold is enabled. Granting a permission is a human act (§6 item 4).
+
+**Rejected alternatives:**
+
+| Option | Rejected because |
+|---|---|
+| Download a workflow artifact on the host | It unpacks a zip produced by the wheel-executing job, inside the most privileged environment (the host holds App keys). It also needs a binary download path that `_run_gh` does not have. |
+| Use the tracking issue as the channel | A weekly freshness write breaks AC-21's zero-writes rule. A failed `audit` never reaches `report`, so `NOT_RUN` could only show up as staleness, up to 9 days late. |
+| Commit statuses | They need a new `statuses: write` scope and are anchored to a SHA that main moves past. |
+| Encode the outcome in step names | Static names cannot carry AC-41's advisory id. |
+
+### AD-17 — Staleness and read failure (AC-38, and the architectural half of Q-D5-6).
+
+- **Stale.** Stale means no qualifying completed run started within **216 h** (the 7-day cadence plus 48 h of grace). The result is `not_run` with `sub=stale`. The value comes from `HOS_DEPENDENCY_AUDIT_MAX_AGE_HOURS` and is clamped to **[168, 336]**. An out-of-range value is a config error, which means held. It is never "disabled". The 48 h grace absorbs GitHub's documented scheduled-run delays and drops, so a single dropped fire does not trip the hold. A missed second week does. A workflow that has never run is stale.
+- **Read failure.** The consumer reads on every worker cycle. That is 3 calls every 15 minutes, which is negligible against the rate limit. If a read fails, the consumer reuses the last successful reading, kept in the hold directory, **only if that reading is under 6 h old**, and logs `reading_age`. Otherwise the result is `not_run` with `sub=read-failed`. This defines "cannot read". It does not decide Q-D5-6. If the human rejects I-7, the only change is that `read-failed` stops holding.
+
+### AD-18 — Hold state, the #2123 seam, and where the consumer lives.
+
+**The state** is a per-project directory that more than one hold source can share: **`~/.hos/build-hold/<project>/<source>.json`**. Directory mode is 0700, file mode 0600, and writes are atomic (temp file plus rename). This source is `dependency-audit`. The schema is `hos-build-hold/1`, with these fields:
+
+- `source`, `cause`, `sub`;
+- `fingerprint`, which is `dependency-audit:<cause>:<first advisory id | sub>`, exactly as AC-41 specifies;
+- `since`, `last_evaluated`;
+- `issue`, `run_url`, `clear_act`;
+- `alert: {status: sent|undelivered|pending, reason, at}`;
+- `detail: {}`, which is source-specific.
+
+**The file is derived, not authoritative.** Every worker cycle recomputes the outcome:
+
+- Not clean: the consumer writes or keeps the file. `since` is kept while the fingerprint is unchanged. A new fingerprint updates the file and re-alerts.
+- Clean: the consumer deletes the file and emits `dependency-pause-cleared` with the hold's duration.
+- **Clean only arrives from a qualifying run** (AC-37, pending Q-D5-3). Deleting the file by hand achieves nothing, because the next cycle rewrites it.
+- An unreadable or corrupt file in the directory means **held**, with `sub=state-corrupt`. It is never "absent".
+
+**The #2123 seam.** #2123 adopts this by writing its own `pipeline-blocked.json` into the same directory, using the same schema. It gets the shared reader, the directive (AD-19) and the log line at no cost. Each source exclusively owns its own file. One source never deletes another's. #2123's B4 rule ("could not run" fingerprints the same as "failed") stays #2123's to implement. Both PR bodies disclose this cross-issue requirement.
+
+**The consumer** is `scripts/automation/dependency_pause.py`. Its decision logic is pure and its I/O goes through injected fakes, so it is testable without network (AC-28, AC-43).
+
+- It is invoked from `bin/hos-cron` as `python3 -m scripts.automation.dependency_pause check …`, the same shape as `select_work_candidates`. It runs for the **worker role only**, after the usage-pause gate, under a wall-clock bound.
+- If the consumer crashes, times out, or prints a line that does not parse as a verdict, `hos-cron` treats the project as **held**, with `sub=check_error`. That is the usage-pause rule, and hos-cron then calls the notifier itself (AD-20).
+- The module gets an **exact-path entry in `protected_surfaces.txt`**. It is the only automated path that releases a hold, so it is control code.
+
+**Scope (binding).** `bin/hos-cron` ships to consumers (`framework_consumer_files.txt`) and `dependency-audit.yml` does not. hos-cron therefore invokes the consumer **only when `.github/workflows/dependency-audit.yml` is tracked in the clone**. When it is not tracked, every cycle prints `[DEPENDENCY-AUDIT] not configured for this project (#1605)`, which is visible. Nothing is held and the consumer is not invoked, so a consumer install neither crashes into `check_error` nor sits in a permanent `stale` hold. Turning the hold off by deleting the workflow takes a merged change to `.github/workflows/**`, which is a protected surface and therefore needs human approval.
+
+### AD-19 — What the hold does (AC-36). Directive-level, stated honestly.
+
+While any hold file is present, hos-cron's **New work directive** renders `NEW WORK: DOCS/DESIGN ONLY` (unless it already says `BLOCKED`). The directive also lists:
+
+- the source, the cause and the issue;
+- the carve-out: triage; docs-only and design-only steps; work on the tracking issue, on #1504, or on an exemption or bump that clears the hold.
+
+Every held cycle logs exactly one line (AC-39):
+
+`[HELD-DEPENDENCY] cause=<c> sub=<s> issue=#<n|-> since=<t> alert=<sent|undelivered:<reason>>`
+
+Audit events are emitted only on transitions: `dependency-pause-set`, `dependency-pause-cleared` (with duration) and `alert-undelivered`. They are not emitted on every cycle.
+
+- **The overseer is not held.** D-5 holds the *start* of build work. Reviewing and merging PRs that were already built is out of scope.
+- **Residual, accepted and disclosed:** the hold is enforced by a directive that the worker agent obeys. That is the same strength as today's #1198 `BLOCKED`. There is no mechanical backstop in v1. A deterministic "no non-docs PR while held" check in `submit_pr.sh` belongs with #2123, which has the identical carve-out and should build the backstop once for both sources.
+
+### AD-20 — The alert seam (AC-39, AC-40). The hold never waits on the alert.
+
+**Ordering is binding.** The consumer writes the hold file **first**, and only then invokes `bootstrap/notify_human.sh --cause <dependency-advisory|environment-broken> --issue <n> --since <iso> --priority high --body-file <path>` through an injectable runner with a 30 s bound.
+
+- **When it fires:** on a new hold or a fingerprint change. While `alert.status=undelivered`, it retries at most once an hour. There are no reminder pushes; #2125's dedup and #1928's re-ping own those.
+- **Undelivered:** the notifier being absent, not executable, exiting non-zero or timing out all mean undelivered with a named reason. The consumer records the reason in the file, emits `alert-undelivered`, and carries the reason in AD-19's log line. Nothing else changes, and the hold stands.
+- **No Pushover client of its own.** The credential never enters this code path.
+- **Cross-issue requirements on #2125**, disclosed in the PR body:
+  - add the two causes to #2125's closed trigger list;
+  - accept `--url <run url>` in place of `--issue` when no tracking issue exists yet (for example, a first run that never reached `report`).
+- **The fallback channel is Q-D5-5 (human).** If the human picks (a), the consumer calls `bootstrap/escalate_to_human.sh` on the tracking issue when the alert is undelivered. The **host** makes that write, not the workflow, so AC-25 is not touched.
+
+### AD-21 — A partial audit is not a clean run.
+
+`security_scan_logic` reports pip-audit's `skipped` dependencies as `NOT CHECKED` and still returns rc 0. On the scheduled path, any skipped dependency means `not_run` with `sub=partial-audit`. A clean run (§2F Terms) means every advisory was decided, and a dependency that was not audited has had nothing decided. **Precondition for the TD:** measure the current main venv. If it produces any skipped entries, bring that back to the architect. Do not allowlist them.
+
+### AD-22 — BINDING sequencing finding: Part 2 predates #1776 and must carry its roster.
+
+The Part 2 implementation branch (`b9c342559`) forks before `4d5b8cff5` (#1776, merged 2026-10-20). Its `dependency_audit.sh` has **zero** references to `security_scan_logic`, while main's `security_scan.sh` has three. Merged as-is, the extracted local gate would block on black and mcp again. That re-creates the always-red gate #1776 just fixed, and the split would silently undo a human ruling.
+
+**Ruling:**
+
+- Part 2 is re-cut on current main.
+- The pip-audit lane moves **as it is on main**: the roster filter, the `GATE FAIL`/exit-2 semantics, and the `GATE PASS … not completed` naming.
+- `tests/oversight/test_security_scan_exemptions.py` (`_GATE` points at `security_scan.sh`) is re-pointed to `dependency_audit.sh`. That is **one more file** in Part 2.
+
+**Startup gap:** no. #1776 landed after this ADR was approved. It is a sequencing gap, and the affected sign-offs are listed in §5.
+
+### AD-23 — Ship vehicle (Q-D5-1). **RECOMMENDATION, PENDING THE HUMAN. Not decided.**
+
+**Recommendation:** pm-agent's option. Invoke shed step 3 (§3), and **Part 3** carries the scheduled half together with all of D-5. Reasons:
+
+- (i) No report-only scheduled workflow ever lands. Landing one would ship exactly the behaviour D-5 overruled.
+- (ii) AD-22 already forces a re-cut of Part 2, so the "don't disturb reviewed SHAs" argument behind the S-6 waiver no longer holds. Under AD-22, `security_scan.sh` and `dependency_audit.sh` need re-review regardless.
+- (iii) Part 2 with files 4, 5, 6 and 8 removed, plus AD-22's test file, is about 11 files, which leaves headroom.
+
+**Corollary for the S-6 waiver.** The 11th commit's security amendments split by half. SEC-M2 and SEC-S1 stay in Part 2. SEC-M1, SEC-S4 and the report-side items go to Part 3. If the re-cut Part 2 is at or under 10 commits, the waiver goes unused. A waiver that goes unused is not a waiver used elsewhere: it does **not** transfer to Part 3.
+
+**Part 3 estimate: 14–15 files, at the ceiling.**
+
+| # | File |
+|---|---|
+| 1 | `dependency-audit.yml` |
+| 2 | `dependency_audit_report.py` |
+| 3 | `lib/github.py` (the three AD-13 write helpers and the three AD-16 read helpers) |
+| 4 | `test_dependency_audit_report.py` |
+| 5 | `dependency_pause.py` |
+| 6 | `test_dependency_pause.py` |
+| 7 | `bin/hos-cron` |
+| 8 | the existing hos-cron directive test |
+| 9 | `protected_surfaces.txt` |
+| 10 | `CODEOWNERS` (regenerated) |
+| 11 | `OVERSIGHT-RUNBOOK.md` |
+| 12 | `CI-EXECUTION-INVENTORY.md` |
+| 13 | `DECISIONS.md` |
+| 14 | `CRON-SETUP.md` (the permission precondition) |
+| 15 | `SCRIPTS-INDEX.md` |
+
+**Part 3 shed order:** first, `SCRIPTS-INDEX.md` becomes a follow-up. Second, the `CRON-SETUP.md` note folds into the runbook. **Never shed** AD-19, AD-20 or AC-43's tests. Splitting Part 3 again would land either a report-only workflow or a consumer with nothing to read. If it goes over 15 after the shed, that is a new human waiver question, not an agent-side split.
+
+**If the human prefers one larger Part 2:** the D-5 work makes Part 2 roughly 22 files, and that needs an explicit size waiver. I recommend against it, because one PR would carry `bin/hos-cron`, a new trust read path and the gate split together.
+
+### Q-D5 dispositions
+
+| Q | Kind | Disposition |
+|---|---|---|
+| Q-D5-1 vehicle | **human** | Open. Recommendation in AD-23 (Part 3). |
+| Q-D5-2 `NOT_RUN` written to the issue | **product** | Open. **Recommendation: no.** Keep AC-25's zero writes. The hold file, the log line, the run and the alert are the record. If Q-D5-5 = (a), the host's escalation comment provides the visible issue record without the workflow writing anything. Either answer fits AD-15 without a redesign. |
+| Q-D5-3 clearing without a clean run | **product** | Open. **Recommendation: clean run only** (AC-37 as written). A human's fix lands on main, and a `workflow_dispatch` re-evaluates it in minutes. Clearing on an issue comment or label would need an authenticated human-act parser, and bots can write both, which makes a new trust surface. If the human wants an escape hatch for an Actions outage, make it a **host-side, human-run, time-boxed override** (at most 7 days, audited), never an issue act. An override is a loosening, so it needs the human's explicit choice. |
+| Q-D5-4 does Q3 count as the AD-12a/b merge clearance | **human** | Open. Not architectural. One note: under AD-23 the label code moves to Part 3, so whichever answer the human gives attaches to **Part 3's** merge, not Part 2's. A one-line link in that PR thread costs nothing and removes the ambiguity. |
+| Q-D5-5 fallback when the alert is undelivered | **product** | Open. **Recommendation: (a)**, `escalate_to_human.sh` on the tracking issue, which relaxes AC-26's SHOULD for this case only. (b) is "log only", which contradicts B3's "never silent". (c) is "hold D-5 until #2125 lands", which leaves the hold unbuilt for no gain, because AD-20 already holds independently of the alert. |
+| Q-D5-6 read failure means held | **product**, with an architectural half | The definition of "cannot read" is **decided** in AD-17: 6 h of cached-reading tolerance, then `read-failed`. Whether `read-failed` holds is open. **Recommendation: confirm I-7.** A worker that cannot reach GitHub cannot open PRs anyway, so holding costs nothing extra. |
+
+---
+
 ## 3. File and commit budget
 
 Design artefacts ship in their **own** PR in this repo (precedent: PRs #1618, #1651, #1656, #1658 — one or two files each), so this ADR and `TECHNICAL-DESIGN-1605` do **not** consume the implementation PR's 15.
@@ -499,6 +696,13 @@ No approved design or code elsewhere in the repo was built against a decision th
 - **REQUIREMENTS-1605: unaffected.** AC-20 requires a `state=all` scope and no title matching. Both are kept, so no pm-agent action is needed.
 - **Cross-vendor second review.** This amendment answers the codex finding at the design level. The second review must be re-run on the amendment delta so the evaluator has a recorded disposition. The agy lane in the same run failed with `prompt_too_large` (#1718), and its own output says not to narrow the review to get a pass. That is a human restructuring decision and is not resolved by this ruling.
 
+**D-5 (amendment, recorded 2026-10-20).** *Should this have been settled in the initial review?* **No for D-5 itself.** It is a new human scope ruling, not a gap in the original review. **AD-22 is a sequencing gap**, not a startup gap: #1776 merged after approval, and nothing in this ADR could have anticipated it. One process lesson is noted all the same: an ADR whose implementation stays unmerged for four weeks has to be re-checked against main before it is resumed. **Affected sign-offs:**
+
+- **Stand.** The bandit-half design (AD-1, AD-3..AD-9). Every Part 2 design approval except those listed below.
+- **Orphaned by D-5 (design).** Every approval of AD-10 and AD-12 as "the scheduled path" is orphaned for the scope of that path. They stand for the job split, artifact handling, identity and idempotence, and are orphaned for what happens on failure and on a finding. technical-design must add AD-15..AD-21 to the TD. The security reviewer must re-review the new read path (AD-16) and the `outcome` job. The reliability reviewer must review AD-17 and AD-20. The ops reviewer must review the new log line and events.
+- **Orphaned by AD-22 (code).** Every code sign-off on the Part 2 `security_scan.sh` and `dependency_audit.sh` (through `b9c342559`) was given against a pre-#1776 base. They must be re-reviewed against the re-cut branch. #1776's own sign-offs stand, because AD-22 preserves its behaviour and only relocates it.
+- **Moved, if AD-23 is adopted.** The pending re-confirmations on `dependency_audit_report.py` and `github.py` at `b9c342559` move to Part 3 together with the code.
+
 ---
 
 ## 6. Flagged for the overseer/human in the PR body (items 1–2 not blocking; item 3 merge-gated)
@@ -510,6 +714,13 @@ Per the worker's directive, items 1–2 are surfaced, not gated; item 3 is merge
 
 3. **A new repo label and a standing "do not remove it" rule (AD-12a/AD-12b).** This contradicts the requirements' AC-26 ("no new label"), so it needs explicit human clearance in the PR body. It was adopted in code during the 2026-09-22 cycle to close a HIGH security finding, and it is being recorded here after the fact, which is itself a reason to put it in front of a human rather than treat it as settled. Item 1's issue gains one label, `dependency-audit`. Hand-removing it causes a duplicate tracking issue. The `docs/LABELS.md` row is deferred to #1812 item 12. The residual risk (an actor with triage rights can still squat, or can be led into it by an outside author's decoy, S-3) is accepted in AD-12a, on the binding condition that no issue template, `labels:` front matter or labelling workflow ever applies `dependency-audit`. If the human prefers the deferred author-pinning design (#1812 item 5), that is the alternative, not "no label": "no label" reopens the HIGH. *(Added 2026-10-14, AD-12a "Lookup bound".)* The label now also bounds the lookup: the listing is filtered server-side by `dependency-audit`, so outsiders cannot exhaust its 5,000-entry cap, and the repo's own growth cannot either (about 2,100 issues and PRs today, growing about 800 a month). Declining the label therefore also reopens the CWE-400 availability finding. Any fallback design must solve the lookup bound as well as identity. This adds no new obligation to the clearance. It changes what the human is weighing. **Merge gate:** the implementation PR MUST NOT merge until a human clears this item in the PR thread. Design and code proceed against AD-12a/AD-12b meanwhile. If declined, the fallback is #1812 item 5 plus an ADR revision, never a revert to marker-only.
 
+*(Added 2026-10-20, D-5. These are product-boundary items arising from my D-5 decisions. They are in addition to Q-D5-1..6, which are in AD-23's table. The human's D-5 ruling covers the hold itself. It does not cover the following.)*
+
+4. **New App permissions (AD-16).** The Worker App token must be able to read Actions runs and jobs (`actions: read`) and check-run annotations (`checks: read`). These are read-only, but they are a grant on the trust surface. If the App already has them, this item reduces to a recorded check. If it does not, a human grants them before Part 3's day-one run (AC-42).
+5. **Holds on a clean audit (AD-15, AD-21).** A `report` failure, or a partial audit, holds build work even when no advisory is outstanding. I chose the never-silent direction, because the scheduled path did not complete. The human may prefer an alert-only treatment for `report-failed`.
+6. **The hold is directive-level (AD-19).** It has the same strength as #1198's `BLOCKED`. The mechanical backstop is deferred to #2123.
+7. **A dated hold.** #1776's black and mcp exemptions expire on **2027-01-31**. Under D-5, the first scheduled run after that date returns `finding` and **holds build work**. TC-X5 also turns the `tests` check red from 2027-02-01. A renewal decision is therefore needed **before** the end of January, not after.
+
 None of these reverses anything below; each narrows or retunes rather than invalidates.
 
 ## Human Review Required
@@ -518,3 +729,11 @@ None of these reverses anything below; each narrows or retunes rather than inval
 **Change classification: ADDITIVE, with three STRUCTURAL-adjacent items (§6; item 3 per AD-12a/AD-12b).**
 
 The technical core is high-confidence: every premise is re-measured (§0), and the fail-closed design removes an entire class of false green rather than patching one instance of it. The residual risk is operational, not correctness: a first scheduled workflow with a write-scoped token, and a gate that now runs in a situation where it previously did not.
+
+**D-5 amendment (2026-10-20): RISK: HIGH, CONFIDENCE: MEDIUM. Change classification: STRUCTURAL.** D-5 adds a new pipeline state that holds build work, a new host read path from GitHub, a cycle-start step in `bin/hos-cron`, and two cross-issue requirements (on #2123 and #2125). Confidence is MEDIUM, not HIGH, for three reasons:
+
+- AD-16 depends on GitHub behaviour that has not yet been exercised live: annotations as a data channel, and the run-selection fields.
+- AD-15 assumes that job outputs survive a failed job; until that is confirmed, the fallback is `sub=audit-failed`.
+- AD-21's precondition is unmeasured.
+
+The TD must verify each of these, and AC-42's day-one run must exercise them.
