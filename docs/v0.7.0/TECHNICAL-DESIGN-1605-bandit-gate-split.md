@@ -1330,8 +1330,8 @@ python3 -m scripts.automation.dependency_audit_report measure \
 |---|---|---|---|
 | 1 | Check `--venv-build-outcome` | `== success` | `venv-build-failed` |
 | 2 | Run `<venv-bin>/python -c "import json,sys; print(json.dumps([sys.version_info[0], sys.version_info[1], sys.prefix != sys.base_prefix]))"` with a 30 s timeout | rc 0, and stdout parses to exactly `[M, m, true]` from `--python-version` | `interpreter-wrong` (this includes a missing python, rc≠0, a timeout and a mismatch) |
-| 3 | **Venv matches requirements (TV-16).** Run `<venv-bin>/pip install --dry-run --no-index --quiet` then `-r <f>` for each `--requirements`, then `--report <tmp>/pip-report.json`, with a 120 s timeout | rc 0, the report parses, and `report["install"] == []` | `venv-mismatch` (this includes pip being absent) |
-| 4 | **pip-audit present** | `<venv-bin>/pip-audit` is a regular file and executable | `pip-audit-absent` |
+| 3 | **pip-audit present** *(moved ahead of the venv-match step, architect R-A 2026-10-20: `pip-audit` is in `scripts/oversight/requirements.txt`, so a real absence would otherwise surface as `venv-mismatch`)* | `<venv-bin>/pip-audit` is a regular file and executable | `pip-audit-absent` |
+| 4 | **Venv matches requirements (TV-16).** Run `<venv-bin>/pip install --dry-run --no-index --quiet` then `-r <f>` for each `--requirements`, then `--report <tmp>/pip-report.json`, with a 120 s timeout | rc 0, the report parses, and `report["install"] == []` | `venv-mismatch` (this includes pip being absent) |
 | 5 | **Run pip-audit, and accept output whatever the rc (TV-15).** Up to 3 attempts, sleeping `--retry-sleep-seconds` between them. Each attempt deletes `<tmp>/raw.json`, then runs `<venv-bin>/pip-audit --progress-spinner off --format json -o <tmp>/raw.json` with the attempt timeout. stderr is captured and only its last 20 lines are kept. An attempt is **accepted** only if rc ∈ {0,1} **and** `raw.json` is a regular non-symlink file of at most `MAX_INPUT_BYTES` **and** `json.loads` of it gives a dict. | an attempt is accepted | After exhaustion, these are checked in order. A file over `MAX_INPUT_BYTES` on any attempt gives `oversized`. Otherwise, any attempt with rc ∈ {0,1} and no acceptable file gives `unparseable`, and this is sticky across later timeouts (main's CWE-636 rule). Otherwise, all attempts timing out gives `timeout`. Otherwise `pip-audit-failed`. |
 | 6 | **Verdict = filter rc (AC-32).** Run `PYTHONSAFEPATH=1 <venv-bin>/python <logic-path> filter < raw.json` with a 60 s timeout, capturing stdout and stderr (each capped at 64 KiB) | rc ∈ {0,1} | rc 2 with stderr starting `GATE FAIL: exemption roster invalid` gives `roster-invalid`. rc 2 with stderr starting `GATE FAIL: could not parse pip-audit output` gives `unparseable`. Any other rc 2, any other rc, or a timeout gives `filter-error`. |
 | 7 | **Skip count (TV-14, AD-21).** Done inside `project` (step 8) as `len(parse_audit(doc).skipped)`, using the module's own parser, never a re-implementation | — | see step 9 |
@@ -1508,7 +1508,8 @@ def list_check_run_annotations(owner, repo, check_run_id, *, per_page=50, retrie
 
 - Any `GitHubError`, `RateLimitError`, `ValueError` from shape validation, or `subprocess.TimeoutExpired` from any of the three reads is a read failure.
 - A **complete** read, meaning one where selection reached a decision (including `stale`, `run-incomplete` and `record-invalid`), is cached at `<hold-dir>/dependency-audit.reading`. The file has no `.json` suffix so the hold reader (§15.6) never parses it.
-  - Cache format: JSON `{"schema": "hos-dependency-audit-reading/1", "read_at": <iso>, "run": {"id", "run_started_at", "html_url", "conclusion", "head_sha"} | null, "record": <str|null>, "selection_sub": <token|null>}`.
+  - Cache format: JSON `{"schema": "hos-dependency-audit-reading/1", "read_at": <iso>, "run": {"id", "run_started_at", "html_url", "conclusion", "head_sha"} | null, "record": <str|null>, "selection_sub": <token|null>, "last_issue": <int|null>}`.
+  - `last_issue` *(architect R-B, 2026-10-20)* is the most recent numeric `issue=` from any valid record this consumer has read. It is carried forward from the previous cache when the current record has `issue=-`, and it is never cleared by a clean run. It feeds only the §15.7 fallback target. It never affects the outcome, the fingerprint or the hold.
   - It is written 0600 and atomically.
 - On a read failure, the cache is used **only if** it parses and `now - read_at ≤ 6 h` (21,600 s). The cached reading is then **re-evaluated** at `now`, so staleness keeps advancing.
 - Otherwise the result is `not_run`, `sub=read-failed`.
@@ -1618,9 +1619,10 @@ After any `undelivered`, the module re-writes the hold file with `alert.status`,
 
 **Fallback (Q-D5-5, PENDING THE HUMAN; designed for recommendation (a)).**
 
-- On `undelivered` with a numeric `issue`, the module calls `Deps.run_escalation([<repo-root>/bootstrap/escalate_to_human.sh, --number, <issue>, --body-file, <path>, --reason, dependency-audit-alert-undelivered, --app, worker], timeout=60)` **once per fingerprint**. That happens when `alert.fallback` is not already `posted`.
+- **Fallback target (architect R-B, 2026-10-20):** the record's numeric `issue` if there is one, else the cache's `last_issue` (§15.5), else none.
+- On `undelivered` with a fallback target, the module calls `Deps.run_escalation([<repo-root>/bootstrap/escalate_to_human.sh, --number, <target>, --body-file, <path>, --reason, dependency-audit-alert-undelivered, --app, worker], timeout=60)` **once per fingerprint**. That happens when `alert.fallback` is not already `posted`.
 - The body is stable for the fingerprint: it contains no `at` or `last_evaluated`. The script's own idempotency key therefore also dedups.
-- The results are rc 0 = `posted` and anything else = `failed`. A failed fallback is retried with the hourly alert retry. With no numeric issue, the fallback is `not-applicable`.
+- The results are rc 0 = `posted` and anything else = `failed`. A failed fallback is retried with the hourly alert retry. With no fallback target, the fallback is `not-applicable`, and the held line shows it: `alert=undelivered:<reason>` is followed by ` fallback=not-applicable` (the §15.8 `[HELD-DEPENDENCY]` regex already admits it). This residual is ADR §6 item 8 (H-D5-7) and must be disclosed in the Part 3 PR body.
 - **If the human answers (b)**, the coder sets the module constant `FALLBACK_ENABLED = False` (status `disabled`). **If the human answers (c)**, Part 3 does not start until #2125 lands. **Part 3 coding must not start before Q-D5-5 is answered.**
 
 **No Pushover client and no credential in this path** (AD-20).
@@ -1683,7 +1685,7 @@ Not allowed: starting any other build (code) step. Clear act: <clear_act sentenc
 
 - Else the existing `NEW WORK: ALLOWED` is printed.
 
-**Prompt (Part 3, G-2).** `bootstrap/worker-cron-prompt.md` gains one bullet after `:73`: *"`NEW WORK: DOCS/DESIGN ONLY` → a build hold is active (#1605 D-5). Step 0 triage runs. Proceed to Step 2 only for an issue whose next step is docs-only or design-only, or one the directive's `Allowed this cycle` line names. Never start a code step. If no such issue exists, STOP. Do not try to clear the hold yourself, except through an issue the directive names."* The directive is also self-describing, which covers the agent-definition parity gap (G-2) for this release.
+**Prompt (Part 3, G-2).** `bootstrap/worker-cron-prompt.md` gains one bullet after `:73`: *"`NEW WORK: DOCS/DESIGN ONLY` → a build hold is active (#1605 D-5). Step 0 triage runs. Proceed to Step 2 only for an issue whose next step is docs-only or design-only, or one the directive's `Allowed this cycle` line names. Never start a code step. If no such issue exists, STOP. Do not try to clear the hold yourself, except through an issue the directive names. Any `NEW WORK:` value other than `ALLOWED` means: do not start a code step."* (The last sentence is architect G-2 condition (ii).) The directive is also self-describing, which covers the agent-definition parity gap (G-2) for this release.
 
 **Residual (R-7, AD-19).** The hold is directive-level. Nothing in `submit_pr.sh` blocks a code PR while held. #2123 owns the backstop.
 
@@ -1696,8 +1698,8 @@ All tests are offline. No `~/.hos` access (`tmp_path` state dirs), no `gh`, no n
 | ID | Case | Asserts |
 |---|---|---|
 | TC-P1 | stub `python` prints `[3, 11, true]` | rc 1; `cause=interpreter-wrong`; the five GITHUB_OUTPUT lines are present |
-| TC-P2 | no `pip-audit` in venv-bin | rc 1; `cause=pip-audit-absent`; no stdout or stderr line matches `(?i)\b(GATE PASS\|PASS\|SKIP)\b\|^OK:` |
-| TC-P3 | (a) `pip` exits 1; (b) `pip` rc 0 with a report where `install` is non-empty; (c) `pip` absent | `venv-mismatch` ×3 |
+| TC-P2 | no `pip-audit` in venv-bin, and a stub `pip` that would report `install` non-empty (the realistic state, since pip-audit is a listed requirement) | rc 1; `cause=pip-audit-absent`; `pip` is never invoked; no stdout or stderr line matches `(?i)\b(GATE PASS\|PASS\|SKIP)\b\|^OK:` |
+| TC-P3 | (pip-audit stub present in every sub-case, since step 3 now precedes the venv-match step) (a) `pip` exits 1; (b) `pip` rc 0 with a report where `install` is non-empty; (c) `pip` absent | `venv-mismatch` ×3 |
 | TC-P4 | `--venv-build-outcome failure` | `venv-build-failed`; `pip-audit` is never invoked |
 | TC-P5 | `pip-audit` sleeps 5 s on every attempt | `timeout`; 3 invocations recorded |
 | TC-P6 | (a) rc 1 and no `-o` file (TV-15); (b) rc 0 with a garbage file; (c) unparseable, then a timeout | `unparseable` ×3 |
@@ -1772,7 +1774,7 @@ Alert (TC-A\*):
 | TC-A2 | **notifier absent (AC-39):** the hold file exists when the fake runner is checked; `alert=undelivered:absent` appears in the file and in the `[HELD-DEPENDENCY]` line; `EVENT alert-undelivered` |
 | TC-A3 | not executable; `exit-3`; `timeout`; `spawn-error` → those reasons |
 | TC-A4 | undelivered at T; a cycle at T+59 m → no call; T+60 m → exactly one call |
-| TC-A5 | fallback (Q-D5-5 = a): undelivered with issue 77 → `escalate_to_human.sh` argv exact, once per fingerprint; a second cycle makes no call; a failed fallback leaves the hold unchanged; `FALLBACK_ENABLED=False` → `disabled`, no call |
+| TC-A5 | fallback (Q-D5-5 = a): undelivered with issue 77 → `escalate_to_human.sh` argv exact, once per fingerprint; (R-B) a `not_run` record with `issue=-` and a cache `last_issue=77` → escalation on 77; no issue and no `last_issue` → `fallback=not-applicable` in the file and the held line, no call; a second cycle makes no call; a failed fallback leaves the hold unchanged; `FALLBACK_ENABLED=False` → `disabled`, no call |
 
 **`tests/automation/test_hos_cron.py` (modify; TC-K\*).** These cases use the file's existing harness. The fake consumer is a `scripts/automation/dependency_pause.py` written into the test's fake `REPO_ROOT`, which is a real module path, not an env seam. It prints a scripted stdout and exit code.
 
@@ -1939,6 +1941,8 @@ Both PRs touch protected surfaces, so both need human approval for merge regardl
 
 ### 15.13 Gaps returned to the architect
 
+> **Ruled 2026-10-20 (ADR §2b, "Architect rulings on TD §15.13").** G-1: decided, no shed exists, and a 16th file is a human waiver. G-2: deferral accepted, on two conditions: a follow-up issue linked in the Part 3 PR body, and the prompt bullet's fail-closed sentence (§15.8). G-3: both removals confirmed. G-4: a human/product question (ADR §6 item 9). §15.6 implements AC-41 as written until it is answered. G-5: aligned, no change. The review also produced two findings, both edited into this TD. R-A: the presence check now runs ahead of the venv-match step (§15.2). R-B: the fallback falls back to `last_issue` (§15.5, §15.7), with the residual in ADR §6 item 8.
+
 - **G-1 (ADR AD-23 shed step 1 cannot apply).** `SCRIPTS-INDEX.md` is pinned by `tests/framework/test_scripts_index.py`. Both Part 3 automation modules are under `scripts/**`, so it must be regenerated in Part 3 and cannot become a follow-up. Part 3 is therefore at exactly 15 with **no** shed headroom. Request: amend AD-23's shed order to name the real first shed, if any, or record that the next file over is a human waiver question. §15.11 already states the latter.
 - **G-2 (the directive's readers).** AD-23's Part 3 list omits `bootstrap/worker-cron-prompt.md`, which enumerates the directive values (`:73–76`). Without it, a third value is undefined behaviour for the agent. It is added as file 9. `.claude/agents/worker.md` (`:321–346`) also enumerates them. It is an agent definition, and CLAUDE.md says those edits are authored by the top-level session, not `coder`. Adding it would also make 16 files. The design makes the directive self-describing (§15.8) and defers `worker.md` parity to a follow-up. Request: the architect confirms the deferral, or rules that `worker.md` must ship with Part 3. The second option is a human waiver (16 files).
 - **G-3 (protected-surface mirror).** AD-18 adds an exact-path protected surface. The #1776 precedent (`test_t3`) shows `docs/AGENT-IDENTITY.md` §9 mirrors exact-path entries, so it is added as file 12. `DECISIONS.md` (prospective in Part 2) and `CRON-SETUP.md` (folded into the runbook) leave Part 3 to keep the count at 15. Request: confirm both removals.
@@ -1994,3 +1998,5 @@ Nothing here required a human before `coder` built the original ten commits. Ite
 17. **Day one holds by design (R-10).** After Part 3 merges, the worker holds with `stale` until someone dispatches the workflow on main. Dispatch it immediately.
 18. **Cross-issue requirements, to be disclosed in the Part 3 PR body.** #2125: add the two causes and accept `--url`. #2123: B4 fingerprinting and adopting the shared hold directory. Neither is implemented here.
 19. **`.claude/agents/worker.md` parity is deferred (G-2).** Only the cron prompt learns the third directive value in Part 3. The directive describes itself. A follow-up, authored by the top-level session, brings `worker.md` in line.
+20. **H-D5-7 (ADR §6 item 8): until #2125 lands, a hold with no tracking issue ever seen pushes no alert, and a fallback on a closed tracking issue may not surface.** Accept and disclose (recommended), or choose Q-D5-5 (c), or authorise an anchor issue.
+21. **G-4 (ADR §6 item 9): does a second new advisory while held need a pushed alert?** Recommendation: re-alert when `kept` increases under the same fingerprint.
