@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
 from tests import conftest as guard
 from tests.framework.test_hos_human_launcher import _Launcher
+from tests.tmp_hygiene import child_env
 
 
 def test_the_session_override_is_set_and_is_not_the_real_path():
@@ -87,3 +90,23 @@ def test_a_symlink_is_fingerprinted_without_being_followed(tmp_path):
     link.symlink_to(target)
     fp = guard.registry_fingerprint(str(link))
     assert isinstance(fp, dict) and fp["present"] and fp["sha256"] is None
+
+
+def test_a_from_scratch_env_through_child_env_sees_the_session_override():
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import os,sys;sys.path.insert(0,sys.argv[1]);import hos_tmp_root;"
+            "print(hos_tmp_root.registry_path())",
+            str(guard.ROOT / "bootstrap" / "lib"),
+        ],
+        env=child_env({"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == os.environ[guard.REGISTRY_ENV]
+    assert r.stdout.strip() != guard.real_registry_path()

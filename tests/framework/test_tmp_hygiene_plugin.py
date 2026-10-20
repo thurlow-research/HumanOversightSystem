@@ -371,11 +371,13 @@ def test_T6_tmpdir_is_restored_before_later_session_finish_hooks(tmp_path):
 
 def test_T11_child_env_adds_tmpdir_when_absent(monkeypatch, tmp_path):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.delenv("HOS_TMP_REGISTRY_FILE", raising=False)
     assert tmp_hygiene.child_env({"PATH": "/bin"}) == {"PATH": "/bin", "TMPDIR": str(tmp_path)}
 
 
 def test_T11_child_env_never_overrides_a_callers_tmpdir(monkeypatch, tmp_path):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.delenv("HOS_TMP_REGISTRY_FILE", raising=False)
     assert tmp_hygiene.child_env({"TMPDIR": "/somewhere/else"}) == {"TMPDIR": "/somewhere/else"}
 
 
@@ -389,7 +391,28 @@ def test_T11_child_env_copies_and_passes_none_through(monkeypatch, tmp_path):
 
 def test_T11_child_env_leaves_env_alone_without_a_session_tmpdir(monkeypatch):
     monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("HOS_TMP_REGISTRY_FILE", raising=False)
     assert tmp_hygiene.child_env({"A": "1"}) == {"A": "1"}
+
+
+def test_T11_child_env_adds_the_registry_override_when_absent(monkeypatch):
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.setenv("HOS_TMP_REGISTRY_FILE", "/session/reg.json")
+    assert tmp_hygiene.child_env({"A": "1"}) == {
+        "A": "1",
+        "HOS_TMP_REGISTRY_FILE": "/session/reg.json",
+    }
+
+
+def test_T11_child_env_never_overrides_a_callers_registry_override(monkeypatch):
+    monkeypatch.setenv("HOS_TMP_REGISTRY_FILE", "/session/reg.json")
+    out = tmp_hygiene.child_env({"HOS_TMP_REGISTRY_FILE": "/caller/reg.json"})
+    assert out["HOS_TMP_REGISTRY_FILE"] == "/caller/reg.json"
+
+
+def test_T11_child_env_passes_none_through_with_a_registry_override(monkeypatch):
+    monkeypatch.setenv("HOS_TMP_REGISTRY_FILE", "/session/reg.json")
+    assert tmp_hygiene.child_env(None) is None
 
 
 # --- helpers shipped for tests ----------------------------------------------------------------
