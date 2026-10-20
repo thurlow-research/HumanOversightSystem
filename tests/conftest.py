@@ -6,11 +6,16 @@ Also add the project root so `from scripts.automation.lib.X import ...`
 works for the automation subsystem (scripts/ is a namespace package).
 """
 
+import hashlib
 import importlib.util
 import os
+import stat
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 ROOT = Path(__file__).parent.parent
 
@@ -56,6 +61,129 @@ for p in (str(VALIDATORS_DIR), str(OVERSIGHT_DIR)):
 # Allow `from scripts.automation.lib.X import ...`
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+# #2100 AD-10: tests never write the real tmp-root trust registry. The override is
+# set for the whole session (before any test or fixture runs) and a guard proves the
+# real file is untouched. Production registry_path() stays free of test-awareness.
+REGISTRY_ENV = "HOS_TMP_REGISTRY_FILE"
+NOT_OBSERVABLE = "not observable"
+_REGISTRY_READ_CAP = 4 << 20
+
+
+def real_registry_path() -> str:
+    """The registry path a launcher would use with no override, from the module's own helper."""
+    mod = load_module_from_path(
+        "hos_tmp_root_registry_guard", ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
+    )
+    saved = os.environ.pop(REGISTRY_ENV, None)
+    try:
+        return mod.registry_path()
+    finally:
+        if saved is not None:
+            os.environ[REGISTRY_ENV] = saved
+
+
+def registry_fingerprint(path: str) -> dict | str:
+    """lstat presence, inode, mtime, size and sha256 of ``path``; NOT_OBSERVABLE if unreadable.
+
+    Read-only: it never creates the file or its directory. An absent file is a
+    legitimate observable state (a later appearance is a change); any other failure to
+    look is not observable.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return {"present": False}
+    except OSError:
+        return NOT_OBSERVABLE
+    fp: dict = {
+        "present": True,
+        "ino": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+        "size": info.st_size,
+        "sha256": None,
+    }
+    if stat.S_ISREG(info.st_mode):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            return NOT_OBSERVABLE
+        try:
+            fp["sha256"] = hashlib.sha256(os.read(fd, _REGISTRY_READ_CAP)).hexdigest()
+        except OSError:
+            return NOT_OBSERVABLE
+        finally:
+            os.close(fd)
+    return fp
+
+
+def registry_changes(before: dict | str, after: dict | str) -> str | None:
+    """A description of the change between two fingerprints, or None if the guard passes."""
+    if before == NOT_OBSERVABLE or after == NOT_OBSERVABLE:
+        return None
+    if before == after:
+        return None
+    return f"before={before} after={after}"
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class _RegistryIsolation:
+    """Session-end half of the AD-10 guard. Registered by pytest_configure below, because
+    the hygiene hooks imported above already occupy the pytest_sessionfinish and
+    pytest_unconfigure names in this module."""
+
+    def __init__(self, real_path: str, before: dict | str, saved_env: str | None):
+        self.real_path = real_path
+        self.before = before
+        self.saved_env = saved_env
+        self.started = _utcnow()
+        self.failure: str | None = None
+        self.restored = False
+
+    def restore_env(self) -> None:
+        if self.restored:
+            return
+        self.restored = True
+        if self.saved_env is None:
+            os.environ.pop(REGISTRY_ENV, None)
+        else:
+            os.environ[REGISTRY_ENV] = self.saved_env
+
+    def pytest_sessionfinish(self, session):
+        change = registry_changes(self.before, registry_fingerprint(self.real_path))
+        if change:
+            self.failure = (
+                f"REGISTRY_ISOLATION FAIL the real tmp-root registry {self.real_path} changed "
+                f"during the test run {self.started} .. {_utcnow()}: {change}"
+            )
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+    def pytest_terminal_summary(self, terminalreporter):
+        if self.failure:
+            terminalreporter.section("registry-isolation (#2100)")
+            terminalreporter.write_line(self.failure)
+
+    def pytest_unconfigure(self, config):
+        self.restore_env()
+
+
+@pytest.hookimpl(trylast=True)  # after pytest's tmpdir plugin has created its factory
+def pytest_configure(config):
+    real = real_registry_path()
+    saved = os.environ.get(REGISTRY_ENV)
+    # A caller-set override is kept only when it is not the real path (a fixture-style
+    # value such as a test rig's own file); otherwise the session-owned path under the
+    # run's basetemp (deleted with the run's pytest-N dir) replaces it.
+    if not saved or os.path.realpath(saved) == os.path.realpath(real):
+        basetemp = config._tmp_path_factory.getbasetemp()
+        os.environ[REGISTRY_ENV] = str(basetemp / "hos-registry" / "tmp-roots.json")
+    config.pluginmanager.register(
+        _RegistryIsolation(real, registry_fingerprint(real), saved), "hos-registry-isolation"
+    )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
