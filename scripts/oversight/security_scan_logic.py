@@ -3,9 +3,9 @@
 
 `security_scan.sh` runs pip-audit against the oversight venv and blocks on any
 reported advisory. That made the gate permanently red: advisories sit in
-tools HOS uses but cannot yet upgrade (black x2, and mcp via semgrep's pin), and a gate
-that is always red stops carrying information (DECISIONS.md:787 recorded it as accepted debt; #1776 is
-the ruling that ends it).
+tools HOS uses but cannot yet upgrade (black x2, and mcp via semgrep's pin),
+and a gate that is always red stops carrying information (DECISIONS.md:787
+recorded it as accepted debt; #1776 is the ruling that ends it).
 
 THE RULINGS
 -----------
