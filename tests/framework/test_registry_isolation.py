@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from tests import conftest as guard
+from tests import registry_guard as guard
 from tests.framework.test_hos_human_launcher import _Launcher
 from tests.tmp_hygiene import child_env
 
@@ -25,9 +25,7 @@ def test_the_session_override_is_set_and_is_not_the_real_path():
 
 def test_the_real_path_is_computed_without_the_override(monkeypatch, tmp_path):
     monkeypatch.setenv(guard.REGISTRY_ENV, str(tmp_path / "x.json"))
-    relpath = guard.load_module_from_path(
-        "hos_tmp_root_relpath", guard.ROOT / "bootstrap" / "lib" / "hos_tmp_root.py"
-    ).REGISTRY_RELPATH
+    relpath = guard.load_resolver().REGISTRY_RELPATH
     assert guard.real_registry_path().endswith("/" + relpath)
     assert os.environ[guard.REGISTRY_ENV] == str(tmp_path / "x.json")
 
