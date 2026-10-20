@@ -1204,3 +1204,12 @@ or bandit/pip-audit not being installed is still non-blocking but is named in th
 `scripts/oversight/` per file and rules `prompt_audit_logic.py` and `retry_rescue_logic.py`
 unprotected). ADR-1935 §3.5/§4 is amended with the new module. This is a small, deliberate
 increase in human-approval load ahead of ADR-1935's ESC-1.
+
+**Amendment 2026-10-20 (mcp).** The roster is now three records (black x2, mcp x1). Human
+ruling (Option M, #1776): mcp 1.29.0 CVE-2026-59951 is exempted on the same 2027-01-31 timebox,
+tracked in #2120. Rationale: the flaw is a Streamable HTTP MCP *server* leaking session state;
+HOS never serves MCP, and mcp reaches the venv only as a hard pin of semgrep (`mcp==1.29.0`, also
+in the latest 1.181.0), so no fixed combination is installable. The ruling's wording "HOS does not
+import mcp" was checked and corrected: semgrep's CLI imports mcp modules on every invocation, so
+the record states the accurate premise (HOS never imports mcp directly and never starts an MCP
+server) and tests PR4/PR5 enforce it. Design doc section 17.

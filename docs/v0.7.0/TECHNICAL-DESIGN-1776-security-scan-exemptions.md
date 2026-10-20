@@ -903,3 +903,39 @@ Round 2 reset `_PIP_AUDIT_UNPARSEABLE` at the start of every attempt, so "attemp
 
 - **agy spec-adherence.** `run_filter` relied on the caller to pass an empty roster when the mode is inactive. It now computes `effective_rules = rules if mode.active else ()` and uses that for validation, partition and render, so H2 holds regardless of caller. Test M6 passes the shipped roster with an INACTIVE mode: the advisory is kept, status 1, output shows `Exemption roster: INACTIVE`.
 - **codex CWE-693.** The PYSEC-2026-2121 exemption rests on HOS never setting black's `python-cell-magics`; PYSEC-2026-2120 rests on no workflow using the Black GitHub Action. Nothing enforced either premise. New tests: PR1 (`pyproject.toml [tool.black]` has neither `python-cell-magics` nor `python_cell_magics`; pyproject.toml is the only config black reads from the repo root), PR2 (no black invocation in `lint_check.sh` passes `--python-cell-magics`), PR3 (no `.github/workflows` file references `psf/black`). Failure messages say the premise no longer holds and direct removal of the exemption (upgrade black, #1961) rather than editing the test. Both records' `reason` strings gain one sentence naming the enforcing tests (reasons are not pinned by R-tests beyond the minimum length).
+
+## 17. Amendment 2026-10-20 — mcp CVE-2026-59951 (human ruling, Option M)
+
+Human ruling (ScottThurlow, #1776, 2026-10-20): exempt mcp 1.29.0 CVE-2026-59951 in this PR
+on the black timebox (expiry 2027-01-31), tracking issue #2120. Earlier sections are unchanged.
+
+**Record.** `mcp` / `CVE-2026-59951` (alias GHSA-84m7-p3x7-pcfv) / `fixed_in="1.30.0"` /
+expires 2027-01-31 / #2120. The advisory's fix versions are 1.30.0 and 2.2.0; `fixed_in` is the
+lowest, and matching is unchanged: an installed version `>= fixed_in` is kept as `PREMISE BROKEN`,
+so an upgrade clears the record without any other edit. The 2.x fix is irrelevant while semgrep
+pins the 1.x line.
+
+**Vulnerability.** A Streamable HTTP MCP *server* in stateful mode (the FastMCP 1.x default,
+`StreamableHTTPSessionManager`) never reclaims session state, so any client that can reach the
+endpoint grows server memory without bound. stdio/SSE transports and `stateless_http=True` are
+not affected. It is reachable only by serving MCP over Streamable HTTP.
+
+**Why no fix is installable.** mcp 1.29.0 in `scripts/oversight/.venv` is `Required-by: semgrep`
+only; `requirements.txt` does not pin it. semgrep 1.181.0 (the latest) hard-pins `mcp==1.29.0`,
+so no version floor can clear it.
+
+**Wording correction to the ruling.** The ruling's draft reason said HOS "does not import or run
+mcp". Verified: HOS code never imports mcp and never starts an MCP server, but semgrep's own CLI
+(`semgrep/cli.py`: `from semgrep.commands.mcp import semgrep_mcp`) imports mcp modules
+(`mcp.types`, `mcp.client`, `mcp.shared.session`, `mcp.server.fastmcp`, ...) on every semgrep
+invocation, confirmed with `PYTHONPROFILEIMPORTTIME` on HOS's own
+`semgrep --config <ruleset> --json --quiet <file>` call (`static_analysis.py`,
+`static_analysis_js.py`). "HOS does not import mcp" is therefore false transitively. The record's
+reason states the accurate premise: HOS never imports mcp directly and never starts an MCP server;
+mcp loads only as an import side effect of semgrep's CLI, which does not start a Streamable HTTP
+server.
+
+**Premise tests.** PR4: no tracked file under `scripts/`, `bootstrap/`, `bin/`,
+`.github/workflows/` runs the `semgrep mcp` subcommand. PR5: no tracked `.py` file has an `import
+mcp` / `from mcp` statement (parsed with `ast`). S2c covers suppression at 1.29.0 and `PREMISE
+BROKEN` at 1.30.0; R1 pins the three-record roster.

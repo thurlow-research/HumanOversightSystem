@@ -1,8 +1,8 @@
 """security_scan: time-boxed, visible advisory exemptions that fail closed (#1776).
 
 `security_scan.sh` blocks on any pip-audit advisory, which made it permanently
-red on advisories in tools HOS cannot yet upgrade (black x2; PyJWT is handled by
-the requirements.txt floor alone, with no exemption).
+red on advisories in tools HOS cannot yet upgrade (black x2, and mcp via semgrep's
+pin; PyJWT is handled by the requirements.txt floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
@@ -23,10 +23,12 @@ them; that is the forcing function, #1776 H3).
 
 from __future__ import annotations
 
+import ast
 import datetime
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -85,6 +87,7 @@ def _run(
 _BLACK_2120 = _vuln("PYSEC-2026-2120", ("26.3.0",))
 _BLACK_2121 = _vuln("PYSEC-2026-2121", ("26.3.1",))
 _PYJWT_4146 = _vuln("PYSEC-2026-4146")
+_MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 
 # Test-only no-fix record. It is NEVER in SUPPRESSIONS: it exists so the no-fix
 # key (TD-D2b), which no shipped record uses, stays covered.
@@ -101,13 +104,14 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_two_ruled_records():
+def test_r1_roster_is_exactly_the_three_ruled_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
     assert got == [
         ("black", "PYSEC-2026-2120", "26.3.0", _EXPIRES, 1961),
         ("black", "PYSEC-2026-2121", "26.3.1", _EXPIRES, 1961),
+        ("mcp", "CVE-2026-59951", "1.30.0", _EXPIRES, 2120),
     ]
 
 
@@ -137,6 +141,16 @@ def test_s2_each_record_suppresses_at_its_bounded_version():
     out, _, status = _run(_audit(_dep("black", "24.10.0", _BLACK_2120, _BLACK_2121)))
     assert status == 0, out
     assert "2 advisory(ies) suppressed by a time-boxed exemption" in out
+
+
+def test_s2c_mcp_59951_is_suppressed_at_1_29_0_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("mcp", "1.29.0", _MCP_59951)))
+    assert status == 0, out
+    assert "mcp 1.29.0 [CVE-2026-59951]" in out
+    assert "exempt until 2027-01-31 (#2120)" in out
+    out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_59951)))
+    assert status == 1
+    assert "PREMISE BROKEN" in out
 
 
 def test_s2b_no_fix_record_suppresses_while_fix_versions_is_empty():
@@ -568,6 +582,56 @@ def test_pr3_no_workflow_references_the_black_github_action():
         if p.is_file() and "psf/black" in p.read_text()
     ]
     assert not bad, f"{bad} reference psf/black: {_PREMISE_2120}"
+
+
+_PREMISE_59951 = (
+    "the CVE-2026-59951 exemption's premise no longer holds (HOS must never serve "
+    "MCP) — remove the exemption (upgrade mcp once semgrep unpins it, #2120) "
+    "rather than editing this test"
+)
+_SERVE_MCP = re.compile(r"""\bsemgrep["']?\s*,?\s*["']?mcp\b""")
+
+
+def _tracked_files(*paths: str) -> list[Path]:
+    res = subprocess.run(
+        ["git", "ls-files", "-z", "--", *paths],
+        cwd=str(_REPO),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [_REPO / p for p in res.stdout.split("\0") if p and (_REPO / p).is_file()]
+
+
+def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
+    bad = []
+    for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        if _SERVE_MCP.search(text):
+            bad.append(str(path.relative_to(_REPO)))
+    assert not bad, f"{bad} run `semgrep mcp`: {_PREMISE_59951}"
+
+
+def test_pr5_no_tracked_python_file_imports_mcp():
+    bad = []
+    for path in _tracked_files("*.py"):
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            if any(n == "mcp" or n.startswith("mcp.") for n in names):
+                bad.append(str(path.relative_to(_REPO)))
+                break
+    assert not bad, f"{bad} import mcp: {_PREMISE_59951}"
 
 
 # ── Gate (shell path, via the HOS_PIP_AUDIT_BIN stub seam) ──────────────────

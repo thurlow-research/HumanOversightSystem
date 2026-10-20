@@ -2,8 +2,8 @@
 """security_scan_logic.py — advisory-level exemptions for the pip-audit gate (#1776).
 
 `security_scan.sh` runs pip-audit against the oversight venv and blocks on any
-reported advisory. That made the gate permanently red: two advisories sit in
-tools HOS uses but cannot yet upgrade, and a gate that is always red stops
+reported advisory. That made the gate permanently red: advisories sit in
+tools HOS uses but cannot yet upgrade (black x2, and mcp via semgrep's pin), and a gate that is always red stops
 carrying information (DECISIONS.md:787 recorded it as accepted debt; #1776 is
 the ruling that ends it).
 
@@ -17,6 +17,10 @@ THE RULINGS
     (`pyjwt>=2.15.0`) alone. The floor clears all 13 of its advisories:
     PYSEC-2026-4146 affects 2.11.0-2.13.0 only (OSV last_affected 2.13.0), so no
     PyJWT exemption is shipped (architect ruling, design doc section 15 B1).
+  * 2026-10-20 (#1776, Option M): mcp 1.29.0 CVE-2026-59951 is exempted on the
+    same 2027-01-31 timebox as black. mcp is reachable only as a dependency of
+    semgrep, which hard-pins mcp==1.29.0 (so no fixed combination is
+    installable); the upgrade is tracked in #2120.
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -214,6 +218,31 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "target-version. The fix (26.3.1) is blocked by the #103 pin; tracked in "
             "#1961. The never-set premise is enforced by tests PR1 and PR2. "
             "Human ruling #1776, 2026-10-03."
+        ),
+    ),
+    Exemption(
+        package="mcp",
+        advisory_id="CVE-2026-59951",
+        fixed_in="1.30.0",
+        expires=datetime.date(2027, 1, 31),
+        tracking_issue=2120,
+        # What: a Streamable HTTP MCP *server* in stateful mode (FastMCP 1.x default,
+        # StreamableHTTPSessionManager) never reclaims session state, so any client
+        # that can reach the endpoint grows server memory without bound. stdio/SSE
+        # transports and stateless_http=True are not affected. Fixed in 1.30.0 / 2.2.0;
+        # the 2.x fix is irrelevant here because semgrep pins the 1.x line.
+        reason=(
+            "A Streamable HTTP MCP server in stateful mode never reclaims session "
+            "state, so a client that can reach the endpoint grows server memory "
+            "without bound; only serving MCP over Streamable HTTP is affected. HOS "
+            "never imports mcp directly and never starts an MCP server (never launches "
+            "semgrep's MCP subcommand, never uses FastMCP, mcp.server or streamable_http_app); "
+            "mcp is loaded only as an import side effect of semgrep's CLI "
+            "(static_analysis.py, static_analysis_js.py), which does not start a "
+            "Streamable HTTP server. semgrep pins mcp==1.29.0 (1.181.0 is the latest), "
+            "so no fixed combination is installable; upgrade mcp once semgrep unpins "
+            "it, tracked in #2120. The no-server premise is enforced by tests PR4 "
+            "and PR5. Human ruling #1776, 2026-10-20."
         ),
     ),
 )
