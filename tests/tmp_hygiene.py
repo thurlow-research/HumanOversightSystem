@@ -93,13 +93,17 @@ def child_env(env: Mapping[str, str] | None) -> dict[str, str] | None:
     write to the real /tmp, outside the guardrail's view. A TMPDIR the caller set
     on purpose is never overridden. ``None`` (the child inherits ``os.environ``,
     TMPDIR included) is returned unchanged.
+
+    It also carries the session's HOS_TMP_REGISTRY_FILE under the same rule, so a
+    from-scratch env cannot reach the real trust registry (#2100 AD-10).
     """
     if env is None:
         return None
     out = dict(env)
-    tmpdir = os.environ.get("TMPDIR")
-    if tmpdir and "TMPDIR" not in out:
-        out["TMPDIR"] = tmpdir
+    for name in ("TMPDIR", "HOS_TMP_REGISTRY_FILE"):
+        value = os.environ.get(name)
+        if value and name not in out:
+            out[name] = value
     return out
 
 

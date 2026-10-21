@@ -12,10 +12,18 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 
 # #2054 in-run temp hygiene. Importing the hooks and fixture here registers them
 # for every run of this suite; all logic lives in tests/tmp_hygiene.py.
+from tests.registry_guard import (  # noqa: E402
+    REGISTRY_ENV,
+    _RegistryIsolation,
+    real_registry_path,
+    registry_fingerprint,
+)
 from tests.tmp_hygiene import (  # noqa: E402,F401
     _hos_tmp_hygiene,
     emit_report,
@@ -56,6 +64,24 @@ for p in (str(VALIDATORS_DIR), str(OVERSIGHT_DIR)):
 # Allow `from scripts.automation.lib.X import ...`
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.hookimpl(trylast=True)  # after pytest's tmpdir plugin has created its factory
+def pytest_configure(config):
+    real = real_registry_path()
+    saved = os.environ.get(REGISTRY_ENV)
+    # A caller-set override is kept only when it is not the real path (a fixture-style
+    # value such as a test rig's own file); otherwise the session-owned path under the
+    # run's basetemp (pytest keeps the last few basetemps; tmp_reaper reclaims older
+    # ones) replaces it.
+    if not saved or os.path.realpath(saved) == os.path.realpath(real):
+        # Private pytest API: there is no public configure-time alternative, and a pytest
+        # that drops it fails loudly here with AttributeError.
+        basetemp = config._tmp_path_factory.getbasetemp()
+        os.environ[REGISTRY_ENV] = str(basetemp / "hos-registry" / "tmp-roots.json")
+    config.pluginmanager.register(
+        _RegistryIsolation(real, registry_fingerprint(real), saved), "hos-registry-isolation"
+    )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
