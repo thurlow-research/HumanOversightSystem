@@ -34,6 +34,11 @@ it against the tree and the live filesystem (§0). One claim is wrong: "only Wor
 > behaviour for cron roles. Amended: §1, REQ-2, REQ-3, REQ-4, REQ-6, REQ-7, REQ-8, §3, §4, §5, §6.
 > Added: REQ-10 (cron fail-closed), REQ-11 (install verify, including the v0.6.0 upgrade path),
 > REQ-12 (release gate on #2137). Slice names S2, S4a and S4b below refer to ADR-2100 §slicing.
+>
+> *Reconciled 2026-10-21 with the amended ADR-2100 (AF-10, AF-11, AD-2, AD-9, AD-12):* REQ-11's
+> upgrade write is in `bootstrap/hos_install.sh` via #2059's writer; REQ-7's S4b record is the
+> journal banner only; REQ-10's `bot` is `bot_source=config`; REQ-6 auto-closes after one clean
+> cycle.
 **Protected surfaces:** `bootstrap/**` (`hos_tmp_root.py`, `tmp_reaper.py`) and `bin/**`
 (`hos-cron`, `hos-human`) are protected (`scripts/framework/protected_surfaces.txt`). The human gate
 applies whatever tier is computed.
@@ -231,21 +236,24 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   - that it must be run **unsandboxed, in the human's own terminal**.
 
   It is not re-filed while open. It auto-closes with a comment after K consecutive cycles in which
-  the dir resolves. *Ownership (ESC-3, ruled 2026-10-20: (i) #1928 owns):* delivered by #1928
+  the dir resolves. With K = 1 for this key, that means the item auto-closes after **one** clean
+  cycle (ADR-2100 AD-9; reconciled 2026-10-21). *Ownership (ESC-3, ruled 2026-10-20: (i) #1928 owns):* delivered by #1928
   REQ-I1/I2 under its `tmp-root-fallback` key. #2100's acceptance depends on it and adds the content
   requirements above. Until #1928 S6 lands, the ADR-2100 S2 slice files the marker-keyed issue
   itself, with the same dedup, auto-close and fail-closed duplicate-query behaviour as the timeout
   breaker (`bin/hos-cron:2179-2200`, `:2283-2322`). *AC:* a deterministic test runs one refusal
   (exactly one item), further refusals (no duplicate item, no duplicate alert), a missing helper
-  (treated as a refusal; no duplicate if the item is already open) and K successes (closed).
+  (treated as a refusal; no duplicate if the item is already open) and one clean cycle (closed).
 
 - **REQ-7 (Human launcher parity).** `bin/hos-human` must record its refusal in the same audit event
   as `bin/hos-cron` (role `human`), and print the remedy, not just the reason. It is an interactive
   launcher, so REQ-6 escalation from it is *not* required (ESC-3 (ii), ruled 2026-10-20: concur).
   Cron cycles are the counting source. *(Amended 2026-10-20.)* `hos-human` and the S4b wrapper stay
   **fail-open**: on refusal they print a visible banner (role dir, blocking entries, exact remedy),
-  then continue with the inherited `TMPDIR`. The audit write here is best-effort (`|| true`); it
-  never blocks the session. *AC:* a test checks that a refusing `hos-human` writes one
+  then continue with the inherited `TMPDIR`. For `hos-human` the audit write is best-effort
+  (`|| true`) and never blocks the session. The S4b wrapper writes **no** clone audit event: it must
+  not run clone code (ADR-2100 AF-11), so its only record is the banner in the journal (stderr)
+  (reconciled 2026-10-21). *AC:* a test checks that a refusing `hos-human` writes one
   `cycle-tmp-root-fallback`-shaped event with `role=human`, prints the banner, and still launches
   the session; a second test checks that the session still launches when the audit write fails.
 
@@ -265,7 +273,9 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
 - **REQ-10 (cron refusal is fail-closed; added 2026-10-20).** For every `hos-cron` role, a resolver
   refusal, or a missing or unrunnable resolver helper, stops the cycle:
   - the cycle writes a `cycle-tmp-root-refused` audit event with full identity (bot, project,
-    cycle_id, role, clone path, role-dir path, blocking entries);
+    cycle_id, role, clone path, role-dir path, blocking entries). The refusal is detected before
+    auth, so `bot` is the role's configured login, not a verified one, and the event marks it
+    `bot_source=config` (ADR-2100 AD-2; reconciled 2026-10-21);
   - it then exits non-zero **before any build or review work** (no issue selection, no branch, no
     agent dispatch, no PR action);
   - it never exports or inherits a `/tmp` fallback `TMPDIR`;
@@ -283,8 +293,11 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   installer (S4a) pre-registers the role dirs, it must check that the resolver accepts each of the
   four role dirs (Worker, Overseer, Human, Local). If any is refused, the install exits non-zero and
   prints the blocking entries and the exact `mark --reviewed` / `mv` remedy. This holds on the
-  **v0.6.0 upgrade path** too: when an existing `config.sh` lacks `HOS_TMP_ROOT`, `install.sh` writes
-  it before registering and verifying (coordinate with #2059, which writes the same file). *AC:* an
+  **v0.6.0 upgrade path** too: when an existing `config.sh` lacks `HOS_TMP_ROOT`, the install writes
+  it before registering and verifying. The write is made by `bootstrap/hos_install.sh` (its
+  non-interactive key-append step) through #2059's shared `config.sh` writer, not by
+  `scripts/framework/install.sh`, which does not run on a non-interactive upgrade (ADR-2100 AF-10,
+  AD-12; reconciled 2026-10-21). *AC:* an
   install test with a clean target passes and leaves all four dirs registered; one with a
   non-allowlisted entry in a role dir fails non-zero with the blockers and remedy printed; a v0.6.0
   upgrade test, starting from a `config.sh` without `HOS_TMP_ROOT`, ends with `HOS_TMP_ROOT` written
