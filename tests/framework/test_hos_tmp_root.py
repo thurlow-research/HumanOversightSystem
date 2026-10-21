@@ -769,16 +769,17 @@ def test_the_letter_case_refusal_happens_before_any_side_effect(tmp_path, monkey
     (root / "worker").mkdir(parents=True, mode=0o755)  # present as "worker", wanted "Worker"
     os.chmod(root / "worker", 0o755)
     real_lexists = os.path.lexists
+
+    def fold_case(p):
+        # Rewrite only the final component: tmp_path may itself contain "/Worker" (the
+        # Worker's disk TMPDIR is .../.tmp/Worker), so a whole-path replace corrupts it.
+        path = Path(p)
+        if path.name == "Worker" and str(path).endswith("/.tmp/Worker"):
+            return real_lexists(path.parent / "worker")
+        return real_lexists(p)
+
     # simulate a case-insensitive filesystem: "Worker" is found although only "worker" exists
-    monkeypatch.setattr(
-        os.path,
-        "lexists",
-        lambda p: (
-            real_lexists(str(p).replace("/Worker", "/worker"))
-            if str(p).endswith("/.tmp/Worker")
-            else real_lexists(p)
-        ),
-    )
+    monkeypatch.setattr(os.path, "lexists", fold_case)
     with pytest.raises(mod.TmpRootError, match="different letter case"):
         mod.resolve_role_dir(clone, "worker", create=True)
     assert stat.S_IMODE((root / "worker").stat().st_mode) == 0o755, "no chmod"

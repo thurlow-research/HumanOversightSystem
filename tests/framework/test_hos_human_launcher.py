@@ -58,6 +58,7 @@ class _Launcher:
     def __init__(self, tmp_path: Path):
         self.home = tmp_path / "home"
         self.home.mkdir()
+        self.registry = tmp_path / "registry-state" / "tmp-roots.json"
         self.parent = tmp_path / "hos"
         self.repo = self.parent / "Human"
         self.claude_env = tmp_path / "claude_env.txt"
@@ -95,6 +96,8 @@ class _Launcher:
     def run(self) -> subprocess.CompletedProcess:
         env = {
             "HOME": str(self.home),
+            # A fake HOME does not isolate: the registry path comes from the passwd home.
+            "HOS_TMP_REGISTRY_FILE": str(self.registry),
             "PATH": f"{self.fakebin}:/usr/bin:/bin",
             # hos-human's mktemp (the token file) lands here, before TMPDIR moves.
             "TMPDIR": str(self.token_dir),
