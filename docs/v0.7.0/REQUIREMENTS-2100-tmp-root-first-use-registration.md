@@ -237,12 +237,17 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   exactly one open `needs-human` item exists for that (clone, role), and the alert is also routed to
   #2125 as the ruling directs. A missing or unrunnable resolver helper counts as a refusal (REQ-10).
   Repeated refusals while the item is open produce no duplicate alert. The item states:
-  - the role and the absolute clone path;
-  - the absolute role-dir path;
+  - the role and the clone path;
+  - the role-dir path.
+
+    Both paths are rendered with a leading `$HOME` as `~`, and are absolute only when outside
+    `$HOME` (ADR-2100 AD-2, AD-11; REQ-10; reconciled 2026-10-21). No host is included;
   - the blocking entries;
   - the exact remedy, verbatim: the `mv <entry> <dest>` alternative and the
-    `python3 <abs>/bootstrap/lib/hos_tmp_root.py mark --repo <clone> --role <role> --reviewed`
-    command;
+    `python3 <clone>/bootstrap/lib/hos_tmp_root.py mark --repo <clone> --role <role> --reviewed`
+    command. In every outbound sink each path in it is rendered with a leading `$HOME` as `~`,
+    with the `~` outside quotes so that the human's shell expands it. A path is absolute only when
+    it is outside `$HOME` (ADR-2100 AD-11; reconciled 2026-10-21);
   - that it must be run **unsandboxed, in the human's own terminal**.
 
   It is not re-filed while open. It auto-closes with a comment after K consecutive cycles in which
@@ -255,8 +260,10 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
     The local alerted-state file is only a rate-limit cache with a **12 h TTL**. A state file that
     is older than the TTL, or untrusted, is treated as absent, so it can never suppress an alert
     for longer than 12 h.
-  - **Notifier payload (#2125).** It is a fixed-template pointer only: cause, role, project and
-    issue number (`none` if filing failed). It carries no path, no blocker name and no host.
+  - **Notifier payload (#2125).** It is a fixed-template pointer. It holds four fields: cause, role,
+    project and issue (`none` if filing failed). Only when `issue=none` does it add the fixed
+    constant text "GitHub item could not be filed; see the cron log for this role". It carries no
+    path, no blocker name and no host.
   - **Failed notify.** A failed, timed-out or absent notifier writes `alert-undelivered`.
     Delivery on this channel is at-most-once per TTL window. The GitHub item is the at-least-once
     channel.
@@ -326,7 +333,9 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   written per refusing cycle; (g) hostile blocker names (forged marker, `@mention`, `#<n>`,
   newline, 10 kB) are neutralised and capped in every outbound sink; (h) a forged or stale (over
   12 h) state file cannot suppress filing when GitHub has no open marker item; (i) the notifier
-  payload holds only cause, role, project and issue number.
+  payload holds only the four fields (cause, role, project, issue). Only when `issue=none` does it
+  also carry the fixed constant text "GitHub item could not be filed; see the cron log for this
+  role". It carries no paths, no names and no host.
 
 - **REQ-11 (install verifies registration and fails on refusal; added 2026-10-20).** After the
   installer (S4a) pre-registers the role dirs, it must check that the resolver accepts each of the

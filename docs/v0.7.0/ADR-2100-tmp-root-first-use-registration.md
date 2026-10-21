@@ -165,7 +165,7 @@ The guard's input set grows only by exact, producer-named tool names, and only o
 ### AD-4: The refusal message names the move, the mark command, and where to run them. (BINDING; REQ-6 content, REQ-7.)
 
 `_remedy()` (`hos_tmp_root.py:488-498`) is reworded. This is a message change only. The blocker computation, the ordering and the exit code are untouched. The single line must carry:
-- the absolute role-dir path;
+- the absolute role-dir path (this is the resolver's own line, for the local cron log and banner; every committed or outbound sink `~`-redacts it per AD-2);
 - the blocking entries (the first five, plus a count, as today);
 - the move alternative as a concrete command shape, `mv '<role_dir>/<entry>' <a dir outside HOS_TMP_ROOT>/`;
 - the `python3 <abs>/bootstrap/lib/hos_tmp_root.py mark --repo <clone> --role <role> --reviewed` command, verbatim as today;
@@ -242,16 +242,16 @@ AD-7's install-time pre-registration and wrapper call `resolve --create` only. T
 
 ### AD-9: Escalation is #1928 AD-7's condition primitive. #2100 adds content, and carries a marker-keyed interim filer until S6 lands. (BINDING; REQ-6. ESC-3(i) ruled "#1928 owns", 2026-10-20. Was PROVISIONAL on ESC-3(i). Amended 2026-10-21 for K = 1 and the interim filer.)
 
-- **Ownership.** ADR-1928 AD-7 already binds: the counter per role-clone, K = 3, a marker-keyed fail-closed dedup, filing into the target milestone, auto-close after K clear cycles, a committed key registry whose first key is `tmp-root-fallback`, and an Action of the exact `mark --reviewed` command with the absolute clone path. That satisfies REQ-6's dedup, auto-close and duplicate-query rules by construction.
+- **Ownership.** ADR-1928 AD-7 already binds: the counter per role-clone, K = 3, a marker-keyed fail-closed dedup, filing into the target milestone, auto-close after K clear cycles, a committed key registry whose first key is `tmp-root-fallback`, and an Action of the exact `mark --reviewed` command with the clone path (`~`-rendered per AD-2; absolute only outside `$HOME`). That satisfies REQ-6's dedup, auto-close and duplicate-query rules by construction.
 - **#2100's contribution (AM-2 to #1928).** The condition body must also carry:
-  - the absolute role-dir path;
-  - the blocking entries;
+  - the role-dir path (`~`-rendered per AD-2; absolute only outside `$HOME`);
+  - the blocking entries (through the AD-11 blocker renderer);
   - the AD-4 move alternative;
   - Who = "the human, unsandboxed, in your own terminal".
 
   The pass takes these from the `--observed` detail, which is `HOS_TMP_REASON` (AD-2), sanitised as today. The REQ-6 deterministic test (K-1, K, K+n, K clear) belongs in #1928 S6's suite, with a #2100 fixture.
 - **K = 1 for this key (amended 2026-10-21; ruling: "first refusal alerts once").** This overrides ADR-1928 AD-7's default K = 3 for `tmp-root-fallback` only. The clear count is also 1: one cycle that resolves cleanly auto-closes the item. Flapping is not a practical risk, because registration is sticky (invariant 8). Once the human remedies and the next cycle registers the dir, it stays accepted, unless the dir is re-pointed, its inode changes or it becomes a symlink. Each of those is a genuinely new condition, and deserves a new alert. AM-8 asks #1928 for a per-key K.
-- **Second channel: #2125 (ruling: "alerts once via needs-human and #2125").** When the interim filer (or, later, S6) files a **new** item, the alert step also makes one call to `bootstrap/notify_human.sh` (#2125's seam, ADR-1605 AC-40 shape), with a cause of `tmp-root-refused`, the issue number, `--since` and `--priority high`. ~~and the AD-11 body~~ *(Amended in review round 2, 2026-10-21; privacy.)* The notifier payload is a **fixed-template pointer only**: cause, role, project and issue number (or `none` when filing failed, AD-11 step 3). It carries no path, no blocker name and no host. The detail lives in the GitHub item and the local cron log. Until #2125 lands, the call resolves to "absent": an `alert-undelivered` event is written, and the GitHub item is the only channel (ADR-1605 AC-39 rule, reused). Adding `tmp-root-refused` to #2125's closed trigger list is a cross-issue requirement (AM-9).
+- **Second channel: #2125 (ruling: "alerts once via needs-human and #2125").** When the interim filer (or, later, S6) files a **new** item, the alert step also makes one call to `bootstrap/notify_human.sh` (#2125's seam, ADR-1605 AC-40 shape), with a cause of `tmp-root-refused`, the issue number, `--since` and `--priority high`. ~~and the AD-11 body~~ *(Amended in review round 2, 2026-10-21; privacy.)* The notifier payload is a **fixed-template pointer only**: the four fields cause, role, project and issue number, plus, only when `issue=none` (filing failed, AD-11 step 3), the fixed constant text "GitHub item could not be filed; see the cron log for this role". That constant is allowed because it carries no variable detail. The payload carries no path, no blocker name and no host. The detail lives in the GitHub item and the local cron log. Until #2125 lands, the call resolves to "absent": an `alert-undelivered` event is written, and the GitHub item is the only channel (ADR-1605 AC-39 rule, reused). Adding `tmp-root-refused` to #2125's closed trigger list is a cross-issue requirement (AM-9).
 - ~~**Recommendation: no #2100 one-off.**~~ *Superseded 2026-10-20 by the ruling's first-refusal alert.* The recommendation is kept below because it explains why the interim filer is marker-keyed and must be deleted when S6 lands. Original text: I disagree with the requirement's fallback clause ("#2100 delivers a minimal one-off if #1928's primitive has not landed"). The reasons:
   - **(1) D41.** A second dedup-and-file implementation in `bin/hos-cron` would have to be deleted when #1928 S6 lands.
   - **(2) Double filing.** The one-off keys on a title prefix (the breaker idiom, `:2186-2206`) and #1928 keys on a body marker. Neither sees the other, so during any overlap both file a `needs-human` issue for the same condition.
@@ -468,7 +468,7 @@ AD-7's install-time pre-registration and wrapper call `resolve --create` only. T
     - (o) **hostile blocker names** (forged marker line, `Closes #1`, `@mention`, embedded newline, 10 kB, invalid UTF-8): the rendered body, comment and audit fields contain none of `<!--`, `-->`, a backtick fence, `#<digits>` or `@`; each name is at most 64 characters; at most five names plus a count; the marker first line is unchanged; two names that render identically still give different fingerprints;
     - (p) **lookups ignore impostors:** an open issue whose body carries the exact marker on a non-first line, or carries it on the first line but was authored by another login, is not deduped against, commented on or closed;
     - (q) one `cycle-tmp-root-alert` event per refusing cycle, with the right `outcome`, `notified` and `failed_stage` for cases (a), (c), (e), (h), (h2), (i) and a cap hit; the refusal event carries `exit_code=77`, `fingerprint`, a `~`-redacted `reason` and no `host`;
-    - (r) the notifier payload contains only cause, role, project and issue number (no `/`, no blocker name, no host);
+    - (r) the notifier payload contains only the four fields cause, role, project and issue number, plus, only when `issue=none`, the fixed constant text; with a filed issue the constant is absent; no path, blocker name or host appears in either case;
     - (s) a hung notifier or `gh` stub is killed with its process group at the cap, the cycle still exits 77, and no token file survives a normal (non-`SIGKILL`) exit; a token file planted in the alert `TMPDIR` is removed on the next entry; the token string appears in no event, log line, body or payload;
     - (i) halt set: the event and the exit, with no GitHub or notifier write;
     - (j) clean resolve after a refusal: the state file is removed, and the item auto-closes past auth;
@@ -489,12 +489,12 @@ AD-7's install-time pre-registration and wrapper call `resolve --create` only. T
   - a fresh install creates, registers **and verifies** four dirs (override registry), and exits 0;
   - the export-only plus third-party-write plus launcher sequence succeeds;
   - ~~an install into a root holding a refused dir prints the remedy and exits 0;~~ *(superseded 2026-10-20)* an install into a root holding a refused dir prints the blockers and remedy for that dir and **exits non-zero**, after completing every other step; a re-run after the remedy exits 0;
-  - a verify against a different path than `<HOS_TMP_ROOT>/<RoleDir>` fails;
+  - ~~a verify against a different path than `<HOS_TMP_ROOT>/<RoleDir>` fails;~~ *(superseded by the `status` registry read-back, AD-12; see the round-1 S4a test below)*
   - an unreadable registry fails the verify, with the "re-run unsandboxed" message;
   - **v0.6.0 upgrade:** starting from a `config.sh` with no `HOS_TMP_ROOT`, both the non-interactive and the interactive paths end with `HOS_TMP_ROOT` written once (through the shared writer) and all four dirs registered and verified. An existing `HOS_TMP_ROOT` value is never overwritten;
   - `--dry-run` writes nothing;
   - the install never passes `--reviewed`;
-  - *(added in architecture review, 2026-10-21)* a failed verify exits 77 and leaves `.hos-release` at the old tag with no install PR opened; a registration planted in a different (override) registry than the one `status` reads fails the verify; `status` makes no `mkdir`, chmod, registration or marker write, and reports a masked registry as exit 2; a computed value outside the charset gate writes nothing and exits 77 (pre-#2059 writer only); *(round 2)* the install prints exactly one `tmp-root-verify: refused=<roles|none>` line, and a resolver stub that hangs is killed at 30 s and counted as a refusal of that role.
+  - *(added in architecture review, 2026-10-21)* a failed verify exits 77 and leaves `.hos-release` at the old tag with no install PR opened; a registration planted in a different (override) registry than the one `status` reads fails the verify; `status` makes no `mkdir`, chmod, registration or marker write, and reports a masked registry as exit 2; *(added after the second review, 2026-10-21)* `status`'s machine-readable output (TD-H5) lists **all** blockers, not the first five, and round-trips names with a newline, a NUL-adjacent control byte, a 10 kB length and invalid UTF-8 byte-for-byte; a computed value outside the charset gate writes nothing and exits 77 (pre-#2059 writer only); *(round 2)* the install prints exactly one `tmp-root-verify: refused=<roles|none>` line, and a resolver stub that hangs is killed at 30 s and counted as a refusal of that role.
 - **S4b:**
   - the wrapper execs with the exports on success;
   - on refusal, or with a missing machine-copy helper, it execs without them, with the **banner** and remedy on stderr, and it runs no clone file;
@@ -609,8 +609,8 @@ superseded: [S5prime]
 order: [S1, S4a, S2, S4b]   # S3 anywhere, preferably before S2
 merge_gates:
   S2: ["S4a merged or same PR", "every live role dir: hos_tmp_root.py status exits 0 (human-run, human-attested)", "human approval (protected)"]
-exit_codes: {hos-cron_tmp_root_refused: 77, hos_install_verify_failed: 77}
   S5: ["#1928 S6 (AM-8)"]
+exit_codes: {hos-cron_tmp_root_refused: 77, hos_install_verify_failed: 77}
 release_gate: {v0.7.0: "#2137 green"}
 hard_constraints_not_waivable: [REQ-5, AD-5, AD-11 landing order]
 # Original escalation record (all ruled 2026-10-20):
@@ -638,7 +638,7 @@ Each item is binding on the TD for the slice named. The ADR fixes the rule, and 
 - **TD-H2 (S2; reliability).** Confirm, from `bin/hos-cron:300-334`, that the stale-lock reclaim rule cannot reclaim the lock from a live alert step running inside the 120 s cap. If it can, the TD fixes the reclaim condition rather than shortening the cap (AD-11 step 3, the lock bullet).
 - **TD-H3 (S2; security N-B).** Before the alert `TMPDIR` is emptied on entry, or used at all, the step must `lstat` `$_HOS_DIR/tmp-root-alert/` and its `tmp-<role>-<project>/` child. Each must be a real directory, owned by the current user, mode 0700, and not a symlink; otherwise the alert step stops (`failed_stage=tmpdir`) and writes nothing. Emptying never follows symlinks. It unlinks only the directory's own entries, and treats a symlinked or non-regular entry as an entry to unlink, never as a directory to descend into. Tests: a symlinked parent, a symlinked child, a wrong-owner child, and a symlink entry pointing outside. In each case nothing outside the directory is touched.
 - **TD-H4 (S2; security N-A).** Charset and quoting test for `~`-rendered paths in the issue body, the comment and the remedy commands. The test covers paths containing a space, a single quote, `$`, a backtick and a newline. Each rendered command must stay one shell word per path, with `~` unquoted and the rest quoted, and pasting it must not expand or execute anything. A path that cannot be rendered safely is shown as an `<entry>`-style placeholder, with the instruction to run `status` locally. It is never emitted raw.
-- **TD-H5 (S2).** The machine-readable blocker format from `status` (AD-11 step 3, "Where the blockers come from"). It must carry all blockers, not the first five, and be byte-safe.
+- **TD-H5 (S4a, consumed by S2).** The machine-readable blocker format from `status` (AD-11 step 3, "Where the blockers come from"). It must carry all blockers, not the first five, and be byte-safe.
 - **TD-H6 (S2).** Whether `bin/hos-cron` rejects a project key that fails the marker charset at argument parsing, for every cycle (AD-9, marker construction).
 - **TD-H7 (S4a, with S4b's doc pass if S4b ships; privacy).** Install docs note: when the clone or `HOS_TMP_ROOT` is outside `$HOME`, its absolute path appears in the committed audit trail and in alert issues, because it cannot be `~`-redacted (AD-2). The note goes in the install documentation that S4a touches, or in `docs/CRON-SETUP.md` if S4a touches no install doc.
 
