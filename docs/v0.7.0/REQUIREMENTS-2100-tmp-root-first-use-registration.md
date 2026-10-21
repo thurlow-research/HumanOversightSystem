@@ -39,6 +39,7 @@ it against the tree and the live filesystem (§0). One claim is wrong: "only Wor
 > upgrade write is in `bootstrap/hos_install.sh` via #2059's writer; REQ-7's S4b record is the
 > journal banner only; REQ-10's `bot` is `bot_source=config`; REQ-6 auto-closes after one clean
 > cycle.
+
 **Protected surfaces:** `bootstrap/**` (`hos_tmp_root.py`, `tmp_reaper.py`) and `bin/**`
 (`hos-cron`, `hos-human`) are protected (`scripts/framework/protected_surfaces.txt`). The human gate
 applies whatever tier is computed.
@@ -295,7 +296,8 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   prints the blocking entries and the exact `mark --reviewed` / `mv` remedy. This holds on the
   **v0.6.0 upgrade path** too: when an existing `config.sh` lacks `HOS_TMP_ROOT`, the install writes
   it before registering and verifying. The write is made by `bootstrap/hos_install.sh` (its
-  non-interactive key-append step) through #2059's shared `config.sh` writer, not by
+  non-interactive key-append step) through the installer's single `config.sh` writer (#2059's, if
+  merged; otherwise the charset-gated extension of the existing append site, ADR-2100 AD-12), not by
   `scripts/framework/install.sh`, which does not run on a non-interactive upgrade (ADR-2100 AF-10,
   AD-12; reconciled 2026-10-21). *AC:* an
   install test with a clean target passes and leaves all four dirs registered; one with a
