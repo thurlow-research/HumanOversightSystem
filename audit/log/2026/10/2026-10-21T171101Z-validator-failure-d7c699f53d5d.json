@@ -1,0 +1,1 @@
+{"attempts":1,"event":"validator-failure","final_outcome":"failed","last_error":"exit 127","required":true,"timestamp":"2026-10-21T17:11:01Z","validator":"bandit"}
