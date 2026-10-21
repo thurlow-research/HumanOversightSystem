@@ -1,6 +1,6 @@
 # REQUIREMENTS-2100: Register a role temp dir before anything else can write to it, never fall back silently every cycle, and keep the foreign-project guard
 
-**Status:** DRAFT for architect. **Change classification: STRUCTURAL.** Three things make it
+**Status:** Amended 2026-10-21, pending human review. **Change classification: STRUCTURAL.** Three things make it
 structural. It adds a registration obligation to paths that do not register today. It may widen
 what the security guard accepts (ESC-1). It adds a human-facing escalation (REQ-6).
 **Date:** 2026-10-15. **Amended:** 2026-10-21, to record the human ruling of 2026-10-20 (see the
@@ -22,7 +22,8 @@ it against the tree and the live filesystem (§0). One claim is wrong: "only Wor
 > **Amendment — 2026-10-20 human ruling (recorded 2026-10-21, pm-agent).** ScottThurlow ruled on
 > #2100:
 > 1. ESC-1 **A**; ESC-2 **b+d**; ESC-3 (i) **#1928 owns** the escalation primitive, (ii) **concur**
->    (a `hos-human` refusal logs and audits only); ESC-4 **rejected**. Install-time registration
+>    (a `hos-human` refusal logs and audits only); ESC-4: **quarantine-and-adopt rejected; refusal
+>    stands**. Install-time registration
 >    (ADR-2100 S4a) is wanted, so that no role dir depends on a manual `mark --reviewed` again.
 > 2. Verbatim (18:34Z): *"Amend ADR-2100: tmp-root refusal is fail-closed for hos-cron roles (no
 >    cycle runs; first refusal alerts once via needs-human and #2125; a missing helper counts as
@@ -39,6 +40,14 @@ it against the tree and the live filesystem (§0). One claim is wrong: "only Wor
 > upgrade write is in `bootstrap/hos_install.sh` via #2059's writer; REQ-7's S4b record is the
 > journal banner only; REQ-10's `bot` is `bot_source=config`; REQ-6 auto-closes after one clean
 > cycle.
+>
+> *Reconciled 2026-10-21 with ADR-2100 review round 2 (commit `5dee1c58c`):* REQ-6 (GitHub marker
+> authoritative, 12 h TTL state cache, pointer-only notifier payload, at-most-once
+> `alert-undelivered`); REQ-10 (`exit_code=77`, `fingerprint`, no `host`, `~`-redacted `reason`,
+> capped and neutralised blockers, `cycle-tmp-root-alert` event); REQ-11 (writer clause, summary
+> line, 30 s timeout, exit 77, verify before the `.hos-release` stamp); REQ-12 (enforced at
+> `cut_release.sh`); §5 (S4b is in scope; whether it ships in v0.7.0 is an **open human
+> question**, not a ruling); ESC-4 wording.
 
 **Protected surfaces:** `bootstrap/**` (`hos_tmp_root.py`, `tmp_reaper.py`) and `bin/**`
 (`hos-cron`, `hos-human`) are protected (`scripts/framework/protected_surfaces.txt`). The human gate
@@ -238,7 +247,21 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
 
   It is not re-filed while open. It auto-closes with a comment after K consecutive cycles in which
   the dir resolves. With K = 1 for this key, that means the item auto-closes after **one** clean
-  cycle (ADR-2100 AD-9; reconciled 2026-10-21). *Ownership (ESC-3, ruled 2026-10-20: (i) #1928 owns):* delivered by #1928
+  cycle (ADR-2100 AD-9; reconciled 2026-10-21).
+
+  *(Round 2, 2026-10-21; ADR-2100 AD-9, AD-11.)*
+  - **Authority.** Whether an alert exists is decided by the GitHub query. The match is on an
+    issue whose body's first line is exactly the marker and whose author is the role's own bot.
+    The local alerted-state file is only a rate-limit cache with a **12 h TTL**. A state file that
+    is older than the TTL, or untrusted, is treated as absent, so it can never suppress an alert
+    for longer than 12 h.
+  - **Notifier payload (#2125).** It is a fixed-template pointer only: cause, role, project and
+    issue number (`none` if filing failed). It carries no path, no blocker name and no host.
+  - **Failed notify.** A failed, timed-out or absent notifier writes `alert-undelivered`.
+    Delivery on this channel is at-most-once per TTL window. The GitHub item is the at-least-once
+    channel.
+
+  *Ownership (ESC-3, ruled 2026-10-20: (i) #1928 owns):* delivered by #1928
   REQ-I1/I2 under its `tmp-root-fallback` key. #2100's acceptance depends on it and adds the content
   requirements above. Until #1928 S6 lands, the ADR-2100 S2 slice files the marker-keyed issue
   itself, with the same dedup, auto-close and fail-closed duplicate-query behaviour as the timeout
@@ -276,7 +299,16 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   - the cycle writes a `cycle-tmp-root-refused` audit event with full identity (bot, project,
     cycle_id, role, clone path, role-dir path, blocking entries). The refusal is detected before
     auth, so `bot` is the role's configured login, not a verified one, and the event marks it
-    `bot_source=config` (ADR-2100 AD-2; reconciled 2026-10-21);
+    `bot_source=config` (ADR-2100 AD-2; reconciled 2026-10-21). *(Round 2.)* The event also
+    carries `exit_code=77` and the refusal `fingerprint`. It has **no `host` field**. `reason`
+    and the path fields are `~`-redacted. Blockers are capped at five names plus a count, each
+    at most 64 characters;
+  - blocker names are neutralised by one shared renderer in **every outbound or committed sink**
+    (audit events, issue body, comments). Only the local cron log and banner show them raw
+    (ADR-2100 AD-11, round 2);
+  - after the alert step, one `cycle-tmp-root-alert` outcome event is written per refusing cycle,
+    best-effort. Its fields are `outcome`, `issue`, `notified`, `failed_stage` and `fingerprint`
+    (ADR-2100 AD-11, round 2);
   - it then exits non-zero **before any build or review work** (no issue selection, no branch, no
     agent dispatch, no PR action);
   - it never exports or inherits a `/tmp` fallback `TMPDIR`;
@@ -288,7 +320,13 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   on the dev machine resolves cleanly. *AC:* `test_hos_cron.py` cases check that (a) a refusing
   resolver yields a non-zero exit, one `cycle-tmp-root-refused` event, no work-stage side effect and
   exactly one alert; (b) a missing helper behaves identically; (c) a second and third refusal add an
-  event each but no alert; (d) a failing audit write still yields a non-zero exit and no work.
+  event each but no alert; (d) a failing audit write still yields a non-zero exit and no work;
+  *(round 2)* (e) the exit code is 77, and the refusal event carries `exit_code=77` and
+  `fingerprint`, a `~`-redacted `reason`, and no `host`; (f) one `cycle-tmp-root-alert` event is
+  written per refusing cycle; (g) hostile blocker names (forged marker, `@mention`, `#<n>`,
+  newline, 10 kB) are neutralised and capped in every outbound sink; (h) a forged or stale (over
+  12 h) state file cannot suppress filing when GitHub has no open marker item; (i) the notifier
+  payload holds only cause, role, project and issue number.
 
 - **REQ-11 (install verifies registration and fails on refusal; added 2026-10-20).** After the
   installer (S4a) pre-registers the role dirs, it must check that the resolver accepts each of the
@@ -299,15 +337,34 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   non-interactive key-append step) through the installer's single `config.sh` writer (#2059's, if
   merged; otherwise the charset-gated extension of the existing append site, ADR-2100 AD-12), not by
   `scripts/framework/install.sh`, which does not run on a non-interactive upgrade (ADR-2100 AF-10,
-  AD-12; reconciled 2026-10-21). *AC:* an
-  install test with a clean target passes and leaves all four dirs registered; one with a
-  non-allowlisted entry in a role dir fails non-zero with the blockers and remedy printed; a v0.6.0
-  upgrade test, starting from a `config.sh` without `HOS_TMP_ROOT`, ends with `HOS_TMP_ROOT` written
-  and all four role dirs registered and verified.
+  AD-12; reconciled 2026-10-21). *(pm-agent confirms the architect's writer clause, round 2:* it
+  means no second writer and no wait on #2059. An existing value is never overwritten.*)*
+
+  *Round 2 (ADR-2100 AD-12):*
+  - Verification is a read-only registry read-back (`status`).
+  - Every resolver call in register and verify runs under a **30 s** timeout. A timeout counts as
+    a refusal of that role.
+  - After verify, the install prints exactly one machine-parseable stdout line,
+    `tmp-root-verify: refused=<roles|none>`.
+  - A refusal exits **77**.
+  - Register-and-verify runs **before the `.hos-release` stamp**. A failed verify leaves the old
+    version stamp and opens no install PR.
+
+  *AC:* an install test with a clean target passes and leaves all four dirs registered; one with a
+  non-allowlisted entry in a role dir fails with exit 77, prints the blockers and remedy, leaves
+  `.hos-release` at the old tag and opens no install PR; a v0.6.0 upgrade test, starting from a
+  `config.sh` without `HOS_TMP_ROOT`, ends with `HOS_TMP_ROOT` written and all four role dirs
+  registered and verified; every run prints exactly one `tmp-root-verify: refused=` line; a hung
+  resolver is killed at 30 s and counted as a refusal of that role.
 
 - **REQ-12 (release gate; added 2026-10-20).** v0.7.0 does not ship until the consumer-upgrade
-  smoke test (#2137) passes. *AC:* the #2137 smoke test is green on the v0.7.0 release candidate
-  before the release is cut.
+  smoke test (#2137) passes. It is enforced at `scripts/framework/cut_release.sh`'s validation gate:
+  a failing or missing #2137 result fails the cut. Using the existing `--skip-validation` bypass
+  against #2137 is a human decision. The ruling's scope is a fresh install, the v0.6.0 → v0.7.0
+  upgrade and the first cron cycle after it. If #2137 omits **any** of those three, the release
+  needs an explicit human decision, recorded on #2137, that accepts the omission. A disclosure
+  alone is not enough (ADR-2100 AD-13, round 2). *AC:* the #2137 smoke test is green on the v0.7.0
+  release candidate before the release is cut, and the cut fails when #2137 is failing or missing.
 
 ## 3. Out of scope / non-goals
 
@@ -356,8 +413,11 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
 
 *(Amended 2026-10-20.)* ADR-2100's slicing governs. REQ-10 lands in ADR-2100 S2 (with the interim
 marker-keyed issue from REQ-6), merging with or after S4a. REQ-11 is ADR-2100 S4a. REQ-7's
-fail-open banner covers `hos-human` and S4b. REQ-12 is a release gate, not a slice. S4b in v0.7.0
-remains conditional, as ruled.
+fail-open banner covers `hos-human` and S4b. REQ-12 is a release gate, not a slice.
+*(Corrected in round 2, 2026-10-21.)* No human ruling makes S4b conditional. The earlier wording
+came only from the 18:27Z human-proxy relay, which describes itself as "not a ruling". On ESC-2 b+d,
+S4b is **in scope**. **Whether S4b must ship in v0.7.0 is an OPEN human question** (Human Review
+Required). S2 and S4a do not depend on it.
 
 ## 6. Escalations for the human (all ruled 2026-10-20; the defaults below are kept for the record)
 
@@ -395,7 +455,7 @@ remains conditional, as ruled.
   adopt. *Default: no.* Moving files inside an unregistered dir is a write into a possibly foreign
   directory, which the guard exists to prevent. This is listed only so the alternative is explicitly
   rejected or accepted.
-  **Resolved 2026-10-20: rejected.**
+  **Resolved 2026-10-20: quarantine-and-adopt rejected; refusal stands.**
 
 ## Escalation flag (CORE self-flag)
 
@@ -417,3 +477,6 @@ human's own structural ruling of 2026-10-20, recorded here rather than proposed.
 amended to match before S2 and S4a are designed further. REQ-10 is a new failure mode for every
 cron cycle (RISK: HIGH), so its landing-order condition (with or after S4a, all live role dirs
 clean) is not open to an agent-side waiver either.
+
+**OPEN human question (round 2, 2026-10-21):** must S4b (the machine-copy wrapper) ship in v0.7.0?
+ESC-2 b+d puts it in scope. No ruling makes it conditional, and no answer is assumed here.
