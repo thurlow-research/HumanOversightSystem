@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"2d4fd77a79f97b202b8efeb71502841a6e75f9a1","pr":2143,"reason":"#1215: verdict already posted 2026-10-21T07:43:12Z on this head; no new commits, human comments, reviews, or label changes since; PR awaits human DECIDE under needs-human"}
