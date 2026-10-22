@@ -243,7 +243,8 @@ The decline form is exactly `/hos decline step=<N>`.
      - any item that fails `ITEM_RE` or is longer than 80 characters gives `bad-item@L<n>`;
      - a repeated item gives `duplicate-item@L<n>`;
      - `state = none`.
-   - If the stripped line is exactly `reviewed_files:`:
+   - If the stripped line starts with `reviewed_files:` (a prefix match, as for `covers:`):
+     - if anything other than whitespace follows the colon (e.g. `reviewed_files: foo.py`), return `unexpected-line@L<n>`. Paths go only on `  - <path>` lines below the header;
      - a second occurrence gives `duplicate-field:reviewed_files`;
      - otherwise `state = list`.
    - If `state == list` and the line matches `^[ \t]*-[ \t]+(.*)$`:
@@ -449,7 +450,7 @@ Failures map as follows:
 - A non-zero exit gives `api-error`. A rate limit is the same code. The stderr text goes only to the module's own stderr diagnostic line, never into JSON or audit.
 - Invalid JSON gives `payload-shape`.
 
-A module-level deadline `time.monotonic() + FETCH_BUDGET_SECONDS` is checked before every call. If it has passed, raise `budget-exhausted`.
+**Deadline.** Each `fetch()` call sets its own local deadline, `deadline = time.monotonic() + FETCH_BUDGET_SECONDS`, as its first statement. It is never a module-level value computed at import, and never shared between calls. The deadline is checked before every `gh` call that `fetch()` makes. If it has passed, raise `budget-exhausted`.
 
 **Reads, in this order** (`o/r` is `--repo`):
 1. `repos/{o}/{r}` gives a dict with a non-empty str `default_branch`. Anything else is `default-branch-unreadable`.
@@ -743,6 +744,7 @@ Shared helper (per file, no fixture files): `_c(id, login, type="User", created=
 | T-PR-1 | Round trip: `parse_act(render_form(s, B, items, files)) == Act(...)` over a table of 6 item/path mixes | equal |
 | T-PR-2 | Round trip inside ` ```text ` fences, with CRLF line endings, and with a leading BOM | equal |
 | T-PR-3 | One row per `PARSE_ERRORS` code, each built to hit that code first | the code (and `@L<n>` or `:key`) |
+| T-PR-3b | `reviewed_files:` with inline trailing text (`reviewed_files: foo.py`) is `unexpected-line@L<n>`, where `<n>` is that line, not `unknown-key`. `reviewed_files:   ` (trailing whitespace only) followed by `  - scripts/x.py` parses, with that path | `unexpected-line@L<n>`; Act |
 | T-PR-4 | Not candidates: `""`, whitespace only, `hello`, `/hostile`, ` ``` ` with no content, a fence whose first line is `hello` | `None` |
 | T-PR-5 | Candidacy is case-insensitive: `/HOS Authorize step=5 …` | `ParseError("marker-line")` |
 | T-PR-6 | Free text after `---` is accepted. Text after `---` that contains `/hos decline` is ignored | Act |
@@ -782,6 +784,7 @@ A recording fake replaces `_run_gh_get` and maps endpoint to response or excepti
 | T-F-5 | `OSError` (gh missing) | `api-error` |
 | T-F-6 | Rate limit (rc=1, stderr `API rate limit exceeded`) | `api-error`; stderr not in the JSON |
 | T-F-7 | Fake clock passes `FETCH_BUDGET_SECONDS` | `budget-exhausted` |
+| T-F-7b | The deadline is per call, not set at import. Monkeypatch `time.monotonic` to return `T0 + 10 × FETCH_BUDGET_SECONDS` (as if the process had been alive long after import). Then call `fetch()` twice with the happy-path fake, advancing the clock by less than `FETCH_BUDGET_SECONDS` within each call | both calls succeed; neither raises `budget-exhausted` |
 | T-F-8 | Page 10 full on the issue; and page 10 full on the PR | `pagination-bound` ×2 |
 | T-F-9 | Page 2 is a dict, not a list | `payload-shape` |
 | T-F-10 | A comment with a bad `created_at`, a non-int id, a missing `body`, `user.login` not a str, or a duplicate id across sources | `payload-shape` ×5 |
