@@ -21,7 +21,15 @@ lands in these sections:
 | RC-12 (I-6 for `pm-agent`) | §10 |
 | RC-13 (E-1 ruling) | FM-14, §9, §11, §13 |
 
-**Date:** 2026-10-22 (round 1); revised 2026-10-22 (round 2)
+**Round 3 (architect round 2: CHANGES_REQUIRED, 4 items).**
+- Item 1: FM-12 and FM-13 restored to five columns, and their test text moved into I-10c and I-2b.
+- Item 2: a register timeout now prints a `register:` line (§4.4), and I-5 asserts it.
+- Item 3: I-18 is scoped to `bin/`, `bootstrap/`, `scripts/` and `.github/`, with no document allowlist;
+  §4.2 is updated to match.
+- Item 4: E-1's (b) rejection reason is corrected in §13, and §9.1(b) and FM-14 are widened.
+- Recommended: I-17's PATH shim mirrors the full original PATH, minus the two timeout binaries.
+
+**Date:** 2026-10-22 (round 1); revised 2026-10-22 (rounds 2 and 3)
 **Author:** technical-design (autonomous worker cycle; no human present)
 **Baseline:** `HEAD` = `origin/main` = **`70ba746e1`** (the merge of PR #2146, the ADR-2100 fail-closed amendment).
 Every file:line below refers to that commit. §0.3 lists the drift from the line numbers the ADR cites.
@@ -468,9 +476,10 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   - If `HOS_INSTALL_TMP_ROOT` is set and non-empty, its value is used. This is an operator override, and
     the test isolation in §5 uses it. It is otherwise just "the human typed it", and it passes exactly the
     same gates. See E-3.
-  - **Containment (RC-6).** `bootstrap/hos_install.sh` is the only non-test file that reads or names
-    `HOS_INSTALL_TMP_ROOT`. The only other non-test file that names it is `docs/CRON-SETUP.md`. §8.2 I-18
-    pins this. #2137's upgrade case must **not** set it, because #2137 has to exercise the real
+  - **Containment (RC-6).** Among the code files under `bin/`, `bootstrap/`, `scripts/` and `.github/`
+    (tests excluded), `bootstrap/hos_install.sh` is the only one that reads or names
+    `HOS_INSTALL_TMP_ROOT`. Docs (for example `docs/CRON-SETUP.md`, §6) may describe it, and are outside
+    the check. §8.2 I-18 pins this. #2137's upgrade case must **not** set it, because #2137 has to exercise the real
     `install-default` (§9.1).
   - Otherwise, the value is the stdout of `<HOS_SOURCE>/bootstrap/lib/hos_tmp_root.py install-default
     --target "$TARGET_REPO" --project-name "<name>"` (F-5: the source copy, because a v0.6.0 target has
@@ -566,8 +575,10 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   occurrence, the same selection rule as AD-11 step 4). It prints, in this order:
   1. For each refused role, on stdout:
      - `err "Temp dir refused: <role> (<RoleDir>)"`;
-     - then, **if that role's `resolve --create` exited non-zero for a reason other than a timeout
-       (RC-1)**, its kept stderr line, indented four spaces and labelled `register: `;
+     - then, **if that role's `resolve --create` failed (RC-1)**, a line indented four spaces and labelled
+       `register: `:
+       - on a non-zero exit, its kept stderr line;
+       - on a **timeout**, `register: resolve --create did not answer within <T> s; killed`;
      - then the role's kept `status` stderr line (or the timeout or helper-missing reason), indented four
        spaces and labelled `verify: `.
 
@@ -754,9 +765,9 @@ paragraph must state:
 | FM-9 | `python3` crashes (a traceback) in `resolve` or `status` | `status` maps every exception to exit 2 inside `main` (§2.3 step 10). An interpreter-level crash is a non-zero exit, so the role is refused | fatal, loud | S-13 |
 | FM-10 | `install-default` or `validate` fails, times out, or yields a value outside the charset | Nothing is written; exit 77 with "Set HOS_TMP_ROOT … by hand, then re-run"; `refused=worker,overseer,human,local` | fatal, loud | I-11 |
 | FM-11 | `config.sh` cannot be read for the presence test | exit 77, "cannot read `<config.sh>`" | fatal, loud | I-11c |
-| FM-12 | An existing `HOS_TMP_ROOT` is invalid (an unterminated quote, inside the clone, inside a work tree) | No write (never overwrite); `status` exit 2 `root-invalid` with the `INVALID:` prefix; the INVALID bullet (fix the named value); exit 77 | fatal, loud | I-10c | an existing invalid value (`HOS_TMP_ROOT="./inside"`) | not rewritten; rc 77; the resolver's "inside the clone" reason is in an `INVALID:` line; the INVALID bullet is printed; neither the `mv`/`mark` bullets nor any "unsandboxed" text appears (RC-2) |
-| FM-13 | Verify fails in `--pr` mode | No commit, push or PR; the consumer stays on `PR_BRANCH`, with the recovery text (§4.7) | fatal, loud; recovery is manual (E-2) | I-2b | as I-2, with `--pr`: a bare `file://` origin and a `gh` stub on `PATH` that logs its argv | rc 77; the `gh` log has no `pr create`; `git ls-remote origin` has no `hos-upgrade/*` branch; the checked-out branch is `PR_BRANCH`; the output contains, verbatim (with the values filled in), the three lines `git -C <target> stash push --include-untracked -m "hos-upgrade <tag>"`, `git -C <target> checkout <PR_ORIG_BRANCH>` and `git -C <target> branch -D <PR_BRANCH>`, plus the sentence that the remedy is machine-local; the output contains none of `git clean`, `reset --hard` or `checkout -- .`. **Then** executing exactly those three printed commands, the remedy (`mv`), and a `--pr` re-run gives rc 0 and opens a PR (the `gh` log has one `pr create`) |
-| FM-14 | Lone `--human` clone: the written XDG root fails `gen_sandbox_config`'s D15 rule | **Ruled E-1 (a): build the ADR-literal value in S4a.** The sandbox step warns (the existing non-fatal path, `:1838`); register and verify still pass; exit 0. The fresh-install layout default is the human question **Q-1**, which gates the v0.7.0 cut, not S4a's merge (§13). Disclosed in the PR body (§9.1) | degraded, loud warning; known and ruled | none in S4a (the behaviour is the ADR's) |
+| FM-12 | An existing `HOS_TMP_ROOT` is invalid (an unterminated quote, inside the clone, inside a work tree) | No write (never overwrite); `status` exit 2 `root-invalid`, printed with the `INVALID:` prefix; the INVALID bullet (fix the named value); exit 77 | fatal, loud | I-10c |
+| FM-13 | Verify fails in `--pr` mode | No commit, push or PR; the consumer stays on `PR_BRANCH`, with the exact recovery commands (§4.7) | fatal, loud; recovery is manual (E-2) | I-2b |
+| FM-14 | A fresh `--human` install whose project is not yet in `projects.conf` (the normal first-install order, `:2617`), or a lone clone: the written XDG root fails `gen_sandbox_config`'s D15 rule | **Ruled E-1 (a): build the ADR-literal value in S4a.** The sandbox step warns (the existing non-fatal path, `:1838`); register and verify still pass; exit 0. The fresh-install layout default is the human question **Q-1**, which gates the v0.7.0 cut, not S4a's merge (§13). Disclosed in the PR body (§9.1) | degraded, loud warning; known and ruled | none in S4a (the behaviour is the ADR's) |
 | FM-15 | The installer is interrupted (HUP, INT or TERM) during register or verify | The existing traps exit 129, 130 or 143; no stamp; a re-run is idempotent | fail-safe | — |
 | FM-16 | A second installer run in parallel on the same machine | `register` serialises on the registry flock (`:396-397`); each `status` reads an atomically renamed file | safe | — |
 | FM-17 | The disk is full while `register` writes the registry | `register` raises before the rename (`:428-439`); the old registry is intact; `status` shows the role unregistered; exit 77 | fatal, loud | — |
@@ -805,19 +816,19 @@ path, captured at test time.
 |---|---|---|
 | I-1 | fresh install, clean | rc 0; exactly one stdout line matching the §4.4 regex, and it is `refused=none`; `<parent>/.tmp/{Worker,Overseer,Human,Local}` exist with mode 0700; the per-test registry has 4 entries with `repo == realpath(target)`; `status` exits 0 for each role; `config.sh` holds exactly one `_LINE_RE` match, `HOS_TMP_ROOT="../.tmp"`; the `ok` line ends `(from HOS_INSTALL_TMP_ROOT)`; `.hos-release` is written. **RC-8:** the success line names `realpath(<parent>/.tmp)`, and through the shim, `resolve` prints a decoy path on stdout (`/decoy`) that appears nowhere in the installer output, which proves `resolve`'s stdout is discarded and the root is taken from `status`'s `OK:` line; the registry-override `warn` (RC-7) is present, naming the per-test path |
 | I-2 | refused: `config.sh` pre-seeded with `HOS_TMP_ROOT="<tmp>/root"` and `.hos-release` = `v0.6.0`; `<tmp>/root/Worker` is 0700 and holds `percommit-2054/` | rc **77**; `refused=worker`; the output contains `percommit-2054`, `mark --repo`, `unsandboxed, in your own terminal` and `mv '`; `.hos-release` is still `v0.6.0`; `.hos-manifest` and `.claude/agents/*.md` were written (every other step completed); Overseer, Human and Local are registered. **Then** `mv` `percommit-2054` out and re-run: rc 0, `refused=none`, `.hos-release` updated |
-| I-2b | as I-2, with `--pr`: a bare `file://` origin and a `gh` stub on `PATH` that logs its argv | rc 77; the `gh` log has no `pr create`; `git ls-remote origin` has no `hos-upgrade/*` branch; the checked-out branch is `PR_BRANCH`; the §4.7 text is printed |
+| I-2b | as I-2, with `--pr`: a bare `file://` origin and a `gh` stub on `PATH` that logs its argv | rc 77; the `gh` log has no `pr create`; `git ls-remote origin` has no `hos-upgrade/*` branch; the checked-out branch is `PR_BRANCH`. The output contains, verbatim with the values filled in, the three lines `git -C <target> stash push --include-untracked -m "hos-upgrade <tag>"`, `git -C <target> checkout <PR_ORIG_BRANCH>` and `git -C <target> branch -D <PR_BRANCH>`, plus the sentence that the remedy is machine-local. The output contains none of `git clean`, `reset --hard` or `checkout -- .`. **End to end:** the test then runs exactly those three printed commands, the remedy (`mv` the blocker out) and a `--pr` re-run. The re-run gives rc 0, `refused=none`, one `pr create` in the `gh` log, and `git stash list` still holds the `hos-upgrade <tag>` entry |
 | I-2c | re-point: register Worker at root A, then pre-seed `config.sh` with root B | rc 77; `refused=worker` (plus any other role whose key re-points); `refusing to re-point` is in the output |
 | I-3 | `HOS_TMP_REGISTRY_FILE` is a directory | rc 77; `refused=worker,overseer,human,local`; every `verify:` line has the `CANNOT VERIFY:` prefix; the CANNOT VERIFY bullet (`re-run this installer unsandboxed`) is printed; the NOT REGISTERED `mv`/`mark` bullets and the INVALID bullet are **absent** (RC-2) |
 | I-3b | masked: the shim gives `status` a non-existent registry path, and `resolve` the real override | rc 77; refused all four; `CANNOT VERIFY` and `re-run` are in the output |
 | I-4 | registration planted in a different registry: the shim gives `resolve` registry A and `status` registry B (an empty, valid v1 document) | rc 77; refused all four. This proves the verify reads the registry and does not repeat `resolve` |
-| I-5 | hang: `HOS_INSTALL_TMP_VERIFY_TIMEOUT=2`; the shim sleeps 600 s on `status --role worker` and on `resolve --role overseer` | rc 77; `refused=worker,overseer`; the wall time is under 2 × (2 + 5) + 60 s; the output names the timeout; no stray `sleep` survives (the process group is gone) |
+| I-5 | hang: `HOS_INSTALL_TMP_VERIFY_TIMEOUT=2`; the shim sleeps 600 s on `status --role worker` and on `resolve --role overseer` | rc 77; `refused=worker,overseer`; the overseer's block contains `register: resolve --create did not answer within 2 s; killed` (RC-1 also covers timeouts); the worker's `verify:` line names the status timeout; the wall time is under 2 × (2 + 5) + 60 s; no stray `sleep` survives (the process group is gone) |
 | I-6 | idempotent re-run of I-1 | rc 0; `config.sh` byte-identical; the registry entry count is unchanged (4) |
 | I-7 | argv audit (the shim log from I-1 and I-8) | every `hos_tmp_root.py` subcommand is in {`install-default`, `validate`, `resolve`, `status`}; every `resolve` has `--create`; no argv contains `mark` or `--reviewed` |
 | I-8 | **v0.6.0 upgrade, non-interactive**: `.hos-release` = `v0.6.0`; `config.sh` has v0.6.0's keys and **no** `HOS_TMP_ROOT`; no `bootstrap/lib/` in the target; `HOS_INSTALL_TMP_ROOT` popped; a fake `HOME` whose `projects.conf` lists a sibling `<p>_worker_root` | rc 0; exactly one `_LINE_RE` line, `HOS_TMP_ROOT="../.tmp"` (the computed `install-default`); 4 registered and verified; `.hos-release` updated. A re-run leaves `config.sh` byte-identical |
 | I-8b | lone-clone default, dry run only: as I-8, without `projects.conf`, with `--dry-run` | the output contains `Would append HOS_TMP_ROOT="~/.local/state/hos/tmp/<slug>"`; nothing written (see I-12) |
 | I-9 | **v0.6.0 upgrade, interactive path** (`@pytest.mark.slow`): as I-8, plus unresolved placeholders, `HOS_NO_CONFIG` unset, stdin a pty from `os.openpty()` pre-loaded with 60 `\n`, and the master drained by a reader thread; timeout 180 s | rc 0; the final `config.sh` (rewritten by `install.sh`) holds exactly one `_LINE_RE` match, with the value from §4.2; 4 registered and verified; `refused=none` |
 | I-10 | existing value never overwritten, as `export HOS_TMP_ROOT="../custom"`, as `   HOS_TMP_ROOT=../custom`, and as `HOS_TMP_ROOT=""` | `config.sh` byte-identical (no second line); the dirs are created under `../custom` (or `../.tmp` for the empty case) |
-| I-10c | an existing invalid value (`HOS_TMP_ROOT="./inside"`) | not rewritten; rc 77; the resolver's "inside the clone" reason is in the output |
+| I-10c | an existing invalid value (`HOS_TMP_ROOT="./inside"`) | `config.sh` not rewritten; rc 77; the resolver's "inside the clone" reason is in a `verify:` line with the `INVALID:` prefix; the INVALID bullet is printed; **neither** the `mv`/`mark` bullets **nor** any "unsandboxed" text appears anywhere in the output (RC-2) |
 | I-11 | charset gate: `HOS_INSTALL_TMP_ROOT="<tmp>/a+b"` (passes `validate`, fails AD-12's set); `HOS_INSTALL_TMP_ROOT="./tmp"` (fails `validate`); the shim makes `install-default` exit 1 | rc 77 each time; `Set HOS_TMP_ROOT in` and `by hand, then re-run` are in the output; no `HOS_TMP_ROOT` line in `config.sh`; `refused=worker,overseer,human,local` |
 | I-11c | `config.sh` mode 000 (skip when the euid is 0) | rc 77, `cannot read` |
 | I-12 | `--dry-run` on a fresh target | rc 0; `Would register and verify` and exactly one `tmp-root-verify: skipped=dry-run` line; no `refused=` line; no `<parent>/.tmp`, no registry file, no `.lock`; `config.sh` unchanged or absent |
@@ -825,8 +836,8 @@ path, captured at test time.
 | I-14 | `--reviewed` occurs nowhere in `hos_install.sh`, and no non-comment line runs `hos_tmp_root.py` with a `mark` argument; dynamically, a target whose `bootstrap/lib/hos_tmp_root.py` is pre-created as a **directory** (so the copy fails) | static; rc 77, refused all four, the missing-helper reason |
 | I-15 | static ordering and constants: on non-comment lines, the register-and-verify call comes after the line that writes `.hos-manifest` (`printf … > "$_manifest_file"`) and before the line that writes `.hos-release`, which comes before `if $PR_ACTIVE; then` (anchor regexes that match code, never comment text); the default timeout is `30` and the kill-after is `5s`; **every** non-comment line that runs `hos_tmp_root.py` starts with the timeout prefix array (no empty-prefix or bare `python3 … hos_tmp_root.py` path, RC-3); the timeout-prerequisite check sits inside the prerequisite block (before `if ! $PREREQ_OK`); the only `>> "$_subst_config"` appends are the helper's and the `PACK` lines; the two capture forms of §4.1 are the only ones used (RC-8) | static |
 | I-16 | **registry-full (RC-1):** the per-test registry is pre-seeded with 256 live entries (256 real dirs under `tmp_path`, each with a distinct live repo dir, written as a valid v1 document with the right inodes) | rc 77; for every role, the output has a `register:` line containing the resolver's `registry-full` text (`already holds 256 live temp roots`), printed before that role's `verify: … NOT REGISTERED` line |
-| I-17 | **no timeout binary (RC-3):** `PATH` holds a shim dir with `python3`, `git`, `gh` and the other prerequisites symlinked, and neither `timeout` nor `gtimeout` | rc **1**; the output contains `timeout (coreutils) missing` and `hos_bootstrap.sh`; nothing written (no `.gitignore` change, no `config.sh`, no `.tmp`, no registry). With `--dry-run`: rc 0; `a real install would stop here`; no `hos_tmp_root.py` invocation in the shim log |
-| I-18 | **containment (RC-6):** `git ls-files` minus `tests/**`; grep for the literal `HOS_INSTALL_TMP_ROOT` | it appears only in `bootstrap/hos_install.sh` and `docs/CRON-SETUP.md` (this TD's own file under `docs/v0.7.0/` is allowlisted by exact path as a design doc). Also, a run with the variable popped (I-8) prints `(resolver install-default)` |
+| I-17 | **no timeout binary (RC-3):** `PATH` is a single shim dir built by symlinking **every** entry of every directory on the original `PATH`, except `timeout` and `gtimeout` (first occurrence wins, matching `PATH` lookup order). This keeps the rest of the toolchain the installer needs intact | rc **1**; the output contains `timeout (coreutils) missing` and `hos_bootstrap.sh`; nothing written (no `.gitignore` change, no `config.sh`, no `.tmp`, no registry). With `--dry-run`: rc 0; `a real install would stop here`; no `hos_tmp_root.py` invocation (the shim dir's `python3` entry is a logging wrapper rather than a symlink) |
+| I-18 | **containment (RC-6):** over `git ls-files` restricted to `bin/`, `bootstrap/`, `scripts/` and `.github/` (if present), excluding `tests/**`, grep for the literal `HOS_INSTALL_TMP_ROOT` | the only file with a hit is `bootstrap/hos_install.sh`. There is no document allowlist: docs are out of the scanned set. Also, a run with the variable popped (I-8) prints `(resolver install-default)` |
 | I-19 | **registry-override notice (RC-7):** I-1's run, and a run with `HOS_TMP_REGISTRY_FILE` removed from the env but registry reads redirected by the shim (so the installer's own env has no override) | the first prints exactly one `HOS_TMP_REGISTRY_FILE is set (<path>)` warn before the first `register:`/verify output; the second prints none |
 
 ### 8.3 `tests/framework/test_tmp_root_first_writer.py` (new; REQ-2 AC; ADR S4a "the export-only plus third-party-write plus launcher sequence succeeds")
@@ -903,10 +914,15 @@ exercises the real upgrade at the release cut.
   either by S3 (which adopts `node-compile-cache`) or by the human's own `mv` or `mark --reviewed` (ADR §8
   N-1). The `.tmp/Worker` unblock is reported done, and is re-verified by `status`. The disclosure gives the
   four read-only `status` commands to check first.
-- **(b) The E-1 ruling and Q-1.** S4a writes the ADR-literal `install-default` value. So a lone `--human`
-  clone gets `~/.local/state/hos/tmp/<slug>`, and its sandbox-policy generation warns instead of succeeding
-  (FM-14). The interactive path already behaves this way since #2054. Q-1, the fresh-install layout default,
-  is an open **human** question that gates the v0.7.0 cut, not this merge (§13).
+- **(b) The E-1 ruling and Q-1.** S4a writes the ADR-literal `install-default` value. **Any fresh install
+  whose project is not yet listed in `projects.conf`** gets `~/.local/state/hos/tmp/<slug>`. That is the
+  normal order for a three-clone setup, because the installer tells you to add the project to
+  `projects.conf` only *after* it runs (`hos_install.sh:2617`). It is not limited to a lone `--human`
+  clone. That value is unusable by #2054 D15 sandboxes, so a `--human` install's sandbox-policy generation
+  warns instead of succeeding (FM-14). Because `config.sh` is committed and shared, the value also
+  propagates to the other role clones. The interactive path already behaves this way since #2054. Q-1, the
+  fresh-install layout default, is an open **human** question that gates the v0.7.0 cut, not this merge
+  (§13).
 - **(c) New prerequisite.** `hos_install.sh` now requires `timeout` (or `gtimeout`). Without one it stops
   with exit 1 before writing anything, and points to `hos_bootstrap.sh` (RC-3).
 
@@ -973,7 +989,7 @@ with 13 required changes (RC-1 to RC-13), all folded in above.
 
 | ID | Ruling | Effect in this TD |
 |---|---|---|
-| **E-1** | **(a): build the ADR-literal `install-default` value in S4a.** Option (b) (choosing `../.tmp` for `--human`) is **rejected**: AD-12 forbids the installer from computing a value | FM-14, §9.1(b) |
+| **E-1** | **(a): build the ADR-literal `install-default` value in S4a.** Option (b) (`../.tmp` for `--human` installs) is **rejected as only a partial fix**. AD-12 alone would not rule it out, because a resolver-side flag on `install-default` would satisfy AD-12. But `config.sh` is committed and shared across the role clones: a Worker-first install writes the XDG value, and the Human clone inherits it anyway. The real fix is Q-1's layout-aware default | FM-14, §9.1(b) |
 | **Q-1** (new, human) | Fresh installs not yet listed in `projects.conf` get `~/.local/state/hos/tmp/<slug>`, which #2054 D15 sandboxes cannot use. **Recommendation:** a #2054 follow-up that makes `install-default` recognise the Worker/Overseer/Human sibling-clone layout. **Gates the v0.7.0 cut, not S4a's merge.** Routed to the human via `pm-agent` and the worker | §9.1(b), §11 |
 | **E-2** | Accepted: stay on `PR_BRANCH`. The recovery text must give the exact `stash push --include-untracked` / `checkout` / `branch -D` commands, and must never suggest `git clean` or `reset --hard`. It must state that the remedy is machine-local | §4.7, I-2b |
 | **E-3** | Accepted, with three conditions: the conftest sets the variable unconditionally (RC-5); the variable is contained, its source is shown, and #2137 must not set it (RC-6); fixture-scope bound stated (RC-10) | §4.2, §5, I-18, §8.4, §9 |
