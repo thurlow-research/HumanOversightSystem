@@ -376,8 +376,9 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   - A run that exits before the register/verify step (for example a prerequisite failure or a drift
     hard-stop) prints no `tmp-root-verify:` line (TD-2100-S4a §4.4).
 
-  The invariant is unchanged: exit 77 ⇔ exactly one line with `refused≠none`; a non-dry-run exit 0
-  ⇔ exactly one `refused=none` line.
+  The invariant applies to a run that reaches the register/verify step (TD-2100-S4a §4.3): exit 77 ⇔
+  exactly one line with `refused≠none`; exit 0 ⇔ exactly one `refused=none` line. Runs that do not
+  reach the step (for example `--help`, which exits 0) are outside it.
 
 - **REQ-12 (release gate; added 2026-10-20).** v0.7.0 does not ship until the consumer-upgrade
   smoke test (#2137) passes. It is enforced at `scripts/framework/cut_release.sh`'s validation gate:
