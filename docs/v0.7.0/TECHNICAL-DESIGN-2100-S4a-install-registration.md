@@ -1,7 +1,12 @@
 # TECHNICAL DESIGN — #2100 slice S4a: install-time registration, the read-only `status` read-back, fail-on-refusal (exit 77), and the v0.6.0 `HOS_TMP_ROOT` upgrade write
 
-**Status: REVISION 4 (design loop round 4 of 5).** This revision applies the architect's binding arbitration
-of the inner-loop reviewer findings:
+**Status: APPROVED (architect round 4).** Ready for `coder`. Revision 4 (design loop round 4 of 5), plus a
+final wording-only pass. That pass:
+- names follow-up #2148;
+- records the REQ-11 scope;
+- records the I-8 and I-9 confirmations.
+
+Revision 4 applied the architect's binding arbitration of the inner-loop reviewer findings:
 - the arbitration is `.claudetmp/design/architect-2100-S4a-reviewer-arbitration.md`, rulings (a)–(h);
 - the findings are `.claudetmp/design/reviewers-2100-S4a-TD-round1.md`. The `code-reviewer`,
   `reliability-reviewer` and `infra-reviewer` lenses returned CHANGES_REQUIRED. The `security-reviewer`
@@ -12,11 +17,11 @@ rounds:
 - round 1: CHANGES_REQUIRED, RC-1 to RC-13;
 - round 2: CHANGES_REQUIRED, 4 items.
 
-All of those changes remain folded in. **The design now awaits the architect's round-4 confirmation and
-is not ready for `coder` until that is given.**
+All of those changes remain folded in. **The architect approved round 4**, including the I-8 and I-9
+confirmations (§13.4).
 
-REQ-11's clarification for I-6 is **recorded in the requirements**. `pm-agent` is scoping it to "a run that
-reaches §4.3" (code-review-7). Two human questions are open: Q-1 and Q-2. Both gate the v0.7.0 cut, and
+REQ-11's clarification for I-6 is **recorded in REQUIREMENTS-2100 REQ-11**, scoped to "a run that reaches
+the register/verify step" (commit `61fbeebc4`; code-review-7). Two human questions are open: Q-1 and Q-2. Both gate the v0.7.0 cut, and
 neither gates S4a's merge (§11).
 
 **Date:** 2026-10-22 (rounds 1–4)
@@ -744,7 +749,7 @@ The block must state:
 | FM-14b | An **upgrade** keeps an existing `.claude/settings.local.json` that lacks the Human role-dir grant (every v0.6.0 consumer, ruling (a)) | A non-fatal warning after verify passes, with the move-aside and regenerate remedy; exit 0. Regenerating automatically is human question Q-2 | degraded, loud warning; Q-2 | I-20 |
 | FM-15 | Interrupted (HUP, INT, TERM) during register or verify | The traps exit 129, 130 or 143, no stamp, and a re-run is idempotent. The trap runs only after the foreground `timeout` child returns, which takes at most `<T>` + 5 s (reliability-8) | fail-safe | — |
 | FM-16 | Parallel installer runs | `register` serialises on the flock (`:396-397`) | safe | — |
-| FM-17 | The disk is full while `register` writes the registry | **Not claimed.** `register()` does not check short `os.write` results. It can rename a truncated file, which `status` then reports as `registry-unreadable`, with the "re-run unsandboxed" remedy, which is wrong for this cause. It can also leave `tmp-roots.json.new.<pid>`. Both are left to **follow-up #<n>** (the worker files it, per ruling (g)). S4a guarantees only that the install exits 77 and does not stamp | not claimed | — |
+| FM-17 | The disk is full while `register` writes the registry | **Not claimed.** `register()` does not check short `os.write` results. It can rename a truncated file, which `status` then reports as `registry-unreadable`, with the "re-run unsandboxed" remedy, which is wrong for this cause. It can also leave `tmp-roots.json.new.<pid>`. Both are left to **follow-up #2148** (filed per ruling (g)). S4a guarantees only that the install exits 77 and does not stamp | not claimed | — |
 
 **Partial state after a 77 exit** (AD-12's "complete-but-untrusted"):
 - agents, `.hos-manifest` and the framework files are written;
@@ -937,7 +942,7 @@ PR-required suite.
     while `resolve`/`status` make the trust decisions. Each decision is one extractable named function, and
     §8.6 maps every branch to a test. The `shell_logic_check.py` finding on `hos_install.sh` is reproduced
     in full and **not suppressed**;
-  - **Follow-up #<n> (ruling (g))** for `register()`'s short-write and leftover `.new.<pid>` handling. FM-17
+  - **Follow-up #2148 (ruling (g))** for `register()`'s short-write and leftover `.new.<pid>` handling. FM-17
     is not claimed;
   - every item in §9.1.
 
@@ -973,21 +978,22 @@ PR-required suite.
 - **I-3** (§2.3 step 8): accepted, with the `INVALID:` prefix.
 - **I-4** (§4.4): accepted; the bullets depend on the prefixes.
 - **I-5** (§4.2): accepted; the `install.sh:148` indented-key issue goes to #2059's re-review.
-- **I-6** (§4.5): **recorded in REQ-11.** `pm-agent` is scoping it to "a run that reaches §4.3"
-  (code-review-7), because `--help` and earlier hard stops exit without a line. The invariant, for a run
+- **I-6** (§4.5): **recorded in REQUIREMENTS-2100 REQ-11**, scoped to "a run that reaches the
+  register/verify step" (commit `61fbeebc4`; code-review-7). The scope exists because `--help` and earlier
+  hard stops exit without a line. The invariant, for a run
   that reaches §4.3:
   - exit 77 ⇔ exactly one line with `refused≠none`;
   - exit 0 ⇔ exactly one `refused=none` line;
   - a dry run prints exactly one `skipped=dry-run`.
 - **I-7** (F-7): accepted.
-- **I-8** (§2.7, new, for the architect to confirm). The arbitration lists `../x → x` among the slug tests.
+- **I-8** (§2.7): **accepted (architect round 4).** The arbitration listed `../x → x` among the slug tests.
   The ruled rule (dots-only → `project`) leaves `../x` as `..-x`, because `[^a-z0-9._-]` already maps `/` to
   `-`. `..-x` is a single safe path component. It cannot traverse, and it leaves no `.` or `..` component.
-  S-15 therefore expects `..-x`. If the architect wants `x`, that needs a further rule (strip leading dots
-  and hyphens), which would also change existing slugs such as `.hidden`.
-- **I-9** (I-11e, new). The arbitration's "I-11 case `PROJECT_NAME=..` writes
+  S-15 therefore expects `..-x`. The architect confirmed that `..-x` is correct: `../x → x` was a slip. The
+  bound is that no `.` or `..` component results, and leading-dot stripping is **rejected**.
+- **I-9** (I-11e): **accepted (architect round 4).** The arbitration's "I-11 case `PROJECT_NAME=..` writes
   `~/.local/state/hos/tmp/project`" runs as **`--dry-run`**. A real install would then register under the
-  passwd home (F-2). The assertion is the would-append line.
+  passwd home (F-2). The assertion is the would-append line. I-11e stays a dry run.
 
 ---
 
@@ -1002,8 +1008,9 @@ All round-1 escalations (E-1 to E-4) and every reviewer arbitration are **ruled*
   upgrade, when the existing policy lacks the role-dir grant, regenerate it, keeping a timestamped backup.
   That relaxes #1221. #2137 must exercise a Human sandbox session. Q-2 is also a `startup-artifact-gap`
   against #2054.
-- **For the architect to confirm in round 4:** I-8 and I-9 (§10). Neither is a divergence. I-8 is the
-  literal reading of the ruled rule, and I-9 keeps the test out of the real home.
+- ~~For the architect to confirm in round 4: I-8 and I-9 (§10).~~ **Confirmed (architect round 4).** I-8 is
+  accepted: `..-x` is correct, the bound is no `.` or `..` component, and leading-dot stripping is rejected.
+  I-9 is accepted: I-11e stays a dry run. See §13.4.
 
 **Contradictions with the ADR:** none.
 
@@ -1059,10 +1066,19 @@ All round-1 escalations (E-1 to E-4) and every reviewer arbitration are **ruled*
 | (d) code-review-5 | Keep shell as a declared exception. Each decision is one named, extractable function; there is a branch → test table; the `shell_logic_check` finding is disclosed and never suppressed | §4.0, §8.6, I-23, §9 |
 | (e) security-3 | A dots-only slug → `project`, in `install_default`. Unit tests, plus an installer `PROJECT_NAME=..` case | §2.7, S-15, I-11e, §9.1(e), §10 I-8/I-9 |
 | (f) reliability-4 | Fail fast after the first timeout; the remaining roles are "skipped after an earlier timeout"; the D-state residual is stated | §4.1, §4.3, FM-5, I-5, I-5b, I-5c |
-| (g) reliability-3 | FM-17 narrowed to "not claimed"; follow-up #<n> | FM-17, §9 |
+| (g) reliability-3 | FM-17 narrowed to "not claimed"; follow-up #2148 (filed) | FM-17, §9 |
 | (h) others | A per-attempt registry via `tmp_path_factory.mktemp`, with a rerun test. `""` instead of pop, with the I-19 non-empty shim caveat. An atomic, checked `config.sh` append. The `--kill-after` probe (BusyBox unsupported; coreutils named). Helper `cmp -s`. `%q` on the tag and stash message, with hostile cases. The #2137 obligations. The outside-`$HOME` warning. The privacy note names `config.sh`. code-review 3, 4, 6, 8, 9, 10; security 5 (to S2) and 6; reliability 7 and 8; infra 7 and 8. code-review-7 goes to `pm-agent` | §4.1–§4.7, §5, §6, §7, §8, §9, §10 |
 
 Security's APPROVED verdict stands, on condition of (e), which is applied.
+
+### 13.4 Round 4 verdict (2026-10-22): APPROVED
+
+| ID | Ruling | Lands in |
+|---|---|---|
+| I-8 | **Accepted.** `../x` → `..-x` is correct. The arbitration's `../x → x` was a slip. The bound is that no `.` or `..` component results. Leading-dot stripping is **rejected** | §2.7, S-15, §10 |
+| I-9 | **Accepted.** I-11e (`PROJECT_NAME=..`) stays a `--dry-run` case | I-11e, §10 |
+| Follow-up | `register()`'s short-write and leftover `.new.<pid>` handling is filed as **#2148** | FM-17, §9 |
+| REQ-11 | The I-6 clarification is recorded in REQUIREMENTS-2100 REQ-11, scoped to "a run that reaches the register/verify step" (commit `61fbeebc4`) | §10 I-6 |
 
 ---
 
@@ -1084,7 +1100,6 @@ CONFIDENCE:
   - the I-16 fixture (256 live entries with real inodes);
   - I-17's PATH mirror on unusual CI images;
   - whether §5's central fix leaves zero existing harnesses to touch (the reserve slots cover it);
-  - the I-8 slug reading, pending the architect's confirmation.
 
 BLAST RADIUS:
 - every HOS project install and upgrade (fresh, v0.6.0 → v0.7.0, `--pr`, `--dry-run`), with a new hard
