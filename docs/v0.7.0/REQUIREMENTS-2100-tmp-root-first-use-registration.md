@@ -48,6 +48,9 @@ it against the tree and the live filesystem (§0). One claim is wrong: "only Wor
 > line, 30 s timeout, exit 77, verify before the `.hos-release` stamp); REQ-12 (enforced at
 > `cut_release.sh`); §5 (S4b is in scope; whether it ships in v0.7.0 is an **open human
 > question**, not a ruling); ESC-4 wording.
+>
+> *Clarified 2026-10-22 (TD-2100-S4a §10 I-6):* REQ-11's "exactly one `tmp-root-verify:` line" AC
+> now covers dry runs (`skipped=dry-run`) and early exits (no line). See the dated note under REQ-11.
 
 **Protected surfaces:** `bootstrap/**` (`hos_tmp_root.py`, `tmp_reaper.py`) and `bin/**`
 (`hos-cron`, `hos-human`) are protected (`scripts/framework/protected_surfaces.txt`). The human gate
@@ -365,6 +368,16 @@ own goal, keeping scratch off `/tmp`, is therefore silently undone for two of th
   `config.sh` without `HOS_TMP_ROOT`, ends with `HOS_TMP_ROOT` written and all four role dirs
   registered and verified; every run prints exactly one `tmp-root-verify: refused=` line; a hung
   resolver is killed at 30 s and counted as a refusal of that role.
+
+  *(Amended 2026-10-22, pm-agent; clarifying; TD-2100-S4a §10 I-6, accepted by the architect, §13.)*
+  "Every run" in the AC above means every run that reaches the register/verify step. Two refinements:
+  - A `--dry-run` prints exactly one `tmp-root-verify: skipped=dry-run` line instead, and no
+    `refused=` line (TD-2100-S4a §4.5).
+  - A run that exits before the register/verify step (for example a prerequisite failure or a drift
+    hard-stop) prints no `tmp-root-verify:` line (TD-2100-S4a §4.4).
+
+  The invariant is unchanged: exit 77 ⇔ exactly one line with `refused≠none`; a non-dry-run exit 0
+  ⇔ exactly one `refused=none` line.
 
 - **REQ-12 (release gate; added 2026-10-20).** v0.7.0 does not ship until the consumer-upgrade
   smoke test (#2137) passes. It is enforced at `scripts/framework/cut_release.sh`'s validation gate:
