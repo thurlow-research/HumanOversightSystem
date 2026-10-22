@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #2101 slice S1: the inert GitHub-native human-authorization verifier (`scripts/framework/human_authorization.py`)
 
-**Status:** DRAFT, round 1. Awaiting architect review. Not yet handed to `coder`.
+**Status:** APPROVED WITH CHANGES by architect, round 1 (2026-10-22). Rulings and the changes applied are in §10.1. Ready for `coder` (S1 only).
 **Change class:** **additive** for this slice. S1 adds one new, inert, protected module with no caller, and makes two behaviour-preserving extractions in `requester_trust.py`. Nothing that runs today changes behaviour until S2 wires the consumers. The ADR the slice implements is STRUCTURAL and was human-approved (PR #2105, merged by `ScottThurlow`). The refinements this TD makes inside the ADR's delegation are listed in §10, each with its class.
 **Date:** 2026-10-22
 **Author:** technical-design (autonomous worker cycle; no human present)
@@ -71,7 +71,7 @@ That is **11 files**, matching the ADR's S1 row. All are inline-fixture tests, w
 3. **No decision on incomplete data.** `decide` runs only after every input is complete: the binding, the diff file list, both CODEOWNERS and bot sources, and every comment page from every source. Any failure before that point is exit 3, with `covered == []` and `refusals == []`.
 4. **Nothing in a clone confers authority.** The verifier never reads `.github/CODEOWNERS` from disk, and never reads any `.claudetmp/**` auth file. The one local file it writes besides audit records is the `--audit-on-change` suppression record (§4.11). That record can only suppress an audit write. It is never read to compute a verdict.
 5. **Import graph (AM-2).** The verifier imports only the standard library, `scripts.framework.require_human_approval` and `scripts.framework.requester_trust`. It contains no `scripts.automation` and no `scripts.oversight` import. `audit_log` is reached only as `python3 -m scripts.oversight.lib.audit_log` in a subprocess argv.
-6. **Only exit 0 means authorized.** `covered[]` is non-empty only when the exit is 0 or 1 **and** the acceptance audit event was written (§4.10). On exit 2, 3 or 4, `covered` is `[]`.
+6. **Only exit 0 means authorized.** `covered[]` is non-empty only when the exit is 0 or 1 **and** the acceptance audit event was written (§4.10). On exit 2, 3 or 4, `covered` is `[]`. The per-item consumer rule built on this is §10.1 R-A2.
 
 ---
 
@@ -113,7 +113,7 @@ return baseline | env_accounts
 - **Required update, or S1 breaks the suite.** `TestConformance.test_no_second_codeowners_parser_in_framework` (`:663-684`) asserts that the set of `scripts/framework/*.py` files containing the string `CODEOWNERS` is exactly `{requester_trust.py, select_work_candidates.py}`. The verifier must name `.github/CODEOWNERS` in its contents-API endpoint, so it trips this test.
   - The coder adds `scripts/framework/human_authorization.py` to the expected set.
   - The coder adds `assert "parse_codeowners_humans(" in ha_text`.
-  - The coder adds `assert "codeowners_humans(repo_root" not in ha_text` and `assert "read_text" not in ha_text`. The verifier must never read CODEOWNERS from disk (AF-2).
+  - **(Architect ruling R-A4, replacing the round-1 assertions.)** The coder adds `assert re.search(r"(?<![A-Za-z0-9_])codeowners_humans\(", ha_text) is None` (the working-tree reader is never called, in any spelling) and `assert "_codeowners_path" not in ha_text`, and asserts that every line of `ha_text` containing the literal `CODEOWNERS` is either the `CODEOWNERS_PATH = ".github/CODEOWNERS"` assignment, a comment/docstring line, or a line that also contains `contents/`. The round-1 `"read_text" not in ha_text` ban is **dropped**: `render-request --findings-file/--verdict-file` and the §4.11 record legitimately read files, and a string ban on `read_text` only invites `open()` workarounds. The behavioural guard that the verifier never reads CODEOWNERS from disk (AF-2) is T-CLI-9, which is mandatory.
 
   The docstring gains one sentence naming the verifier as a delegating reader.
 - **Extend.** Add `scripts/framework/human_authorization.py` to the `surface` list of `test_no_production_use_of_not_is_bot_reviewer` (`:636-653`). `decide` must never read `not is_bot_reviewer(...)` alone as authorization.
@@ -268,7 +268,7 @@ It raises `ValueError` on any invalid item, binding or step, on an empty `items`
 
 **`render_request(step, binding, items, diff_files, *, issue_url, pr_url=None, findings=(), parse_error=None) -> str`** (pure; AD-9). `findings` is a tuple of `(id, source, description)`. `parse_error` is `(comment_url, detail_text)` or `None`. Output, in this order:
 1. `### Action needed`
-2. `**Action:** post this comment from your own GitHub account, exactly as shown. Delete any reviewed_files line for a file you did not review, but keep at least one.`
+2. `**Action:** copy only the text inside the first box below into a new comment, from your own GitHub account. Its first line must be the /hos line. Delete any reviewed_files line for a file you did not review, but keep at least one.` *(Architect ruling R-A5: a human who pastes the whole request block makes a comment whose first line is `### Action needed`, which AD-1 ignores silently. The instruction must say "only the box", and that the first line is the `/hos` line.)*
 3. A ` ```text ` fence containing `render_form(...)`, then a closing fence.
 4. `To decline instead, post:` followed by a ` ```text ` fence containing `/hos decline step=<N>`.
 5. Only if any `BF:` item is present: `Blocking findings this covers:`, then one line per finding: `- BF:<id> — <source>: <description>`.
@@ -364,7 +364,7 @@ else:
 return Verdict(False, (), required_items, gov, None, sorted(refusals))
 ```
 
-`sorted(refusals)` orders by `(created_at, comment_id)`. Every candidate comment yields **exactly one** of: one `Refusal`, or the `Accepted`. This is AD-10's "one event per candidate", and T-P-20 pins it. The only non-candidate that yields an event is a governing edited non-candidate (§4.6.1).
+`sorted(refusals)` orders by `(created_at, comment_id)`, via an explicit `key=` (the dataclasses are not declared `order=True`). Every candidate comment yields **exactly one** of: one `Refusal`, or the `Accepted`. This is AD-10's "one event per candidate", and T-P-20 pins it. The only non-candidate that yields an event is a governing edited non-candidate (§4.6.1).
 
 **Rules, stated as the coder will test them.**
 - **No accumulation.** The latest participant governs. An older valid authorize never fills items the governing act leaves out, so `covered` comes from one act only. A stale or no-overlap governing authorize gives `covered = ()` even if an older act would have been current. `render_request` always lists every required item, so the human posts the complete set in one comment.
@@ -385,7 +385,8 @@ The older authorize would then govern. So an edited verified-CODEOWNER comment i
 Local git only. Every git call goes through `_run_git`.
 
 **`_run_git(repo_root, args, *, stdin=None) -> bytes`.**
-- argv is `["git", "-C", str(repo_root), *GIT_PIN, *args]`.
+- argv is `["git", "-C", str(repo_root), f"--attr-source={EMPTY_TREE}", *GIT_PIN, *args]`, where `EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"` (the SHA-1 empty tree). **Architect ruling R-A3 (§10.1):** this stops git reading `.gitattributes` from the **working tree** (or index). Without it, a working-tree `* -diff` (or `binary`) attribute changes the patch-id (architect experiment, git 2.53.0: clean `427de3d6…`, worktree `* -diff` `1656691d…`, worktree `* -diff` with `--attr-source=<empty>` `427de3d6…`). The worker computes on the step branch and the overseer on the default branch, so a step that edits `.gitattributes` would otherwise give the two clones different bindings: a permanent `stale` that no human act can clear. `$GIT_DIR/info/attributes` is still read (R-S1-2 stands, per clone).
+- **Minimum git version.** The verifier needs `patch-id --verbatim` and `--attr-source` (git ≥ 2.42). An older git rejects the option, so the call exits non-zero and is `git-failure` (exit 3, closed). The coder records the exact minimum version in the module docstring; S2 adds it to the consumer prerequisites (§10.1, S2-PRE-3).
 - `env` is built from `os.environ`, minus **every key starting with `GIT_`**. This removes `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, `GIT_DIFF_OPTS`, `GIT_EXTERNAL_DIFF` and `GIT_ATTR_SOURCE`. Three keys are then added: `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_ATTR_NOSYSTEM=1`.
 - Use `capture_output=True`, `timeout=GIT_TIMEOUT_SECONDS` and `check=False`.
 - A non-zero exit, `OSError` or `TimeoutExpired` raises `VerifierError("git-failure")`. The detail names the git subcommand only, never stderr.
@@ -429,7 +430,9 @@ GIT_PIN = ["-c", "core.quotePath=true", "-c", "core.attributesFile=/dev/null",
 | The same two payloads with `--text` | **identical ids**: `--text` makes `patch-id` blind to binary content. This is why `--text` is forbidden. |
 | `core.compression` 0 or 9 with `--binary` | same id. `patch-id` hashes the full-index blob ids of a binary diff, not the deflate stream, so **`--full-index` is load-bearing**. |
 
-`.git/info/attributes` cannot be neutralized from the command line. Its only effect is to make one clone compute a *different* id (`stale`, closed), never to make two different contents collide. Tests T-B-5 and T-B-6 pin both directions.
+| *(architect)* Working-tree `.gitattributes` `* -diff` | changed **without** `--attr-source`; **same** with `--attr-source=<empty tree>` (now pinned) |
+
+`.git/info/attributes` cannot be neutralized from the command line (`--attr-source` does not suppress it; architect experiment). Its only effect is to make one clone compute a *different* id (`stale`, closed), never to make two different contents collide. Tests T-B-5 and T-B-6 pin both directions.
 
 ### 4.8 Fetcher: `fetch(repo, issue, pr) -> Fetched` (AD-3, REQ-9)
 
@@ -673,10 +676,12 @@ AD-6 makes this an overseer flag. S2's file list does not include the verifier, 
 | Diff path with a control character, non-UTF-8, edge whitespace or wrapping quotes | exit 3 `unrepresentable-path` | Closed (R-S1-3) |
 | SHA-256 object-format repo | exit 3 `unsupported-object-format` | Closed (R-S1-4) |
 | Hostile global/local git config, `.gitattributes` textconv, `GIT_*` env | Neutralized; same id | — |
+| Working-tree `.gitattributes` `-diff`/`binary` (e.g. the step edits `.gitattributes`) | Neutralized by `--attr-source=<empty tree>`; same id in worker and overseer clones | — (R-A3) |
+| git older than the minimum version | exit 3 `git-failure` | Closed |
 | Local `.git/info/attributes` `-diff` | Different id, so `stale` | Closed (R-S1-2) |
 | Bot edits or deletes a human's *authorize* | `edited` / absent, so unmet | Closed |
 | Bot edits a human's newer *decline* into chatter or another step | Still a participant (§4.6.1), so `edited` | Closed |
-| Bot **deletes** a human's newer decline | The older current authorize governs | **Open: R-S1-5 / ARCH-Q1** |
+| Bot **deletes** a human's newer decline | The older current authorize governs | **Open: R-S1-5.** Accepted for inert S1 only; must be mitigated or human-accepted before S2 merges (§10.1 R-A1) |
 | Comment hidden (minimized) | `edited` | Closed (over-refusal) |
 | Acceptance audit write fails | exit 4, `covered = []` | Closed |
 | Refusal audit write fails | Exit unchanged, WARN | Closed |
@@ -758,7 +763,8 @@ Shared helper (per file, no fixture files): `_c(id, login, type="User", created=
 | T-B-4 | AF-6: a whitespace-only commit changes the binding | differs |
 | T-B-5 | Hostile config (AD-5 test). `HOME` points to a dir with the §4.7 hostile `.gitconfig`. Hostile repo-local config. `.gitattributes` with a textconv driver whose command writes a sentinel file. Env `GIT_CONFIG_PARAMETERS="'diff.algorithm'='patience'"`, `GIT_CONFIG_COUNT=1/KEY_0=diff.context/VALUE_0=0` and `GIT_DIFF_OPTS=--unified=0` | same id as clean; the sentinel file never created |
 | T-B-6 | Two different binary payloads at one path give different ids. The same holds with `.git/info/attributes` `* -diff` | differs ×2 |
-| T-B-7 | The argv recorded through a `_run_git` spy contains every ADR flag (`--no-ext-diff --no-textconv --no-color --no-renames --full-index --binary`, `diff.algorithm=myers`, `core.quotePath=true`) and never `--text` or `-a` | holds |
+| T-B-6a | R-A3: a working-tree `.gitattributes` containing `* -diff`, and separately `* binary`, written after the commits (uncommitted), gives the **same** id as clean. Variant: the step commit itself adds `.gitattributes` `* -diff`; computing from a checkout of `head` and from a checkout of `base` gives the same id | same ×3 |
+| T-B-7 | The argv recorded through a `_run_git` spy contains every ADR flag (`--no-ext-diff --no-textconv --no-color --no-renames --full-index --binary`, `diff.algorithm=myers`, `core.quotePath=true`), `--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904` before the subcommand on **every** git call, and never `--text` or `-a` | holds |
 | T-B-8 | Missing base / missing head / shallow clone / empty diff / two merge bases (criss-cross fixture) | `git-failure` ×3, `empty-diff`, `ambiguous-merge-base` |
 | T-B-9 | A path with a tab, and a path that is invalid UTF-8 (`os.fsencode` bytes name) | `unrepresentable-path` |
 | T-B-10 | `base` = `--output=x` is rejected before git runs (CLI exit 2); `head` not 40-hex is exit 2 | holds |
@@ -888,6 +894,55 @@ Each question gives this TD's default, which S1 is drafted on, and what changes 
 
 None of these blocks handing S1 to `coder` once you approve. ARCH-Q1 changes S1's scope if you rule "mitigate".
 
+### 10.1 Architect rulings (round 1, 2026-10-22)
+
+**Verdict: APPROVED WITH CHANGES.** The changes below were applied to this document by the architect. They are mechanical and need no further technical-design round. S1 may go to `coder`.
+
+**R-A1 (ARCH-Q1, deletion resurrection): S1 ships without mitigation; R-S1-5 is accepted for the inert S1 only. It is NOT accepted for live use, and gates S2's merge.**
+- *Why not mitigate in S1.* The only proposed mitigation (GraphQL `CommentDeletedEvent`) adds a second transport (POST) and a second fetch to the trust path, and it is unprobed: nobody has confirmed that a deletion of another user's issue comment by an App is reliably visible, or with which fields. Putting an unprobed read into the trust decision is worse than a stated residual in a module with no caller.
+- *Why it is not harmless.* The resurrected act did name the exact current binding, so the content is something the human once approved. But for `C10:*` and `BF:*` items on a non-CRITICAL, non-protected step, the overseer may auto-merge (ceiling HIGH), so #757 is **not** a backstop there. The human's retraction would be silently lost. That is a user-observable failure mode on the hardest gate.
+- *Binding instruction for S2.* S2's technical design must, before S2 merges, do one of:
+  (a) probe REST `GET /repos/{o}/{r}/issues/{n}/timeline` (same GET transport, no `-f`) for a comment-deletion event naming the deleted comment's author and time. If it exists, add it to the fetch as fail-closed input and add refusal reason `deleted-later`: any deletion of a verified CODEOWNER's comment newer than the governing act makes the result unmet. This is a protected-file change to the verifier, ≤4 files, inside S2's or a dedicated S1b slice's budget; or
+  (b) carry the human's explicit, own-account acceptance of R-S1-5 for live use.
+  (a) is my recommended path. GraphQL is acceptable only if REST does not expose the event, and then only as a fail-closed read.
+- **Human question (product-boundary checkpoint; blocks S2 merge, not S1 coding): HQ-1.** "If (a) proves impossible on the REST API, do you accept that a decline you post can be erased by a bot deleting it, letting your earlier authorize for the same exact content stand?"
+
+**R-A2 (ARCH-Q4, exit-0-only versus per-item split): the per-item split is allowed, under exact conditions.** This resolves the AD-2/AD-6 tension. AD-2's "only 0 clears an item" is read as "only 0 authorizes the **whole request**". A consumer that asks for several items in one call may clear an individual item **iff all** of the following hold:
+1. the process exit status (not the JSON's `exit_code` field) is 0 or 1;
+2. stdout parses as the §4.9 JSON object, `schema == "hos-human-authorization/v1"`, and its `exit_code` equals the process exit status;
+3. `error` is `null`;
+4. the item is in `covered`.
+
+Any other state (exit 2, 3, 4, any other status, unparseable or mismatched JSON) clears **no** item. `pr_readiness` REQ-W-07 asks for `C7` alone and uses exit 0 only. The overseer's re-verify never splits: any non-zero exit is HUMAN_REQUIRED. S2's design cites this ruling. S1 already guarantees what it relies on (§2 rule 6, §4.9 exit 4). Classification: clarifying; no product consequence, because any unmet item still keeps the step from PROCEED. I do not amend the human-approved ADR text for this; S2's design records it as an ADR-2101 erratum in `DECISIONS.md`.
+
+**R-A3 (binding environment pinning, a defect found in review): pin the attribute source.** §4.7's environment strip and config pins are correct, and the `--text` prohibition and `--full-index` reasoning are right. But a **working-tree** `.gitattributes` with `-diff`/`binary` changes the id (reproduced; §4.7). The worker and overseer compute from different checkouts, so a step that edits `.gitattributes` would get a permanent, unclearable `stale` at the overseer. Fixed: `--attr-source=<empty tree>` on every git call, test T-B-6a, T-B-7 extended, minimum git version declared (git-failure, closed, on older git). R-S1-2 (`info/attributes`) stands, since it is per-clone and only over-refuses.
+
+**R-A4 (requester_trust conformance-test change): approved, with the assertions replaced.** Widening `test_no_second_codeowners_parser_in_framework` by one delegating reader is correct and the #1540 sign-off on that test stands. But the round-1 `"read_text" not in ha_text` ban contradicts this TD's own `--findings-file`, `--verdict-file` and §4.11 reads, and `"codeowners_humans(repo_root"` is trivially evaded by a keyword argument. Replaced in §3.4. T-CLI-9 is the behavioural guard and is mandatory.
+
+**R-A5 (render text):** §4.4 `render_request` item 2 now says to copy only the boxed text, whose first line is the `/hos` line. Otherwise a pasted whole block is silently ignored under AD-1, which REQ-8's "a human's newest word must never be silently skipped" intends to prevent.
+
+**ARCH-Q2 (any later edit by the CODEOWNER voids the act): the technical call is approved as drafted.** The narrower rule ("only edited candidates poison") reopens two resurrection attacks; the only other narrowing ("only edits by someone other than the author poison") needs GraphQL `userContentEdits.editor`, a second transport. The fail-closed rule stands for S1. It is a **user-visible** over-refusal beyond the ADR's literal "edited act is refused", so under the product-boundary checkpoint it goes to pm-agent and the human before it is live:
+- **Human question HQ-2 (blocks S2 merge, not S1 coding):** "After you authorize a step, editing any later comment of yours on that issue or PR voids the authorization until you post a fresh one. Accept that, or require the editor-identity check (a GraphQL read) so that only edits by someone else void it?"
+- The S1 PR's "Human Review Required" section discloses it, and `render_request` line 7 tells the human.
+
+**ARCH-Q3 (closed-set additions): approved.** `superseded` is required for AD-10's one-event-per-candidate to hold. Every added field is additive, and none carries body text. `ParseError.key` is restricted to the four allowed keys, which keeps `duplicate-key:<k>` privacy-clean; the coder pins that `unknown-key` is checked before `duplicate-key`.
+
+**ARCH-Q5 (extra extractions `parse_env_text`, `bot_baseline_from_env_text`): approved.** I re-read `requester_trust.py:242-255` and `:301-322`. Both are pure moves, and `load_trusted_apps` (also a `_parse_env_file` caller) is unaffected. A second `.env` parser would be a drift site on a security input. AD-2's "public functions of `requester_trust`" covers them; no ADR change.
+
+**ARCH-Q6 (grammar refinements): approved.** Each one moves a near-miss from "silently ignored" to "malformed", or accepts the fenced form AD-9 itself presents. None widens what is accepted beyond the canonical form.
+
+**ARCH-Q7 (no GraphQL `lastEditedAt` alternative; R-S1-1 accepted): approved.** The probe evidence (hidden comments have `lastEditedAt == null`) shows the alternative would accept a minimized comment. AD-4 permitted, never required, it. R-S1-1's one-second window is negligible against an actor that is our own App.
+
+**Scope and import checks (asked by the worker): pass.**
+- Files: 11, the ADR's S1 row, within the ≤15 cap. `regen_all.sh` changes only `SCRIPTS-INDEX.md` (CODEOWNERS covers `/scripts/framework/` by directory). The §4.11 record is runtime state under `.claudetmp/`, not a repo file.
+- Imports: stdlib, `require_human_approval` (stdlib-only imports, re-checked) and `requester_trust` (stdlib + `require_human_approval`). Nothing from `scripts/automation/**` or `scripts/oversight/**`, directly or transitively. `audit_log` is reached only by subprocess (AF-3). T-CLI-16 pins it.
+
+**S2 prerequisites recorded here so they are not lost (none blocks S1):**
+- **S2-PRE-1:** R-A1 resolved (mitigation (a) built, or HQ-1 answered).
+- **S2-PRE-2:** HQ-2 answered.
+- **S2-PRE-3 (product-boundary: consumer operational obligation).** Consumers do not receive `scripts/framework/machine-accounts.env` (not in `framework_consumer_files.txt`; re-checked), so every consumer `verify` exits 3 and the human gate is unsatisfiable there. S2 must decide with pm-agent and the human how a consumer provisions and commits that file to its default branch, and add the minimum git version (R-A3) to the consumer prerequisites. Fail-closed is correct; an unsatisfiable gate in every consumer is a product consequence that needs clearance.
+- **S2-PRE-4:** consumers take `--repo` from protected configuration, never from agent prose. A caller-chosen repo selects whose CODEOWNERS and comments are read. The overseer's own-clone re-verify (AF-5) remains the anchor.
+
 ---
 
 ## 11. Startup-gap check and affected sign-offs
@@ -909,4 +964,4 @@ Change classification: **additive** (S1). It implements a human-approved STRUCTU
 
 ## Human Review Required
 
-The S1 PR lands on `scripts/framework/**`, so your own-account approval of the protected-surface PR is the final gate. Before then, the architect must answer ARCH-Q1 (deletion resurrection), and should confirm ARCH-Q2 (any later edit voids the act, which is user-visible). REQ-2 and REQ-9 are not open to any answer.
+The S1 PR lands on `scripts/framework/**`, so your own-account approval of the protected-surface PR is the final gate. The architect answered ARCH-Q1 to ARCH-Q7 (§10.1). Two human questions are open. Neither blocks S1 coding or the S1 merge, because S1 has no caller. Both block S2's merge: **HQ-1**, whether to accept deletion resurrection (R-S1-5) if the REST mitigation is impossible, and **HQ-2**, whether any later edit of your own comment should void your authorization. S2-PRE-3, consumer provisioning of `machine-accounts.env`, also needs your clearance before S2. REQ-2 and REQ-9 are not open to any answer.
