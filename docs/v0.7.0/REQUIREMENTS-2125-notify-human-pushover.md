@@ -346,11 +346,13 @@ the notifier for:
 **REQ-16. Worker idle (S3; `bin/hos-cron`, worker role; normal).**
 - A per-project counter increments on every worker cycle in which the selector ran and reported
   `eligible=0` with at least one unparked in-milestone `needs-ai` issue (`scanned>0`, which already
-  excludes `needs-human` and the selector's `EXCLUDED` set). It resets on any cycle with `eligible>0`
-  or `scanned=0`. Cycles that never reach the selector (paused, halted, suspended, skipped before
-  selection) neither increment nor reset it.
-- **[PM]** `eligible=0` with `complete=no` (the selector's exit 3, "DEGRADED") counts as idle. A
-  worker that cannot determine its work for N cycles is stalled too (the #1704 class).
+  excludes `needs-human` and the selector's `EXCLUDED` set). It resets on any cycle with `eligible>0`,
+  or with `scanned=0` and `complete=yes` (the selector verified there is no unparked work). Cycles
+  that never reach the selector (paused, halted, suspended, skipped before selection) neither
+  increment nor reset it.
+- **[PM]** `eligible=0` with `complete=no` (the selector's exit 3, "DEGRADED") counts as idle and
+  increments the counter **whatever `scanned` reports**, including `scanned=0`. A worker that cannot
+  determine its work for N cycles is stalled too (the #1704 class).
 - When the counter reaches N (ESC-3), call with `--cause worker-idle --issue none`. `--since` is the
   first idle cycle in the run. Dedup (REQ-6) then limits repeats to one per 6 h while it persists.
 
@@ -459,7 +461,8 @@ test that would reach the real endpoint fails rather than sends. This follows th
   code (REQ-15).
 - **AC-15 (S3).** N idle worker cycles produce one `worker-idle` call. An `eligible>0` cycle resets
   the count. A paused cycle neither increments nor resets it. All-excluded (parked) work produces no
-  call (REQ-16).
+  call (REQ-16). N degraded cycles (`eligible=0 complete=no`, including `scanned=0`) produce one
+  call, and a `scanned=0 complete=yes` cycle resets the count.
 - **AC-16 (S3).** A critical `needs-human` item 25 h after escalation with no human comment produces
   one `needs-human-stale` call. A comment from the human produces none. A comment from a bot in
   `BOT_ACCOUNTS` (including the human-proxy) does not count as human. A non-critical `needs-human`
@@ -578,3 +581,7 @@ issued it. ESC-1 to ESC-4 are open. **S1 may proceed to `architect` on ESC-1's r
 because nothing else in S1 depends on an open question, and a change to (A) is cheap. S2 waits on
 ESC-2. S3 waits on ESC-3 and ESC-4. Provisioning `~/.config/hos/pushover.env` and running
 `notify_human.sh --test` after S1 merges are human acts, not slices.
+
+## Revisions
+
+- 2026-10-22 (clarifying; second review 2026-10-22 (agy)): REQ-16 and AC-15 now agree. `eligible=0 complete=no` increments the worker-idle counter even when `scanned=0`, and `scanned=0` resets it only when `complete=yes`.
