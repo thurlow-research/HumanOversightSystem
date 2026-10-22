@@ -1,8 +1,27 @@
 # TECHNICAL DESIGN — #2100 slice S4a: install-time registration, the read-only `status` read-back, fail-on-refusal (exit 77), and the v0.6.0 `HOS_TMP_ROOT` upgrade write
 
-**Status:** DRAFT, round 1. **Not yet reviewed by the architect, so not ready for `coder`.** §10 lists the
-interpretations the architect must accept or correct. §11 lists the open escalations.
-**Date:** 2026-10-22
+**Status:** REVISION 2, in reply to **architect round 1: CHANGES_REQUIRED** (13 required changes; ruling at
+`.claudetmp/design/architect-2100-S4a-2026-10-22T083613Z.md`). All 13 are folded into the body, and §13
+records the rulings. **Awaiting the architect's round-2 check, so not yet ready for `coder`.** Each change
+lands in these sections:
+
+| Change | Where |
+|---|---|
+| RC-1 (register failure printed) | §4.3, §4.4, I-16 |
+| RC-2 (`CANNOT VERIFY` vs `INVALID`) | §2.4, §4.4, S-10, S-11, I-3, I-10c |
+| RC-3 (timeout fail-closed) | §4.1, FM-6, §6, I-15, I-17 |
+| RC-4 (`--pr` recovery commands) | §4.7, I-2b |
+| RC-5 (conftest unconditional) | §5, §8.4 |
+| RC-6 (variable containment) | §4.2, I-18, §9 |
+| RC-7 (registry-override warn) | §4.3, I-19 |
+| RC-8 (capture method) | §4.1, §4.3, I-1 |
+| RC-9 (`security-reviewer` mandatory) | §1, §9 |
+| RC-10 (fixture scope) | §5 |
+| RC-11 (PR-body disclosures) | §9.1 |
+| RC-12 (I-6 for `pm-agent`) | §10 |
+| RC-13 (E-1 ruling) | FM-14, §9, §11, §13 |
+
+**Date:** 2026-10-22 (round 1); revised 2026-10-22 (round 2)
 **Author:** technical-design (autonomous worker cycle; no human present)
 **Baseline:** `HEAD` = `origin/main` = **`70ba746e1`** (the merge of PR #2146, the ADR-2100 fail-closed amendment).
 Every file:line below refers to that commit. §0.3 lists the drift from the line numbers the ADR cites.
@@ -58,7 +77,7 @@ I searched `bin/`, `bootstrap/`, `scripts/` (recursively) and `scripts/automatio
   (`repr(name)`, `"<repr> (it contains project files)"`, `"an unreadable listing (<exc>)"`), so it cannot give
   back raw names. See §2.6.
 - **Bounded subprocess in bash.** I found the `timeout` → `gtimeout` → unbounded-with-one-warning precedent at
-  `bootstrap/edit_issue_edges.sh:144-149` and `bootstrap/query_issues.sh:163-170`. §4.1 reuses that shape.
+  `bootstrap/edit_issue_edges.sh:144-149` and `bootstrap/query_issues.sh:163-170`. §4.1 reuses the binary lookup but, per the round-1 ruling (E-4 reversed), not the unbounded fallback.
 - **`config.sh` writer.** I found one non-interactive append site (`hos_install.sh:845-849`) and the
   interactive `install.sh` writer (`scripts/framework/install.sh:316-377`). §4.2 extends the former.
 - **Install-time registration.** I found nothing, as ADR §0.2 also reports.
@@ -98,14 +117,14 @@ I searched `bin/`, `bootstrap/`, `scripts/` (recursively) and `scripts/automatio
     key is absent, so `../.tmp` is the effective default and generation works.
   - The interactive `install.sh` path already has this conflict today (it writes the same default at
     `install.sh:266-272`, before `:1790`). This is a pre-existing #2054 inconsistency that S4a would extend
-    to non-interactive installs. **Escalated as E-1.**
+    to non-interactive installs. **Escalated as E-1; ruled (a) with human question Q-1 (§13).**
 - **F-4 (MEDIUM): In `--pr` mode the upgrade branch already exists, with the staged upgrade on it, when
   verify runs.**
   - The branch is created before any scaffolding (`:675-733`).
   - A verify failure therefore leaves the consumer on `PR_BRANCH` with uncommitted changes.
   - A plain re-run with `--pr` then fails the "working tree not clean" eligibility test (`:678`). That
     breaks AD-12's "a re-run takes the same upgrade path again" for `--pr`.
-  - **Escalated as E-2.** §4.7 gives the default behaviour.
+  - **Escalated as E-2; accepted with exact recovery commands (§4.7, §13).**
 - **F-5 (MEDIUM): A remedy command must name a file that still exists after the install.**
   - `_remedy` and `_repoint_message` embed `os.path.abspath(__file__)` (`:352`, `:492`).
   - In release mode, `HOS_SOURCE` is a `mktemp -d` staging dir removed on `EXIT` (`:221-224`, `:411`).
@@ -160,9 +179,9 @@ absorbs this one, and say that #2059's `_cfg_read` would replace §4.2's `PROJEC
 | 11–14 | reserve | at most four existing install-suite harnesses, **only if** §5's central fix leaves one failing. A harness edit may only add environment; it may not weaken an assertion | no |
 
 Total: 9 to 14. The two `bootstrap/**` files put the whole PR behind the human approval gate.
-`reliability-reviewer` is **mandatory** (ADR §4 S4a row). `security-reviewer` is **recommended**, because
-`status` and the `adoption_problems` refactor touch the guard module (AD-5 invariants 1 and 2 must hold
-byte-for-byte).
+`reliability-reviewer` is **mandatory** (ADR §4 S4a row). `security-reviewer` is **mandatory** (architect
+round 1, RC-9): the §2.6 refactor rewrites the body of the guard's adoption check, so AD-5 invariants 1 and
+2 must be re-reviewed as a whole, not only as a diff.
 
 ---
 
@@ -221,7 +240,8 @@ code.
 8. **Registered for this (repo, role)?** `info = os.lstat(role_dir)`. If
    `is_registered(role_dir, info, repo_real)`:
    - if `info.st_mode & 0o077`: exit **2**, class `structural`, reason "registered but accessible to
-     group/other". AD-12 defines exit 0 as "a private owned real dir"; see I-3;
+     group/other (mode <octal>); chmod 700 it, or let any launcher run tighten it". The line uses the
+     `INVALID:` prefix. AD-12 defines exit 0 as "a private owned real dir"; see I-3;
    - otherwise: exit **0**, class `registered`.
 9. **Not registered for this key.**
    - (a) **Re-point:** `_repoint_conflict(entries, repo_real, ROLE_DIRS[role], os.path.realpath(role_dir))`
@@ -259,7 +279,15 @@ line is single so that callers that keep only the last stderr line still get all
 | `unregistered-blocked` | `NOT REGISTERED: ` + `_remedy(role_dir, role, repo, <formatted blockers>)`. The existing text is reused; it shows the first five plus a count (AD-4's wording is S2's, I-4) |
 | `repoint` | `NOT REGISTERED: ` + `_repoint_message(conflict, str(role_dir), repo, role)` (existing text) |
 | `registry-absent` / `registry-unreadable` | `CANNOT VERIFY: <reason>. If this runs inside a Claude session or any sandbox, re-run it unsandboxed, in your own terminal (the sandbox hides the trust registry)` |
-| `root-invalid` / `structural` / `error` | `CANNOT VERIFY: <the TmpRootError/OSError text>` |
+| `root-invalid` / `structural` / `error`, including I-3's registered-but-loose-mode case | `INVALID: <the TmpRootError/OSError text>. Fix the path or value named on this line` |
+
+**The three prefixes are a closed set, and they mean different things (RC-2):**
+- `NOT REGISTERED:` is exit 1. The remedy is `mv` or `mark`.
+- `CANNOT VERIFY:` is **only** the two registry classes. The remedy is to re-run unsandboxed.
+- `INVALID:` is every other exit-2 class. The remedy is to fix the named path or value. A re-run without a
+  sandbox would not help, so this line never says to do that.
+
+The installer (§4.4) selects its remedy text by these prefixes, so they are part of the contract.
 
 ### 2.5 Exit codes (binding)
 
@@ -359,22 +387,55 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
 
 ### 4.1 The bounded invoker (used by every resolver call S4a adds)
 
-- **Timeout prefix.** It is computed once, after the prerequisite check (`:571-577`), following the
-  `edit_issue_edges.sh:144-149` precedent:
-  - `timeout --kill-after=5s <T>s` if `timeout` exists;
-  - otherwise `gtimeout --kill-after=5s <T>s`;
-  - otherwise empty, with **one** `warn`: "no timeout/gtimeout found — temp-dir registration runs unbounded
-    (install coreutils; hos_bootstrap.sh does this on macOS)". See E-4.
+- **A timeout binary is a prerequisite (RC-3; E-4 reversed: fail closed).** The prerequisite check
+  (`hos_install.sh:552-577`) gains one more check, placed with the others and evaluated before
+  `PREREQ_OK` is tested:
+  - if `timeout` exists, it is `ok "timeout present"`;
+  - otherwise, if `gtimeout` exists, it is `ok "gtimeout present (coreutils)"`;
+  - otherwise it is `err "timeout (coreutils) missing — needed to bound temp-dir registration"`, and
+    `PREREQ_OK=false`.
+
+  The existing block then exits **1**, before any write and before the PR branch. It points to
+  `hos_bootstrap.sh`, which already installs coreutils (`hos_bootstrap.sh:267-281`). That covers a real
+  install and a `--pr` install alike.
+- **Dry run without a timeout binary.** A `--dry-run` must not stop on a missing prerequisite it never
+  needs. When neither binary exists under `--dry-run`, the check prints
+  `warn "timeout (coreutils) missing — a real install would stop here (exit 1); run hos_bootstrap.sh"`
+  instead of `err`. It does not set `PREREQ_OK=false`. The §4.2 preview calls (`install-default`,
+  `validate`) are then **skipped**, with
+  `dry_run "Would compute and check HOS_TMP_ROOT (skipped: no timeout binary)"`, so the dry run still makes
+  no unbounded call.
+- **Timeout prefix.** It is computed once, right after the prerequisite check:
+  - `(timeout --kill-after=5s <T>s)`;
+  - or `(gtimeout --kill-after=5s <T>s)`.
+
+  **There is no empty-prefix path.** The invoker refuses to run if the prefix array is empty: it is
+  unreachable after the prerequisite check, but a defensive `err` and the 77 path cover it.
+  §8.2 I-15 pins that no code path calls the helper without the prefix.
 - **`<T>`** is `30`. The environment variable `HOS_INSTALL_TMP_VERIFY_TIMEOUT` may only **lower** it: an
   integer from 1 to 30 is used; anything else (absent, non-integer, 0, above 30) gives 30. This exists so the
   hang test does not take 35 s. It mirrors `HOS_TEST_TMP_BUDGET_MB`'s "lowerable, never raisable" rule. A
   static test pins the default of 30 and the kill-after of 5 (§8.2 I-15).
-- **Invocation.** It runs `<prefix> python3 -I <helper> <args…>`, with `python3` looked up on `PATH` like
-  the rest of the installer.
-  - stdout and stderr are captured into shell variables with command substitution. No temp file is written,
-    so nothing lands in `TMPDIR`, which may itself be a role dir if the installer runs from a `hos-human`
-    shell.
-  - The return code is preserved without tripping `set -e` (`|| _rc=$?`).
+- **Invocation and capture (RC-8, exact).** The helper is run as
+  `"${_prefix[@]}" python3 -I "$helper" <args…>`, with `python3` looked up on `PATH` like the rest of the
+  installer. There are two capture forms, and no other:
+  - **Diagnostic calls** (`resolve --create`, `status`, `validate`) capture **stderr only**, with stdout
+    discarded:
+
+    `_rc=0; _err="$("${_prefix[@]}" python3 -I "$helper" <args…> 2>&1 >/dev/null)" || _rc=$?`
+
+    The redirection order is deliberate. `2>&1` points stderr at the substitution, then `>/dev/null`
+    discards stdout. `resolve`'s printed path is therefore never read. The install reports the root from
+    `status`'s `OK:` line instead (§4.3).
+  - **The value call** (`install-default`) captures **stdout only**, with stderr discarded:
+
+    `_rc=0; _val="$("${_prefix[@]}" python3 -I "$helper" install-default … 2>/dev/null)" || _rc=$?`
+
+    On failure the cause is reported as `install-default exited <rc>`.
+  - No temp file is written, so nothing lands in `TMPDIR`. `TMPDIR` may itself be a role dir if the
+    installer is run from a `hos-human` shell.
+  - `_err` keeps only its **last** line (`${_err##*$'\n'}`), which matches the resolver's one-line
+    convention.
   - Return code **124** or **137** means "timed out" (TERM, then KILL after 5 s).
 
 ### 4.2 The `HOS_TMP_ROOT` upgrade write (AD-12 "Upgrade write"; REQ-11)
@@ -404,9 +465,13 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   - rc ≥2 (unreadable file) goes to the **77 path** with "cannot read `<config.sh>`".
   - A missing `config.sh` counts as absent.
 - **The value.**
-  - If `HOS_INSTALL_TMP_ROOT` is set and non-empty, its value is used. This is an operator and automation
-    override, used by #2137 and §5. It is otherwise just "the human typed it", and it passes exactly the
+  - If `HOS_INSTALL_TMP_ROOT` is set and non-empty, its value is used. This is an operator override, and
+    the test isolation in §5 uses it. It is otherwise just "the human typed it", and it passes exactly the
     same gates. See E-3.
+  - **Containment (RC-6).** `bootstrap/hos_install.sh` is the only non-test file that reads or names
+    `HOS_INSTALL_TMP_ROOT`. The only other non-test file that names it is `docs/CRON-SETUP.md`. §8.2 I-18
+    pins this. #2137's upgrade case must **not** set it, because #2137 has to exercise the real
+    `install-default` (§9.1).
   - Otherwise, the value is the stdout of `<HOS_SOURCE>/bootstrap/lib/hos_tmp_root.py install-default
     --target "$TARGET_REPO" --project-name "<name>"` (F-5: the source copy, because a v0.6.0 target has
     none yet).
@@ -426,8 +491,10 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   > `HOS_TMP_ROOT could not be written to config.sh: <cause>. Set HOS_TMP_ROOT in <config.sh> by hand, then re-run.`
 
   `<cause>` is the gate that failed and, for `validate`, its stderr line.
-- **On success:** `_config_append_kv HOS_TMP_ROOT "<v>"`, then `ok "config.sh: added HOS_TMP_ROOT=\"<v>\""`.
-  The value is also added to `_appended`, so the warning at `:1717` lists it.
+- **On success:** `_config_append_kv HOS_TMP_ROOT "<v>"`, then
+  `ok "config.sh: added HOS_TMP_ROOT=\"<v>\" <source>"`. `<source>` is exactly
+  `(from HOS_INSTALL_TMP_ROOT)` or `(resolver install-default)` (RC-6). The dry-run line in §4.5 carries the
+  same suffix. The value is also added to `_appended`, so the warning at `:1717` lists it.
 - **Interactive path.** When `install.sh` is later delegated to (`:1735-1742`), it reads this line as
   `EXISTING_HOS_TMP_ROOT` (`install.sh:148`), offers "Enter to keep", rewrites `config.sh` whole and writes
   one `HOS_TMP_ROOT=` line (`install.sh:362-377`). The final file still holds exactly one assignment, and
@@ -444,12 +511,23 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   install takes the 77 path.
 - **Roles.** Always all four, in this fixed order: `worker overseer human local`. The `--worker`,
   `--overseer` and `--human` flags do not change the set (AD-7(b) "Why all four from one clone").
-- **Register.** For each role: `resolve --repo "$TARGET_REPO" --role <r> --create`, through §4.1.
+- **Registry-override notice (RC-7).** If `HOS_TMP_REGISTRY_FILE` is set and non-empty in the installer's
+  environment, one line is printed before the register step:
+
+  > `warn "HOS_TMP_REGISTRY_FILE is set (<path>): registration and verify use that file, NOT the real trust registry (~/.local/state/hos/tmp-roots.json); the reaper will not see these registrations."`
+
+  The run continues. The override is the resolver's test hook, and the installer neither blocks it nor
+  hides it.
+- **Register.** For each role: `resolve --repo "$TARGET_REPO" --role <r> --create`, through §4.1's
+  diagnostic form (stderr only).
   - The outcome is recorded but **does not decide** the verdict, except that a **timeout** marks that role
     refused ("resolve --create did not answer within <T> s; killed").
-  - A non-timeout failure's stderr line is kept for diagnostics only.
+  - **A non-zero, non-timeout exit keeps its stderr line (RC-1).** That line is **printed in the refusal
+    report** (§4.4), directly before the role's `status` line. That way a `status` line such as "the next
+    resolve --create creates and registers it" is never the only explanation when `resolve --create` has
+    just failed. Examples are `registry-full`, a disk-full write, and a lock failure.
 - **Verify.** After all four registers, for each role: `status --repo "$TARGET_REPO" --role <r>` (no
-  `--json`), through §4.1.
+  `--json`), through §4.1's diagnostic form (stderr only).
   - A role passes **only** on exit 0.
   - Exit 1 or 2, any other exit code, or a timeout marks it refused.
   - The status stderr line is kept for the report.
@@ -461,7 +539,14 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
 - **Verdict.**
   - If no role is refused, the summary line (§4.4) is `refused=none`, followed by
     `ok "Role temp dirs registered and verified under <root>"`, and the install proceeds to stamp.
-    `<root>` is the dirname of the Worker role dir that `resolve` printed.
+  - **Where `<root>` comes from (RC-8).** It comes from the **Worker `status` `OK:` line**, never from
+    `resolve`'s stdout, which is discarded:
+    1. strip the fixed prefix `hos_tmp_root: status worker: OK: `;
+    2. cut at the first ` is registered for ` (`${x%% is registered for *}`);
+    3. take the `dirname`.
+
+    The value is display-only. If parsing yields an empty string, the line prints `under HOS_TMP_ROOT`
+    instead. It never fails the install.
   - Otherwise, the 77 path.
 
 ### 4.4 Output contract and the 77 path
@@ -479,23 +564,43 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
   the `skipped` form (§4.5).
 - **The 77 path.** One function, which holds the file's **only** `exit 77` (a static test pins exactly one
   occurrence, the same selection rule as AD-11 step 4). It prints, in this order:
-  1. For each refused role, on stdout: `err "Temp dir refused: <role> (<RoleDir>)"`, then the role's kept
-     `status` stderr line (or the timeout or helper-missing reason), indented four spaces. The line is
-     printed as-is (local terminal only). It already names the role dir, the blockers (the first five and a
-     count, as `repr` text, so control bytes are escaped) and, for adoption and re-point refusals, the
-     exact `mark` command.
-  2. Once, the installer-owned remedy block, which carries the AD-4 content S2 has not yet put into
-     `_remedy` (I-4):
+  1. For each refused role, on stdout:
+     - `err "Temp dir refused: <role> (<RoleDir>)"`;
+     - then, **if that role's `resolve --create` exited non-zero for a reason other than a timeout
+       (RC-1)**, its kept stderr line, indented four spaces and labelled `register: `;
+     - then the role's kept `status` stderr line (or the timeout or helper-missing reason), indented four
+       spaces and labelled `verify: `.
 
-     > `Remedy — run it unsandboxed, in your own terminal (not inside a Claude session; it needs the trust registry):`
-     > `  • move each blocking entry out of the role dir:  mv '<role_dir>/<entry>' <a dir outside HOS_TMP_ROOT>/`
-     > `  • or, after reviewing the dir yourself, run the mark command printed above for that role.`
-     > `  A "CANNOT VERIFY" line means re-run this installer unsandboxed, in your own terminal.`
-     > `Then re-run this installer with the same arguments. Re-running is safe (idempotent).`
-     > `The install is NOT complete: .hos-release is unchanged (<INSTALLED_TAG or "none">) and no install PR was opened.`
+     These lines are printed as-is (local terminal only). The `status` line already carries the `NOT
+     REGISTERED:`, `CANNOT VERIFY:` or `INVALID:` prefix (§2.4). It already names the role dir, the blockers
+     (the first five and a count, as `repr` text, so control bytes are escaped) and, for adoption and
+     re-point refusals, the exact `mark` command.
+  2. Once, the installer-owned remedy block (I-4). **Its bullets are selected by the prefixes that actually
+     appeared (RC-2):**
+     - **Only if some role printed `NOT REGISTERED:`:**
 
+       > `Remedy for a NOT REGISTERED dir — run it unsandboxed, in your own terminal (not inside a Claude session; it needs the trust registry):`
+       > `  • move each blocking entry out of the role dir:  mv '<role_dir>/<entry>' <a dir outside HOS_TMP_ROOT>/`
+       > `  • or, after reviewing the dir yourself, run the mark command printed above for that role.`
+     - **Only if some role printed `CANNOT VERIFY:`:**
+
+       > `CANNOT VERIFY: the trust registry could not be read. Re-run this installer unsandboxed, in your own terminal (not inside a Claude session).`
+     - **Only if some role printed `INVALID:`:**
+
+       > `INVALID: fix the path or value named on that line (HOS_TMP_ROOT in <config.sh>, or the role dir itself).`
+     - **Only if a role timed out, or the helper was missing:** its reason line, already printed in step 1,
+       is enough. No extra bullet is printed.
+     - **Always:**
+
+       > `Then re-run this installer with the same arguments. Re-running is safe (idempotent).`
+       > `The install is NOT complete: .hos-release is unchanged (<INSTALLED_TAG or "none">) and no install PR was opened.`
+
+     The words "unsandboxed, in your own terminal" therefore appear only beside `NOT REGISTERED` (the
+     `mark`/`mv` remedy needs the registry) and `CANNOT VERIFY`, never as the remedy for `INVALID`.
      `<entry>` and `<a dir outside HOS_TMP_ROOT>` are literal placeholders, never filled-in names (the same
      rule as AD-11's renderer). `INSTALLED_TAG` is the variable already set at `:451-452`.
+     For the §4.2 failure path, step 1 is replaced by the §4.2 message, and no bullet but "Always" is
+     printed.
   3. If `PR_ACTIVE` is set, the §4.7 lines.
   4. The summary line.
   5. `exit 77`.
@@ -505,7 +610,9 @@ No reason text, and no path except as hex, goes into the JSON. The reason is on 
 ### 4.5 `--dry-run` (AD-12; AD-7(b) "the dry-run output says that they would run")
 
 - **§4.2.** The presence test, the value computation and both gates run, because they are read-only.
-  - If they succeed: `dry_run "Would append HOS_TMP_ROOT=\"<v>\" to config.sh"`.
+  - If they succeed: `dry_run "Would append HOS_TMP_ROOT=\"<v>\" to config.sh <source>"`, with §4.2's
+    `<source>` suffix.
+  - If no timeout binary exists, the calls are skipped (§4.1), and only the presence test runs.
   - If any of them fails: `warn "Would FAIL the install (exit 77): <message>"`, and the dry run continues.
     A preview never exits 77.
   - If the key is present: the same `skip` line as §4.2.
@@ -526,16 +633,27 @@ release (`:411`).
 For a self-install of the HOS repo into its own clone, the two copies are the same file. Nothing in S4a
 reads `HOS_REF`, except that the 77 message reports `INSTALLED_TAG`.
 
-### 4.7 `--pr` mode (F-4; default behaviour, pending E-2)
+### 4.7 `--pr` mode (F-4; E-2 accepted, with the exact recovery commands of RC-4)
 
 When the 77 path runs with `PR_ACTIVE=true`:
 - there is no commit, no push and no `gh pr create`. The verify runs before `:2515`, so this follows from
   the placement;
 - the installer does **not** check out `PR_ORIG_BRANCH`. #993's reason applies: the staged changes would
   follow onto the base branch;
-- it prints:
+- the installer runs no git command of its own on this path;
+- it prints exactly the following, with `<target>`, `<tag>`, `<PR_BRANCH>` and `<PR_ORIG_BRANCH>` filled in.
+  `<target>` and the branch names are printed shell-quoted with `printf %q`:
 
-  > `The upgrade is staged, uncommitted, on branch '<PR_BRANCH>' (you are on it); no PR was opened. To finish after the remedy: re-run this installer with --no-pr on this branch, then commit and open the PR yourself — or discard the staged changes, return to '<PR_ORIG_BRANCH>', delete '<PR_BRANCH>', and re-run with --pr.`
+  > `The upgrade is staged, uncommitted, on branch '<PR_BRANCH>' (you are on it). No PR was opened.`
+  > `The temp-dir remedy above (mv or mark) is machine-local: it changes the role dir or the trust registry, not this repository, so it works from any branch.`
+  > `To return to '<PR_ORIG_BRANCH>' and retry the PR install after the remedy, run:`
+  > `  git -C <target> stash push --include-untracked -m "hos-upgrade <tag>"`
+  > `  git -C <target> checkout <PR_ORIG_BRANCH>`
+  > `  git -C <target> branch -D <PR_BRANCH>`
+  > `then re-run this installer with --pr. (The stash keeps the staged upgrade recoverable; drop it with 'git stash drop' once the new PR exists.)`
+
+  `<tag>` is `HOS_REF`. The text must **never** suggest `git clean`, `git reset --hard` or
+  `git checkout -- .`. §8.2 I-2b pins both rules.
 
 ### 4.8 Idempotency (AD-12 "re-running after the remedy is safe")
 
@@ -561,7 +679,9 @@ session-start fingerprint are unchanged.
 
 - **`pytest_configure` (S1's hook).** After setting `HOS_TMP_REGISTRY_FILE` as today:
   - it records the session-owned default path in a module global, `_SESSION_REGISTRY`;
-  - it sets `os.environ["HOS_INSTALL_TMP_ROOT"] = "../.tmp"` unless that variable is already set.
+  - it **always** sets `os.environ["HOS_INSTALL_TMP_ROOT"] = "../.tmp"`, overwriting any inherited value
+    (RC-5). An absolute value inherited from a developer's shell or CI must never steer test installs. This
+    is unlike the registry override, where a caller-set value is respected.
 
   `../.tmp` resolves against each target's realpath, to `<target's parent>/.tmp`. Every existing harness
   creates its target inside its own `tmp_path`, so this:
@@ -577,6 +697,13 @@ session-start fingerprint are unchanged.
   - A caller-set override is left alone (S1's rule). So is a test's own `monkeypatch.setenv`, which runs
     after this fixture.
   - Each test therefore has its own registry, so the 256 cap is reached per test, never per session.
+  - **Fixture scope (RC-10).** Module- and session-scoped fixtures run **before** this function-scoped
+    autouse fixture, so they use the **session** registry. For example, `test_install_registry_data.py`
+    has four module-scoped fixtures (`:117-139`), each installing into its own `tmp_path_factory` target.
+    That is intended, and it is bounded: 4 targets × 4 keys = **16 entries**, far below 256. A second
+    install into the same target, as in `django_then_astro`, replaces that repo's keys and adds none. Any future module- or session-scoped install fixture
+    adds to the same session file. The coder must keep the session total far below the cap; the bound is
+    stated in a conftest comment beside the fixture.
 - **`child_env` (`tests/tmp_hygiene.py:89-107`).** The carried set becomes
   `("TMPDIR", "HOS_TMP_REGISTRY_FILE", "HOS_INSTALL_TMP_ROOT")`, under the same "never override a value the
   caller set" rule.
@@ -593,8 +720,11 @@ S4a touches no other install doc, so per TD-H7 the note goes here. Add one parag
 bullet at `:421`. S3 and S4b also edit this file, in other paragraphs; whichever lands later rebases. The
 paragraph must state:
 - the installer (`bootstrap/hos_install.sh`) creates and registers all four role dirs, then verifies them
-  with the read-only `python3 bootstrap/lib/hos_tmp_root.py status --repo <clone> --role <role>` (exit 0
-  registered, 1 not registered, 2 cannot verify);
+  with the read-only `python3 bootstrap/lib/hos_tmp_root.py status --repo <clone> --role <role>`. Exit 0
+  means registered, 1 `NOT REGISTERED`, and 2 either `CANNOT VERIFY` (re-run unsandboxed) or `INVALID` (fix
+  the named path or value);
+- the installer now **requires `timeout`** (or `gtimeout` from coreutils on macOS). Without one, it stops
+  with exit 1 before writing anything; `hos_bootstrap.sh` installs it (RC-3);
 - any refusal fails the install with **exit 77**, before `.hos-release` is stamped and before any install
   PR. The output names the blockers and the remedy, and a re-run after the remedy is safe. The
   machine-readable line is `tmp-root-verify: refused=<roles|none>`;
@@ -618,15 +748,15 @@ paragraph must state:
 | FM-3 | Registry absent or masked (the installer was run sandboxed) | `status` exit 2 `registry-absent`; "CANNOT VERIFY … re-run unsandboxed"; exit 77. Never a pass | fatal, loud | S-11, I-3b |
 | FM-4 | Registry unreadable, malformed, loose mode or not a regular file | `register` refuses (exit 3, kept for diagnostics); `status` exit 2 `registry-unreadable`; exit 77 | fatal, loud | S-11, I-3 |
 | FM-5 | A resolver call hangs (NFS stall, a held registry flock) | Killed at `<T>` s, plus 5 s for KILL; that role is refused with the timeout reason; the other roles still run; exit 77. The worst-case total is 8 × 35 s = 280 s | fatal, bounded | I-5 |
-| FM-6 | No `timeout` or `gtimeout` binary | One warning; the calls run unbounded. A hang never yields a pass: the stamp is reached only after every `status` exits 0. The human can interrupt (exit 130, no stamp) | fail-safe; liveness lost (E-4) | I-15 (static) |
-| FM-7 | `registry-full` (256 live keys) | `register` exit 3 with its remedy; `status` exit 1 `absent` or `unregistered-*`; exit 77 | fatal, loud | S-4 covers the class; the remedy is the resolver's existing text |
+| FM-6 | No `timeout` or `gtimeout` binary | **Fail-closed prerequisite (RC-3).** The prerequisite check exits **1** before any write or PR branch, pointing to `hos_bootstrap.sh`. A `--dry-run` warns that a real install would stop there, and skips its resolver calls. There is no unbounded call path | fatal, loud, before any write | I-15 (static), I-17 |
+| FM-7 | `registry-full` (256 live keys) | `register` exits 3 with its `registry-full` remedy. That line is **printed** as `register:` (RC-1), so `status`'s `NOT REGISTERED` "next resolve --create creates it" line is never the only explanation. Exit 77 | fatal, loud | I-16 |
 | FM-8 | The target helper is missing (the copy failed) | All four roles refused, with the missing-helper reason; exit 77 | fatal, loud | I-14 |
 | FM-9 | `python3` crashes (a traceback) in `resolve` or `status` | `status` maps every exception to exit 2 inside `main` (§2.3 step 10). An interpreter-level crash is a non-zero exit, so the role is refused | fatal, loud | S-13 |
 | FM-10 | `install-default` or `validate` fails, times out, or yields a value outside the charset | Nothing is written; exit 77 with "Set HOS_TMP_ROOT … by hand, then re-run"; `refused=worker,overseer,human,local` | fatal, loud | I-11 |
 | FM-11 | `config.sh` cannot be read for the presence test | exit 77, "cannot read `<config.sh>`" | fatal, loud | I-11c |
-| FM-12 | An existing `HOS_TMP_ROOT` is invalid (an unterminated quote, inside the clone, inside a work tree) | No write (never overwrite); `status` exit 2 `root-invalid`; exit 77, with the resolver's reason | fatal, loud | I-10c |
-| FM-13 | Verify fails in `--pr` mode | No commit, push or PR; the consumer stays on `PR_BRANCH`, with the recovery text (§4.7) | fatal, loud; recovery is manual (E-2) | I-2b |
-| FM-14 | Lone `--human` clone: the written XDG root fails `gen_sandbox_config`'s D15 rule | The sandbox step warns (the existing non-fatal path, `:1838`); register and verify still pass; exit 0 | **degraded, loud warning (E-1)** | none until E-1 is ruled |
+| FM-12 | An existing `HOS_TMP_ROOT` is invalid (an unterminated quote, inside the clone, inside a work tree) | No write (never overwrite); `status` exit 2 `root-invalid` with the `INVALID:` prefix; the INVALID bullet (fix the named value); exit 77 | fatal, loud | I-10c | an existing invalid value (`HOS_TMP_ROOT="./inside"`) | not rewritten; rc 77; the resolver's "inside the clone" reason is in an `INVALID:` line; the INVALID bullet is printed; neither the `mv`/`mark` bullets nor any "unsandboxed" text appears (RC-2) |
+| FM-13 | Verify fails in `--pr` mode | No commit, push or PR; the consumer stays on `PR_BRANCH`, with the recovery text (§4.7) | fatal, loud; recovery is manual (E-2) | I-2b | as I-2, with `--pr`: a bare `file://` origin and a `gh` stub on `PATH` that logs its argv | rc 77; the `gh` log has no `pr create`; `git ls-remote origin` has no `hos-upgrade/*` branch; the checked-out branch is `PR_BRANCH`; the output contains, verbatim (with the values filled in), the three lines `git -C <target> stash push --include-untracked -m "hos-upgrade <tag>"`, `git -C <target> checkout <PR_ORIG_BRANCH>` and `git -C <target> branch -D <PR_BRANCH>`, plus the sentence that the remedy is machine-local; the output contains none of `git clean`, `reset --hard` or `checkout -- .`. **Then** executing exactly those three printed commands, the remedy (`mv`), and a `--pr` re-run gives rc 0 and opens a PR (the `gh` log has one `pr create`) |
+| FM-14 | Lone `--human` clone: the written XDG root fails `gen_sandbox_config`'s D15 rule | **Ruled E-1 (a): build the ADR-literal value in S4a.** The sandbox step warns (the existing non-fatal path, `:1838`); register and verify still pass; exit 0. The fresh-install layout default is the human question **Q-1**, which gates the v0.7.0 cut, not S4a's merge (§13). Disclosed in the PR body (§9.1) | degraded, loud warning; known and ruled | none in S4a (the behaviour is the ADR's) |
 | FM-15 | The installer is interrupted (HUP, INT or TERM) during register or verify | The existing traps exit 129, 130 or 143; no stamp; a re-run is idempotent | fail-safe | — |
 | FM-16 | A second installer run in parallel on the same machine | `register` serialises on the registry flock (`:396-397`); each `status` reads an atomically renamed file | safe | — |
 | FM-17 | The disk is full while `register` writes the registry | `register` raises before the rename (`:428-439`); the old registry is intact; `status` shows the role unregistered; exit 77 | fatal, loud | — |
@@ -658,8 +788,8 @@ sets its own `HOS_TMP_REGISTRY_FILE`.
 | S-7 | re-point: the key is registered at root A; `config.sh` now names root B (B's role dir present, and also absent) | exit 1, `repoint`, `adoptable=false`; the stderr line contains `refusing to re-point` |
 | S-8 | registered for another repo only | exit 1, `unregistered-adoptable`, `blockers=[]` |
 | S-9 | inode change: registered, then `rmdir` and `mkdir` at the same path | exit 1 (not registered: invariant 4) |
-| S-10 | structural: role dir is a symlink; a regular file; wrong letter case (the `lexists` monkeypatch of the existing test at `:766`); wrong owner (in-process, with `os.getuid` monkeypatched); registered but mode 0755; root invalid (a forbidden character in `config.sh`) | exit 2; classes `structural` ×5 and `root-invalid` |
-| S-11 | registry absent (the override points at a missing path); the registry is a directory; mode 0644; malformed JSON | exit 2: `registry-absent` for the first, `registry-unreadable` for the rest; stderr contains `re-run it unsandboxed`; in the absent case the file and its directory are **not created** |
+| S-10 | structural: role dir is a symlink; a regular file; wrong letter case (the `lexists` monkeypatch of the existing test at `:766`); wrong owner (in-process, with `os.getuid` monkeypatched); registered but mode 0755 (I-3); root invalid (a forbidden character in `config.sh`); an internal error (S-13) | exit 2; classes `structural` ×5 and `root-invalid`; the stderr line starts `hos_tmp_root: status <role>: INVALID:` and contains `Fix the path or value named on this line`; it does **not** contain `CANNOT VERIFY` or `unsandboxed` (RC-2) |
+| S-11 | registry absent (the override points at a missing path); the registry is a directory; mode 0644; malformed JSON | exit 2: `registry-absent` for the first, `registry-unreadable` for the rest; the stderr line starts `…: CANNOT VERIFY:` and contains `re-run it unsandboxed`, and never `INVALID:` (RC-2); in the absent case the file and its directory are **not created** |
 | S-12 | **no side effects**, over the states of S-1, S-2, S-4, S-10 (mode 0755) and S-11 (absent) | (a) a tree snapshot (`lstat` mode, inode, mtime_ns and size of every path under `tmp_path`, plus the registry's bytes) is identical before and after; no `.lock` and no marker created. (b) In-process, with `os.mkdir`, `os.makedirs`, `os.chmod`, `os.rename`, `os.unlink`, `register`, `write_info_marker` and `_make_dirs_0700` monkeypatched to raise, and `os.open` monkeypatched to raise on `O_CREAT`, `O_WRONLY` or `O_RDWR`, `main(["status", …])` completes with the expected code |
 | S-13 | CLI edges: an invalid `--role`; a forced internal exception (monkeypatch `resolve_root` to raise `OSError`) | exit 2 with no JSON for the usage error; exit 2 `class=error` with no traceback for the other; `status` never returns 3 |
 | S-14 | `adoption_problems` parity: the S-4 fixture, an unreadable listing (a mode-000 dir; skip as root), and an empty dir | the output equals literal expected strings in today's format; `[_format_blocker(b) for b in adoption_blockers(d)] == adoption_problems(d)`; **every pre-existing guard test passes unchanged** (REQ-5 AC) |
@@ -673,11 +803,11 @@ path, captured at test time.
 
 | ID | Case | Asserts |
 |---|---|---|
-| I-1 | fresh install, clean | rc 0; exactly one stdout line matching the §4.4 regex, and it is `refused=none`; `<parent>/.tmp/{Worker,Overseer,Human,Local}` exist with mode 0700; the per-test registry has 4 entries with `repo == realpath(target)`; `status` exits 0 for each role; `config.sh` holds exactly one `_LINE_RE` match, `HOS_TMP_ROOT="../.tmp"`; `.hos-release` is written |
+| I-1 | fresh install, clean | rc 0; exactly one stdout line matching the §4.4 regex, and it is `refused=none`; `<parent>/.tmp/{Worker,Overseer,Human,Local}` exist with mode 0700; the per-test registry has 4 entries with `repo == realpath(target)`; `status` exits 0 for each role; `config.sh` holds exactly one `_LINE_RE` match, `HOS_TMP_ROOT="../.tmp"`; the `ok` line ends `(from HOS_INSTALL_TMP_ROOT)`; `.hos-release` is written. **RC-8:** the success line names `realpath(<parent>/.tmp)`, and through the shim, `resolve` prints a decoy path on stdout (`/decoy`) that appears nowhere in the installer output, which proves `resolve`'s stdout is discarded and the root is taken from `status`'s `OK:` line; the registry-override `warn` (RC-7) is present, naming the per-test path |
 | I-2 | refused: `config.sh` pre-seeded with `HOS_TMP_ROOT="<tmp>/root"` and `.hos-release` = `v0.6.0`; `<tmp>/root/Worker` is 0700 and holds `percommit-2054/` | rc **77**; `refused=worker`; the output contains `percommit-2054`, `mark --repo`, `unsandboxed, in your own terminal` and `mv '`; `.hos-release` is still `v0.6.0`; `.hos-manifest` and `.claude/agents/*.md` were written (every other step completed); Overseer, Human and Local are registered. **Then** `mv` `percommit-2054` out and re-run: rc 0, `refused=none`, `.hos-release` updated |
 | I-2b | as I-2, with `--pr`: a bare `file://` origin and a `gh` stub on `PATH` that logs its argv | rc 77; the `gh` log has no `pr create`; `git ls-remote origin` has no `hos-upgrade/*` branch; the checked-out branch is `PR_BRANCH`; the §4.7 text is printed |
 | I-2c | re-point: register Worker at root A, then pre-seed `config.sh` with root B | rc 77; `refused=worker` (plus any other role whose key re-points); `refusing to re-point` is in the output |
-| I-3 | `HOS_TMP_REGISTRY_FILE` is a directory | rc 77; `refused=worker,overseer,human,local`; `re-run it unsandboxed` is in the output |
+| I-3 | `HOS_TMP_REGISTRY_FILE` is a directory | rc 77; `refused=worker,overseer,human,local`; every `verify:` line has the `CANNOT VERIFY:` prefix; the CANNOT VERIFY bullet (`re-run this installer unsandboxed`) is printed; the NOT REGISTERED `mv`/`mark` bullets and the INVALID bullet are **absent** (RC-2) |
 | I-3b | masked: the shim gives `status` a non-existent registry path, and `resolve` the real override | rc 77; refused all four; `CANNOT VERIFY` and `re-run` are in the output |
 | I-4 | registration planted in a different registry: the shim gives `resolve` registry A and `status` registry B (an empty, valid v1 document) | rc 77; refused all four. This proves the verify reads the registry and does not repeat `resolve` |
 | I-5 | hang: `HOS_INSTALL_TMP_VERIFY_TIMEOUT=2`; the shim sleeps 600 s on `status --role worker` and on `resolve --role overseer` | rc 77; `refused=worker,overseer`; the wall time is under 2 × (2 + 5) + 60 s; the output names the timeout; no stray `sleep` survives (the process group is gone) |
@@ -693,7 +823,11 @@ path, captured at test time.
 | I-12 | `--dry-run` on a fresh target | rc 0; `Would register and verify` and exactly one `tmp-root-verify: skipped=dry-run` line; no `refused=` line; no `<parent>/.tmp`, no registry file, no `.lock`; `config.sh` unchanged or absent |
 | I-13 | `exit 77` appears exactly once in `hos_install.sh` (a regex over non-comment lines) | static |
 | I-14 | `--reviewed` occurs nowhere in `hos_install.sh`, and no non-comment line runs `hos_tmp_root.py` with a `mark` argument; dynamically, a target whose `bootstrap/lib/hos_tmp_root.py` is pre-created as a **directory** (so the copy fails) | static; rc 77, refused all four, the missing-helper reason |
-| I-15 | static ordering and constants: on non-comment lines, the register-and-verify call comes after the line that writes `.hos-manifest` (`printf … > "$_manifest_file"`) and before the line that writes `.hos-release`, which comes before `if $PR_ACTIVE; then` (anchor regexes that match code, never comment text); the default timeout is `30` and the kill-after is `5s`; the only `>> "$_subst_config"` appends are the helper's and the `PACK` lines | static |
+| I-15 | static ordering and constants: on non-comment lines, the register-and-verify call comes after the line that writes `.hos-manifest` (`printf … > "$_manifest_file"`) and before the line that writes `.hos-release`, which comes before `if $PR_ACTIVE; then` (anchor regexes that match code, never comment text); the default timeout is `30` and the kill-after is `5s`; **every** non-comment line that runs `hos_tmp_root.py` starts with the timeout prefix array (no empty-prefix or bare `python3 … hos_tmp_root.py` path, RC-3); the timeout-prerequisite check sits inside the prerequisite block (before `if ! $PREREQ_OK`); the only `>> "$_subst_config"` appends are the helper's and the `PACK` lines; the two capture forms of §4.1 are the only ones used (RC-8) | static |
+| I-16 | **registry-full (RC-1):** the per-test registry is pre-seeded with 256 live entries (256 real dirs under `tmp_path`, each with a distinct live repo dir, written as a valid v1 document with the right inodes) | rc 77; for every role, the output has a `register:` line containing the resolver's `registry-full` text (`already holds 256 live temp roots`), printed before that role's `verify: … NOT REGISTERED` line |
+| I-17 | **no timeout binary (RC-3):** `PATH` holds a shim dir with `python3`, `git`, `gh` and the other prerequisites symlinked, and neither `timeout` nor `gtimeout` | rc **1**; the output contains `timeout (coreutils) missing` and `hos_bootstrap.sh`; nothing written (no `.gitignore` change, no `config.sh`, no `.tmp`, no registry). With `--dry-run`: rc 0; `a real install would stop here`; no `hos_tmp_root.py` invocation in the shim log |
+| I-18 | **containment (RC-6):** `git ls-files` minus `tests/**`; grep for the literal `HOS_INSTALL_TMP_ROOT` | it appears only in `bootstrap/hos_install.sh` and `docs/CRON-SETUP.md` (this TD's own file under `docs/v0.7.0/` is allowlisted by exact path as a design doc). Also, a run with the variable popped (I-8) prints `(resolver install-default)` |
+| I-19 | **registry-override notice (RC-7):** I-1's run, and a run with `HOS_TMP_REGISTRY_FILE` removed from the env but registry reads redirected by the shim (so the installer's own env has no override) | the first prints exactly one `HOS_TMP_REGISTRY_FILE is set (<path>)` warn before the first `register:`/verify output; the second prints none |
 
 ### 8.3 `tests/framework/test_tmp_root_first_writer.py` (new; REQ-2 AC; ADR S4a "the export-only plus third-party-write plus launcher sequence succeeds")
 
@@ -710,6 +844,11 @@ S4b later appends its wrapper case to this file (ADR §4 S4b row).
   `<basetemp>/hos-registry/`, and neither is the real path.
 - A test that sets its own override with `monkeypatch.setenv` keeps it.
 - `child_env({"PATH": …})` carries `HOS_INSTALL_TMP_ROOT == "../.tmp"` and the per-test registry.
+- **Inherited value replaced (RC-5).** A `pytester` (or subprocess `pytest`) run is started with
+  `HOS_INSTALL_TMP_ROOT=/abs/elsewhere` in its environment. Inside it, a test asserts
+  `os.environ["HOS_INSTALL_TMP_ROOT"] == "../.tmp"`.
+- **Module-scope behaviour (RC-10).** A module-scoped fixture sees the session registry path, and a
+  function-scoped test in the same module sees a per-test path. Both differ from the real registry.
 - Every existing S1 test passes unchanged.
 
 ### 8.5 ADR S4a obligation → test map
@@ -729,7 +868,8 @@ S4b later appends its wrapper case to this file (ADR §4 S4b row).
 | TD-H5: **all** blockers; byte-for-byte round-trip (newline, control byte, 10 kB, invalid UTF-8) | S-4, S-5, S-6 |
 | a computed value outside the charset gate writes nothing and exits 77 | I-11 |
 | exactly one `tmp-root-verify: refused=<roles|none>` line | I-1, I-2, I-3, I-5, I-11 (and I-12's `skipped` form) |
-| a hanging resolver stub is killed at 30 s and counted as a refusal of that role | I-5 (lowered timeout), I-15 (30 s default pinned) |
+| a hanging resolver stub is killed at 30 s and counted as a refusal of that role | I-5 (lowered timeout), I-15 (30 s default pinned; no unbounded path), I-17 (no timeout binary → exit 1) |
+| *(round 2)* register failure printed; prefix-selected remedy; `--pr` recovery commands; variable containment; override notice; capture method | I-16; S-10, S-11, I-3, I-10c; I-2b; I-18; I-19; I-1 |
 
 `@pytest.mark.slow` runs at release only (`pyproject.toml:23`). Only I-9 (pty) and I-2b (bare remote plus
 `gh` stub) are marked slow. Every other case runs in the PR-required suite. #2137 (AD-13) independently
@@ -742,133 +882,135 @@ exercises the real upgrade at the release cut.
 - **Protected.** `bootstrap/hos_install.sh` and `bootstrap/lib/hos_tmp_root.py` match `bootstrap/**`
   (`protected_surfaces.txt:27`). Human approval is required whatever tier is computed. The overseer may not
   merge it.
-- **Reviewers.** `reliability-reviewer` is mandatory (§7). `security-reviewer` is recommended (the guard
-  module; AD-5 invariants 1 and 2 must hold byte-for-byte through §2.6). `code-reviewer` is required as
-  usual.
+- **Reviewers.** `reliability-reviewer` is **mandatory** (§7). `security-reviewer` is **mandatory** (RC-9):
+  §2.6 rewrites the body of the guard's adoption check, so AD-5 invariants 1 and 2 must be re-reviewed
+  whole. `code-reviewer` is required as usual.
 - **The S4a PR body must state:**
-  - #2059 (unmerged) absorbs the §4.2 writer when it rebases, and that re-review is #2059's obligation;
+  - #2059 (unmerged) absorbs the §4.2 writer when it rebases, and that re-review is #2059's obligation. It
+    must also cover `install.sh:148`'s presence grep, which misses an indented key (I-5 ruling);
   - S3 extends `adoption_blockers` (§2.6);
   - S2 consumes `status --json` per §3.2;
-  - the E-1 behaviour for lone `--human` clones, as ruled;
   - landing order: S4a merges before S2, or in the same PR (AD-11). S2's landing attestation uses this
-    slice's `status`.
+    slice's `status`;
+  - **#2137's v0.6.0-upgrade case must not set `HOS_INSTALL_TMP_ROOT`** (RC-6). It must exercise the real
+    `install-default`;
+  - every item in §9.1.
+
+### 9.1 PR-body disclosures (RC-11; each is a behaviour a human will notice)
+
+- **(a) The HOS dev machine.** Every real `hos_install.sh` run into a clone that shares `../.tmp` (Worker,
+  Overseer, Human) verifies **all four** role dirs. It therefore **exits 77 until `.tmp/Human` is fixed**,
+  either by S3 (which adopts `node-compile-cache`) or by the human's own `mv` or `mark --reviewed` (ADR §8
+  N-1). The `.tmp/Worker` unblock is reported done, and is re-verified by `status`. The disclosure gives the
+  four read-only `status` commands to check first.
+- **(b) The E-1 ruling and Q-1.** S4a writes the ADR-literal `install-default` value. So a lone `--human`
+  clone gets `~/.local/state/hos/tmp/<slug>`, and its sandbox-policy generation warns instead of succeeding
+  (FM-14). The interactive path already behaves this way since #2054. Q-1, the fresh-install layout default,
+  is an open **human** question that gates the v0.7.0 cut, not this merge (§13).
+- **(c) New prerequisite.** `hos_install.sh` now requires `timeout` (or `gtimeout`). Without one it stops
+  with exit 1 before writing anything, and points to `hos_bootstrap.sh` (RC-3).
 
 ---
 
-## 10. Interpretations for the architect to accept or correct (not escalations)
+## 10. Interpretations (all accepted by the architect in round 1, with the notes shown)
 
-- **I-1 (§2.6).** The ADR scopes S4a's `hos_tmp_root.py` edit to "the read-only `status` subcommand only".
-  §2.6 also moves `adoption_problems`' body into `adoption_blockers`, byte-identically, because raw names
-  cannot be recovered from its output. The alternative was a duplicated predicate inside `status`, which
-  drifts under S3. The resolve path's behaviour and ordering are unchanged, and pinned by S-14.
-- **I-2 (§2.3 step 5).** The letter-case expression is repeated in `status` rather than extracted, so that
-  `resolve_role_dir` is not edited. S-10 pins the parity.
-- **I-3 (§2.3 step 8).** A registered dir with group or other bits set is exit 2, following the ADR's
-  literal "private". Any launcher run self-heals it (`:552`), so in S2's landing attestation this is a
-  conservative false alarm. The alternative is exit 0 with a note.
-- **I-4 (§4.4).** AD-12 asks the install to print "the exact AD-4 remedy". AD-4's `_remedy` rewording is in
-  S2's file list, and S2 lands after S4a. The installer therefore prints its own fixed block with AD-4's
-  content: the `mv` shape and "unsandboxed, in your own terminal". The `mark` command still comes from
-  `_remedy`. The alternative is to move AD-4's `_remedy` rewording into S4a (a re-slice).
-- **I-5 (§4.2).** On the interactive path, the final `HOS_TMP_ROOT` line is written by `install.sh`'s
-  whole-file rewrite, which preserves S4a's value. "Written once (through the shared writer)" is read as:
-  S4a's single writer introduces the value, and the final file holds exactly one assignment.
-- **I-6 (§4.5).** REQ-11's AC says "every run prints exactly one `tmp-root-verify: refused=` line". A dry
-  run verifies nothing, and `refused=none` would read as a pass. So a dry run prints
-  `tmp-root-verify: skipped=dry-run`, and runs that exit before the step print nothing. The invariant kept
-  is: **exit 77 ⇔ exactly one line with `refused≠none`; a non-dry exit 0 ⇔ exactly one `refused=none`
-  line.**
-- **I-7 (F-7).** The "10 kB" round-trip is tested on the serializer, because `NAME_MAX` forbids a 10 kB name
-  on disk. The on-disk maximum (255 bytes) is tested separately.
+- **I-1 (§2.6), accepted.** The ADR scopes S4a's `hos_tmp_root.py` edit to "the read-only `status`
+  subcommand only". §2.6 also moves `adoption_problems`' body into `adoption_blockers`, byte-identically.
+  The resolve path's behaviour and ordering are unchanged, and pinned by S-14. Consequence:
+  `security-reviewer` is mandatory (RC-9).
+- **I-2 (§2.3 step 5), accepted.** The letter-case expression is repeated in `status`; S-10 pins the parity.
+- **I-3 (§2.3 step 8), accepted.** A registered dir with group or other bits set is exit 2, with the
+  `INVALID:` prefix (RC-2), never `CANNOT VERIFY:`.
+- **I-4 (§4.4), accepted.** The installer prints its own AD-4 remedy block. Its bullets are now
+  **conditional on the prefixes printed** (RC-2).
+- **I-5 (§4.2), accepted.** `install.sh:148` greps `^(export )?HOS_TMP_ROOT=`, which misses an indented key
+  that `_LINE_RE` accepts. That belongs to #2059's re-review, not to S4a.
+- **I-6 (§4.5): pm-agent to record before merge.** This is a refinement, not yet satisfied. It refines
+  REQ-11's AC "every run prints exactly one `tmp-root-verify: refused=` line". A dry run prints
+  `tmp-root-verify: skipped=dry-run`, and runs that exit before the step (prerequisites, drift) print
+  nothing. The invariant kept is: **exit 77 ⇔ exactly one line with `refused≠none`; a non-dry exit 0 ⇔
+  exactly one `refused=none` line.** **`pm-agent` must record this clarification in
+  REQUIREMENTS-2100 REQ-11 before S4a merges.** Until then, the REQ-11 AC is not claimed as met for dry
+  runs or early exits.
+- **I-7 (F-7), accepted.** The 10 kB round-trip is tested on the serializer, and the 255-byte name on disk.
 
 ---
 
 ## 11. Escalations
 
-None of these needs a human first. CORE routes architecture to `architect`, which may route E-1 onward if it
-judges the behaviour a product question (→ `pm-agent` → human).
+All four round-1 escalations are **ruled** (§13). The only item still open is **Q-1**, a **human** question
+that gates the v0.7.0 release cut, not S4a's merge. It was raised by the architect and is routed via
+`pm-agent` and the worker.
 
-- **E-1 (architecture; blocks merge, not coding): the ADR's upgrade value conflicts with #2054 D15 for lone
-  `--human` clones (F-3).** S4a writes `install-default`'s value, which for a lone clone is
-  `~/.local/state/hos/tmp/<slug>`. `gen_sandbox_config.check_tmp_root` accepts only `<clone parent>/.tmp`.
-  So a lone `--human` non-interactive install that generates its sandbox policy today would only warn
-  after S4a. Options:
-  - (a) **ADR-literal** (the design's default, as coded here). Disclose it; the interactive path already
-    behaves this way.
-  - (b) For a `--human` install, write `../.tmp`. This needs the installer to choose a value, which AD-12
-    forbids, or a role hint added to `install-default`, which is outside S4a's scope.
-  - (c) A follow-up issue that teaches `gen_sandbox_config` a root placeholder (its own error text already
-    anticipates this).
-
-  This is also a recommended `startup-artifact-gap` against #2054 (§12).
-- **E-2 (architecture): `--pr`-mode recovery after a verify failure (F-4).** §4.7's default leaves the
-  consumer on `PR_BRANCH`, with manual recovery text. Alternatives:
-  - (a) Run a read-only `status` pre-check before the PR branch is created, in addition to the binding
-    final verify. It cannot catch everything, because registration has not run yet.
-  - (b) On failure, commit the staged upgrade locally on `PR_BRANCH` (no push), so the tree is clean, then
-    teach a `--pr` re-run to reuse an existing local `PR_BRANCH`. That is more code on a protected
-    surface.
-- **E-3 (architecture): the test-isolation refinement and the new operator variable (§5, §4.2).** F-2 shows
-  that the S1 design (one session registry) plus the ADR-literal `install-default` would make about 70 test
-  installs either hit `registry-full` or write into the real home. The design adds:
-  - a per-test registry under S1's session dir (AD-10's guard is unchanged; this refines, not weakens);
-  - `HOS_INSTALL_TMP_ROOT`, an operator override that is gated exactly like the computed value.
-
-  The alternative is to pre-seed `config.sh` in each of the 4 to 6 existing harnesses. That uses the
-  reserve file slots, and every future install test would have to remember it. If the architect rejects
-  the variable, the conftest default cannot be expressed without it, and the reserve-slot alternative
-  applies.
-- **E-4 (architecture/reliability): no `timeout` binary (FM-6).** The design follows the repo precedent:
-  unbounded, with one warning. The alternative is fail-closed (exit 77, "install coreutils"), which would
-  block macOS installs without coreutils. Safety holds either way. Only liveness differs.
-
-**Contradictions with the ADR:** none found that this design resolves by diverging. F-1 and F-2 are gaps the
-ADR did not address. F-3 is a conflict between AD-12 and #2054 D15, and it is escalated (E-1), not decided.
+**Contradictions with the ADR:** none that this design resolves by diverging. F-3 (AD-12 against #2054
+D15) is resolved by the E-1 ruling: build the ADR-literal value (a), and leave Q-1 open.
 
 ---
 
 ## 12. Startup-gap check and affected sign-offs
 
 - *Should this have been settled before code was written?*
-  - F-3/E-1: **yes**, at #2054's architecture. `install-default`'s lone-clone value and D15's single
+  - F-3/E-1/Q-1: **yes**, at #2054's architecture. `install-default`'s lone-clone value and D15's single
     accepted root were never reconciled. **Recommendation to the worker:** annotate #2100, or open a
-    `startup-artifact-gap` against #2054. I have not filed it, per this task's instructions.
+    `startup-artifact-gap` against #2054, carrying Q-1. I have not filed it, per this task's instructions.
   - F-1 and F-2 are ADR-level gaps found at TD time. No S4a code exists, so no code approval is orphaned.
+- **Round-2 changes.** Each is a change to an unbuilt design, so no sign-off is invalidated.
 - **Affected sign-offs:**
-  - **#2054 S2a resolver security review.** It stands, provided S-14 proves `adoption_problems` is
-    byte-identical. If the refactor is accepted (I-1), `security-reviewer` should look at §2.6
-    specifically.
+  - **#2054 S2a resolver security review.** It stands for the resolve path. The §2.6 refactor needs the
+    mandatory S4a `security-reviewer` sign-off to re-review the adoption check whole.
   - **S1 (PR #2140).** It stands. §5 adds to its conftest and does not change its guard. S1's tests must
     pass unchanged (§8.4).
-  - **#2054 install tests** (`test_install_tmp_root.py`, for `install.sh`) are unaffected. They do not run
-    `hos_install.sh`. `child_env` will now carry `HOS_INSTALL_TMP_ROOT` into their envs, but `install.sh`
+  - **#2054 install tests** (`test_install_tmp_root.py`, for `install.sh`) are unaffected. `install.sh`
     reads only the environment variable `HOS_TMP_ROOT`, never `HOS_INSTALL_TMP_ROOT`.
   - **No approved code is affected.** S4a is unbuilt.
+
+---
+
+## 13. Architect rulings (round 1, 2026-10-22)
+
+Source: `.claudetmp/design/architect-2100-S4a-2026-10-22T083613Z.md`. The verdict was **CHANGES_REQUIRED**,
+with 13 required changes (RC-1 to RC-13), all folded in above.
+
+| ID | Ruling | Effect in this TD |
+|---|---|---|
+| **E-1** | **(a): build the ADR-literal `install-default` value in S4a.** Option (b) (choosing `../.tmp` for `--human`) is **rejected**: AD-12 forbids the installer from computing a value | FM-14, §9.1(b) |
+| **Q-1** (new, human) | Fresh installs not yet listed in `projects.conf` get `~/.local/state/hos/tmp/<slug>`, which #2054 D15 sandboxes cannot use. **Recommendation:** a #2054 follow-up that makes `install-default` recognise the Worker/Overseer/Human sibling-clone layout. **Gates the v0.7.0 cut, not S4a's merge.** Routed to the human via `pm-agent` and the worker | §9.1(b), §11 |
+| **E-2** | Accepted: stay on `PR_BRANCH`. The recovery text must give the exact `stash push --include-untracked` / `checkout` / `branch -D` commands, and must never suggest `git clean` or `reset --hard`. It must state that the remedy is machine-local | §4.7, I-2b |
+| **E-3** | Accepted, with three conditions: the conftest sets the variable unconditionally (RC-5); the variable is contained, its source is shown, and #2137 must not set it (RC-6); fixture-scope bound stated (RC-10) | §4.2, §5, I-18, §8.4, §9 |
+| **E-4** | **Reversed: fail closed.** `timeout`/`gtimeout` is a prerequisite (exit 1 before any write); a dry run warns. There is no unbounded path | §4.1, FM-6, §6, I-15, I-17 |
+| I-1 to I-7 | All accepted. I-3 uses `INVALID:`; I-4's bullets depend on the prefixes; I-5's indented-key issue goes to #2059; I-6 goes to `pm-agent` | §10 |
 
 ---
 
 ## Escalation flag (CORE self-flag)
 
 RISK: HIGH. Both code files are protected (`bootstrap/**`). The slice adds a new fatal install and upgrade
-failure mode (exit 77) on every consumer's install path. It touches the guard module (`adoption_blockers`
-refactor) and the session-wide test isolation that every test inherits.
-CONFIDENCE: HIGH on the `status` contract, on F-1, F-2 and F-5 (each read from code at `70ba746e1` and
-counted), and on the placement relative to `.hos-release` and the PR block. MEDIUM on the pty interactive
-test's stability (I-9), on E-1's product impact for lone `--human` clones, and on whether §5's central fix
-leaves zero existing harnesses to touch (the reserve slots cover that).
+failure mode (exit 77) and a new prerequisite (exit 1 without `timeout`) on every consumer's install path.
+It rewrites the body of the guard's adoption check (behaviour-preserving) and changes the test isolation
+that every test inherits.
+CONFIDENCE: HIGH on the `status` contract, on F-1, F-2 and F-5, on the placement relative to
+`.hos-release` and the PR block, and on the round-2 output contract (the prefixes, the capture forms and
+the recovery text). MEDIUM on the pty interactive test's stability (I-9), on the I-16 fixture (256 live
+entries with real inodes), and on whether §5's central fix leaves zero existing harnesses to touch (the
+reserve slots cover that).
 BLAST RADIUS:
-- every HOS project install and upgrade (fresh, v0.6.0 → v0.7.0, `--pr`, `--dry-run`);
-- the `hos_tmp_root.py` CLI surface, with a new subcommand and the refactored adoption core;
-- every test that runs the resolver or the installer, through the per-test registry and
-  `HOS_INSTALL_TMP_ROOT`;
+- every HOS project install and upgrade (fresh, v0.6.0 → v0.7.0, `--pr`, `--dry-run`), including a new
+  hard prerequisite;
+- on the HOS dev machine, every install exits 77 until `.tmp/Human` is fixed (§9.1(a));
+- the `hos_tmp_root.py` CLI surface;
+- every test that runs the resolver or the installer;
 - `docs/CRON-SETUP.md` §5a.
 
 No gate, label, merge, reaper or launcher path changes.
-Change classification: **additive** (it implements the human-ruled AD-12; the new environment variable and
-the per-test refinement add to, and do not weaken, existing behaviour).
+Change classification: **additive**, inside the human-ruled structural change. The timeout prerequisite
+tightens, and does not weaken, existing behaviour.
 
 ## Human Review Required
 
 - Your own-account approval of the S4a PR (protected `bootstrap/**`).
-- Nothing else is asked of you yet. E-1 to E-4 go to `architect` first. E-1 may come to you if the architect
-  judges a lone `--human` clone losing automatic sandbox-policy generation to be a product question.
+- **Q-1 (gates the v0.7.0 cut, not this merge):** should a fresh install not yet listed in `projects.conf`
+  default to the per-project `~/.local/state/hos/tmp/<slug>`, which #2054 D15 sandboxes cannot use? The
+  architect recommends a #2054 follow-up that makes `install-default` recognise the
+  Worker/Overseer/Human sibling-clone layout. It reaches you via `pm-agent` and the worker.
+- Before installing S4a on the HOS dev machine: fix `.tmp/Human` (S3, or your own `mv` or `mark`), or every
+  install there exits 77 (§9.1(a)).
