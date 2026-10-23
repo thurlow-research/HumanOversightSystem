@@ -75,3 +75,41 @@ Run `bash scripts/framework/run_tests_inner_loop.sh` and make it green (fix pre-
 
 Out of scope (do NOT build): cycle metrics / spec-to-code ratio (that is #2131's per-cycle metrics — leave it), the hos-in-progress label (#2157), changes to bin/hos-cron beyond what is strictly needed for the new output format to keep parsing.
 ```
+
+## Round 2 (after code-review CHANGES_REQUESTED: M1, S1, S2, S3, N1, N3)
+
+Dispatched by the autonomous worker to the `coder` subagent (exact text of the brief file):
+
+```
+Round 2 for #2155 on branch `worker-2155-wip-discipline-selection-261023073501-570555` in /home/scott/Code/HumanOversightSystem/Worker (checked out; do NOT switch branches, push, file issues, comment or touch labels). The round-1 brief is in prompts/scripts/framework/select_work_candidates.v2.md and your round-1 commit is 5072d4a6a. Code review returned CHANGES_REQUESTED. Fix exactly the following, then commit (one commit, "Refs #2155", no closing keywords) with this contiguous trailer block after a blank line:
+
+Prompt-Artifact: prompts/scripts/framework/select_work_candidates.v2.md
+AI-Model: claude-opus-5-5
+AI-Risk: HIGH
+Supervised-by: ScottThurlow
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Work efficiently: you have about 8 minutes of wall time. Run only the targeted test files while iterating; the worker will run the full suite afterwards.
+
+1. (S1, the cause) Replace the `git cherry` landed test in `scripts/framework/select_work_candidates.py` with a CONTENT-level test that handles squash merges: for each matching branch, run `git merge-tree --write-tree refs/remotes/origin/main <full refname>` (git 2.53 is installed). The branch is `branch`-stage (unlanded work) iff the merge exits 1 (conflict) OR the result tree OID (first stdout line) differs from `git rev-parse refs/remotes/origin/main^{tree}` (resolve that once per run). An exit code other than 0/1, or a timeout, is a `_GitFailure` (existing fail-safe). Merging a branch whose changes are already on main yields main's tree exactly, whatever the merge mode (squash, rebase, cherry-pick, merge). Update the docstring/comments accordingly.
+   (N3) Enumerate with `%(refname)` (full ref) and derive the issue number from the stripped name, instead of `%(refname:short)`.
+   Tests: replace/extend `test_branch_already_landed_is_not_started` with (a) single-commit cherry-pick landed → not started, (b) multi-commit branch squash-merged onto main as ONE commit → not started (this is the regression case), (c) branch landed and main has since changed other files → not started, (d) branch conflicting with main → started.
+
+2. (M1) `bootstrap/worker-cron-prompt.md` Step 2: REMOVE the instruction to `git branch -D` a branch. Replace with: the selector only marks a branch started when merging it into `origin/main` would change something, so a `[started:branch]` pick has real unlanded work; re-adopt it onto a fresh `create_branch.sh` branch per #967/#2126; if it cannot be landed this cycle (e.g. it is blocked on a human ruling), record that with `bootstrap/escalate_to_human.sh` (which applies `needs-human` and so removes it from selection) rather than leaving it to re-rank every cycle. Never delete a worker branch by hand.
+
+3. (S3) `design` stage requires a `TECHNICAL-DESIGN-<N>` file; an `ADR-<N>` alone (or REQUIREMENTS) does NOT mark `design` — its next step is still a spec. Update the regex/helper, tests (ADR-only → none; TD → design; combined `TECHNICAL-DESIGN-1660-1662-x` marks both), and add a one-line code comment noting that legacy low-numbered docs (e.g. TECHNICAL-DESIGN-63) can collide with old issue numbers, which is harmless unless that issue is open and needs-ai.
+
+4. (N1) Add a clamp test where a `design`-stage low-priority issue sits behind more than 5 higher-priority unstarted issues and is still emitted.
+
+5. (S2) `bin/hos-cron`: change the "Next work candidates" header text at ~line 2094 from "highest priority first" to "started work first, then highest priority", and fix the comment at ~2095-2101 that says it emits in "(rank, number ASC)" order to "(stage, rank, number ASC)" citing #2155. Check `tests/automation/test_hos_cron.py` for an assertion on that header text and update it consistently if one exists. Also update `bootstrap/worker-cron-prompt.md` wherever it quotes that header (it refers to the "Next work candidates" block).
+
+6. `docs/LABELS.md` priority row (~line 49): the emission order now ranks started stage first (branch > design > none, #2155), then priority, then lowest number. One clause; keep the rest of the row.
+
+Do NOT edit `.claude/agents/worker.md` (agent definition — the worker session handles it).
+
+Then run: the three select_work_candidates test files + test_select_work_candidates_started.py + tests/framework/test_selection_call_sites.py + the relevant tests/automation/test_hos_cron.py tests (-k for the context/header ones), and the gates on your changed files (`bash scripts/oversight/run_gates.sh <files>`). Report: commit SHA, files, test counts, gate results, anything unsure.
+```
+
+## Worker-session edit (not delegated)
+
+`.claude/agents/worker.md` "Select by priority, then number" bullet updated to the started-first ordering by the top-level worker session directly, per CLAUDE.md "Agent-definition edits (HOS source repo only)" (#1347); `coder` may not write agent definition files.
