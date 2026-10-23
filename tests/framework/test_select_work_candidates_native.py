@@ -359,6 +359,39 @@ class TestNativeExclusion:
         assert "EXCLUDED" not in joined
         assert "edge-summary-unreadable" not in joined
 
+    def test_pk1_parked_is_excluded_and_reported_with_its_own_reason(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(70, "parked"), _issue(71)]
+        rc, out, err = run_gate(capsys)
+        assert rc == 0
+        assert _numbers(out) == [71]
+        assert (
+            PREFIX + "EXCLUDED 1 in-milestone issues are not actionable (not counted in scanned): "
+            "blocked-by-open-issue=0 blocker-closed-unverified=0 untracked-parent=0 parked=1"
+        ) in err
+        assert PREFIX + "EXCLUDED issues: #70(parked)" in err
+        assert "scanned=1 " in " ".join(err)
+
+    def test_pk2_parked_wins_over_a_native_reason(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(72, "parked", deps=_BLOCKED)]
+        rc, out, err = run_gate(capsys)
+        assert PREFIX + "EXCLUDED issues: #72(parked)" in err
+
+    def test_pk3_needs_human_wins_over_parked_silently(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(73, "needs-human", "parked")]
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert rc == 0
+        assert "EXCLUDED" not in " ".join(err)
+
+    def test_pk4_parked_does_not_change_completeness_or_exit_code(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(74)]
+        rc_without, out_without, err_without = run_gate(capsys)
+        stub.issue_pages[1] = [_issue(74), _issue(75, "parked")]
+        rc_with, out_with, err_with = run_gate(capsys)
+        assert (rc_with, out_with) == (rc_without, out_without)
+        assert "complete=yes" in " ".join(err_with)
+        assert "unevaluated=0" in " ".join(err_with)
+
     def test_nb13_the_predicate_reads_only_the_two_summaries(self):
         class _Hostile(dict):
             def get(self, key, default=None):
