@@ -155,6 +155,19 @@ def test_working_on_line_survives_label_failure(monkeypatch, tmp_path, capsys):
     assert fake.carriers == set()
 
 
+def test_working_on_line_survives_slug_failure(monkeypatch, tmp_path, capsys):
+    def bad(_p):
+        raise RuntimeError("no remote")
+
+    monkeypatch.setattr(in_progress, "resolve_repo_slug", bad)
+    log = tmp_path / "cycle.log"
+    log.write_text("")
+    monkeypatch.setenv("HOS_CYCLE_LOG", str(log))
+    assert in_progress.main(["mark", "--issue", "7", "--branch", "b"]) == 0
+    assert "WORKING ON #7  branch=b" in capsys.readouterr().err
+    assert "WORKING ON #7  branch=b" in log.read_text()
+
+
 def test_usage_error_exits_2():
     with pytest.raises(SystemExit) as exc:
         in_progress.main(["mark"])
@@ -194,6 +207,14 @@ def test_create_branch_stdout_clean_when_mark_prints(tmp_path):
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip().splitlines() == ["worker-7-thing-260101000000-999"]
     assert "NOISE on stdout" in res.stderr
+
+
+def test_create_branch_silent_when_module_absent(tmp_path):
+    repo = Repo(tmp_path)
+    res = repo.create_branch("--issue", "7", "--slug", "thing")
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip().splitlines() == ["worker-7-thing-260101000000-999"]
+    assert "hos-in-progress" not in res.stderr and "ModuleNotFound" not in res.stderr
 
 
 def test_hos_cron_exit_trap_clears_for_worker():

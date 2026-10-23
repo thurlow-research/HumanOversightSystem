@@ -101,8 +101,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)  # usage errors exit 2
 
     try:
-        slug = resolve_repo_slug(Path.cwd())
-        owner, repo = slug.split("/", 1)
+        try:
+            slug = resolve_repo_slug(Path.cwd())
+            owner, repo = slug.split("/", 1)
+        except Exception:
+            if args.cmd == "mark":  # the log line must not depend on slug resolution
+                _emit_line(f"WORKING ON #{args.issue}  branch={sanitize_title(args.branch)}")
+            raise
         if args.cmd == "mark":
             mark(owner, repo, args.issue, args.branch)
         else:

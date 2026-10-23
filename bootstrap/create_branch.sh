@@ -115,7 +115,12 @@ BRANCH_NAME="${PREFIX}-${ISSUE}-${SLUG_SANITIZED}-${HOS_CYCLE_TOKEN}-${pid}"
 # observability; stdout goes to stderr so the branch name stays the only stdout line.
 _hos_mark_in_progress() {
     [[ "$PREFIX" == "worker" ]] || return 0
-    (cd "$REPO_DIR" && python3 -m scripts.automation.in_progress mark --issue "$ISSUE" --branch "$BRANCH_NAME") >&2 \
+    # HOS-repo-only for now: scripts/automation/ is not shipped to consumer installs.
+    [[ -f "$REPO_DIR/scripts/automation/in_progress.py" ]] || return 0
+    local _tb=""
+    command -v timeout &>/dev/null && _tb="timeout"
+    [[ -n "$_tb" ]] || { command -v gtimeout &>/dev/null && _tb="gtimeout"; }
+    (cd "$REPO_DIR" && ${_tb:+"$_tb" 60} python3 -m scripts.automation.in_progress mark --issue "$ISSUE" --branch "$BRANCH_NAME") >&2 \
         || warn "could not mark issue #${ISSUE} hos-in-progress (non-fatal, #2157)"
 }
 

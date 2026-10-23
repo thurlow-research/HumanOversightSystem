@@ -342,6 +342,8 @@ echo "$$" > "$_LOCK_DIR/pid"
 _HOS_INPROG_ARMED=""
 _hos_inprogress_clear() {
   [[ "$ROLE" == "worker" && -n "$_HOS_INPROG_ARMED" ]] || return 0
+  # HOS-repo-only for now: scripts/automation/ is not shipped to consumer installs.
+  [[ -f "$REPO_ROOT/scripts/automation/in_progress.py" ]] || return 0
   local _tb=""
   if command -v timeout &>/dev/null; then _tb="timeout"
   elif command -v gtimeout &>/dev/null; then _tb="gtimeout"; fi
