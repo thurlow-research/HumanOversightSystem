@@ -2,7 +2,7 @@
 scripts/framework/select_work_candidates.py (#2155: WIP discipline).
 
 The git-backed tests build a REAL throwaway repository under pytest's tmp_path
-(a local `origin/main` ref stands in for the remote) so the `git cherry` and
+(a local `origin/main` ref stands in for the remote) so the `git merge-tree` and
 `git ls-tree` logic is exercised for real. The fixtures are duplicated from
 test_select_work_candidates.py: tests/framework is not a package.
 """
@@ -95,6 +95,22 @@ class _Repo:
         self.git("checkout", "-q", "main")
         return sha
 
+    def multi_commit_branch(self, name: str, count: int = 3) -> None:
+        self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "-b", name)
+        for i in range(count):
+            self.write(f"{name}-{i}.txt", f"{i}\n")
+            self.git("add", "-A")
+            self.git("commit", "-q", "-m", f"step {i}")
+        self.git("checkout", "-q", "main")
+
+    def squash_onto_main(self, name: str) -> None:
+        """Land a whole branch as ONE new commit (a GitHub squash merge)."""
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--squash", name)
+        self.git("commit", "-q", "-m", f"squash {name}")
+        self.publish()
+
     def land_on_main(self, sha: str) -> None:
         """Re-apply a branch commit onto main (new SHA, same patch)."""
         self.git("checkout", "-q", "main")
@@ -184,7 +200,7 @@ class TestStageClassification:
         assert _nums(out) == [33, 31, 32]
 
     def test_branch_wins_when_both_signals_present(self, repo, gh, capsys):
-        repo.doc_on_main("docs/ADR-40-x.md")
+        repo.doc_on_main("docs/TECHNICAL-DESIGN-40-x.md")
         repo.branch_with_commit("worker-40-y")
         gh.issues = [_issue(40)]
         _, out, err = _run(capsys)
@@ -201,13 +217,43 @@ class TestStageClassification:
         assert len(out) == 5
         assert _nums(out)[0] == 99
 
-    def test_branch_already_landed_is_not_started(self, repo, gh, capsys):
+    def test_branch_cherry_picked_onto_main_is_not_started(self, repo, gh, capsys):
         sha = repo.branch_with_commit("worker-50-landed")
         repo.land_on_main(sha)
         gh.issues = [_issue(50)]
         _, out, err = _run(capsys)
         assert out == ["#50 [low] issue 50"]
         assert PREFIX + "STARTED branch=0 design=0" in err
+
+    def test_multi_commit_branch_squash_merged_is_not_started(self, repo, gh, capsys):
+        repo.multi_commit_branch("worker-52-squashed")
+        repo.squash_onto_main("worker-52-squashed")
+        gh.issues = [_issue(52)]
+        _, out, err = _run(capsys)
+        assert out == ["#52 [low] issue 52"]
+        assert PREFIX + "STARTED branch=0 design=0" in err
+
+    def test_landed_branch_stays_landed_after_main_changes_other_files(self, repo, gh, capsys):
+        repo.multi_commit_branch("worker-53-squashed")
+        repo.squash_onto_main("worker-53-squashed")
+        repo.doc_on_main("docs/unrelated.md")
+        gh.issues = [_issue(53)]
+        _, out, _ = _run(capsys)
+        assert out == ["#53 [low] issue 53"]
+
+    def test_branch_conflicting_with_main_is_started(self, repo, gh, capsys):
+        repo.git("checkout", "-q", "-b", "worker-54-conflict")
+        repo.write("README.md", "branch side\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "branch edit")
+        repo.git("checkout", "-q", "main")
+        repo.write("README.md", "main side\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "main edit")
+        repo.publish()
+        gh.issues = [_issue(54)]
+        _, out, _ = _run(capsys)
+        assert out == ["#54 [low] [started:branch] issue 54"]
 
     def test_branch_with_no_commits_beyond_main_is_not_started(self, repo, gh, capsys):
         repo.git("branch", "worker-51-empty", "main")
@@ -223,14 +269,29 @@ class TestStageClassification:
         assert out == ["#61 [low] issue 61"]
 
     def test_design_doc_number_boundaries(self, repo, gh, capsys):
-        repo.doc_on_main("docs/ADR-1552-other.md")
-        repo.doc_on_main("docs/v0.7.0/ADR-1660-1662-combined.md")
+        repo.doc_on_main("docs/TECHNICAL-DESIGN-1552-other.md")
+        repo.doc_on_main("docs/v0.7.0/TECHNICAL-DESIGN-1660-1662-combined.md")
         repo.doc_on_main("docs/TECHNICAL-DESIGN-70.md")
         gh.issues = [_issue(155), _issue(1660), _issue(1662), _issue(70), _issue(7)]
         _, out, _ = _run(capsys)
         started = {int(ln.split()[0][1:]) for ln in out if "[started:design]" in ln}
         assert started == {1660, 1662, 70}
         assert _nums(out)[:3] == [70, 1660, 1662]
+
+    def test_adr_only_does_not_mark_design(self, repo, gh, capsys):
+        repo.doc_on_main("docs/ADR-80-x.md")
+        gh.issues = [_issue(80)]
+        _, out, _ = _run(capsys)
+        assert out == ["#80 [low] issue 80"]
+
+    def test_design_stage_low_priority_is_emitted_past_the_clamp(self, repo, gh, capsys):
+        repo.doc_on_main("docs/TECHNICAL-DESIGN-98-x.md")
+        gh.issues = [_issue(n, "priority:high") for n in range(1, 8)] + [_issue(98, "priority:low")]
+        rc, out, _ = _run(capsys)
+        assert rc == 0
+        assert len(out) == 5
+        assert _nums(out)[0] == 98
+        assert out[0] == "#98 [low] [started:design] issue 98"
 
     def test_unstarted_lines_are_byte_identical_to_the_old_format(self, repo, gh, capsys):
         gh.issues = [_issue(8, "priority:high", title="Some  title")]
@@ -294,13 +355,15 @@ class TestDesignNumbers:
     @pytest.mark.parametrize(
         "path,expected",
         [
-            ("docs/ADR-1552-x.md", {1552}),
-            ("docs/ADR-1660-1662-x.md", {1660, 1662}),
+            ("docs/TECHNICAL-DESIGN-1552-x.md", {1552}),
+            ("docs/TECHNICAL-DESIGN-1660-1662-x.md", {1660, 1662}),
             ("docs/a/TECHNICAL-DESIGN-1540-S1-S2-x.md", {1540}),
             ("docs/TECHNICAL-DESIGN-12.md", {12}),
-            ("docs/ADR-12_x.md", {12}),
-            ("docs/ADR-12abc.md", set()),
-            ("docs/MY-ADR-12-x.md", set()),
+            ("docs/TECHNICAL-DESIGN-12_x.md", {12}),
+            ("docs/TECHNICAL-DESIGN-12abc.md", set()),
+            ("docs/ADR-12-x.md", set()),
+            ("docs/ADR-1660-1662-x.md", set()),
+            ("docs/MY-TECHNICAL-DESIGN-12-x.md", set()),
             ("docs/REQUIREMENTS-12-x.md", set()),
         ],
     )

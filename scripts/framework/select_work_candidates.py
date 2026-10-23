@@ -35,10 +35,13 @@ Two orders, deliberately different (AM-29, TP-1):
   EMIT  = (stage, rank, number ASC)   -- #901's documented FIFO-within-band.
 
 `stage` is the "already started" key (#2155): 0 = a local `worker-<N>-*`
-branch carries un-landed patches, 1 = a design/ADR for N is merged on
-origin/main, 2 = neither. It sorts BEFORE priority so started work finishes
-before new work begins, and it leads the WALK order so the max-candidates
-clamp cannot drop a started low-priority issue. It costs zero API requests
+branch whose content is not yet on origin/main (merging it into origin/main
+would change the tree, or conflict -- a content test, so squash, rebase and
+cherry-pick landings all count as landed), 1 = a TECHNICAL-DESIGN for N is
+merged on origin/main (an ADR alone leaves a spec still to write), 2 = neither.
+It sorts BEFORE priority so started work finishes before new work
+begins, and it leads the WALK order so the max-candidates clamp cannot drop a
+started low-priority issue. It costs zero API requests
 (local git against `_REPO_ROOT` only) and is fail-safe: if git cannot answer,
 every candidate is stage 2 and one WARN line is emitted -- it only reorders,
 never drops a candidate or changes an exit code.
@@ -570,14 +573,17 @@ class _Candidate:
 # ---------------------------------------------------------------------------
 
 _BRANCH_RE = re.compile(r"^worker-([0-9]+)-")  # bootstrap/create_branch.sh naming
-_DESIGN_DOC_RE = re.compile(r"^(?:TECHNICAL-DESIGN|ADR)-([0-9]+(?:-[0-9]+)*)(?=[-._]|$)")
+# Legacy low-numbered docs (e.g. TECHNICAL-DESIGN-63) can collide with old issue
+# numbers; harmless unless that issue is open and needs-ai.
+_DESIGN_DOC_RE = re.compile(r"^TECHNICAL-DESIGN-([0-9]+(?:-[0-9]+)*)(?=[-._]|$)")
 
 
 class _GitFailure(Exception):
     """A local git query could not be answered."""
 
 
-def _git(repo_root: str, *args: str) -> str:
+def _git(repo_root: str, *args: str, ok_codes: Sequence[int] = (0,)) -> str:
+    """stdout of a git command; a return code outside `ok_codes` is a failure."""
     try:
         result = subprocess.run(
             ["git", "-C", repo_root, *args],
@@ -588,14 +594,35 @@ def _git(repo_root: str, *args: str) -> str:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise _GitFailure(str(exc)) from exc
-    if result.returncode != 0:
+    if result.returncode not in ok_codes:
         raise _GitFailure(result.stderr.strip())
     return result.stdout
 
 
+def _branch_has_unlanded_work(repo_root: str, refname: str, main_tree: str) -> bool:
+    """True iff merging `refname` into origin/main would conflict or change the
+    tree. Content-level, so it is merge-mode agnostic: a branch whose changes
+    are already on main (squash, rebase, cherry-pick or merge) merges to main's
+    tree exactly. Exit 0/1 are answers; anything else is a failure."""
+    out = _git(
+        repo_root,
+        "merge-tree",
+        "--write-tree",
+        "refs/remotes/origin/main",
+        refname,
+        ok_codes=(0, 1),
+    )
+    # A conflict (exit 1) still prints a result tree OID, but that tree holds the
+    # conflict markers and so never equals main's: the comparison covers both.
+    lines = out.splitlines()
+    return not lines or lines[0].strip() != main_tree
+
+
 def _design_numbers(doc_paths: Sequence[str]) -> set:
-    """Issue numbers named by the leading numeric components of a design/ADR
-    doc basename (`ADR-1660-1662-x.md` names both 1660 and 1662)."""
+    """Issue numbers named by the leading numeric components of a
+    TECHNICAL-DESIGN doc basename (`TECHNICAL-DESIGN-1660-1662-x.md` names both
+    1660 and 1662). ADR and REQUIREMENTS docs do not count: the next step after
+    them is still a spec."""
     found: set = set()
     for path in doc_paths:
         match = _DESIGN_DOC_RE.match(path.rsplit("/", 1)[-1])
@@ -610,23 +637,23 @@ def _started_stages(repo_root: str, numbers: Sequence[int]) -> Optional[dict]:
     Always run against `_REPO_ROOT`, never a caller-supplied path (AD-13)."""
     wanted = set(numbers)
     try:
-        _git(repo_root, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+        main_tree = _git(
+            repo_root, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main^{tree}"
+        ).strip()
         stages: dict = {}
-        heads = _git(repo_root, "for-each-ref", "--format=%(refname:short)", "refs/heads/worker-*")
-        for branch in heads.split():
-            match = _BRANCH_RE.match(branch)
+        heads = _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/heads/worker-*")
+        for refname in heads.split():
+            match = _BRANCH_RE.match(refname.removeprefix("refs/heads/"))
             if not match or int(match.group(1)) not in wanted:
                 continue
             number = int(match.group(1))
             if number in stages:
                 continue
-            # `cherry` lists only commits not reachable from origin/main; a `+`
-            # is a patch origin/main does not already carry (a squash-merged
-            # branch shows only `-`).
-            cherry = _git(repo_root, "cherry", "origin/main", f"refs/heads/{branch}")
-            if any(line.startswith("+") for line in cherry.splitlines()):
+            if _branch_has_unlanded_work(repo_root, refname, main_tree):
                 stages[number] = _STAGE_BRANCH
-        docs = _git(repo_root, "ls-tree", "-r", "--name-only", "origin/main", "--", "docs")
+        docs = _git(
+            repo_root, "ls-tree", "-r", "--name-only", "refs/remotes/origin/main", "--", "docs"
+        )
         for number in _design_numbers(docs.splitlines()) & wanted:
             stages.setdefault(number, _STAGE_DESIGN)
         return stages
