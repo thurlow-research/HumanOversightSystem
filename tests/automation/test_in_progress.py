@@ -168,6 +168,37 @@ def test_working_on_line_survives_slug_failure(monkeypatch, tmp_path, capsys):
     assert "WORKING ON #7  branch=b" in log.read_text()
 
 
+def test_line_written_before_any_label_call(monkeypatch, tmp_path):
+    fake = FakeGitHub(carriers=[5]).install(monkeypatch)
+    log = tmp_path / "cycle.log"
+    log.write_text("")
+    monkeypatch.setenv("HOS_CYCLE_LOG", str(log))
+    seen = []
+
+    def rec(name, orig):
+        def wrapper(*a):
+            seen.append((name, "WORKING ON #7" in log.read_text()))
+            return orig(*a)
+
+        return wrapper
+
+    for name in ("get_label", "list_issues_with_label", "add_issue_label", "remove_issue_label"):
+        monkeypatch.setattr(github, name, rec(name, getattr(github, name)))
+    in_progress.main(["mark", "--issue", "7", "--branch", "b"])
+    assert seen and all(logged for _n, logged in seen)
+    assert fake.carriers == {7}
+
+
+def test_warn_appended_to_cycle_log(monkeypatch, tmp_path):
+    fake = FakeGitHub().install(monkeypatch)
+    fake.fail_all = True
+    log = tmp_path / "cycle.log"
+    log.write_text("")
+    monkeypatch.setenv("HOS_CYCLE_LOG", str(log))
+    in_progress.main(["clear"])
+    assert "in-progress: WARN: clear failed" in log.read_text()
+
+
 def test_usage_error_exits_2():
     with pytest.raises(SystemExit) as exc:
         in_progress.main(["mark"])

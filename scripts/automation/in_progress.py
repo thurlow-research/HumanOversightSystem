@@ -30,8 +30,22 @@ _TITLE_MAX = 100
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 
+def _append_cycle_log(line: str) -> None:
+    """Append to $HOS_CYCLE_LOG when it names an existing regular file; never create it."""
+    log = os.environ.get("HOS_CYCLE_LOG", "")
+    if log and Path(log).is_file():
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"[{stamp}] {line}\n")
+        except OSError:
+            pass  # observability only
+
+
 def _warn(msg: str) -> None:
-    print(f"in-progress: WARN: {msg}", file=sys.stderr)
+    line = f"in-progress: WARN: {msg}"
+    print(line, file=sys.stderr)
+    _append_cycle_log(sanitize_title(line))
 
 
 def sanitize_title(title: str) -> str:
@@ -62,28 +76,24 @@ def _remove_from_others(owner: str, repo: str, keep: int | None) -> list[int]:
 
 def _emit_line(line: str) -> None:
     print(line, file=sys.stderr)
-    log = os.environ.get("HOS_CYCLE_LOG", "")
-    if log and Path(log).is_file():
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with open(log, "a", encoding="utf-8") as fh:  # append only; never create
-            fh.write(f"[{stamp}] {line}\n")
+    _append_cycle_log(line)
 
 
 def mark(owner: str, repo: str, issue: int, branch: str) -> None:
-    # The log line is the local half of the feature: it must not depend on the
-    # network, so label work and title fetch are each isolated.
-    try:
-        _ensure_label(owner, repo)
-        _remove_from_others(owner, repo, keep=issue)
-        github.add_issue_label(owner, repo, issue, LABEL)
-    except Exception as exc:
-        _warn(f"labelling #{issue} failed: {exc}")
+    # The log line is the local half of the feature and is emitted before any
+    # label call, so create_branch.sh's outer timeout can only cut off label work.
     title = ""
     try:
         title = sanitize_title(str((github.get_issue(owner, repo, issue) or {}).get("title", "")))
     except Exception as exc:
         _warn(f"title fetch for #{issue} failed: {exc}")
     _emit_line(f"WORKING ON #{issue} {title} branch={sanitize_title(branch)}")
+    try:
+        _ensure_label(owner, repo)
+        _remove_from_others(owner, repo, keep=issue)
+        github.add_issue_label(owner, repo, issue, LABEL)
+    except Exception as exc:
+        _warn(f"labelling #{issue} failed: {exc}")
 
 
 def clear(owner: str, repo: str) -> str:
