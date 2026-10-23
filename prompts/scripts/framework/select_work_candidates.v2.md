@@ -16,7 +16,7 @@
 Dispatched by the autonomous worker to the `coder` subagent (exact text of the brief file the dispatch pointed at):
 
 ```
-You are implementing #2155 (WIP discipline in work selection) in the HOS repo at /home/scott/Code/HumanOversightSystem/Worker, branch `worker-2155-wip-discipline-selection-261023073501-570555` (already checked out — do NOT create or switch branches, do NOT push, do NOT file issues, comment, or touch labels). Commit your work on this branch when done (one or two commits), with these trailers as ONE contiguous block after a blank line:
+You are implementing #2155 (WIP discipline in work selection) in the HOS repo at <repo root>, branch `worker-2155-wip-discipline-selection-261023073501-570555` (already checked out — do NOT create or switch branches, do NOT push, do NOT file issues, comment, or touch labels). Commit your work on this branch when done (one or two commits), with these trailers as ONE contiguous block after a blank line:
 
 Prompt-Artifact: prompts/scripts/framework/select_work_candidates.v2.md
 AI-Model: claude-opus-5-5
@@ -81,7 +81,7 @@ Out of scope (do NOT build): cycle metrics / spec-to-code ratio (that is #2131's
 Dispatched by the autonomous worker to the `coder` subagent (exact text of the brief file):
 
 ```
-Round 2 for #2155 on branch `worker-2155-wip-discipline-selection-261023073501-570555` in /home/scott/Code/HumanOversightSystem/Worker (checked out; do NOT switch branches, push, file issues, comment or touch labels). The round-1 brief is in prompts/scripts/framework/select_work_candidates.v2.md and your round-1 commit is 5072d4a6a. Code review returned CHANGES_REQUESTED. Fix exactly the following, then commit (one commit, "Refs #2155", no closing keywords) with this contiguous trailer block after a blank line:
+Round 2 for #2155 on branch `worker-2155-wip-discipline-selection-261023073501-570555` in <repo root> (checked out; do NOT switch branches, push, file issues, comment or touch labels). The round-1 brief is in prompts/scripts/framework/select_work_candidates.v2.md and your round-1 commit is 5072d4a6a. Code review returned CHANGES_REQUESTED. Fix exactly the following, then commit (one commit, "Refs #2155", no closing keywords) with this contiguous trailer block after a blank line:
 
 Prompt-Artifact: prompts/scripts/framework/select_work_candidates.v2.md
 AI-Model: claude-opus-5-5
