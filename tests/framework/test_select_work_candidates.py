@@ -40,6 +40,8 @@ def gate_repo(tmp_path, monkeypatch):
         'COPILOT_BOT_LOGIN="copilot[bot]"\n'
     )
     monkeypatch.setattr(swc, "_REPO_ROOT", root)
+    # The throwaway tree is not a git repo; pin the started signal to "none started".
+    monkeypatch.setattr(swc, "_started_stages", lambda *_a, **_k: {})
     return root
 
 

@@ -93,7 +93,10 @@ For each open PR authored by this worker:
 4. No open PRs → Step 2.
 
 **Step 2 — Pick next @@TARGET_RELEASE@@ needs-ai issue:**
-Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. The list is already ordered highest-priority first (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`), then lowest issue number within a band. **Pick the first non-blocked candidate** (#901).
+Context pre-computed — see "Next work candidates" in the context block at the bottom of this prompt. The list is already ordered started-work first (a `[started:branch]` candidate, then a `[started:design]` one), then highest-priority first (`priority:critical` > `high` > `medium` > `low`; no label ⇒ `low`), then lowest issue number within a band. **Pick the first non-blocked candidate** (#901, #2155).
+
+Work follows five levels, highest first: (1) feedback on your own PRs (Step 1); (2) land built branches (`[started:branch]`); (3) finish the code for designs that are already merged (`[started:design]`); (4) new code that needs no spec; (5) spec work, only for the next thing to build. The worker does not skip a level while a higher one is non-empty.
+- `[started:branch]`: a local `worker-<N>-*` branch holds built work that has not landed. It was not created this cycle, so per #967 you do not continue on it: cherry-pick its unique commits onto a fresh branch from `create_branch.sh` (the #2126 re-adoption protocol, which also requires re-running the review chain). The selector only marks a branch started when merging it into `origin/main` would change something, so a `[started:branch]` pick has real unlanded work. If it cannot be landed this cycle (e.g. it is blocked on a human ruling), record that with `bootstrap/escalate_to_human.sh` (which applies `needs-human` and so removes it from selection) rather than leaving it to re-rank every cycle. Never delete a worker branch by hand.
 
 Fallback (if context block is absent) — run from `$REPO_ROOT`:
 ```bash
@@ -115,6 +118,8 @@ This is the **only** sanctioned way to create a branch (#967). Never `git checko
 - Spec/behavioral → pm-agent + architect + technical-design
 - Bug fix/tweak → proceed directly
 - Docs/tests → proceed directly
+- **Spec proportionality (#2155):** write one high-level spec per design chain at the start (direction, constraints, interfaces, and decisions that are costly to reverse). Write each slice's detail in the cycle that builds that slice. Do not open a spec PR for a slice while built code from an earlier slice of the same chain is unlanded. Review of risky code is unchanged.
+- **Definition of done:** an issue is done when working code is merged. A merged spec is not done. The cycle summary reports merged code first.
 
 **Step 4 — After any code change, run inner-loop tests then validators (HARD GATE — no exceptions):**
 ```bash
