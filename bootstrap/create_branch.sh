@@ -111,12 +111,21 @@ pid="${HOS_CYCLE_ID##*-}"
 
 BRANCH_NAME="${PREFIX}-${ISSUE}-${SLUG_SANITIZED}-${HOS_CYCLE_TOKEN}-${pid}"
 
+# #2157: label the issue hos-in-progress and log "WORKING ON #<n>". Best-effort
+# observability; stdout goes to stderr so the branch name stays the only stdout line.
+_hos_mark_in_progress() {
+    [[ "$PREFIX" == "worker" ]] || return 0
+    (cd "$REPO_DIR" && python3 -m scripts.automation.in_progress mark --issue "$ISSUE" --branch "$BRANCH_NAME") >&2 \
+        || warn "could not mark issue #${ISSUE} hos-in-progress (non-fatal, #2157)"
+}
+
 # ── Step 3 — idempotent re-entry within this cycle, or refuse (never adopt) ──
 if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
     if hos_bo_verify "$REPO_DIR" "$BRANCH_NAME"; then
         git -C "$REPO_DIR" checkout --quiet "$BRANCH_NAME" \
             || err "Branch '${BRANCH_NAME}' has a valid ownership record for this cycle, but 'git checkout' failed."
         ok "re-entered existing branch '${BRANCH_NAME}' (already owned by this cycle)"
+        _hos_mark_in_progress
         echo "${BRANCH_NAME}"
         exit 0
     fi
@@ -143,4 +152,5 @@ fi
 
 # ── Step 6 — the branch name is the ONLY stdout line ─────────────────────────
 ok "created branch '${BRANCH_NAME}' from '${CHECKOUT_FROM}', ownership recorded for cycle ${HOS_CYCLE_ID}"
+_hos_mark_in_progress
 echo "${BRANCH_NAME}"

@@ -554,3 +554,58 @@ def request_reviewers(
     if result is None:
         raise GitHubError("request_reviewers: GitHub returned no response for POST")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Label helpers (#2157 — hos-in-progress visibility)
+# ---------------------------------------------------------------------------
+
+
+def get_issue(owner: str, repo: str, issue_number: int) -> Optional[dict[str, Any]]:
+    """GET /repos/{owner}/{repo}/issues/{number}; None if it does not exist."""
+    return _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}"])
+
+
+def get_label(owner: str, repo: str, name: str) -> Optional[dict[str, Any]]:
+    """GET /repos/{owner}/{repo}/labels/{name}; None if the label does not exist."""
+    return _run_gh([f"/repos/{owner}/{repo}/labels/{name}"])
+
+
+def create_label(
+    owner: str, repo: str, name: str, color: str, description: str
+) -> Optional[dict[str, Any]]:
+    """POST /repos/{owner}/{repo}/labels. Raises GitHubError (status 422 if it already exists)."""
+    return _run_gh(
+        [f"/repos/{owner}/{repo}/labels", "--method", "POST"],
+        stdin_json={"name": name, "color": color, "description": description},
+    )
+
+
+def list_issues_with_label(owner: str, repo: str, label: str) -> list[dict[str, Any]]:
+    """GET open issues (and PRs — the issues endpoint returns both) carrying `label`, all pages."""
+    found: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/issues?labels={label}&state=open&per_page=100&page={page}"]
+        )
+        if not batch:
+            break
+        found.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return found
+
+
+def add_issue_label(owner: str, repo: str, issue_number: int, label: str) -> None:
+    """POST /repos/{owner}/{repo}/issues/{number}/labels (adds; never replaces)."""
+    _run_gh(
+        [f"/repos/{owner}/{repo}/issues/{issue_number}/labels", "--method", "POST"],
+        stdin_json={"labels": [label]},
+    )
+
+
+def remove_issue_label(owner: str, repo: str, issue_number: int, label: str) -> None:
+    """DELETE one label from an issue; a 404 (already removed) is success."""
+    _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}", "--method", "DELETE"])
