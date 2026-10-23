@@ -2091,7 +2091,7 @@ _build_context() {
   fi
 
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
-    printf '### Next work candidates (%s, needs-ai, not needs-human; started work first, then highest priority)\n' "${HOS_TARGET_RELEASE:-active milestone}"
+    printf '### Next work candidates (%s, needs-ai, not needs-human/parked; started work first, then highest priority)\n' "${HOS_TARGET_RELEASE:-active milestone}"
     # #1540 S2: select_work_candidates.py is the single entry point (AD-3) —
     # query + author-trust + live authorization + ordering, all in one
     # place. It emits in (stage, rank, number ASC) order (#2155 started-first,

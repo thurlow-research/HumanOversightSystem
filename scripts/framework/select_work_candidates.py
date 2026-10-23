@@ -22,7 +22,7 @@ Exit codes (§2.2, AM-32):
 
 The algorithm's order is part of the contract (§2.3, AM-19/AM-29):
   A args -> B config (incl. LAZY tier resolution) -> C list (PAGINATED)
-  D1 drop PR records (free) -> D2 drop EXCLUDED_LABELS (free)
+  D1 drop PR records (free) -> D2 drop EXCLUDED_LABELS; report PARKED_LABEL (free)
   D2b drop native-blocked / parent records; set aside unreadable-summary records (free)
   D3 requester_verdict (free) -> D4 trusted -> eligible, zero cost (free)
   D-rank: rank the WHOLE set (free) -- precedes D5, never move it below
@@ -121,6 +121,9 @@ from scripts.framework.requester_trust import (
 # ---------------------------------------------------------------------------
 
 EXCLUDED_LABELS = ("needs-human",)  # the ADR-1604 AD-5 exclusion landing site
+# #2124: "deliberately not selected, no human action pending". Excluded like
+# EXCLUDED_LABELS, but reported (reason == label) instead of silently dropped.
+PARKED_LABEL = "parked"
 LIST_PAGE_BOUND = 5  # 500 records (AM-22 / AF-8)
 EVENTS_PAGE_BOUND = 10  # 1000 events (AM-5)
 
@@ -449,7 +452,7 @@ def _label_names(record: dict) -> set:
 @dataclass(frozen=True)
 class _NativeVerdict:
     outcome: str  # "clear" | "excluded" | "unreadable"
-    reason: str  # excluded: a NATIVE_EXCLUSION_REASONS literal; unreadable: the limb; clear: ""
+    reason: str  # excluded: a NATIVE_EXCLUSION_REASONS literal (or PARKED_LABEL); unreadable: the limb; clear: ""
 
 
 @dataclass
@@ -515,7 +518,8 @@ def _native_verdict(record: dict) -> _NativeVerdict:
 
 
 def _apply_free_filters(raw_records: list) -> _FreeFilterResult:
-    """D1 (drop pull_request records), D2 (drop EXCLUDED_LABELS) and D2b
+    """D1 (drop pull_request records), D2 (drop EXCLUDED_LABELS; report
+    PARKED_LABEL, #2124: needs-human wins when both are present) and D2b
     (native blockers / parents), applied BEFORE ranking so the ranked set and
     the eligible universe are drawn from the same population (§2.3 D5.1 limb
     (c)). D2b must follow D1: PR records carry `None` summaries on the live
@@ -526,7 +530,11 @@ def _apply_free_filters(raw_records: list) -> _FreeFilterResult:
             continue
         if record.get("pull_request"):
             continue
-        if _label_names(record) & set(EXCLUDED_LABELS):
+        labels = _label_names(record)
+        if labels & set(EXCLUDED_LABELS):
+            continue
+        if PARKED_LABEL in labels:
+            result.excluded.append((record.get("number"), PARKED_LABEL))
             continue
         verdict = _native_verdict(record)
         if verdict.outcome == "excluded":
@@ -856,6 +864,8 @@ def _report_and_exit(
     if excluded:
         by_reason = Counter(reason for _, reason in excluded)
         reason_counts = " ".join(f"{r}={by_reason[r]}" for r in NATIVE_EXCLUSION_REASONS)
+        if by_reason[PARKED_LABEL]:  # absent when 0: the native literal line stays byte-stable
+            reason_counts += f" {PARKED_LABEL}={by_reason[PARKED_LABEL]}"
         _emit(
             f"EXCLUDED {len(excluded)} in-milestone issues are not actionable",
             f"(not counted in scanned): {reason_counts}",
