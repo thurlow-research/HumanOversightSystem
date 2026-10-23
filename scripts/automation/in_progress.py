@@ -98,7 +98,11 @@ def mark(owner: str, repo: str, issue: int, branch: str) -> None:
 
 def clear(owner: str, repo: str) -> str:
     removed = _remove_from_others(owner, repo, keep=None)
-    return "in-progress: cleared " + ",".join(f"#{n}" for n in removed) if removed else "in-progress: none"
+    return (
+        "in-progress: cleared " + ",".join(f"#{n}" for n in removed)
+        if removed
+        else "in-progress: none"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

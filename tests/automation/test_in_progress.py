@@ -1,8 +1,6 @@
 """Tests for scripts/automation/in_progress.py and its wiring (#2157)."""
 
-import os
 import re
-import shutil
 from pathlib import Path
 
 import pytest
