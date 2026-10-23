@@ -307,7 +307,7 @@ def test_s2_st2_gate_placement():
     ):
         assert text.index(later) > begin, later
     for earlier in (
-        "trap '_hos_inprogress_clear; rm -rf \"$_LOCK_DIR\"",
+        'trap \'_hos_inprogress_clear; rm -rf "$_LOCK_DIR"',
         "HOS_CYCLE_ID=",
         "_HOS_DIR=",
     ):
