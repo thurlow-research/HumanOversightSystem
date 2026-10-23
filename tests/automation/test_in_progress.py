@@ -137,6 +137,24 @@ def test_github_error_is_warning_exit_zero(monkeypatch, capsys):
     assert "WARN" in capsys.readouterr().err
 
 
+def test_working_on_line_survives_label_failure(monkeypatch, tmp_path, capsys):
+    fake = FakeGitHub().install(monkeypatch)
+
+    def boom(*_a):
+        raise github.GitHubError("nope", status_code=500)
+
+    monkeypatch.setattr(github, "add_issue_label", boom)
+    monkeypatch.setattr(github, "get_issue", boom)
+    log = tmp_path / "cycle.log"
+    log.write_text("")
+    monkeypatch.setenv("HOS_CYCLE_LOG", str(log))
+    assert in_progress.main(["mark", "--issue", "7", "--branch", "b"]) == 0
+    err = capsys.readouterr().err
+    assert "WARN" in err and "WORKING ON #7  branch=b" in err
+    assert "WORKING ON #7  branch=b" in log.read_text()
+    assert fake.carriers == set()
+
+
 def test_usage_error_exits_2():
     with pytest.raises(SystemExit) as exc:
         in_progress.main(["mark"])

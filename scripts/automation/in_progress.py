@@ -70,11 +70,19 @@ def _emit_line(line: str) -> None:
 
 
 def mark(owner: str, repo: str, issue: int, branch: str) -> None:
-    _ensure_label(owner, repo)
-    _remove_from_others(owner, repo, keep=issue)
-    github.add_issue_label(owner, repo, issue, LABEL)
-    data = github.get_issue(owner, repo, issue) or {}
-    title = sanitize_title(str(data.get("title", "")))
+    # The log line is the local half of the feature: it must not depend on the
+    # network, so label work and title fetch are each isolated.
+    try:
+        _ensure_label(owner, repo)
+        _remove_from_others(owner, repo, keep=issue)
+        github.add_issue_label(owner, repo, issue, LABEL)
+    except Exception as exc:
+        _warn(f"labelling #{issue} failed: {exc}")
+    title = ""
+    try:
+        title = sanitize_title(str((github.get_issue(owner, repo, issue) or {}).get("title", "")))
+    except Exception as exc:
+        _warn(f"title fetch for #{issue} failed: {exc}")
     _emit_line(f"WORKING ON #{issue} {title} branch={sanitize_title(branch)}")
 
 
