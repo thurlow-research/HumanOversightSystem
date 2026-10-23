@@ -55,6 +55,8 @@ def gate_repo(tmp_path, monkeypatch):
         'COPILOT_BOT_LOGIN="copilot[bot]"\n'
     )
     monkeypatch.setattr(swc, "_REPO_ROOT", root)
+    # The throwaway tree is not a git repo; pin the started signal to "none started".
+    monkeypatch.setattr(swc, "_started_stages", lambda *_a, **_k: {})
     return root
 
 
@@ -709,10 +711,18 @@ class TestZeroAddedRequests:
 
         functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
         run_gh = functions["_run_gh"]
-        span = range(run_gh.lineno, run_gh.end_lineno + 1)
+        # `_git` (#2155's started signal) shells out to LOCAL git only -- zero
+        # API requests -- so it is the one other sanctioned subprocess site.
+        git_fn = functions["_git"]
+        span = [
+            *range(run_gh.lineno, run_gh.end_lineno + 1),
+            *range(git_fn.lineno, git_fn.end_lineno + 1),
+        ]
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id == "subprocess":
-                assert node.lineno in span, f"subprocess referenced outside _run_gh: {node.lineno}"
+                assert (
+                    node.lineno in span
+                ), f"subprocess referenced outside _run_gh/_git: {node.lineno}"
 
         for name in ("_native_verdict", "_dependency_counts", "_sub_issue_total"):
             for node in ast.walk(functions[name]):

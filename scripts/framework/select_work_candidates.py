@@ -30,9 +30,18 @@ The algorithm's order is part of the contract (§2.3, AM-19/AM-29):
   E: sort the admitted set into emission order -> F: report
 
 Two orders, deliberately different (AM-29, TP-1):
-  WALK  = (rank, number DESC)  -- a reachability decision, total by
+  WALK  = (stage, rank, number DESC)  -- a reachability decision, total by
           construction (issue numbers are unique; no tie-break needed).
-  EMIT  = (rank, number ASC)   -- #901's documented FIFO-within-band.
+  EMIT  = (stage, rank, number ASC)   -- #901's documented FIFO-within-band.
+
+`stage` is the "already started" key (#2155): 0 = a local `worker-<N>-*`
+branch carries un-landed patches, 1 = a design/ADR for N is merged on
+origin/main, 2 = neither. It sorts BEFORE priority so started work finishes
+before new work begins, and it leads the WALK order so the max-candidates
+clamp cannot drop a started low-priority issue. It costs zero API requests
+(local git against `_REPO_ROOT` only) and is fail-safe: if git cannot answer,
+every candidate is stage 2 and one WARN line is emitted -- it only reorders,
+never drops a candidate or changes an exit code.
 
 Every bounded list fetch in this module issues ONE `gh api` invocation PER
 PAGE, with `page=` and `per_page=100` literally in the endpoint's query
@@ -135,6 +144,13 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _GH_SUBPROCESS_TIMEOUT_SECONDS = 30
+_GIT_SUBPROCESS_TIMEOUT_SECONDS = 10
+
+# Stage keys for the "already started" signal (#2155): lower sorts first.
+_STAGE_BRANCH = 0  # built work waiting to land
+_STAGE_DESIGN = 1  # design merged, code not finished
+_STAGE_NONE = 2
+_STAGE_NAMES = {_STAGE_BRANCH: "branch", _STAGE_DESIGN: "design"}
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +562,76 @@ class _Candidate:
     rank: int
     verdict: RequesterVerdict
     record: dict
+    stage: int = _STAGE_NONE
+
+
+# ---------------------------------------------------------------------------
+# The "already started" signal (#2155) — free: local git only, no API requests
+# ---------------------------------------------------------------------------
+
+_BRANCH_RE = re.compile(r"^worker-([0-9]+)-")  # bootstrap/create_branch.sh naming
+_DESIGN_DOC_RE = re.compile(r"^(?:TECHNICAL-DESIGN|ADR)-([0-9]+(?:-[0-9]+)*)(?=[-._]|$)")
+
+
+class _GitFailure(Exception):
+    """A local git query could not be answered."""
+
+
+def _git(repo_root: str, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _GitFailure(str(exc)) from exc
+    if result.returncode != 0:
+        raise _GitFailure(result.stderr.strip())
+    return result.stdout
+
+
+def _design_numbers(doc_paths: Sequence[str]) -> set:
+    """Issue numbers named by the leading numeric components of a design/ADR
+    doc basename (`ADR-1660-1662-x.md` names both 1660 and 1662)."""
+    found: set = set()
+    for path in doc_paths:
+        match = _DESIGN_DOC_RE.match(path.rsplit("/", 1)[-1])
+        if match:
+            found.update(int(part) for part in match.group(1).split("-"))
+    return found
+
+
+def _started_stages(repo_root: str, numbers: Sequence[int]) -> Optional[dict]:
+    """{issue number: _STAGE_BRANCH | _STAGE_DESIGN} for started issues, or None
+    when git cannot answer (the caller then treats every candidate as unstarted).
+    Always run against `_REPO_ROOT`, never a caller-supplied path (AD-13)."""
+    wanted = set(numbers)
+    try:
+        _git(repo_root, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main")
+        stages: dict = {}
+        heads = _git(repo_root, "for-each-ref", "--format=%(refname:short)", "refs/heads/worker-*")
+        for branch in heads.split():
+            match = _BRANCH_RE.match(branch)
+            if not match or int(match.group(1)) not in wanted:
+                continue
+            number = int(match.group(1))
+            if number in stages:
+                continue
+            # `cherry` lists only commits not reachable from origin/main; a `+`
+            # is a patch origin/main does not already carry (a squash-merged
+            # branch shows only `-`).
+            cherry = _git(repo_root, "cherry", "origin/main", f"refs/heads/{branch}")
+            if any(line.startswith("+") for line in cherry.splitlines()):
+                stages[number] = _STAGE_BRANCH
+        docs = _git(repo_root, "ls-tree", "-r", "--name-only", "origin/main", "--", "docs")
+        for number in _design_numbers(docs.splitlines()) & wanted:
+            stages.setdefault(number, _STAGE_DESIGN)
+        return stages
+    except _GitFailure:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -893,7 +979,13 @@ def main(argv: Optional[list] = None) -> int:
         )
         for r in candidates_raw
     ]
-    walk_order = sorted(candidate_states, key=lambda c: (c.rank, -c.number))
+    stages = _started_stages(repo_root, [c.number for c in candidate_states])
+    if stages is None:
+        _emit("WARN started-signal-unavailable")
+    else:
+        for c in candidate_states:
+            c.stage = stages.get(c.number, _STAGE_NONE)
+    walk_order = sorted(candidate_states, key=lambda c: (c.stage, c.rank, -c.number))
 
     walk_result = _walk(
         walk_order,
@@ -905,9 +997,14 @@ def main(argv: Optional[list] = None) -> int:
         max_candidates=effective_max_candidates,
     )
 
-    emit_order = sorted(walk_result.eligible, key=lambda c: (c.rank, c.number))
+    emit_order = sorted(walk_result.eligible, key=lambda c: (c.stage, c.rank, c.number))
     for c in emit_order:
-        print(f"#{c.number} [{_PRIORITY_NAMES[c.rank]}] {c.title}")
+        marker = f" [started:{_STAGE_NAMES[c.stage]}]" if c.stage in _STAGE_NAMES else ""
+        print(f"#{c.number} [{_PRIORITY_NAMES[c.rank]}]{marker} {c.title}")
+    _emit(
+        f"STARTED branch={sum(c.stage == _STAGE_BRANCH for c in emit_order)}",
+        f"design={sum(c.stage == _STAGE_DESIGN for c in emit_order)}",
+    )
 
     return _report_and_exit(
         repo=args.repo,
