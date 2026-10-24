@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"11b6a7aaf54ab6b9123b842160c549adcbbe7e51","pr":2160,"reason":"verdict + escalation thread already posted on this head at 17:43Z; no new human comments, reviews, or commits; reviewer already requested; needs-human present"}
