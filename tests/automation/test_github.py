@@ -543,3 +543,14 @@ class TestRequestReviewers:
             with pytest.raises(GitHubError) as excinfo:
                 request_reviewers("o", "r", 1, ["not-a-collaborator"])
         assert excinfo.value.status_code == 422
+
+
+def test_list_pulls_url_encodes_head():
+    from unittest.mock import patch
+
+    from scripts.automation.lib import github
+
+    with patch.object(github, "_run_gh", return_value=[]) as run:
+        github.list_pulls("o", "r", head="o:feat/a b&x=1", state="closed")
+    url = run.call_args[0][0][0]
+    assert url == "/repos/o/r/pulls?state=closed&head=o:feat%2Fa%20b%26x%3D1"
