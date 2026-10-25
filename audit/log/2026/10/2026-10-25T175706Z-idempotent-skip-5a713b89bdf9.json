@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","gate":"oversight-verdict","head_sha":"47893837544b9aefe4759a9179d80fceafe88d94","pr":2172,"summary":"Same head, no new comments since 17:44Z HUMAN_REQUIRED escalation; escalation suppressed per #1215, verdict deduped by wrapper","tier":"HIGH"}
