@@ -30,6 +30,11 @@ pip-audit>=2.6
 # pins pyjwt~=2.13.0, so this floor also resolves semgrep to >=1.179.0.
 pyjwt>=2.15.0
 
+# Not imported by HOS; certifi arrives transitively via requests/httpx. The floor
+# clears PYSEC-2026-4320 so security_scan does not depend on what the venv happens
+# to have installed (#2147). Latest semgrep itself requires certifi>=2026.10.19.
+certifi>=2026.10.19
+
 # PEP 440 ordering + PEP 503 canonicalisation for security_scan_logic.py (#1776).
 # Arrives via pip-audit, but declare what we import (same rule as PyYAML above).
 packaging>=23.0
