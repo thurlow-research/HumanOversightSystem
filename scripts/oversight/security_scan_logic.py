@@ -21,6 +21,14 @@ THE RULINGS
     same 2027-01-31 timebox as black. mcp is reachable only as a dependency of
     semgrep, which hard-pins mcp==1.29.0 (so no fixed combination is
     installable); the upgrade is tracked in #2120.
+  * 2026-10-23 (#2147): black CVE-2026-114134 (GitHub Action required-version,
+    same class as PYSEC-2026-2120) is exempted on the same 2027-01-31 timebox;
+    certifi is cleared by a requirements floor, not an exemption.
+  * 2026-10-25 (#2147): opentelemetry-api CVE-2026-114603 (O(N^2) tracestate
+    parsing) is exempted on the same 2027-01-31 timebox. opentelemetry-api is
+    reachable only as a dependency of semgrep, which pins
+    opentelemetry-api~=1.37.0 (so no fixed combination is installable); the
+    upgrade is tracked in #2179.
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -221,6 +229,28 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
         ),
     ),
     Exemption(
+        package="black",
+        advisory_id="CVE-2026-114134",
+        fixed_in="26.10.1",
+        expires=datetime.date(2027, 1, 31),
+        tracking_issue=1961,
+        # What: Black's GitHub Action with `use_pyproject: true` reads
+        # `tool.black.required-version` from pyproject.toml without validating it,
+        # so a PR editing pyproject.toml can make the Action install a malicious
+        # package and execute code inside the Action. Same class as PYSEC-2026-2120.
+        reason=(
+            "Black's GitHub Action with use_pyproject: true installs the unvalidated "
+            "tool.black.required-version from pyproject.toml, so a malicious PR could "
+            "make the Action install a malicious package and execute code in it. HOS "
+            "never uses the Black GitHub Action (no workflow references psf/black); "
+            "black runs only as a local formatter checker (lint_check.sh: black "
+            "--check --diff --quiet <files>). The fix (26.10.1) is blocked by the "
+            "deliberate black>=24.0,<25.0 pin (#103); the upgrade is tracked in "
+            "#1961. The no-Action premise is enforced by test PR3. "
+            "Authorized in #2147, 2026-10-23."
+        ),
+    ),
+    Exemption(
         package="mcp",
         advisory_id="CVE-2026-59951",
         fixed_in="1.30.0",
@@ -243,6 +273,34 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "so no fixed combination is installable; upgrade mcp once semgrep unpins "
             "it, tracked in #2120. The no-server premise is enforced by tests PR4 "
             "and PR5. Human ruling #1776, 2026-10-20."
+        ),
+    ),
+    Exemption(
+        package="opentelemetry-api",
+        advisory_id="CVE-2026-114603",
+        fixed_in="1.45.1",
+        expires=datetime.date(2027, 1, 31),
+        tracking_issue=2179,
+        # What: TraceState.from_header does O(N^2) regex work, so a server that
+        # parses an attacker-controlled inbound W3C `tracestate` header (for
+        # example via propagate.extract() on request headers) can be driven to
+        # burn CPU. Only that server-side parse of untrusted headers is affected.
+        reason=(
+            "TraceState.from_header does O(N^2) regex work, reached when an inbound "
+            "W3C tracestate header is parsed (server-side propagate.extract() on "
+            "attacker-controlled request headers); only that is affected. HOS never "
+            "imports opentelemetry (change_classifier.py only names it inside a "
+            "regex string) and never calls propagate.extract, "
+            "TraceContextTextMapPropagator or sets up opentelemetry server "
+            "instrumentation; opentelemetry-api is installed only as a dependency of "
+            "semgrep, whose only propagate.extract call (semgrep/telemetry.py) passes "
+            "a carrier holding just a traceparent built from its own environment, "
+            "never tracestate, and semgrep runs no server-side instrumentation. "
+            "semgrep 1.179.0 (installed) and semgrep 1.182.1 (latest) both pin "
+            "opentelemetry-api~=1.37.0, so no fixed combination is installable; upgrade "
+            "opentelemetry-api once semgrep unpins it, tracked in #2179. The "
+            "no-import and no-extract premises are enforced by tests PR6, PR6b and "
+            "PR7. Human ruling #2147, 2026-10-25."
         ),
     ),
 )

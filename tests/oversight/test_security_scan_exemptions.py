@@ -1,8 +1,8 @@
 """security_scan: time-boxed, visible advisory exemptions that fail closed (#1776).
 
 `security_scan.sh` blocks on any pip-audit advisory, which made it permanently
-red on advisories in tools HOS cannot yet upgrade (black x2, and mcp via semgrep's
-pin; PyJWT is handled by the requirements.txt floor alone, with no exemption).
+red on advisories in tools HOS cannot yet upgrade (black x2, and mcp and opentelemetry-api via
+semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
 pin the roster (a roster edit must force a visible test edit), the narrowness of
 the match (AC-2), the visibility of every suppression (AC-3), and the
@@ -86,8 +86,10 @@ def _run(
 
 _BLACK_2120 = _vuln("PYSEC-2026-2120", ("26.3.0",))
 _BLACK_2121 = _vuln("PYSEC-2026-2121", ("26.3.1",))
+_BLACK_114134 = _vuln("CVE-2026-114134", ("26.10.1",), ("GHSA-cg8m-r9f2-5wm2",))
 _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
+_OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
 
 # Test-only no-fix record. It is NEVER in SUPPRESSIONS: it exists so the no-fix
 # key (TD-D2b), which no shipped record uses, stays covered.
@@ -104,14 +106,16 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_three_ruled_records():
+def test_r1_roster_is_exactly_the_five_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
     assert got == [
         ("black", "PYSEC-2026-2120", "26.3.0", _EXPIRES, 1961),
         ("black", "PYSEC-2026-2121", "26.3.1", _EXPIRES, 1961),
+        ("black", "CVE-2026-114134", "26.10.1", _EXPIRES, 1961),
         ("mcp", "CVE-2026-59951", "1.30.0", _EXPIRES, 2120),
+        ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
     ]
 
 
@@ -143,12 +147,31 @@ def test_s2_each_record_suppresses_at_its_bounded_version():
     assert "2 advisory(ies) suppressed by a time-boxed exemption" in out
 
 
+def test_s2d_black_114134_is_suppressed_at_24_10_0_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("black", "24.10.0", _BLACK_114134)))
+    assert status == 0
+    assert "black 24.10.0 [CVE-2026-114134]" in out
+    out, _, status = _run(_audit(_dep("black", "26.10.1", _BLACK_114134)))
+    assert status == 1
+    assert "black 26.10.1 [CVE-2026-114134]" in out
+
+
 def test_s2c_mcp_59951_is_suppressed_at_1_29_0_and_kept_once_fixed():
     out, _, status = _run(_audit(_dep("mcp", "1.29.0", _MCP_59951)))
     assert status == 0, out
     assert "mcp 1.29.0 [CVE-2026-59951]" in out
     assert "exempt until 2027-01-31 (#2120)" in out
     out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_59951)))
+    assert status == 1
+    assert "PREMISE BROKEN" in out
+
+
+def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
+    out, _, status = _run(_audit(_dep("opentelemetry-api", "1.37.0", _OTEL_114603)))
+    assert status == 0, out
+    assert "opentelemetry-api 1.37.0 [CVE-2026-114603]" in out
+    assert "exempt until 2027-01-31 (#2179)" in out
+    out, _, status = _run(_audit(_dep("opentelemetry-api", "1.45.1", _OTEL_114603)))
     assert status == 1
     assert "PREMISE BROKEN" in out
 
@@ -578,10 +601,25 @@ def test_pr2_lint_check_never_passes_python_cell_magics_to_black():
 def test_pr3_no_workflow_references_the_black_github_action():
     bad = [
         str(p.relative_to(_REPO))
-        for p in sorted((_REPO / ".github" / "workflows").glob("*"))
-        if p.is_file() and "psf/black" in p.read_text()
+        for p in sorted((_REPO / ".github").rglob("*"))
+        if p.is_file() and "psf/black" in p.read_text(errors="replace").lower()
     ]
     assert not bad, f"{bad} reference psf/black: {_PREMISE_2120}"
+
+
+_PREMISE_114134 = (
+    "the CVE-2026-114134 exemption's premise no longer holds (HOS must never set "
+    "black's required-version in [tool.black]) — remove the exemption (upgrade "
+    "black, #1961) rather than editing this test"
+)
+
+
+def test_pr3b_pyproject_black_table_never_sets_required_version():
+    tomllib = pytest.importorskip("tomllib", reason="tomllib needs Python 3.11+")
+    with (_REPO / "pyproject.toml").open("rb") as fh:
+        black_cfg = tomllib.load(fh).get("tool", {}).get("black", {})
+    found = [k for k in black_cfg if k in ("required-version", "required_version")]
+    assert not found, f"{found} set in pyproject.toml [tool.black]: {_PREMISE_114134}"
 
 
 _PREMISE_59951 = (
@@ -655,6 +693,79 @@ def test_pr5_no_tracked_python_file_imports_mcp():
                 break
     assert not unparsed, f"cannot parse {unparsed} to check for mcp imports: {_PREMISE_59951}"
     assert not bad, f"{bad} import mcp: {_PREMISE_59951}"
+
+
+_PREMISE_114603 = (
+    "the CVE-2026-114603 exemption's premise no longer holds (HOS must never "
+    "import opentelemetry or parse inbound W3C tracestate headers) — remove the "
+    "exemption (upgrade opentelemetry-api once semgrep unpins it, #2179) rather "
+    "than editing this test"
+)
+# The only tracked .py files allowed to contain the word: change_classifier.py
+# holds it inside a regex string, and the roster itself names the exempted package.
+# Neither imports it (the AST walk in PR6 would flag any import).
+_OTEL_NAME_ONLY = "scripts/oversight/change_classifier.py"
+_OTEL_ROSTER = "scripts/oversight/security_scan_logic.py"
+_OTEL_SERVER_USE = re.compile(
+    r"propagate\s*\.\s*extract|TraceContextTextMapPropagator|TraceState\b"
+    r"|opentelemetry\.instrumentation|opentelemetry-instrument\b"
+)
+
+
+def test_pr6_no_tracked_python_file_imports_opentelemetry():
+    bad, unparsed = [], []
+    for path in _tracked_files("*.py"):
+        if path == Path(__file__).resolve():
+            continue
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            unparsed.append(str(path.relative_to(_REPO)))
+            continue
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            if any(n == "opentelemetry" or n.startswith("opentelemetry.") for n in names):
+                bad.append(str(path.relative_to(_REPO)))
+                break
+    assert not unparsed, f"cannot parse {unparsed} to check for otel imports: {_PREMISE_114603}"
+    assert not bad, f"{bad} import opentelemetry: {_PREMISE_114603}"
+
+
+def test_pr6b_opentelemetry_name_exclusion_stays_narrow():
+    mentions = [
+        str(p.relative_to(_REPO))
+        for p in _tracked_files("*.py")
+        if p != Path(__file__).resolve() and "opentelemetry" in p.read_text(errors="replace")
+    ]
+    assert mentions == [_OTEL_NAME_ONLY, _OTEL_ROSTER], f"{mentions}: {_PREMISE_114603}"
+    lines = [
+        ln for ln in (_REPO / _OTEL_NAME_ONLY).read_text().splitlines() if "opentelemetry" in ln
+    ]
+    assert len(lines) == 1 and re.search(
+        r"""\br?["'].*opentelemetry\|""", lines[0]
+    ), f"{lines}: {_PREMISE_114603}"
+
+
+def test_pr7_no_tracked_file_parses_tracestate_or_sets_up_otel_server():
+    bad, unreadable = [], []
+    for path in _tracked_files("scripts", "bootstrap", "bin", "tests", ".github/workflows"):
+        if path == Path(__file__).resolve() or path == _REPO / _OTEL_ROSTER:
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            unreadable.append(str(path.relative_to(_REPO)))
+            continue
+        if _OTEL_SERVER_USE.search(text):
+            bad.append(str(path.relative_to(_REPO)))
+    assert not unreadable, f"cannot scan {unreadable} for otel server use: {_PREMISE_114603}"
+    assert (
+        not bad
+    ), f"{bad} use propagate.extract/TraceState/otel instrumentation: {_PREMISE_114603}"
 
 
 # ── Gate (shell path, via the HOS_PIP_AUDIT_BIN stub seam) ──────────────────
