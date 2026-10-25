@@ -113,6 +113,7 @@ This command is the **only** sanctioned way to produce work candidates (#1540 S2
 bash bootstrap/create_branch.sh --issue <N> --slug <short-slug>
 ```
 This is the **only** sanctioned way to create a branch (#967). Never `git checkout -b` directly. Never continue work on a branch you did not create in this cycle — whatever commits are on it, whatever issue it names.
+`create_branch.sh` also labels the issue `hos-in-progress` and logs `WORKING ON #<n>` to the cycle log (#2157); do not add or remove that label by hand.
 
 **Step 3 — Pipeline discipline:**
 - Spec/behavioral → pm-agent + architect + technical-design

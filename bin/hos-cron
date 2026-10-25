@@ -335,7 +335,24 @@ if ! mkdir "$_LOCK_DIR" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$_LOCK_DIR/pid"
-trap 'rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
+# #2157: the worker's hos-in-progress label is cleared at cycle end however the
+# cycle ends (SIGKILL aside — the next cycle's start-clear covers that). Armed only
+# once the cycle has authenticated, so early exits never touch GitHub. Best-effort,
+# bounded, and run BEFORE the lock is released.
+_HOS_INPROG_ARMED=""
+_hos_inprogress_clear() {
+  [[ "$ROLE" == "worker" && -n "$_HOS_INPROG_ARMED" ]] || return 0
+  # HOS-repo-only for now: scripts/automation/ is not shipped to consumer installs.
+  [[ -f "$REPO_ROOT/scripts/automation/in_progress.py" ]] || return 0
+  local _tb=""
+  if command -v timeout &>/dev/null; then _tb="timeout"
+  elif command -v gtimeout &>/dev/null; then _tb="gtimeout"; fi
+  local _out
+  _out="$(cd "$REPO_ROOT" && ${_tb:+"$_tb" 60} python3 -m scripts.automation.in_progress clear 2>&1)" || true
+  [[ -n "$_out" ]] && echo "$LOG_PREFIX $_out"
+  return 0
+}
+trap '_hos_inprogress_clear; rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
 
 # ── Cycle identity (#967, ADR-037 AD-5) ───────────────────────────────────────
 # Minted exactly once per invocation, under the overlap lock, and exported into
@@ -363,6 +380,14 @@ fi
 # is enforced by the recorded role= value in the ownership record, not by
 # withholding the identifier here.
 export HOS_CYCLE_ID HOS_CYCLE_ROLE HOS_CYCLE_TOKEN
+
+# #2157: the cron cycle log is this process's stdout when it is a regular file
+# (cron redirects to it). Exported so create_branch.sh -> in_progress.py can append
+# the "WORKING ON #<n>" line to it. Unresolvable (tty/pipe/non-Linux) leaves it unset.
+if [[ "$ROLE" == "worker" ]]; then
+  _cycle_log="$(readlink "/proc/$$/fd/1" 2>/dev/null)" || _cycle_log=""
+  if [[ -n "$_cycle_log" && -f "$_cycle_log" ]]; then export HOS_CYCLE_LOG="$_cycle_log"; fi
+fi
 
 # ── Audit helper ──────────────────────────────────────────────────────────────
 _audit() {
@@ -1979,6 +2004,13 @@ fi
 # ── Cycle start ───────────────────────────────────────────────────────────────
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT cycle_id=$HOS_CYCLE_ID"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
+
+# #2157: no issue is this cycle's pick yet, so drop any stale hos-in-progress label
+# (e.g. left by a SIGKILLed cycle), then arm the EXIT-trap clear.
+if [[ "$ROLE" == "worker" ]]; then
+  _HOS_INPROG_ARMED=1
+  _hos_inprogress_clear
+fi
 
 # ── Per-fire bounds (#728 Task 2) ─────────────────────────────────────────────
 # Headless fires draw from the same weekly subscription rate limit as interactive use, and
