@@ -1,0 +1,1 @@
+{"agent":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"181f5581119a89ef61aa7e17c741dfb926e876a3","pr":2163,"reason":"1215 precheck: HUMAN_REQUIRED verdict + escalation thread already posted at this head 2026-10-25T06:43:55Z; no new commits, comments, or human reviews since; reviewer ScottThurlow requested; needs-human label present"}
