@@ -1509,6 +1509,40 @@ if [[ "$ROLE" == "worker" ]]; then
   fi
 fi
 
+# #2126 (D-8): after a re-adopted or ordinary worker PR merges, delete the
+# local branch and its ownership record. readopt.py only considers branches
+# that HAVE an ownership record, skips the checked-out branch and records
+# inside the grace window, and never deletes on uncertainty (a failed PR
+# lookup skips the branch). Fail-open: hygiene, never correctness-critical.
+if [[ "$ROLE" == "worker" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]]; then
+  # Bounded wall-clock (a stalled gh call must not hold the cycle); fail-open.
+  _RO_BOUND=()
+  if command -v timeout >/dev/null 2>&1; then _RO_BOUND=(timeout --kill-after=10 120)
+  elif command -v gtimeout >/dev/null 2>&1; then _RO_BOUND=(gtimeout --kill-after=10 120); fi
+  # -u: unbuffered, so lines already printed survive a timeout kill.
+  # Anchored: only a line that fully matches is audited (CWE-117 log-forging guard).
+  _RO_EVENT_RE='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason='
+  _ro_rc=0
+  _ro_out="$(cd "$REPO_ROOT" && ${_RO_BOUND[@]+"${_RO_BOUND[@]}"} python3 -u -m scripts.automation.readopt reap-landed --grace-secs "$_BO_REAP_GRACE_SECS" 2>&1)" || _ro_rc=$?
+  # Process the output on BOTH paths so REAPED audit events survive a kill/crash.
+  while IFS= read -r _ro_line; do
+    [[ -z "$_ro_line" ]] && continue
+    echo "$LOG_PREFIX readopt: $_ro_line"
+    if [[ "$_ro_line" =~ $_RO_EVENT_RE ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "REAPED" ]]; then
+        _audit cycle-branch-reap "branch=${BASH_REMATCH[2]}" "reason=landed"
+      else
+        _audit cycle-branch-reap-failed "branch=${BASH_REMATCH[2]}" "reason=landed"
+      fi
+    fi
+  done <<< "$_ro_out"
+  if [[ "$_ro_rc" -ne 0 ]]; then
+    _ro_why="rc=$_ro_rc"
+    if [[ "$_ro_rc" -eq 124 || "$_ro_rc" -eq 137 ]]; then _ro_why="$_ro_why timeout"; fi
+    echo "$LOG_PREFIX WARN: readopt reap-landed failed ($_ro_why) — continuing (#2126)"
+  fi
+fi
+
 # #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
 # between a session's commit and push can strand a stray commit on main; from
 # then on every fast-forward fails and silently discarding it would let the

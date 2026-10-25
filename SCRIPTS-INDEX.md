@@ -72,6 +72,7 @@ excluded.
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
 - `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
+- `scripts/automation/readopt.py` — mechanics for re-adopting stalled local worker branches (#2126).
 
 ## scripts/automation/lib/
 
