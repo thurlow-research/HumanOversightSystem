@@ -567,11 +567,6 @@ def request_reviewers(
 # ---------------------------------------------------------------------------
 
 
-def get_issue(owner: str, repo: str, issue_number: int) -> Optional[dict[str, Any]]:
-    """GET /repos/{owner}/{repo}/issues/{number}; None if it does not exist."""
-    return _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}"])
-
-
 def get_label(owner: str, repo: str, name: str) -> Optional[dict[str, Any]]:
     """GET /repos/{owner}/{repo}/labels/{name}; None if the label does not exist."""
     return _run_gh([f"/repos/{owner}/{repo}/labels/{name}"])
