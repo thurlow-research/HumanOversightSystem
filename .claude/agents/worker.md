@@ -449,6 +449,48 @@ branch at its tip — `bash bootstrap/create_branch.sh --issue <N> --slug <slug>
 ownership record says only "this cycle created this branch"; it never says the commits on it
 were reviewed.
 
+### Re-adopting a stalled branch (#2126, rulings D-7/D-8)
+
+A *stalled* branch is a prior cycle's branch whose review chain **completed** (its register
+shows every required sign-off at a recorded head) but which was never submitted or never
+landed — typically parked behind a red gate or a human ruling. It is still foreign (above);
+this protocol extends the orphan rule for that case. A branch whose register does **not**
+show a completed review is an orphan, not a stalled branch: re-run the full chain.
+
+1. **Prune first.** If the issue is closed, or several `worker-<N>-*` attempts exist, run
+   `python3 -m scripts.automation.readopt prune-attempts --issue <N>` (`--issue-closed` when
+   the issue is closed — the script confirms the closed state with GitHub and refuses
+   otherwise; then stop, there is nothing to adopt). When the latest escalation comment names
+   a head, pass it as `--keep <branch>`; only without one does it fall back to keeping the
+   newest attempt.
+2. **Rebuild check.** A branch more than ~200 commits behind `origin/main` whose merge
+   conflicts in reviewed files is a **rebuild**, not a rebase: say so on the issue and start
+   fresh from the design. Do not adopt it.
+3. **Adopt.** `bash bootstrap/create_branch.sh --issue <N> --slug <slug> --from <stalled-branch>`,
+   then merge `origin/main` and resolve conflicts. A conflict resolved in a reviewed file is
+   stated in the register.
+4. **Gates and validators always re-run** on the merged head (`run_gates.sh` on the changed
+   files, `run_validators.sh --diff origin/main...HEAD`).
+5. **Choose the AI re-review path (D-7)** with
+   `python3 -m scripts.automation.readopt review-path --original-head <reviewed-head> --merged-head HEAD`:
+   `full` (the merge from main touched a file in the reviewed set, commits were added
+   beyond the reviewed head, the merge had conflicts, or the merged tree differs from an
+   independent `git merge-tree` of the reviewed head and `origin/main`) → the full review
+   chain plus second review; `delta` → the
+   oversight-evaluator plus a delta second review only. Anything other than exit 0 with a
+   parsed `REVIEW_PATH=` line means `full`. The
+   register records the path taken and its `REASON=` line, pinned to the new head.
+6. **Submit** with `submit_pr.sh --closes <N>`. The PR body names the original build date, the
+   original reviewed head, and the re-review path. If a superseded PR is still open for the
+   same issue, close it first (#1781 ruling).
+7. **After merge (D-8)** the local branch and its ownership record are deleted. `bin/hos-cron`
+   runs `readopt reap-landed` each worker cycle: it deletes a *recorded* branch once its tip is
+   in `origin/main` or a merged PR's `head.sha` equals its tip (at most 20 PR lookups per
+   cycle, chosen at random from the unlanded branches so coverage rotates across cycles), and never on uncertainty.
+   Unrecorded leftover branches are out of its scope — their cleanup is human-authorized.
+
+Never delete a worker branch with raw `git branch -D`; deletion goes through `readopt.py`.
+
 ### Out-of-scope commit bounce response (SPEC-328)
 
 When the bounce comment names an `Out_of_scope_commits:` flag (the bounce `reason_category` is `COMPLIANCE_FAILURE` and the summary names a commit SHA), choose one of the two resolution options presented in the bounce comment:

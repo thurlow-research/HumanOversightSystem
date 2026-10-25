@@ -167,7 +167,7 @@ NON_AGENT_TOKENS="${NON_AGENT_TOKENS}${PROJECT_NON_AGENT_TOKENS:+|$PROJECT_NON_A
 # known short names. Skip library names, types, and status values.
 KNOWN_SHORT_AGENTS="architect|coder|human"
 # GitHub labels and HOS workflow tokens are not agent names — skip them.
-KNOWN_LABELS="needs-human|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized|release-request|release-authorized"
+KNOWN_LABELS="needs-human|parked|needs-ai|needs-coordination|hos-claimed|hos-halt|hos-budget-gated|hos-embargo|hos-autowork-authorized|release-request|release-authorized"
 
 # KNOWN_AGENTS is a newline-separated string; the classifier takes a pipe-joined
 # alternation, so join once (trim the trailing pipe).

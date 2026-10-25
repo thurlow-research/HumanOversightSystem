@@ -6,6 +6,7 @@ real HOS temp root.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
 import stat
@@ -821,3 +822,86 @@ def test_the_value_allowlist_rejects_shell_metacharacters(tmp_path, value):
 )
 def test_the_value_allowlist_accepts_ordinary_paths(tmp_path, value):
     mod.validate_value(_worker_clone(tmp_path), value)
+
+
+# ── register(): the whole registry is written, and a failed write leaves no temp file ──
+def _two_role_dirs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    clone = _worker_clone(tmp_path)
+    first = mod.resolve_role_dir(clone, "worker", create=True)
+    second = tmp_path / "hos" / ".tmp" / "Human"
+    second.mkdir(mode=0o700)
+    return clone, first, second
+
+
+def _leftovers() -> list[str]:
+    reg = Path(mod.registry_path())
+    return [p.name for p in reg.parent.iterdir() if ".new." in p.name]
+
+
+def _assert_register_fails_cleanly(tmp_path, monkeypatch, name, fault, cause):
+    clone, _, second = _two_role_dirs(tmp_path)
+    reg = Path(mod.registry_path())
+    before = reg.read_bytes()
+    monkeypatch.setattr(mod.os, name, fault)  # after setup: only the second registration
+    with pytest.raises(mod.TmpRootError) as err:
+        mod.register(second, clone, "Human")
+    assert str(reg) in str(err.value) and cause in str(err.value)
+    assert reg.read_bytes() == before
+    assert _leftovers() == []
+
+
+def test_register_zero_progress_write_fails_and_leaves_registry_and_no_temp(tmp_path, monkeypatch):
+    clone, _, second = _two_role_dirs(tmp_path)
+    reg = Path(mod.registry_path())
+    before = reg.read_bytes()
+    real_write = os.write
+    state = {"first": True}
+
+    def short_write(fd, data):
+        if state["first"]:
+            state["first"] = False
+            return real_write(fd, bytes(data)[: len(data) // 2])
+        return 0
+
+    monkeypatch.setattr(mod.os, "write", short_write)
+    with pytest.raises(mod.TmpRootError) as err:
+        mod.register(second, clone, "Human")
+    assert str(reg) in str(err.value) and "no progress" in str(err.value)
+    assert reg.read_bytes() == before
+    assert _leftovers() == []
+
+
+def test_register_write_enospc_fails_and_leaves_registry_and_no_temp(tmp_path, monkeypatch):
+    def full(fd, data):
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    _assert_register_fails_cleanly(tmp_path, monkeypatch, "write", full, "No space left on device")
+
+
+def test_register_fsync_failure_fails_and_leaves_registry_and_no_temp(tmp_path, monkeypatch):
+    def bad_fsync(fd):
+        raise OSError(errno.EIO, "Input/output error")
+
+    _assert_register_fails_cleanly(tmp_path, monkeypatch, "fsync", bad_fsync, "Input/output error")
+
+
+def test_register_rename_failure_fails_and_leaves_registry_and_no_temp(tmp_path, monkeypatch):
+    def bad_rename(src, dst):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    _assert_register_fails_cleanly(
+        tmp_path, monkeypatch, "rename", bad_rename, "Invalid cross-device link"
+    )
+
+
+def test_register_completes_when_write_returns_small_chunks(tmp_path, monkeypatch):
+    clone, _, second = _two_role_dirs(tmp_path)
+    real_write = os.write
+
+    def chunked(fd, data):
+        return real_write(fd, bytes(data)[:7])
+
+    monkeypatch.setattr(mod.os, "write", chunked)
+    mod.register(second, clone, "Human")
+    assert sorted(e["role"] for e in _registry()) == ["Human", "Worker"]
+    assert _leftovers() == []

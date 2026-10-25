@@ -10,6 +10,7 @@ import json
 import subprocess
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 
 class GitHubError(Exception):
@@ -203,7 +204,7 @@ def list_pulls(
     """
     params = f"state={state}"
     if head:
-        params += f"&head={head}"
+        params += f"&head={quote(head, safe=':')}"
     result = _run_gh([f"/repos/{owner}/{repo}/pulls?{params}"])
     if result is None:
         return []
@@ -331,6 +332,11 @@ def get_ruleset_required_checks(
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
     """GET /repos/{owner}/{repo} — basic repo metadata."""
     return _run_gh([f"/repos/{owner}/{repo}"])
+
+
+def get_issue(owner: str, repo: str, issue_number: int) -> Optional[dict[str, Any]]:
+    """GET /repos/{owner}/{repo}/issues/{issue_number} — None if not found."""
+    return _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}"])
 
 
 def get_pull(owner: str, repo: str, pr_number: int) -> Optional[dict[str, Any]]:
