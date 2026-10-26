@@ -2,10 +2,18 @@
 # check_agents_static.sh — fast static consistency checker for the agent pipeline.
 #
 # No AI calls. Checks structural correctness deterministically:
-#   1. Every agent named in docs/AGENTS.md has a .claude/agents/*.md file
-#   2. Every file path referenced in agent files exists on disk
-#   3. Every agent named in an "escalates to" / "invoked by" line resolves to a known agent
-#   4. The project-start doc outputs referenced in agent files share a consistent path
+#   1. Agent file inventory — every agent file has a 'name:' frontmatter key
+#   2. Every agent named in docs/AGENTS.md has a .claude/agents/*.md file
+#   3. Every file path referenced in agent files exists on disk
+#   4. Every agent named in an "escalates to" / "invoked by" line resolves to a known agent
+#   5. The project-start doc outputs referenced in agent files share a consistent path
+#   6. Every agent file with a HOS:CORE region has the "PROJECT may NEVER" carve-out clause (#291)
+#   7. Agent-to-doc staleness: agent files changed without a docs update (warn-only, never fails)
+#   8. Every peer-review lane carries the D53 anti-framing instruction (#1132)
+#   9. No dated model generation IDs in agents, scripts, bootstrap, bin, or markdown (#1366)
+#
+# A clean run exits 0 and writes nothing (the phase1 validation stamp was retired, #2053).
+# CI runs this directly: .github/workflows/agent-static-check.yml.
 #
 # Exit codes:
 #   0 — clean
@@ -367,13 +375,6 @@ echo "════════════════════════�
 if [[ $FINDINGS -eq 0 ]]; then
     echo "  PASS — agent static checks clean (0 findings)"
     echo "═══════════════════════════════════════════════════════"
-    # Write content-hash-based validation stamp (#552).
-    # Hash is over agent file contents, not timestamps — survives rebase unchanged.
-    STAMP_DIR="scripts/framework/validation-stamps"
-    mkdir -p "$STAMP_DIR"
-    CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
-    printf "validated_at: %s\nhash: %s\nphase: 1-static\nresult: pass\n" \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTENT_HASH" > "$STAMP_DIR/phase1-${CONTENT_HASH}.stamp"
     exit 0
 else
     echo "  FAIL — $FINDINGS finding(s) require attention"

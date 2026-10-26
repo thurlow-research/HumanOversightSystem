@@ -1251,3 +1251,13 @@ instance only. The general rule is #2132 (v0.7.1: the per-change status of envir
 in the local `run_gates.sh`, including the local `dependency_audit.sh` half, which D-5 leaves
 unchanged) and #2127 (v0.7.10). Until those land, no other check is bound by it. The local
 pip-audit gate keeps its current blocking behaviour (ADR-1605 AD-6).
+
+## 2026-10-15 — Validation stamps retired; CI runs the agent static checks directly (#2053, Option A)
+
+Human ruling on #2053 (Option A, confirmed 2026-10-15): the committed validation stamps are retired. A stamp attests that a local run happened, which the overseer or CI can perform itself; and the phase1 stamp (`phase1-<HASH>.stamp`, keyed on all `.claude/agents/*.md` content) churned on every agent-file PR. The old "Validation stamps current" CI job (`validation-check.yml` -> `check_validation_current.sh`) only verified that such a file existed.
+
+`check_agents_static.sh`'s nine deterministic checks are nonetheless governance guards — including the #291 PROJECT carve-out clause, the D53 anti-framing instruction, and #1366 dated model IDs — and must not lose pre-merge coverage. So the stamp check is replaced by `.github/workflows/agent-static-check.yml` ("Agent static checks"), which runs `bash scripts/framework/check_agents_static.sh` on the PR head. It is **non-required for now** (not in `setup_branch_protection.sh` contexts; not read by `merge_authority.py`'s required-content check) and HOS-internal (not shipped to consumers). `check_agents_static.sh` no longer writes the phase1 stamp.
+
+#1536 stays open, narrowed to the AI-validation half (#1643 W7).
+
+**Scope of this slice (1 of N).** New workflow; deleted `validation-check.yml` and `check_validation_current.sh`; stamp-writing block removed from `check_agents_static.sh`; `framework_consumer_files.txt` no longer ships `validation-check.yml`; docs and tests updated. The rest of the retirement lands in follow-up slices: the committed `*.stamp` files and `validation-stamps/README.md`, the `all-phases`/phase 2-4 stamp writers, `cut_release.sh` (`HOS_ALLOW_UNVALIDATED`), and remaining doc references.
