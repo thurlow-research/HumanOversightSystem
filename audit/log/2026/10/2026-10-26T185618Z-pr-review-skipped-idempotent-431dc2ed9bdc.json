@@ -1,0 +1,1 @@
+{"agent":"overseer","decision":"HUMAN_REQUIRED","event":"pr-review-skipped-idempotent","head_sha":"e42f2ef4861cdc692a37110bedf4dc672ca3d500","pr":2189,"reason":"#1215: same head, no new activity since overseer HUMAN_REQUIRED verdict 2026-10-26T18:29:20Z; awaiting human review per #2100 ruling"}
