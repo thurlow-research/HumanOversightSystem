@@ -56,7 +56,8 @@ DOMAIN_RULES: dict[str, tuple[str | None, str | None]] = {
     "security": (r"\.(py|html|js|ts|jsx|tsx)$", None),
     # privacy: paths or code touching identity / PII / data-subject rights
     "privacy": (
-        r"(account|user|profile|pii|gdpr|privacy|consent|erasure|retention|personal|email|address|phone)",
+        r"(account|user|profile|pii|gdpr|privacy|consent|erasure|retention|personal|"
+        r"email|address|phone)",
         r"(PII|personal_data|anonymi|pseudonymi|erasure|retention|consent|EmailField|"
         r"first_name|last_name|date_of_birth|ssn|national_id)",
     ),
@@ -73,7 +74,8 @@ DOMAIN_RULES: dict[str, tuple[str | None, str | None]] = {
     "reliability": (
         None,
         r"(requests\.|httpx|aiohttp|urllib|socket\.|\.execute\(|cursor|"
-        r"cache\.(get|set)|redis|\.objects\.(all|filter|get|create)|session\.(get|post|put|delete))",
+        r"cache\.(get|set)|redis|\.objects\.(all|filter|get|create)|"
+        r"session\.(get|post|put|delete))",
     ),
     # infra: deployment / orchestration config
     "infra": (
@@ -114,9 +116,22 @@ ADDED_LINE_SIGNATURES: list[tuple[str, str]] = [
         # classify it as additive (#84). High-confidence telemetry primitives only
         # — deliberately NOT routine `logger.info(...)` or `collections.Counter(`,
         # which would force spurious human gates (the #117 false-match lesson).
+        # No bare `propagat` stem: it matched English prose ("propagates") and
+        # raised false Condition-10 escalations (#2031, same lesson as #117/#1889);
+        # only propagator-specific code tokens are listed, plus
+        # line-start-anchored import `propagation` for vendor tracers (ddtrace, opencensus).
+        # The dotted-name runs in those import alternatives are explicitly bounded:
+        # unbounded `[\w.]*` adjacent to `(?:\.\w+)*` backtracked quadratically on a
+        # crafted long non-matching line (#2031, CWE-1333).
         "new-observability-instrumentation",
         r"(get_tracer|start_as_current_span|add_span_processor|TracerProvider|"
-        r"\.set_attribute\(|SpanKind|get_current_span|propagat|TraceContext|"
+        r"\.set_attribute\(|SpanKind|get_current_span|\bpropagators?\b|"
+        r"propagate\.(inject|extract)\b|"
+        r"^\s*from\s+[\w.]{0,200}\bpropagation\b[\w.]{0,200}\s+import\b|"
+        r"^\s*(from\s+[\w.]{1,200}\s+)?import\s+\(?[\w.]{0,200}\bpropagation\b"
+        r"(?:\.\w{1,100}){0,8}\)?"
+        r"\s*(,|\s+as\b|$)|"
+        r"TextMapPropagator|TraceContext|"
         r"opentelemetry|\bOTLP\b|prometheus|statsd|push_to_gateway|"
         r"structlog\.(get_logger|configure)|logging\.config|dictConfig|\bLOGGING\s*=)",
     ),
