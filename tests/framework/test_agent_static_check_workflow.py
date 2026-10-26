@@ -56,6 +56,22 @@ def test_clean_static_run_writes_no_stamp(tmp_path):
     assert not list(tmp_path.rglob("*.stamp"))
 
 
+def test_job_name_matches_the_name_overseer_relies_on():
+    # overseer.md step 2a matches the check run by this display name, not the job
+    # id. A rename would make the check look absent to the overseer.
+    name = _workflow()["jobs"]["agent-static-check"]["name"]
+    assert name == "Agent static checks"
+    overseer = ROOT / ".claude" / "agents" / "overseer.md"
+    assert name in overseer.read_text(encoding="utf-8")
+
+
+def test_permissions_are_least_privilege():
+    wf = _workflow()
+    assert wf["permissions"] == {"contents": "read"}
+    for job in wf["jobs"].values():
+        assert "permissions" not in job
+
+
 def test_trigger_has_no_paths_filter():
     # Check 3 can fail on a deletion anywhere in the repo, so no path filter.
     # PyYAML parses the bare key `on` as boolean True.
