@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -442,3 +443,140 @@ def test_cli_default_output_byte_identical_with_unused_removed(tmp_path):
     _make_auth_mod_repo(tmp_path)
     out = json.loads(_cli(tmp_path))
     assert set(out.keys()) == {"base", "head", "domains_touched", "structural_signals"}
+
+
+def _obs_signal(path, line):
+    sigs = {s["signal"] for s in cc.detect_structural([("M", path)], {path: [line]})}
+    return "new-observability-instrumentation" in sigs
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "the exception propagates to the caller",
+        "`main()` lets `_Interrupted` propagate.",
+        "error propagation is unchanged",
+        "the step recovered from propagation of the error",
+        "we import propagation semantics from X",
+        "from propagation delays the result",
+        "  from propagation to the caller",
+        "import propagation of errors is unchanged",
+    ],
+)
+def test_prose_propagate_is_not_observability(line):
+    assert not _obs_signal("docs/notes.md", line)
+
+
+# `\bpropagators?\b` may still match prose "propagator"; accepted as OTel-specific.
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from opentelemetry import propagate",
+        "ctx = propagate.extract(request.headers)",
+        "propagator = TraceContextTextMapPropagator()",
+        # Each of these is matched ONLY by one new alternative (isolation cases).
+        "set_global_textmap(propagator)",  # only \bpropagators?\b
+        "class MyPropagator(TextMapPropagator):",  # only TextMapPropagator
+        "from ddtrace.propagation.http import HTTPPropagator",  # only import-anchored
+        "from opencensus.trace import propagation",  # only import-anchored
+        "from opencensus.trace import propagation as p",  # only import-anchored
+        "import ddtrace.propagation",  # only import-anchored
+        "    from ddtrace.propagation.http import HTTPPropagator",  # indented
+    ],
+)
+def test_propagator_code_is_observability(line):
+    assert _obs_signal("app/tracing.py", line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Line-start anchors: the import lookalike appears mid-sentence.
+        "we later import propagation",
+        "we copied from ddtrace.propagation import HTTPPropagator",
+        # Word boundaries around `propagation` in the import alternative.
+        "import mypropagation",
+        "import propagations",
+        "from x.mypropagation import y",
+        # Dotted-submodule tail must not swallow prose or near-miss names.
+        "import propagation.httpish of things",
+        "import ddtrace.propagationx.http",
+    ],
+)
+def test_midline_or_substring_propagation_import_is_not_observability(line):
+    assert not _obs_signal("docs/notes.md", line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ctx = propagate.inject(headers)",  # only propagate.(inject|extract) via inject
+        "x = TraceContext(a)",  # only TraceContext
+        "import propagation, os",  # import-anchored, trailing alt: comma
+        "import ddtrace.propagation.http",  # import-anchored, dotted submodule
+        "import opencensus.trace.propagation.trace_context",  # import-anchored, dotted
+        "import ddtrace.propagation.http as h",  # import-anchored, dotted + as
+        "from x import (propagation)",  # import-anchored, parenthesised
+        "from x import (propagation, y)",  # parenthesised + comma
+    ],
+)
+def test_each_remaining_alternative_is_isolated_observability(line):
+    assert _obs_signal("app/tracing.py", line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import " + "propagation." * 3500 + "!",
+        "from " + "propagation." * 3500 + "!",
+    ],
+)
+def test_crafted_long_propagation_import_line_is_not_quadratic(line):
+    """#2031 / CWE-1333: unbounded dotted-name quantifiers took seconds on ~40KB."""
+    start = time.perf_counter()
+    assert not _obs_signal("app/tracing.py", line)
+    assert time.perf_counter() - start < 0.5
+
+
+def test_bounded_propagation_import_keeps_deep_dotted_match():
+    assert _obs_signal("app/tracing.py", "import a.b.c.d.e.f.propagation.g.h.i.j")
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        # {0,8} dotted tail after `propagation`: 8 segments match, 9 do not.
+        ("import propagation" + ".a" * 8, True),
+        ("import propagation" + ".a" * 9, False),
+        # {0,100} per-segment length.
+        ("import propagation." + "a" * 100, True),
+        ("import propagation." + "a" * 101, False),
+        # {0,200} prefix run before `propagation` (import form).
+        ("import " + "a" * 199 + ".propagation", True),
+        ("import " + "a" * 201 + ".propagation", False),
+        # {1,200} module run in `from X import propagation`.
+        ("from " + "a" * 200 + " import propagation", True),
+        ("from " + "a" * 201 + " import propagation", False),
+        # {0,200} runs in the `from ...propagation... import` form.
+        ("from " + "a" * 199 + ".propagation import x", True),
+        ("from " + "a" * 201 + ".propagation import x", False),
+        ("from propagation." + "a" * 199 + " import x", True),
+        ("from propagation." + "a" * 200 + " import x", False),
+    ],
+)
+def test_propagation_import_bound_edges(line, expected):
+    assert _obs_signal("app/tracing.py", line) is expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("ctx = propagate.inject(h)", True),
+        ("ctx = propagate.extract(h)", True),
+        ("ctx = propagate.injection(h)", False),
+        ("ctx = propagate.extraction(h)", False),
+        ("ctx = propagators.get()", True),
+    ],
+)
+def test_propagate_inject_extract_word_boundary(line, expected):
+    assert _obs_signal("app/tracing.py", line) is expected
