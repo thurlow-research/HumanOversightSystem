@@ -10,12 +10,11 @@ Covers:
   - check_audit_log_not_committed: audit-only file guard (#880)
 """
 
-import subprocess
-import sys
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scripts.automation.lib.stale_commit_detector import StaleCommitResult
 from scripts.automation.pre_pr_stale_check import (
     check_audit_log_not_committed,
     parse_remote_url,
@@ -23,7 +22,6 @@ from scripts.automation.pre_pr_stale_check import (
     resolve_owner_repo,
     run_check,
 )
-from scripts.automation.lib.stale_commit_detector import StaleCommitResult
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -36,7 +34,8 @@ BASE = "main"
 
 def _clean_result(branch=BRANCH, base=BASE):
     return StaleCommitResult(
-        branch=branch, base=base,
+        branch=branch,
+        base=base,
         all_commits=[SHA_A],
         redundant_in_main=[],
         redundant_in_prs={},
@@ -45,7 +44,8 @@ def _clean_result(branch=BRANCH, base=BASE):
 
 def _stale_main_result(branch=BRANCH, base=BASE):
     return StaleCommitResult(
-        branch=branch, base=base,
+        branch=branch,
+        base=base,
         all_commits=[SHA_A, SHA_B],
         redundant_in_main=[SHA_A],
         redundant_in_prs={},
@@ -54,16 +54,29 @@ def _stale_main_result(branch=BRANCH, base=BASE):
 
 def _stale_pr_result(branch=BRANCH, base=BASE):
     return StaleCommitResult(
-        branch=branch, base=base,
+        branch=branch,
+        base=base,
         all_commits=[SHA_A],
         redundant_in_main=[],
         redundant_in_prs={"42": [SHA_A]},
     )
 
 
+def _unverified_result(branch=BRANCH, base=BASE):
+    return StaleCommitResult(
+        branch=branch,
+        base=base,
+        all_commits=[SHA_A],
+        redundant_in_main=[],
+        redundant_in_prs={},
+        open_prs_unverified="401 bad token",
+    )
+
+
 def _stale_both_result(branch=BRANCH, base=BASE):
     return StaleCommitResult(
-        branch=branch, base=base,
+        branch=branch,
+        base=base,
         all_commits=[SHA_A, SHA_B],
         redundant_in_main=[SHA_A],
         redundant_in_prs={"42": [SHA_B]},
@@ -74,26 +87,31 @@ def _stale_both_result(branch=BRANCH, base=BASE):
 # parse_remote_url
 # ---------------------------------------------------------------------------
 
+
 class TestParseRemoteUrl:
     def test_https_with_git_suffix(self):
-        assert parse_remote_url(
-            "https://github.com/thurlow-research/HumanOversightSystem.git"
-        ) == ("thurlow-research", "HumanOversightSystem")
+        assert parse_remote_url("https://github.com/thurlow-research/HumanOversightSystem.git") == (
+            "thurlow-research",
+            "HumanOversightSystem",
+        )
 
     def test_https_without_git_suffix(self):
-        assert parse_remote_url(
-            "https://github.com/thurlow-research/HumanOversightSystem"
-        ) == ("thurlow-research", "HumanOversightSystem")
+        assert parse_remote_url("https://github.com/thurlow-research/HumanOversightSystem") == (
+            "thurlow-research",
+            "HumanOversightSystem",
+        )
 
     def test_ssh_with_git_suffix(self):
-        assert parse_remote_url(
-            "git@github.com:thurlow-research/HumanOversightSystem.git"
-        ) == ("thurlow-research", "HumanOversightSystem")
+        assert parse_remote_url("git@github.com:thurlow-research/HumanOversightSystem.git") == (
+            "thurlow-research",
+            "HumanOversightSystem",
+        )
 
     def test_ssh_without_git_suffix(self):
-        assert parse_remote_url(
-            "git@github.com:thurlow-research/HumanOversightSystem"
-        ) == ("thurlow-research", "HumanOversightSystem")
+        assert parse_remote_url("git@github.com:thurlow-research/HumanOversightSystem") == (
+            "thurlow-research",
+            "HumanOversightSystem",
+        )
 
     def test_raises_on_unrecognised_url(self):
         with pytest.raises(ValueError, match="Cannot parse"):
@@ -108,6 +126,7 @@ class TestParseRemoteUrl:
 # resolve_owner_repo
 # ---------------------------------------------------------------------------
 
+
 class TestResolveOwnerRepo:
     def test_explicit_args_bypass_git(self):
         with patch("subprocess.run") as mock_run:
@@ -118,9 +137,7 @@ class TestResolveOwnerRepo:
     def test_falls_back_to_git_remote(self):
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = (
-            "https://github.com/thurlow-research/HumanOversightSystem.git\n"
-        )
+        mock_result.stdout = "https://github.com/thurlow-research/HumanOversightSystem.git\n"
         with patch("subprocess.run", return_value=mock_result):
             owner, repo = resolve_owner_repo(None, None)
         assert (owner, repo) == ("thurlow-research", "HumanOversightSystem")
@@ -148,6 +165,7 @@ class TestResolveOwnerRepo:
 # ---------------------------------------------------------------------------
 # resolve_branch
 # ---------------------------------------------------------------------------
+
 
 class TestResolveBranch:
     def test_returns_explicit_branch(self):
@@ -178,6 +196,7 @@ class TestResolveBranch:
 # ---------------------------------------------------------------------------
 # run_check
 # ---------------------------------------------------------------------------
+
 
 class TestRunCheck:
     def test_clean_branch_returns_0(self):
@@ -265,12 +284,87 @@ class TestRunCheck:
         assert rc == 1
         mock_strip.assert_not_called()
 
+    # --- Fail-closed (#1681): unverified open-PR overlap exits 3 ---
+
+    def test_unverified_first_check_returns_3_without_strip(self, capsys):
+        with (
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_stale_commits",
+                return_value=_unverified_result(),
+            ),
+            patch(
+                "scripts.automation.pre_pr_stale_check.strip_redundant_commits",
+            ) as mock_strip,
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+
+        out = capsys.readouterr()
+        assert rc == 3
+        mock_strip.assert_not_called()
+        assert "already rebased locally" not in out.err
+        assert "✔" not in out.out + out.err
+        assert "✘ pre-pr-stale-check:" in out.err
+        assert "401 bad token" in out.err
+
+    def test_unverified_with_redundant_in_main_still_returns_3_without_strip(self):
+        result = _unverified_result()
+        result.redundant_in_main = [SHA_A]
+        with (
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_stale_commits",
+                return_value=result,
+            ),
+            patch(
+                "scripts.automation.pre_pr_stale_check.strip_redundant_commits",
+            ) as mock_strip,
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+
+        assert rc == 3
+        mock_strip.assert_not_called()
+
+    def test_unverified_post_rebase_recheck_returns_3(self, capsys):
+        with (
+            patch(
+                "scripts.automation.pre_pr_stale_check.check_stale_commits",
+                side_effect=[_stale_main_result(), _unverified_result()],
+            ),
+            patch(
+                "scripts.automation.pre_pr_stale_check.strip_redundant_commits",
+                return_value=True,
+            ),
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+
+        out = capsys.readouterr()
+        assert rc == 3
+        assert "✔" not in out.out + out.err
+        assert "✘ pre-pr-stale-check:" in out.err
+        assert "already rebased locally onto main" in out.err
+        assert "nothing was pushed" in out.err
+
+    def test_unverified_reason_is_sanitized_on_stderr(self, capsys):
+        result = _unverified_result()
+        result.open_prs_unverified = "a\nb\x1b[31m" + "z" * 500
+        with patch(
+            "scripts.automation.pre_pr_stale_check.check_stale_commits",
+            return_value=result,
+        ):
+            rc = run_check(OWNER, REPO, branch=BRANCH, base=BASE)
+        err = capsys.readouterr().err
+        assert rc == 3
+        assert "\x1b" not in err
+        assert "a b" in err
+        assert "z" * 400 not in err
+
     def test_audit_log_on_feature_branch_returns_1_before_stale_check(self):
         """Audit-only file committed to feature branch blocks push before stale check."""
         with (
             patch(
                 "scripts.automation.pre_pr_stale_check.check_audit_log_not_committed",
-                return_value=["audit-only file committed to feature branch: 'audit/oversight-log.jsonl'"],
+                return_value=[
+                    "audit-only file committed to feature branch: 'audit/oversight-log.jsonl'"
+                ],
             ),
             patch(
                 "scripts.automation.pre_pr_stale_check.check_stale_commits",
@@ -302,6 +396,7 @@ class TestRunCheck:
 # check_audit_log_not_committed
 # ---------------------------------------------------------------------------
 
+
 class TestCheckAuditLogNotCommitted:
     def _mock_run(self, stdout: str):
         """Return a mock for _run that yields the given stdout string."""
@@ -329,9 +424,7 @@ class TestCheckAuditLogNotCommitted:
         assert result == []
 
     def test_detects_oversight_log_committed(self):
-        mock_sp = self._mock_run(
-            "scripts/fix.py\naudit/oversight-log.jsonl"
-        )
+        mock_sp = self._mock_run("scripts/fix.py\naudit/oversight-log.jsonl")
         with patch("subprocess.run", return_value=mock_sp):
             result = check_audit_log_not_committed(BRANCH, base=BASE)
         assert len(result) == 1
@@ -345,9 +438,7 @@ class TestCheckAuditLogNotCommitted:
         assert "audit/overnight-loop-log.md" in result[0]
 
     def test_detects_both_audit_files_committed(self):
-        mock_sp = self._mock_run(
-            "audit/oversight-log.jsonl\naudit/overnight-loop-log.md"
-        )
+        mock_sp = self._mock_run("audit/oversight-log.jsonl\naudit/overnight-loop-log.md")
         with patch("subprocess.run", return_value=mock_sp):
             result = check_audit_log_not_committed(BRANCH, base=BASE)
         assert len(result) == 2
