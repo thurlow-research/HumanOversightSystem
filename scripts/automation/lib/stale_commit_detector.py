@@ -11,7 +11,8 @@ Usage (call before `git push && gh pr create`):
 
     result = check_stale_commits(owner, repo, branch="feat/my-fix-850")
     if not result.is_clean:
-        # strip commits already in main, then re-check
+        # never strip/push when result.open_prs_unverified is set (#1681);
+        # otherwise strip commits already in main, then re-check
         if strip_redundant_commits():
             result = check_stale_commits(owner, repo, branch="feat/my-fix-850")
 """
@@ -19,8 +20,9 @@ Usage (call before `git push && gh pr create`):
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from scripts.automation.lib.cycle_log import log_event
@@ -29,22 +31,40 @@ from scripts.automation.lib.github import GitHubError, _run_gh
 logger = logging.getLogger(__name__)
 
 
+class OpenPrsUnverifiedError(Exception):
+    """The open-PR overlap check could not be completed (#1681).
+
+    Deliberately NOT a GitHubError subclass: callers that catch GitHubError to
+    degrade gracefully must not accidentally swallow a failed hard gate.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class StaleCommitResult:
     """Result of a pre-PR stale-commit check."""
+
     branch: str
     base: str
     all_commits: list[str]
     redundant_in_main: list[str]
     redundant_in_prs: dict[str, list[str]]  # {str(pr_number): [sha, ...]}
+    # Reason the open-PR overlap check could not be completed (#1681); None
+    # means it ran to completion (or was not requested).
+    open_prs_unverified: Optional[str] = None
 
     @property
     def is_clean(self) -> bool:
-        return not self.redundant_in_main and not self.redundant_in_prs
+        """True only when nothing is redundant AND the check was fully verified."""
+        return (
+            not self.redundant_in_main
+            and not self.redundant_in_prs
+            and self.open_prs_unverified is None
+        )
 
     @property
     def all_redundant(self) -> list[str]:
@@ -66,12 +86,15 @@ class StaleCommitResult:
 # Git helpers
 # ---------------------------------------------------------------------------
 
+
 def _run_git(args: list[str], input: Optional[str] = None) -> str:
     """Run a git command and return stdout. Raises RuntimeError on failure."""
     result = subprocess.run(
         ["git"] + args,
         input=input,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -104,7 +127,9 @@ def find_redundant_in_main(base: str = "main", head: str = "HEAD") -> list[str]:
     """
     result = subprocess.run(
         ["git", "cherry", base, head],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -118,6 +143,38 @@ def find_redundant_in_main(base: str = "main", head: str = "HEAD") -> list[str]:
         if line.startswith("- "):
             redundant.append(line[2:].strip())
     return redundant
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_MAX_REASON_LEN = 300
+
+
+def sanitize_reason(text: str, limit: int = _MAX_REASON_LEN) -> str:
+    """Make untrusted text safe for a log line / event field / stderr (CWE-117).
+
+    Strips ANSI escape sequences, turns remaining control characters (newlines
+    included) into single spaces, collapses whitespace, and truncates to
+    ``limit`` characters with an ellipsis marker.
+    """
+    text = _ANSI_RE.sub("", str(text))
+    text = " ".join(_CONTROL_RE.sub(" ", text).split())
+    if len(text) > limit:
+        text = text[: limit - 1] + "\u2026"
+    return text
+
+
+def _github_error_text(exc: GitHubError) -> str:
+    """Message plus status code of a GitHubError, without the tuple repr."""
+    message = exc.args[0] if exc.args else str(exc)
+    status = getattr(exc, "status_code", None)
+    return f"{message} (HTTP {status})" if status is not None else str(message)
+
+
+def _unverified(reason: str) -> OpenPrsUnverifiedError:
+    reason = sanitize_reason(reason)
+    logger.warning("Open-PR stale-commit check unverifiable: %s", reason)
+    return OpenPrsUnverifiedError(reason)
 
 
 def find_redundant_in_open_prs(
@@ -140,8 +197,15 @@ def find_redundant_in_open_prs(
     matches current_branch — the branch under check, whose own already-pushed
     commits are not "stale" against itself.  Both the open-PR listing and each
     PR's commit list are fully paginated so a large PR backlog (or a PR with
-    >100 commits) is never silently truncated.  API errors are logged and
-    silently skipped — this check is best-effort.
+    >100 commits) is never silently truncated.
+
+    Fail-closed (#1681): this check backs a hard gate, so "could not check" must
+    never read as "no overlap".  OpenPrsUnverifiedError is raised at the FIRST
+    failure — a GitHubError (incl. RateLimitError) on any listing, a None
+    response (_run_gh returns None on HTTP 404 or an empty body; only a real
+    ``[]`` means "no more items"), a non-list response, a PR entry that is not a
+    dict or lacks ``number``, or a commit entry that is not a dict or lacks
+    ``sha``.  Other exception types propagate unchanged.
 
     bot_login is retained for backward compatibility but no longer suppresses
     detection (#987): in autonomous mode *every* open PR is bot-authored, so the
@@ -156,74 +220,68 @@ def find_redundant_in_open_prs(
     our_sha_set = set(branch_commit_shas)
     redundant_by_pr: dict[str, list[str]] = {}
 
+    def _fetch_page(path: str, what: str) -> list:
+        """Fetch one page; raise OpenPrsUnverifiedError on anything but a list."""
+        try:
+            batch = _run_gh([path])
+        except GitHubError as exc:
+            raise _unverified(f"could not fetch {what}: {_github_error_text(exc)}") from exc
+        if batch is None:
+            raise _unverified(f"{what}: empty or 404 response (wrong repo, or token lacks access?)")
+        if not isinstance(batch, list):
+            raise _unverified(f"{what}: unexpected response type {type(batch).__name__}")
+        return batch
+
     # Paginate the open-PR listing — an unpaged fetch silently drops PRs past
     # the first 100, letting stale commits slip through in a busy repo (#987).
     open_prs: list = []
     page = 1
     while True:
-        try:
-            batch = _run_gh(
-                [f"/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}"]
-            )
-        except GitHubError as exc:
-            logger.warning("Could not list open PRs for stale-commit check: %s", exc)
-            return {}
+        batch = _fetch_page(
+            f"/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}",
+            f"open-PR listing page {page}",
+        )
         if not batch:
             break
-        if not isinstance(batch, list):
-            logger.warning(
-                "Unexpected type from PR listing API: %s — skipping open-PR stale check",
-                type(batch).__name__,
-            )
-            return {}
         open_prs.extend(batch)
         if len(batch) < 100:
             break
         page += 1
 
     for pr in open_prs:
-        pr_number = pr.get("number")
-        if pr_number is None:
-            continue
-        if current_branch and pr.get("head", {}).get("ref", "") == current_branch:
+        if not isinstance(pr, dict) or pr.get("number") is None:
+            raise _unverified("open-PR listing contained a malformed PR entry")
+        pr_number = pr["number"]
+        if not isinstance(pr_number, int) or isinstance(pr_number, bool):
+            raise _unverified("open-PR listing contained a PR with a non-integer number")
+        head = pr.get("head")
+        head_ref = head.get("ref", "") if isinstance(head, dict) else ""
+        if current_branch and head_ref == current_branch:
             continue
 
         # Paginate this PR's commits — a PR can carry more than 100 commits.
         pr_commits: list = []
         commit_page = 1
-        commits_ok = True
         while True:
-            try:
-                commit_batch = _run_gh([
-                    f"/repos/{owner}/{repo}/pulls/{pr_number}/commits"
-                    f"?per_page=100&page={commit_page}"
-                ])
-            except GitHubError as exc:
-                logger.warning("Could not fetch commits for PR #%s: %s", pr_number, exc)
-                commits_ok = False
-                break
+            commit_batch = _fetch_page(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/commits"
+                f"?per_page=100&page={commit_page}",
+                f"commits of PR #{pr_number} page {commit_page}",
+            )
             if not commit_batch:
-                break
-            if not isinstance(commit_batch, list):
-                logger.warning(
-                    "Unexpected commits response for PR #%s: got %s — skipping",
-                    pr_number,
-                    type(commit_batch).__name__,
-                )
-                commits_ok = False
                 break
             pr_commits.extend(commit_batch)
             if len(commit_batch) < 100:
                 break
             commit_page += 1
-        if not commits_ok:
-            continue
 
-        overlap = [
-            c.get("sha", "")
-            for c in pr_commits
-            if c.get("sha", "") in our_sha_set
-        ]
+        overlap = []
+        for c in pr_commits:
+            sha = c.get("sha") if isinstance(c, dict) else None
+            if not sha:
+                raise _unverified(f"commits of PR #{pr_number} contained a malformed commit entry")
+            if sha in our_sha_set:
+                overlap.append(sha)
         if overlap:
             redundant_by_pr[str(pr_number)] = overlap
 
@@ -233,6 +291,7 @@ def find_redundant_in_open_prs(
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
+
 
 def check_stale_commits(
     owner: str,
@@ -252,17 +311,38 @@ def check_stale_commits(
 
     Audit log event `pre-pr-stale-commits` is emitted when redundant commits
     are found, so every detection is traceable in audit/oversight-log.jsonl.
+
+    Fail-closed (#1681): if the open-PR overlap check cannot be completed (API
+    error, 404/empty body, malformed response), the result carries the reason in
+    `open_prs_unverified`, `is_clean` is False, and a
+    `pre-pr-stale-check-unverified` event is emitted.  Callers must not treat an
+    unverified result as clean.  When check_open_prs is False, or the branch has
+    no commits ahead of base, there is nothing to verify and the check is not
+    marked unverified.
     """
     all_commits = get_branch_commits(base=base, head=head)
     redundant_in_main = find_redundant_in_main(base=base, head=head)
 
     redundant_in_prs: dict[str, list[str]] = {}
+    unverified: Optional[str] = None
     if check_open_prs and all_commits:
-        redundant_in_prs = find_redundant_in_open_prs(
-            owner, repo, all_commits,
-            current_branch=branch,
-            bot_login=bot_login,
-        )
+        try:
+            redundant_in_prs = find_redundant_in_open_prs(
+                owner,
+                repo,
+                all_commits,
+                current_branch=branch,
+                bot_login=bot_login,
+            )
+        except OpenPrsUnverifiedError as exc:
+            unverified = sanitize_reason(str(exc))
+            logger.warning("Open-PR overlap on %s could not be verified: %s", branch, unverified)
+            log_event(
+                "pre-pr-stale-check-unverified",
+                branch=branch,
+                base=base,
+                reason=unverified,
+            )
 
     result = StaleCommitResult(
         branch=branch,
@@ -270,9 +350,12 @@ def check_stale_commits(
         all_commits=all_commits,
         redundant_in_main=redundant_in_main,
         redundant_in_prs=redundant_in_prs,
+        open_prs_unverified=unverified,
     )
 
-    if not result.is_clean:
+    # Real redundancies keep their existing event; a merely-unverified result
+    # has already emitted its own event above.
+    if result.redundant_in_main or result.redundant_in_prs:
         logger.warning(
             "Stale commits detected on %s before PR open: "
             "redundant_in_main=%s redundant_in_prs=%s",
@@ -316,6 +399,7 @@ def strip_redundant_commits(base: str = "main") -> bool:
 # Base freshness (#1162)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BaseFreshnessResult:
     """Whether a base ref is current with respect to the branch it targets.
@@ -324,11 +408,12 @@ class BaseFreshnessResult:
     commits already present upstream (redundant work). This asks the opposite
     question: does upstream carry commits the *base* is missing?
     """
+
     base: str
     target: str
-    missing_commits: list[str]      # oneline summaries, newest first
+    missing_commits: list[str]  # oneline summaries, newest first
     behind_count: int
-    target_resolved: bool           # False → the check could not run
+    target_resolved: bool  # False → the check could not run
 
     @property
     def is_fresh(self) -> bool:
@@ -376,8 +461,11 @@ def check_base_freshness(
     """
     if not _ref_exists(target):
         return BaseFreshnessResult(
-            base=base, target=target, missing_commits=[],
-            behind_count=0, target_resolved=False,
+            base=base,
+            target=target,
+            missing_commits=[],
+            behind_count=0,
+            target_resolved=False,
         )
 
     count_out = _run_git(["rev-list", "--count", f"{base}..{target}"])
@@ -385,12 +473,13 @@ def check_base_freshness(
 
     missing: list[str] = []
     if behind:
-        log_out = _run_git(
-            ["log", "--oneline", f"-{sample}", f"{base}..{target}"]
-        )
+        log_out = _run_git(["log", "--oneline", f"-{sample}", f"{base}..{target}"])
         missing = log_out.splitlines() if log_out else []
 
     return BaseFreshnessResult(
-        base=base, target=target, missing_commits=missing,
-        behind_count=behind, target_resolved=True,
+        base=base,
+        target=target,
+        missing_commits=missing,
+        behind_count=behind,
+        target_resolved=True,
     )

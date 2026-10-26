@@ -39,27 +39,16 @@ before `test_scripts_index.py` / `test_codeowners_current.py` even run.
 | Artifact | Generator | Input | Gate | Attributes the cause? | Blast radius if ungated |
 |---|---|---|---|---|---|
 | `SCRIPTS-INDEX.md` | `scripts/framework/gen_scripts_index.sh` | `bin/`, `bootstrap/` (top-level), `scripts/` (recursive) | `tests/framework/test_scripts_index.py` (byte-diff + independent re-scan floor) | Yes — lists the missing file(s) by path | Confirmed (#1413): a stale index halted the worker for ~40 min across 4 cycles when an untracked script was left behind by a prior dead cycle |
-| `scripts/framework/validation-stamps/phase1-<hash>.stamp` | `check_agents_static.sh` (via `run_framework_validation.sh`) | `.claude/agents/*.md` content hash | `check_validation_current.sh` (CI check — status unverified, see caveat below) | Yes — prints the expected stamp filename and the remediation command | Confirmed (#1367): every open PR failed the "Validation stamps current" check regardless of what it touched |
+| `scripts/framework/validation-stamps/phase1-<hash>.stamp` | **No longer written** (#2053): `check_agents_static.sh` stopped writing it; existing committed stamps are removed in follow-up slices | — | None — `agent-static-check.yml` runs `check_agents_static.sh` directly (non-required) | n/a | Historical (#1367): every open PR failed the former "Validation stamps current" check regardless of what it touched |
 | `.github/CODEOWNERS` | `scripts/framework/gen_codeowners.sh` | `scripts/framework/protected_surfaces.txt` | `tests/framework/test_codeowners_current.py` (added by #1414; byte-diff against a sandboxed regeneration) | Yes — the failure message names the stale file and the exact regeneration command | **Was unguarded before #1414.** This is the governance-critical member: CODEOWNERS is the static half of the AGENT-IDENTITY.md §9 human-approval gate. A silent drift here means a protected surface could stop requiring human review without any signal — worse than either confirmed instance above, because nothing would even fail loudly. |
 | `.hos-manifest` | `bootstrap/hos_install.sh` (via `scripts/oversight/validators/regions.py`'s `assemble_manifest`) | The **consumer's** installed agent/pack files at install/upgrade time | `tests/framework/test_consumer_framework_files.py` (guards that the *source list* `framework_consumer_files.txt` the manifest enumerator reads matches what the installer ships) + `tests/framework/test_pack_install.py`, `test_regions_cli.py`, `test_plan_upgrade.py` (manifest-write correctness) | Partially — these tests guard correctness of the manifest-writer and its source list in *this* repo; they do not (and structurally cannot) detect a stale manifest in an already-installed consumer repo | Different failure shape from the other three: `.hos-manifest` is not a file *this* repo commits and re-derives on every PR. It is written once per install/upgrade in a *target* project. There is no "PR touched an input, manifest is now stale" scenario in this repo — the closest analogue (per #1389) is an install/upgrade path that produces a manifest with zero entries, which the pack-install/upgrade test suite already covers. Kept in this table because `gen_scripts_index.sh`'s own header names the manifest family as precedent, and because a broken assembler would be governance-relevant, not because it currently drifts unnoticed. |
 
-**Caveat on the validation-stamp row's "required CI check" status:** an
-independent audit could not confirm from in-repo source alone that
-`check_validation_current.sh` / "Validation Stamp Check" is actually wired
-into `scripts/framework/setup_branch_protection.sh`'s required-status-check
-list — the required contexts there are the script's core three plus
-the HOS-only `scripts/framework/hos_required_contexts.txt`,
-and `tests/framework/test_branch_protection_contexts.py` does not hardcode
-that exact set: it dynamically derives the required contexts from the setup
-script and asserts each one has a producing workflow job, plus a fixed
-sub-check that those four original gates specifically remain required (a
-"Validation Stamp Check" context is not among either). A live `gh api
-repos/.../branches/main/protection` call to confirm the
-actual GitHub-side setting returned 403 (insufficient permissions for this
-token) rather than a definitive answer. This document does not claim the
-validation-stamp check either is or isn't a required branch-protection check
-— that needs a human with admin access to verify live branch-protection
-settings.
+**Validation-stamp row (#2053):** the phase1 stamp and its CI check
+(`check_validation_current.sh` / "Validation stamps current") are retired. The
+former check was never confirmed to be a required branch-protection check, and
+the replacement `agent-static-check.yml` is deliberately non-required. The
+remaining `all-phases`/phase 2-4 stamp artifacts and their writers are retired
+in follow-up slices of #2053.
 
 ## Outstanding question this table answers
 
@@ -84,13 +73,10 @@ state, no human judgment required) and is wired into
 `run_tests_inner_loop.sh`, so drift in either no longer halts the worker at
 cycle-start (#1413).
 
-The validation-stamp file remains explicitly **not** self-heal-safe — it is
-only written after real AI/human review passes (Phase 2-4 of
-`run_framework_validation.sh`), so auto-regenerating it on drift would defeat
-the gate it exists to enforce. `check_validation_current.sh` already names the
-expected filename and the exact remediation command, satisfying the
-"names the cause" branch of the acceptance criterion for that artifact without
-self-healing.
+The remaining validation-stamp files are explicitly **not** self-heal-safe —
+they are only written after real AI/human review passes (Phase 2-4 of
+`run_framework_validation.sh`), so auto-regenerating them on drift would
+defeat the gate they exist to enforce. They are being retired under #2053.
 
 **#1415's distinct scope is unaffected**: a dead cycle's *other* debris
 (uncommitted or untracked files unrelated to these two generated artifacts) is

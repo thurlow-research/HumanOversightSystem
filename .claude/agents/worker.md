@@ -177,7 +177,7 @@ The human. You are the **console entry point** — the agent Scott opens a sessi
   3. Add the `needs-ai` label.
   ```
 - **Stay within the active milestone.** Only pick up issues assigned to the current sprint milestone (e.g., `v0.5.0 — Governance, Accuracy & Usability`). When the milestone backlog is exhausted, stop and report to the human — do not range into future milestones without explicit human authorization. (#404)
-- **Select by priority, then number.** Among eligible issues (`needs-ai`, not `needs-human`, in the active milestone), pick the **highest priority** first — `priority:critical` > `priority:high` > `priority:medium` > `priority:low`; an issue with no `priority:*` label is treated as `priority:low`. Break ties by **lowest issue number** (preserving FIFO within a band). Priority is a worker-side *selection* signal only — it confers no merge, risk, or gate privilege. The ordering is implemented once in `scripts/framework/select_work_candidates.py` — the single entry point for work selection — and consumed by both the pre-computed candidates block (`bin/hos-cron`) and the cron-prompt Step-2 fallback. Eligibility is **author-trust-gated**, not merely label-filtered: an issue from an untrusted requester is eligible only if a CODEOWNER's own account applied the dispatch label (#1539, TD-1540 §2). (#901)
+- **Select started work first, then by priority, then number.** Among eligible issues (`needs-ai`, not `needs-human`, in the active milestone), work already started comes first — a local branch with unlanded work (`[started:branch]`), then a merged technical design whose code is unfinished (`[started:design]`) — and a lower level is not chosen while a higher one is non-empty (#2155). Within a level, pick the **highest priority** first — `priority:critical` > `priority:high` > `priority:medium` > `priority:low`; an issue with no `priority:*` label is treated as `priority:low`. Break ties by **lowest issue number** (preserving FIFO within a band). Priority is a worker-side *selection* signal only — it confers no merge, risk, or gate privilege. The ordering is implemented once in `scripts/framework/select_work_candidates.py` — the single entry point for work selection — and consumed by both the pre-computed candidates block (`bin/hos-cron`) and the cron-prompt Step-2 fallback. Eligibility is **author-trust-gated**, not merely label-filtered: an issue from an untrusted requester is eligible only if a CODEOWNER's own account applied the dispatch label (#1539, TD-1540 §2). (#901)
 - **Use `Co-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>`** in commits (interactive attribution convention).
 - **Before declaring a step complete, verify doc currency:** if the step modified documented behavior (new agent, new gate, new governance rule), the relevant docs must be updated in the same step. Flag outstanding doc updates to the human; do not mark the step done until they are resolved.
 
@@ -448,6 +448,48 @@ branch at its tip — `bash bootstrap/create_branch.sh --issue <N> --slug <slug>
 — and **re-run the full review chain (steps 8 → 8.9) in this cycle** before submitting. The
 ownership record says only "this cycle created this branch"; it never says the commits on it
 were reviewed.
+
+### Re-adopting a stalled branch (#2126, rulings D-7/D-8)
+
+A *stalled* branch is a prior cycle's branch whose review chain **completed** (its register
+shows every required sign-off at a recorded head) but which was never submitted or never
+landed — typically parked behind a red gate or a human ruling. It is still foreign (above);
+this protocol extends the orphan rule for that case. A branch whose register does **not**
+show a completed review is an orphan, not a stalled branch: re-run the full chain.
+
+1. **Prune first.** If the issue is closed, or several `worker-<N>-*` attempts exist, run
+   `python3 -m scripts.automation.readopt prune-attempts --issue <N>` (`--issue-closed` when
+   the issue is closed — the script confirms the closed state with GitHub and refuses
+   otherwise; then stop, there is nothing to adopt). When the latest escalation comment names
+   a head, pass it as `--keep <branch>`; only without one does it fall back to keeping the
+   newest attempt.
+2. **Rebuild check.** A branch more than ~200 commits behind `origin/main` whose merge
+   conflicts in reviewed files is a **rebuild**, not a rebase: say so on the issue and start
+   fresh from the design. Do not adopt it.
+3. **Adopt.** `bash bootstrap/create_branch.sh --issue <N> --slug <slug> --from <stalled-branch>`,
+   then merge `origin/main` and resolve conflicts. A conflict resolved in a reviewed file is
+   stated in the register.
+4. **Gates and validators always re-run** on the merged head (`run_gates.sh` on the changed
+   files, `run_validators.sh --diff origin/main...HEAD`).
+5. **Choose the AI re-review path (D-7)** with
+   `python3 -m scripts.automation.readopt review-path --original-head <reviewed-head> --merged-head HEAD`:
+   `full` (the merge from main touched a file in the reviewed set, commits were added
+   beyond the reviewed head, the merge had conflicts, or the merged tree differs from an
+   independent `git merge-tree` of the reviewed head and `origin/main`) → the full review
+   chain plus second review; `delta` → the
+   oversight-evaluator plus a delta second review only. Anything other than exit 0 with a
+   parsed `REVIEW_PATH=` line means `full`. The
+   register records the path taken and its `REASON=` line, pinned to the new head.
+6. **Submit** with `submit_pr.sh --closes <N>`. The PR body names the original build date, the
+   original reviewed head, and the re-review path. If a superseded PR is still open for the
+   same issue, close it first (#1781 ruling).
+7. **After merge (D-8)** the local branch and its ownership record are deleted. `bin/hos-cron`
+   runs `readopt reap-landed` each worker cycle: it deletes a *recorded* branch once its tip is
+   in `origin/main` or a merged PR's `head.sha` equals its tip (at most 20 PR lookups per
+   cycle, chosen at random from the unlanded branches so coverage rotates across cycles), and never on uncertainty.
+   Unrecorded leftover branches are out of its scope — their cleanup is human-authorized.
+
+Never delete a worker branch with raw `git branch -D`; deletion goes through `readopt.py`.
 
 ### Out-of-scope commit bounce response (SPEC-328)
 

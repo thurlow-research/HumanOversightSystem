@@ -358,6 +358,17 @@ def _repoint_message(conflict: dict, new_path: str, repo: str | os.PathLike[str]
     )
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """os.write may write fewer bytes than asked; loop until all are written. A call that
+    makes no progress is an error, never an infinite loop or a truncated file."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise TmpRootError(f"write made no progress with {len(view)} bytes remaining")
+        view = view[written:]
+
+
 def register(
     role_dir: Path,
     repo: str | os.PathLike[str],
@@ -432,11 +443,20 @@ def register(
         except OSError as exc:
             raise TmpRootError(f"cannot write the temp-root registry {path}: {exc}") from exc
         try:
-            os.write(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.rename(tmp, path)
+            try:
+                _write_all(fd, payload)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(tmp, path)
+        except (OSError, TmpRootError) as exc:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass  # best-effort; the original failure is what matters
+            raise TmpRootError(f"cannot write the temp-root registry {path}: {exc}") from exc
     finally:
         os.close(lock_fd)  # also releases the flock
 

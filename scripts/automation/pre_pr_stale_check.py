@@ -6,7 +6,9 @@ present in main or in another open PR.
 
 Behaviour:
   1. Runs check_stale_commits() against the current branch.
-  2. If clean: prints a confirmation and exits 0.
+  2. If the open-PR overlap could not be verified (API failure): exits 3 without
+     rebasing or claiming clean (#1681).
+  2b. If clean: prints a confirmation and exits 0.
   3. If only redundant-in-main commits are found: calls strip_redundant_commits()
      to rebase them away, then re-checks.  Exits 0 if now clean, 1 if the rebase
      failed or commits remain.
@@ -31,6 +33,9 @@ Exit codes:
   0 — branch is clean (or was made clean by auto-rebase)
   1 — stale commits remain; do NOT push or open a PR
   2 — usage / configuration error
+  3 — could not verify open-PR overlap (GitHub API error, 404/empty response,
+      malformed data); fail-closed (#1681) — do NOT push; re-mint the token
+      and re-run
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ import sys
 
 from scripts.automation.lib.stale_commit_detector import (
     check_stale_commits,
+    sanitize_reason,
     strip_redundant_commits,
 )
 
@@ -48,10 +54,12 @@ from scripts.automation.lib.stale_commit_detector import (
 # These are gitignored append-only operational files synced to main via GitHub
 # Actions (introduced in #861). Committing them to a feature branch shifts PR
 # HEAD past the validator artifact commit and breaks the overseer's §3b check.
-_AUDIT_ONLY_FILES: frozenset[str] = frozenset({
-    "audit/oversight-log.jsonl",
-    "audit/overnight-loop-log.md",
-})
+_AUDIT_ONLY_FILES: frozenset[str] = frozenset(
+    {
+        "audit/oversight-log.jsonl",
+        "audit/overnight-loop-log.md",
+    }
+)
 
 
 def _run(args: list[str]) -> str:
@@ -150,10 +158,29 @@ def resolve_branch(branch: str | None) -> str:
         sys.exit(2)
 
 
+def _report_unverified(reason: str, rebased_onto: str | None = None) -> int:
+    print(
+        f"✘ pre-pr-stale-check: could not verify open-PR overlap: {sanitize_reason(reason)}\n"
+        "  Do NOT push or open a PR. The GitHub API check failed, so a clean\n"
+        "  result cannot be claimed. Re-mint the token and re-run this check.",
+        file=sys.stderr,
+    )
+    if rebased_onto:
+        print(
+            f"  Note: the branch was already rebased locally onto {rebased_onto}"
+            " (commits already in base were dropped); nothing was pushed.",
+            file=sys.stderr,
+        )
+    return 3
+
+
 def run_check(owner: str, repo: str, branch: str, base: str) -> int:
     """Perform the stale-commit check and auto-strip if possible.
 
-    Returns 0 on clean, 1 if stale commits cannot be resolved.
+    Returns 0 on clean, 1 if stale commits cannot be resolved, 3 if the
+    open-PR overlap could not be verified (fail-closed, #1681) — on either the
+    first check or the post-rebase re-check.  An unverified result is never
+    auto-rebased.
     """
     # Audit-log guard (#880): fail before stale check if audit-only files
     # have been committed to this branch — they invalidate the overseer's §3b
@@ -172,6 +199,10 @@ def run_check(owner: str, repo: str, branch: str, base: str) -> int:
         return 1
 
     result = check_stale_commits(owner, repo, branch=branch, base=base)
+
+    # Fail-closed (#1681): checked before is_clean and before any auto-rebase.
+    if result.open_prs_unverified:
+        return _report_unverified(result.open_prs_unverified)
 
     if result.is_clean:
         print(f"✔ pre-pr-stale-check: branch {branch!r} is clean — no stale commits.")
@@ -213,10 +244,10 @@ def run_check(owner: str, repo: str, branch: str, base: str) -> int:
         return 1
 
     result2 = check_stale_commits(owner, repo, branch=branch, base=base)
+    if result2.open_prs_unverified:
+        return _report_unverified(result2.open_prs_unverified, rebased_onto=base)
     if result2.is_clean:
-        print(
-            f"✔ pre-pr-stale-check: rebase succeeded — branch {branch!r} is now clean."
-        )
+        print(f"✔ pre-pr-stale-check: rebase succeeded — branch {branch!r} is now clean.")
         return 0
 
     print(

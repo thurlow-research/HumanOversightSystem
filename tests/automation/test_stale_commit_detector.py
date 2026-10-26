@@ -5,18 +5,19 @@ Covers:
   - get_branch_commits: parses git log output, empty branch
   - find_redundant_in_main: parses git cherry output (- vs + marks)
   - find_redundant_in_open_prs: SHA overlap detection, bot-PR skip, branch skip,
-    API error tolerance
+    fail-closed on any API/response failure (#1681)
   - check_stale_commits: orchestration, audit log emission, clean/unclean result
   - strip_redundant_commits: success and failure paths
   - StaleCommitResult: is_clean, all_redundant dedup
 """
 
-import subprocess
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scripts.automation.lib.github import GitHubError, RateLimitError
 from scripts.automation.lib.stale_commit_detector import (
+    OpenPrsUnverifiedError,
     StaleCommitResult,
     check_stale_commits,
     find_redundant_in_main,
@@ -24,8 +25,6 @@ from scripts.automation.lib.stale_commit_detector import (
     get_branch_commits,
     strip_redundant_commits,
 )
-from scripts.automation.lib.github import GitHubError
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,6 +59,7 @@ def _git_fail(stderr: str = "error") -> MagicMock:
 # get_branch_commits
 # ---------------------------------------------------------------------------
 
+
 class TestGetBranchCommits:
     def test_returns_shas_oldest_first(self):
         git_log_out = f"{SHA_A}\n{SHA_B}\n{SHA_C}"
@@ -91,6 +91,7 @@ class TestGetBranchCommits:
 # ---------------------------------------------------------------------------
 # find_redundant_in_main
 # ---------------------------------------------------------------------------
+
 
 class TestFindRedundantInMain:
     def test_returns_shas_marked_with_minus(self):
@@ -134,6 +135,7 @@ class TestFindRedundantInMain:
 # find_redundant_in_open_prs
 # ---------------------------------------------------------------------------
 
+
 def _pr(number, author="other-user", branch="feat/other", commit_shas=None):
     return {
         "number": number,
@@ -155,9 +157,7 @@ class TestFindRedundantInOpenPrs:
             "scripts.automation.lib.stale_commit_detector._run_gh",
             side_effect=[prs, pr_commits],
         ):
-            result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A, SHA_C]
-            )
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A, SHA_C])
 
         assert result == {"42": [SHA_A]}
 
@@ -169,9 +169,7 @@ class TestFindRedundantInOpenPrs:
             "scripts.automation.lib.stale_commit_detector._run_gh",
             side_effect=[prs, pr_commits],
         ):
-            result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A, SHA_B]
-            )
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A, SHA_B])
 
         assert result == {}
 
@@ -189,7 +187,9 @@ class TestFindRedundantInOpenPrs:
             side_effect=[prs, pr_commits],
         ):
             result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A],
+                OWNER,
+                REPO,
+                [SHA_A],
                 bot_login="hos-worker-hos[bot]",
             )
 
@@ -208,7 +208,9 @@ class TestFindRedundantInOpenPrs:
             side_effect=[prs],
         ):
             result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A],
+                OWNER,
+                REPO,
+                [SHA_A],
                 current_branch="feat/my-fix",
                 bot_login="hos-worker-hos[bot]",
             )
@@ -224,7 +226,9 @@ class TestFindRedundantInOpenPrs:
             side_effect=[prs],
         ):
             result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A],
+                OWNER,
+                REPO,
+                [SHA_A],
                 current_branch="feat/my-fix",
             )
 
@@ -243,54 +247,24 @@ class TestFindRedundantInOpenPrs:
         result = find_redundant_in_open_prs(OWNER, REPO, [])
         assert result == {}
 
-    def test_api_error_on_list_prs_returns_empty(self):
+    # --- Fail-closed cases (#1681): formerly returned {} / skipped the PR. ---
+
+    def test_api_error_on_list_prs_raises_unverified(self):
         with patch(
             "scripts.automation.lib.stale_commit_detector._run_gh",
             side_effect=GitHubError("503"),
         ):
-            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+            with pytest.raises(OpenPrsUnverifiedError, match="503"):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
 
-        assert result == {}
-
-    def test_api_error_on_pr_commits_skips_that_pr(self):
-        prs = [_pr(42), _pr(99)]
-        pr_42_commits = _make_commits([SHA_A])
-
-        def _side_effect(args):
-            url = args[0]
-            if "pulls/42/commits" in url:
-                raise GitHubError("timeout")
-            if "pulls/99/commits" in url:
-                return pr_42_commits
-            return prs
-
-        with patch(
-            "scripts.automation.lib.stale_commit_detector._run_gh",
-            side_effect=_side_effect,
-        ):
-            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
-
-        # PR #42 errored out (skipped), PR #99's commits overlap → detected
-        assert "42" not in result
-        assert result.get("99") == [SHA_A]
-
-    def test_non_list_pr_listing_returns_empty(self):
-        with patch(
-            "scripts.automation.lib.stale_commit_detector._run_gh",
-            return_value={"message": "API error"},
-        ):
-            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
-
-        assert result == {}
-
-    def test_non_list_pr_commits_response_skips_that_pr(self):
+    def test_api_error_on_pr_commits_raises_unverified(self):
         prs = [_pr(42), _pr(99)]
         pr_99_commits = _make_commits([SHA_A])
 
         def _side_effect(args):
             url = args[0]
             if "pulls/42/commits" in url:
-                return {"message": "unexpected dict"}
+                raise GitHubError("timeout")
             if "pulls/99/commits" in url:
                 return pr_99_commits
             return prs
@@ -299,10 +273,203 @@ class TestFindRedundantInOpenPrs:
             "scripts.automation.lib.stale_commit_detector._run_gh",
             side_effect=_side_effect,
         ):
-            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+            with pytest.raises(OpenPrsUnverifiedError, match="PR #42"):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
 
-        assert "42" not in result
-        assert result.get("99") == [SHA_A]
+    def test_non_list_pr_listing_raises_unverified(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value={"message": "API error"},
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_non_list_pr_commits_response_raises_unverified(self):
+        prs = [_pr(42), _pr(99)]
+
+        def _side_effect(args):
+            url = args[0]
+            if "pulls/42/commits" in url:
+                return {"message": "unexpected dict"}
+            if "pulls/99/commits" in url:
+                return _make_commits([SHA_A])
+            return prs
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_rate_limit_error_raises_unverified(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=RateLimitError("403 rate limited"),
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_unverified_error_is_not_a_github_error(self):
+        assert not issubclass(OpenPrsUnverifiedError, GitHubError)
+
+    def test_non_github_exception_propagates(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=ValueError("boom"),
+        ):
+            with pytest.raises(ValueError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_none_on_first_listing_page_raises_unverified(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value=None,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_none_on_second_listing_page_raises_unverified(self):
+        page1 = [_pr(1000 + i, branch=f"feat/x{i}") for i in range(100)]
+
+        def _side_effect(args):
+            url = args[0]
+            if "pulls?state=open" in url:
+                return page1 if "&page=1" in url else None
+            return _make_commits([SHA_D])
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_pr_without_number_raises_unverified(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value=[{"head": {"ref": "feat/x"}}],
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_error_reason_is_sanitized_single_line_bounded(self):
+        raw = "boom\n\x1b[31mred\x1b[0m\tline2\r\x07" + "x" * 1000
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=GitHubError(raw, 401),
+        ):
+            with pytest.raises(OpenPrsUnverifiedError) as ei:
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+        reason = str(ei.value)
+        assert "\n" not in reason and "\x1b" not in reason and "\x07" not in reason
+        assert not any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F for c in reason)
+        assert len(reason) <= 300
+        assert reason.endswith("\u2026")
+        assert "boom red line2" in reason
+
+    def test_error_reason_has_no_tuple_repr_and_includes_status(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=GitHubError("bad token", 401),
+        ):
+            with pytest.raises(OpenPrsUnverifiedError) as ei:
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+        reason = str(ei.value)
+        assert "('bad token'" not in reason
+        assert "bad token (HTTP 401)" in reason
+
+    @pytest.mark.parametrize("number", ["42", True, 4.5])
+    def test_non_int_pr_number_raises_unverified(self, number):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value=[{"number": number, "head": {"ref": "feat/x"}}],
+        ) as mock_gh:
+            with pytest.raises(OpenPrsUnverifiedError, match="non-integer"):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+        assert mock_gh.call_count == 1  # never used in a commits API path
+
+    def test_non_dict_head_is_not_treated_as_current_branch(self):
+        pr = {"number": 7, "head": "feat/x"}
+        responses = [[pr], _make_commits([SHA_A])]
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=responses,
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A], current_branch="feat/x")
+        assert result == {"7": [SHA_A]}
+
+    def test_non_dict_pr_entry_raises_unverified(self):
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            return_value=["not-a-dict"],
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_none_commit_page_raises_unverified(self):
+        def _side_effect(args):
+            return [_pr(42)] if "pulls?state=open" in args[0] else None
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError, match="PR #42"):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_commit_without_sha_raises_unverified(self):
+        def _side_effect(args):
+            if "pulls?state=open" in args[0]:
+                return [_pr(42)]
+            return [{"commit": {}}]
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_non_dict_commit_entry_raises_unverified(self):
+        def _side_effect(args):
+            if "pulls?state=open" in args[0]:
+                return [_pr(42)]
+            return ["not-a-dict"]
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_empty_sha_commit_raises_unverified(self):
+        def _side_effect(args):
+            if "pulls?state=open" in args[0]:
+                return [_pr(42)]
+            return [{"sha": ""}]
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            with pytest.raises(OpenPrsUnverifiedError):
+                find_redundant_in_open_prs(OWNER, REPO, [SHA_A])
+
+    def test_current_branch_pr_with_bad_commits_is_not_fetched(self):
+        # The current-branch skip precedes any commit fetch, so it cannot fail.
+        def _side_effect(args):
+            if "pulls?state=open" in args[0]:
+                return [_pr(42, branch="feat/me")]
+            raise AssertionError("commits of the current branch's PR fetched")
+
+        with patch(
+            "scripts.automation.lib.stale_commit_detector._run_gh",
+            side_effect=_side_effect,
+        ):
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A], current_branch="feat/me")
+        assert result == {}
 
     def test_multiple_overlapping_shas_in_one_pr(self):
         prs = [_pr(55)]
@@ -312,9 +479,7 @@ class TestFindRedundantInOpenPrs:
             "scripts.automation.lib.stale_commit_detector._run_gh",
             side_effect=[prs, pr_commits],
         ):
-            result = find_redundant_in_open_prs(
-                OWNER, REPO, [SHA_A, SHA_B, SHA_D]
-            )
+            result = find_redundant_in_open_prs(OWNER, REPO, [SHA_A, SHA_B, SHA_D])
 
         assert set(result["55"]) == {SHA_A, SHA_B}
 
@@ -379,6 +544,7 @@ class TestFindRedundantInOpenPrs:
 # check_stale_commits
 # ---------------------------------------------------------------------------
 
+
 class TestCheckStaleCommits:
     def _patch_sub_fns(self, all_commits=None, redundant_main=None, redundant_prs=None):
         all_commits = all_commits or []
@@ -437,10 +603,8 @@ class TestCheckStaleCommits:
 
     def test_skips_open_pr_check_when_disabled(self):
         p1, p2, p3, p4 = self._patch_sub_fns(all_commits=[SHA_A])
-        with p1, p2 as mock_gcbc, p3 as mock_pr_check, p4:
-            check_stale_commits(
-                OWNER, REPO, branch="feat/x", check_open_prs=False
-            )
+        with p1, p2, p3 as mock_pr_check, p4:
+            check_stale_commits(OWNER, REPO, branch="feat/x", check_open_prs=False)
         mock_pr_check.assert_not_called()
 
     def test_skips_open_pr_check_when_no_commits(self):
@@ -449,12 +613,81 @@ class TestCheckStaleCommits:
             check_stale_commits(OWNER, REPO, branch="feat/x")
         mock_pr_check.assert_not_called()
 
+    def test_unverified_open_prs_is_not_clean_and_emits_event(self):
+        # #1681: an API failure must never read as clean.
+        p1, p2, p3, p4 = self._patch_sub_fns(all_commits=[SHA_A])
+        with p1, p2, p3 as mock_pr_check, p4 as mock_log:
+            mock_pr_check.side_effect = OpenPrsUnverifiedError("401 bad token")
+            result = check_stale_commits(OWNER, REPO, branch="feat/x")
+
+        assert result.open_prs_unverified == "401 bad token"
+        assert not result.is_clean
+        assert result.redundant_in_prs == {}
+        mock_log.assert_called_once()
+        assert mock_log.call_args[0][0] == "pre-pr-stale-check-unverified"
+        assert mock_log.call_args[1]["reason"] == "401 bad token"
+        assert mock_log.call_args[1]["branch"] == "feat/x"
+
+    def test_unverified_reason_is_sanitized_everywhere(self):
+        p1, p2, p3, p4 = self._patch_sub_fns(all_commits=[SHA_A])
+        with p1, p2, p3 as mock_pr_check, p4 as mock_log:
+            mock_pr_check.side_effect = OpenPrsUnverifiedError("a\nb\x1b[1m" + "y" * 500)
+            result = check_stale_commits(OWNER, REPO, branch="feat/x")
+        assert "\n" not in result.open_prs_unverified
+        assert len(result.open_prs_unverified) <= 300
+        assert mock_log.call_args[1]["reason"] == result.open_prs_unverified
+
+    def test_unverified_with_real_redundancy_emits_both_events(self):
+        p1, p2, p3, p4 = self._patch_sub_fns(all_commits=[SHA_A], redundant_main=[SHA_A])
+        with p1, p2, p3 as mock_pr_check, p4 as mock_log:
+            mock_pr_check.side_effect = OpenPrsUnverifiedError("x")
+            result = check_stale_commits(OWNER, REPO, branch="feat/x")
+
+        assert not result.is_clean
+        assert [c[0][0] for c in mock_log.call_args_list] == [
+            "pre-pr-stale-check-unverified",
+            "pre-pr-stale-commits",
+        ]
+
+    @pytest.mark.parametrize(
+        "gh_effect",
+        [
+            GitHubError("401"),
+            RateLimitError("403"),
+            None,
+            {"message": "x"},
+        ],
+    )
+    def test_end_to_end_api_failure_is_unverified(self, gh_effect):
+        p1, p2, _, p4 = self._patch_sub_fns(all_commits=[SHA_A])
+        if isinstance(gh_effect, Exception):
+            gh_patch = patch(
+                "scripts.automation.lib.stale_commit_detector._run_gh",
+                side_effect=gh_effect,
+            )
+        else:
+            gh_patch = patch(
+                "scripts.automation.lib.stale_commit_detector._run_gh",
+                return_value=gh_effect,
+            )
+        with p1, p2, gh_patch, p4 as mock_log:
+            result = check_stale_commits(OWNER, REPO, branch="feat/x")
+
+        assert result.open_prs_unverified
+        assert not result.is_clean
+        assert mock_log.call_args[0][0] == "pre-pr-stale-check-unverified"
+
+    def test_disabled_open_pr_check_is_not_unverified(self):
+        p1, p2, p3, p4 = self._patch_sub_fns(all_commits=[SHA_A])
+        with p1, p2, p3, p4:
+            result = check_stale_commits(OWNER, REPO, branch="feat/x", check_open_prs=False)
+        assert result.open_prs_unverified is None
+        assert result.is_clean
+
     def test_result_carries_correct_branch_and_base(self):
         p1, p2, p3, p4 = self._patch_sub_fns()
         with p1, p2, p3, p4:
-            result = check_stale_commits(
-                OWNER, REPO, branch="feat/thing", base="origin/main"
-            )
+            result = check_stale_commits(OWNER, REPO, branch="feat/thing", base="origin/main")
         assert result.branch == "feat/thing"
         assert result.base == "origin/main"
 
@@ -462,6 +695,7 @@ class TestCheckStaleCommits:
 # ---------------------------------------------------------------------------
 # strip_redundant_commits
 # ---------------------------------------------------------------------------
+
 
 class TestStripRedundantCommits:
     def test_returns_true_on_success(self):
@@ -486,19 +720,34 @@ class TestStripRedundantCommits:
 # StaleCommitResult
 # ---------------------------------------------------------------------------
 
+
 class TestStaleCommitResult:
     def test_is_clean_when_no_redundancies(self):
         r = StaleCommitResult(
-            branch="b", base="main",
+            branch="b",
+            base="main",
             all_commits=[SHA_A],
             redundant_in_main=[],
             redundant_in_prs={},
         )
         assert r.is_clean
 
+    def test_not_clean_when_open_prs_unverified(self):
+        r = StaleCommitResult(
+            branch="b",
+            base="main",
+            all_commits=[SHA_A],
+            redundant_in_main=[],
+            redundant_in_prs={},
+            open_prs_unverified="401",
+        )
+        assert not r.is_clean
+        assert r.all_redundant == []
+
     def test_not_clean_when_redundant_in_main(self):
         r = StaleCommitResult(
-            branch="b", base="main",
+            branch="b",
+            base="main",
             all_commits=[SHA_A],
             redundant_in_main=[SHA_A],
             redundant_in_prs={},
@@ -507,7 +756,8 @@ class TestStaleCommitResult:
 
     def test_not_clean_when_redundant_in_pr(self):
         r = StaleCommitResult(
-            branch="b", base="main",
+            branch="b",
+            base="main",
             all_commits=[SHA_A],
             redundant_in_main=[],
             redundant_in_prs={"42": [SHA_A]},
@@ -516,7 +766,8 @@ class TestStaleCommitResult:
 
     def test_all_redundant_deduplicates_across_sources(self):
         r = StaleCommitResult(
-            branch="b", base="main",
+            branch="b",
+            base="main",
             all_commits=[SHA_A, SHA_B, SHA_C],
             redundant_in_main=[SHA_A, SHA_B],
             redundant_in_prs={"42": [SHA_B, SHA_C]},
@@ -528,7 +779,8 @@ class TestStaleCommitResult:
 
     def test_all_redundant_empty_when_clean(self):
         r = StaleCommitResult(
-            branch="b", base="main",
+            branch="b",
+            base="main",
             all_commits=[SHA_A],
             redundant_in_main=[],
             redundant_in_prs={},

@@ -1,0 +1,45 @@
+name: Agent Static Check
+
+# Runs scripts/framework/check_agents_static.sh directly on the PR head: nine
+# deterministic, no-AI structural checks over the agent pipeline (agent/doc
+# coverage, path references, escalation targets, the #291 CORE carve-out
+# clause, D53 anti-framing, #1366 dated model IDs, ...).
+#
+# This replaced the validation-stamp check (validation-check.yml, which only
+# verified that a committed phase1-<HASH>.stamp existed) per the #2053 human
+# ruling, Option A: the check itself is deterministic and CI-portable, so CI
+# runs it rather than trusting an attestation that a local run happened.
+#
+# Deliberately NOT a required status check: it is not listed in
+# setup_branch_protection.sh's required_status_checks.contexts (nor in
+# hos_required_contexts.txt) and so is not read by merge_authority.py's
+# check_required_content_checks (#1580, which only considers checks in that
+# required list), so it cannot stall a merge.
+#
+# Runs on every PR to main, with no paths filter (like shellcheck.yml). Check 3
+# verifies that every path an agent file references exists, so a PR that deletes
+# a referenced file anywhere (contract/, packs/, templates/, tests/, .github/)
+# must trigger it. The job is cheap and deterministic, so a filter buys nothing.
+#
+# HOS-internal: not shipped to consumers, because check_agents_static.sh is
+# HOS dev-only tooling (see framework_consumer_files.txt).
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  agent-static-check:
+    name: Agent static checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run agent static checks
+        run: bash scripts/framework/check_agents_static.sh
