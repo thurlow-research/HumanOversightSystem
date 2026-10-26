@@ -26,7 +26,6 @@ _HOS_DEV_ONLY = {
     "run_framework_validation.sh",
     "run_tests_release.sh",
     "check_agents_static.sh",
-    "check_validation_current.sh",
     "strip_internal_paths.sh",
 }
 

@@ -198,7 +198,7 @@ Run all phases before committing:
 bash scripts/framework/run_framework_validation.sh
 ```
 
-Each successful run writes a timestamp to `scripts/framework/validation-stamps/`. The PR pipeline checks that the stamp is newer than all changed files — enforcing that validation ran locally without re-running AI models in CI.
+CI's `agent-static-check` workflow runs `check_agents_static.sh` (phase 1) directly on each PR; it is not a required check. The AI phases run locally only. The remaining validation stamp files are retired in follow-up slices of #2053.
 
 ---
 

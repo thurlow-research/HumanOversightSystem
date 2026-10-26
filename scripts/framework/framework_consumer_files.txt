@@ -11,8 +11,7 @@
 #     installer section (also tracked directly in enumerate_framework_files)
 #   - Internal HOS-dev tooling (must stay OUT of consumer installs):
 #       cut_release.sh, validate_*.sh, check_agents_static.sh,
-#       check_validation_current.sh, strip_internal_paths.sh,
-#       run_framework_validation.sh, run_tests_release.sh
+#       strip_internal_paths.sh, run_framework_validation.sh, run_tests_release.sh
 #   - scripts/framework/run_post_change_sweep.sh — withheld until #1643 W7 ships the registry modules (#1930 option (b))
 #   - contract/dimensions/project.yaml (consumer-owned, TD-D19) and contract/resolved-packs.txt (installer-generated, TD-D27)
 #
@@ -57,7 +56,6 @@ bootstrap/tmp_reaper.py
 .github/workflows/require-human-approval.yml
 .github/workflows/require-overseer-approval.yml
 .github/workflows/require-tier-ceiling.yml
-.github/workflows/validation-check.yml
 
 # ── .github/workflows/ — gate re-evaluation dispatcher (#1299) ───────────────────
 # NOT itself a required status check (see test_branch_protection_contexts.py) — it
