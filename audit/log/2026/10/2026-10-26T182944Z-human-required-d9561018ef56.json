@@ -1,0 +1,1 @@
+{"agent":"hos-overseer-hos[bot]","escalation_thread":"PRRT_kwDOS4BZNs6wZgAB","event":"human-required","head_sha":"e42f2ef4861cdc692a37110bedf4dc672ca3d500","pr":2189,"reason_category":"GATE_UNSATISFIED","summary":"CONDITIONAL_PROCEED plus needs-human: human ruling on #2100 makes the human review the authorization","tier":"HIGH","verdict_review_id":5657065657}
