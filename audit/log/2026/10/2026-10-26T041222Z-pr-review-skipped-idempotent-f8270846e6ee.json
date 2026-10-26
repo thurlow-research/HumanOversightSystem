@@ -1,0 +1,1 @@
+{"agent":"overseer","decision":"HUMAN_REQUIRED","event":"pr-review-skipped-idempotent","head_sha":"03513dcbdc99cb83426b0612daebb894c2516b5e","pr":2186,"reason":"#1215: same head, no new activity since overseer verdict 5647202120; verdict wrapper dedup skipped identical body"}
