@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"6b28fac98180e44b378bd30cb0f5a2b5209b3774","pr":2193,"reason":"#1215: HUMAN_REQUIRED/DECIDE verdict review 5671546354 already posted at this head; no new human activity; needs-human present"}
