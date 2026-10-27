@@ -30,6 +30,12 @@ pip-audit>=2.6
 # pins pyjwt~=2.13.0, so this floor also resolves semgrep to >=1.179.0.
 pyjwt>=2.15.0
 
+# Not imported by HOS. Arrives via pip-audit -> CacheControl[filecache], an
+# extras-only edge, so `pip show filelock` reports Required-by: (none) and it
+# looks orphaned; it is not. The floor exists so a stale venv re-synced with
+# `pip install -r` drops 4.0.8's three advisories (#2164); >=4.2.1 clears all three.
+filelock>=4.2.1
+
 # Not imported by HOS; certifi arrives transitively via requests/httpx. The floor
 # clears PYSEC-2026-4320 so security_scan does not depend on what the venv happens
 # to have installed (#2147). Latest semgrep itself requires certifi>=2026.10.19.

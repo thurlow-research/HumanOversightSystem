@@ -15,6 +15,11 @@
 # Ubuntu 24.04+ (PEP 668 / EXTERNALLY-MANAGED): system and --user pip are
 # blocked; this venv is the intended install path.
 #
+# An existing venv is NOT re-synced when requirements.txt changes, so floors such
+# as pyjwt/filelock reach it only on rebuild. To pick one up, run
+#   scripts/oversight/.venv/bin/pip install -r scripts/oversight/requirements.txt
+# or delete scripts/oversight/.venv to rebuild it.
+#
 # Flags (effective only when run as a subprocess — not when sourced):
 #   --quiet   Suppress informational stdout; errors still go to stderr.
 

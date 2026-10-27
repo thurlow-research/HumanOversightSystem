@@ -127,6 +127,25 @@ def test_r3_no_shipped_pyjwt_record_the_floor_handles_all_of_it():
     assert [r for r in sl.SUPPRESSIONS if r.package == "pyjwt"] == []
 
 
+def test_r3b_requirements_declare_the_filelock_floor():
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    reqs = [
+        Requirement(line.split("#")[0].strip())
+        for line in (_REPO / "scripts" / "oversight" / "requirements.txt").read_text().splitlines()
+        if line.split("#")[0].strip()
+    ]
+    floors = [
+        Version(spec.version)
+        for r in reqs
+        if r.name == "filelock"
+        for spec in r.specifier
+        if spec.operator == ">="
+    ]
+    assert floors and max(floors) >= Version("4.2.1")
+
+
 def test_r4_no_record_tracks_the_issue_that_closes_on_merge():
     assert all(r.tracking_issue != 1776 for r in sl.SUPPRESSIONS)
 
