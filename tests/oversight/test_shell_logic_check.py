@@ -181,19 +181,18 @@ class TestShellLogicCheck:
 class TestShellLogicCheckRealFiles:
     """Empirical sanity check against real files in this repo (#1241)."""
 
-    def test_create_branch_sh_is_a_genuine_thin_launcher_but_has_real_guard_clauses(self):
+    def test_create_branch_sh_counts_its_base_selection_branches_but_exempts_guard_clauses(self):
         path = os.path.join(ROOT, "bootstrap", "create_branch.sh")
         assert os.path.isfile(path)
         result = sl_main([path])
-        # create_branch.sh uses the canonical fixed-flag-parsing loop (exempt)
-        # plus six standalone `if` statements outside that loop (verified by
-        # reading the file: lines ~92, 110, 111, 125, 131, 133) — all six are
-        # single-outcome guard clauses (err "...", no else/elif), so each is
-        # exempt under the guard-clause rule. Genuine count is zero: this file
-        # really is a thin launcher, not a false negative from the exemption
-        # over-applying.
-        assert result["raw_value"]["decision_construct_count"] == 0
-        assert result["score"] == pytest.approx(0.0)
+        # create_branch.sh still uses the canonical fixed-flag-parsing loop and
+        # its single-outcome guard clauses (err "...", no else/elif), which
+        # remain exempt. The 3 counted constructs are the #1827 base-selection
+        # if/else branches: --from vs default base (Step 4a), origin remote vs
+        # local default branch, and the Step 5 checkout-argument selection.
+        # This is genuine decision logic, so it is counted, not exempted.
+        assert result["raw_value"]["decision_construct_count"] == 3
+        assert result["score"] == pytest.approx(0.3)
 
     def test_hos_bootstrap_sh_is_exactly_zero_hard_exemption(self):
         path = os.path.join(ROOT, "bootstrap", "hos_bootstrap.sh")

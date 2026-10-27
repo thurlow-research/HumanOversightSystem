@@ -33,12 +33,22 @@
 # human-proxy session has none of these — it creates branches directly with
 # git and writes no ownership record; this script is not for it.
 #
-# --from <ref> (default: current HEAD) lets a cycle create ITS OWN branch at
-# the tip of a prior, unsubmitted (and therefore foreign — AD-1) branch,
-# adopting its commits under new, cycle-owned authority. Adopting commits is
-# NOT adopting their review status: whoever adopts via --from MUST re-run the
-# full review chain in this cycle before any PR is opened — see
-# .claude/agents/worker.md.
+# Base (#1827): without --from, the new branch is cut from the repository's
+# DEFAULT branch, never from HEAD. The default branch <D> is resolved as
+# bootstrap/hos_repo_sync.sh does, without network calls: origin/HEAD with the
+# 'origin/' prefix stripped, else 'main'. The base ref is origin/<D> when an
+# 'origin' remote exists, else local <D>. A missing base ref, or tracked
+# changes in the working tree, is a refusal (before any ownership record is
+# written); the script never falls back to HEAD. Why: a cycle parks on a
+# pushed-but-unmerged foreign branch on purpose (#1044 guard), so a HEAD-based
+# default would silently cut the new branch from that foreign work.
+#
+# --from <ref> lets a cycle create ITS OWN branch at the tip of a prior,
+# unsubmitted (and therefore foreign — AD-1) branch, adopting its commits under
+# new, cycle-owned authority. Adopting commits is NOT adopting their review
+# status: whoever adopts via --from MUST re-run the full review chain in this
+# cycle before any PR is opened — see .claude/agents/worker.md. Every --from
+# use prints that obligation on stderr.
 #
 # One script invocation, no loops or substitution at the call site — see
 # CLAUDE.md "Shell usage under the sandbox".
@@ -137,6 +147,42 @@ if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; the
     err "Branch '${BRANCH_NAME}' already exists locally but its ownership record is not valid for this cycle (reason: ${HOS_BO_REASON:-unknown}). This script never adopts an existing branch (#967, ADR-037 AD-3) — the branch name is cycle-unique, so this indicates a name collision outside the ownership model; investigate before retrying."
 fi
 
+# ── Step 4a — resolve the base; every refusal happens BEFORE the record (#1827) ─
+# The base never depends on where HEAD sits. No network calls: origin/HEAD was
+# set by hos_repo_sync.sh at session start and origin is fetched by bin/hos-cron.
+BASE_REF=""
+if [[ -n "$FROM_REF" ]]; then
+    [[ "$FROM_REF" != -* ]] \
+        || err "create_branch.sh: --from '${FROM_REF}' starts with '-' and would be parsed as a git option — refusing (#1827)."
+    git -C "$REPO_DIR" rev-parse --verify -q "${FROM_REF}^{commit}" >/dev/null 2>&1 \
+        || err "create_branch.sh: --from '${FROM_REF}' does not resolve to a commit — refusing (#1827)."
+    warn "create_branch.sh: --from '${FROM_REF}' — ADOPTING commits this cycle did not create. Adopted commits carry NO review status: the full review chain MUST be re-run in this cycle before any PR is opened (#967, #1827; see .claude/agents/worker.md)."
+else
+    DEFAULT_BRANCH="$(git -C "$REPO_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+    DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+    if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+        BASE_REF="refs/remotes/origin/${DEFAULT_BRANCH}"
+    else
+        BASE_REF="refs/heads/${DEFAULT_BRANCH}"
+    fi
+    BASE_SHA="$(git -C "$REPO_DIR" rev-parse --verify -q "${BASE_REF}^{commit}" 2>/dev/null || true)"
+    [[ -n "$BASE_SHA" ]] \
+        || err "create_branch.sh: default base '${BASE_REF}' does not exist — refusing to fall back to HEAD (#1827). Fetch origin, or pass --from <ref> to choose a base deliberately."
+
+    HEAD_SHA="$(git -C "$REPO_DIR" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null || true)"
+    HEAD_DESC="$(git -C "$REPO_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    [[ -n "$HEAD_DESC" ]] || HEAD_DESC="detached @ ${HEAD_SHA:0:12}"
+
+    DIRTY_STATUS="$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" \
+        || err "create_branch.sh: 'git status' failed — cannot verify the working tree is clean, refusing (#1827)."
+    if [[ -n "$DIRTY_STATUS" ]]; then
+        err "create_branch.sh: tracked changes in the working tree would be carried onto the new branch from '${HEAD_DESC}' — refusing (#1827). Commit, stash, or discard them first."
+    fi
+    if [[ "$HEAD_SHA" != "$BASE_SHA" ]]; then
+        warn "create_branch.sh: HEAD is on '${HEAD_DESC}', not the default base — new branch cut from '${BASE_REF}' (#1827). Use --from to adopt other work."
+    fi
+fi
+
 # ── Step 4 — write the ownership record BEFORE creating the branch ──────────
 # Record-first, not branch-first: a record with no branch is inert (nothing
 # can be pushed); a branch with no record is a confusing fail-closed refusal
@@ -146,13 +192,22 @@ if ! hos_bo_write_record "$REPO_DIR" "$BRANCH_NAME"; then
 fi
 
 # ── Step 5 — create the branch; roll back the record on failure ─────────────
-CHECKOUT_FROM="${FROM_REF:-HEAD}"
-if ! git -C "$REPO_DIR" checkout --quiet -b "$BRANCH_NAME" "$CHECKOUT_FROM"; then
+# --no-track on both paths: an upstream of origin/<D> (e.g. --from origin/main)
+# would defeat the #1044 guard and make a bare 'git push' target the default
+# branch.
+if [[ -n "$FROM_REF" ]]; then
+    CHECKOUT_FROM="$FROM_REF"
+    CHECKOUT_ARGS=(--no-track -b "$BRANCH_NAME" "$FROM_REF")
+else
+    CHECKOUT_FROM="$BASE_REF"
+    CHECKOUT_ARGS=(--no-track -b "$BRANCH_NAME" "$BASE_REF")
+fi
+if ! git -C "$REPO_DIR" checkout --quiet "${CHECKOUT_ARGS[@]}"; then
     RECORD_PATH="$(hos_bo_record_path "$REPO_DIR" "$BRANCH_NAME" 2>/dev/null || true)"
     if [[ -n "$RECORD_PATH" ]]; then
         rm -f "$RECORD_PATH" 2>/dev/null || true
     fi
-    err "'git checkout -b ${BRANCH_NAME} ${CHECKOUT_FROM}' failed — ownership record removed to keep the store coherent."
+    err "'git checkout ${CHECKOUT_ARGS[*]}' failed — ownership record removed to keep the store coherent."
 fi
 
 # ── Step 6 — the branch name is the ONLY stdout line ─────────────────────────
