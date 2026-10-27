@@ -457,3 +457,300 @@ class TestMissingCycleIdentity:
         cap = capture_file.read_text()
         assert '"event":"branch-ownership-refused"' in cap, cap
         assert '"reason":"no_cycle_id"' in cap, cap
+
+
+# ─────────────────── #1827 — default base is the default branch ────────────
+def _commit(repo: Path, name: str, msg: str) -> str:
+    (repo / name).write_text(msg + "\n")
+    _git(repo, "add", name)
+    _git(repo, *GIT_IDENT, "commit", "-q", "-m", msg)
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _rev(repo: Path, ref: str) -> str:
+    return _git(repo, "rev-parse", ref).stdout.strip()
+
+
+def _records(repo: Path) -> list[Path]:
+    common = Path(_git(repo, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    return list((common / "hos" / "branch-ownership").glob("*.rec"))
+
+
+def _add_origin(repo: Repo, tmp_path: Path, default: str = "main") -> Path:
+    """Bare origin under tmp_path holding <default>, with origin/HEAD set."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    _git(repo.root, "remote", "add", "origin", str(bare))
+    if default != "main":
+        _git(repo.root, "branch", "-m", "main", default)
+    _git(repo.root, "push", "-q", "origin", default)
+    _git(repo.root, "fetch", "-q", "origin")
+    _git(repo.root, "remote", "set-head", "origin", default)
+    return bare
+
+
+def _park_on_foreign(repo: Repo) -> str:
+    _git(repo.root, "checkout", "-q", "-b", "worker-1776-x")
+    tip = _commit(repo.root, "foreign.txt", "foreign work")
+    _git(repo.root, "push", "-q", "-u", "origin", "worker-1776-x")
+    return tip
+
+
+class TestDefaultBase1827:
+    def _ok(self, r: subprocess.CompletedProcess) -> str:
+        assert r.returncode == 0, r.stdout + r.stderr
+        lines = r.stdout.splitlines()
+        assert len(lines) == 1, r.stdout
+        return lines[0]
+
+    def test_parked_on_foreign_pushed_branch_cuts_from_origin_main(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        foreign = _park_on_foreign(repo)
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        branch = self._ok(r)
+        assert _rev(repo.root, branch) == _rev(repo.root, "origin/main")
+        anc = _git(repo.root, "merge-base", "--is-ancestor", foreign, branch, check=False)
+        assert anc.returncode != 0
+        assert "not the default base" in r.stderr
+        assert "worker-1776-x" in r.stderr
+
+    def test_from_adopts_foreign_tip_and_warns(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        foreign = _park_on_foreign(repo)
+        r = repo.create_branch("--issue", "1827", "--slug", "x", "--from", "worker-1776-x")
+        branch = self._ok(r)
+        assert _rev(repo.root, branch) == foreign
+        assert "ADOPTING" in r.stderr
+        assert "re-run" in r.stderr
+
+    def test_no_origin_cuts_from_local_main_not_head(self, repo):
+        main_tip = _rev(repo.root, "main")
+        _git(repo.root, "checkout", "-q", "-b", "other")
+        _commit(repo.root, "o.txt", "other")
+        branch = self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+        assert _rev(repo.root, branch) == main_tip
+
+    def test_detached_head_cuts_from_default_base(self, repo):
+        main_tip = _rev(repo.root, "main")
+        _git(repo.root, "checkout", "-q", "--detach", "HEAD")
+        _commit(repo.root, "d.txt", "detached work")
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        branch = self._ok(r)
+        assert _rev(repo.root, branch) == main_tip
+        assert "detached @" in r.stderr
+
+    def test_non_main_default_branch(self, repo, tmp_path):
+        _add_origin(repo, tmp_path, default="trunk")
+        trunk_tip = _rev(repo.root, "origin/trunk")
+        _git(repo.root, "checkout", "-q", "-b", "elsewhere")
+        _commit(repo.root, "e.txt", "elsewhere")
+        branch = self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+        assert _rev(repo.root, branch) == trunk_tip
+
+    def test_local_main_ahead_of_origin_is_excluded(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        origin_tip = _rev(repo.root, "origin/main")
+        stray = _commit(repo.root, "stray.txt", "stray local commit")
+        branch = self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+        assert _rev(repo.root, branch) == origin_tip
+        anc = _git(repo.root, "merge-base", "--is-ancestor", stray, branch, check=False)
+        assert anc.returncode != 0
+
+    def _assert_refused_clean(self, repo, r, head_before, branches_before):
+        assert r.returncode != 0
+        assert _records(repo.root) == []
+        assert _rev(repo.root, "HEAD") == head_before
+        assert (
+            _git(repo.root, "branch", "--format=%(refname:short)").stdout.split() == branches_before
+        )
+
+    def test_missing_origin_default_ref_refused(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        _git(repo.root, "update-ref", "-d", "refs/remotes/origin/main")
+        head, branches = (
+            _rev(repo.root, "HEAD"),
+            _git(repo.root, "branch", "--format=%(refname:short)").stdout.split(),
+        )
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "does not exist" in r.stderr
+
+    def test_missing_local_main_without_origin_refused(self, repo):
+        _git(repo.root, "checkout", "-q", "-b", "other")
+        _git(repo.root, "branch", "-D", "main")
+        head, branches = (
+            _rev(repo.root, "HEAD"),
+            _git(repo.root, "branch", "--format=%(refname:short)").stdout.split(),
+        )
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "does not exist" in r.stderr
+
+    def test_dirty_tracked_tree_refused(self, repo):
+        (repo.root / "README.md").write_text("dirty\n")
+        head, branches = (
+            _rev(repo.root, "HEAD"),
+            _git(repo.root, "branch", "--format=%(refname:short)").stdout.split(),
+        )
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "tracked changes" in r.stderr
+
+    def test_untracked_files_only_allowed(self, repo):
+        (repo.root / "untracked.txt").write_text("u\n")
+        self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+
+    def test_new_branch_has_no_upstream(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        branch = self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+        up = _git(repo.root, "rev-parse", "--abbrev-ref", f"{branch}@{{u}}", check=False)
+        assert up.returncode != 0
+
+    def test_origin_head_unset_falls_back_to_origin_main(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        _git(repo.root, "remote", "set-head", "origin", "-d")
+        assert (
+            _git(
+                repo.root, "symbolic-ref", "-q", "refs/remotes/origin/HEAD", check=False
+            ).returncode
+            != 0
+        )
+        origin_tip = _rev(repo.root, "origin/main")
+        _git(repo.root, "checkout", "-q", "-b", "elsewhere")
+        _commit(repo.root, "e.txt", "elsewhere")
+        branch = self._ok(repo.create_branch("--issue", "1827", "--slug", "x"))
+        assert _rev(repo.root, branch) == origin_tip
+
+    def test_origin_head_unset_and_origin_main_absent_refused(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        _git(repo.root, "remote", "set-head", "origin", "-d")
+        _git(repo.root, "update-ref", "-d", "refs/remotes/origin/main")
+        head = _rev(repo.root, "HEAD")
+        branches = _git(repo.root, "branch", "--format=%(refname:short)").stdout.split()
+        r = repo.create_branch("--issue", "1827", "--slug", "x")
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "does not exist" in r.stderr
+
+    def test_from_with_dirty_tracked_tree_still_succeeds_and_warns(self, repo):
+        main_tip = _rev(repo.root, "main")
+        (repo.root / "README.md").write_text("dirty\n")
+        r = repo.create_branch("--issue", "1827", "--slug", "x", "--from", "main")
+        branch = self._ok(r)
+        assert _rev(repo.root, branch) == main_tip
+        assert "ADOPTING" in r.stderr
+
+    @pytest.mark.parametrize("bad_ref", ["-x", "--orphan"])
+    def test_from_option_like_ref_refused(self, repo, bad_ref):
+        head = _rev(repo.root, "HEAD")
+        branches = _git(repo.root, "branch", "--format=%(refname:short)").stdout.split()
+        r = repo.create_branch("--issue", "1827", "--slug", "x", "--from", bad_ref)
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "starts with '-'" in r.stderr
+
+    def test_from_nonexistent_ref_refused(self, repo):
+        head = _rev(repo.root, "HEAD")
+        branches = _git(repo.root, "branch", "--format=%(refname:short)").stdout.split()
+        r = repo.create_branch("--issue", "1827", "--slug", "x", "--from", "no-such-ref")
+        self._assert_refused_clean(repo, r, head, branches)
+        assert "does not resolve" in r.stderr
+
+    def test_from_origin_main_has_no_upstream(self, repo, tmp_path):
+        _add_origin(repo, tmp_path)
+        branch = self._ok(
+            repo.create_branch("--issue", "1827", "--slug", "x", "--from", "origin/main")
+        )
+        up = _git(repo.root, "rev-parse", "--abbrev-ref", f"{branch}@{{u}}", check=False)
+        assert up.returncode != 0
+
+
+# ─────────── #1827 + #2157 — refusals never mark the issue hos-in-progress ───
+_STUB_IN_PROGRESS = """\
+import os, sys
+with open(os.environ["HOS_TEST_IN_PROGRESS_MARKER"], "a") as fh:
+    fh.write(" ".join(sys.argv[1:]) + "\\n")
+"""
+
+
+def _install_in_progress_stub(repo: Repo, marker: Path) -> dict:
+    """Install a stub scripts/automation/in_progress.py (untracked, so the
+    tracked-tree cleanliness check is unaffected). It only appends its argv to
+    `marker`: the real module is never reached and no GitHub call is possible.
+    Returns env overrides that point the stub at the marker and strip any
+    GitHub credentials from the child environment."""
+    pkg = repo.root / "scripts" / "automation"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (repo.root / "scripts" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "in_progress.py").write_text(_STUB_IN_PROGRESS)
+    return {
+        "HOS_TEST_IN_PROGRESS_MARKER": str(marker),
+        "GH_TOKEN": "",
+        "GITHUB_TOKEN": "",
+        "GH_ENTERPRISE_TOKEN": "",
+    }
+
+
+class TestRefusalsNeverMarkInProgress1827:
+    @pytest.fixture
+    def stubbed(self, repo, tmp_path):
+        marker = tmp_path / "in_progress.marker"
+        env = _install_in_progress_stub(repo, marker)
+        return repo, marker, env
+
+    def _refusal_state(self, repo):
+        return (
+            _rev(repo.root, "HEAD"),
+            _git(repo.root, "branch", "--format=%(refname:short)").stdout.split(),
+        )
+
+    def _assert_refused_unmarked(self, repo, marker, r, state):
+        assert r.returncode != 0
+        assert not marker.exists(), "stub ran despite refusal"
+        assert _records(repo.root) == []
+        assert self._refusal_state(repo) == state
+
+    def test_stub_is_wired_and_invoked_on_success(self, stubbed):
+        repo, marker, env = stubbed
+        r = repo.create_branch("--issue", "1827", "--slug", "x", env_overrides=env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        lines = r.stdout.splitlines()
+        assert len(lines) == 1
+        branch = lines[0]
+        calls = marker.read_text().splitlines()
+        assert calls == [f"mark --issue 1827 --branch {branch}"]
+        assert _rev(repo.root, branch) == _rev(repo.root, "main")
+
+    def test_dirty_tracked_tree_refusal_does_not_mark(self, stubbed):
+        repo, marker, env = stubbed
+        (repo.root / "README.md").write_text("dirty\n")
+        state = self._refusal_state(repo)
+        r = repo.create_branch("--issue", "1827", "--slug", "x", env_overrides=env)
+        self._assert_refused_unmarked(repo, marker, r, state)
+        assert "tracked changes" in r.stderr
+
+    def test_missing_default_base_refusal_does_not_mark(self, stubbed):
+        repo, marker, env = stubbed
+        _git(repo.root, "checkout", "-q", "-b", "other")
+        _git(repo.root, "branch", "-D", "main")
+        state = self._refusal_state(repo)
+        r = repo.create_branch("--issue", "1827", "--slug", "x", env_overrides=env)
+        self._assert_refused_unmarked(repo, marker, r, state)
+        assert "does not exist" in r.stderr
+
+    def test_option_like_from_refusal_does_not_mark(self, stubbed):
+        repo, marker, env = stubbed
+        state = self._refusal_state(repo)
+        r = repo.create_branch("--issue", "1827", "--slug", "x", "--from", "-x", env_overrides=env)
+        self._assert_refused_unmarked(repo, marker, r, state)
+        assert "starts with '-'" in r.stderr
+
+    def test_unresolvable_from_refusal_does_not_mark(self, stubbed):
+        repo, marker, env = stubbed
+        state = self._refusal_state(repo)
+        r = repo.create_branch(
+            "--issue", "1827", "--slug", "x", "--from", "no-such-ref", env_overrides=env
+        )
+        self._assert_refused_unmarked(repo, marker, r, state)
+        assert "does not resolve" in r.stderr
