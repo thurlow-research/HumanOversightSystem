@@ -335,7 +335,24 @@ if ! mkdir "$_LOCK_DIR" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$_LOCK_DIR/pid"
-trap 'rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
+# #2157: the worker's hos-in-progress label is cleared at cycle end however the
+# cycle ends (SIGKILL aside — the next cycle's start-clear covers that). Armed only
+# once the cycle has authenticated, so early exits never touch GitHub. Best-effort,
+# bounded, and run BEFORE the lock is released.
+_HOS_INPROG_ARMED=""
+_hos_inprogress_clear() {
+  [[ "$ROLE" == "worker" && -n "$_HOS_INPROG_ARMED" ]] || return 0
+  # HOS-repo-only for now: scripts/automation/ is not shipped to consumer installs.
+  [[ -f "$REPO_ROOT/scripts/automation/in_progress.py" ]] || return 0
+  local _tb=""
+  if command -v timeout &>/dev/null; then _tb="timeout"
+  elif command -v gtimeout &>/dev/null; then _tb="gtimeout"; fi
+  local _out
+  _out="$(cd "$REPO_ROOT" && ${_tb:+"$_tb" 60} python3 -m scripts.automation.in_progress clear 2>&1)" || true
+  [[ -n "$_out" ]] && echo "$LOG_PREFIX $_out"
+  return 0
+}
+trap '_hos_inprogress_clear; rm -rf "$_LOCK_DIR" 2>/dev/null || true' EXIT
 
 # ── Cycle identity (#967, ADR-037 AD-5) ───────────────────────────────────────
 # Minted exactly once per invocation, under the overlap lock, and exported into
@@ -363,6 +380,14 @@ fi
 # is enforced by the recorded role= value in the ownership record, not by
 # withholding the identifier here.
 export HOS_CYCLE_ID HOS_CYCLE_ROLE HOS_CYCLE_TOKEN
+
+# #2157: the cron cycle log is this process's stdout when it is a regular file
+# (cron redirects to it). Exported so create_branch.sh -> in_progress.py can append
+# the "WORKING ON #<n>" line to it. Unresolvable (tty/pipe/non-Linux) leaves it unset.
+if [[ "$ROLE" == "worker" ]]; then
+  _cycle_log="$(readlink "/proc/$$/fd/1" 2>/dev/null)" || _cycle_log=""
+  if [[ -n "$_cycle_log" && -f "$_cycle_log" ]]; then export HOS_CYCLE_LOG="$_cycle_log"; fi
+fi
 
 # ── Audit helper ──────────────────────────────────────────────────────────────
 _audit() {
@@ -1509,6 +1534,40 @@ if [[ "$ROLE" == "worker" ]]; then
   fi
 fi
 
+# #2126 (D-8): after a re-adopted or ordinary worker PR merges, delete the
+# local branch and its ownership record. readopt.py only considers branches
+# that HAVE an ownership record, skips the checked-out branch and records
+# inside the grace window, and never deletes on uncertainty (a failed PR
+# lookup skips the branch). Fail-open: hygiene, never correctness-critical.
+if [[ "$ROLE" == "worker" && -f "$REPO_ROOT/scripts/automation/readopt.py" ]]; then
+  # Bounded wall-clock (a stalled gh call must not hold the cycle); fail-open.
+  _RO_BOUND=()
+  if command -v timeout >/dev/null 2>&1; then _RO_BOUND=(timeout --kill-after=10 120)
+  elif command -v gtimeout >/dev/null 2>&1; then _RO_BOUND=(gtimeout --kill-after=10 120); fi
+  # -u: unbuffered, so lines already printed survive a timeout kill.
+  # Anchored: only a line that fully matches is audited (CWE-117 log-forging guard).
+  _RO_EVENT_RE='^(REAPED|REAP-FAILED) branch=([A-Za-z0-9._/@+-]+) reason='
+  _ro_rc=0
+  _ro_out="$(cd "$REPO_ROOT" && ${_RO_BOUND[@]+"${_RO_BOUND[@]}"} python3 -u -m scripts.automation.readopt reap-landed --grace-secs "$_BO_REAP_GRACE_SECS" 2>&1)" || _ro_rc=$?
+  # Process the output on BOTH paths so REAPED audit events survive a kill/crash.
+  while IFS= read -r _ro_line; do
+    [[ -z "$_ro_line" ]] && continue
+    echo "$LOG_PREFIX readopt: $_ro_line"
+    if [[ "$_ro_line" =~ $_RO_EVENT_RE ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "REAPED" ]]; then
+        _audit cycle-branch-reap "branch=${BASH_REMATCH[2]}" "reason=landed"
+      else
+        _audit cycle-branch-reap-failed "branch=${BASH_REMATCH[2]}" "reason=landed"
+      fi
+    fi
+  done <<< "$_ro_out"
+  if [[ "$_ro_rc" -ne 0 ]]; then
+    _ro_why="rc=$_ro_rc"
+    if [[ "$_ro_rc" -eq 124 || "$_ro_rc" -eq 137 ]]; then _ro_why="$_ro_why timeout"; fi
+    echo "$LOG_PREFIX WARN: readopt reap-landed failed ($_ro_why) — continuing (#2126)"
+  fi
+fi
+
 # #996/#1044: never let a diverged local main be masked by `|| true`. A SIGTERM
 # between a session's commit and push can strand a stray commit on main; from
 # then on every fast-forward fails and silently discarding it would let the
@@ -1946,6 +2005,13 @@ fi
 _audit cycle-start "bot=$HOS_BOT_LOGIN project=$PROJECT cycle_id=$HOS_CYCLE_ID"
 echo "$LOG_PREFIX Authenticated as $HOS_BOT_LOGIN — starting $ROLE cycle"
 
+# #2157: no issue is this cycle's pick yet, so drop any stale hos-in-progress label
+# (e.g. left by a SIGKILLed cycle), then arm the EXIT-trap clear.
+if [[ "$ROLE" == "worker" ]]; then
+  _HOS_INPROG_ARMED=1
+  _hos_inprogress_clear
+fi
+
 # ── Per-fire bounds (#728 Task 2) ─────────────────────────────────────────────
 # Headless fires draw from the same weekly subscription rate limit as interactive use, and
 # a hung/runaway autonomous session could burn it. The always-on bound is a
@@ -2091,10 +2157,11 @@ _build_context() {
   fi
 
   if [[ "${ROLE:-}" == "worker" && -n "${HOS_TARGET_MILESTONE_NUMBER:-}" && -n "${_REPO_SLUG:-}" ]]; then
-    printf '### Next work candidates (%s, needs-ai, not needs-human; highest priority first)\n' "${HOS_TARGET_RELEASE:-active milestone}"
+    printf '### Next work candidates (%s, needs-ai, not needs-human/parked; started work first, then highest priority)\n' "${HOS_TARGET_RELEASE:-active milestone}"
     # #1540 S2: select_work_candidates.py is the single entry point (AD-3) —
     # query + author-trust + live authorization + ordering, all in one
-    # place. It emits in (rank, number ASC) order (#901's FIFO-within-band)
+    # place. It emits in (stage, rank, number ASC) order (#2155 started-first,
+    # then #901's FIFO-within-band)
     # so this path and the worker-cron-prompt.md Step-2 fallback select
     # identically. _GATE_CANDIDATES is already that emitted, ordered list —
     # see the fetch above. head -5 caps DISPLAY only (the gate's own

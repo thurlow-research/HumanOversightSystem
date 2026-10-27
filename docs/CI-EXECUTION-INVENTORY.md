@@ -88,6 +88,7 @@ workflow's own header comment).
 | Check | Status | Workflow | Reason |
 |---|---|---|---|
 | `shellcheck --shell=bash` | Wired, **required-check status undecided** | `shellcheck.yml` | Runs on every PR; its own header states findings "block the PR" (#768), but `shellcheck` is **not** listed in `scripts/framework/setup_branch_protection.sh`'s required contexts (the script's core three plus the HOS-only `scripts/framework/hos_required_contexts.txt`). This is the exact "runs but isn't a required check" gap #1216 asked to have a decision recorded on. Promoting it needs the same human ruling `tests.yml` needed for #1244 — protected-surface/governance-policy change, not made by this entry. |
+| `scripts/framework/check_agents_static.sh` | Wired, advisory | `oversight-gates.yml` (job: `oversight-agents-static`) | Deterministic, repo-scoped, no network, stdlib-only; zero findings on a clean HEAD export 2026-10-19. Runs on every PR with no paths filter because it cross-references file paths repo-wide (a script rename can break an agent-file reference). Not promoted to required — same human-ruling requirement as the shellcheck row (#1606). |
 
 ## Subscription-CLI-dependent — local-only by design (D5), not attempted in CI
 
@@ -96,23 +97,22 @@ workflow's own header comment).
 | `run_second_review.sh` (agy MEDIUM+, codex HIGH+) | Subscription CLI auth cannot be provisioned in CI. |
 | `run_panel.sh` (agy + codex + IP agent + Copilot) | Same. |
 | `spec-red-team` agent (uses agy) | Same. |
-| `framework-validator`'s `validate_agents.sh` semantic pass (agy + codex) | Same — this is what `validation-check.yml`'s content-hash stamp attests to (see below). |
+| `framework-validator`'s `validate_agents.sh` semantic pass (agy + codex) | Same — the local-only AI half of agent validation; the deterministic static half now runs in CI (see below). |
 
-## The validation stamp's scope
+## Agent static checks (stamp retired, #2053)
 
-`validation-check.yml` / `scripts/framework/check_validation_current.sh` verify
-a content-hash stamp (`phase1-<HASH>.stamp`, keyed on the SHA-256 of all
-`.claude/agents/*.md` content) rather than re-running anything. This is
-**already scoped to the local-only agy/codex semantic review of agent files**
-(`framework-validator`'s "phase 1"), not to gates, validators, or tests — that
-narrowing landed with `e1ae14a4` (#552, content-hash stamps, 2026-06-28),
-**before** #1216 was filed (2026-08-02). #1216's own "Current state" section
-describes an older timestamp-based, all-changed-files stamp design that #552
-had already replaced; that description was stale at filing time. No code
-change was needed here — the stamp does not, and never has (since #552),
-implied coverage of anything CI now executes directly (gates, validators,
-tests). Nothing in this document's "Wired" rows overlaps with what the stamp
-attests.
+`agent-static-check.yml` (job: `agent-static-check`) runs
+`scripts/framework/check_agents_static.sh` directly on the PR head — nine
+deterministic, no-AI checks (including the #291 PROJECT carve-out clause, D53
+anti-framing, and #1366 dated model IDs). It **replaced** the validation-stamp
+check (`validation-check.yml` / `check_validation_current.sh`, which only
+verified that a committed `phase1-<HASH>.stamp` existed) per the #2053 human
+ruling (Option A). It is deliberately **not** a required status check: it is
+not in `scripts/framework/setup_branch_protection.sh`'s contexts or
+`hos_required_contexts.txt`. It is HOS-internal and not shipped to consumers.
+`check_agents_static.sh` no longer writes the phase1 stamp. The remaining stamp
+artifacts (`all-phases`/phase 2-4 stamps and their writers) are retired in
+follow-up slices of #2053.
 
 ## Governance/approval workflows — out of scope for this inventory
 

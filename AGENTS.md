@@ -81,6 +81,12 @@ When acting in a repo you **do not own** (a consumer project, an upstream, anyon
 
 ---
 
+## Core Principle: Finish What's Started
+
+Working merged code is the measure of progress. Write only the spec that is needed, just in time. Finish started work before starting new work: built branches land first, then code for designs already merged, then new code, and spec work last. Given a choice between finishing code and writing a spec, finish the code (#2155).
+
+---
+
 ## Mandatory Behaviors
 
 ### 1. Risk-Tiered Output

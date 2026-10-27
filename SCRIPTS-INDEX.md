@@ -69,9 +69,11 @@ excluded.
 - `scripts/automation/closing_keywords.py` — Closing-keyword guard for PR titles, bodies, and commit messages (#1856).
 - `scripts/automation/dimension_registry_cli.py` — L2 CLI over lib/dimension_registry.py (ADR-1643 TD §7.10 as amended by Amendment C §C.2.7).
 - `scripts/automation/dimension_sweep_cli.py` — L2 measurement runner (ADR-1643 AD-13, W6; TD Amendment G, docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md §G.1-§G.12).
+- `scripts/automation/in_progress.py` — Make the autonomous worker's current pick visible (#2157).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
 - `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
+- `scripts/automation/readopt.py` — mechanics for re-adopting stalled local worker branches (#2126).
 
 ## scripts/automation/lib/
 
@@ -107,7 +109,6 @@ excluded.
 
 - `scripts/framework/audit_predicate.py` — the single shared authority for "audit-only-and-well-formed" (ADR-035 AD-2, TECHNICAL-DESIGN-035 §3).
 - `scripts/framework/check_agents_static.sh` — fast static consistency checker for the agent pipeline.
-- `scripts/framework/check_validation_current.sh` — verify that agent content has a valid validation stamp.
 - `scripts/framework/config.sh` — HumanOversightSystem framework source configuration.
 - `scripts/framework/cut_release.sh` — cut a validated HOS release.
 - `scripts/framework/gen_codeowners.sh` — generate .github/CODEOWNERS from the canonical protected surface list (scripts/framework/protected_surfaces.txt), so CODEOWNERS and the require_human_approval status check can never drift (AGENT-IDENTITY.md §9).
@@ -156,6 +157,7 @@ excluded.
 - `scripts/oversight/run_with_retry.sh` — shared timeout + retry wrapper for validators and gates.
 - `scripts/oversight/second_review_logic.py` — reviewer selection + verdict aggregation for second review.
 - `scripts/oversight/secret_scan_logic.py` — finding-level suppression for the secret-scan gate (#1754).
+- `scripts/oversight/security_scan_logic.py` — advisory-level exemptions for the pip-audit gate (#1776).
 - `scripts/oversight/sign_off.sh` — write a validation-suite sign-off stamp.
 - `scripts/oversight/signoff_gate.py` — validation-suite sign-off gate (HOS framework script).
 - `scripts/oversight/smoke_test.sh` — one-shot health check for every dependency a HOS session relies on: agent CLIs, oversight venv scanners, the IP/provenance scanner, and the validator orchestrator.

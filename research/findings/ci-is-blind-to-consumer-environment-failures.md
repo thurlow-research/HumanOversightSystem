@@ -36,3 +36,9 @@ So a system whose product is *human oversight* has a non-negotiable requirement 
 ## Provenance
 
 Observed 2026-06-13 during the CondoParkShare real-world HOS test. `mapfile` portability (#101) fixed across `run_validators.sh`, `type_check.sh`, `portability_check.sh`; venv tool-resolution (#102) fixed in `secret_scan.sh`; undeclared PyYAML (#73/#74) in the sibling finding. Related: `oversight-gate-must-declare-its-deps-and-fail-loud.md`, `release-gate-catches-its-own-missing-oversight.md` (re-validate the shipped artifact in a fresh context), `jidoka-reactive-pipeline.md` (fail-loud), `tooling-drift-in-validation-pipelines.md` (a gate that isn't actually running is the limiting case of tooling drift).
+
+## Further evidence (2026-10-20): the upgrade path is a consumer environment too
+
+v0.7.0 introduces per-role disk temp directories registered by a resolver (#2054, #2100), and makes an unusable directory **fail-closed** for cron cycles. No test installed a release into a consumer project the way a downstream project actually receives it. A concrete downstream consumer (Tutelare) was on v0.6.0, with no `HOS_TMP_ROOT` in its `config.sh` and no resolver at all, so the v0.7.0 upgrade would be its first contact with the mechanism. If installation got registration wrong, the consumer's worker and overseer would stop on their first cycle after upgrading. In HOS's own clone, the equivalent state had already caused five days of silent fallback.
+
+The remedy follows this finding's prescription. #2137 makes a **consumer install and upgrade smoke test** a release gate: a fresh install, a v0.6.0 → v0.7.0 upgrade into a fixture, a first worker and overseer cycle with no temp-dir fallback, and a negative case in which a blocked directory fails the install. #2100 slice S4a also makes the installer verify registration and fail on refusal, so a broken install can never look successful.
