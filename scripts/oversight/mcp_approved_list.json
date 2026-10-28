@@ -7,7 +7,7 @@
       "mode": "run",
       "forbidden_subcommands": ["mcp"],
       "reason": "CLI scanner for the JS/TS lint pass; its built-in MCP server subcommand is never started",
-      "approved_pr": 2197
+      "approved_pr": 2205
     },
     {
       "package": "mcp",
@@ -15,7 +15,7 @@
       "mode": "install-only",
       "modules": ["mcp"],
       "reason": "required by semgrep at this exact version; never imported or executed by HOS",
-      "approved_pr": 2197
+      "approved_pr": 2205
     }
   ]
 }
