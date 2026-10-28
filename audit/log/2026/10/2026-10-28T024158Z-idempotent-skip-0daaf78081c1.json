@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"eb977b9fd862d602265110e883966c0f5fc1f1a2","pr":2195,"reason":"#1215: same head, no new human activity since HUMAN_REQUIRED verdict review 5677024386 (NG3b title false positive)"}
