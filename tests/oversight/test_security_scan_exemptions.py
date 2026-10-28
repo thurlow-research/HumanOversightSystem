@@ -16,9 +16,10 @@ The gate tests drive the real shell path through the `HOS_PIP_AUDIT_BIN` stub
 seam and skip when the oversight venv is absent.
 
 Two tests are deliberately environment- or date-sensitive: M5 (this repo is the
-HOS source repo) and X5 (a dated cliff — from 2027-02-01 the shipped records are
-expired and the required `tests` check turns red until a human renews or removes
-them; that is the forcing function, #1776 H3).
+HOS source repo) and X5 (a dated cliff — from 2027-01-01 the three mcp #2194
+records are expired, and from 2027-02-01 the rest, and the required `tests` check
+turns red until a human renews or removes them; that is the forcing function,
+#1776 H3).
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ _ACTIVE = sl.RosterMode(True, "HOS source repository: test")
 _INACTIVE = sl.RosterMode(False, "installed tree: .hos-release present")
 _TODAY = datetime.date(2026, 10, 6)
 _EXPIRES = datetime.date(2027, 1, 31)
+_EXPIRES_MCP_2194 = datetime.date(2026, 12, 31)
 
 _needs_gate = pytest.mark.skipif(
     shutil.which("bash") is None
@@ -90,6 +92,11 @@ _BLACK_114134 = _vuln("CVE-2026-114134", ("26.10.1",), ("GHSA-cg8m-r9f2-5wm2",))
 _PYJWT_4146 = _vuln("PYSEC-2026-4146")
 _MCP_59951 = _vuln("CVE-2026-59951", ("1.30.0", "2.2.0"), ("GHSA-84m7-p3x7-pcfv",))
 _OTEL_114603 = _vuln("CVE-2026-114603", ("1.45.1",))
+_MCP_2194 = (
+    _vuln("CVE-2026-116684", ("1.30.0", "2.2.0"), ("GHSA-w4fh-qvv9-3v23",)),
+    _vuln("CVE-2026-116685", ("1.30.0", "2.2.0"), ("GHSA-5h93-6whr-6q8j",)),
+    _vuln("CVE-2026-116686", ("1.30.0", "2.2.0"), ("GHSA-rwrf-2pqf-9j8j",)),
+)
 
 # Test-only no-fix record. It is NEVER in SUPPRESSIONS: it exists so the no-fix
 # key (TD-D2b), which no shipped record uses, stays covered.
@@ -106,7 +113,7 @@ _NOFIX = sl.Exemption(
 # ── Roster pins ─────────────────────────────────────────────────────────────
 
 
-def test_r1_roster_is_exactly_the_five_authorized_records():
+def test_r1_roster_is_exactly_the_eight_authorized_records():
     got = [
         (r.package, r.advisory_id, r.fixed_in, r.expires, r.tracking_issue) for r in sl.SUPPRESSIONS
     ]
@@ -115,6 +122,9 @@ def test_r1_roster_is_exactly_the_five_authorized_records():
         ("black", "PYSEC-2026-2121", "26.3.1", _EXPIRES, 1961),
         ("black", "CVE-2026-114134", "26.10.1", _EXPIRES, 1961),
         ("mcp", "CVE-2026-59951", "1.30.0", _EXPIRES, 2120),
+        ("mcp", "CVE-2026-116684", "1.30.0", _EXPIRES_MCP_2194, 2120),
+        ("mcp", "CVE-2026-116685", "1.30.0", _EXPIRES_MCP_2194, 2120),
+        ("mcp", "CVE-2026-116686", "1.30.0", _EXPIRES_MCP_2194, 2120),
         ("opentelemetry-api", "CVE-2026-114603", "1.45.1", _EXPIRES, 2179),
     ]
 
@@ -183,6 +193,17 @@ def test_s2c_mcp_59951_is_suppressed_at_1_29_0_and_kept_once_fixed():
     out, _, status = _run(_audit(_dep("mcp", "1.30.0", _MCP_59951)))
     assert status == 1
     assert "PREMISE BROKEN" in out
+
+
+@pytest.mark.parametrize("vuln", _MCP_2194, ids=[v["id"] for v in _MCP_2194])
+def test_s2f_mcp_2194_is_suppressed_at_1_29_0_and_kept_once_fixed(vuln):
+    out, _, status = _run(_audit(_dep("mcp", "1.29.0", vuln)))
+    assert status == 0
+    line = next(ln for ln in out.splitlines() if f"mcp 1.29.0 [{vuln['id']}]" in ln)
+    assert "exempt until 2026-12-31 (#2120)" in line
+    out, _, status = _run(_audit(_dep("mcp", "1.30.0", vuln)))
+    assert status == 1
+    assert f"mcp 1.30.0 [{vuln['id']}]" in out
 
 
 def test_s2e_otel_114603_is_suppressed_at_1_37_0_and_kept_once_fixed():
@@ -646,6 +667,12 @@ _PREMISE_59951 = (
     "MCP) — remove the exemption (upgrade mcp once semgrep unpins it, #2120) "
     "rather than editing this test"
 )
+_PREMISE_2194 = (
+    "the CVE-2026-116684/5/6 exemptions' premise no longer holds (HOS must never "
+    "import mcp or run an MCP client or server) — remove the exemptions (upgrade "
+    "mcp once semgrep unpins it, #2120) rather than editing this test"
+)
+_MCP_CLIENT = re.compile(r"\b(?:ClientSession|streamablehttp_client|sse_client)\b")
 _SERVE_MCP = re.compile(r"""\bsemgrep\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+mcp\b""")
 
 
@@ -681,7 +708,9 @@ def test_pr4b_serve_mcp_pattern_covers_flag_forms(text, expected):
 
 def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
     bad, unreadable = [], []
-    for path in _tracked_files("scripts", "bootstrap", "bin", ".github/workflows"):
+    files = _tracked_files("scripts", "bootstrap", "bin", ".github/workflows")
+    assert files, f"scanned no files (path typo?): {_PREMISE_59951}"
+    for path in files:
         try:
             text = path.read_text()
         except UnicodeDecodeError:
@@ -695,7 +724,9 @@ def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
 
 def test_pr5_no_tracked_python_file_imports_mcp():
     bad, unparsed = [], []
-    for path in _tracked_files("*.py"):
+    files = _tracked_files("*.py")
+    assert files, f"scanned no files (path typo?): {_PREMISE_59951}"
+    for path in files:
         try:
             tree = ast.parse(path.read_text())
         except (SyntaxError, UnicodeDecodeError):
@@ -711,7 +742,44 @@ def test_pr5_no_tracked_python_file_imports_mcp():
                 bad.append(str(path.relative_to(_REPO)))
                 break
     assert not unparsed, f"cannot parse {unparsed} to check for mcp imports: {_PREMISE_59951}"
-    assert not bad, f"{bad} import mcp: {_PREMISE_59951}"
+    assert not bad, f"{bad} import mcp: {_PREMISE_59951}; also {_PREMISE_2194}"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("async with ClientSession(read, write) as s:", True),
+        ("from mcp.client.streamable_http import streamablehttp_client", True),
+        ("async with sse_client(url) as streams:", True),
+        ("MyClientSessionFactory", False),
+        ("my_sse_client_helper", False),
+        ("an MCP client talks to a server", False),
+    ],
+)
+def test_pr5c_mcp_client_pattern_matches_the_three_entry_points(text, expected):
+    assert bool(_MCP_CLIENT.search(text)) is expected
+
+
+def test_pr5b_no_tracked_file_uses_an_mcp_client():
+    bad, unreadable, scanned = [], [], 0
+    tracked = _tracked_files("scripts", "bootstrap", "bin", "tests", ".github/workflows")
+    excluded = (Path(__file__).resolve(), _LOGIC_PATH)
+    for ex in excluded:
+        assert ex in tracked, f"excluded path {ex} is not tracked: {_PREMISE_2194}"
+    for path in tracked:
+        if path in excluded:
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            unreadable.append(str(path.relative_to(_REPO)))
+            continue
+        scanned += 1
+        if _MCP_CLIENT.search(text):
+            bad.append(str(path.relative_to(_REPO)))
+    assert scanned, f"scanned no files (path typo?): {_PREMISE_2194}"
+    assert not unreadable, f"cannot scan {unreadable} for MCP client use: {_PREMISE_2194}"
+    assert not bad, f"{bad} use ClientSession/streamablehttp_client/sse_client: {_PREMISE_2194}"
 
 
 _PREMISE_114603 = (

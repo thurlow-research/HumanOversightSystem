@@ -3,8 +3,8 @@
 | Field | Value |
 |---|---|
 | **Generated file** | `scripts/oversight/security_scan_logic.py` (also `tests/oversight/test_security_scan_exemptions.py`, `scripts/oversight/requirements.txt`) |
-| **Description** | #2147 certifi floor + black/otel time-boxed exemptions |
-| **Date** | 2026-10-25 (first slice built 2026-10-23) |
+| **Description** | #2194 mcp CVE-2026-116684/5/6 time-boxed exemptions + MCP-client premise test (earlier: #2147 certifi floor + black/otel exemptions) |
+| **Date** | 2026-10-28 (earlier slices 2026-10-23, 2026-10-25) |
 | **Model** | claude-opus-5-5 |
 | **Risk level** | MEDIUM |
 | **Human review status** | ⬜ Pending (CODEOWNERS review of the PR) |
@@ -53,6 +53,11 @@ two files.
 
 - v1 (2026-10-23): certifi floor, black CVE-2026-114134 record, PR3 widened, PR3b. The opentelemetry-api floor turned out to be uninstallable (semgrep pin), so it was escalated as Q1.
 - v2 (2026-10-25): opentelemetry-api exemption plus PR6/PR6b/PR7, per the Q1=A ruling.
+- v3 (2026-10-28, #2194): three mcp exemptions plus PR5b/PR5c, per the human ruling on #2194 (ScottThurlow, 2026-10-28T06:47:16Z):
+
+  > Ruling: A, with changes. Add the three mcp exemptions (CVE-2026-116684/5/6), tracked in #2120, on the premise that HOS never imports mcp or runs an MCP client or server. Expiry 2026-12-31, or earlier as soon as semgrep allows a fixed mcp (1.30.0+), whichever comes first. Extend the PR4/PR5 premise tests to cover MCP clients (ClientSession, streamablehttp_client, sse_client). This matches mcp's install-only, never-run entry on the #2197 approved list.
+
+  Worker prompt to `coder` (essential instructions): add three `mcp` `Exemption` records (fixed_in `1.30.0`, expires `2026-12-31`, tracking_issue 2120) after CVE-2026-59951, mirroring its shape, with reasons that state only verified facts and name their premise tests; the "earlier at 1.30.0+" clause is delivered by `fixed_in` (record goes inert once a fixed mcp is installed); add a RULINGS bullet; update R1 (eight records, separate `_EXPIRES_MCP_2194`); add a suppressed-at-1.29.0/kept-at-1.30.0 test; add a premise test scanning tracked scripts/bootstrap/bin/tests/workflows for `ClientSession|streamablehttp_client|sse_client` with narrow asserted exclusions, plus a pattern test; update the X5 docstring cliff; touch no other file. CVE-2026-59951 keeps its 2027-01-31 expiry.
 
 ## Human Review Notes
 
