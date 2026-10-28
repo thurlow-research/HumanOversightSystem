@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"human-required","expected_action":"DECIDE","head_sha":"eb977b9fd862d602265110e883966c0f5fc1f1a2","pr":2195,"reason":"Release-related PR — autonomous releases are prohibited (NG3b); title version-string false positive","review_id":5677024386,"tier":"LOW"}
