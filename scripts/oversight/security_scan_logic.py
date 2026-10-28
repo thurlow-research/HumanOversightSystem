@@ -29,6 +29,11 @@ THE RULINGS
     reachable only as a dependency of semgrep, which pins
     opentelemetry-api~=1.37.0 (so no fixed combination is installable); the
     upgrade is tracked in #2179.
+  * 2026-10-28 (#2194): mcp CVE-2026-116684/116685/116686 (server bearer-auth
+    audience, client cross-origin redirects, client outputSchema $ref fetch) are
+    exempted on a SHORTER box, 2026-12-31 (not 2027-01-31), tracked in #2120, on
+    the premise that HOS never imports mcp or runs an MCP client or server. Each
+    record goes inert as soon as mcp>=1.30.0 is installed (semgrep unpinning).
 
 WHY ADVISORY-LEVEL, NOT A pip-audit SKIP
 ----------------------------------------
@@ -273,6 +278,73 @@ SUPPRESSIONS: tuple[Exemption, ...] = (
             "so no fixed combination is installable; upgrade mcp once semgrep unpins "
             "it, tracked in #2120. The no-server premise is enforced by tests PR4 "
             "and PR5. Human ruling #1776, 2026-10-20."
+        ),
+    ),
+    Exemption(
+        package="mcp",
+        advisory_id="CVE-2026-116684",
+        fixed_in="1.30.0",
+        expires=datetime.date(2026, 12, 31),
+        tracking_issue=2120,
+        # What: an MCP *server* using bearer auth (AuthSettings(token_verifier=...))
+        # cannot check the token audience; the fix is an opt-in
+        # validate_token_resource setting. Only a running MCP server is affected.
+        reason=(
+            "An MCP server using bearer auth (AuthSettings(token_verifier=...)) cannot "
+            "check the token audience; only a running MCP server is affected. HOS never "
+            "imports mcp directly and never starts an MCP server (never launches "
+            "semgrep's MCP subcommand). semgrep's CLI does import its MCP command module "
+            "at load (semgrep/cli.py imports commands.mcp, which imports mcp), so mcp is "
+            "loaded as an import side effect; but the only bearer-auth server code "
+            "(mcp/utilities/token_verifier.py, wired in commands/mcp.py) runs only under "
+            "that subcommand, which HOS never invokes. semgrep pins mcp==1.29.0, so no "
+            "fixed combination is installable; upgrade mcp once semgrep unpins it, "
+            "tracked in #2120. The no-server premise is enforced by tests PR4 and PR5. "
+            "Human ruling #2194, 2026-10-28."
+        ),
+    ),
+    Exemption(
+        package="mcp",
+        advisory_id="CVE-2026-116685",
+        fixed_in="1.30.0",
+        expires=datetime.date(2026, 12, 31),
+        tracking_issue=2120,
+        # What: the MCP *client* Streamable HTTP/SSE transports and OAuth client
+        # providers follow cross-origin redirects, re-sending custom headers (and
+        # the body on 307/308) to the new origin. Only running an MCP client is
+        # affected.
+        reason=(
+            "The MCP client Streamable HTTP/SSE transports and OAuth client providers "
+            "follow cross-origin redirects, re-sending custom headers (and the body on "
+            "307/308) to the new origin; only running an MCP client is affected. HOS "
+            "never imports mcp directly and never runs an MCP client (no ClientSession, "
+            "streamablehttp_client or sse_client); the installed semgrep contains no "
+            "MCP client usage. semgrep pins mcp==1.29.0, so no fixed combination is "
+            "installable; upgrade mcp once semgrep unpins it, tracked in #2120. The "
+            "no-client premise is enforced by tests PR5 and PR5b. "
+            "Human ruling #2194, 2026-10-28."
+        ),
+    ),
+    Exemption(
+        package="mcp",
+        advisory_id="CVE-2026-116686",
+        fixed_in="1.30.0",
+        expires=datetime.date(2026, 12, 31),
+        tracking_issue=2120,
+        # What: MCP *client* call_tool validates results against a server-declared
+        # outputSchema with jsonschema's default resolver, which fetches remote and
+        # file:// $refs (SSRF, local file read, event-loop stall). Only running an
+        # MCP client against an untrusted server is affected.
+        reason=(
+            "The MCP client call_tool validates results against a server-declared "
+            "outputSchema using jsonschema's default resolver, which fetches remote "
+            "and file:// $refs (SSRF, local file read, event-loop stall); only running "
+            "an MCP client is affected. HOS never imports mcp directly and never runs "
+            "an MCP client (no ClientSession, streamablehttp_client or sse_client); the "
+            "installed semgrep contains no MCP client usage. semgrep pins mcp==1.29.0, "
+            "so no fixed combination is installable; upgrade mcp once semgrep unpins "
+            "it, tracked in #2120. The no-client premise is enforced by tests PR5 "
+            "and PR5b. Human ruling #2194, 2026-10-28."
         ),
     ),
     Exemption(
