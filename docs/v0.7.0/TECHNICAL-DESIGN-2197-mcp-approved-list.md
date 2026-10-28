@@ -127,19 +127,19 @@ list fails closed:
 
 Use `packaging` (a declared dependency) for names, versions, requirements and markers.
 Reuse `canonicalize_name`; do not write a new canonicaliser. `canon(n)` means
-`canonicalize_name(n)`. `has_mcp_token(s)` is true iff `"mcp"` is one of the pieces of
-`re.split(r"[^a-z0-9]+", s.lower())`. Under that rule `mcp-server-git`, `semgrep-mcp` and
-`mcp.cli` match, while `fastmcp` and `smcp` do not. Those two are caught by R3 if they
-depend on mcp.
+`canonicalize_name(n)`. `has_mcp(s)` is true iff `"mcp"` is a substring of `s.lower()`. This is
+deliberately a substring match, not a whole-token match (security review, 2026-10-28):
+`mcp-server-git`, `semgrep-mcp`, `mcp.cli`, `fastmcp`, `mcpserver`, `pymcp` and `mcp2` all
+match. A false positive costs one list entry; a miss lets MCP software in unlisted.
 
 **`is_mcp_dist(name, requires, entry_points)`** is true iff any rule holds:
 - R1: `canon(name) == "mcp"`.
-- R2: `has_mcp_token(canon(name))`.
+- R2: `has_mcp(canon(name))`.
 - R3: any `Requires-Dist` entry whose requirement name satisfies R1 or R2. This holds
   **regardless of markers or extras**. It is deliberately conservative, so an optional
   `mcp` extra counts.
-- R4: any entry point, in any group, where `has_mcp_token(ep.name)` is true or
-  `has_mcp_token` is true of the module part of `ep.value` (before `:`). Example:
+- R4: any entry point, in any group, where `has_mcp(ep.name)` is true or
+  `has_mcp` is true of the module part of `ep.value` (before `:`). Example:
   `mcp.cli:app`.
 
 An unparseable `Requires-Dist` line in the metadata raises `CheckError` (exit 2).
@@ -254,8 +254,8 @@ Unit tests use synthetic `Dist` tuples, or fake `.dist-info` directories under
   case asserts `ListError` and CLI exit 2.
 - `test_is_mcp_dist[...]`. Positive cases: R1 `mcp`; R2 `mcp-server-git`; R3 semgrep with
   `mcp==1.29.0`; R3 `mcp; extra == "ai"`; R4 entry point value `mcp.server:run`; R4 entry
-  point name `my-mcp`. Negative cases: `requests`, `fastmcp` with no mcp dependency,
-  `smcp`, and a dependency on `mcpclient`.
+  point name `my-mcp`; R2 lookalikes `fastmcp`, `mcpserver`, `pymcp`, `mcp2`, and a dependency on
+  `mcpclient`. Negative case: `requests`.
 - `test_static_unlisted_mcp_requirement_fails`, an **acceptance** case: adding
   `mcp-server-git==1.0` produces exit 1.
 - `test_static_floating_listed_pin_fails`: `semgrep>=1.50` produces exit 1.

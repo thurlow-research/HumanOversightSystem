@@ -67,13 +67,14 @@ def canon(name: str) -> str:
     return canonicalize_name(name)
 
 
-def has_mcp_token(text: str) -> bool:
-    return "mcp" in re.split(r"[^a-z0-9]+", text.lower())
+def has_mcp(text: str) -> bool:
+    # Substring, not whole-token: a lookalike such as fastmcp, pymcp or mcp2 must not
+    # slip past the policy. False positives are cheap (add a list entry); misses are not.
+    return "mcp" in text.lower()
 
 
 def _name_is_mcp(name: str) -> bool:
-    c = canon(name)
-    return c == "mcp" or has_mcp_token(c)
+    return has_mcp(canon(name))
 
 
 def _parse_req(line: str, where: str) -> Requirement:
@@ -93,7 +94,7 @@ def is_mcp_dist(
         if _name_is_mcp(_parse_req(line, f"Requires-Dist of {name}").name):
             return True
     for _group, ep_name, ep_value in entry_points:
-        if has_mcp_token(ep_name) or has_mcp_token(ep_value.split(":", 1)[0]):
+        if has_mcp(ep_name) or has_mcp(ep_value.split(":", 1)[0]):
             return True
     return False
 
