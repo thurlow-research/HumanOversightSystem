@@ -1,0 +1,1 @@
+{"agent":"overseer","decision":"HUMAN_REQUIRED","event":"pr-review-skipped-idempotent","head_sha":"d904230bd950cc84b1be01b76e9daf4e689099f3","pr":2200,"reason":"#1215: same head, no new activity since overseer HUMAN_REQUIRED verdict 2026-10-28T08:15:13Z; needs-human set, ScottThurlow requested, awaiting CODEOWNERS approval"}
