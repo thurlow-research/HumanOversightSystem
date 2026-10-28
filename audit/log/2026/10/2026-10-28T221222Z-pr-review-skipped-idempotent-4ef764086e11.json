@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"2e573ef0600a0e8da7afa20496f229e6f45c882e","pr":2205,"reason":"#1215 precheck: unchanged head, latest entry is overseer Decision: HUMAN_REQUIRED thread, no human activity since; verdict re-submit deduped by wrapper (review 5690238093)"}
