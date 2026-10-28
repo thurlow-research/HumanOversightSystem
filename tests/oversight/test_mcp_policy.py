@@ -161,10 +161,12 @@ def test_missing_list_file_is_exit_2(tmp_path):
         ("foo", ['mcp; extra == "ai"'], [], True),
         ("foo", [], [("console_scripts", "run", "mcp.server:run")], True),
         ("foo", [], [("console_scripts", "my-mcp", "foo:main")], True),
+        ("fastmcp", ["click"], [], True),
+        ("mcpserver", [], [], True),
+        ("pymcp", [], [], True),
+        ("mcp2", [], [], True),
+        ("foo", ["mcpclient>=1"], [], True),
         ("requests", ["urllib3>=1"], [], False),
-        ("fastmcp", ["click"], [], False),
-        ("smcp", [], [], False),
-        ("foo", ["mcpclient>=1"], [], False),
     ],
 )
 def test_is_mcp_dist(name, requires, eps, expected):
@@ -420,3 +422,58 @@ def test_contract_states_mcp_rule():
     text = (_REPO / "contract" / "OVERSIGHT-CONTRACT.md").read_text()
     assert "## 9. MCP software (approved list)" in text
     assert "HOS installs MCP software only if it is on the approved list" in text
+
+
+# --- review follow-ups --------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["fastmcp", "mcpserver", "pymcp", "mcp2"])
+def test_static_lookalike_mcp_names_fail(tmp_path, name):
+    res = _static(tmp_path, f"{name}==1.0")
+    assert res.returncode == 1 and "unlisted MCP package" in res.stdout
+
+
+def test_discover_requirement_files_missing_dirs_and_no_duplicates(tmp_path):
+    (tmp_path / "scripts" / "oversight").mkdir(parents=True)
+    base = tmp_path / "scripts" / "oversight" / "requirements.txt"
+    base.write_text("requests\n")
+    (tmp_path / "scripts" / "requirements-extra.txt").write_text("requests\n")
+    (tmp_path / "scripts" / ".venv").mkdir()
+    (tmp_path / "scripts" / ".venv" / "requirements-skip.txt").write_text("x\n")
+    found = m.discover_requirement_files(tmp_path)  # bootstrap/ and bin/ do not exist
+    assert found.count(base) == 1
+    assert sorted(p.name for p in found) == ["requirements-extra.txt", "requirements.txt"]
+
+
+def test_unreadable_requirements_file_is_exit_2(tmp_path):
+    res = _cli("--list", str(_LIST), "--requirements", str(tmp_path / "missing.txt"))
+    assert res.returncode == 2
+
+
+def test_static_listed_pin_with_unparseable_version_fails(tmp_path):
+    # `===` takes an arbitrary string, so this parses as a requirement but is not a valid version.
+    assert _static(tmp_path, "semgrep===not.a.version").returncode == 1
+    # A garbled `==` spec does not parse at all and fails closed.
+    assert _static(tmp_path, "semgrep==not.a.version").returncode == 2
+
+
+def test_extras_requeue_visits_dist_again_for_new_extras():
+    foo = Dist("foo", "1", ['bar; extra == "a"', 'baz; extra == "b"'], [])
+    bar = Dist("bar", "1", [], [])
+    baz = Dist("baz", "1", ["mcp"], [])
+    dists = [foo, bar, baz, _mcp_dist("9.9")]
+    v, _ = m.check_installed(dists, _roots("foo[a]", "foo[b]"), _approved_obj())
+    assert any("baz==1" in x for x in v) and any("mcp==9.9" in x for x in v)
+
+
+def test_installed_unparseable_version_fails_closed():
+    with pytest.raises(m.CheckError):
+        m.check_installed([Dist("mcp", "not-a-version", [], [])], _roots("mcp"), _approved_obj())
+
+
+def test_run_entry_without_forbidden_subcommands_is_valid(tmp_path):
+    # TD §2: forbidden_subcommands is optional on a run entry.
+    doc = copy.deepcopy(_GOOD)
+    doc["entries"][0].pop("forbidden_subcommands")
+    entries = m.load_list(_list_file(tmp_path, doc))
+    assert entries["semgrep"].forbidden_subcommands == ()

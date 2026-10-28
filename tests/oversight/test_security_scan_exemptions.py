@@ -679,8 +679,11 @@ _MCP_LIST_2197 = load_module_from_path(
 
 
 def _invocation_pattern(pkg: str, sub: str) -> re.Pattern[str]:
+    # `(?:py)?` also catches the `pysemgrep` entry point. A static scan cannot see an
+    # invocation assembled at runtime (e.g. from variables); that is a known limit.
     return re.compile(
-        r"""\b%s\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+%s\b""" % (re.escape(pkg), re.escape(sub))
+        r"""\b(?:py)?%s\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+%s\b"""
+        % (re.escape(pkg), re.escape(sub))
     )
 
 
@@ -713,6 +716,8 @@ def _tracked_files(*paths: str) -> list[Path]:
     "text,expected",
     [
         ("semgrep mcp", True),
+        ("pysemgrep mcp", True),
+        ("pysemgrep --quiet mcp", True),
         ("semgrep --quiet mcp", True),
         ("semgrep --metrics=off -v mcp -t streamable-http", True),
         ('["semgrep", "mcp"]', True),
