@@ -18,7 +18,11 @@ PyYAML>=6.0
 
 radon>=5.1
 bandit>=1.7
-semgrep>=1.50
+# semgrep and mcp are pinned EXACTLY and must match scripts/oversight/mcp_approved_list.json
+# (#2197; the mcp_policy gate fails on any other version). semgrep 1.179.0 requires
+# mcp==1.29.0. mcp is install-only: HOS must never import it or start semgrep's MCP server.
+mcp==1.29.0
+semgrep==1.179.0
 detect-secrets>=1.4
 pip-audit>=2.6
 
@@ -26,8 +30,8 @@ pip-audit>=2.6
 # bootstrap/get_app_token.sh). PyJWT arrives via semgrep and mcp; the floor exists
 # so the shared oversight venv does not sit on 2.13.0's 13 advisories (#1776,
 # ruling 2026-10-03). >=2.15.0 clears all 13 (PYSEC-2026-4146 affects only
-# 2.11.0-2.13.0 per OSV), so no PyJWT advisory is exempted. NOTE: semgrep 1.178.0
-# pins pyjwt~=2.13.0, so this floor also resolves semgrep to >=1.179.0.
+# 2.11.0-2.13.0 per OSV), so no PyJWT advisory is exempted. semgrep 1.179.0
+# (pinned above) requires pyjwt[crypto]>=2.15.0, so the pin and this floor agree.
 pyjwt>=2.15.0
 
 # Not imported by HOS. Arrives via pip-audit -> CacheControl[filecache], an
@@ -38,7 +42,7 @@ filelock>=4.2.1
 
 # Not imported by HOS; certifi arrives transitively via requests/httpx. The floor
 # clears PYSEC-2026-4320 so security_scan does not depend on what the venv happens
-# to have installed (#2147). Latest semgrep itself requires certifi>=2026.10.19.
+# to have installed (#2147).
 certifi>=2026.10.19
 
 # PEP 440 ordering + PEP 503 canonicalisation for security_scan_logic.py (#1776).

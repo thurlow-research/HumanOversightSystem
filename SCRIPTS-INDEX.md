@@ -145,6 +145,7 @@ excluded.
 - `scripts/oversight/check_pr_reviewed.sh` — PR-review idempotency precheck (#1524).
 - `scripts/oversight/codeowners.py` — CODEOWNERS-derived HUMAN_REQUIRED gate (SPEC-303b).
 - `scripts/oversight/ensure_venv.sh` — Create the oversight pip venv if it does not exist.
+- `scripts/oversight/mcp_policy_logic.py` — MCP approved-list policy (#2197) — the logic behind gates/mcp_policy.sh.
 - `scripts/oversight/panel_logic.py` — corroboration counting and tier ranking for the review panel.
 - `scripts/oversight/prompt_audit_logic.py` — pure logic for the prompt-artifact audit tool.
 - `scripts/oversight/record_agent_model.py` — record the resolved model ID for a subagent invocation into the audit trail (#1122 Option C, revised acceptance criterion 3).
@@ -174,6 +175,7 @@ excluded.
 - `scripts/oversight/gates/django_check.sh` — Django system check gate (blocking on errors).
 - `scripts/oversight/gates/expensive_gates_stub.sh` — placeholder + static container-start check.
 - `scripts/oversight/gates/lint_check.sh` — style and formatting gate (blocking).
+- `scripts/oversight/gates/mcp_policy.sh` — MCP approved-list gate (blocking, CRITICAL; #2197).
 - `scripts/oversight/gates/portability_check.sh` — flag machine-specific absolute paths in source (blocking).
 - `scripts/oversight/gates/secret_scan.sh` — hardcoded secret detection gate (blocking).
 - `scripts/oversight/gates/security_scan.sh` — security static analysis gate (blocking on HIGH).

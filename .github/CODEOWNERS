@@ -26,6 +26,8 @@
 /scripts/oversight/validators/schema.py    @ScottThurlow
 /scripts/oversight/secret_scan_logic.py    @ScottThurlow
 /scripts/oversight/security_scan_logic.py  @ScottThurlow
+/scripts/oversight/mcp_approved_list.json  @ScottThurlow
+/scripts/oversight/mcp_policy_logic.py     @ScottThurlow
 /.github/CODEOWNERS                        @ScottThurlow
 /.github/workflows/                        @ScottThurlow
 /PROJECT/hos-coordination.yaml             @ScottThurlow

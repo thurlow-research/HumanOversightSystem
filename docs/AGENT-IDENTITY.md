@@ -178,6 +178,8 @@ scripts/oversight/gates/** scripts/oversight/run_validators.sh
 scripts/oversight/validators/schema.py                 (weights / tier thresholds)
 scripts/oversight/secret_scan_logic.py                 (finding-level suppression, #1754)
 scripts/oversight/security_scan_logic.py               (advisory-level suppression, #1776)
+scripts/oversight/mcp_approved_list.json               (approved MCP software list, #2197)
+scripts/oversight/mcp_policy_logic.py                  (MCP list checker, #2197)
 .github/CODEOWNERS         .github/workflows/**
 ```
 (Anything that defines an agent's behavior, the contract, a gate/validator, the installer/release path, or the identity/authority model itself. `CLAUDE.md` is included because it contains the `HOS:HUMAN-PROXY` identity block — a bot that edits that block could grant itself human-approval status or suppress the identity guard.)

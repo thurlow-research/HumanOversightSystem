@@ -673,7 +673,28 @@ _PREMISE_2194 = (
     "mcp once semgrep unpins it, #2120) rather than editing this test"
 )
 _MCP_CLIENT = re.compile(r"\b(?:ClientSession|streamablehttp_client|sse_client)\b")
-_SERVE_MCP = re.compile(r"""\bsemgrep\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+mcp\b""")
+_MCP_LIST_2197 = load_module_from_path(
+    "mcp_policy_logic_2197_exemptions", _REPO / "scripts" / "oversight" / "mcp_policy_logic.py"
+).load_list(_REPO / "scripts" / "oversight" / "mcp_approved_list.json")
+
+
+def _invocation_pattern(pkg: str, sub: str) -> re.Pattern[str]:
+    return re.compile(
+        r"""\b%s\b(?:["',\s]+-{1,2}[\w=.-]+)*["',\s]+%s\b""" % (re.escape(pkg), re.escape(sub))
+    )
+
+
+# Built from the approved list (#2197): every `run` entry's forbidden subcommands.
+_FORBIDDEN_INVOCATIONS = [
+    _invocation_pattern(e.package, sub)
+    for e in _MCP_LIST_2197.values()
+    if e.mode == "run"
+    for sub in e.forbidden_subcommands
+]
+# Modules HOS must never import: every install-only entry's modules.
+_BANNED_MODULES = {
+    mod for e in _MCP_LIST_2197.values() if e.mode == "install-only" for mod in e.modules
+}
 
 
 def _tracked_files(*paths: str) -> list[Path]:
@@ -703,7 +724,7 @@ def _tracked_files(*paths: str) -> list[Path]:
     ],
 )
 def test_pr4b_serve_mcp_pattern_covers_flag_forms(text, expected):
-    assert bool(_SERVE_MCP.search(text)) is expected
+    assert bool(_invocation_pattern("semgrep", "mcp").search(text)) is expected
 
 
 def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
@@ -716,7 +737,7 @@ def test_pr4_no_tracked_launcher_runs_semgrep_mcp():
         except UnicodeDecodeError:
             unreadable.append(str(path.relative_to(_REPO)))
             continue
-        if _SERVE_MCP.search(text):
+        if any(p.search(text) for p in _FORBIDDEN_INVOCATIONS):
             bad.append(str(path.relative_to(_REPO)))
     assert not unreadable, f"cannot scan {unreadable} for `semgrep mcp`: {_PREMISE_59951}"
     assert not bad, f"{bad} run `semgrep mcp`: {_PREMISE_59951}"
@@ -726,6 +747,7 @@ def test_pr5_no_tracked_python_file_imports_mcp():
     bad, unparsed = [], []
     files = _tracked_files("*.py")
     assert files, f"scanned no files (path typo?): {_PREMISE_59951}"
+    assert _BANNED_MODULES, f"no install-only modules on the approved list: {_PREMISE_59951}"
     for path in files:
         try:
             tree = ast.parse(path.read_text())
@@ -738,7 +760,7 @@ def test_pr5_no_tracked_python_file_imports_mcp():
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [node.module]
-            if any(n == "mcp" or n.startswith("mcp.") for n in names):
+            if any(n == mod or n.startswith(mod + ".") for n in names for mod in _BANNED_MODULES):
                 bad.append(str(path.relative_to(_REPO)))
                 break
     assert not unparsed, f"cannot parse {unparsed} to check for mcp imports: {_PREMISE_59951}"
@@ -758,6 +780,17 @@ def test_pr5_no_tracked_python_file_imports_mcp():
 )
 def test_pr5c_mcp_client_pattern_matches_the_three_entry_points(text, expected):
     assert bool(_MCP_CLIENT.search(text)) is expected
+
+
+def test_pr5d_list_keeps_mcp_never_run():
+    mcp = _MCP_LIST_2197.get("mcp")
+    semgrep = _MCP_LIST_2197.get("semgrep")
+    assert (
+        mcp is not None and mcp.mode == "install-only" and "mcp" in mcp.modules
+    ), f"{_PREMISE_59951}; also {_PREMISE_2194}"
+    assert (
+        semgrep is not None and "mcp" in semgrep.forbidden_subcommands
+    ), f"{_PREMISE_59951}; also {_PREMISE_2194}"
 
 
 def test_pr5b_no_tracked_file_uses_an_mcp_client():
