@@ -123,6 +123,14 @@ _BAD_LISTS = {
     "bad-forbidden-subcommand": _mut(
         lambda d: d["entries"][0].update(forbidden_subcommands=["Bad Cmd"])
     ),
+    "entry-not-object": _mut(lambda d: d["entries"].__setitem__(0, "semgrep")),
+    "version-not-string": _mut(lambda d: d["entries"][0].update(version=1.179)),
+    "package-not-string": _mut(lambda d: d["entries"][0].update(package=7)),
+    "forbidden-on-install-only": _mut(
+        lambda d: d["entries"][1].update(forbidden_subcommands=["mcp"])
+    ),
+    "empty-forbidden-on-run": _mut(lambda d: d["entries"][0].update(forbidden_subcommands=[])),
+    "schema-version-true": _mut(lambda d: d.update(schema_version=True)),
     "duplicate-package": _mut(lambda d: d["entries"].append(copy.deepcopy(d["entries"][0]))),
 }
 
@@ -231,6 +239,16 @@ def test_installed_transitive_unlisted_fails():
     dists = [Dist("foo", "1", ["bar"], []), Dist("bar", "1", ["mcp"], []), _mcp_dist()]
     v, _ = m.check_installed(dists, _roots("foo"), _approved_obj())
     assert any("bar==1" in x and "foo" in x and "req.txt:1" in x for x in v), v
+
+
+def test_installed_chain_survives_mixed_case_dist_names():
+    dists = [
+        Dist("Foo-Pkg", "1", ["Bar_Pkg"], []),
+        Dist("Bar_Pkg", "1", ["mcp"], []),
+        _mcp_dist(),
+    ]
+    v, _ = m.check_installed(dists, _roots("Foo-Pkg"), _approved_obj())
+    assert any("bar-pkg==1 (via bar-pkg <- foo-pkg <- req.txt:1)" in x for x in v), v
 
 
 def test_installed_outside_closure_is_note_only(tmp_path):

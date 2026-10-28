@@ -297,7 +297,7 @@ def check_installed(
         for line in d.requires:
             r = _parse_req(line, f"Requires-Dist of {d.name}")
             if _marker_ok(r, extras):
-                enqueue(r, d.name)
+                enqueue(r, c)
 
     def chain(c: str) -> str:
         parts = [c]
