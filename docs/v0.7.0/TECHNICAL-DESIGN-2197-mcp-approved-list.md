@@ -1,6 +1,6 @@
 # TECHNICAL DESIGN — #2197 MCP approved list (single slice, v0.7.0)
 
-Status: DRAFT, awaiting architect review. The spec is the issue body plus the binding
+Status: ARCHITECT-REVIEWED 2026-10-28 (APPROVED_WITH_CHANGES; D3 withdrawn into ESC-1). The spec is the issue body plus the binding
 ruling (ScottThurlow, CODEOWNER, 2026-10-28). Out of scope (#2199): reporting unlisted MCP
 software a human installed, and `.mcp.json` / `mcpServers` registrations.
 
@@ -9,12 +9,15 @@ touches protected surfaces. CONFIDENCE: MEDIUM-HIGH. Change class: `additive`. I
 rule and a gate and loosens nothing.
 
 ## Human Review Required
-- Protected surfaces touched: `contract/**`, `bootstrap/hos_install.sh`,
+- Protected surfaces touched: `contract/**`,
   `scripts/oversight/gates/**`, `scripts/framework/protected_surfaces.txt`,
   `.github/CODEOWNERS`, `docs/AGENT-IDENTITY.md`, plus two new protected files (§1).
 - Operational effect: once this merges, any existing oversight venv whose semgrep or mcp is
-  not at the listed version fails the new gate until it is re-synced (§5, D3). That covers
-  the Worker, Overseer and Human clones and every consumer.
+  not at the listed version fails the new gate (CRITICAL, with the re-sync command printed)
+  until someone re-syncs it by hand (§4, ESC-1). That covers every consumer venv on a
+  rsync-path upgrade. (The installer's cp fallback already deletes the target `.venv`, so
+  those upgrades rebuild from the new pins.) Main's clones resolve semgrep 1.179.0 /
+  mcp 1.29.0 today, so they pass.
 
 ## Decisions (made within the ruling; no ESC needed)
 - **D1. Pin exactly.** `requirements.txt` changes `semgrep>=1.50` to `semgrep==1.179.0` and
@@ -22,11 +25,20 @@ rule and a gate and loosens nothing.
   1.179.0 is what main's oversight venv resolves today, and its METADATA was checked:
   `Requires-Dist: mcp==1.29.0`. It also meets the existing `pyjwt>=2.15.0` floor
   (semgrep 1.179.0 requires `pyjwt[crypto]>=2.15.0,<3`). Without an exact pin, a fresh
-  install would resolve the newest semgrep and fail the check. Declaring `mcp` explicitly
+  install would resolve the newest semgrep and fail the check. Architect check
+  (2026-10-28): 1.179.0's METADATA has no `certifi` edge (certifi arrives via `requests`,
+  whose floor is far below 2026.10.19), and `click~=8.4.2`, `tomli~=2.4.0`,
+  `typing-extensions~=4.2` and `jsonschema~=4.25.1` don't conflict with any other floor in the
+  file. So the pin and the existing floors resolve together. The coder **must reword two
+  stale comments**: the pyjwt block ("this floor also resolves semgrep to >=1.179.0" no
+  longer has any effect once semgrep is pinned) and the certifi block ("Latest semgrep
+  itself requires certifi>=2026.10.19" describes a semgrep version HOS no longer installs;
+  keep the floor and its #2147 reason). Declaring `mcp` explicitly
   has two effects: the static check can see it, and if a future semgrep needs a different
   `mcp`, the conflict shows up as a pip resolution error rather than as silent drift. The
-  coder may choose 1.181.0 instead, which also pins mcp==1.29.0 per the issue, but only if
-  `security_scan` requires it. The list entry and the pin must always match.
+  coder may choose 1.181.0 instead, but only if `security_scan` requires it, and only after
+  re-reading that version's METADATA for the same conflicts. The list entry and the pin
+  must always match.
 - **D2. Govern HOS's dependency closure only.** `ensure_venv.sh` also installs the
   consumer's own root `requirements*.txt` into the same venv (#956). So the installed-tree
   check governs only the closure reachable from HOS's own requirement files. An MCP
@@ -34,10 +46,14 @@ rule and a gate and loosens nothing.
   other way is #2199's job, so v0.7.0 does not pre-empt it. If a consumer dependency
   changes the version of an `mcp` that is inside HOS's closure, the gate still fails,
   because HOS's dependency changed.
-- **D3. Re-sync the venv on upgrade.** `hos_install.sh` re-syncs an *existing* target
-  venv. The acceptance requires a v0.6.0→v0.7.0 upgrade to contain exactly the listed
-  packages, and `ensure_venv.sh` deliberately never re-syncs (#2164). This keeps
-  `ensure_venv.sh` unchanged and adds one step to the installer (§5).
+- **D3. WITHDRAWN by architect → ESC-1 (see "Open questions").** This slice does not
+  change `hos_install.sh`. An existing venv on upgrade is handled by the gate failing
+  closed (CRITICAL), with the printed remediation (§4). Whether the installer should
+  itself run `pip install` into an existing consumer venv is a product-boundary decision,
+  not an architecture one: it would mutate a venv the consumer shares with its own
+  requirements (#956), it could downgrade consumer packages to HOS's exact pins, it adds
+  a network-dependent mutation to an installer that runs no pip today, and in `--pr`
+  mode it would change the environment before the upgrade PR is approved.
 - **D4. Standalone gate, not part of security_scan.** The new gate needs no network and
   no file list. Keeping it separate means a pip-audit outage or a bandit finding can never
   mask it, and it cannot mask them. Being on the list does not exempt a package from
@@ -47,7 +63,7 @@ rule and a gate and loosens nothing.
   `modules: ["mcp"]`. The never-run tests read these fields (§6). They are not duplicated
   as constants.
 
-## 1. Files (14)
+## 1. Files (13; 14 if ESC-1 = B)
 
 | # | File | Change |
 |---|---|---|
@@ -60,7 +76,7 @@ rule and a gate and loosens nothing.
 | 7 | `SCRIPTS-INDEX.md` | Regenerate with `regen_all.sh`. |
 | 8 | `docs/AGENT-IDENTITY.md` | §9 code block: add #1 and #2 (this doc must stay in sync with #5). |
 | 9 | `contract/OVERSIGHT-CONTRACT.md` | New §9 (§7). |
-| 10 | `bootstrap/hos_install.sh` | D3 re-sync step (§5). |
+| 10 | ~~`bootstrap/hos_install.sh`~~ | Not changed unless ESC-1 = B (§5). |
 | 11 | `scripts/oversight/smoke_test.sh` | One required `check` line (§5). |
 | 12 | `tests/oversight/test_mcp_policy.py` | NEW (§6). |
 | 13 | `tests/oversight/test_security_scan_exemptions.py` | Derive PR4/PR5 from the list (§6). |
@@ -155,6 +171,9 @@ when `--site-path` is given, which only tests do).
    each `Requires-Dist r` iff `r.marker is None` or `r.marker.evaluate({"extra": e})` is
    true for some `e` in `E ∪ {""}`. A followed edge whose target is not installed raises
    `CheckError("venv inconsistent: <parent> requires <r> but it is not installed")`.
+   A root requirement that is not installed raises the same `CheckError`, with `<parent>`
+   set to the requirement file. A root requirement whose own marker is false for the
+   running interpreter is skipped. HOS's files carry no root markers today.
    Re-visit a dist only when it brings newly requested extras.
 3. For every `d` in the closure where `is_mcp_dist(d)` is true, the package must be on the
    list and `Version(d.version)` must equal the listed version. Violations:
@@ -196,7 +215,12 @@ Follow the `security_scan.sh` conventions: `set -euo pipefail`, source `ensure_v
 
 ## 5. Installer and smoke test
 
-- **`hos_install.sh`**, right after the `scripts/oversight/` sync block (around line 1893).
+- **`hos_install.sh` — only if ESC-1 = B.** Default (ESC-1 = A): no installer change.
+  The v0.6.0→v0.7.0 upgrade acceptance is then verified by #2137's smoke test. That test
+  performs the documented re-sync after its upgrade step (the same command the gate
+  prints) and then runs the check below. Option B's design, kept so it can be added
+  without another design round: right after the `scripts/oversight/` sync block (around
+  line 1893).
   If `$TARGET_REPO/scripts/oversight/.venv/bin/pip` exists, run
   `pip install --quiet -r scripts/oversight/requirements.txt` in that venv.
   - Use the installer's `run` / `dry_run` conventions.
@@ -302,12 +326,21 @@ rule (contract test).
 ## 8. Boundaries
 - The logic module must not use the network, write files, or import `mcp` or semgrep.
 - No `.mcp.json` or settings handling in this slice. That is #2199.
-- `ensure_venv.sh` is not modified (D3).
+- `ensure_venv.sh` is not modified. `hos_install.sh` is not modified unless ESC-1 = B.
 - Do not file issues or change labels. The only exception is the informational comment on
   #2137 described in §5.
 
 ## Open questions for a human
-None blocking. Reviewers should note D1 (which semgrep version is pinned) and D3 (the
-installer re-syncs an existing consumer venv on upgrade). Both are judgment calls made
-inside the ruling. Either can be reversed in review without changing the rest of the
-design.
+**ESC-1 (architect, 2026-10-28). Should the installer re-sync an existing consumer venv on
+upgrade?** This must be answered before merge, not before coding.
+- **A (default; the coder builds this):** no installer change. After an upgrade, a stale
+  venv fails `mcp_policy` CRITICAL and the failure prints the one-line re-sync command.
+  The acceptance "a v0.6.0→v0.7.0 upgrade contains exactly the listed packages" is then
+  read as "after the documented re-sync step". #2137's smoke test runs that step. This is
+  the smaller change and consistent with #2164.
+- **B:** `hos_install.sh` runs `pip install -r scripts/oversight/requirements.txt` into an
+  existing target venv (§5). The upgrade meets the acceptance with no manual step. In
+  exchange the installer gains network-dependent mutation of a venv the consumer shares,
+  with possible downgrades of consumer packages to HOS's exact pins, including during
+  `--pr` mode before approval.
+If B is chosen, add file #10 (§5) on this branch before merge. Nothing else changes.
