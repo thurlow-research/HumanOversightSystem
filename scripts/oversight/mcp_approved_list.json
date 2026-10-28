@@ -6,7 +6,7 @@
       "version": "1.179.0",
       "mode": "run",
       "forbidden_subcommands": ["mcp"],
-      "reason": "CLI scanner for the JS/TS lint pass; its built-in MCP server (`semgrep mcp`) is never started",
+      "reason": "CLI scanner for the JS/TS lint pass; its built-in MCP server subcommand is never started",
       "approved_pr": 2197
     },
     {
