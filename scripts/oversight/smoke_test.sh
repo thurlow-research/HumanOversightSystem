@@ -66,6 +66,7 @@ if source "$SCRIPT_DIR/ensure_venv.sh" --quiet; then
   for tool in bandit radon pysemgrep pip-audit detect-secrets mypy black flake8 isort pytest mutmut; do
     check "$tool" true "$VENV_BIN/$tool" --version
   done
+  check "mcp approved list" true "$VENV_BIN/python3" -I "$SCRIPT_DIR/mcp_policy_logic.py" --list "$SCRIPT_DIR/mcp_approved_list.json" --installed
 else
   bad "oversight venv unavailable — cannot check scanners"
 fi

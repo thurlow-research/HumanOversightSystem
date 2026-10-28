@@ -33,6 +33,9 @@ scripts/oversight/validators/schema.py
 # Exact paths, not a *_logic.py glob: ADR-1935 classifies scripts/oversight/ per file.
 scripts/oversight/secret_scan_logic.py
 scripts/oversight/security_scan_logic.py
+# MCP approved list and its checker (#2197): an entry is valid only via CODEOWNER approval.
+scripts/oversight/mcp_approved_list.json
+scripts/oversight/mcp_policy_logic.py
 .github/CODEOWNERS
 .github/workflows/**
 

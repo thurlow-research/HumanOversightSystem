@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "package": "semgrep",
+      "version": "1.179.0",
+      "mode": "run",
+      "forbidden_subcommands": ["mcp"],
+      "reason": "CLI scanner for the JS/TS lint pass; its built-in MCP server (`semgrep mcp`) is never started",
+      "approved_pr": 2197
+    },
+    {
+      "package": "mcp",
+      "version": "1.29.0",
+      "mode": "install-only",
+      "modules": ["mcp"],
+      "reason": "required by semgrep at this exact version; never imported or executed by HOS",
+      "approved_pr": 2197
+    }
+  ]
+}

@@ -582,3 +582,18 @@ Breaking changes (increment contract version):
 - Changing the sign-off register file path or format
 - Changing required field names in the schema
 - Changing the filesystem protocol locations
+
+## 9. MCP software (approved list)
+
+HOS installs MCP software only if it is on the approved list,
+`scripts/oversight/mcp_approved_list.json`. "MCP software" is any distribution that is
+the `mcp` package, depends on it, or provides an MCP server or client entry point
+(detection rule: `scripts/oversight/mcp_policy_logic.py`). Each entry names the exact
+package and version, the reason, the mode (`install-only` or `run`) and the approving PR.
+HOS executes only entries marked `run`, and never a subcommand an entry forbids. HOS
+never imports or starts an `install-only` entry. The list is a protected surface: an
+entry is added or changed only through a PR approved by a CODEOWNER. The `mcp_policy`
+gate fails (CRITICAL) when HOS's requirement files or its resolved dependency closure
+contain MCP software that is not listed, or listed at another version. Being on the list
+does not exempt a package from `security_scan`. Unlisted MCP software outside HOS's
+closure and Claude Code MCP server registrations are governed by #2199.
