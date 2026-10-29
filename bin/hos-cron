@@ -2240,7 +2240,7 @@ _build_context() {
         needs-attention)
           printf 'At least one PR is open and not yet reviewed — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
         unknown)
-          printf 'The state of at least one open PR could not be determined (a GitHub call failed) — this is NOT "nothing to fix". Read each listed PR'"'"'s reviews and comments; if one has CHANGES_REQUESTED, a conflict, or a human-applied `needs-ai` label, fix and push, then STOP. Otherwise STOP — Step 0 triage still runs; do not proceed to Step 2.\n' ;;
+          printf 'The state of at least one open PR could not be determined (a GitHub call failed) — this is NOT "nothing to fix". Re-read each listed PR yourself (its reviews, comments, labels and mergeable state); act on a PR ONLY if that read succeeds now and it has CHANGES_REQUESTED, a merge conflict, or a `needs-ai` label WITHOUT `needs-human` — then fix and push, and STOP. A PR carrying `needs-human`, or one you still cannot read, is left alone. Otherwise STOP — Step 0 triage still runs; do not proceed to Step 2.\n' ;;
         *)
           printf 'STOP — do not proceed to Step 2.\n' ;;
       esac

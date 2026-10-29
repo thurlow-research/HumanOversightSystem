@@ -2439,10 +2439,8 @@ def _unchecked_gh_substitutions(text: str) -> list[int]:
             quote = "" if c == "'" else quote
         elif c == "\\":
             i += 1
-        elif c == "'" and quote == "":
+        elif c == "'":
             quote = "'"
-        elif c == '"':
-            quote = "" if quote == '"' else '"'
         elif c == "`" or text.startswith("$(", i):
             opener = "`" if c == "`" else "$("
             start = i + len(opener)
@@ -2541,6 +2539,13 @@ class TestPRRoutingGhFailure:
         assert "NEW WORK: BLOCKED" in context
         assert "routing=unknown" in context
         assert "could not be determined" in context
+        # The unknown directive must keep the needs-human hold (#1526) and
+        # require the worker's own fresh read before acting (#2171).
+        assert "WITHOUT `needs-human`" in context
+        assert "carrying `needs-human`" in context
+        assert "read succeeds now" in context
+        assert "cannot read, is left alone" in context
+        assert "Step 0 triage still runs" in context
         assert "awaiting-merge" not in context
 
     def test_definite_needs_fix_on_later_pr_wins_over_failed_pr(self, cron):
