@@ -46,6 +46,11 @@ _REMINT_ROLES = ("worker", "overseer", "human")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _EXPORT_RE = re.compile(r"^export (GH_TOKEN|HOS_BOT_LOGIN)='([^']*)'$")
 
+# After a failed re-mint, skip further mint attempts for this long so a
+# persistently bad credential costs one mint timeout, not one per call.
+_REMINT_COOLDOWN_SECONDS = 300
+_last_remint_failure: Optional[float] = None  # time.monotonic() of last failed mint
+
 
 def _remint_token() -> bool:
     """
@@ -57,7 +62,30 @@ def _remint_token() -> bool:
     only if the minted bot login equals the current HOS_BOT_LOGIN (identity
     pin). On success sets GH_TOKEN in this process's env only. Returns False
     on any failure. The token value is never logged or put in a message.
+
+    A failed mint is memoised per process: for _REMINT_COOLDOWN_SECONDS the
+    function returns False immediately without spawning the mint. A
+    successful mint clears the memo.
     """
+    global _last_remint_failure
+    now = time.monotonic()
+    if _last_remint_failure is not None and now - _last_remint_failure < _REMINT_COOLDOWN_SECONDS:
+        print(
+            f"github: 401 — token re-mint skipped (failed {int(now - _last_remint_failure)}s ago)",
+            file=sys.stderr,
+        )
+        return False
+    if _spawn_remint():
+        _last_remint_failure = None
+        return True
+    # A missing role never spawns a mint, so it is not worth memoising.
+    if os.environ.get("HOS_TOKEN_APP_ROLE", "") in _REMINT_ROLES:
+        _last_remint_failure = time.monotonic()
+    return False
+
+
+def _spawn_remint() -> bool:
+    """Run the mint once and apply the result; see _remint_token."""
     role = os.environ.get("HOS_TOKEN_APP_ROLE", "")
     if role not in _REMINT_ROLES:
         print("github: 401 — token re-mint failed (no valid HOS_TOKEN_APP_ROLE)", file=sys.stderr)
