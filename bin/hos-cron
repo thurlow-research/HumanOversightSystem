@@ -1256,6 +1256,7 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
   if [[ -n "$_OPEN_PR_NUMS" ]]; then
     _PR_ROUTING="awaiting-merge"
     _pr_degraded=0
+    _pr_failed_nums=""
     while IFS= read -r _pr_num; do
       [[ -z "$_pr_num" ]] && continue
       # Check mergeable_state first via detail endpoint — a conflicting PR must
@@ -1273,8 +1274,9 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       # checked separately and a failure is "unknown", never a fabricated value.
       if ! _pr_detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
           --jq '{ms: .mergeable_state, d: .draft, labels: [.labels[].name]}' 2>/dev/null); then
-        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed which=detail — routing unknown"
         _pr_degraded=1
+        _pr_failed_nums="${_pr_failed_nums:+${_pr_failed_nums},}${_pr_num}"
         continue
       fi
       _pr_ms=$(printf '%s' "$_pr_detail" | python3 -c \
@@ -1309,16 +1311,18 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       if ! _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
           --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null) \
           || [[ ! "$_pr_cr" =~ ^[0-9]+$ ]]; then
-        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed which=changes_requested — routing unknown"
         _pr_degraded=1
+        _pr_failed_nums="${_pr_failed_nums:+${_pr_failed_nums},}${_pr_num}"
         continue
       fi
       if [[ "$_pr_cr" -gt 0 ]]; then _PR_ROUTING="needs-fix"; break; fi
       if ! _pr_ap=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
           --jq '[.[] | select(.state == "APPROVED")] | length' 2>/dev/null) \
           || [[ ! "$_pr_ap" =~ ^[0-9]+$ ]]; then
-        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed which=approved — routing unknown"
         _pr_degraded=1
+        _pr_failed_nums="${_pr_failed_nums:+${_pr_failed_nums},}${_pr_num}"
         continue
       fi
       if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
@@ -1343,7 +1347,8 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
         > "$_HOS_DIR/wakeup/overseer-${PROJECT}"
     elif [[ "$_PR_ROUTING" == "unknown" ]]; then
       echo "$LOG_PREFIX state of open PR(s) could not be determined (GitHub call failed) — routing unknown (#2171)"
-      _audit cycle-pr-state-unknown "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
+      _audit cycle-pr-state-unknown "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" \
+        "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}" "failed_pr_nums=${_pr_failed_nums}"
     elif [[ "$_PR_ROUTING" == "needs-attention" ]]; then
       echo "$LOG_PREFIX ${_pr_count} open PR(s) unreviewed — new work blocked, Step 0 triage still runs (#1198)"
       _audit cycle-needs-attention "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
@@ -1450,8 +1455,9 @@ if [[ "$ROLE" == "overseer" ]]; then
     # re-checks live state and the merge gates are independent.
     if ! _detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
         --jq '{ms: .mergeable_state, d: .draft}' 2>/dev/null); then
-      echo "$LOG_PREFIX WARN: PR #${_pr_num} detail fetch failed — treating as actionable (ms=unknown)"
+      echo "$LOG_PREFIX WARN: PR #${_pr_num} detail fetch failed which=detail — treating as actionable ms=unknown"
       _detail='{"ms":"unknown","d":false}'
+      _detail_failed_nums="${_detail_failed_nums:+${_detail_failed_nums},}${_pr_num}"
     fi
     _ms=$(printf '%s' "$_detail" | python3 -c \
       "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
@@ -1463,6 +1469,10 @@ if [[ "$ROLE" == "overseer" ]]; then
       _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS} #${_pr_num}"
     fi
   done
+  if [[ -n "${_detail_failed_nums:-}" ]]; then
+    _audit cycle-pr-state-unknown "role=$ROLE" "project=$PROJECT" "cycle_id=$HOS_CYCLE_ID" \
+      "failed_pr_nums=${_detail_failed_nums}" "which=detail" "fallback=actionable"
+  fi
   _HOS_ACTIONABLE_PRS="${_HOS_ACTIONABLE_PRS# }"
   _HOS_SKIPPED_PRS="${_HOS_SKIPPED_PRS# }"
   if [[ -z "$_HOS_ACTIONABLE_PRS" ]]; then

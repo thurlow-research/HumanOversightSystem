@@ -2508,7 +2508,13 @@ class TestNoUncheckedGhSubstitution:
 class TestPRRoutingGhFailure:
     """#2171: a failed per-PR gh call routes `unknown`, never `awaiting-merge`."""
 
+    def _assert_audit(self, cron, pr_nums, failed):
+        (rec,) = cron.audit_records("cycle-pr-state-unknown")
+        assert rec["role"] == "worker" and rec["project"] and rec["cycle_id"].startswith("worker-")
+        assert (str(rec["pr_nums"]), str(rec["failed_pr_nums"])) == (pr_nums, failed)
+
     def _capture(self, cron):
+        cron.install_cycle_log()
         stdin_capture = cron.home / "claude_stdin.log"
         _write_exec(
             cron.bindir / "claude",
@@ -2527,7 +2533,8 @@ class TestPRRoutingGhFailure:
             }
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "WARN: PR #856 state fetch failed which=changes_requested" in r.stdout
+        self._assert_audit(cron, "856", "856")
         assert "awaiting human merge" not in r.stdout
         assert "arithmetic syntax error" not in r.stdout + r.stderr
         context = stdin_capture.read_text()
@@ -2547,8 +2554,9 @@ class TestPRRoutingGhFailure:
             }
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "WARN: PR #856 state fetch failed which=changes_requested" in r.stdout
         assert "routing=needs-fix" in stdin_capture.read_text()
+        assert cron.audit_records("cycle-pr-state-unknown") == []
 
     def test_failed_approved_count_routes_unknown(self, cron):
         stdin_capture = self._capture(cron)
@@ -2561,7 +2569,8 @@ class TestPRRoutingGhFailure:
             }
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "WARN: PR #856 state fetch failed which=approved" in r.stdout
+        self._assert_audit(cron, "856", "856")
         assert "awaiting human merge" not in r.stdout
         assert "routing=unknown" in stdin_capture.read_text()
 
@@ -2576,11 +2585,13 @@ class TestPRRoutingGhFailure:
             }
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "WARN: PR #856 state fetch failed which=detail" in r.stdout
+        self._assert_audit(cron, "856", "856")
         assert "awaiting human merge" not in r.stdout
         assert "routing=unknown" in stdin_capture.read_text()
 
     def test_overseer_detail_failure_keeps_pr_actionable(self, cron):
+        cron.install_cycle_log()
         r = cron.run(
             role="overseer",
             env_overrides={
@@ -2589,9 +2600,19 @@ class TestPRRoutingGhFailure:
             },
         )
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "WARN: PR #856 detail fetch failed" in r.stdout
+        assert (
+            "WARN: PR #856 detail fetch failed which=detail — treating as actionable ms=unknown"
+            in r.stdout
+        )
         assert "actionable: #856" in r.stdout
         assert cron.claude_ran()
+        (rec,) = cron.audit_records("cycle-pr-state-unknown")
+        assert rec["role"] == "overseer" and rec["cycle_id"].startswith("overseer-")
+        assert (rec["which"], rec["fallback"], str(rec["failed_pr_nums"])) == (
+            "detail",
+            "actionable",
+            "856",
+        )
 
     def test_context_open_prs_fetch_failure_is_not_none(self, cron):
         stdin_capture = self._capture(cron)
