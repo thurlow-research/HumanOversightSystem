@@ -1,0 +1,1 @@
+{"base":"main","branch":"worker-2171-gh-exit-status-check-261029155002-4106204","event":"pre-pr-stale-check-unverified","reason":"could not fetch open-PR listing page 1: GitHub authentication failed (HTTP 401); token re-mint unavailable or failed (HTTP 401)","role":"worker","timestamp":"2026-10-29T17:01:58Z"}
