@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"54b70ac4e09b109f32405a25e1e758b899e5f1d4","pr":2210,"reason":"#1215 precheck: latest post-push entry is own HUMAN_REQUIRED escalation; no new commits, reviews or comments","tier":"HIGH"}
