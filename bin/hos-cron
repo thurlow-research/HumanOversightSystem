@@ -1255,6 +1255,7 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
   fi
   if [[ -n "$_OPEN_PR_NUMS" ]]; then
     _PR_ROUTING="awaiting-merge"
+    _pr_degraded=0
     while IFS= read -r _pr_num; do
       [[ -z "$_pr_num" ]] && continue
       # Check mergeable_state first via detail endpoint — a conflicting PR must
@@ -1267,9 +1268,15 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       # without this the bounce is invisible to the checks below and falls
       # through to needs-attention, whose directive text is the opposite of
       # what's true).
-      _pr_detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-        --jq '{ms: .mergeable_state, d: .draft, labels: [.labels[].name]}' 2>/dev/null \
-        || echo '{"ms":"unknown","d":false,"labels":[]}')
+      #
+      # #2171: a failed gh call writes its error body to stdout, so the status is
+      # checked separately and a failure is "unknown", never a fabricated value.
+      if ! _pr_detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
+          --jq '{ms: .mergeable_state, d: .draft, labels: [.labels[].name]}' 2>/dev/null); then
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        _pr_degraded=1
+        continue
+      fi
       _pr_ms=$(printf '%s' "$_pr_detail" | python3 -c \
         "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
       _pr_draft=$(printf '%s' "$_pr_detail" | python3 -c \
@@ -1299,15 +1306,28 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       if [[ " $_pr_labels " == *" needs-ai "* && " $_pr_labels " != *" needs-human "* ]]; then
         _PR_ROUTING="needs-fix"; break
       fi
-      _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
-        --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
-      _pr_cr="${_pr_cr:-0}"
+      if ! _pr_cr=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
+          --jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null) \
+          || [[ ! "$_pr_cr" =~ ^[0-9]+$ ]]; then
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        _pr_degraded=1
+        continue
+      fi
       if [[ "$_pr_cr" -gt 0 ]]; then _PR_ROUTING="needs-fix"; break; fi
-      _pr_ap=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
-        --jq '[.[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo "0")
-      _pr_ap="${_pr_ap:-0}"
+      if ! _pr_ap=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}/reviews" \
+          --jq '[.[] | select(.state == "APPROVED")] | length' 2>/dev/null) \
+          || [[ ! "$_pr_ap" =~ ^[0-9]+$ ]]; then
+        echo "$LOG_PREFIX WARN: PR #${_pr_num} state fetch failed — routing unknown"
+        _pr_degraded=1
+        continue
+      fi
       if [[ "$_pr_ap" -eq 0 ]]; then _PR_ROUTING="needs-attention"; fi
     done <<< "$_OPEN_PR_NUMS"
+    # #2171: a definite needs-fix above still wins (it breaks out); otherwise any
+    # failed per-PR call makes the whole routing unknown, never awaiting-merge.
+    if [[ "$_pr_degraded" == "1" && ( "$_PR_ROUTING" == "awaiting-merge" || "$_PR_ROUTING" == "needs-attention" ) ]]; then
+      _PR_ROUTING="unknown"
+    fi
 
     _pr_count=$(echo "$_OPEN_PR_NUMS" | grep -c '[0-9]' 2>/dev/null || echo "?")
     if [[ "$_PR_ROUTING" == "awaiting-merge" ]]; then
@@ -1321,6 +1341,9 @@ if [[ "$ROLE" == "worker" && -n "$_REPO_SLUG" ]]; then
       printf '{"reason":"worker-cycle-skip","project":"%s","timestamp":"%s"}\n' \
         "$PROJECT" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         > "$_HOS_DIR/wakeup/overseer-${PROJECT}"
+    elif [[ "$_PR_ROUTING" == "unknown" ]]; then
+      echo "$LOG_PREFIX state of open PR(s) could not be determined (GitHub call failed) — routing unknown (#2171)"
+      _audit cycle-pr-state-unknown "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
     elif [[ "$_PR_ROUTING" == "needs-attention" ]]; then
       echo "$LOG_PREFIX ${_pr_count} open PR(s) unreviewed — new work blocked, Step 0 triage still runs (#1198)"
       _audit cycle-needs-attention "pr_nums=${_OPEN_PR_NUMS//$'\n'/,}"
@@ -1422,8 +1445,14 @@ if [[ "$ROLE" == "overseer" ]]; then
     exit 0
   fi
   for _pr_num in $_open_pr_nums; do
-    _detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
-      --jq '{ms: .mergeable_state, d: .draft}' 2>/dev/null || echo '{"ms":"unknown","d":false}')
+    # #2171: status checked separately — an error body must never be joined to a
+    # fallback. On failure keep the PR actionable (ms=unknown); the overseer
+    # re-checks live state and the merge gates are independent.
+    if ! _detail=$(gh api "repos/${_REPO_SLUG}/pulls/${_pr_num}" \
+        --jq '{ms: .mergeable_state, d: .draft}' 2>/dev/null); then
+      echo "$LOG_PREFIX WARN: PR #${_pr_num} detail fetch failed — treating as actionable (ms=unknown)"
+      _detail='{"ms":"unknown","d":false}'
+    fi
     _ms=$(printf '%s' "$_detail" | python3 -c \
       "import json,sys; print(json.load(sys.stdin).get('ms','unknown'))" 2>/dev/null || echo "unknown")
     _d=$(printf '%s' "$_detail" | python3 -c \
@@ -2150,10 +2179,12 @@ _build_context() {
 
   printf '### Open bot PRs\n'
   if [[ -n "${_REPO_SLUG:-}" && -n "${HOS_BOT_LOGIN:-}" ]]; then
-    _ctx_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
-      --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | \"#\(.number) \(.title | .[0:70]) [\(.labels | map(.name) | join(\",\"))]\"" \
-      2>/dev/null || echo "")
-    if [[ -n "$_ctx_prs" ]]; then
+    # #2171: a failed fetch is not "None." and its error body must not be printed.
+    if ! _ctx_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=open&per_page=20" \
+        --jq ".[] | select(.user.login == \"${HOS_BOT_LOGIN}\") | \"#\(.number) \(.title | .[0:70]) [\(.labels | map(.name) | join(\",\"))]\"" \
+        2>/dev/null); then
+      printf '(fetch failed — the New work directive below is authoritative)\n'
+    elif [[ -n "$_ctx_prs" ]]; then
       printf '%s\n' "$_ctx_prs"
     else
       printf 'None.\n'
@@ -2198,6 +2229,8 @@ _build_context() {
           printf 'All open PRs are approved/clean, awaiting a human merge — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
         needs-attention)
           printf 'At least one PR is open and not yet reviewed — nothing to fix. Step 0 triage still runs; STOP after it (do not proceed to Step 2).\n' ;;
+        unknown)
+          printf 'The state of at least one open PR could not be determined (a GitHub call failed) — this is NOT "nothing to fix". Read each listed PR'"'"'s reviews and comments; if one has CHANGES_REQUESTED, a conflict, or a human-applied `needs-ai` label, fix and push, then STOP. Otherwise STOP — do not proceed to Step 2.\n' ;;
         *)
           printf 'STOP — do not proceed to Step 2.\n' ;;
       esac

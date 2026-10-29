@@ -323,6 +323,11 @@ class CronEnv:
             "    fi\n"
             '    printf "{\\"ms\\":\\"%s\\",\\"d\\":%s,\\"labels\\":%s}\\n" '
             '"${HOS_TEST_PR_MS:-clean}" "${HOS_TEST_PR_DRAFT:-false}" "$_labels_json" ;;\n'
+            # HOS_TEST_PR_REVIEWS_FAIL_PR=<n>: that PR's /reviews calls fail the way
+            # a real expired token does (#2171) — error body on stdout, exit 1.
+            '  *"pulls/${HOS_TEST_PR_REVIEWS_FAIL_PR:-__none__}/reviews"*)\n'
+            '    echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "    exit 1 ;;\n"
             # PR reviews — CHANGES_REQUESTED count
             '  *"reviews"*"CHANGES_REQUESTED"*)\n' '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
             # PR reviews — APPROVED count
@@ -2365,6 +2370,113 @@ class TestMidCycleTokenRefresh:
         for age in ("0", "99999"):
             r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": age})
             assert "SECRETTOK" not in r.stdout + r.stderr
+
+
+def _unchecked_gh_substitutions(text: str) -> list[int]:
+    """Line numbers of `$(gh ...)` substitutions carrying an in-substitution `||`.
+
+    Such a fallback appends to the error body gh writes to stdout on an HTTP
+    failure (#2171). Backslash continuations are joined; comment lines ignored.
+    """
+    logical: list[tuple[int, str]] = []
+    pending, start = "", 0
+    for n, raw in enumerate(text.splitlines(), 1):
+        if not pending and raw.lstrip().startswith("#"):
+            continue
+        if not pending:
+            start = n
+        if raw.endswith("\\"):
+            pending += raw[:-1] + " "
+            continue
+        logical.append((start, pending + raw))
+        pending = ""
+    bad = []
+    for lineno, line in logical:
+        for m in re.finditer(r"\$\(\s*gh\b", line):
+            depth, i = 1, m.start() + 2
+            while i < len(line) and depth:
+                depth += {"(": 1, ")": -1}.get(line[i], 0)
+                i += 1
+            if "||" in line[m.start() : i]:
+                bad.append(lineno)
+    return bad
+
+
+class TestNoUncheckedGhSubstitution:
+    """#2171 AC3: no hos-cron step consumes `gh` output without checking its
+    exit status — a `$(gh ...)` must not carry an in-substitution `||` fallback."""
+
+    def test_hos_cron_has_no_unchecked_gh_substitution(self):
+        bad = _unchecked_gh_substitutions(HOS_CRON.read_text())
+        assert (
+            not bad
+        ), f"bin/hos-cron: `$(gh ...) || ...` fallback inside substitution at line(s) {bad}"
+
+    def test_checker_flags_inline_fallback(self):
+        assert _unchecked_gh_substitutions("x=$(gh api foo || echo 0)\n") == [1]
+
+    def test_checker_flags_continuation_form(self):
+        snippet = "echo hi\nx=$(gh api foo \\\n  --jq .a 2>/dev/null \\\n  || echo 0)\n"
+        assert _unchecked_gh_substitutions(snippet) == [2]
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "if x=$(gh api foo); then\n",
+            "x=$(gh api foo) && rc=0 || rc=$?\n",
+            'gh api -X PATCH foo || echo "WARN"\n',
+            "# x=$(gh api foo || echo 0)\n",
+            "x=$(git rev-parse HEAD || echo 0)\n",
+        ],
+    )
+    def test_checker_passes_good_snippets(self, snippet):
+        assert _unchecked_gh_substitutions(snippet) == []
+
+
+class TestPRRoutingGhFailure:
+    """#2171: a failed per-PR gh call routes `unknown`, never `awaiting-merge`."""
+
+    def _capture(self, cron):
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
+        )
+        return stdin_capture
+
+    def test_failed_reviews_call_routes_unknown(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_REVIEWS_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "awaiting human merge" not in r.stdout
+        assert "arithmetic syntax error" not in r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=unknown" in context
+        assert "could not be determined" in context
+        assert "awaiting-merge" not in context
+
+    def test_definite_needs_fix_on_later_pr_wins_over_failed_pr(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857",
+                "HOS_TEST_PR_CR": "1",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_REVIEWS_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed" in r.stdout
+        assert "routing=needs-fix" in stdin_capture.read_text()
 
 
 # ──────────────────────────── _validate_env ─────────────────────────────────
