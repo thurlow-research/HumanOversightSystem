@@ -47,7 +47,25 @@ The worker gave the `coder` these design decisions:
 
 ## Refinement History
 
-1. `d3c4a2cfb`: the initial implementation and tests.
+1. `d3c4a2cfb`: the initial implementation and tests. Beyond the constraints
+   above, the coder:
+   - also treats a failed `gh` call with no parseable status line, whose
+     stderr contains `HTTP 401` or `Bad credentials`, as a 401;
+   - replaced the `for` retry loop with a `while` loop, so the 401 re-send can
+     step back one attempt (`attempt -= 1`) without using up the budget;
+   - fails closed when the role is not `worker`, `overseer` or `human`, or
+     when the current `HOS_BOT_LOGIN` is unset;
+   - writes one stderr line per mint attempt. The line never contains the token.
+
+   Prompt-fidelity flagged the first two as gaps in this artifact. This note
+   records them.
+2. Review round 1 (`.claudetmp/signoffs/step2171s2-register.md`): all reviewers
+   approved. `d2ac142b1` then addressed:
+   - reliability SHOULD_FIX: the `reminted` flag was per call, so a credential
+     that stays bad cost up to 90 s on every call. A failed mint is now
+     memoised per process: further mints are skipped for 300 s, and a
+     successful mint clears the memo;
+   - NITs: a mint-timeout test, and test-file tidy-ups.
 
 ## Human Review Notes
 
