@@ -2219,6 +2219,154 @@ class TestPostCycleBookkeeping:
         assert '"project":"hos"' in payload
 
 
+class TestMidCycleTokenRefresh:
+    """#2171: installation tokens expire after 1h but cycles run longer, so the
+    launcher re-mints before its post-agent steps and never parses a gh error
+    body as data."""
+
+    def _setup(self, cron, tmp_path):
+        """Counting get_app_token (SECRETTOK<n>), a gh wrapper that 401s the
+        first token once claude has run, and an in_progress stub that records
+        the token it ran with."""
+        counter = tmp_path / "mint_count"
+        gh_tokens = tmp_path / "gh_tokens.log"
+        inprog = tmp_path / "inprog_token.log"
+        _write_exec(
+            cron.repo / "bootstrap" / "get_app_token.sh",
+            "#!/usr/bin/env bash\n"
+            f'echo "$*" >> "{cron.token_log}"\n'
+            f'n=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\n'
+            f'echo "$n" > "{counter}"\n'
+            'if (( n >= 2 )) && [[ -n "${HOS_TEST_REFRESH_FAIL:-}" ]]; then exit 1; fi\n'
+            'if (( n >= 2 )) && [[ -n "${HOS_TEST_REFRESH_SLEEP:-}" ]]; then sleep "$HOS_TEST_REFRESH_SLEEP"; fi\n'
+            'login="${HOS_TEST_BOT_LOGIN-' + EXPECTED_BOT + '}"\n'
+            'if (( n >= 2 )) && [[ -n "${HOS_TEST_REFRESH_LOGIN:-}" ]]; then login="$HOS_TEST_REFRESH_LOGIN"; fi\n'
+            'expected="' + EXPECTED_BOT + '"\n'
+            'if (( n >= 2 )) && [[ -n "${HOS_TEST_REFRESH_LOGIN_CONSISTENT:-}" ]]; then\n'
+            '  login="$HOS_TEST_REFRESH_LOGIN_CONSISTENT"; expected="$login"\n'
+            "fi\n"
+            "echo \"export HOS_BOT_LOGIN='$login'\"\n"
+            "echo \"export HOS_EXPECTED_BOT_LOGIN='$expected'\"\n"
+            'echo "export GH_TOKEN=SECRETTOK$n"\n',
+        )
+        orig = cron.bindir / "gh.orig"
+        (cron.bindir / "gh").rename(orig)
+        _write_exec(
+            cron.bindir / "gh",
+            "#!/usr/bin/env bash\n"
+            f'echo "$GH_TOKEN $*" >> "{gh_tokens}"\n'
+            f'if [[ "$GH_TOKEN" == "SECRETTOK1" && -e "{cron.claude_log}" ]]; then\n'
+            '  echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "  exit 1\n"
+            "fi\n"
+            'case "$*" in\n'
+            '  *"pulls?state=all"*) echo 1; exit 0 ;;\n'
+            "esac\n"
+            f'exec "{orig}" "$@"\n',
+        )
+        stub = cron.repo / "scripts" / "automation" / "in_progress.py"
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text(
+            "import os\n"
+            f'open({str(inprog)!r}, "a").write(os.environ.get("GH_TOKEN", "") + "\\n")\n'
+        )
+        return counter, gh_tokens, inprog
+
+    def test_expired_token_refreshed_before_post_agent_steps(self, cron, tmp_path):
+        counter, gh_tokens, inprog = self._setup(cron, tmp_path)
+        r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": "0"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "token refreshed" in r.stdout
+        assert "arithmetic syntax error" not in r.stdout + r.stderr
+        assert "outcome: did-work" in r.stdout
+        post = [ln for ln in gh_tokens.read_text().splitlines() if "pulls?state=all" in ln]
+        assert post and all(
+            ln.startswith("SECRETTOK") and not ln.startswith("SECRETTOK1 ") for ln in post
+        )
+        # The EXIT-trap clear (last invocation) ran with a refreshed token.
+        assert inprog.read_text().splitlines()[-1] != "SECRETTOK1"
+
+    def test_no_refresh_below_age_threshold(self, cron, tmp_path):
+        counter, _, _ = self._setup(cron, tmp_path)
+        r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": "99999"})
+        assert "token refreshed" not in r.stdout
+        assert counter.read_text().strip() == "1"
+
+    def test_invalid_age_falls_back_to_default(self, cron, tmp_path):
+        counter, _, _ = self._setup(cron, tmp_path)
+        r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": "abc"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert counter.read_text().strip() == "1"
+
+    def test_refresh_mint_failure_keeps_going(self, cron, tmp_path):
+        counter, _, inprog = self._setup(cron, tmp_path)
+        r = cron.run(
+            env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": "0", "HOS_TEST_REFRESH_FAIL": "1"}
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: token refresh failed" in r.stdout
+        assert "token refreshed" not in r.stdout
+        assert "arithmetic syntax error" not in r.stdout + r.stderr
+        assert "outcome: idle" in r.stdout
+        assert cron.last_run_file.exists()
+        assert inprog.read_text().splitlines()[-1] == "SECRETTOK1"  # old env kept
+
+    def test_refresh_identity_mismatch_refused(self, cron, tmp_path):
+        _, _, inprog = self._setup(cron, tmp_path)
+        r = cron.run(
+            env_overrides={
+                "HOS_TOKEN_REFRESH_AGE_SECS": "0",
+                "HOS_TEST_REFRESH_LOGIN": "imposter[bot]",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "token refresh refused (identity mismatch)" in r.stdout
+        assert "token refreshed" not in r.stdout
+        assert inprog.read_text().splitlines()[-1] == "SECRETTOK1"
+
+    def test_refresh_self_consistent_but_different_identity_refused(self, cron, tmp_path):
+        _, _, inprog = self._setup(cron, tmp_path)
+        r = cron.run(
+            env_overrides={
+                "HOS_TOKEN_REFRESH_AGE_SECS": "0",
+                "HOS_TEST_REFRESH_LOGIN_CONSISTENT": "other[bot]",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "token refresh refused (identity mismatch)" in r.stdout
+        assert "token refreshed" not in r.stdout
+        assert inprog.read_text().splitlines()[-1] == "SECRETTOK1"
+
+    def test_refresh_mint_timeout_is_warn_and_cycle_completes(self, cron, tmp_path):
+        _, _, inprog = self._setup(cron, tmp_path)
+        r = cron.run(
+            env_overrides={
+                "HOS_TOKEN_REFRESH_AGE_SECS": "0",
+                "HOS_TOKEN_REFRESH_TIMEOUT_SECS": "1",
+                "HOS_TEST_REFRESH_SLEEP": "5",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: token refresh failed" in r.stdout
+        assert "token refreshed" not in r.stdout
+        assert cron.last_run_file.exists()
+        assert inprog.read_text().splitlines()[-1] == "SECRETTOK1"
+
+    def test_gh_401_on_did_work_query_is_idle_not_arithmetic_error(self, cron, tmp_path):
+        self._setup(cron, tmp_path)
+        r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": "99999"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "arithmetic syntax error" not in r.stdout + r.stderr
+        assert "WARN: did-work query failed" in r.stdout
+        assert "outcome: idle" in r.stdout
+
+    def test_token_value_never_logged(self, cron, tmp_path):
+        self._setup(cron, tmp_path)
+        for age in ("0", "99999"):
+            r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": age})
+            assert "SECRETTOK" not in r.stdout + r.stderr
+
+
 # ──────────────────────────── _validate_env ─────────────────────────────────
 class TestValidateEnv:
     def test_bootstrap_marker_absent_warns(self, cron):
