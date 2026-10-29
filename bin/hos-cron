@@ -1036,6 +1036,7 @@ _hos_refresh_token() {
   # The new login must be non-empty, self-consistent, AND equal the identity this
   # cycle passed its guard with (HOS_EXPECTED_BOT_LOGIN as of now).
   local _ids _new_login="" _new_expected=""
+  # shellcheck source=/dev/null
   _ids="$( (source "$_rt" 2>/dev/null; printf '%s\n%s\n' "${HOS_BOT_LOGIN:-}" "${HOS_EXPECTED_BOT_LOGIN:-}") )"
   { IFS= read -r _new_login; IFS= read -r _new_expected; } <<< "$_ids" || true
   if [[ -z "$_new_login" || "$_new_login" != "$_new_expected" || "$_new_login" != "${HOS_EXPECTED_BOT_LOGIN:-}" ]]; then
