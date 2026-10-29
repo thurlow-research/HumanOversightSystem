@@ -6,11 +6,13 @@ module exposes no Search API surface (critical boundary contract).
 """
 
 import json
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scripts.automation.lib import github as github_module
 from scripts.automation.lib.github import (
     GitHubError,
     RateLimitError,
@@ -554,3 +556,173 @@ def test_list_pulls_url_encodes_head():
         github.list_pulls("o", "r", head="o:feat/a b&x=1", state="closed")
     url = run.call_args[0][0][0]
     assert url == "/repos/o/r/pulls?state=closed&head=o:feat%2Fa%20b%26x%3D1"
+
+
+# ---------------------------------------------------------------------------
+# 401 -> re-mint once -> retry once (#2171)
+# ---------------------------------------------------------------------------
+
+_SECRET = "ghs_NEWSECRETTOKEN123"  # pragma: allowlist secret
+_OLD = "ghs_OLDTOKEN"  # pragma: allowlist secret
+_LOGIN = "hos-worker-test[bot]"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mint(monkeypatch):
+    """No test may reach the real get_app_token.sh: start with no role set."""
+    monkeypatch.delenv("HOS_TOKEN_APP_ROLE", raising=False)
+    monkeypatch.setattr(github_module, "_last_remint_failure", None)
+
+
+@pytest.fixture
+def mint_env(monkeypatch):
+    monkeypatch.setenv("HOS_TOKEN_APP_ROLE", "worker")
+    monkeypatch.setenv("HOS_BOT_LOGIN", _LOGIN)
+    monkeypatch.setenv("GH_TOKEN", _OLD)
+
+
+def _mint_result(login: str = _LOGIN, token: str = _SECRET, rc: int = 0) -> MagicMock:
+    mock = MagicMock()
+    mock.returncode = rc
+    mock.stderr = ""
+    mock.stdout = (
+        f"export GH_TOKEN='{token}'\n"
+        f"export HOS_BOT_LOGIN='{login}'\n"
+        f"export HOS_EXPECTED_BOT_LOGIN='{login}'\n"
+        "export HOS_TOKEN_APP_ROLE='worker'\n"
+    )
+    return mock
+
+
+def _mint_calls(mock_run) -> list:
+    return [c for c in mock_run.call_args_list if "get_app_token.sh" in str(c.args[0][0])]
+
+
+class TestRunGh401:
+    def test_401_then_200_reminted_and_retried(self, mint_env):
+        payload = {"ok": True}
+        with _patch_run([_make_result(401), _mint_result(), _make_result(200, payload)]) as run:
+            result = _run_gh(["/repos/o/r"], backoff_base=0)
+        assert result == payload
+        mints = _mint_calls(run)
+        assert len(mints) == 1
+        assert mints[0].args[0][1:] == ["--app", "worker"]
+        assert mints[0].kwargs.get("shell") is None
+        assert mints[0].kwargs["timeout"] > 0
+
+        assert os.environ["GH_TOKEN"] == _SECRET
+
+    def test_401_with_zero_retries_still_reminted_once(self, mint_env):
+        payload = {"id": 1}
+        with _patch_run([_make_result(401), _mint_result(), _make_result(200, payload)]) as run:
+            result = _run_gh(["/repos/o/r/x", "--method", "POST"], retries=0, stdin_json={"a": 1})
+        assert result == payload
+        assert len(_mint_calls(run)) == 1
+
+    def test_second_401_raises_after_single_mint(self, mint_env):
+        with _patch_run([_make_result(401), _mint_result(), _make_result(401)]) as run:
+            with pytest.raises(GitHubError) as exc:
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        assert exc.value.status_code == 401
+        assert "still 401" in str(exc.value.args[0])
+        assert len(_mint_calls(run)) == 1
+
+    def test_no_role_raises_without_mint(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", _OLD)
+        with _patch_run([_make_result(401)]) as run:
+            with pytest.raises(GitHubError) as exc:
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        assert exc.value.status_code == 401
+        assert len(_mint_calls(run)) == 0
+        assert run.call_count == 1
+
+    def test_invalid_role_raises_without_mint(self, mint_env, monkeypatch):
+        monkeypatch.setenv("HOS_TOKEN_APP_ROLE", "../evil")
+        with _patch_run([_make_result(401)]) as run:
+            with pytest.raises(GitHubError):
+                _run_gh(["/repos/o/r"])
+        assert len(_mint_calls(run)) == 0
+
+    @pytest.mark.parametrize(
+        "mint_effect",
+        [_mint_result(rc=1), subprocess.TimeoutExpired(cmd=["m"], timeout=90), OSError("boom")],
+    )
+    def test_mint_failure_raises_and_keeps_token(self, mint_env, mint_effect):
+
+        with _patch_run([_make_result(401), mint_effect]):
+            with pytest.raises(GitHubError) as exc:
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        assert exc.value.status_code == 401
+        assert os.environ["GH_TOKEN"] == _OLD
+
+    def test_identity_mismatch_rejected(self, mint_env):
+
+        with _patch_run([_make_result(401), _mint_result(login="other[bot]")]):
+            with pytest.raises(GitHubError) as exc:
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        assert exc.value.status_code == 401
+        assert os.environ["GH_TOKEN"] == _OLD
+
+    def test_identity_rejected_when_current_login_unset(self, mint_env, monkeypatch):
+
+        monkeypatch.delenv("HOS_BOT_LOGIN")
+        with _patch_run([_make_result(401), _mint_result()]):
+            with pytest.raises(GitHubError):
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        assert os.environ["GH_TOKEN"] == _OLD
+
+    def test_token_never_in_message_or_stderr(self, mint_env, capsys):
+        with _patch_run([_make_result(401), _mint_result(), _make_result(401)]):
+            with pytest.raises(GitHubError) as exc:
+                _run_gh(["/repos/o/r"], backoff_base=0)
+        captured = capsys.readouterr()
+        assert _SECRET not in str(exc.value) + repr(exc.value.args)
+        assert _SECRET not in captured.err + captured.out
+        assert "re-minted worker token" in captured.err
+
+    def test_stderr_only_401_handled(self, mint_env):
+        bare = MagicMock()
+        bare.stdout = ""
+        bare.stderr = "gh: Bad credentials (HTTP 401)"
+        bare.returncode = 1
+        payload = {"ok": 1}
+        with _patch_run([bare, _mint_result(), _make_result(200, payload)]) as run:
+            result = _run_gh(["/repos/o/r"], retries=0)
+        assert result == payload
+        assert len(_mint_calls(run)) == 1
+
+
+class TestRemintMemo:
+    def test_failed_mint_spawned_once_across_calls(self, mint_env):
+        with _patch_run([_make_result(401), _mint_result(rc=1), _make_result(401)]) as run:
+            for _ in range(2):
+                with pytest.raises(GitHubError) as exc:
+                    _run_gh(["/repos/o/r"], backoff_base=0)
+                assert exc.value.status_code == 401
+        assert len(_mint_calls(run)) == 1
+
+    def test_retried_after_cooldown(self, mint_env):
+        effects = [_make_result(401), _mint_result(rc=1), _make_result(401), _mint_result()]
+        effects.append(_make_result(200, {"ok": 1}))
+        with (
+            _patch_run(effects) as run,
+            patch("time.monotonic", side_effect=[1000.0, 1000.0, 1001.0]),
+        ):
+            with pytest.raises(GitHubError):
+                _run_gh(["/repos/o/r"], backoff_base=0)
+            # Second call: cool-down elapsed -> mint tried again (monotonic jumps).
+            github_module._last_remint_failure = 1000.0 - github_module._REMINT_COOLDOWN_SECONDS - 1
+            assert _run_gh(["/repos/o/r"], backoff_base=0) == {"ok": 1}
+        assert len(_mint_calls(run)) == 2
+
+    def test_success_clears_memo(self, mint_env):
+        github_module._last_remint_failure = None
+        with _patch_run([_make_result(401), _mint_result(), _make_result(200, {})]):
+            _run_gh(["/repos/o/r"], backoff_base=0)
+        assert github_module._last_remint_failure is None
+
+    def test_success_after_expired_memo_clears_it(self, mint_env, monkeypatch):
+        monkeypatch.setattr(github_module, "_last_remint_failure", -10_000.0)
+        with _patch_run([_make_result(401), _mint_result(), _make_result(200, {})]):
+            _run_gh(["/repos/o/r"], backoff_base=0)
+        assert github_module._last_remint_failure is None

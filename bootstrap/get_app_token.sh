@@ -215,3 +215,5 @@ printf "export GH_TOKEN='%s'\n"              "$TOKEN"
 #   HOS_EXPECTED_BOT_LOGIN = operator's apps.env declaration (expected)
 printf "export HOS_BOT_LOGIN='%s'\n"          "$BOT_LOGIN"
 printf "export HOS_EXPECTED_BOT_LOGIN='%s'\n" "$DECLARED_BOT_LOGIN"  # #699/#703: cron identity guard
+# #2171: role (not a secret) so scripts/automation/lib/github.py can re-mint once on HTTP 401
+printf "export HOS_TOKEN_APP_ROLE='%s'\n"      "$APP_ROLE"

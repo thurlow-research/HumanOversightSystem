@@ -136,6 +136,8 @@ class TestIdentityExports:
         # actual identity comes from the API slug; expected from apps.env.
         assert exp["HOS_BOT_LOGIN"] == "hos-worker-test[bot]"
         assert exp["HOS_EXPECTED_BOT_LOGIN"] == "hos-worker-test[bot]"
+        # #2171: the validated role is exported so github.py can re-mint on 401.
+        assert exp["HOS_TOKEN_APP_ROLE"] == "worker"
 
     def test_expected_reflects_apps_env_not_the_api_slug(self, token_env):
         # The expected value must track the apps.env declaration. Declaring a
