@@ -562,8 +562,8 @@ def test_list_pulls_url_encodes_head():
 # 401 -> re-mint once -> retry once (#2171)
 # ---------------------------------------------------------------------------
 
-_SECRET = "ghs_NEWSECRETTOKEN123"
-_OLD = "ghs_OLDTOKEN"
+_SECRET = "ghs_NEWSECRETTOKEN123"  # pragma: allowlist secret
+_OLD = "ghs_OLDTOKEN"  # pragma: allowlist secret
 _LOGIN = "hos-worker-test[bot]"
 
 
