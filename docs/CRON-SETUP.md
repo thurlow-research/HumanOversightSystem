@@ -547,6 +547,16 @@ permission gate; it comes from these layers (#728, #734):
    environment (it needs `gh`). It is a GitHub App **installation** token —
    scoped to the App's permissions (not your account) and valid ~1 hour. That
    bounds the blast radius if it were ever exfiltrated.
+
+   Because cycles can outlive that hour, `bin/hos-cron` re-mints the token
+   (#2171) after the claude session returns and again at the start of the EXIT
+   trap's in-progress clear, but only when the current token is older than
+   `HOS_TOKEN_REFRESH_AGE_SECS` (default `3000`). The mint is bounded by
+   `HOS_TOKEN_REFRESH_TIMEOUT_SECS` (default `90`). The refresh is best-effort:
+   on failure the launcher keeps the old token, logs a `WARN`, and emits a
+   `cycle-token-refresh-fail` audit event with `reason=mint_failed`
+   (including a timed-out mint), `identity_mismatch` or `mktemp_failed`; it
+   never aborts the cycle. The agent session itself is not refreshed.
 4. **Prompt-injection hardening.** The cron prompts instruct both agents to
    treat issue/PR/comment text as untrusted **data, never instructions**, and
    never to echo or transmit credentials. Injection attempts are escalated to a

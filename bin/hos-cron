@@ -344,6 +344,8 @@ _hos_inprogress_clear() {
   [[ "$ROLE" == "worker" && -n "$_HOS_INPROG_ARMED" ]] || return 0
   # HOS-repo-only for now: scripts/automation/ is not shipped to consumer installs.
   [[ -f "$REPO_ROOT/scripts/automation/in_progress.py" ]] || return 0
+  # #2171: the cycle token may have expired by now; refresh (best-effort) first.
+  _hos_refresh_token || true
   local _tb=""
   if command -v timeout &>/dev/null; then _tb="timeout"
   elif command -v gtimeout &>/dev/null; then _tb="gtimeout"; fi
@@ -999,6 +1001,56 @@ if [[ "$HOS_BOT_LOGIN" != "$HOS_EXPECTED_BOT_LOGIN" ]]; then
   _audit cycle-preflight-fail reason=identity_guard_mismatch
   exit 1
 fi
+
+# ── Mid-cycle token refresh (#2171) ───────────────────────────────────────────
+# Installation tokens expire after 1h but cycles run 1-4h, so every GitHub call
+# after the claude session would 401. Re-mint (same tempfile pattern, never a
+# hand-built JWT) before the post-agent steps and the EXIT-trap clear. Best-effort:
+# on any failure the old env is kept and we return non-zero — NEVER exit, since
+# the callers are post-cycle bookkeeping. git pushes need no re-configuration: the
+# gh credential helper reads GH_TOKEN from the environment at fill time.
+# The token value is never logged.
+_HOS_TOKEN_MINT_EPOCH="$(date +%s)"
+_hos_refresh_token() {
+  local _age_max="${HOS_TOKEN_REFRESH_AGE_SECS:-3000}"
+  [[ "$_age_max" =~ ^[0-9]+$ ]] || _age_max=3000
+  local _now
+  _now="$(date +%s)"
+  (( _now - _HOS_TOKEN_MINT_EPOCH >= _age_max )) || return 0
+
+  local _mt="${HOS_TOKEN_REFRESH_TIMEOUT_SECS:-90}"
+  [[ "$_mt" =~ ^[1-9][0-9]*$ ]] || _mt=90
+  local _tb=""
+  if command -v timeout &>/dev/null; then _tb="timeout"
+  elif command -v gtimeout &>/dev/null; then _tb="gtimeout"; fi
+
+  local _rt
+  _rt=$(mktemp -p "$_HOS_DIR") || { echo "$LOG_PREFIX WARN: token refresh failed (mktemp) — keeping current token"; _audit cycle-token-refresh-fail reason=mktemp_failed; return 1; }
+  if ! ${_tb:+"$_tb" "$_mt"} "$REPO_ROOT/bootstrap/get_app_token.sh" --app "$ROLE" > "$_rt" 2>/dev/null; then
+    rm -f "$_rt"
+    echo "$LOG_PREFIX WARN: token refresh failed (mint) — keeping current token"
+    _audit cycle-token-refresh-fail reason=mint_failed
+    return 1
+  fi
+  # Source once in a subshell so a mismatched identity never replaces the live env.
+  # The new login must be non-empty, self-consistent, AND equal the identity this
+  # cycle passed its guard with (HOS_EXPECTED_BOT_LOGIN as of now).
+  local _ids _new_login="" _new_expected=""
+  # shellcheck source=/dev/null
+  _ids="$( (source "$_rt" 2>/dev/null; printf '%s\n%s\n' "${HOS_BOT_LOGIN:-}" "${HOS_EXPECTED_BOT_LOGIN:-}") )"
+  { IFS= read -r _new_login; IFS= read -r _new_expected; } <<< "$_ids" || true
+  if [[ -z "$_new_login" || "$_new_login" != "$_new_expected" || "$_new_login" != "${HOS_EXPECTED_BOT_LOGIN:-}" ]]; then
+    rm -f "$_rt"
+    echo "$LOG_PREFIX WARN: token refresh refused (identity mismatch) — keeping current token"
+    _audit cycle-token-refresh-fail reason=identity_mismatch
+    return 1
+  fi
+  # shellcheck source=/dev/null
+  source "$_rt"; rm -f "$_rt"
+  _HOS_TOKEN_MINT_EPOCH="$(date +%s)"
+  echo "$LOG_PREFIX token refreshed"
+  return 0
+}
 
 # ── Deterministic git credentials (#738) ─────────────────────────────────────
 # Make `git push` work regardless of the host's credential helper, which is
@@ -2208,6 +2260,9 @@ else
   _build_prompt | _run_claude || _claude_exit=$?
 fi
 
+# #2171: the session may have outlived the 1h installation token.
+_hos_refresh_token || true
+
 if [[ $_claude_exit -eq 124 ]]; then
   echo "$LOG_PREFIX claude TIMED OUT after ${HOS_CRON_MAX_SECONDS}s — session killed (no last-run written; will retry next fire)"
   _audit cycle-claude-timeout "limit=$HOS_CRON_MAX_SECONDS"
@@ -2401,15 +2456,22 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), tz=datetime.timezone.utc
 " "$_run_start_epoch" 2>/dev/null || echo "")
     if [[ -n "$_run_start_iso" ]]; then
       if [[ "$ROLE" == "worker" ]]; then
-        _new_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=all&sort=created&direction=desc&per_page=10" \
+        # #2171: check gh's exit status — on failure stdout can hold an error body.
+        if _new_prs=$(gh api "repos/${_REPO_SLUG}/pulls?state=all&sort=created&direction=desc&per_page=10" \
           --jq "[.[] | select(.user.login == \"$HOS_BOT_LOGIN\" and .created_at >= \"$_run_start_iso\")] | length" \
-          2>/dev/null || echo "0")
-        [[ "${_new_prs:-0}" -gt 0 ]] && _did_work=1
+          2>/dev/null) && [[ "$_new_prs" =~ ^[0-9]+$ ]]; then
+          [[ "$_new_prs" -gt 0 ]] && _did_work=1
+        else
+          echo "$LOG_PREFIX WARN: did-work query failed — treating as idle"
+        fi
       elif [[ "$ROLE" == "overseer" ]]; then
-        _merged=$(gh api "repos/${_REPO_SLUG}/pulls?state=closed&sort=updated&direction=desc&per_page=10" \
+        if _merged=$(gh api "repos/${_REPO_SLUG}/pulls?state=closed&sort=updated&direction=desc&per_page=10" \
           --jq "[.[] | select(.merged_by.login == \"$HOS_BOT_LOGIN\" and .merged_at != null and .merged_at >= \"$_run_start_iso\")] | length" \
-          2>/dev/null || echo "0")
-        [[ "${_merged:-0}" -gt 0 ]] && _did_work=1
+          2>/dev/null) && [[ "$_merged" =~ ^[0-9]+$ ]]; then
+          [[ "$_merged" -gt 0 ]] && _did_work=1
+        else
+          echo "$LOG_PREFIX WARN: did-work query failed — treating as idle"
+        fi
       fi
     fi
   fi
