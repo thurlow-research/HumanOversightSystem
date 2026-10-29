@@ -7,8 +7,12 @@ and rate-limited (~30/min) and MUST NOT be used on any correctness path.
 """
 
 import json
+import os
+import re
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -34,6 +38,58 @@ class RateLimitError(GitHubError):
 # (CLAUDE.md "Shell usage under the sandbox": this is a genuine timeout, not
 # a permission event — no rule catches it).
 _GH_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+# Bounded budget for the one-shot token re-mint on HTTP 401 (#2171); mirrors
+# hos-cron's HOS_TOKEN_REFRESH_TIMEOUT_SECS default.
+_REMINT_TIMEOUT_SECONDS = 90
+_REMINT_ROLES = ("worker", "overseer", "human")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_EXPORT_RE = re.compile(r"^export (GH_TOKEN|HOS_BOT_LOGIN)='([^']*)'$")
+
+
+def _remint_token() -> bool:
+    """
+    Re-mint the GitHub App installation token once (#2171).
+
+    Installation tokens expire after 1h but cron cycles run 1-4h. Runs
+    bootstrap/get_app_token.sh for the role in HOS_TOKEN_APP_ROLE, parses its
+    `export NAME='VALUE'` lines strictly (never eval), and accepts the result
+    only if the minted bot login equals the current HOS_BOT_LOGIN (identity
+    pin). On success sets GH_TOKEN in this process's env only. Returns False
+    on any failure. The token value is never logged or put in a message.
+    """
+    role = os.environ.get("HOS_TOKEN_APP_ROLE", "")
+    if role not in _REMINT_ROLES:
+        print("github: 401 — token re-mint failed (no valid HOS_TOKEN_APP_ROLE)", file=sys.stderr)
+        return False
+    try:
+        proc = subprocess.run(
+            [str(_REPO_ROOT / "bootstrap" / "get_app_token.sh"), "--app", role],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_REMINT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print("github: 401 — token re-mint failed (mint did not run)", file=sys.stderr)
+        return False
+    if proc.returncode != 0:
+        print(f"github: 401 — token re-mint failed (exit {proc.returncode})", file=sys.stderr)
+        return False
+    values: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        match = _EXPORT_RE.match(line.strip())
+        if match:
+            values[match.group(1)] = match.group(2)
+    token = values.get("GH_TOKEN", "")
+    login = values.get("HOS_BOT_LOGIN", "")
+    current_login = os.environ.get("HOS_BOT_LOGIN", "")
+    if not token or not login or not current_login or login != current_login:
+        print("github: 401 — token re-mint failed (identity check)", file=sys.stderr)
+        return False
+    os.environ["GH_TOKEN"] = token
+    print(f"github: 401 — re-minted {role} token, retrying once", file=sys.stderr)
+    return True
 
 
 def _run_gh(
@@ -66,14 +122,25 @@ def _run_gh(
     may have already reached GitHub, and only the call site — which can
     re-fetch and check whether the write landed — is positioned to decide
     that safely.
+
+    HTTP 401 (#2171): an expired installation token. On the first 401 the
+    token is re-minted once (`_remint_token`) and the same request is re-sent
+    immediately. That retry is outside the `retries` budget and applies even
+    with retries=0: a 401 means GitHub rejected the request, so re-sending a
+    write is safe. If the re-mint fails or the retry is 401 again, raises
+    GitHubError(status_code=401) — a 401 is never backed off, parsed as
+    data, or returned as None.
     """
     stdin_input: Optional[str] = None
+    reminted = False
     base_cmd = ["gh", "api", "--include"]
     if stdin_json is not None:
         base_cmd += ["--input", "-"]
         stdin_input = json.dumps(stdin_json)
 
-    for attempt in range(retries + 1):
+    attempt = -1
+    while attempt < retries:
+        attempt += 1
         try:
             result = subprocess.run(
                 base_cmd + args,
@@ -109,6 +176,26 @@ def _run_gh(
                     except ValueError:
                         pass
                 break
+
+        stderr_401 = (
+            status_code is None
+            and result.returncode != 0
+            and ("HTTP 401" in result.stderr or "Bad credentials" in result.stderr)
+        )
+        if status_code == 401 or stderr_401:
+            if reminted:
+                raise GitHubError(
+                    "GitHub authentication failed (HTTP 401); still 401 after token re-mint",
+                    status_code=401,
+                )
+            reminted = True
+            if not _remint_token():
+                raise GitHubError(
+                    "GitHub authentication failed (HTTP 401); token re-mint unavailable or failed",
+                    status_code=401,
+                )
+            attempt -= 1  # the 401 re-send does not consume the retry budget
+            continue
 
         if status_code is None and result.returncode != 0:
             # gh uses non-zero exit for API errors; no parseable header.
