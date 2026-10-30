@@ -35,9 +35,15 @@ try:
     from packaging.version import InvalidVersion, Version
 except ImportError:
     try:
-        from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
-        from pip._vendor.packaging.utils import canonicalize_name
-        from pip._vendor.packaging.version import InvalidVersion, Version
+        from pip._vendor.packaging.requirements import (  # type: ignore[assignment]
+            InvalidRequirement,
+            Requirement,
+        )
+        from pip._vendor.packaging.utils import canonicalize_name  # type: ignore[assignment]
+        from pip._vendor.packaging.version import (  # type: ignore[assignment]
+            InvalidVersion,
+            Version,
+        )
     except ImportError:
         print(
             "mcp_policy: cannot check: packaging unavailable "
@@ -397,7 +403,8 @@ def main(argv: list[str] | None = None) -> int:
     except (ListError, CheckError) as exc:
         print(f"mcp_policy: cannot check: {exc}", file=sys.stderr)
         return 2
-    except Exception as exc:  # noqa: BLE001 - an unexpected failure is "cannot check", never "violation"
+    # An unexpected failure is "cannot check", never "violation".
+    except Exception as exc:  # noqa: BLE001
         print(f"mcp_policy: cannot check: unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     for note in notes:

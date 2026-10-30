@@ -400,9 +400,7 @@ class TestMcpPreinstallCheck:
 
     def test_smoke_rebuild_refusal_no_loop(self, venv_env):
         venv_env.create_fake_venv()
-        r = venv_env.run(
-            env_overrides={"HOS_TEST_SMOKE_EXIT": "1", "HOS_TEST_POLICY_EXIT": "1"}
-        )
+        r = venv_env.run(env_overrides={"HOS_TEST_SMOKE_EXIT": "1", "HOS_TEST_POLICY_EXIT": "1"})
         assert r.returncode != 0
         assert len(venv_env.policy_calls()) == 1
         assert not venv_env.venv.exists()

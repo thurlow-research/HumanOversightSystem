@@ -518,9 +518,7 @@ def _vendor_available() -> bool:
 
 
 @pytest.mark.skipif(not _vendor_available(), reason="pip._vendor.packaging not importable")
-@pytest.mark.parametrize(
-    "line,rc", [("mcp-server-git==1.0", 1), ("mcp==1.29.0", 0)]
-)
+@pytest.mark.parametrize("line,rc", [("mcp-server-git==1.0", 1), ("mcp==1.29.0", 0)])
 def test_packaging_fallback_to_pip_vendor(tmp_path, line, rc):
     req = _write(tmp_path, "req.txt", line + "\n")
     res = _blocked_cli("packaging", "--list", str(_LIST), "--requirements", str(req))
@@ -544,9 +542,22 @@ except SystemExit as e:
 def test_fallback_is_version_sensitive_and_uses_vendored_source(tmp_path, line, rc):
     req = _write(tmp_path, "req.txt", line + "\n")
     res = subprocess.run(
-        [sys.executable, "-I", "-c", _PROBE_DRIVER, "packaging", str(_LOGIC),
-         "--list", str(_LIST), "--requirements", str(req)],
-        capture_output=True, text=True, timeout=60, cwd=str(_REPO),
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            _PROBE_DRIVER,
+            "packaging",
+            str(_LOGIC),
+            "--list",
+            str(_LIST),
+            "--requirements",
+            str(req),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(_REPO),
     )
     assert res.returncode == rc, res.stdout + res.stderr
     assert "VENDOR_USED=True" in res.stdout
