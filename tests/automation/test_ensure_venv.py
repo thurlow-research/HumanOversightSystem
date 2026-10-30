@@ -75,6 +75,13 @@ class EnsureVenvEnv:
         # Empty requirements.txt (no real packages to install during tests)
         (self.script_dir / "requirements.txt").write_text("")
 
+        # Placeholders so the pre-install MCP policy check's file-presence guard passes
+        # (#2204); the stub python3 below stands in for the real checker.
+        self.logic = self.script_dir / "mcp_policy_logic.py"
+        self.logic.write_text("")
+        (self.script_dir / "mcp_approved_list.json").write_text("{}")
+        self.policy_call_log = tmp_path / "policy_calls.log"
+
         # Stub python3:
         #   python3 -m venv <path>          → create minimal fake venv (copies stub)
         #   python3 -c "import ..."         → smoke test (controlled by env vars)
@@ -100,6 +107,13 @@ class EnsureVenvEnv:
             'if [[ "${1:-}" == "--version" ]]; then\n'
             '  echo "Python 3.10.0"\n'
             "  exit 0\n"
+            "fi\n"
+            # MCP policy pre-install check (#2204): argv starts with -I, so this must
+            # precede the pip-logging fallback. Logs to its own file, never the pip log.
+            'if [[ "$*" == *mcp_policy_logic.py* ]]; then\n'
+            '  printf "%s\\n" "$*" >> "${HOS_TEST_POLICY_CALL_LOG:-/dev/null}"\n'
+            '  [[ "${HOS_TEST_POLICY_EXIT:-0}" == "1" ]] && echo "VIOLATION: test"\n'
+            '  exit "${HOS_TEST_POLICY_EXIT:-0}"\n'
             "fi\n"
             # python3 -c "import ..." smoke test
             'if [[ "${1:-}" == "-c" ]]; then\n'
@@ -158,12 +172,19 @@ class EnsureVenvEnv:
             return []
         return self.pip_call_log.read_text().splitlines()
 
+    def policy_calls(self) -> list:
+        """Args logged by the stub for the MCP policy pre-install check."""
+        if not self.policy_call_log.exists():
+            return []
+        return self.policy_call_log.read_text().splitlines()
+
     def run(self, env_overrides=None, quiet=True) -> subprocess.CompletedProcess:
         env = {
             "HOME": str(self.home),
             # Stub python3 precedes system bins so venv creation uses our stub
             "PATH": f"{self.stub_bin}:/usr/bin:/bin",
             "HOS_TEST_PIP_CALL_LOG": str(self.pip_call_log),
+            "HOS_TEST_POLICY_CALL_LOG": str(self.policy_call_log),
         }
         if env_overrides:
             env.update(env_overrides)
@@ -329,3 +350,88 @@ class TestSkipProjectRequirements:
         r = venv_env.run()
         assert r.returncode == 0, r.stderr
         assert any(str(req) in c for c in venv_env.pip_calls())
+
+
+# ─────────── MCP policy is checked before anything is installed (#2204) ───────────
+class TestMcpPreinstallCheck:
+    def _assert_refused(self, venv_env, r):
+        assert r.returncode != 0
+        assert venv_env.pip_calls() == [], "no pip command may run before/after a refusal"
+        assert not venv_env.venv.exists()
+        assert not venv_env.marker_exists()
+
+    def test_policy_violation_refuses_install(self, venv_env):
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        self._assert_refused(venv_env, r)
+        assert "VIOLATION" in r.stderr
+        assert "refusing" in r.stderr
+
+    @pytest.mark.parametrize("code", ["2", "127"])
+    def test_policy_cannot_check_refuses_install(self, venv_env, code):
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": code})
+        self._assert_refused(venv_env, r)
+        assert "could not be checked" in r.stderr
+        assert "fail closed" in r.stderr
+
+    @pytest.mark.parametrize("missing", ["mcp_policy_logic.py", "mcp_approved_list.json"])
+    def test_policy_missing_guard_file_refuses(self, venv_env, missing):
+        (venv_env.script_dir / missing).unlink()
+        r = venv_env.run()
+        self._assert_refused(venv_env, r)
+        assert "could not be checked" in r.stderr
+
+    def test_policy_runs_before_any_pip_call(self, venv_env):
+        req = venv_env.write_project_requirements()
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        calls = venv_env.policy_calls()
+        assert len(calls) == 1
+        assert f"--requirements {venv_env.script_dir}/requirements.txt" in calls[0]
+        assert str(req) not in calls[0]
+
+    def test_preexisting_venv_dir_is_removed_before_creation(self, venv_env):
+        sentinel = venv_env.venv / "lib" / "site-packages" / "evil.pth"
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text("import os\n")  # no bin/python3: stale check is skipped
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        assert len(venv_env.policy_calls()) == 1
+        assert not sentinel.exists(), "pre-existing venv content must not survive creation"
+
+    def test_smoke_rebuild_refusal_no_loop(self, venv_env):
+        venv_env.create_fake_venv()
+        r = venv_env.run(env_overrides={"HOS_TEST_SMOKE_EXIT": "1", "HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode != 0
+        assert len(venv_env.policy_calls()) == 1
+        assert not venv_env.venv.exists()
+        assert not venv_env.marker_exists()
+
+    def test_acceptance_real_interpreter_refuses_unlisted_mcp(self, tmp_path):
+        """Real python3, no stub: an unlisted MCP line is refused before any pip call."""
+        probe = subprocess.run(
+            ["python3", "-I", "-c", "import ensurepip, venv"],
+            capture_output=True,
+            check=False,
+            env=child_env({"PATH": "/usr/bin:/bin"}),
+        )
+        if probe.returncode != 0:
+            pytest.skip("system python3 lacks ensurepip/venv")
+        oversight = ENSURE_VENV_SH.parent
+        home = tmp_path / "home"
+        home.mkdir()
+        script_dir = tmp_path / "repo" / "scripts" / "oversight"
+        script_dir.mkdir(parents=True)
+        for name in ("ensure_venv.sh", "mcp_policy_logic.py", "mcp_approved_list.json"):
+            shutil.copy2(oversight / name, script_dir / name)
+        (script_dir / "requirements.txt").write_text("mcp-server-git==1.0\n")
+        r = subprocess.run(
+            [BASH, str(script_dir / "ensure_venv.sh"), "--quiet"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=child_env({"HOME": str(home), "PATH": "/usr/bin:/bin"}),
+        )
+        assert r.returncode != 0
+        assert "VIOLATION" in r.stderr and "unlisted MCP package mcp-server-git" in r.stderr
+        assert not (script_dir / ".venv").exists()
