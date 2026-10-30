@@ -198,6 +198,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | `the-1point7x-defect-rate-claim-has-a-precise-empirical-source.md` | research provenance / citation hygiene | The 1.7× agentic defect rate claim has a precise empirical source — cite it correctly or the premise weakens |
 | `the-distrust-check-exempted-its-most-important-target.md` | oversight-mechanism | An anti-gaming re-derivation check carved out code-review — its most important target; coverage must be scoped by threat model. |
 | `the-gate-must-time-out-its-own-dependencies.md` | oversight-mechanism | Every external call an oversight gate makes must be hard-bounded; a hung dependency is a dead gate (invisible denial of oversight). |
+| `the-ratchet-counts-human-attention-as-free.md` | oversight-mechanism | The ratchet classifies "escalate to the human" as tightening, so safety-first agents freely added human steps; on PR #2211 the human took 10 acts, 1 of them a decision. Oversight invariants need a human-load cost term. |
 | `the-recorder-must-not-be-in-the-recorded-set.md` | oversight-mechanism | The artifacts a control writes about a step must be excluded from the changed-file set the step is re-validated against. |
 | `the-safety-valve-must-be-more-trustworthy-than-the-gates.md` | oversight-mechanism | The mechanism that *disables* oversight must be more trustworthy and auditable than the gates it disables — its failures fail toward less oversight. |
 | `three-tier-review-cost-model.md` | oversight-mechanism | Expensive Cross-Vendor Review Should Run at Transition Points, Not at Every Change — the Three-Tier Model |
@@ -215,7 +216,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-59 of 100 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+60 of 101 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
@@ -270,6 +271,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `state-assertions-decay-faster-than-their-documents.md`
 - `structured-fault-explanation-drives-developer-action.md`
 - `the-1point7x-defect-rate-claim-has-a-precise-empirical-source.md`
+- `the-ratchet-counts-human-attention-as-free.md` (candidate: a qualification of O7, since the ratchet needs a human-load cost term)
 - `the-recorder-must-not-be-in-the-recorded-set.md`
 - `three-tier-review-cost-model.md`
 - `two-key-enable-for-autonomous-systems.md`
