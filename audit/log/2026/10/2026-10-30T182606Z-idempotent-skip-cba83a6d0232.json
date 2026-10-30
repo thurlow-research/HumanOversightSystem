@@ -1,0 +1,1 @@
+{"event":"idempotent-skip","head_sha":"2d18794464340d2f0a871c3dccf9f7c895f9700a","pr":2223,"reason":"#1215: own HUMAN_REQUIRED verdict at this head (18:14Z), needs-human applied, no new human comment/review/commit since"}
