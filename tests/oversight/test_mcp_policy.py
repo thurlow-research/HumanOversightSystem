@@ -477,3 +477,62 @@ def test_run_entry_without_forbidden_subcommands_is_valid(tmp_path):
     doc["entries"][0].pop("forbidden_subcommands")
     entries = m.load_list(_list_file(tmp_path, doc))
     assert entries["semgrep"].forbidden_subcommands == ()
+
+
+# ───────── pre-install fallback: packaging -> pip._vendor.packaging (#2204) ─────────
+_BLOCK_DRIVER = """
+import runpy, sys
+blocked = sys.argv[1].split(",")
+for name in blocked:
+    sys.modules[name] = None
+for n in (
+    "packaging.requirements", "packaging.utils", "packaging.version",
+):
+    sys.modules[n] = None
+sys.argv = [sys.argv[2]] + sys.argv[3:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+_VENDOR_BLOCK = (
+    "pip._vendor.packaging,pip._vendor.packaging.requirements,"
+    "pip._vendor.packaging.utils,pip._vendor.packaging.version"
+)
+
+
+def _blocked_cli(blocked: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-I", "-c", _BLOCK_DRIVER, blocked, str(_LOGIC), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(_REPO),
+    )
+
+
+def _vendor_available() -> bool:
+    try:
+        import pip._vendor.packaging.requirements  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _vendor_available(), reason="pip._vendor.packaging not importable")
+@pytest.mark.parametrize(
+    "line,rc", [("mcp-server-git==1.0", 1), ("mcp==1.29.0", 0)]
+)
+def test_packaging_fallback_to_pip_vendor(tmp_path, line, rc):
+    req = _write(tmp_path, "req.txt", line + "\n")
+    res = _blocked_cli("packaging", "--list", str(_LIST), "--requirements", str(req))
+    assert res.returncode == rc, res.stdout + res.stderr
+    assert "Traceback" not in res.stderr
+
+
+def test_no_packaging_fails_closed(tmp_path):
+    req = _write(tmp_path, "req.txt", "mcp==1.29.0\n")
+    res = _blocked_cli(
+        "packaging," + _VENDOR_BLOCK, "--list", str(_LIST), "--requirements", str(req)
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "packaging unavailable" in res.stderr
+    assert "Traceback" not in res.stderr

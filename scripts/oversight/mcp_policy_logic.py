@@ -8,6 +8,10 @@ closure reachable from them.
 
 Read-only: no network, no file writes, never imports mcp or semgrep.
 
+Runs under the oversight venv's interpreter, including a freshly created venv that has
+only ensurepip's pip (ensure_venv.sh pre-install check, #2204); hence the
+packaging -> pip._vendor.packaging import fallback below.
+
 Exit codes: 0 = clean, 1 = one or more violations, 2 = cannot check (fail closed).
 """
 from __future__ import annotations
@@ -21,9 +25,26 @@ import sys
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
-from packaging.version import InvalidVersion, Version
+# Atomic per source (#2204): Version and the requirement objects must come from the same
+# library, so try all three imports of one source before falling back to the other.
+# The pre-install check runs in a fresh ensurepip venv, which has pip's vendored copy
+# but no top-level packaging. ImportError only: anything else is a real bug.
+try:
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+except ImportError:
+    try:
+        from pip._vendor.packaging.requirements import InvalidRequirement, Requirement
+        from pip._vendor.packaging.utils import canonicalize_name
+        from pip._vendor.packaging.version import InvalidVersion, Version
+    except ImportError:
+        print(
+            "mcp_policy: cannot check: packaging unavailable "
+            "(neither packaging nor pip._vendor.packaging importable)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_LIST = Path(__file__).resolve().parent / "mcp_approved_list.json"

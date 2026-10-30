@@ -597,3 +597,4 @@ gate fails (CRITICAL) when HOS's requirement files or its resolved dependency cl
 contain MCP software that is not listed, or listed at another version. Being on the list
 does not exempt a package from `security_scan`. Unlisted MCP software outside HOS's
 closure and Claude Code MCP server registrations are governed by #2199.
+`ensure_venv.sh` checks the oversight requirements file against the list before it installs anything and refuses to build the venv on a violation or when the check cannot run. MCP software that arrives only as a transitive dependency is detected after install by the `mcp_policy` gate, not prevented (#2204).

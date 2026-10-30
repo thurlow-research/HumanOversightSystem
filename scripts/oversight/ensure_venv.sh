@@ -20,6 +20,11 @@
 #   scripts/oversight/.venv/bin/pip install -r scripts/oversight/requirements.txt
 # or delete scripts/oversight/.venv to rebuild it.
 #
+# MCP policy (#2204): _create_venv checks requirements.txt against
+# mcp_approved_list.json BEFORE any pip command runs, and refuses to build the venv
+# (fail closed) on a violation or when the check cannot run. The post-install
+# gates/mcp_policy.sh --installed stays the drift control and the only transitive one.
+#
 # Flags (effective only when run as a subprocess — not when sourced):
 #   --quiet   Suppress informational stdout; errors still go to stderr.
 
@@ -114,9 +119,31 @@ _install_project_requirements() {
 
 _create_venv() {
   _check_disk_space
+  # The pre-install MCP policy check (#2204) needs both files; without them it cannot
+  # run, so refuse before creating anything (fail closed).
+  if [[ ! -f "$_ENSURE_VENV_DIR/mcp_policy_logic.py" || ! -f "$_ENSURE_VENV_DIR/mcp_approved_list.json" ]]; then
+    _evenv_err "MCP policy could not be checked — refusing to install (fail closed): mcp_policy_logic.py or mcp_approved_list.json missing from $_ENSURE_VENV_DIR"
+    return 1
+  fi
   _evenv_info "creating oversight venv at $VENV"
   if ! python3 -m venv "$VENV"; then
     _evenv_err "python3 -m venv failed — is python3 (>= 3.8) installed? ($(_evenv_free_space))"
+    return 1
+  fi
+  # Authorize before acting: the fresh venv holds only ensurepip's pip, nothing from any
+  # requirements file. Explicit rc capture because callers may source us under set -e.
+  # VIOLATION lines go to stderr so --quiet / stdout-capturing callers still show them.
+  local policy_rc=0
+  PYTHONSAFEPATH=1 "$VENV_BIN/python3" -I "$_ENSURE_VENV_DIR/mcp_policy_logic.py" \
+    --list "$_ENSURE_VENV_DIR/mcp_approved_list.json" \
+    --requirements "$_ENSURE_VENV_DIR/requirements.txt" >&2 || policy_rc=$?
+  if (( policy_rc != 0 )); then
+    if (( policy_rc == 1 )); then
+      _evenv_err "MCP policy: refusing to install oversight requirements — unapproved MCP software (see above); update scripts/oversight/mcp_approved_list.json via a CODEOWNER-approved PR"
+    else
+      _evenv_err "MCP policy could not be checked — refusing to install (fail closed)"
+    fi
+    rm -rf "$VENV"
     return 1
   fi
   _evenv_info "installing oversight dependencies (this runs once) ..."
