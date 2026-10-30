@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"748a8a5073a974f78a71f8c666141f7f7bb229e5","pr":2221,"reason":"#1215 precheck: latest post-push entry is own HUMAN_REQUIRED/APPROVE verdict (12:13:27Z); no new commits, reviews or comments; protected surface recomputed True, no human approval on head; needs-human label present"}
