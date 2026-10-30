@@ -397,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ListError, CheckError) as exc:
         print(f"mcp_policy: cannot check: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - an unexpected failure is "cannot check", never "violation"
+        print(f"mcp_policy: cannot check: unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     for note in notes:
         print(note)
     for v in violations:

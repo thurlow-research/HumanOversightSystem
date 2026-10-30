@@ -126,6 +126,10 @@ _create_venv() {
     return 1
   fi
   _evenv_info "creating oversight venv at $VENV"
+  # Start from nothing: a pre-existing $VENV without bin/python3 skips the stale check, and
+  # `python3 -m venv` would keep any file in it (e.g. a force-added site-packages/*.pth that
+  # runs when the policy checker starts; -I does not disable site).
+  rm -rf "$VENV"
   if ! python3 -m venv "$VENV"; then
     _evenv_err "python3 -m venv failed — is python3 (>= 3.8) installed? ($(_evenv_free_space))"
     return 1

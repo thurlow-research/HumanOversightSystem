@@ -389,6 +389,15 @@ class TestMcpPreinstallCheck:
         assert f"--requirements {venv_env.script_dir}/requirements.txt" in calls[0]
         assert str(req) not in calls[0]
 
+    def test_preexisting_venv_dir_is_removed_before_creation(self, venv_env):
+        sentinel = venv_env.venv / "lib" / "site-packages" / "evil.pth"
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text("import os\n")  # no bin/python3: stale check is skipped
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        assert len(venv_env.policy_calls()) == 1
+        assert not sentinel.exists(), "pre-existing venv content must not survive creation"
+
     def test_smoke_rebuild_refusal_no_loop(self, venv_env):
         venv_env.create_fake_venv()
         r = venv_env.run(

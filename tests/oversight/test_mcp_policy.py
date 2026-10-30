@@ -560,3 +560,13 @@ def test_no_packaging_fails_closed(tmp_path):
     assert res.returncode == 2, res.stdout + res.stderr
     assert "packaging unavailable" in res.stderr
     assert "Traceback" not in res.stderr
+
+
+@pytest.mark.parametrize("target", ["load_list", "check_requirements"])
+def test_unexpected_exception_is_cannot_check_exit_2(monkeypatch, capsys, target):
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(m, target, boom)
+    assert m.main(["--list", str(_LIST), "--requirements", str(_REQ)]) == 2
+    assert "cannot check" in capsys.readouterr().err

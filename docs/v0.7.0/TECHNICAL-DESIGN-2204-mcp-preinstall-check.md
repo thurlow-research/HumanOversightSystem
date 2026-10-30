@@ -153,7 +153,7 @@ the action.
 | 2 | `scripts/oversight/mcp_policy_logic.py` | D2 import fallback. Update the docstring: the module may run in a fresh ensurepip venv. No other behaviour change. PROTECTED. |
 | 3 | `tests/oversight/test_mcp_policy.py` | New tests (below). |
 | 4 | `tests/automation/test_ensure_venv.py` | Harness changes and new tests (below). |
-| 5 | `contract/OVERSIGHT-CONTRACT.md` §9 | (architect A5) Append two sentences: "`ensure_venv.sh` checks the oversight requirements file against the list before it installs anything and refuses to build the venv on a violation or when the check cannot run. MCP software that arrives only as a transitive dependency is detected after install by the `mcp_policy` gate, not prevented (#2204)." PROTECTED; the PR already needs CODEOWNER approval for file 2. |
+| 5 | `contract/OVERSIGHT-CONTRACT.md` §9 | (architect A5) Append two sentences: "`ensure_venv.sh` checks the oversight requirements file against the list before it installs anything and refuses to build the venv on a violation or when the check cannot run. MCP software that arrives only as a transitive dependency is detected after install by the `mcp_policy` gate, not prevented: a transitively installed package's wheel `.pth` may already have run by then, and consumer root `requirements*.txt` files are not pre-checked (outside the policy closure, #2199) (#2204)." PROTECTED; the PR already needs CODEOWNER approval for file 2. |
 
 `requirements.txt`, the list, the gate and `hos_install.sh` are unchanged.
 The installer already syncs `scripts/oversight/` WHOLE, so consumers receive the logic
