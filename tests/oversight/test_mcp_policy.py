@@ -528,6 +528,30 @@ def test_packaging_fallback_to_pip_vendor(tmp_path, line, rc):
     assert "Traceback" not in res.stderr
 
 
+_PROBE_DRIVER = _BLOCK_DRIVER.replace(
+    'runpy.run_path(sys.argv[0], run_name="__main__")',
+    """try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+except SystemExit as e:
+    used = sys.modules.get("pip._vendor.packaging.version") is not None
+    print("VENDOR_USED=%s" % used)
+    raise""",
+)
+
+
+@pytest.mark.skipif(not _vendor_available(), reason="pip._vendor.packaging not importable")
+@pytest.mark.parametrize("line,rc", [("mcp==0.0.1", 1), ("mcp==1.29.0", 0)])
+def test_fallback_is_version_sensitive_and_uses_vendored_source(tmp_path, line, rc):
+    req = _write(tmp_path, "req.txt", line + "\n")
+    res = subprocess.run(
+        [sys.executable, "-I", "-c", _PROBE_DRIVER, "packaging", str(_LOGIC),
+         "--list", str(_LIST), "--requirements", str(req)],
+        capture_output=True, text=True, timeout=60, cwd=str(_REPO),
+    )
+    assert res.returncode == rc, res.stdout + res.stderr
+    assert "VENDOR_USED=True" in res.stdout
+
+
 def test_no_packaging_fails_closed(tmp_path):
     req = _write(tmp_path, "req.txt", "mcp==1.29.0\n")
     res = _blocked_cli(

@@ -373,8 +373,9 @@ class TestMcpPreinstallCheck:
         assert "could not be checked" in r.stderr
         assert "fail closed" in r.stderr
 
-    def test_policy_missing_logic_file_refuses(self, venv_env):
-        venv_env.logic.unlink()
+    @pytest.mark.parametrize("missing", ["mcp_policy_logic.py", "mcp_approved_list.json"])
+    def test_policy_missing_guard_file_refuses(self, venv_env, missing):
+        (venv_env.script_dir / missing).unlink()
         r = venv_env.run()
         self._assert_refused(venv_env, r)
         assert "could not be checked" in r.stderr
