@@ -302,6 +302,14 @@ class CronEnv:
             # PR list (open bot PRs) — outputs one PR number per line.
             # HOS_TEST_PR_FETCH_FAIL simulates a gh API failure (non-zero exit)
             # so the #915 fail-closed overseer PR-fetch path can be exercised.
+            # HOS_TEST_CTX_PRS_FAIL fails only the cycle-context "Open bot PRs"
+            # query (#2171), recognised by its title-formatting jq.
+            '  *"pulls?state=open"*"(.title"*)\n'
+            '    if [[ -n "${HOS_TEST_CTX_PRS_FAIL:-}${HOS_TEST_PR_FETCH_FAIL:-}" ]]; then\n'
+            '      echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "      exit 1\n"
+            "    fi\n"
+            '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
             '  *"pulls?state=open"*)\n'
             '    [[ -n "${HOS_TEST_PR_FETCH_FAIL:-}" ]] && exit 1\n'
             '    printf "%s\\n" ${HOS_TEST_OPEN_PR_NUMS:-} ;;\n'
@@ -312,6 +320,10 @@ class CronEnv:
             # Defaults (ms=clean, d=false, no labels) preserve prior test
             # behavior, when this call fell through unmatched to an empty
             # `exit 0` and the caller's `_pr_ms` ended up "" — never "dirty".
+            # HOS_TEST_PR_DETAIL_FAIL_PR=<n>: that PR's detail fetch fails (#2171).
+            '  *"pulls/${HOS_TEST_PR_DETAIL_FAIL_PR:-__none__}"*"mergeable_state"*)\n'
+            '    echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "    exit 1 ;;\n"
             '  *"mergeable_state"*)\n'
             '    _labels_json="[]"\n'
             '    if [[ -n "${HOS_TEST_PR_LABELS:-}" ]]; then\n'
@@ -323,6 +335,15 @@ class CronEnv:
             "    fi\n"
             '    printf "{\\"ms\\":\\"%s\\",\\"d\\":%s,\\"labels\\":%s}\\n" '
             '"${HOS_TEST_PR_MS:-clean}" "${HOS_TEST_PR_DRAFT:-false}" "$_labels_json" ;;\n'
+            # HOS_TEST_PR_REVIEWS_FAIL_PR=<n>: that PR's /reviews calls fail the way
+            # a real expired token does (#2171) — error body on stdout, exit 1.
+            '  *"pulls/${HOS_TEST_PR_REVIEWS_FAIL_PR:-__none__}/reviews"*)\n'
+            '    echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "    exit 1 ;;\n"
+            # HOS_TEST_PR_AP_FAIL_PR=<n>: only that PR's APPROVED-count query fails.
+            '  *"pulls/${HOS_TEST_PR_AP_FAIL_PR:-__none__}/reviews"*"APPROVED"*)\n'
+            '    echo \'{ "message": "Bad credentials", "status": "401" }\'\n'
+            "    exit 1 ;;\n"
             # PR reviews — CHANGES_REQUESTED count
             '  *"reviews"*"CHANGES_REQUESTED"*)\n' '    echo "${HOS_TEST_PR_CR:-0}" ;;\n'
             # PR reviews — APPROVED count
@@ -2365,6 +2386,255 @@ class TestMidCycleTokenRefresh:
         for age in ("0", "99999"):
             r = cron.run(env_overrides={"HOS_TOKEN_REFRESH_AGE_SECS": age})
             assert "SECRETTOK" not in r.stdout + r.stderr
+
+
+_GH_CMD = re.compile(
+    r"(?:^|[;&|\n(]|\b(?:command|exec|env|time|nice|timeout\s+\S+)\s)\s*(?:\w+=\S*\s+)*gh\s"
+)
+
+
+def _scan_substitution(text: str, i: int, opener: str) -> tuple[int, bool]:
+    """Walk a substitution body starting at `i`; return (end index, saw a `||`
+    outside quotes). Quotes are tracked so a `)` or `||` inside a quoted jq
+    string neither ends the substitution nor counts."""
+    depth, quote, has_or = 1, "", False
+    while i < len(text) and depth:
+        c = text[i]
+        if quote == "'":
+            quote = "" if c == "'" else quote
+        elif c == "\\":
+            i += 1
+        elif quote == '"':
+            quote = "" if c == '"' else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "`" and opener == "`":
+            depth = 0
+        elif c == "(" and opener == "$(":
+            depth += 1
+        elif c == ")" and opener == "$(":
+            depth -= 1
+        elif text.startswith("||", i):
+            has_or = True
+            i += 1
+        i += 1
+    return i, has_or
+
+
+def _unchecked_gh_substitutions(text: str) -> list[int]:
+    """Line numbers of command substitutions (`$(...)` and backticks) that run
+    `gh` and carry an in-substitution `||`.
+
+    Such a fallback appends to the error body gh writes to stdout on an HTTP
+    failure (#2171). Comment lines are ignored; substitutions inside single
+    quotes or after a backslash are literal text and are skipped.
+    """
+    text = "\n".join("" if ln.lstrip().startswith("#") else ln for ln in text.splitlines())
+    bad, quote, i = [], "", 0
+    while i < len(text):
+        c = text[i]
+        if c == "\n":
+            quote = ""  # resync: heredoc/multi-line prose must not poison later lines
+        elif quote == "'":
+            quote = "" if c == "'" else quote
+        elif c == "\\":
+            i += 1
+        elif c == "'":
+            quote = "'"
+        elif c == "`" or text.startswith("$(", i):
+            opener = "`" if c == "`" else "$("
+            start = i + len(opener)
+            end, has_or = _scan_substitution(text, start, opener)
+            if has_or and _GH_CMD.search(text[start:end]):
+                bad.append(text.count("\n", 0, i) + 1)
+        i += 1
+    return bad
+
+
+class TestNoUncheckedGhSubstitution:
+    """#2171 AC3: no hos-cron step consumes `gh` output without checking its
+    exit status — a `$(gh ...)` must not carry an in-substitution `||` fallback."""
+
+    def test_hos_cron_has_no_unchecked_gh_substitution(self):
+        bad = _unchecked_gh_substitutions(HOS_CRON.read_text())
+        assert (
+            not bad
+        ), f"bin/hos-cron: `$(gh ...) || ...` fallback inside substitution at line(s) {bad}"
+
+    def test_checker_flags_inline_fallback(self):
+        assert _unchecked_gh_substitutions("x=$(gh api foo || echo 0)\n") == [1]
+
+    def test_checker_flags_continuation_form(self):
+        snippet = "echo hi\nx=$(gh api foo \\\n  --jq .a 2>/dev/null \\\n  || echo 0)\n"
+        assert _unchecked_gh_substitutions(snippet) == [2]
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            # ")" inside a quoted jq string must not end the substitution early
+            "x=$(gh api foo --jq '.[] | select(.a == \"(\")' || echo 0)\n",
+            'x=$(gh api foo --jq "length)" || echo 0)\n',
+            # backtick substitution
+            "x=`gh api foo || echo 0`\n",
+            # gh as a later / wrapped command word
+            "x=$(timeout 5 gh api foo || echo 0)\n",
+            "x=$(command gh api foo || echo 0)\n",
+            "x=$(cd /tmp && gh api foo || echo 0)\n",
+            # newline right after the opener
+            "x=$(\n  gh api foo || echo 0\n)\n",
+        ],
+    )
+    def test_checker_flags_hardened_bad_forms(self, snippet):
+        assert _unchecked_gh_substitutions(snippet) == [1]
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "if x=$(gh api foo); then\n",
+            "x=$(gh api foo --jq 'select(.a == \"||\")')\n",
+            "x=`git log || echo 0`\n",
+            "x=$(gh api foo) && rc=0 || rc=$?\n",
+            'gh api -X PATCH foo || echo "WARN"\n',
+            "# x=$(gh api foo || echo 0)\n",
+            "x=$(git rev-parse HEAD || echo 0)\n",
+        ],
+    )
+    def test_checker_passes_good_snippets(self, snippet):
+        assert _unchecked_gh_substitutions(snippet) == []
+
+
+class TestPRRoutingGhFailure:
+    """#2171: a failed per-PR gh call routes `unknown`, never `awaiting-merge`."""
+
+    def _assert_audit(self, cron, pr_nums, failed):
+        (rec,) = cron.audit_records("cycle-pr-state-unknown")
+        assert rec["role"] == "worker" and rec["project"] and rec["cycle_id"].startswith("worker-")
+        assert (str(rec["pr_nums"]), str(rec["failed_pr_nums"])) == (pr_nums, failed)
+
+    def _capture(self, cron):
+        cron.install_cycle_log()
+        stdin_capture = cron.home / "claude_stdin.log"
+        _write_exec(
+            cron.bindir / "claude",
+            "#!/usr/bin/env bash\n" f'cat > "{stdin_capture}"\n' "exit 0\n",
+        )
+        return stdin_capture
+
+    def test_failed_reviews_call_routes_unknown(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_REVIEWS_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed which=changes_requested" in r.stdout
+        self._assert_audit(cron, "856", "856")
+        assert "awaiting human merge" not in r.stdout
+        assert "arithmetic syntax error" not in r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        assert "NEW WORK: BLOCKED" in context
+        assert "routing=unknown" in context
+        assert "could not be determined" in context
+        # The unknown directive must keep the needs-human hold (#1526) and
+        # require the worker's own fresh read before acting (#2171).
+        assert "WITHOUT `needs-human`" in context
+        assert "carrying `needs-human`" in context
+        assert "read succeeds now" in context
+        assert "cannot read, is left alone" in context
+        assert "Step 0 triage still runs" in context
+        assert "awaiting-merge" not in context
+
+    def test_definite_needs_fix_on_later_pr_wins_over_failed_pr(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856 857",
+                "HOS_TEST_PR_CR": "1",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_REVIEWS_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed which=changes_requested" in r.stdout
+        assert "routing=needs-fix" in stdin_capture.read_text()
+        assert cron.audit_records("cycle-pr-state-unknown") == []
+
+    def test_failed_approved_count_routes_unknown(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_AP_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed which=approved" in r.stdout
+        self._assert_audit(cron, "856", "856")
+        assert "awaiting human merge" not in r.stdout
+        assert "routing=unknown" in stdin_capture.read_text()
+
+    def test_failed_detail_fetch_routes_unknown(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_PR_DETAIL_FAIL_PR": "856",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "WARN: PR #856 state fetch failed which=detail" in r.stdout
+        self._assert_audit(cron, "856", "856")
+        assert "awaiting human merge" not in r.stdout
+        assert "routing=unknown" in stdin_capture.read_text()
+
+    def test_overseer_detail_failure_keeps_pr_actionable(self, cron):
+        cron.install_cycle_log()
+        r = cron.run(
+            role="overseer",
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_DETAIL_FAIL_PR": "856",
+            },
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert (
+            "WARN: PR #856 detail fetch failed which=detail — treating as actionable ms=unknown"
+            in r.stdout
+        )
+        assert "actionable: #856" in r.stdout
+        assert cron.claude_ran()
+        (rec,) = cron.audit_records("cycle-pr-state-unknown")
+        assert rec["role"] == "overseer" and rec["cycle_id"].startswith("overseer-")
+        assert (rec["which"], rec["fallback"], str(rec["failed_pr_nums"])) == (
+            "detail",
+            "actionable",
+            "856",
+        )
+
+    def test_context_open_prs_fetch_failure_is_not_none(self, cron):
+        stdin_capture = self._capture(cron)
+        r = cron.run(
+            env_overrides={
+                "HOS_TEST_OPEN_PR_NUMS": "856",
+                "HOS_TEST_PR_CR": "0",
+                "HOS_TEST_PR_AP": "1",
+                "HOS_TEST_CTX_PRS_FAIL": "1",
+            }
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        context = stdin_capture.read_text()
+        section = context.split("### Open bot PRs", 1)[1].split("###", 1)[0]
+        assert "(fetch failed — the New work directive below is authoritative)" in section
+        assert "None." not in section
+        assert "Bad credentials" not in context
 
 
 # ──────────────────────────── _validate_env ─────────────────────────────────
