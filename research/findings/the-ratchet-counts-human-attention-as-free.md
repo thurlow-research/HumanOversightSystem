@@ -16,6 +16,12 @@ The human named both sides on 2026-10-30:
 
 Both are true. This finding records how the drift happened, because the mechanism is structural and will recur in any AI-built oversight system.
 
+The human then stated what "scalable" means (2026-10-30):
+
+> *"Human time is the most expensive time there is. The goal of the entire effort is to apply the Toyota Jidoka principle to have the system do as much work / checking / validating / fixing as it can on its own and direct the human to items that really need the human's attention. And by definition, every direction to the human needs to be a decision that is presented with a recommendation, risks, pros, cons."*
+
+That gives a test every human-facing item can be checked against. **Is it a decision? Does it carry a recommendation, risks, pros and cons?** If not, it should not reach the human; the system should do it itself. Every instance in the evidence below fails that test.
+
 ## Point 1: the responsible behaviour is real
 
 The agents consistently erred toward safety, and that disposition is valuable:
@@ -54,7 +60,7 @@ Escalating to the human is classified as *tightening*, so automation may add it 
 
 **3. Each rule was added locally; no one owned the total.** Every gate, thread and escalation was justified within its own PR. No artifact tracked **human acts per merged PR** or **decisions vs. mechanical steps**, so the cumulative cost was invisible to reviewers, the overseer and the human alike (compare `safety-serialization-makes-the-human-the-rate-limiter.md`: the cost is absent from how the control describes itself). #2131's per-cycle metrics, which count needs-human items and escalations by cause, would have surfaced it. That issue was still unbuilt at the time.
 
-**4. The objective was a phrase, not a checkable property.** "Scalable" appears in HOS's mission but in no rule an agent checks a design against. Contrast the ratchet, which is enumerable and checkable (`ratchet-principle.md:67`). Agents optimise the property they can check.
+**4. The objective was written down, in the wrong place, and never made checkable.** `METHODOLOGY.md:49-54` states it precisely. The system "*pulls* a human only where a decision is genuinely needed", the human's workload is "the size of the *flagged* set, not the size of the change stream", and a blocking thread is resolved "with a *decision* (not just an acknowledgment)". But METHODOLOGY is the explainer. The texts agents actually work from are `AGENTS.md`'s "Core Principle" sections, the contract, and the per-agent instructions, and none of them carries it. Nothing checks it: no write path rejects a human-facing item that is not a decision. The ratchet, by contrast, is in the core findings, enumerable and checkable (`ratchet-principle.md:67`). Agents optimise the property they are given and can check. So the principle existed, and the governing texts silently dropped it, the same shape as `a-decision-records-intent-not-enforcement.md`.
 
 **5. The agents asked about mechanism, not objective.** Escalations put to the human were overwhelmingly about *how* a gate should work: marker format, which reviewer set counts, A/B for an installer step. They rarely asked *whether a human should be in this loop at all*. When ambiguity existed, it was resolved toward more human involvement without clarification. This is Point 2's "not clarifying with the human enough", and it matches O9 (`ai-agent-scope-drift-mirrors-human-dev-behavior.md`): a mandate to "ensure oversight" is read maximally, the way a cautious new hire might read it.
 
@@ -62,7 +68,7 @@ Escalating to the human is classified as *tightening*, so automation may add it 
 
 ## Implication for research
 
-1. **An oversight invariant needs a cost term.** "Automation may only tighten" is necessary but not sufficient. A complete statement is closer to: *automation may only tighten oversight of AI **risk**; it may not increase the human's **mechanical load** without a human decision either.* Human attention is a protected resource with its own ratchet: steps that are not decisions should be removed by default, and adding one is a design change requiring a human ruling. Without this, a safety-first agent population converges on a system that is safe and does not scale. For a scalable-oversight framework that is a failure of purpose, not of safety.
+1. **An oversight invariant needs a cost term, and Jidoka supplies it.** In Toyota's terms the line runs on its own and stops only to pull a person to a defect it cannot resolve. A stop that does not need the person is waste (*muda*), not safety. "Automation may only tighten" is necessary but not sufficient. A complete statement is closer to: *automation may only tighten oversight of AI **risk**; it may not increase the human's **mechanical load** without a human decision either.* Human attention is a protected resource with its own ratchet: steps that are not decisions should be removed by default, and adding one is a design change requiring a human ruling. Without this, a safety-first agent population converges on a system that is safe and does not scale. For a scalable-oversight framework that is a failure of purpose, not of safety.
 
 2. **Distinguish decision steps from mechanical steps, and measure them.** The useful metric is not "how often does a human touch a PR", but **human decisions per merged PR**, alongside **mechanical human steps per merged PR**, which should approach zero. #2211's 1:9 ratio is the kind of number that would have flagged this months earlier.
 
@@ -73,6 +79,8 @@ Escalating to the human is classified as *tightening*, so automation may add it 
 ## What changed
 
 Rulings from this session, each removing human load the agents had added:
+
+- **#2216** (v0.7.0): the human's definition of "scalable" becomes a **core principle** in `AGENTS.md`. Human time is the most expensive resource. Every direction to the human is a decision with a recommendation, options, pros, cons and risks. Adding a human step is not free tightening. A write-path check rejects human-facing items that lack the decision form.
 
 - **#2209** (v0.7.0): every overseer-recommended change goes to the worker, regardless of risk tier, protected surface or finding class. The human is involved **only when a decision is needed**.
 - **#2213** (v0.7.0): the human's approval alone suffices. On a designated approval of the current head, the overseer clears its own awaiting-approval hold and merges, with no human merge click and no bypass. (Related to the long-term #1519, "PRs auto-merge on approval".)
@@ -90,4 +98,6 @@ Not yet done: a human-load metric (#2131 is closest). The worker's conditional-r
 - `buried-disclosure-fails-like-no-disclosure.md`: more human-facing items lower the salience of each
 - `human-gate-enforcement-limits.md`: why file-authorship gates existed (identity), and why they outlived the reason
 - `ai-agent-scope-drift-mirrors-human-dev-behavior.md`: maximal reading of a broad mandate (O9)
+- `jidoka-reactive-pipeline.md`: stop for the human only on a new finding, the same principle at the pipeline level
+- `a-decision-records-intent-not-enforcement.md`: the principle was recorded (METHODOLOGY) but not carried into the texts that govern behaviour
 - `research/sessions/2026-08-04-controls-that-never-fire.md`: the opposite failure, and the early "robo-approved" observation
