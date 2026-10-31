@@ -63,6 +63,7 @@ The authoritative lists as of this spec's date:
 |---|---|
 | `lint_check.sh` | `lint` |
 | `security_scan.sh` | `security` |
+| `dependency_audit.sh` | `dependencies` [†] |
 | `secret_scan.sh` | `secrets` |
 | `type_check.sh` | `types` |
 | `template_refs_check.sh` | `template-refs` |
@@ -72,6 +73,8 @@ The authoritative lists as of this spec's date:
 | `expensive_gates_stub.sh` | `expensive-gates` (stub; treated as gate when project-specific logic is installed) |
 
 Note: `check_suspension.sh` is a shared helper sourced by other gates, not a gate itself. It is not a deterministic gate for the purposes of this invariant.
+
+[†] `dependency_audit.sh` queries a live advisory database, so it satisfies §3.1's "same result for the same input" clause only relative to that database as of the run. It is listed here because it is a gate under the invariant (a non-suspended non-zero exit is a deterministic failure for REQ-GATE-NN purposes); it is deliberately **not** wired into `.github/workflows/oversight-gates.yml`, which is offline-only (#1605).
 
 **Validators (`scripts/oversight/validators/`):**
 

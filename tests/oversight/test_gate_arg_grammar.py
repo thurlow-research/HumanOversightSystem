@@ -10,11 +10,12 @@ gate directly (the issue's own reproduction shape,
 (scripts/oversight/lib/changeset.sh) behaves identically everywhere it is
 adopted.
 
-Assertions here deliberately avoid depending on `pip-audit`'s network/CVE
-result for `security_scan.sh` (its own currently-installed dependency set may
-or may not carry advisories, independent of anything in this changeset) —
-mirroring the existing precedent in test_scan_gates_empty_args.py, which
-checks stdout markers rather than the overall exit code for that gate.
+After #1605, `security_scan.sh` is offline and deterministic: its pip-audit half
+moved to `dependency_audit.sh`, so the network/CVE caveat that earlier forced these
+assertions to avoid `security_scan.sh`'s exit code now applies to nothing in this
+file. `dependency_audit.sh` is repo-scoped and deliberately NOT in
+`FILE_LIST_GATES`; it takes no file-list grammar, and TC-G9 pins that it ignores
+its argv (except the runner's `--empty-changeset` token, AD-2a).
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ DEFAULTING_STRING_GATES = ["lint_check", "type_check", "secret_scan", "security_
 KIND_FILTER_GATES = {
     "lint_check": "Python or JS/TS",
     "type_check": "Python",
+    "security_scan": "Python",
     "bash_check": ".sh",
 }
 
@@ -227,3 +229,87 @@ def test_collection_integrity_ignores_diff_flag(tmp_path):
 
     assert with_diff.returncode == baseline.returncode
     assert with_diff.stdout == baseline.stdout
+
+
+# ── TC-G9 — dependency_audit.sh ignores its argv, except --empty-changeset ──
+#
+# dependency_audit.sh is repo-scoped (TD-1): dependency posture is a property of
+# the installed environment, not of a changeset, so it parses no file-list
+# grammar and narrows nothing by argv. The one exception is the literal
+# --empty-changeset token (AD-2a), the runner's explicit "this invocation
+# verifies nothing" signal. The audit binary is a stub so the case is offline
+# and deterministic; the exemption-roster lines it prints are date-dependent but
+# identical within one test run.
+
+_CLEAN_AUDIT = '{"dependencies": [{"name": "anyio", "version": "4.4.0", "vulns": []}]}'
+
+
+def _run_dependency_audit(cwd: Path, stub: Path, *args: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, "GATE_TIMEOUT": "20", "GATE_RETRIES": "1", "HOS_PIP_AUDIT_BIN": str(stub)}
+    return subprocess.run(
+        ["bash", str(_GATES_DIR / "dependency_audit.sh"), *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        env=child_env(env),
+    )
+
+
+def _clean_audit_stub(tmp_path: Path) -> Path:
+    stub = tmp_path / "pip-audit-stub"
+    stub.write_text(f"#!/usr/bin/env bash\ncat <<'JSON'\n{_CLEAN_AUDIT}\nJSON\nexit 0\n")
+    stub.chmod(0o755)
+    return stub
+
+
+def test_dependency_audit_ignores_every_argv_but_the_empty_changeset_token(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    _init_repo(work)
+    (work / "a.py").write_text("a = 1\n")
+    _git(work, "add", "a.py")
+    _git(work, "commit", "-q", "-m", "add a.py")
+    stub = _clean_audit_stub(tmp_path)
+
+    baseline = _run_dependency_audit(work, stub)
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
+    for args in (("--diff", "HEAD~1"), ("a.py", "b.py"), ("--nope",)):
+        res = _run_dependency_audit(work, stub, *args)
+        assert res.returncode == baseline.returncode, args
+        assert res.stdout == baseline.stdout, args
+
+    skipped = _run_dependency_audit(work, stub, "--empty-changeset")
+    assert skipped.returncode == 0, skipped.stderr
+    assert skipped.stdout != baseline.stdout
+    assert (
+        "dependency_audit: NOT CHECKED — empty changeset "
+        "(nothing was checked; this is not a pass)"
+    ) in skipped.stdout
+    assert "GATE PASS" not in skipped.stdout
+
+
+# ── TC-G10 — gate auto-discovery (AC-8) ──────────────────────────────────────
+
+
+def test_run_gates_discovery_expression_finds_both_halves():
+    # The runner's own discovery expression. A new gate file is picked up with no
+    # run_gates.sh edit (the companion "run_gates.sh has no diff" is a PR-level
+    # check, not a unit test).
+    found = subprocess.run(
+        [
+            "find",
+            str(_GATES_DIR),
+            "-maxdepth",
+            "1",
+            "-name",
+            "*.sh",
+            "-not",
+            "-name",
+            "check_suspension.sh",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    names = {Path(p).name for p in found}
+    assert {"security_scan.sh", "dependency_audit.sh"} <= names
