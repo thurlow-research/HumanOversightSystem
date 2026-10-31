@@ -14,6 +14,7 @@ same idiom as `merge_authority_cli._load_codeowners_module`).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -205,8 +206,17 @@ def _make_ctx(
     return cli._Context(repo_root=tmp_path, config=config, app_role="overseer")
 
 
-def _make_args(tier="CRITICAL", reviewer=None, pr=42, repo="test-owner/test-repo"):
-    return argparse.Namespace(app="overseer", repo=repo, pr=pr, tier=tier, reviewer=reviewer)
+def _make_args(
+    tier="CRITICAL",
+    reviewer=None,
+    pr=42,
+    repo="test-owner/test-repo",
+    app="overseer",
+    disposition="HUMAN_REQUIRED",
+):
+    return argparse.Namespace(
+        app=app, repo=repo, pr=pr, tier=tier, reviewer=reviewer, disposition=disposition
+    )
 
 
 @pytest.fixture
@@ -265,9 +275,16 @@ def test_r9_resolved_login_equal_to_pr_author_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
     monkeypatch.setattr(gh, "list_pull_files", lambda o, r, n: [{"filename": "README.md"}])
     ctx = _make_ctx(tmp_path)
-    outcome = cli._cmd_request_reviewer(_make_args(), ctx)
+    # Without a disposition (non-overseer caller) the PR-author case still halts.
+    worker_ctx = dataclasses.replace(ctx, app_role="worker")
+    outcome = cli._cmd_request_reviewer(_make_args(app="worker", disposition=None), worker_ctx)
     assert outcome.exit_code == 1
     assert "author" in (outcome.error or "").lower()
+    # With a disposition (#2174) the human is already the named actor: skip, exit 0.
+    outcome = cli._cmd_request_reviewer(_make_args(), ctx)
+    assert outcome.exit_code == 0
+    assert outcome.payload["skipped"] is True
+    assert outcome.payload["skip_reason"] == "reviewer_is_pr_author"
 
 
 # --------------------------------------------------------------------------- #
@@ -354,10 +371,28 @@ def _make_submit_ctx(tmp_path, *, overseer_handle=DEFAULT_OVERSEER_HANDLE, ceili
 
 
 def _make_submit_args(
-    body_file, *, event="approve", tier="LOW", pr=42, repo="test-owner/test-repo"
+    body_file,
+    *,
+    event="approve",
+    tier="LOW",
+    pr=42,
+    repo="test-owner/test-repo",
+    app="overseer",
+    disposition="default",
+    expected_action=None,
 ):
+    if disposition == "default":
+        disposition = "AUTO_MERGE" if event == "approve" else "PROPOSE_ONLY"
+        expected_action = expected_action or (None if event == "approve" else "APPROVE")
     return argparse.Namespace(
-        app="overseer", repo=repo, pr=pr, tier=tier, event=event, body_file=str(body_file)
+        app=app,
+        repo=repo,
+        pr=pr,
+        tier=tier,
+        event=event,
+        body_file=str(body_file),
+        disposition=disposition,
+        expected_action=expected_action,
     )
 
 
@@ -391,11 +426,11 @@ def test_s1_direct_l2_approve_refuses_on_bot_login_mismatch(
     ctx = _make_submit_ctx(tmp_path)
     outcome = cli._cmd_submit_verdict(_make_submit_args(body_file), ctx)
     assert outcome.exit_code == 3
-    assert outcome.payload["refusal_reason"] == "approve_requires_overseer_identity_match"
+    # D-1 (#2174) now catches the mismatch first: every overseer call carries a
+    # disposition (D-0), and a disposition requires the matching identity.
+    assert outcome.payload["refusal_reason"] == "disposition_requires_overseer_identity"
     assert outcome.payload["refused"] is True
     assert outcome.payload["commit_id"] == "sha1"
-    # Distinguishable from G0's own refusal_reason (--app-only mismatch) in
-    # the audit envelope.
     assert outcome.payload["refusal_reason"] != "approve_requires_overseer_identity"
 
 
@@ -442,8 +477,10 @@ def test_s3_direct_l2_comment_unaffected_by_identity_mismatch(
     )
     body_file = tmp_path / "body.md"
     body_file.write_text("a verdict body\n")
-    ctx = _make_submit_ctx(tmp_path)
-    outcome = cli._cmd_submit_verdict(_make_submit_args(body_file, event="comment"), ctx)
+    # A mismatched identity never blocks a verdict that claims no disposition.
+    ctx = dataclasses.replace(_make_submit_ctx(tmp_path), app_role="worker")
+    args = _make_submit_args(body_file, event="comment", app="worker", disposition=None)
+    outcome = cli._cmd_submit_verdict(args, ctx)
     assert outcome.exit_code == 0, outcome.error
     assert outcome.payload["posted"] is True
 
@@ -697,3 +734,45 @@ def test_t7_scrub_exc_wraps_str_exc():
 
 def test_t8_empty_text_returned_as_is():
     assert cli._scrub_secrets("") == ""
+
+
+# --------------------------------------------------------------------------- #
+# #2174 — evaluate_reviewer_trigger with a non-merge disposition (AM-1).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("disposition", ["HUMAN_REQUIRED", "PROPOSE_ONLY"])
+@pytest.mark.parametrize("tier", _TIERS)
+def test_disposition_triggers_regardless_of_tier_and_surface(surfaces_root, tier, disposition):
+    result = cli.evaluate_reviewer_trigger(
+        tier, "HIGH", [NON_PROTECTED_FILE], surfaces_root, disposition
+    )
+    assert result.triggered is True
+    assert result.non_merge_disposition is True
+
+
+@pytest.mark.parametrize("tier", ["SAFE", "LOW", "MEDIUM", "HIGH"])
+def test_no_disposition_scoping_unchanged(surfaces_root, tier):
+    result = cli.evaluate_reviewer_trigger(tier, "HIGH", [NON_PROTECTED_FILE], surfaces_root)
+    assert result.triggered is False
+    assert result.non_merge_disposition is False
+
+
+def test_auto_merge_value_never_widens_the_trigger(surfaces_root):
+    result = cli.evaluate_reviewer_trigger(
+        "LOW", "HIGH", [NON_PROTECTED_FILE], surfaces_root, "AUTO_MERGE"
+    )
+    assert result.triggered is False
+
+
+def test_write_audit_failure_emits_one_stderr_line(tmp_path, monkeypatch, capsys):
+    from scripts.oversight.lib import audit_log
+
+    def _boom(event, root="."):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(audit_log, "write_event", _boom)
+    record, failure = cli._write_audit({"event": "x"}, _make_ctx(tmp_path))
+    assert record is None and "audit write failed" in failure
+    err = capsys.readouterr().err
+    assert err.count("audit write failed") == 1

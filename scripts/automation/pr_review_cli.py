@@ -5,9 +5,15 @@ pr_review_cli.py — L2 PR-review write primitive (#1657).
 Two subcommands: `submit-verdict` posts exactly one review object (APPROVE
 or COMMENT — never REQUEST_CHANGES, ADR-1657 AD-2) recording the overseer's
 verdict on a PR; `request-reviewer` requests the CODEOWNERS human as a
-required reviewer, but only on the three conditions ADR-1657 AD-3 pins
+required reviewer, on the three conditions ADR-1657 AD-3 pins
 (above-ceiling tier, CRITICAL tier, or a protected-surface / CODEOWNERS-
-human-owned path) — never universally.
+human-owned path) — or, per ADR-1657-AMENDMENT-1 AM-1 and #2174, whenever
+the caller passes `--disposition HUMAN_REQUIRED|PROPOSE_ONLY`. The overseer
+must pass `--disposition` on both subcommands (D-0); `AUTO_MERGE` is accepted
+only by `submit-verdict`, so the merge path can never summon a human. On a
+`comment` verdict with a non-merge disposition this module appends the
+head-bound interim sign-off marker that require_overseer_approval.py reads
+(#2174), and writes an audit record per GitHub write.
 
 This module decides the review event and the reviewer trigger itself (it is
 the sole author of both, per ADR-1357-AMENDMENT-1 FC-2 — slice 4 calls this
@@ -55,6 +61,16 @@ SUBCOMMANDS = ("submit-verdict", "request-reviewer")
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _PR_RE = re.compile(r"^[0-9]+$")
 _VALID_TIERS = ("SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+_NON_MERGE_DISPOSITIONS = ("HUMAN_REQUIRED", "PROPOSE_ONLY")
+_VERDICT_DISPOSITIONS = ("AUTO_MERGE",) + _NON_MERGE_DISPOSITIONS
+_EXPECTED_ACTIONS = (
+    "APPROVE",
+    "REQUEST_CHANGES",
+    "DECIDE",
+    "DO_NOT_MERGE",
+    "NO_ACTION",
+    "OTHER",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +259,8 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
 
 def _build_parser() -> _EnvelopeArgumentParser:
     """Build the argv contract (§4.1). --tier is required on both
-    subcommands, uniformly — no conditionally-valid flag. Help is disabled
+    subcommands, uniformly. The one identity-keyed exception is --disposition
+    (required for --app overseer, refused otherwise: ADR-1657-AM1 AM-6). Help is disabled
     everywhere so an unrecognised -h/--help is a plain usage error (exit 2
     via error()) rather than argparse's own sys.exit(0) help path, keeping
     main() the sole exit-code author.
@@ -260,9 +277,12 @@ def _build_parser() -> _EnvelopeArgumentParser:
     submit_p = subparsers.add_parser("submit-verdict", parents=[common], add_help=False)
     submit_p.add_argument("--event", type=_event_type, required=True)
     submit_p.add_argument("--body-file", required=True)
+    submit_p.add_argument("--disposition", choices=_VERDICT_DISPOSITIONS, default=None)
+    submit_p.add_argument("--expected-action", choices=_EXPECTED_ACTIONS, default=None)
 
     request_p = subparsers.add_parser("request-reviewer", parents=[common], add_help=False)
     request_p.add_argument("--reviewer", default=None)
+    request_p.add_argument("--disposition", choices=_NON_MERGE_DISPOSITIONS, default=None)
 
     return parser
 
@@ -472,6 +492,91 @@ def _load_require_tier_ceiling():
     return mod
 
 
+def _load_require_overseer_approval():
+    """Load require_overseer_approval.py by file path — the single source of
+    the interim sign-off marker grammar (#2174), so the writer here and the
+    gate that reads it cannot drift."""
+    path = Path(__file__).resolve().parents[1] / "framework" / "require_overseer_approval.py"
+    spec = importlib.util.spec_from_file_location("hos_require_overseer_approval_pr_review", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _write_audit(event: dict, ctx: _Context) -> tuple[str | None, str | None]:
+    """Write one audit record; (repo-relative path, None) or (None, scrubbed
+    failure text). Never raises: the GitHub write has already landed, so a
+    failed audit write must not turn into an exit 1 that halts the overseer
+    and loses the record permanently (the idempotency guards would skip the
+    write next cycle). audit_log is imported here so importing this module
+    stays I/O-free."""
+    try:
+        from scripts.oversight.lib import audit_log
+
+        relpath = audit_log.write_event(event, root=str(ctx.repo_root))
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        failure = f"audit write failed: {_scrub_exc(exc)}"
+        print(f"pr_review_cli: {failure}", file=sys.stderr)
+        return None, failure
+    return os.path.join("audit", "log", relpath), None
+
+
+def _disposition_usage_error(args: argparse.Namespace, ctx: _Context) -> _Outcome | None:
+    """D-0: --disposition is mandatory for --app overseer (a silent omission
+    would recreate #1668: nobody summoned, gate red)."""
+    if ctx.app_role == "overseer" and args.disposition is None:
+        return _Outcome(
+            payload={},
+            exit_code=2,
+            error="--disposition is required for --app overseer",
+        )
+    return None
+
+
+def _disposition_identity_refusal(
+    args: argparse.Namespace, ctx: _Context, pre: _Preamble, base: dict
+) -> _Outcome | None:
+    """D-1: a disposition marks a sign-off only the overseer identity may make."""
+    if args.disposition is None:
+        return None
+    if ctx.app_role == "overseer" and pre.bot_login.lower() == ctx.config.overseer_handle.lower():
+        return None
+    return _Outcome(
+        payload={
+            **base,
+            "refused": True,
+            "refusal_reason": "disposition_requires_overseer_identity",
+        },
+        exit_code=3,
+        not_verified=pre.not_verified,
+        repo=pre.repo,
+        pr=args.pr,
+    )
+
+
+_SIGNOFF_SENTENCE_APPROVE = (
+    "Overseer interim sign-off (#2174): this review does not approve the PR. "
+    "The merge now waits only on a designated human's approval of commit `{sha12}`."
+)
+_SIGNOFF_SENTENCE_OTHER = (
+    "Overseer interim sign-off (#2174): this review does not approve the PR, and "
+    "the overseer recommends against merging it as it stands (see above). The "
+    "overseer's required check no longer blocks. A designated human who approves "
+    "commit `{sha12}`, after resolving the overseer's open review threads, "
+    "overrides this recommendation and makes the PR mergeable."
+)
+
+
+def _with_interim_signoff(body: str, disposition: str, action: str, head_sha: str) -> str:
+    """Effective body for a non-merge `comment` verdict: the agent's body, the
+    action-dependent visible sentence, then the machine-readable marker."""
+    roa = _load_require_overseer_approval()
+    template = _SIGNOFF_SENTENCE_APPROVE if action == "APPROVE" else _SIGNOFF_SENTENCE_OTHER
+    sentence = template.format(sha12=head_sha[:12])
+    marker = roa.render_interim_marker(disposition, action, head_sha)
+    return body.rstrip("\n") + "\n\n" + sentence + "\n\n" + marker + "\n"
+
+
 def _load_codeowners_module():
     """Load scripts/oversight/codeowners.py by file path (it is not an
     importable package). Same idiom as
@@ -540,8 +645,12 @@ def _find_matching_review(
     return None
 
 
-def _verdict_payload_base(event: str, tier: str, ceiling: str, pr_author: str) -> dict:
+def _verdict_payload_base(
+    event: str, tier: str, ceiling: str, pr_author: str, disposition: str | None
+) -> dict:
     return {
+        "disposition": disposition,
+        "marker_appended": False,
         "posted": False,
         "skipped": False,
         "skip_reason": None,
@@ -559,14 +668,102 @@ def _verdict_payload_base(event: str, tier: str, ceiling: str, pr_author: str) -
     }
 
 
+def _record_signoff(
+    payload: dict,
+    not_verified: list[str],
+    args: argparse.Namespace,
+    ctx: _Context,
+    pre: _Preamble,
+    action: str | None,
+) -> None:
+    """Audit a posted non-merge verdict (on either event: an approve is itself
+    the sign-off and requirement 5 still needs it recorded). Mutates payload
+    and not_verified in place; sets audit_record on every posted verdict."""
+    if args.disposition not in _NON_MERGE_DISPOSITIONS:
+        payload["audit_record"] = None
+        return
+    record, failure = _write_audit(
+        {
+            "event": "overseer-interim-signoff",
+            "pr": args.pr,
+            "repo": pre.repo,
+            "head_sha": pre.head_sha,
+            "disposition": args.disposition,
+            "expected_action": action,
+            "event_requested": args.event,
+            "review_id": payload.get("review_id"),
+            "review_state": payload.get("review_state"),
+            "marker_appended": payload.get("marker_appended"),
+            "actor": pre.bot_login,
+            "timestamp": _now_iso(),
+        },
+        ctx,
+    )
+    payload["audit_record"] = record
+    if failure:
+        not_verified.append(failure)
+
+
 def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    usage_error = _disposition_usage_error(args, ctx)
+    if usage_error is not None:
+        return usage_error
+
     pre = _resolve_preamble(args, ctx)
     if isinstance(pre, _Outcome):
         return pre
 
     ceiling_name = ctx.config.overseer_ceiling.name
-    base = _verdict_payload_base(args.event, args.tier, ceiling_name, pre.author_login)
+    base = _verdict_payload_base(
+        args.event, args.tier, ceiling_name, pre.author_login, args.disposition
+    )
     require_tier_ceiling = _load_require_tier_ceiling()
+
+    # D-1 — a disposition is only valid from the overseer identity.
+    refusal = _disposition_identity_refusal(args, ctx, pre, {**base, "commit_id": pre.head_sha})
+    if refusal is not None:
+        return refusal
+
+    # D-2 — the disposition must be consistent with the event (a disposition
+    # bug, so halt rather than silently post the wrong thing).
+    if (args.disposition == "AUTO_MERGE" and args.event != "approve") or (
+        args.disposition == "PROPOSE_ONLY" and args.event != "comment"
+    ):
+        return _Outcome(
+            payload={
+                **base,
+                "refused": True,
+                "refusal_reason": "disposition_event_mismatch",
+                "commit_id": pre.head_sha,
+            },
+            exit_code=3,
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
+
+    # D-3 — the expected action must match the disposition.
+    non_merge = args.disposition in _NON_MERGE_DISPOSITIONS
+    action = args.expected_action
+    if non_merge and action in (None, "NO_ACTION"):
+        d3_error = (
+            f"--expected-action (not NO_ACTION) is required with --disposition {args.disposition}"
+        )
+    elif args.disposition == "PROPOSE_ONLY" and action != "APPROVE":
+        d3_error = "--disposition PROPOSE_ONLY requires --expected-action APPROVE"
+    elif args.disposition == "AUTO_MERGE" and action not in (None, "NO_ACTION"):
+        d3_error = "--disposition AUTO_MERGE accepts no --expected-action other than NO_ACTION"
+    else:
+        d3_error = None
+    if d3_error is not None:
+        return _Outcome(
+            payload={},
+            exit_code=2,
+            error=d3_error,
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
 
     # G0 — --app never authorizes an approve on its own (MUST_FIX 1, #1657
     # PR-1 review round 4). Elsewhere ctx.app_role/args.app is only ever
@@ -710,11 +907,51 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             pr=args.pr,
         )
 
+    # D-4 — defence in depth: the agent never writes the sign-off marker; this
+    # wrapper appends it. A line that opens the marker comment is refused on
+    # every disposition (a mere mention mid-line is fine).
+    roa = _load_require_overseer_approval()
+    if any(line.lstrip().startswith(roa.MARKER_PREFIX) for line in body_text.splitlines()):
+        return _Outcome(
+            payload={},
+            exit_code=2,
+            error="body_contains_marker: the body must not contain the interim sign-off marker",
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
+
+    # D-5 — keeps G6's key honest: the human-visible text and the key agree.
+    if non_merge and f"Expected action: **{action.replace('_', ' ')}**" not in body_text:
+        return _Outcome(
+            payload={},
+            exit_code=2,
+            error=(
+                "expected_action_not_in_body: the body must contain "
+                f"'Expected action: **{action.replace('_', ' ')}**'"
+            ),
+            not_verified=pre.not_verified,
+            repo=pre.repo,
+            pr=args.pr,
+        )
+
+    # Effective body: for a non-merge `comment` verdict, append the visible
+    # sentence and marker. Everything below (G4, G6, the POST, recovery) uses
+    # this, not the file's bytes. An `approve` is never marked: it already
+    # passes require-overseer-approval and "does not approve" would be false.
+    marker_appended = non_merge and args.event == "comment"
+    if marker_appended:
+        body_text = _with_interim_signoff(body_text, args.disposition, action, pre.head_sha)
+
     # G4 — an identical COMMENT verdict already posted on this exact head:
     # skip, no POST. Narrow by design (byte-identical body, same head SHA):
     # it never suppresses an approval and never suppresses a body that
     # differs by so much as a character, so it cannot hide new information.
-    if args.event == "comment":
+    # Unmarked verdicts only: a marked interim sign-off is revoked by any later
+    # overseer verdict on the head (the gate reads only the latest verdict), so
+    # a historical byte-identical sign-off must not suppress a re-sign-off.
+    # For marked verdicts G6 alone decides, against the LATEST verdict.
+    if args.event == "comment" and not marker_appended:
         for review in pre.reviews:
             reviewer_login = (review.get("user") or {}).get("login", "")
             if (
@@ -739,6 +976,33 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                     repo=pre.repo,
                     pr=args.pr,
                 )
+
+    # G6 — the interim sign-off for this (head, expected action) already
+    # stands: skip, no POST. Keyed on the action, not the disposition or the
+    # narrative (ADR-1657-AM1 AM-3): #761 flips PROPOSE_ONLY to HUMAN_REQUIRED
+    # on the overseer's own reviewer request, which is not new information.
+    if marker_appended:
+        verdict = roa.latest_overseer_verdict_on_head(
+            pre.reviews, ctx.config.overseer_handle, pre.head_sha
+        )
+        signoff = roa.valid_interim_signoff(verdict, pre.head_sha) if verdict else None
+        if signoff is not None and signoff[1] == action:
+            payload = {
+                **base,
+                "skipped": True,
+                "skip_reason": "interim_signoff_on_head",
+                "review_id": verdict.get("id"),
+                "review_state": verdict.get("state"),
+                "review_url": verdict.get("html_url"),
+                "commit_id": pre.head_sha,
+            }
+            return _Outcome(
+                payload=payload,
+                exit_code=0,
+                not_verified=pre.not_verified,
+                repo=pre.repo,
+                pr=args.pr,
+            )
 
     gh_event = "APPROVE" if args.event == "approve" else "COMMENT"
     expected_state = "APPROVED" if args.event == "approve" else "COMMENTED"
@@ -809,10 +1073,12 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
                 "review_url": existing.get("html_url"),
                 "commit_id": existing.get("commit_id"),
                 "body_bytes": len(body_text.encode("utf-8")),
+                "marker_appended": marker_appended,
             }
             not_verified.append(
                 f"review posted despite an ambiguous submit_pull_review response: {_scrub_exc(exc)}"
             )
+            _record_signoff(payload, not_verified, args, ctx, pre, action)
             return _Outcome(
                 payload=payload,
                 exit_code=0,
@@ -873,7 +1139,9 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         "review_url": result.get("html_url"),
         "commit_id": result.get("commit_id"),
         "body_bytes": len(body_text.encode("utf-8")),
+        "marker_appended": marker_appended,
     }
+    _record_signoff(payload, not_verified, args, ctx, pre, action)
     return _Outcome(
         payload=payload,
         exit_code=0,
@@ -894,14 +1162,21 @@ class TriggerResult:
     critical_tier: bool
     protected_surface: bool
     triggered: bool
+    non_merge_disposition: bool = False
 
 
 def evaluate_reviewer_trigger(
-    tier: str, ceiling: str, changed_files: list[str], repo_root
+    tier: str,
+    ceiling: str,
+    changed_files: list[str],
+    repo_root,
+    disposition: str | None = None,
 ) -> TriggerResult:
-    """Pure predicate implementing the #1657 human-reviewer trigger scoping
-    (ADR-1657 AD-3 — CONFIRMED, do not widen). No I/O beyond
-    touches_protected_surface's own surfaces-file read.
+    """Pure predicate implementing the human-reviewer trigger scoping.
+    ADR-1657 AD-3 is superseded for non-merge dispositions by the #1936
+    ruling and #2174 (ADR-1657-AMENDMENT-1 AM-1); with no disposition the
+    scoping is unchanged. No I/O beyond touches_protected_surface's own
+    surfaces-file read.
 
     `critical_tier` is kept as its own term even though it is currently
     implied by `above_ceiling` (ceiling is HIGH): the ruling names the
@@ -913,17 +1188,22 @@ def evaluate_reviewer_trigger(
     above_ceiling = require_tier_ceiling.tier_exceeds_ceiling(tier, ceiling)
     critical_tier = tier.upper() == "CRITICAL"
     protected_surface = merge_authority.touches_protected_surface(changed_files, str(repo_root))
-    triggered = above_ceiling or critical_tier or protected_surface
+    non_merge_disposition = disposition in _NON_MERGE_DISPOSITIONS
+    triggered = above_ceiling or critical_tier or protected_surface or non_merge_disposition
     return TriggerResult(
         above_ceiling=above_ceiling,
         critical_tier=critical_tier,
         protected_surface=protected_surface,
         triggered=triggered,
+        non_merge_disposition=non_merge_disposition,
     )
 
 
-def _reviewer_payload_base(trigger: TriggerResult, changed_file_count: int, head_sha: str) -> dict:
+def _reviewer_payload_base(
+    trigger: TriggerResult, changed_file_count: int, head_sha: str, disposition: str | None
+) -> dict:
     return {
+        "disposition": disposition,
         "requested": False,
         "skipped": False,
         "skip_reason": None,
@@ -937,6 +1217,7 @@ def _reviewer_payload_base(trigger: TriggerResult, changed_file_count: int, head
             "above_ceiling": trigger.above_ceiling,
             "critical_tier": trigger.critical_tier,
             "protected_surface": trigger.protected_surface,
+            "non_merge_disposition": trigger.non_merge_disposition,
         },
         "matched_protected_paths": [],
         "changed_file_count": changed_file_count,
@@ -945,9 +1226,17 @@ def _reviewer_payload_base(trigger: TriggerResult, changed_file_count: int, head
 
 
 def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    usage_error = _disposition_usage_error(args, ctx)
+    if usage_error is not None:
+        return usage_error
+
     pre = _resolve_preamble(args, ctx)
     if isinstance(pre, _Outcome):
         return pre
+
+    refusal = _disposition_identity_refusal(args, ctx, pre, {})
+    if refusal is not None:
+        return refusal
 
     try:
         files = github.list_pull_files(pre.owner, pre.repo_name, args.pr)
@@ -962,9 +1251,13 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     changed_files = [f["filename"] for f in files if f.get("filename")]
 
     trigger = evaluate_reviewer_trigger(
-        args.tier, ctx.config.overseer_ceiling.name, changed_files, ctx.repo_root
+        args.tier,
+        ctx.config.overseer_ceiling.name,
+        changed_files,
+        ctx.repo_root,
+        args.disposition,
     )
-    base = _reviewer_payload_base(trigger, len(changed_files), pre.head_sha)
+    base = _reviewer_payload_base(trigger, len(changed_files), pre.head_sha, args.disposition)
 
     if not trigger.triggered:
         # Step 4 — fail-closed on an unevaluable trigger: a false "not
@@ -1073,6 +1366,24 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
             pr=args.pr,
         )
     if login.lower() == pre.author_login.lower():
+        if args.disposition is not None:
+            # On a PR the human authored they are already the named actor;
+            # halting here would stall the overseer every cycle (#2174).
+            return _Outcome(
+                payload={
+                    **base,
+                    "skipped": True,
+                    "skip_reason": "reviewer_is_pr_author",
+                    "resolved_reviewer": login,
+                    "resolution_source": source,
+                    "codeowners_owners": codeowners_owners,
+                    "codeowners_team_owners": codeowners_team_owners,
+                },
+                exit_code=0,
+                not_verified=not_verified,
+                repo=pre.repo,
+                pr=args.pr,
+            )
         return _Outcome(
             payload={},
             exit_code=1,
@@ -1174,6 +1485,24 @@ def _cmd_request_reviewer(args: argparse.Namespace, ctx: _Context) -> _Outcome:
         "codeowners_team_owners": codeowners_team_owners,
         "matched_protected_paths": matched_protected_paths,
     }
+    record, failure = _write_audit(
+        {
+            "event": "overseer-reviewer-requested",
+            "pr": args.pr,
+            "repo": pre.repo,
+            "head_sha": pre.head_sha,
+            "disposition": args.disposition,
+            "reviewer": login,
+            "resolution_source": source,
+            "trigger": base["trigger"],
+            "actor": pre.bot_login,
+            "timestamp": _now_iso(),
+        },
+        ctx,
+    )
+    payload["audit_record"] = record
+    if failure:
+        not_verified.append(failure)
     return _Outcome(
         payload=payload,
         exit_code=0,

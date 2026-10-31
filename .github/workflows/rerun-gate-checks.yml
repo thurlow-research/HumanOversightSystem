@@ -23,7 +23,9 @@ name: Rerun gate checks on review
 #   * the checkout below pins `ref: base.sha` with `persist-credentials: false`
 #     (the #972 pattern), so the PR head / merge ref is never checked out.
 #   * every input to the dispatch logic is a GitHub-COMPUTED value — PR number,
-#     head SHA, review state, and check-run / workflow-run ids resolved
+#     head SHA, review state, reviewer login (review.user.login, compared with
+#     the overseer login only to decide whether to dispatch), and check-run /
+#     workflow-run ids resolved
 #     server-side. No PR body, title, or branch name is ever read, and the
 #     script refuses to rerun any workflow whose `path` is not one of the three
 #     gate workflows (scripts/framework/rerun_gate_checks.py:GATE_WORKFLOW_PATHS).
@@ -74,10 +76,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_ACTION: ${{ github.event.action }}
           REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER_LOGIN: ${{ github.event.review.user.login }}
         run: |
           set -euo pipefail
           python3 scripts/framework/rerun_gate_checks.py \
             --pr "$PR_NUMBER" \
             --head-sha "$HEAD_SHA" \
             --event-action "$EVENT_ACTION" \
-            --review-state "$REVIEW_STATE"
+            --review-state "$REVIEW_STATE" \
+            --reviewer-login "$REVIEWER_LOGIN"

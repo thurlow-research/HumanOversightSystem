@@ -18,6 +18,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MODULE_PATH = _REPO_ROOT / "scripts" / "framework" / "rerun_gate_checks.py"
 _SPEC = importlib.util.spec_from_file_location("rerun_gate_checks", _MODULE_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
 rgc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(rgc)
 
@@ -25,6 +26,7 @@ _SPEC.loader.exec_module(rgc)
 # ---------------------------------------------------------------------------
 # Fake _gh_api / _sleep harness
 # ---------------------------------------------------------------------------
+
 
 class FakeApi:
     """Substitute for module-level _gh_api.
@@ -73,6 +75,7 @@ def _install_api(monkeypatch, routes: dict[tuple[str, str], list]) -> FakeApi:
 # Fixture builders
 # ---------------------------------------------------------------------------
 
+
 def _check_run(id_, name, suite_id, status="completed", conclusion="failure"):
     return {
         "id": id_,
@@ -111,25 +114,30 @@ _TC_PATH = rgc.GATE_WORKFLOWS["require-tier-ceiling"]
 # 1. GATE_WORKFLOWS constants match real files / job names
 # ---------------------------------------------------------------------------
 
+
 def test_gate_workflow_paths_exist_and_names_match_job_name():
     for name, rel_path in rgc.GATE_WORKFLOWS.items():
         wf_file = _REPO_ROOT / rel_path
         assert wf_file.is_file(), f"{rel_path} does not exist"
         data = yaml.safe_load(wf_file.read_text(encoding="utf-8"))
         job_names = {(job or {}).get("name") for job in (data.get("jobs") or {}).values()}
-        assert name in job_names, (
-            f"GATE_WORKFLOWS key {name!r} does not match any job `name:` in {rel_path}"
-        )
+        assert (
+            name in job_names
+        ), f"GATE_WORKFLOWS key {name!r} does not match any job `name:` in {rel_path}"
 
 
 # ---------------------------------------------------------------------------
 # 2. list_gate_check_runs request shape
 # ---------------------------------------------------------------------------
 
+
 def test_list_gate_check_runs_uses_filter_all_and_per_page_100(monkeypatch):
-    fake = _install_api(monkeypatch, {
-        ("GET", "check-runs"): [_list_payload([])],
-    })
+    fake = _install_api(
+        monkeypatch,
+        {
+            ("GET", "check-runs"): [_list_payload([])],
+        },
+    )
     rgc.list_gate_check_runs("o/r", "sha1")
     assert fake.calls
     method, path = fake.calls[0]
@@ -141,6 +149,7 @@ def test_list_gate_check_runs_uses_filter_all_and_per_page_100(monkeypatch):
 # ---------------------------------------------------------------------------
 # 3 / 4. resolve/dedupe -> distinct vs shared run ids
 # ---------------------------------------------------------------------------
+
 
 def test_two_check_runs_different_suites_resolve_to_two_posts(monkeypatch, sleeper):
     runs = [
@@ -193,6 +202,7 @@ def test_two_check_runs_same_run_id_resolve_to_one_post(monkeypatch, sleeper):
 # 5. Non-gate check runs ignored
 # ---------------------------------------------------------------------------
 
+
 def test_non_gate_check_runs_ignored():
     runs = [
         {"id": 1, "name": "validation-check", "check_suite": {"id": 1}},
@@ -225,6 +235,7 @@ def test_non_gate_check_runs_ignored_end_to_end(monkeypatch, sleeper):
 # 6 / 7. resolve_workflow_run_id path guards
 # ---------------------------------------------------------------------------
 
+
 def test_resolve_returns_none_when_path_not_in_gate_paths(monkeypatch):
     cr = _check_run(1, "require-human-approval", suite_id=10)
     routes = {
@@ -253,11 +264,20 @@ def test_resolve_returns_none_on_path_mismatch_for_check_run_name(monkeypatch):
 # 8 / 9. wait_for_completion polling
 # ---------------------------------------------------------------------------
 
+
 def test_wait_for_completion_second_poll_completes(monkeypatch, sleeper):
     routes = {
         ("GET", "check-runs/5"): [
             (200, {"id": 5, "status": "in_progress"}),
-            (200, {"id": 5, "status": "completed", "name": "require-human-approval", "check_suite": {"id": 1}}),
+            (
+                200,
+                {
+                    "id": 5,
+                    "status": "completed",
+                    "name": "require-human-approval",
+                    "check_suite": {"id": 1},
+                },
+            ),
         ],
     }
     fake = _install_api(monkeypatch, routes)
@@ -284,6 +304,7 @@ def test_wait_for_completion_always_in_progress_exhausts_budget(monkeypatch, sle
 # ---------------------------------------------------------------------------
 # 10 / 11 / 12. rerun_workflow_run retry semantics
 # ---------------------------------------------------------------------------
+
 
 def test_rerun_403_then_201(monkeypatch, sleeper):
     routes = {
@@ -312,7 +333,9 @@ def test_rerun_403_every_attempt_fails(monkeypatch, sleeper):
 
 def test_rerun_403_every_attempt_main_still_returns_0(monkeypatch, sleeper):
     routes = {
-        ("GET", "check-runs?"): [_list_payload([_check_run(1, "require-human-approval", suite_id=10)])],
+        ("GET", "check-runs?"): [
+            _list_payload([_check_run(1, "require-human-approval", suite_id=10)])
+        ],
         ("GET", "check-runs/1"): [(200, _check_run(1, "require-human-approval", suite_id=10))],
         ("GET", "runs?check_suite_id=10"): [_runs_payload([_workflow_run(100, _HA_PATH)])],
         ("POST", "/rerun"): [(403, None)] * rgc.RERUN_ATTEMPTS,
@@ -320,9 +343,21 @@ def test_rerun_403_every_attempt_main_still_returns_0(monkeypatch, sleeper):
     }
     _install_api(monkeypatch, routes)
     monkeypatch.setattr(
-        sys, "argv",
-        ["rerun_gate_checks.py", "--pr", "7", "--head-sha", "sha1",
-         "--event-action", "submitted", "--review-state", "APPROVED", "--repo", "o/r"],
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "APPROVED",
+            "--repo",
+            "o/r",
+        ],
     )
     assert rgc.main() == 0
 
@@ -340,6 +375,7 @@ def test_rerun_404_no_retry(monkeypatch, sleeper):
 # ---------------------------------------------------------------------------
 # 13 / 14. dismissed / submitted regardless of prior conclusion
 # ---------------------------------------------------------------------------
+
 
 def test_dismissed_with_success_conclusion_still_reruns(monkeypatch, sleeper):
     cr = _check_run(1, "require-human-approval", suite_id=10, conclusion="success")
@@ -379,6 +415,7 @@ def test_submitted_reruns_regardless_of_prior_conclusion(monkeypatch, sleeper, c
 # 15 / 16. should_dispatch
 # ---------------------------------------------------------------------------
 
+
 def test_should_dispatch_commented_submitted_false():
     assert rgc.should_dispatch("submitted", "COMMENTED") is False
 
@@ -386,11 +423,24 @@ def test_should_dispatch_commented_submitted_false():
 def test_should_dispatch_commented_submitted_end_to_end_no_api_calls(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("no API call should happen")
+
     monkeypatch.setattr(rgc, "_gh_api", _boom)
     monkeypatch.setattr(
-        sys, "argv",
-        ["rerun_gate_checks.py", "--pr", "7", "--head-sha", "sha1",
-         "--event-action", "submitted", "--review-state", "COMMENTED", "--repo", "o/r"],
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "COMMENTED",
+            "--repo",
+            "o/r",
+        ],
     )
     assert rgc.main() == 0
 
@@ -400,9 +450,26 @@ def test_should_dispatch_dismissed_true_regardless_of_state():
     assert rgc.should_dispatch("dismissed", "APPROVED") is True
 
 
+def test_should_dispatch_overseer_commented_true_2174():
+    bot = "hos-overseer-hos[bot]"
+    assert rgc.should_dispatch("submitted", "commented", bot, bot) is True
+    assert rgc.should_dispatch("submitted", "COMMENTED", bot.upper(), bot) is True
+
+
+def test_should_dispatch_non_overseer_commented_false_2174():
+    assert (
+        rgc.should_dispatch("submitted", "COMMENTED", "ScottThurlow", "hos-overseer-hos[bot]")
+        is False
+    )
+    # Unresolvable overseer login + a reviewer: fail toward dispatching.
+    assert rgc.should_dispatch("submitted", "COMMENTED", "hos-overseer-hos[bot]", "") is True
+    assert rgc.should_dispatch("submitted", "COMMENTED") is False
+
+
 # ---------------------------------------------------------------------------
 # 17. moved-head abort
 # ---------------------------------------------------------------------------
+
 
 def test_moved_head_aborts_before_any_post(monkeypatch, sleeper):
     cr = _check_run(1, "require-human-approval", suite_id=10)
@@ -421,6 +488,7 @@ def test_moved_head_aborts_before_any_post(monkeypatch, sleeper):
 # ---------------------------------------------------------------------------
 # 18 / 19 / 20. fallback path
 # ---------------------------------------------------------------------------
+
 
 def test_zero_head_check_runs_uses_fallback(monkeypatch, sleeper):
     routes = {
@@ -442,10 +510,12 @@ def test_fallback_ignores_other_pr_and_empty_pull_requests(monkeypatch, sleeper)
     routes = {
         ("GET", "check-runs?"): [_list_payload([])],
         ("GET", "runs?event=pull_request_target"): [
-            _runs_payload([
-                _workflow_run(501, _HA_PATH, pull_requests=[{"number": 999}]),  # different PR
-                _workflow_run(502, _OA_PATH, pull_requests=[]),  # empty list
-            ])
+            _runs_payload(
+                [
+                    _workflow_run(501, _HA_PATH, pull_requests=[{"number": 999}]),  # different PR
+                    _workflow_run(502, _OA_PATH, pull_requests=[]),  # empty list
+                ]
+            )
         ],
         ("GET", "pulls/7"): [(200, {"head": {"sha": "sha1"}})],
     }
@@ -474,6 +544,7 @@ def test_fallback_not_called_when_head_check_runs_found(monkeypatch, sleeper):
 # 21. dry-run
 # ---------------------------------------------------------------------------
 
+
 def test_dry_run_makes_zero_posts(monkeypatch, sleeper):
     cr = _check_run(1, "require-human-approval", suite_id=10)
     routes = {
@@ -493,12 +564,23 @@ def test_dry_run_makes_zero_posts(monkeypatch, sleeper):
 # 22. missing --repo
 # ---------------------------------------------------------------------------
 
+
 def test_missing_repo_returns_2(monkeypatch):
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     monkeypatch.setattr(
-        sys, "argv",
-        ["rerun_gate_checks.py", "--pr", "7", "--head-sha", "sha1",
-         "--event-action", "submitted", "--review-state", "APPROVED"],
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "APPROVED",
+        ],
     )
     assert rgc.main() == 2
 
@@ -507,14 +589,28 @@ def test_missing_repo_returns_2(monkeypatch):
 # 23. GhUnavailable
 # ---------------------------------------------------------------------------
 
+
 def test_gh_unavailable_returns_2(monkeypatch):
     def _boom(*a, **k):
         raise rgc.GhUnavailable("gh not found on PATH")
+
     monkeypatch.setattr(rgc, "_gh_api", _boom)
     monkeypatch.setattr(
-        sys, "argv",
-        ["rerun_gate_checks.py", "--pr", "7", "--head-sha", "sha1",
-         "--event-action", "submitted", "--review-state", "APPROVED", "--repo", "o/r"],
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "APPROVED",
+            "--repo",
+            "o/r",
+        ],
     )
     assert rgc.main() == 2
 
@@ -522,6 +618,7 @@ def test_gh_unavailable_returns_2(monkeypatch):
 # ---------------------------------------------------------------------------
 # 24. no gate check runs, fallback also empty
 # ---------------------------------------------------------------------------
+
 
 def test_no_gate_runs_and_empty_fallback_main_returns_0(monkeypatch, sleeper):
     routes = {
@@ -531,9 +628,21 @@ def test_no_gate_runs_and_empty_fallback_main_returns_0(monkeypatch, sleeper):
     }
     _install_api(monkeypatch, routes)
     monkeypatch.setattr(
-        sys, "argv",
-        ["rerun_gate_checks.py", "--pr", "7", "--head-sha", "sha1",
-         "--event-action", "submitted", "--review-state", "APPROVED", "--repo", "o/r"],
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "APPROVED",
+            "--repo",
+            "o/r",
+        ],
     )
     assert rgc.main() == 0
 
@@ -541,6 +650,7 @@ def test_no_gate_runs_and_empty_fallback_main_returns_0(monkeypatch, sleeper):
 # ---------------------------------------------------------------------------
 # 25. dispatcher's own job name is not a gate name (no-recursion sanity check)
 # ---------------------------------------------------------------------------
+
 
 def test_dispatcher_own_job_name_not_a_gate_name():
     assert "rerun-gate-checks" not in rgc.GATE_NAMES
@@ -563,9 +673,11 @@ def test_dispatcher_own_check_run_ignored_end_to_end(monkeypatch, sleeper):
 # _gh_api status-line parsing / GhUnavailable
 # ---------------------------------------------------------------------------
 
+
 def test_gh_api_raises_gh_unavailable_when_gh_missing(monkeypatch):
     def _fake_run(*a, **k):
         raise FileNotFoundError("gh not found")
+
     monkeypatch.setattr(rgc.subprocess, "run", _fake_run)
     with pytest.raises(rgc.GhUnavailable):
         rgc._gh_api("repos/o/r/pulls/1")
@@ -582,3 +694,82 @@ def test_gh_api_unparseable_status_returns_zero_and_warns(monkeypatch, capsys):
     assert payload is None
     captured = capsys.readouterr()
     assert "::warning::" in captured.err
+
+
+def test_overseer_login_from_env_warns_when_env_file_missing(monkeypatch, capsys):
+    monkeypatch.setattr(rgc.Path, "is_file", lambda self: False)
+    assert rgc.overseer_login_from_env() == ""
+    assert "::warning::" in capsys.readouterr().out
+
+
+def test_overseer_login_from_env_warns_when_username_empty(monkeypatch, tmp_path, capsys):
+    fake_dir = tmp_path / "framework"
+    fake_dir.mkdir()
+    (fake_dir / "machine-accounts.env").write_text('BOT_OVERSEER_USERNAME=""\n')
+    (fake_dir / "require_overseer_approval.py").write_text(
+        (_REPO_ROOT / "scripts" / "framework" / "require_overseer_approval.py").read_text()
+    )
+    monkeypatch.setattr(rgc, "__file__", str(fake_dir / "rerun_gate_checks.py"))
+    assert rgc.overseer_login_from_env() == ""
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "BOT_OVERSEER_USERNAME is empty" in out
+    assert "will not dispatch" not in out
+
+
+def test_overseer_login_from_env_returns_login_without_warning(capsys):
+    assert rgc.overseer_login_from_env() != ""
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_gh_api_timeout_is_a_failed_call_status_0(monkeypatch, capsys):
+    seen = {}
+
+    def _run(args, **kwargs):
+        seen.update(kwargs)
+        raise rgc.subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(rgc.subprocess, "run", _run)
+    assert rgc._gh_api("repos/o/r/pulls/1") == (0, None)
+    assert seen["timeout"] == rgc.GH_SUBPROCESS_TIMEOUT_SECONDS == 30
+    assert "timed out" in capsys.readouterr().err
+
+
+def test_should_dispatch_unknown_overseer_dispatches_but_no_reviewer_does_not():
+    assert rgc.should_dispatch("submitted", "COMMENTED", "someone", "") is True
+    assert rgc.should_dispatch("submitted", "COMMENTED", "", "") is False
+
+
+def test_overseer_login_from_env_import_error_warns_and_returns_empty(monkeypatch, capsys):
+    def _boom(*a, **k):
+        raise ImportError("broken sibling")
+
+    monkeypatch.setattr(rgc.importlib.util, "module_from_spec", _boom)
+    assert rgc.overseer_login_from_env() == ""
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "will dispatch" in out
+
+
+def test_no_dispatch_message_names_reviewer_and_overseer(monkeypatch, capsys):
+    monkeypatch.setattr(rgc, "overseer_login_from_env", lambda: "the-overseer[bot]")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rerun_gate_checks.py",
+            "--pr",
+            "7",
+            "--head-sha",
+            "sha1",
+            "--event-action",
+            "submitted",
+            "--review-state",
+            "COMMENTED",
+            "--reviewer-login",
+            "ScottThurlow",
+            "--repo",
+            "o/r",
+        ],
+    )
+    assert rgc.main() == 0
+    out = capsys.readouterr().out
+    assert "ScottThurlow" in out and "the-overseer[bot]" in out

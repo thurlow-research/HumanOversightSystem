@@ -38,6 +38,7 @@ TIER_ORDER = {"SAFE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 # machine-accounts.env loader
 # ---------------------------------------------------------------------------
 
+
 def load_env(path: Path) -> dict[str, str]:
     if not path.is_file():
         print(
@@ -55,7 +56,7 @@ def load_env(path: Path) -> dict[str, str]:
         key, _, val = line.partition("=")
         key = key.strip()
         # Strip inline bash comments before unquoting (e.g. KEY="val"  # comment)
-        val = re.sub(r'\s+#.*$', '', val.strip())
+        val = re.sub(r"\s+#.*$", "", val.strip())
         val = val.strip('"').strip("'")
         # Expand simple variable references (e.g. BOT_ACCOUNTS="${VAR1} ${VAR2}")
         val = re.sub(r"\$\{?(\w+)\}?", lambda m: result.get(m.group(1), ""), val)
@@ -66,6 +67,7 @@ def load_env(path: Path) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # GitHub API helpers
 # ---------------------------------------------------------------------------
+
 
 def _gh(*args: str) -> str:
     """Run `gh` with the given args, return stdout. Exit 2 on failure."""
@@ -182,9 +184,7 @@ def _pr_head_sha(repo: str, pr: str) -> str:
     return sha
 
 
-def _fetch_head_python(
-    repo: str, pr: str, py_files: list[str], dest: Path
-) -> list[str]:
+def _fetch_head_python(repo: str, pr: str, py_files: list[str], dest: Path) -> list[str]:
     """Fetch the PR *head* content of each changed .py file into `dest` as DATA.
 
     The content is written to disk and later parsed (never executed) by the
@@ -203,8 +203,10 @@ def _fetch_head_python(
             continue
         proc = subprocess.run(
             [
-                "gh", "api",
-                "-H", "Accept: application/vnd.github.raw",
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github.raw",
                 f"repos/{repo}/contents/{rel}?ref={head_sha}",
             ],
             capture_output=True,
@@ -279,10 +281,7 @@ def _simplified_tier(changed_files: list[str]) -> str:
     agent_paths = [f for f in changed_files if ".claude/agents/" in f]
     if agent_paths:
         return "MEDIUM"
-    code_files = [
-        f for f in changed_files
-        if f.endswith((".py", ".sh"))
-    ]
+    code_files = [f for f in changed_files if f.endswith((".py", ".sh"))]
     if len(code_files) > 10:
         return "MEDIUM"
     return "LOW"
@@ -330,6 +329,7 @@ def compute_tier(repo: str, pr: str, changed_files: list[str]) -> str | None:
 # Tier comparison
 # ---------------------------------------------------------------------------
 
+
 def tier_to_int(tier: str) -> int:
     """Map tier name to ordering int. Unknown tiers map to CRITICAL (fail-safe)."""
     return TIER_ORDER.get(tier.upper(), TIER_ORDER["CRITICAL"])
@@ -341,9 +341,11 @@ def tier_exceeds_ceiling(tier: str, ceiling: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # compute_tier_for_pr — single source of truth for "what tier is this PR",
-# reused by require_overseer_approval.py's above-ceiling bypass (#1426) so
-# the tier-computation logic is not duplicated across the two gates.
+# used by this gate's own main(). It was formerly also reused by
+# require_overseer_approval.py's above-ceiling bypass (#1426), retired in #2174
+# in favour of the head-bound interim sign-off; it is no longer reused there.
 # ---------------------------------------------------------------------------
+
 
 def compute_tier_for_pr(repo: str, pr: str) -> str | None:
     """Compute the PR's risk tier, or None if a real Python risk surface
@@ -353,9 +355,7 @@ def compute_tier_for_pr(repo: str, pr: str) -> str | None:
     """
     changed = get_changed_files(pr)
     if not changed:
-        print(
-            "require_tier_ceiling: no changed files reported (treating as SAFE)."
-        )
+        print("require_tier_ceiling: no changed files reported (treating as SAFE).")
         return "SAFE"
     return compute_tier(repo, pr, changed)
 
@@ -363,6 +363,7 @@ def compute_tier_for_pr(repo: str, pr: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Overseer tier-ceiling gate")
@@ -419,10 +420,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    print(
-        f"require_tier_ceiling: overseer approved; computed tier={tier}, "
-        f"ceiling={ceiling}."
-    )
+    print(f"require_tier_ceiling: overseer approved; computed tier={tier}, " f"ceiling={ceiling}.")
 
     if tier_exceeds_ceiling(tier, ceiling):
         print(
@@ -436,9 +434,7 @@ def main() -> int:
         )
         return 1
 
-    print(
-        f"PASS — tier {tier} is within the overseer ceiling ({ceiling})."
-    )
+    print(f"PASS — tier {tier} is within the overseer ceiling ({ceiling}).")
     return 0
 
 
