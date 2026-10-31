@@ -947,7 +947,11 @@ def _cmd_submit_verdict(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     # skip, no POST. Narrow by design (byte-identical body, same head SHA):
     # it never suppresses an approval and never suppresses a body that
     # differs by so much as a character, so it cannot hide new information.
-    if args.event == "comment":
+    # Unmarked verdicts only: a marked interim sign-off is revoked by any later
+    # overseer verdict on the head (the gate reads only the latest verdict), so
+    # a historical byte-identical sign-off must not suppress a re-sign-off.
+    # For marked verdicts G6 alone decides, against the LATEST verdict.
+    if args.event == "comment" and not marker_appended:
         for review in pre.reviews:
             reviewer_login = (review.get("user") or {}).get("login", "")
             if (

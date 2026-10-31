@@ -2243,6 +2243,77 @@ def test_w_idem_5_non_bot_typed_prior_review_is_not_a_signoff(h):
     assert _parse_stdout_json(result)["posted"] is True
 
 
+def _later_unmarked_verdict(rid=7003):
+    return {
+        "id": rid,
+        "user": {"login": DEFAULT_BOT_LOGIN, "type": "Bot"},
+        "state": "COMMENTED",
+        "commit_id": HEAD40,
+        "body": "later unmarked verdict that revokes the sign-off\n",
+        "submitted_at": "2026-01-01T00:00:05Z",
+        "html_url": "https://example.test/r/7003",
+    }
+
+
+def _signoff_of_current_body(h, action="APPROVE"):
+    """A prior sign-off byte-identical to what the wrapper will build from the
+    body file currently on disk."""
+    old = _prior_signoff(h, action)
+    old["body"] = cli._with_interim_signoff(h.body_file.read_text(), "PROPOSE_ONLY", action, HEAD40)
+    return old
+
+
+def test_w_idem_6_old_signoff_revoked_by_later_verdict_reposts(h):
+    _body(h, "APPROVE")
+    old = _signoff_of_current_body(h)
+    reviews = json.dumps([old, _later_unmarked_verdict()])
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE", env={"PR_REVIEWS_JSON": reviews})
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["posted"] is True
+    assert not record.get("skipped")
+    assert "GH_STDIN_BODY" in h.capture()
+
+
+def test_w_idem_7_latest_identical_signoff_skips_via_g6(h):
+    _body(h, "APPROVE")
+    reviews = json.dumps([_signoff_of_current_body(h)])
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE", env={"PR_REVIEWS_JSON": reviews})
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["skipped"] is True
+    assert record["skip_reason"] == "interim_signoff_on_head"
+    assert "GH_STDIN_BODY" not in h.capture()
+
+
+def test_w_idem_8_unmarked_identical_comment_verdict_skips_via_g4(h):
+    h.body_file.write_text("plain unmarked verdict body\n")
+    prior = _prior_signoff(h, "APPROVE", rid=7010)
+    prior["body"] = h.body_file.read_text()
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "worker",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+        ],
+        env_overrides={"PR_REVIEWS_JSON": json.dumps([prior])},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["marker_appended"] is False
+    assert record["skipped"] is True
+    assert record["skip_reason"] == "identical_comment_verdict_on_head"
+    assert "GH_STDIN_BODY" not in h.capture()
+
+
 def test_w_idem_1_request_reviewer_idempotent_with_disposition(h):
     result = h.run(
         _reviewer_args("PROPOSE_ONLY"),
