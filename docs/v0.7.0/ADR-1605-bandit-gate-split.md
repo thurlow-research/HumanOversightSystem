@@ -127,6 +127,8 @@ Yes — this should have been settled in the initial ruling. The gap is that I r
 
 ### AD-3 — The JSON acquisition channel is **`-o <file>`**. Stdout is never read. Scrubbing is forbidden.
 
+> **AMENDED 2026-10-21 by AD-5a.** The invocation below gains `--ini "$BANDIT_INI"` (a gate-owned config containing exactly `[bandit]\n`), and, per TD SEC-M2, `--` before the file list. The exact line is in TD §3.6. Everything else in AD-3 stands.
+
 `bandit -f json -lll -o "$BANDIT_JSON" "${FILES[@]}" >/dev/null 2>"$BANDIT_LOG"`.
 
 - **Stdout is redirected to `/dev/null` and is never parsed, filtered, stripped, or regexed.** Any design that reads stdout and removes a prefix is rejected: it makes correctness depend on matching an undocumented, version-specific rendering (Rich's bar is TTY-, width- and locale-sensitive), i.e. it re-creates the defect with an extra step. AV-1 shows the two channels are already separate; we simply stop reading the wrong one.
@@ -134,6 +136,8 @@ Yes — this should have been settled in the initial ruling. The gap is that I r
 - The gate **must not** use `>` to a temp file plus a stdout parse in any form, and **must not** contain the string `|| echo "0"` (or any default-on-parse-failure constant) anywhere. This is a construction rule on both gate files (S-2).
 
 ### AD-4 — The fail-closed contract, and exactly how it sits inside `run_with_retry`.
+
+> **AMENDED 2026-10-21 by AD-5a.** The extraction emits **four** integers, `high=<int> errors=<int> scanned=<int> given=<int>`. All four are guarded by `^[0-9]+$`. `given` is the count of distinct paths the gate passed. The "three integers" below is superseded on that point only. The rc-65 mapping and everything else stands. The coverage comparison is **not** part of the unit of work: it runs in the success branch (AD-5a), and it is never retried.
 
 The unit of work is `_run_bandit`. It succeeds **only** when all of the following hold; anything else is a failed attempt:
 
@@ -166,6 +170,17 @@ The exit-2 split closes #1759's row-7 item, which was specified there and never 
 2. **Non-empty `errors` ⇒ `GATE FAIL`**, listing `filename: reason` per entry: `GATE FAIL: bandit could not scan N file(s) — these were not checked.` (AV-5).
 
 And the green line must be evidence, not an assertion: `OK: no HIGH severity findings (<scanned> file(s) scanned, 0 unscannable)` — where `scanned` comes from **bandit's own `metrics`**, not from our argv length. A gate that reports what it actually covered cannot quietly cover nothing.
+
+### AD-5a — AMENDMENT 2026-10-21: coverage must equal input, and bandit reads no config the PR can plant (TD COV-1, COV-2).
+
+AD-5 made `scanned` the evidence, but it never compared `scanned` to the input. The Part 2 code and security reviews showed rc 0 with `scanned=0` printing `GATE PASS` (TD COV-1). Reviewing COV-1, I measured a worse case: bandit applies a `.bandit` that it finds by walking a **directory target** to the whole run. A committed symlink named `*.py` that points at a directory with `skips`/`baseline`/`recursive = true` suppresses a HIGH finding **with `scanned == given`** (TD M-5). That edits no protected-surface file, so it bypasses the human gate on `scripts/oversight/gates/**`. Two binding parts:
+
+1. **Coverage equality (TD COV-1, approved as corrected).** In the success branch, when `errors == 0` and `scanned ≠ distinct given`, the result is `GATE FAIL`, exit 1, listing every path bandit did not scan. `OK` is printed only when `high == 0`, `errors == 0` and `scanned == given`. Rule (a), `scanned ≥ 1`, is rejected: it passes partial coverage.
+2. **Pinned config (TD COV-2).** bandit is always invoked with `--ini` pointing at a gate-owned temp file containing exactly `[bandit]\n`. Passing `--ini` disables `.bandit` discovery entirely (TD M-6). If that file cannot be created, the gate fails closed. Part 1 is **not** a substitute for part 2: M-5 passes part 1.
+
+*Rejected:* `--ini /dev/null` (it works only through bandit's parse-failure warning path); a committed ini file (the PR under test can edit it); a regular-file pre-filter (with discovery off, part 1 already names directory targets, so a pre-filter would only add a second accounting).
+
+*Startup gap:* **yes, mine.** AD-3 pinned bandit's output channel and never asked what else bandit reads besides argv. *Affected sign-offs:* TD COV-1 and COV-2 list them. In short, code-reviewer, security-reviewer and unit-test are re-checked on the `security_scan.sh` verdict surface, and security-reviewer's "not an exploitable bypass" at `0b0401fea` is superseded. reliability and infra stand. No other AD is affected.
 
 Add `"security_scan": "Python"` to `KIND_FILTER_GATES` in `tests/oversight/test_gate_arg_grammar.py`. `FILE_LIST_GATES` and `DEFAULTING_STRING_GATES` are unchanged — the `--all`/no-selector project enumeration (`find . -name "*.py"`) stays exactly as it is, so AC-3's two #976 cases are untouched.
 
@@ -743,6 +758,7 @@ Per the worker's directive, items 1–2 are surfaced, not gated; item 3 is merge
 7. **A dated hold.** #1776's black and mcp exemptions expire on **2027-01-31**. Under D-5, the first scheduled run after that date returns `finding` and **holds build work**. TC-X5 also turns the `tests` check red from 2027-02-01. A renewal decision is therefore needed **before** the end of January, not after.
 8. **H-D5-7: an alert with nowhere to go (R-B, added 2026-10-20).** Until #2125's `notify_human.sh` lands, a pushed alert can reach the human only through Q-D5-5 (a)'s `escalate_to_human.sh`, which needs an issue number. Two residuals remain after R-B. (i) A hold before any tracking issue has ever existed (the first scheduled run fails, or day one's `stale`) pushes nothing. It is visible only in the worker log and the hold file. (ii) The last tracking issue may be **closed** (it closes on every clean run), so the escalation comment lands on a closed issue, and it is visible only if the human's queue surfaces `needs-human` on closed issues. Options: accept both and disclose them in the Part 3 PR body (recommended, given that #2125 is the real channel and R-10 already tells the operator to dispatch at once); choose Q-D5-5 (c) and wait for #2125; or authorise a fixed anchor issue for unattributed holds. The third adds a standing issue, which is an operational obligation, so it is the human's choice.
 9. ~~**G-4: a second advisory while held (routed to pm-agent and the human).**~~ **Resolved by pm-agent** (AC-34/41/43): a set-based re-alert. Residual R-11 must be disclosed in the PR body. Nothing is left for the human.
+10. **`security_scan` goes red on paths bandit did not scan (AD-5a, added 2026-10-21; Part 2 PR body, not blocking).** This is a fail-closed narrowing that users can see. A directory, or a symlink to a directory, named `*.py`, and, under `--all`/unscoped, a path under one of bandit's default excludes (`.tox/`, `.eggs/`, `*.egg`, `__pycache__`, `.svn`, `.hg`, `.bzr`, `CVS`), now produce `GATE FAIL … not scanned by bandit` where they used to pass silently. Measured on this clone: `--all` lists 292 paths, none of them affected. A consumer with a local `.tox/` that runs the gate unscoped will see red. Also, a `.bandit` file no longer affects this gate in any position. It previously did so only through a directory target, which is the vector being closed. Disclose both in the PR body. Neither reverses an earlier decision.
 
 None of these reverses anything below; each narrows or retunes rather than invalidates.
 

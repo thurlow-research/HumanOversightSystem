@@ -172,13 +172,14 @@ excluded.
 - `scripts/oversight/gates/bash_check.sh` — shell-portability invariant gate (blocking).
 - `scripts/oversight/gates/check_suspension.sh` — shared helper for gate suspension checks.
 - `scripts/oversight/gates/collection_integrity.sh` — test-suite collection-integrity gate (blocking on errors).
+- `scripts/oversight/gates/dependency_audit.sh` — repo-scoped dependency vulnerability gate (pip-audit, blocking on findings).
 - `scripts/oversight/gates/django_check.sh` — Django system check gate (blocking on errors).
 - `scripts/oversight/gates/expensive_gates_stub.sh` — placeholder + static container-start check.
 - `scripts/oversight/gates/lint_check.sh` — style and formatting gate (blocking).
 - `scripts/oversight/gates/mcp_policy.sh` — MCP approved-list gate (blocking, CRITICAL; #2197).
 - `scripts/oversight/gates/portability_check.sh` — flag machine-specific absolute paths in source (blocking).
 - `scripts/oversight/gates/secret_scan.sh` — hardcoded secret detection gate (blocking).
-- `scripts/oversight/gates/security_scan.sh` — security static analysis gate (blocking on HIGH).
+- `scripts/oversight/gates/security_scan.sh` — bandit HIGH-severity static analysis gate (blocking, file-scoped, offline).
 - `scripts/oversight/gates/template_refs_check.sh` — Django template-reference existence gate (blocking).
 - `scripts/oversight/gates/type_check.sh` — static type checking gate (blocking).
 

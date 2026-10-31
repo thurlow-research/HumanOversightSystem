@@ -172,6 +172,7 @@ git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
 | `type_check.sh` | `types` | — |
 | `secret_scan.sh` | `secrets` | — |
 | `security_scan.sh` | `security` | `security` |
+| `dependency_audit.sh` | `dependencies` | — |
 | `template_refs_check.sh` | `template-refs` | — |
 | `portability_check.sh` | `portability` | — |
 | `django_check.sh` | `django` | — |
@@ -191,8 +192,9 @@ git commit -m "chore: re-enable lint gate — all existing lint errors resolved"
 > every role in `required_signoffs`. **Differences in how they re-enable:** pure
 > script gates (lint, types, secrets, template-refs, portability, django) are
 > auto-re-enabled after consecutive clean passes; reviewer-role suspensions —
-> and `security`, which has a reviewer counterpart a passing scan can't satisfy —
-> are removed only by a human. Suspension of any role is additionally **ignored**
+> `security`, which has a reviewer counterpart a passing scan can't satisfy, and
+> `dependencies`, whose pass depends on a live advisory database and is therefore
+> not reproducible on demand — are removed only by a human. Suspension of any role is additionally **ignored**
 > on a step behind the effective human gate (validated tier == CRITICAL or
 > `human_gate_required`).
 
@@ -322,11 +324,17 @@ bash scripts/oversight/gates/type_check.sh [changed files...]
 bash scripts/oversight/gates/secret_scan.sh [changed files...]
 # or with staged files: bash scripts/oversight/gates/secret_scan.sh --staged
 
-# Security scan (HIGH severity = blocking)
+# Security scan (bandit, HIGH severity = blocking; file-scoped, offline)
 bash scripts/oversight/gates/security_scan.sh [changed files...]
+
+# Dependency audit (pip-audit; repo-scoped and network-dependent — takes no
+# file arguments and ignores any it is given)
+bash scripts/oversight/gates/dependency_audit.sh
 ```
 
 All must exit 0 before proceeding. Fix any failures before the review chain.
+
+Since #1605 the dependency audit is repo-scoped. It ignores every path argument `run_gates.sh` forwards, because dependency posture is a property of the installed environment, not of a diff. It skips only the runner's explicit `--empty-changeset` no-op run, reporting `NOT CHECKED` with no network call. Any other invocation, including a bare direct run, still checks. The only sanctioned ways to stop a checked run from reporting `GATE FAIL` are a human suspension of the `dependencies` key or fixing the findings (#1504).
 
 ---
 

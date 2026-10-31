@@ -1,6 +1,6 @@
 """security_scan: time-boxed, visible advisory exemptions that fail closed (#1776).
 
-`security_scan.sh` blocks on any pip-audit advisory, which made it permanently
+`dependency_audit.sh` blocks on any pip-audit advisory, which made it permanently
 red on advisories in tools HOS cannot yet upgrade (black x2, and mcp and opentelemetry-api via
 semgrep's pins; PyJWT is handled by the requirements.txt floor alone, with no exemption).
 The exemptions live in `scripts/oversight/security_scan_logic.py`; these tests
@@ -20,6 +20,9 @@ HOS source repo) and X5 (a dated cliff — from 2027-01-01 the three mcp #2194
 records are expired, and from 2027-02-01 the rest, and the required `tests` check
 turns red until a human renews or removes them; that is the forcing function,
 #1776 H3).
+
+The gate half of this module moved from `security_scan.sh` to `dependency_audit.sh`
+in #1605 (AD-22); the logic module and the roster are untouched.
 """
 
 from __future__ import annotations
@@ -41,7 +44,8 @@ import pytest
 from tests.conftest import load_module_from_path
 
 _REPO = Path(__file__).resolve().parents[2]
-_GATE = _REPO / "scripts" / "oversight" / "gates" / "security_scan.sh"
+_GATE = _REPO / "scripts" / "oversight" / "gates" / "dependency_audit.sh"
+_BANDIT_GATE = _REPO / "scripts" / "oversight" / "gates" / "security_scan.sh"
 _LOGIC_PATH = _REPO / "scripts" / "oversight" / "security_scan_logic.py"
 _VENV_BIN = _REPO / "scripts" / "oversight" / ".venv" / "bin"
 
@@ -54,10 +58,8 @@ _EXPIRES = datetime.date(2027, 1, 31)
 _EXPIRES_MCP_2194 = datetime.date(2026, 12, 31)
 
 _needs_gate = pytest.mark.skipif(
-    shutil.which("bash") is None
-    or not (_VENV_BIN / "python3").exists()
-    or not (_VENV_BIN / "bandit").exists(),
-    reason="oversight venv (python3 + bandit) or bash unavailable",
+    shutil.which("bash") is None or not (_VENV_BIN / "python3").exists(),
+    reason="oversight venv python3 or bash unavailable",
 )
 
 
@@ -938,7 +940,10 @@ def test_g2_only_roster_advisories_pass_with_visible_suppressions(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Exemption roster: ACTIVE" in res.stdout
     assert "2 advisory(ies) suppressed by a time-boxed exemption" in res.stdout
-    assert "GATE PASS: no blocking security issues (pip-audit binary overridden)" in res.stdout
+    assert (
+        "GATE PASS: no blocking dependency vulnerabilities (pip-audit binary overridden)"
+        in res.stdout
+    )
 
 
 @_needs_gate
@@ -954,10 +959,11 @@ def test_g4_pip_audit_not_completing_is_named_in_the_pass_line(tmp_path):
     assert res.returncode == 0, res.stdout + res.stderr
     assert "NOT CHECKED: pip-audit did not complete after retries" in res.stdout
     last = res.stdout.strip().splitlines()[-1]
-    assert (
-        last
-        == "GATE PASS: no blocking security issues (pip-audit binary overridden; pip-audit NOT CHECKED — see above)"
+    expected = (
+        "GATE PASS: no blocking dependency vulnerabilities "
+        "(pip-audit binary overridden; pip-audit NOT CHECKED — see above)"
     )
+    assert last == expected
 
 
 def _counting_stub(tmp_path: Path, script_body: str) -> tuple[Path, Path]:
@@ -1072,13 +1078,32 @@ def test_g5_empty_changeset_never_invokes_pip_audit(tmp_path):
     assert not marker.exists()
 
 
-def test_g6_bandit_skip_is_named_in_the_pass_line_statically():
-    text = _GATE.read_text()
+def test_g6_bandit_absent_prints_no_pass_line_statically():
+    # #1605 (TD §3 rebase item 4, §15.1.3): a missing bandit is an honest SKIP
+    # followed by `exit 0` directly. Nothing names it in a pass line, so no
+    # GATE PASS line is reachable from the branch. This tightens #1776's
+    # architect A2: no pass line is reachable at all once the lane has moved.
+    text = _BANDIT_GATE.read_text()
     skip_idx = text.index('echo "SKIP: bandit not in oversight venv')
-    append = 'NOT_PERFORMED+=("bandit SKIPPED — not installed")'
-    assert text.index(append) > skip_idx
-    assert text.index(append) - skip_idx < 200
-    assert "GATE PASS: no blocking security issues ($NOT_PERFORMED_TEXT)" in text
+    exit_idx = text.index("exit 0", skip_idx)
+    assert exit_idx - skip_idx < 120
+    assert "NOT_PERFORMED" not in text
+    assert "GATE PASS: no blocking security issues (" not in text
+
+
+def test_g7_security_scan_has_no_pip_audit_lane():
+    # TC-S19: the lane moved to dependency_audit.sh, it was not lost (g1-g5 pin
+    # it there). security_scan.sh must not carry any of its tokens.
+    text = _BANDIT_GATE.read_text()
+    for token in (
+        "pip-audit",
+        "PIP_AUDIT",
+        "AUDIT_STATE",
+        "AUDIT_STATUS",
+        "NOT_PERFORMED",
+        "security_scan_logic",
+    ):
+        assert token not in text, token
 
 
 # ── Static ──────────────────────────────────────────────────────────────────

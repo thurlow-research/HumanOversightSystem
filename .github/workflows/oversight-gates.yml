@@ -57,11 +57,21 @@ name: Oversight gates
 #                                  one real run (the #737 failure mode: a
 #                                  required context with no producing job
 #                                  blocks every merge).
+#   oversight-gate-security-scan — zero debt: 0 HIGH findings over 292 tracked
+#                                  .py files, measured 2026-10-31 through
+#                                  bandit's `-o` file channel (NOT stdout,
+#                                  which carries a progress bar once a scan
+#                                  exceeds ~1s — see DECISIONS.md, #1605).
+#                                  The measurement method is part of this
+#                                  entry: a bare "zero debt" would be
+#                                  indistinguishable from a fail-open reading.
+#                                  Not promoted to required — #1605 wires,
+#                                  promotion is its own decision (F-1).
 #
 # Two gate groups, run differently (unchanged from before the split):
 #
-# - File-scoped (secret-scan, lint, type-check, bash-check, portability,
-#   template-refs): take the PR's changed files as args, scoped to `git diff`
+# - File-scoped (secret-scan, security-scan, lint, type-check, bash-check,
+#   portability, template-refs): take the PR's changed files as args, scoped to `git diff`
 #   against the base branch rather than --all — a whole-repo run surfaces
 #   pre-existing findings never enforced at that granularity, out of scope
 #   for the PR under review. Skipped entirely when the diff is empty.
@@ -75,10 +85,13 @@ name: Oversight gates
 # structural check (scripts/framework/check_agents_static.sh), not a
 # scripts/oversight/gates/ gate (#1606).
 #
-# security_scan (pip-audit against the CI venv's installed dependency
-# versions, not the PR's changed files) and collection_integrity (duplicates
-# tests.yml's own pytest collection) are deliberately not wired in here —
-# see DECISIONS.md's 2026-09-10/11 #1216 entries for the full classification.
+# dependency_audit (pip-audit against the CI venv's installed dependency
+# versions, not the PR's changed files — network-dependent, and dependency
+# posture is not a property of a diff) and collection_integrity (duplicates
+# tests.yml's own pytest collection) are deliberately not wired in here.
+# dependency_audit runs on a schedule in a separate workflow instead (#1605,
+# Part 3); see DECISIONS.md's 2026-09-10/11 #1216 entries for the original
+# classification.
 #
 # Deterministic only — no agy/codex, no subscription CLI auth, no network
 # calls.
@@ -296,6 +309,62 @@ jobs:
             exit 0
           fi
           bash scripts/oversight/gates/template_refs_check.sh "${FILES[@]}"
+
+  oversight-gate-security-scan:
+    name: oversight-gate-security-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build oversight venv
+        env:
+          HOS_SKIP_PROJECT_REQUIREMENTS: "1"
+        run: bash scripts/oversight/ensure_venv.sh
+
+      # A failed or partial venv build would otherwise reach the gate's local
+      # `SKIP: bandit not in oversight venv` (exit 0) and give a green job that
+      # scanned nothing. The local SKIP is honest on a developer machine; CI
+      # must not inherit it (#1605, SEC-S1).
+      - name: Assert the scanner is present
+        run: |
+          test -x scripts/oversight/.venv/bin/bandit \
+            || { echo "bandit missing from the oversight venv — the scan cannot run; failing rather than reporting SKIP." >&2; exit 1; }
+
+      # NUL-delimited listing (#1605, SEC-M2): under the default
+      # core.quotepath=true git prints a non-ASCII name quoted, which the gate's
+      # `*.py` filter would silently skip as non-Python. The other file-scoped
+      # jobs still share that defect (#1812).
+      - name: Run security_scan
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_BASE_REF" --depth=1
+          mapfile -t -d '' FILES < <(git diff -z --name-only --diff-filter=d "origin/$GITHUB_BASE_REF...HEAD")
+          if [[ ${#FILES[@]} -eq 0 ]]; then
+            echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
+            exit 0
+          fi
+          # Deletions are excluded above (--diff-filter=d): a deleted path has
+          # nothing to scan, and the gate's missing-path classifier does not
+          # normalise the ./ prefix below, so it would read a deleted file as
+          # fabricated and fail the job (exit 3).
+          # Prefix every name with ./ so no argument can start with `-`
+          # (#1605, SEC re-review 2026-10-31, CWE-88/CWE-636): the shared
+          # changeset grammar treats a bare `--help`/`-h` anywhere in argv as a
+          # usage request and exits 0, so a PR adding a file so named would
+          # turn this job green without scanning anything.
+          FILES=("${FILES[@]/#/./}")
+          bash scripts/oversight/gates/security_scan.sh "${FILES[@]}"
 
   oversight-gate-repo-scoped:
     name: oversight-gate-repo-scoped

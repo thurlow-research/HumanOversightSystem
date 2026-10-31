@@ -1261,3 +1261,76 @@ Human ruling on #2053 (Option A, confirmed 2026-10-15): the committed validation
 #1536 stays open, narrowed to the AI-validation half (#1643 W7).
 
 **Scope of this slice (1 of N).** New workflow; deleted `validation-check.yml` and `check_validation_current.sh`; stamp-writing block removed from `check_agents_static.sh`; `framework_consumer_files.txt` no longer ships `validation-check.yml`; docs and tests updated. The rest of the retirement lands in follow-up slices: the committed `*.stamp` files and `validation-stamps/README.md`, the `all-phases`/phase 2-4 stamp writers, `cut_release.sh` (`HOS_ALLOW_UNVALIDATED`), and remaining doc references.
+
+## 2026-10-21 — Split `security_scan.sh` into a file-scoped bandit gate and a repo-scoped dependency gate; bandit's verdict comes from the file it wrote (#1605)
+
+**The split.** There are now two gates, not one gate with a flag. `security_scan.sh` is
+bandit-only, file-scoped and offline (suspension key `security`). `dependency_audit.sh` is
+the pip-audit lane, repo-scoped and network-dependent (suspension key `dependencies`).
+`run_gates.sh` discovers gates by file, so a flag would have left one code path in which the
+two halves stay fused, and the network half is what kept the bandit half out of CI. The
+`run_gates.sh` runner is untouched.
+
+**The fail-open defect and its trigger.** The old gate parsed bandit's **stdout**. Bandit
+decorates stdout with a progress bar once a scan exceeds about a second, and the unparseable
+stream was read as zero findings. The trigger is **duration, not file count**, so the same PR
+could pass on a fast runner and fail open on a slow or loaded one. A shared CI runner is the
+slow, loaded case. The fix is bandit's `-o`: the verdict is derived only from the JSON file it
+writes, and stdout goes to `/dev/null`. Scrubbing stdout was rejected because correctness would
+then depend on an undocumented, TTY-, width- and locale-sensitive rendering. Every attempt
+truncates the file first, so a timeout-killed attempt's leftover cannot be read as the next
+attempt's result. A file name that begins with `-` cannot become an option, because the file
+list follows `--`.
+
+**A second silent negative.** A file bandit could not parse used to be counted as
+scanned-and-clean. The changeset is now filtered to Python first, a non-empty `errors` list is
+`GATE FAIL`, and the green line names the count of files bandit actually scanned. A
+project-wide scan that finds no Python file is `NOT CHECKED`, never a pass. A missing bandit
+prints `SKIP` and exits 0 with no pass line at all. This tightens #1776's rule that a pass
+line must name what did not run: a pass line is no longer reachable from that branch.
+
+**The baseline, with its measurement channel.** 0 HIGH findings over 219 tracked `.py` files,
+measured 2026-09-22 through `-o`, not stdout. The channel is part of the claim, because a bare
+"zero debt" would be indistinguishable from a fail-open reading.
+
+**Wired, not promoted.** The new `oversight-gate-security-scan` job in `oversight-gates.yml`
+is advisory. Promotion to a required check is a control change that deserves its own visible
+human decision (F-1). In CI the job asserts that bandit is present, so a partial venv build
+cannot give a green job that scanned nothing, and it lists changed files NUL-delimited, so a
+non-ASCII `.py` name is not silently skipped as non-Python.
+
+**The dependency gate keeps main's lane (AD-6, AD-22).** The pip-audit lane moved byte for
+byte from `security_scan.sh`, with #1776's exemption roster. It stays **blocking on findings**
+locally; suspension is the only sanctioned loosening, with a record, a review-by date and
+`--census` visibility. The exit semantics are those #1776 shipped: an uncovered advisory, an
+unparseable completed scan or an undecidable roster is `GATE FAIL`; an execution failure after
+retries (timeout, network) is `NOT CHECKED`, named in the `GATE PASS` line, and non-blocking.
+The pass line reads `no blocking dependency vulnerabilities`, so two gates never print the same
+pass line. The earlier design's `GATE NOT RUN` vocabulary and `-o` capture for pip-audit were
+dropped for main's lane.
+
+**TD-1 as reversed by AD-2a.** AD-2 first ruled that `dependency_audit.sh` runs
+unconditionally, even on an empty changeset. The pinned invariant TC-A2 (#1759), that a run
+which checked nothing must exit 0, required the opposite. The invariant was upheld, not
+narrowed: the gate honours only the literal `--empty-changeset` token (`NOT CHECKED`, exit 0,
+no network call) and still ignores every path argument. The near-miss is the instructive part:
+the original ruling measured how often the newly red surface would fire and did not check
+whether an existing test already forbade it from firing.
+
+**The label and the tracking issue (AD-12a, AD-12b), recorded prospectively.** The scheduled
+report's tracking issue is authenticated by the `dependency-audit` label **and** a first-line
+marker, because the marker alone is a public constant and forgeable. Creation verifies that the
+label stuck and fails red otherwise. This adds one repo label and the rule "do not hand-remove
+it". The registry row is deferred to #1812 item 12 and author pinning to #1812 item 5. The
+human approved the label on 2026-10-20; **the code that applies it ships in Part 3, not in
+this change.**
+
+**Scope.** This entry covers Part 2 of #1605 only. The scheduled workflow, the report module
+and the pause-and-alert path (Part 3) are specified in the 2026-10-20 D-5 entry above and are
+not restated here. Files: `security_scan.sh`, `dependency_audit.sh` (new),
+`oversight-gates.yml`, the three test files that pin the gates, SPEC-375, the runbook, the CI
+execution inventory, this file and the regenerated `SCRIPTS-INDEX.md`. Surfaces touched:
+`scripts/oversight/gates/**` and `.github/workflows/**` (protected, so merge needs human
+approval) and a security gate's verdict path. Deliberately unchanged: `run_gates.sh`,
+`setup_branch_protection.sh`, `static_analysis.py`, `AUTO_CHECKABLE_GATES`, and
+`docs/LABELS.md`.

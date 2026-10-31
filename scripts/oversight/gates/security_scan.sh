@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# security_scan.sh — security static analysis gate (blocking on HIGH).
-#
-# Runs bandit for security issues and pip-audit for dependency vulnerabilities.
+# security_scan.sh — bandit HIGH-severity static analysis gate (blocking, file-scoped, offline).
 #
 # HIGH severity bandit findings = gate failure (blocking).
 # MEDIUM findings are collected but do NOT block here — they feed into the
 # static_analysis.py risk validator score instead.
 #
-# Exit 0 = no blocking findings. Exit 1 = HIGH findings, dependency advisories not
-# covered by the #1776 exemption roster (scripts/oversight/security_scan_logic.py),
-# or an unreadable scan.
+# The bandit verdict is derived from the JSON file bandit writes with -o; its
+# stdout is never read, because bandit decorates stdout with a progress bar once
+# a scan exceeds ~1s — a DURATION trigger, not a file-count one (#1605, pm-agent
+# V-2). A file bandit could not parse is a scan failure, not a clean file
+# (#1605, AV-5). Dependency vulnerability auditing moved to dependency_audit.sh
+# (#1605) — this gate no longer touches the network.
+#
+# Exit 0 = no HIGH findings (or bandit absent, or nothing to scan). Exit 1 = HIGH
+# findings, an unscannable file, or a scan that did not complete or could not be
+# read.
 #
 # Usage: ./security_scan.sh file.py [file2.py ...]
 #        ./security_scan.sh --diff <ref> | --step <n> | --staged | --all | --help
@@ -43,9 +48,8 @@ hos_changeset_parse security_scan "$@" || exit $HOS_CHANGESET_EXIT
 hos_changeset_summary security_scan
 
 FILES=()
-# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759). STATUS=empty
-# skips pip-audit too — nothing changed, so there is nothing to gate, and
-# skipping keeps the empty path fast and side-effect-free (network call).
+PROJECT_WIDE=false
+# INV-SELECTOR: switch on STATUS, never on ${#FILES[@]} (#1759).
 case "$HOS_CHANGESET_STATUS" in
     empty)
         hos_changeset_not_checked security_scan
@@ -64,184 +68,203 @@ case "$HOS_CHANGESET_STATUS" in
         while IFS= read -r line; do FILES+=("$line"); done < <(find . -name "*.py" \
             -not -path "./.venv/*" -not -path "./scripts/oversight/.venv/*" \
             -not -path "./.git/*")
-        if [[ ${#FILES[@]} -eq 0 ]]; then
-            # A project with zero Python files is an honest bandit skip (not a
-            # hidden pass); pip-audit below still runs against the dependency set.
-            echo "security_scan: no Python files found in project — bandit SKIP"
-        fi
+        PROJECT_WIDE=true
         ;;
     ok)
         FILES=("${HOS_CHANGESET_FILES[@]}")
+        PROJECT_WIDE=false
         ;;
 esac
 
+# AD-5 part 1: filter the changeset to Python before bandit ever sees it —
+# without this, CI would hand every .md in a docs PR to bandit and the
+# unscannable-file branch below would go red on every documentation change.
+if $PROJECT_WIDE; then
+    if [[ ${#FILES[@]} -eq 0 ]]; then
+        # Not a pass: nothing was scanned (same vocabulary as secret_scan.sh).
+        echo "security_scan: NOT CHECKED — the project contains no Python file(s); nothing was scanned"
+        exit 0
+    fi
+else
+    PY_FILES=()
+    for f in "${FILES[@]}"; do
+        case "$f" in
+            *.py) PY_FILES+=("$f") ;;
+        esac
+    done
+    if [[ ${#PY_FILES[@]} -eq 0 ]]; then
+        hos_changeset_skip_kind security_scan "Python" 0
+        exit 0
+    fi
+    FILES=("${PY_FILES[@]}")
+fi
+
 ERRORS=0
-# Checks that did not run. A pass line that omits these would read as a clean
-# result when it is a failure to check (#1776, architect A2).
-NOT_PERFORMED=()
 GATE_TIMEOUT="${GATE_TIMEOUT:-120}"   # seconds per tool invocation
 GATE_RETRIES="${GATE_RETRIES:-2}"     # retries on crash/timeout
 
 # --- bandit: HIGH severity only (blocking) ---
 echo "=== bandit (HIGH severity) ==="
 echo "security_scan: bandit received ${#FILES[@]} file(s)"
-if [[ -x "$VENV_BIN/bandit" ]]; then
-    if [[ ${#FILES[@]} -gt 0 ]]; then
-        BANDIT_TMP=$(mktemp "${TMPDIR:-/tmp}/bandit_XXXXXX")
-        _TMP_CLEANUP+=("$BANDIT_TMP")
-        # Unit of work: run bandit under the configured timeout, capture to temp.
-        # bandit exits 1 when it FINDS issues — that is a successful scan for us
-        # (we parse the JSON afterward). Only timeout (124) or a bandit error
-        # (rc >= 2) counts as a failed attempt worth retrying.
-        _run_bandit() {
-            with_timeout "$GATE_TIMEOUT" "$VENV_BIN/bandit" -f json -lll "${FILES[@]}" > "$BANDIT_TMP" 2>/dev/null
-            local brc=$?
-            [[ $brc -eq 0 || $brc -eq 1 ]] && return 0
-            return "$brc"
-        }
-        if run_with_retry "bandit" "$GATE_RETRIES" "true" _run_bandit; then
-            BANDIT_OUT=$(cat "$BANDIT_TMP")
-            # No zero-default fallback: an unparseable bandit report must not read as zero
-            # findings (#1776). The count snippet's stderr stays visible.
-            if HIGH_COUNT=$(echo "$BANDIT_OUT" | PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
-                "import json,sys; d=json.load(sys.stdin); \
-                 print(len([r for r in d.get('results',[]) if r.get('issue_severity')=='HIGH']))") \
-                && [[ "$HIGH_COUNT" =~ ^[0-9]+$ ]]; then
-                if [[ "$HIGH_COUNT" -gt 0 ]]; then
-                    echo "GATE FAIL: $HIGH_COUNT HIGH severity bandit finding(s)"
-                    echo "$BANDIT_OUT" | PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
-                        "import json,sys; [print(f\"  {r['filename']}:{r['line_number']} [{r['test_id']}] {r['issue_text']}\") \
-                         for r in json.load(sys.stdin).get('results',[]) if r.get('issue_severity')=='HIGH']" 2>/dev/null || true
-                    ERRORS=$((ERRORS + 1))
-                else
-                    echo "OK: no HIGH severity findings"
-                fi
-            else
-                echo "GATE FAIL: bandit output could not be parsed — nothing was decided; this is a failure to check, not a clean result"
-                ERRORS=$((ERRORS + 1))
-            fi
-        else
-            echo "GATE FAIL: bandit did not complete after retries"
-            ERRORS=$((ERRORS + 1))
-        fi
-        rm -f "$BANDIT_TMP"
-        unset -f _run_bandit
-    fi
-else
+
+# HOS_BANDIT_BIN (closes #1759's D4) — off by default, inert in the real
+# pipeline, present only so the fail-closed branches below can be pinned
+# deterministically: the real contamination trigger is elapsed scan time
+# (#1605, V-2) and cannot be naturally reproduced in a fast test. No PATH
+# fallback — this gate is venv-only, and adding one would change what runs in
+# the real pipeline (out of scope).
+BANDIT_BIN=""
+if   [[ -n "${HOS_BANDIT_BIN:-}" ]]; then BANDIT_BIN="$HOS_BANDIT_BIN"
+elif [[ -x "$VENV_BIN/bandit"    ]]; then BANDIT_BIN="$VENV_BIN/bandit"
+fi
+
+if [[ -z "$BANDIT_BIN" ]]; then
+    # An honest skip: no GATE PASS line is reachable from here, so a run that
+    # scanned nothing cannot read as a clean result (TD-1605 §3.5).
     echo "SKIP: bandit not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
-    NOT_PERFORMED+=("bandit SKIPPED — not installed")
+    exit 0
 fi
 
-# --- pip-audit: dependency vulnerabilities (network-dependent — optional if it hangs) ---
-# The verdict is decided by security_scan_logic.py: it applies the time-boxed
-# exemption roster (#1776) and fails closed on anything it cannot read. The shell
-# only runs pip-audit and checks that a completed scan produced parseable JSON.
-echo ""
-echo "=== pip-audit (dependency vulnerabilities) ==="
-AUDIT_STATE="not-run"
-AUDIT_STATUS=0
-# HOS_PIP_AUDIT_BIN overrides the resolution below — off by default, inert in the
-# real pipeline, present only so a test can point this gate at a stub binary
-# (same seam as HOS_DETECT_SECRETS_BIN in secret_scan.sh). There is deliberately
-# no way to override the audit PAYLOAD. An override that is not an executable file
-# FAILS the gate: an env var must never be a route to silently disabling the
-# dependency audit (the SKIP branch below is reserved for the unset default).
-PIP_AUDIT="${HOS_PIP_AUDIT_BIN:-$VENV_BIN/pip-audit}"
-if [[ -n "${HOS_PIP_AUDIT_BIN:-}" ]]; then
-    echo "NOTE: pip-audit binary overridden by HOS_PIP_AUDIT_BIN=$HOS_PIP_AUDIT_BIN"
-    NOT_PERFORMED+=("pip-audit binary overridden")
+# Removed by _cleanup_tmp on every exit path, including the inline exit 1 below.
+BANDIT_JSON=$(mktemp "${TMPDIR:-/tmp}/bandit_json_XXXXXX")
+_TMP_CLEANUP+=("$BANDIT_JSON")
+BANDIT_LOG=$(mktemp "${TMPDIR:-/tmp}/bandit_log_XXXXXX")
+_TMP_CLEANUP+=("$BANDIT_LOG")
+# bandit's pinned config (COV-2): a gate-owned ini holding exactly `[bandit]`.
+# Without --ini, bandit walks every directory target for a `.bandit` file and
+# applies it (skips, baseline, recursive, ...) to the WHOLE run, so a committed
+# symlink to a directory could suppress a finding. With --ini it performs no
+# discovery at all. Written once; bandit never writes to it.
+if ! BANDIT_INI=$(mktemp "${TMPDIR:-/tmp}/bandit_ini_XXXXXX"); then
+    echo "GATE FAIL: could not create bandit's pinned config — nothing was scanned."
+    exit 1
 fi
-if [[ -f "$PIP_AUDIT" && -x "$PIP_AUDIT" ]]; then
-    PIP_AUDIT_TMP=$(mktemp "${TMPDIR:-/tmp}/pip_audit_XXXXXX")
-    _TMP_CLEANUP+=("$PIP_AUDIT_TMP")
-    # Unit of work: run pip-audit under the configured timeout, capture JSON.
-    # pip-audit exits 1 when it FINDS vulnerabilities — that is a SUCCESSFUL scan
-    # for us, NOT an execution failure (#672). We must separate the two:
-    #   • completed scan (rc 0 or 1 AND parseable JSON) → hand to the logic module
-    #   • timeout / network error (no parseable JSON)    → retry, then NOT CHECKED
-    # Without this split, run_with_retry treats the vulns-found rc=1 as a crash,
-    # exhausts retries, and — required=false — fails OPEN (gate exits 0 with real
-    # vulnerabilities present). Mirrors the bandit unit-of-work above.
-    # Sticky across attempts: set once ANY attempt completes with unreadable output
-    # and never reset, so a later timeout cannot erase that evidence (CWE-636).
-    _PIP_AUDIT_UNPARSEABLE=0
-    _run_pip_audit() {
-        with_timeout "$GATE_TIMEOUT" "$PIP_AUDIT" --progress-spinner off \
-            --format json > "$PIP_AUDIT_TMP" 2>/dev/null
-        local prc=$?
-        # A completed scan emits parseable JSON regardless of rc 0/1. Require both
-        # an expected rc and valid JSON before declaring the attempt a success.
-        if [[ $prc -eq 0 || $prc -eq 1 ]] && PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c \
-            "import json,sys; json.load(open(sys.argv[1]))" "$PIP_AUDIT_TMP" 2>/dev/null; then
-            return 0
-        fi
-        # Preserve a timeout rc so run_with_retry logs "timeout"; otherwise surface
-        # the execution failure rc (network error, resolver crash, …).
-        # rc 0/1 with unparseable output is a corrupt scan: return non-zero so it is
-        # retried (returning prc=0 here would be read as success).
-        [[ $prc -eq 124 ]] && return 124
-        if [[ $prc -eq 0 || $prc -eq 1 ]]; then
-            _PIP_AUDIT_UNPARSEABLE=1
-            return 1
-        fi
-        return "$prc"
-    }
-    if run_with_retry "pip-audit" "$GATE_RETRIES" "false" _run_pip_audit; then
-        # $OVERSIGHT_PYTHON is the venv interpreter: system python lacks `packaging`
-        # and would turn a healthy run into a spurious exit 2.
-        PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" "$GATES_DIR/../security_scan_logic.py" filter \
-            < "$PIP_AUDIT_TMP" || AUDIT_STATUS=$?
-        AUDIT_STATE="checked"
-        if [[ $AUDIT_STATUS -ne 0 ]]; then
-            ERRORS=$((ERRORS + 1))
-        fi
-    elif [[ $_PIP_AUDIT_UNPARSEABLE -eq 1 ]]; then
-        # At least one attempt COMPLETED (rc 0/1) with unreadable output and none
-        # produced a readable scan: a corrupt result is never a pass (CWE-636),
-        # unlike a pure timeout/execution failure below.
-        echo "GATE FAIL: pip-audit completed at least once but its output could not be parsed, and no attempt produced a readable scan ($((GATE_RETRIES + 1)) attempt(s)) — a scan whose result cannot be read is never treated as a pass."
-        AUDIT_STATE="unparseable"
-        ERRORS=$((ERRORS + 1))
-    else
-        # pip-audit exhausted retries on a genuine execution failure (timeout /
-        # network) — required=false so the gate does not block, but it SAYS the
-        # audit did not happen. This branch is NOT reached when vulnerabilities
-        # are found; those exit cleanly above.
-        echo "NOT CHECKED: pip-audit did not complete after retries — the dependency audit was NOT performed. This is a failure to check, not a clean result."
-        AUDIT_STATE="not-checked"
+_TMP_CLEANUP+=("$BANDIT_INI")
+if ! printf '[bandit]\n' > "$BANDIT_INI"; then
+    echo "GATE FAIL: could not create bandit's pinned config — nothing was scanned."
+    exit 1
+fi
+BANDIT_LAST_RC=0
+BANDIT_HIGH=""
+BANDIT_ERRS=""
+BANDIT_SCANNED=""
+BANDIT_GIVEN=""
+
+# Unit of work: one bandit attempt. The verdict comes ONLY from the JSON file
+# bandit writes via -o — stdout is redirected to /dev/null and is never parsed,
+# filtered or regexed (AD-3): bandit decorates stdout with a progress bar once
+# a scan exceeds ~1s, and that rendering is TTY/width/locale-sensitive, not a
+# channel to read correctness from. Truncate the file FIRST (: >) so a
+# timeout-killed attempt N-1's leftover JSON is never read as attempt N's
+# result (AV-3). Every option (including --ini) precedes `--`; only file paths follow it, so a
+# file named like an option (e.g. --baseline=x.py, which --diff/--step/--staged
+# can deliver from git) is never consumed as one (SEC-M2).
+_run_bandit() {
+    : > "$BANDIT_JSON"
+    with_timeout "$GATE_TIMEOUT" "$BANDIT_BIN" -f json -lll --ini "$BANDIT_INI" -o "$BANDIT_JSON" -- "${FILES[@]}" >/dev/null 2>"$BANDIT_LOG"
+    BANDIT_LAST_RC=$?
+    # rc 1 is a successful scan WITH findings, not a crash (AV-4).
+    if [[ "$BANDIT_LAST_RC" -ne 0 && "$BANDIT_LAST_RC" -ne 1 ]]; then
+        return "$BANDIT_LAST_RC"
     fi
-    rm -f "$PIP_AUDIT_TMP"
-    unset -f _run_pip_audit
-    unset _PIP_AUDIT_UNPARSEABLE
-elif [[ -n "${HOS_PIP_AUDIT_BIN:-}" ]]; then
-    echo "GATE FAIL: HOS_PIP_AUDIT_BIN=$HOS_PIP_AUDIT_BIN is not an executable file — an override that disables the dependency audit is never a pass."
-    AUDIT_STATE="override-invalid"
-    ERRORS=$((ERRORS + 1))
+    # One extraction, not three: a single python call reads the file and prints
+    # exactly "high=<int> errors=<int> scanned=<int> given=<int>", raising on any
+    # shape deviation rather than emitting a default (AD-3/AD-4). `given` is the
+    # number of DISTINCT paths this gate handed bandit (duplicates collapse in
+    # bandit's file set); the comparison with `scanned` happens in the shell.
+    local extraction
+    if ! extraction=$(PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d["results"]; m = d["metrics"]; e = d["errors"]          # KeyError -> fail closed
+if not isinstance(r, list) or not isinstance(m, dict) or not isinstance(e, list):
+    raise SystemExit(1)
+h = len([x for x in r if x.get("issue_severity") == "HIGH"])
+print("high=%d errors=%d scanned=%d given=%d" % (h, len(e), len(m) - 1, len(set(sys.argv[2:]))))
+' "$BANDIT_JSON" "${FILES[@]}" 2>>"$BANDIT_LOG"); then
+        BANDIT_LAST_RC=65
+        return 65
+    fi
+    local high_kv errs_kv scan_kv given_kv
+    read -r high_kv errs_kv scan_kv given_kv <<< "$extraction"
+    BANDIT_HIGH="${high_kv#high=}"
+    BANDIT_ERRS="${errs_kv#errors=}"
+    BANDIT_SCANNED="${scan_kv#scanned=}"
+    BANDIT_GIVEN="${given_kv#given=}"
+    # Guard against a silent pass: [[ "" -gt 0 ]] evaluates false, so an empty
+    # (or negative — an empty metrics dict yields scanned=-1) capture must fail
+    # closed here, not read as zero.
+    if [[ ! "$BANDIT_HIGH" =~ ^[0-9]+$ ]] || [[ ! "$BANDIT_ERRS" =~ ^[0-9]+$ ]] || [[ ! "$BANDIT_SCANNED" =~ ^[0-9]+$ ]] || [[ ! "$BANDIT_GIVEN" =~ ^[0-9]+$ ]]; then
+        BANDIT_LAST_RC=65
+        return 65
+    fi
+    return 0
+}
+
+if run_with_retry "bandit" "$GATE_RETRIES" "true" _run_bandit; then
+    if [[ "$BANDIT_HIGH" -gt 0 ]]; then
+        echo "GATE FAIL: $BANDIT_HIGH HIGH severity bandit finding(s)"
+        PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["results"]:
+    if r.get("issue_severity") == "HIGH":
+        print("  %s:%s [%s] %s" % (r["filename"], r["line_number"], r["test_id"], r["issue_text"]))
+' "$BANDIT_JSON" || true   # reporting-only: the verdict is already FAIL; a listing failure must not mask it
+        ERRORS=$((ERRORS + 1))
+    fi
+    if [[ "$BANDIT_ERRS" -gt 0 ]]; then
+        echo "GATE FAIL: bandit could not scan $BANDIT_ERRS file(s) — these were not checked."
+        PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for x in d["errors"]:
+    print("  %s: %s" % (x.get("filename", "?"), x.get("reason", "?")))
+' "$BANDIT_JSON" || true   # reporting-only: the verdict is already FAIL; a listing failure must not mask it
+        ERRORS=$((ERRORS + 1))
+    fi
+    # Coverage (COV-1): with no errors, bandit must have scanned every distinct
+    # path it was given. A directory, a bandit-excluded path or a non-regular file
+    # is skipped silently (rc 0, no metrics key, no errors entry), which would
+    # otherwise read as a clean scan. Skipped when errors > 0 so no file is
+    # reported twice. -ne, not -lt: scanned > given cannot happen, so if it did the
+    # accounting is broken and the gate fails closed on that too. Deliberately
+    # outside _run_bandit: it is deterministic, so a retry would only repeat it.
+    if [[ "$BANDIT_ERRS" -eq 0 && "$BANDIT_SCANNED" -ne "$BANDIT_GIVEN" ]]; then
+        echo "GATE FAIL: bandit scanned $BANDIT_SCANNED of $BANDIT_GIVEN file(s) given — the rest were not checked (a directory, a bandit-excluded path, or not a regular file). Zero findings are NOT inferred from files bandit did not scan."
+        PYTHONSAFEPATH=1 "$OVERSIGHT_PYTHON" -c '
+import json, os, sys
+m = json.load(open(sys.argv[1]))["metrics"]
+for p in sorted(set(sys.argv[2:])):
+    if os.path.join(".", p) not in m and p not in m:
+        print("  %s: not scanned by bandit" % p)
+' "$BANDIT_JSON" "${FILES[@]}" || true   # reporting-only: the verdict is already FAIL; a listing failure must not mask it
+        ERRORS=$((ERRORS + 1))
+    fi
+    if [[ "$BANDIT_HIGH" -eq 0 && "$BANDIT_ERRS" -eq 0 && "$BANDIT_SCANNED" -eq "$BANDIT_GIVEN" ]]; then
+        echo "OK: no HIGH severity findings ($BANDIT_SCANNED file(s) scanned, 0 unscannable)"
+    fi
 else
-    echo "SKIP: pip-audit not in oversight venv (run: ./scripts/oversight/ensure_venv.sh)"
-    AUDIT_STATE="skipped"
+    if [[ "$BANDIT_LAST_RC" -eq 2 ]]; then
+        echo "GATE FAIL: bandit rejected its arguments (exit 2 — a usage error, not tool flakiness). Nothing was scanned; do not retry."
+    elif [[ "$BANDIT_LAST_RC" -eq 65 ]]; then
+        echo "GATE FAIL: bandit completed but its JSON output could not be parsed — nothing was verified. Zero findings are NOT inferred from a parse failure."
+    else
+        echo "GATE FAIL: bandit did not complete after retries"
+    fi
+    echo "  bandit stderr:"
+    tail -n 5 "$BANDIT_LOG"
+    # Exit inline (not ERRORS+1): no OK line and no GATE PASS line is reachable
+    # after an incomplete scan (AC-4).
+    exit 1
 fi
-case "$AUDIT_STATE" in
-    not-checked) NOT_PERFORMED+=("pip-audit NOT CHECKED — see above") ;;
-    skipped)     NOT_PERFORMED+=("pip-audit SKIPPED — not installed") ;;
-esac
+unset -f _run_bandit
 
 echo ""
-if [[ $AUDIT_STATUS -ne 0 && $AUDIT_STATUS -ne 1 ]]; then
-    echo "GATE FAIL: the dependency audit could not be read or decided — see the error above. Nothing was decided; this is a failure to check, not a clean result."
-fi
 if [[ $ERRORS -gt 0 ]]; then
     echo "GATE FAIL: $ERRORS security check(s) failed"
     exit 1
 else
-    if [[ ${#NOT_PERFORMED[@]} -gt 0 ]]; then
-        NOT_PERFORMED_TEXT=""
-        for entry in "${NOT_PERFORMED[@]}"; do
-            NOT_PERFORMED_TEXT+="${NOT_PERFORMED_TEXT:+; }$entry"
-        done
-        echo "GATE PASS: no blocking security issues ($NOT_PERFORMED_TEXT)"
-    else
-        echo "GATE PASS: no blocking security issues"
-    fi
+    echo "GATE PASS: no blocking security issues"
     exit 0
 fi
