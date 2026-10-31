@@ -57,8 +57,8 @@ name: Oversight gates
 #                                  one real run (the #737 failure mode: a
 #                                  required context with no producing job
 #                                  blocks every merge).
-#   oversight-gate-security-scan — zero debt: 0 HIGH findings over 219 tracked
-#                                  .py files, measured 2026-09-22 through
+#   oversight-gate-security-scan — zero debt: 0 HIGH findings over 292 tracked
+#                                  .py files, measured 2026-10-31 through
 #                                  bandit's `-o` file channel (NOT stdout,
 #                                  which carries a progress bar once a scan
 #                                  exceeds ~1s — see DECISIONS.md, #1605).
@@ -349,11 +349,21 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin "$GITHUB_BASE_REF" --depth=1
-          mapfile -t -d '' FILES < <(git diff -z --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          mapfile -t -d '' FILES < <(git diff -z --name-only --diff-filter=d "origin/$GITHUB_BASE_REF...HEAD")
           if [[ ${#FILES[@]} -eq 0 ]]; then
             echo "No changed files against origin/$GITHUB_BASE_REF — skipping."
             exit 0
           fi
+          # Deletions are excluded above (--diff-filter=d): a deleted path has
+          # nothing to scan, and the gate's missing-path classifier does not
+          # normalise the ./ prefix below, so it would read a deleted file as
+          # fabricated and fail the job (exit 3).
+          # Prefix every name with ./ so no argument can start with `-`
+          # (#1605, SEC re-review 2026-10-31, CWE-88/CWE-636): the shared
+          # changeset grammar treats a bare `--help`/`-h` anywhere in argv as a
+          # usage request and exits 0, so a PR adding a file so named would
+          # turn this job green without scanning anything.
+          FILES=("${FILES[@]/#/./}")
           bash scripts/oversight/gates/security_scan.sh "${FILES[@]}"
 
   oversight-gate-repo-scoped:

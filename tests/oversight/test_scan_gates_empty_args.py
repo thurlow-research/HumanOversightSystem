@@ -771,6 +771,95 @@ def test_security_scan_ci_job_is_wired_with_the_security_amendments():
     assert "--all" not in run
 
 
+_OPTION_LIKE_NAMES = ("--help", "-h", "--all")
+
+
+def _workflow_prefix_line() -> str:
+    # The exact statement the CI job runs between building FILES and calling the
+    # gate, read from the workflow so the test cannot drift from it.
+    text = (_REPO / ".github" / "workflows" / "oversight-gates.yml").read_text()
+    job = text.split("  oversight-gate-security-scan:", 1)[1].split(
+        "\n  oversight-gate-repo-scoped:", 1
+    )[0]
+    lines = [ln.strip() for ln in job.splitlines() if ln.strip().startswith("FILES=(")]
+    assert lines == ['FILES=("${FILES[@]/#/./}")'], lines
+    # The harness below mirrors this listing; deletions must stay excluded.
+    assert 'git diff -z --name-only --diff-filter=d "origin/$GITHUB_BASE_REF...HEAD"' in job
+    return lines[0]
+
+
+def _option_named_changeset_repo(tmp_path: Path) -> Path:
+    work = tmp_path / "work"
+    _init_repo(work)
+    (work / "base.txt").write_text("base\n")
+    _git(work, "add", "base.txt")
+    _git(work, "commit", "-q", "-m", "base")
+    (work / "vuln.py").write_text(_HIGH_FINDING_PY)
+    (work / "gone.py").write_text("x = 1\n")
+    _git(work, "add", "gone.py")
+    _git(work, "commit", "-q", "-m", "to be deleted")
+    _git(work, "rm", "-q", "gone.py")
+    for name in _OPTION_LIKE_NAMES:
+        (work / name).write_text("x\n")
+    _git(work, "add", "--", "vuln.py", *_OPTION_LIKE_NAMES)
+    _git(work, "commit", "-q", "-m", "option-like names plus a HIGH finding")
+    return work
+
+
+def _run_ci_call_shape(work: Path, prefix: str, bandit_bin: str | None = None):
+    # Mirrors the workflow step: NUL-delimited git listing, optional prefix,
+    # then the gate with the array.
+    script = (
+        "set -euo pipefail\n"
+        "mapfile -t -d '' FILES < <(git diff -z --name-only --diff-filter=d HEAD~1...HEAD)\n"
+        f"{prefix}\n"
+        f'bash "{_SECURITY}" "${{FILES[@]}}"\n'
+    )
+    env = {**os.environ, "GATE_TIMEOUT": "20", "GATE_RETRIES": "1"}
+    env.pop("HOS_BANDIT_BIN", None)
+    if bandit_bin:
+        env["HOS_BANDIT_BIN"] = bandit_bin
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=str(work),
+        env=child_env(env),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_ci_call_shape_unprefixed_help_name_fails_open(tmp_path):
+    # Pins the reason for the ./ prefix (#1605, SEC re-review 2026-10-31): the
+    # shared grammar answers a bare `--help` anywhere in argv with usage and
+    # exit 0, so the scan never runs. A parser-level fix is a separate follow-up.
+    work = _option_named_changeset_repo(tmp_path)
+    res = _run_ci_call_shape(work, ":")
+    assert res.returncode == 0
+    assert "GATE FAIL" not in res.stdout
+    assert "bandit received" not in res.stdout
+
+
+@pytest.mark.skipif(not _BANDIT, reason="bandit not installed in oversight venv")
+def test_ci_call_shape_prefixed_option_like_names_still_scan_and_fail(tmp_path):
+    work = _option_named_changeset_repo(tmp_path)
+    res = _run_ci_call_shape(work, _workflow_prefix_line())
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "GATE FAIL: 1 HIGH severity bandit finding(s)" in res.stdout
+    assert "vuln.py" in res.stdout
+
+
+def test_ci_call_shape_prefixed_names_reach_the_gate_as_paths(tmp_path):
+    work = _option_named_changeset_repo(tmp_path)
+    record = tmp_path / "argv.record"
+    stub = _write_stub(tmp_path, _sb9_body(record))
+    res = _run_ci_call_shape(work, _workflow_prefix_line(), bandit_bin=str(stub))
+    assert res.returncode == 0, res.stdout + res.stderr
+    argv = _recorded_argv(record)
+    assert argv[argv.index("--") + 1 :] == ["./vuln.py"]
+    assert "Usage" not in res.stdout
+
+
 # ── dependency_audit.sh ───────────────────────────────────────────────────────
 #
 # Repo-scoped: it takes no file arguments (they are ignored). The lane is the
