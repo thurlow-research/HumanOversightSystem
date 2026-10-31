@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","disposition":"HUMAN_REQUIRED","event":"human-required","expected_action":"APPROVE","head_sha":"dd382152670011711278af3dd82707a1c0124e2e","pr":2232,"reason_category":"GATE_UNSATISFIED","review_id":5725397935,"summary":"Protected surface scripts/framework/** requires CODEOWNERS human approval; no merits defect found","tier":"MEDIUM"}
