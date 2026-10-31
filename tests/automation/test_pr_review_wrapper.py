@@ -37,7 +37,7 @@ BASH = shutil.which("bash") or "/bin/bash"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PR_REVIEW_SH = REPO_ROOT / "bootstrap" / "pr_review.sh"
 
-DEFAULT_HEAD_SHA = "sha-headabc123"
+DEFAULT_HEAD_SHA = "c" * 40  # real SHAs are 40 hex; the #2174 marker binds to one
 DEFAULT_AUTHOR = "hos-worker-hos[bot]"
 DEFAULT_BOT_LOGIN = "fake-overseer-bot[bot]"
 DEFAULT_HUMAN_REVIEWER = "hos-default-human"
@@ -169,7 +169,7 @@ PYEOF
 import json, os
 reviewers = [r for r in os.environ.get("PR_REQUESTED_REVIEWERS", "").split(" ") if r]
 print(json.dumps({
-    "head": {"sha": os.environ.get("PR_HEAD_SHA", "sha-headabc123")},
+    "head": {"sha": os.environ.get("PR_HEAD_SHA", "cccccccccccccccccccccccccccccccccccccccc")},
     "user": {"login": os.environ.get("PR_AUTHOR", "hos-worker-hos[bot]")},
     "requested_reviewers": [{"login": r} for r in reviewers],
     "review_comments": int(os.environ.get("PR_REVIEW_COMMENTS", "0")),
@@ -198,7 +198,7 @@ exit 0
 
 VALID_OVERSEER_BODY = (
     "**Executive summary:** Recommend approving this PR. "
-    "Expected action: **NO ACTION**. Not verified this run: nothing.\n"
+    "Expected action: **APPROVE**. Not verified this run: nothing.\n"
 )
 
 DEFAULT_ENV = f"""BOT_WORKER_USERNAME="hos-worker-hos[bot]"
@@ -276,10 +276,8 @@ class Harness:
 
         framework_dir = scripts_dir / "framework"
         framework_dir.mkdir()
-        shutil.copy(
-            REPO_ROOT / "scripts" / "framework" / "require_tier_ceiling.py",
-            framework_dir / "require_tier_ceiling.py",
-        )
+        for fname in ("require_tier_ceiling.py", "require_overseer_approval.py"):
+            shutil.copy(REPO_ROOT / "scripts" / "framework" / fname, framework_dir / fname)
         (framework_dir / "machine-accounts.env").write_text(DEFAULT_ENV)
         (framework_dir / "protected_surfaces.txt").write_text(DEFAULT_PROTECTED_SURFACES)
 
@@ -313,7 +311,25 @@ class Harness:
         env_path = self.repo_root / "scripts" / "framework" / "machine-accounts.env"
         env_path.write_text(DEFAULT_ENV.replace(f'"{DEFAULT_BOT_LOGIN}"', f'"{handle}"', 1))
 
+    @staticmethod
+    def _with_default_disposition(args):
+        """D-0 (#2174): every overseer call carries --disposition. Existing
+        tests predate the flag and exercise the guards, not the disposition,
+        so supply the neutral one (AUTO_MERGE for an approve, PROPOSE_ONLY
+        for a comment, HUMAN_REQUIRED for a reviewer request) unless the test
+        set its own or opted out with --no-default-disposition."""
+        if "--no-default-disposition" in args:
+            return [a for a in args if a != "--no-default-disposition"]
+        if "--disposition" in args or "overseer" not in args:
+            return list(args)
+        if args[0] == "request-reviewer":
+            return [*args, "--disposition", "HUMAN_REQUIRED"]
+        if "approve" in args:
+            return [*args, "--disposition", "AUTO_MERGE"]
+        return [*args, "--disposition", "PROPOSE_ONLY", "--expected-action", "APPROVE"]
+
     def run(self, args, env_overrides=None):
+        args = self._with_default_disposition(args)
         env = {
             "PATH": f"{self.stub_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "CAPTURE_FILE": str(self.capture_file),
@@ -633,6 +649,10 @@ def test_w6_token_revoked_exactly_once_on_sigterm(h):
         "LOW",
         "--body-file",
         str(h.body_file),
+        "--disposition",
+        "PROPOSE_ONLY",
+        "--expected-action",
+        "APPROVE",
     ]
     proc = subprocess.Popen(
         [BASH, str(h.repo_root / "bootstrap" / "pr_review.sh"), *full_args],
@@ -771,7 +791,9 @@ def test_w7_envelope_exit_3(h):
 
 def test_w8_low_tier_non_protected_refuses_no_post(h):
     result = h.run(
-        ["request-reviewer", "--app", "overseer", "--pr", "42", "--tier", "LOW"],
+        # Scoping without a disposition is unchanged but now reachable only for
+        # non-overseer callers (D-0 makes --disposition mandatory for overseer).
+        ["request-reviewer", "--app", "worker", "--pr", "42", "--tier", "LOW"],
         env_overrides={"PR_FILES": "README.md"},
     )
     assert result.returncode == 3, result.stderr
@@ -1127,7 +1149,7 @@ def test_explicit_repo_matching_origin_still_works(h):
 
 def test_w14_empty_changed_files_fails_closed_exit_1(h):
     result = h.run(
-        ["request-reviewer", "--app", "overseer", "--pr", "42", "--tier", "LOW"],
+        ["request-reviewer", "--app", "worker", "--pr", "42", "--tier", "LOW"],
         env_overrides={"PR_FILES": ""},
     )
     assert result.returncode == 1, result.stderr
@@ -1395,7 +1417,7 @@ case "$PATH_ARG" in
     json_out="$(python3 - <<'PYEOF2'
 import json, os
 print(json.dumps({
-    "head": {"sha": os.environ.get("PR_HEAD_SHA", "sha-headabc123")},
+    "head": {"sha": os.environ.get("PR_HEAD_SHA", "cccccccccccccccccccccccccccccccccccccccc")},
     "user": {"login": os.environ.get("PR_AUTHOR", "hos-worker-hos[bot]")},
     "requested_reviewers": [],
     "review_comments": 0,
@@ -1433,7 +1455,9 @@ def test_w18_ambiguous_post_response_recovers_without_duplicate_post(h):
                 "user": {"login": DEFAULT_BOT_LOGIN},
                 "state": "COMMENTED",
                 "commit_id": DEFAULT_HEAD_SHA,
-                "body": VALID_OVERSEER_BODY,
+                "body": cli._with_interim_signoff(
+                    VALID_OVERSEER_BODY, "PROPOSE_ONLY", "APPROVE", DEFAULT_HEAD_SHA
+                ),
                 "html_url": "https://github.com/test-owner/test-repo/pull/1#pullrequestreview-9001",
             }
         ]
@@ -1538,7 +1562,9 @@ def test_s_approve_refuses_when_minted_identity_mismatches_overseer_handle(h):
     )
     assert result.returncode == 3, result.stderr
     record = _parse_stdout_json(result)
-    assert record["refusal_reason"] == "approve_requires_overseer_identity_match"
+    # D-1 (#2174) catches the mismatch before G0b: every overseer call carries
+    # a disposition (D-0), and a disposition requires the matching identity.
+    assert record["refusal_reason"] == "disposition_requires_overseer_identity"
     assert record["commit_id"] == DEFAULT_HEAD_SHA
     cap = h.capture()
     stdin_lines = [line for line in cap.splitlines() if line.startswith("GH_STDIN_BODY:")]
@@ -1572,14 +1598,14 @@ def test_s_approve_succeeds_when_minted_identity_matches_overseer_handle(h):
 
 
 def test_s_comment_unaffected_by_identity_mismatch(h):
-    """G0b is gated on --event approve only — a mismatched configured
-    overseer handle must not block a comment verdict."""
+    """A mismatched configured overseer handle must not block a comment
+    verdict that claims no disposition (D-1 applies to dispositions only)."""
     h.set_overseer_handle("some-other-bot[bot]")
     result = h.run(
         [
             "submit-verdict",
             "--app",
-            "overseer",
+            "worker",
             "--pr",
             "42",
             "--event",
@@ -1855,3 +1881,410 @@ def test_w18_stale_content_review_does_not_short_circuit_as_success(h):
     # Exactly one POST attempt — no in-process retry, and the stale review
     # must not have short-circuited a second POST either.
     assert len(posts) == 1, cap
+
+
+# --------------------------------------------------------------------------- #
+# #2174 — non-merge dispositions: reviewer trigger, interim sign-off marker,
+# G6 idempotency, audit records, and the D-0..D-5 guards.
+# TD: docs/v0.7.0/TECHNICAL-DESIGN-2174-overseer-interim-signoff.md §6.
+# --------------------------------------------------------------------------- #
+
+HEAD40 = DEFAULT_HEAD_SHA
+MARKER_PREFIX = "<!-- hos:overseer-interim-signoff"
+
+
+def _body(h, action_text="APPROVE", extra=""):
+    h.body_file.write_text(
+        f"**Executive summary:** narrative. Expected action: **{action_text}**. "
+        f"Not verified this run: nothing.\n{extra}"
+    )
+
+
+def _verdict(h, disposition, action, event="comment", tier="LOW", env=None, extra_args=()):
+    return h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            event,
+            "--tier",
+            tier,
+            "--body-file",
+            str(h.body_file),
+            "--disposition",
+            disposition,
+            "--expected-action",
+            action,
+            *extra_args,
+        ],
+        env_overrides=env,
+    )
+
+
+def _posted_body(h):
+    lines = [x for x in h.capture().splitlines() if x.startswith("GH_STDIN_BODY:")]
+    assert len(lines) == 1, h.capture()
+    return json.loads(lines[0][len("GH_STDIN_BODY:") :])["body"]
+
+
+def _audit_records(h):
+    root = h.repo_root / "audit" / "log"
+    return (
+        [json.loads(p.read_text()) for p in sorted(root.rglob("*.json"))] if root.exists() else []
+    )
+
+
+def _reviewer_args(disposition):
+    return [
+        "request-reviewer",
+        "--app",
+        "overseer",
+        "--pr",
+        "42",
+        "--tier",
+        "LOW",
+        "--disposition",
+        disposition,
+    ]
+
+
+@pytest.mark.parametrize("disposition", ["HUMAN_REQUIRED", "PROPOSE_ONLY"])
+def test_w_hr_1_non_merge_disposition_requests_human_below_ceiling(h, disposition):
+    result = h.run(_reviewer_args(disposition), env_overrides={"PR_FILES": "README.md"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["requested"] is True
+    assert record["trigger"]["non_merge_disposition"] is True
+    assert record["disposition"] == disposition
+    cap = h.capture()
+    assert cap.count("requested_reviewers") == 1
+    recs = _audit_records(h)
+    assert len(recs) == 1
+    assert recs[0]["event"] == "overseer-reviewer-requested"
+    assert recs[0]["pr"] == 42
+    assert recs[0]["head_sha"] == HEAD40
+    assert recs[0]["disposition"] == disposition
+    assert record["audit_record"].startswith("audit/log/")
+
+
+def test_w_hr_2_comment_gets_sentence_and_one_marker(h):
+    _body(h, "DO NOT MERGE")
+    result = _verdict(h, "HUMAN_REQUIRED", "DO_NOT_MERGE")
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _posted_body(h)
+    marker = f"{MARKER_PREFIX} v=1 disposition=HUMAN_REQUIRED action=DO_NOT_MERGE head={HEAD40} -->"
+    assert body.count(MARKER_PREFIX) == 1
+    assert body.rstrip("\n").endswith(marker)
+    # W-HR-3: the action-aware sentence is the override one, not "waits only on".
+    assert "recommends against merging" in body
+    assert "waits only on" not in body
+    record = _parse_stdout_json(result)
+    assert record["marker_appended"] is True
+    recs = _audit_records(h)
+    assert [r["event"] for r in recs] == ["overseer-interim-signoff"]
+    assert recs[0]["marker_appended"] is True
+    assert recs[0]["expected_action"] == "DO_NOT_MERGE"
+
+
+def test_w_hr_3_approve_action_gets_waits_only_sentence(h):
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE")
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _posted_body(h)
+    assert "waits only on a designated human's approval of commit `cccccccccccc`" in body
+
+
+def test_w_po_1_propose_only_guards(h):
+    _body(h, "NO ACTION")
+    result = _verdict(h, "PROPOSE_ONLY", "NO_ACTION")
+    assert result.returncode == 2
+    _body(h, "DECIDE")
+    result = _verdict(h, "PROPOSE_ONLY", "DECIDE")
+    assert result.returncode == 2
+    _body(h, "APPROVE")
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE", event="approve")
+    assert result.returncode == 3
+    assert _parse_stdout_json(result)["refusal_reason"] == "disposition_event_mismatch"
+
+
+def test_w_auto_merge_guards(h):
+    result = _verdict(h, "AUTO_MERGE", "APPROVE", event="approve")
+    assert result.returncode == 2  # AUTO_MERGE takes no expected action
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+            "--disposition",
+            "AUTO_MERGE",
+        ]
+    )
+    assert result.returncode == 3
+    assert _parse_stdout_json(result)["refusal_reason"] == "disposition_event_mismatch"
+
+
+def test_w_am_1_auto_merge_never_summons(h):
+    result = h.run(
+        [
+            "request-reviewer",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--tier",
+            "LOW",
+            "--disposition",
+            "AUTO_MERGE",
+        ]
+    )
+    assert result.returncode == 2
+    assert "requested_reviewers" not in h.capture()
+
+
+def test_w_am_2_overseer_requires_disposition(h):
+    result = h.run(
+        [
+            "request-reviewer",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--tier",
+            "LOW",
+            "--no-default-disposition",
+        ]
+    )
+    assert result.returncode == 2
+    assert "--disposition is required" in _parse_stdout_json(result)["error"]
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+            "--no-default-disposition",
+        ]
+    )
+    assert result.returncode == 2
+    assert "GH_STDIN_BODY" not in h.capture()
+
+
+def test_w_forge_2_worker_disposition_refused(h):
+    result = h.run(
+        [
+            "submit-verdict",
+            "--app",
+            "worker",
+            "--pr",
+            "42",
+            "--event",
+            "comment",
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+            "--disposition",
+            "HUMAN_REQUIRED",
+            "--expected-action",
+            "APPROVE",
+        ]
+    )
+    assert result.returncode == 3
+    assert _parse_stdout_json(result)["refusal_reason"] == "disposition_requires_overseer_identity"
+    result = h.run(
+        [
+            "request-reviewer",
+            "--app",
+            "human",
+            "--pr",
+            "42",
+            "--tier",
+            "LOW",
+            "--disposition",
+            "HUMAN_REQUIRED",
+        ]
+    )
+    assert result.returncode == 3
+    assert "requested_reviewers" not in h.capture()
+
+
+def test_w_forge_1_marker_line_in_body_refused_even_for_auto_merge(h):
+    marker = f"{MARKER_PREFIX} v=1 disposition=PROPOSE_ONLY action=APPROVE head={HEAD40} -->"
+    for disposition, event, action in (
+        ("PROPOSE_ONLY", "comment", "APPROVE"),
+        ("AUTO_MERGE", "approve", None),
+    ):
+        _body(h, "APPROVE", extra="  " + marker + "\n")
+        args = [
+            "submit-verdict",
+            "--app",
+            "overseer",
+            "--pr",
+            "42",
+            "--event",
+            event,
+            "--tier",
+            "LOW",
+            "--body-file",
+            str(h.body_file),
+            "--disposition",
+            disposition,
+        ]
+        if action:
+            args += ["--expected-action", action]
+        result = h.run(args)
+        assert result.returncode == 2, result.stdout
+        assert "body_contains_marker" in _parse_stdout_json(result)["error"]
+    assert "GH_STDIN_BODY" not in h.capture()
+
+
+def test_w_forge_3_mid_line_mention_posts_normally(h):
+    _body(h, "APPROVE", extra="See hos:overseer-interim-signoff handling in the gate.\n")
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_w_d5_expected_action_must_be_in_body(h):
+    _body(h, "DO NOT MERGE")
+    result = _verdict(h, "HUMAN_REQUIRED", "APPROVE")
+    assert result.returncode == 2
+    assert "expected_action_not_in_body" in _parse_stdout_json(result)["error"]
+
+
+def test_w_approve_1_hr_approve_unmarked_but_audited(h):
+    _body(h, "APPROVE")
+    result = _verdict(h, "HUMAN_REQUIRED", "APPROVE", event="approve")
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _posted_body(h)
+    assert MARKER_PREFIX not in body
+    assert "interim sign-off" not in body
+    recs = _audit_records(h)
+    assert len(recs) == 1
+    assert recs[0]["marker_appended"] is False
+    assert recs[0]["event_requested"] == "approve"
+
+
+def test_w_ceil_1_hr_approve_above_ceiling_still_refused(h):
+    _body(h, "APPROVE")
+    result = _verdict(h, "HUMAN_REQUIRED", "APPROVE", event="approve", tier="CRITICAL")
+    assert result.returncode == 3
+    assert _parse_stdout_json(result)["refusal_reason"] == "above_ceiling_approve"
+
+
+def _prior_signoff(h, action, *, suffix="", rid=7001, rtype="Bot"):
+    body = cli._with_interim_signoff(f"old narrative {suffix}\n", "PROPOSE_ONLY", action, HEAD40)
+    return {
+        "id": rid,
+        "user": {"login": DEFAULT_BOT_LOGIN, "type": rtype},
+        "state": "COMMENTED",
+        "commit_id": HEAD40,
+        "body": body,
+        "submitted_at": "2026-01-01T00:00:01Z",
+        "html_url": "https://example.test/r/7001",
+    }
+
+
+def test_w_idem_2_g6_skips_same_action_even_when_disposition_flips(h):
+    reviews = json.dumps([_prior_signoff(h, "APPROVE")])
+    _body(h, "APPROVE", extra="a completely different narrative\n")
+    result = _verdict(h, "HUMAN_REQUIRED", "APPROVE", env={"PR_REVIEWS_JSON": reviews})
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["skipped"] is True
+    assert record["skip_reason"] == "interim_signoff_on_head"
+    assert "GH_STDIN_BODY" not in h.capture()
+    assert _audit_records(h) == []
+
+
+def test_w_idem_3_changed_action_posts(h):
+    reviews = json.dumps([_prior_signoff(h, "APPROVE")])
+    _body(h, "DO NOT MERGE")
+    result = _verdict(h, "HUMAN_REQUIRED", "DO_NOT_MERGE", env={"PR_REVIEWS_JSON": reviews})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _parse_stdout_json(result)["posted"] is True
+
+
+def test_w_idem_4_thread_container_after_verdict_does_not_defeat_g6(h):
+    container = {
+        "id": 7002,
+        "user": {"login": DEFAULT_BOT_LOGIN, "type": "Bot"},
+        "state": "COMMENTED",
+        "commit_id": HEAD40,
+        "body": "",
+        "submitted_at": "2026-01-01T00:00:09Z",
+    }
+    reviews = json.dumps([_prior_signoff(h, "APPROVE"), container])
+    _body(h, "APPROVE", extra="reworded\n")
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE", env={"PR_REVIEWS_JSON": reviews})
+    assert _parse_stdout_json(result)["skip_reason"] == "interim_signoff_on_head"
+
+
+def test_w_idem_5_non_bot_typed_prior_review_is_not_a_signoff(h):
+    reviews = json.dumps([_prior_signoff(h, "APPROVE", rtype="User")])
+    _body(h, "APPROVE", extra="reworded\n")
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE", env={"PR_REVIEWS_JSON": reviews})
+    assert _parse_stdout_json(result)["posted"] is True
+
+
+def test_w_idem_1_request_reviewer_idempotent_with_disposition(h):
+    result = h.run(
+        _reviewer_args("PROPOSE_ONLY"),
+        env_overrides={"PR_REQUESTED_REVIEWERS": DEFAULT_HUMAN_REVIEWER},
+    )
+    record = _parse_stdout_json(result)
+    assert record["skip_reason"] == "already_requested"
+    assert "--method POST" not in h.capture()
+    assert _audit_records(h) == []
+    reviews = json.dumps(
+        [
+            {
+                "id": 1,
+                "user": {"login": DEFAULT_HUMAN_REVIEWER, "type": "User"},
+                "state": "COMMENTED",
+                "commit_id": HEAD40,
+                "body": "x",
+            }
+        ]
+    )
+    h.capture_file.write_text("")
+    result = h.run(_reviewer_args("PROPOSE_ONLY"), env_overrides={"PR_REVIEWS_JSON": reviews})
+    assert _parse_stdout_json(result)["skip_reason"] == "already_reviewed_head"
+    assert "--method POST" not in h.capture()
+    assert _audit_records(h) == []
+
+
+def test_w_auth_1_reviewer_is_author_skips_with_disposition(h):
+    result = h.run(
+        _reviewer_args("HUMAN_REQUIRED"), env_overrides={"PR_AUTHOR": DEFAULT_HUMAN_REVIEWER}
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _parse_stdout_json(result)["skip_reason"] == "reviewer_is_pr_author"
+    assert _audit_records(h) == []
+
+
+def test_w_audit_1_audit_failure_does_not_fail_the_command(h):
+    # Make the audit directory unwritable by putting a file where audit/ must go.
+    (h.repo_root / "audit").write_text("not a directory")
+    result = _verdict(h, "PROPOSE_ONLY", "APPROVE")
+    assert result.returncode == 0, result.stdout + result.stderr
+    record = _parse_stdout_json(result)
+    assert record["posted"] is True
+    assert record["audit_record"] is None
+    assert any("audit write failed" in nv for nv in record["not_verified"])

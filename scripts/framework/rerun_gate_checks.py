@@ -18,7 +18,7 @@ approval state — that idempotence is the load-bearing assumption here.
 
 Usage (CI):
   rerun_gate_checks.py --pr N --head-sha SHA --event-action submitted|dismissed
-                       [--review-state STATE] [--repo owner/repo] [--dry-run]
+                       [--review-state STATE] [--reviewer-login LOGIN] [--repo owner/repo] [--dry-run]
 
 Exit codes:
   0 — dispatched, or nothing to do, or partially degraded (see below)
@@ -35,12 +35,14 @@ $GITHUB_STEP_SUMMARY.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 GATE_WORKFLOWS: dict[str, str] = {
@@ -65,9 +67,14 @@ class GhUnavailable(RuntimeError):
 # Low-level helpers
 # ---------------------------------------------------------------------------
 
+
 def _sleep(seconds: float) -> None:
     """Sole `time.sleep` call site — tests monkeypatch this, never real time."""
     time.sleep(seconds)
+
+
+# Mirrors _GH_SUBPROCESS_TIMEOUT_SECONDS in scripts/automation/lib/github.py.
+GH_SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 def _gh_api(path: str, *, method: str = "GET") -> tuple[int, Any]:
@@ -81,9 +88,22 @@ def _gh_api(path: str, *, method: str = "GET") -> tuple[int, Any]:
         args += ["--method", method]
     args.append(path)
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GH_SUBPROCESS_TIMEOUT_SECONDS,
+        )
     except FileNotFoundError as exc:
         raise GhUnavailable("gh not found on PATH") from exc
+    except subprocess.TimeoutExpired:
+        print(
+            f"::warning::rerun_gate_checks: gh timed out after "
+            f"{GH_SUBPROCESS_TIMEOUT_SECONDS}s for {path}",
+            file=sys.stderr,
+        )
+        return 0, None
 
     out = proc.stdout
     if "\r\n\r\n" in out:
@@ -116,17 +136,76 @@ def _gh_api(path: str, *, method: str = "GET") -> tuple[int, Any]:
 # Dispatch decision
 # ---------------------------------------------------------------------------
 
-def should_dispatch(event_action: str, review_state: str) -> bool:
+
+def should_dispatch(
+    event_action: str,
+    review_state: str,
+    reviewer_login: str = "",
+    overseer_login: str = "",
+) -> bool:
     """False only for a plain "commented" review — every other case dispatches
-    (including dismissed and empty/unknown states — fail toward dispatching)."""
+    (including dismissed and empty/unknown states — fail toward dispatching).
+
+    Exception (#2174): a COMMENTED review by the overseer carries the interim
+    sign-off, so it dispatches. Without this, a human approving BEFORE the
+    overseer's sign-off leaves require-overseer-approval red. With no
+    reviewer_login the behaviour is today's; with a reviewer but an
+    unresolvable overseer_login it dispatches (reruns are idempotent and this
+    job is not a required check).
+    """
     if event_action == "submitted" and review_state.upper() == "COMMENTED":
-        return False
+        if not reviewer_login:
+            return False
+        if not overseer_login:
+            return True
+        return reviewer_login.lower() == overseer_login.lower()
     return True
+
+
+def overseer_login_from_env() -> str:
+    """BOT_OVERSEER_USERNAME from machine-accounts.env ("" if unavailable).
+
+    "" means "unknown": should_dispatch then dispatches a COMMENTED review
+    (fail toward dispatching), and the cause is surfaced as a workflow
+    annotation.
+    """
+    env_file = Path(__file__).with_name("machine-accounts.env")
+    if not env_file.is_file():
+        print(
+            f"::warning::rerun_gate_checks: {env_file.name} not found — overseer "
+            "COMMENTED reviews will dispatch a rerun (#2174)"
+        )
+        return ""
+    path = Path(__file__).with_name("require_overseer_approval.py")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        print(
+            "::warning::rerun_gate_checks: could not load require_overseer_approval.py — "
+            "COMMENTED reviews will dispatch a rerun (#2174)"
+        )
+        return ""
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        login = module.load_env(env_file).get("BOT_OVERSEER_USERNAME", "").strip()
+    except (ImportError, OSError) as exc:
+        print(
+            f"::warning::rerun_gate_checks: could not read the overseer login "
+            f"({type(exc).__name__}: {exc}) — COMMENTED reviews will dispatch a rerun (#2174)"
+        )
+        return ""
+    if not login:
+        print(
+            "::warning::rerun_gate_checks: BOT_OVERSEER_USERNAME is empty in "
+            f"{env_file.name} — COMMENTED reviews will dispatch a rerun (#2174)"
+        )
+    return login
 
 
 # ---------------------------------------------------------------------------
 # Gate check-run discovery
 # ---------------------------------------------------------------------------
+
 
 def list_gate_check_runs(repo: str, head_sha: str) -> list[dict]:
     """Every check run on head_sha whose name is a gate name (filter=all is
@@ -209,9 +288,7 @@ def resolve_workflow_run_id(repo: str, check_run: dict) -> int | None:
         )
         return None
 
-    status, payload = _gh_api(
-        f"repos/{repo}/actions/runs?check_suite_id={suite_id}&per_page=100"
-    )
+    status, payload = _gh_api(f"repos/{repo}/actions/runs?check_suite_id={suite_id}&per_page=100")
     if status != 200 or not isinstance(payload, dict):
         print(
             f"::error::rerun_gate_checks: could not list workflow runs for "
@@ -220,6 +297,12 @@ def resolve_workflow_run_id(repo: str, check_run: dict) -> int | None:
         )
         return None
 
+    if not isinstance(name, str):
+        print(
+            f"::error::rerun_gate_checks: check run {check_run.get('id')} has no name",
+            file=sys.stderr,
+        )
+        return None
     expected_path = GATE_WORKFLOWS.get(name)
     runs = payload.get("workflow_runs") or []
     survivors = []
@@ -274,14 +357,9 @@ def rerun_workflow_run(
         return True
 
     for i in range(attempts):
-        status, _ = _gh_api(
-            f"repos/{repo}/actions/runs/{run_id}/rerun", method="POST"
-        )
+        status, _ = _gh_api(f"repos/{repo}/actions/runs/{run_id}/rerun", method="POST")
         if 200 <= status < 300:
-            print(
-                f"rerun_gate_checks: rerun dispatched for run {run_id} "
-                f"(status {status})"
-            )
+            print(f"rerun_gate_checks: rerun dispatched for run {run_id} " f"(status {status})")
             # Log-only readback; its failure does not affect the result.
             _gh_api(f"repos/{repo}/actions/runs/{run_id}")
             return True
@@ -322,9 +400,7 @@ def fallback_gate_runs_for_pr(repo: str, pr: int) -> list[int]:
     head SHA at all). NEVER enumerates check-runs on base.sha (shared across
     all open PRs) — the PR-number filter on pull_requests[] below is the
     safety property that stops this from ever touching another PR's runs."""
-    status, payload = _gh_api(
-        f"repos/{repo}/actions/runs?event=pull_request_target&per_page=100"
-    )
+    status, payload = _gh_api(f"repos/{repo}/actions/runs?event=pull_request_target&per_page=100")
     if status != 200 or not isinstance(payload, dict):
         print(
             f"::warning::rerun_gate_checks: fallback workflow-run listing "
@@ -367,7 +443,15 @@ def process_pull_request(
     run_ids: set[int] = set()
     if deduped:
         for cr in deduped:
-            completed = wait_for_completion(repo, cr.get("id"))
+            check_run_id = cr.get("id")
+            if not isinstance(check_run_id, int):
+                print(
+                    f"::warning::rerun_gate_checks: check run ({cr.get('name')}) "
+                    "has no integer id — skipping",
+                    file=sys.stderr,
+                )
+                continue
+            completed = wait_for_completion(repo, check_run_id)
             if completed is None:
                 print(
                     f"::warning::rerun_gate_checks: check run {cr.get('id')} "
@@ -423,8 +507,7 @@ def process_pull_request(
                 f.write(table + "\n")
         except OSError as exc:
             print(
-                f"::warning::rerun_gate_checks: could not write "
-                f"GITHUB_STEP_SUMMARY: {exc}",
+                f"::warning::rerun_gate_checks: could not write " f"GITHUB_STEP_SUMMARY: {exc}",
                 file=sys.stderr,
             )
 
@@ -434,6 +517,7 @@ def process_pull_request(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -453,6 +537,11 @@ def main() -> int:
         default=os.environ.get("GITHUB_REPOSITORY"),
         help="owner/repo (defaults to GITHUB_REPOSITORY env)",
     )
+    ap.add_argument(
+        "--reviewer-login",
+        default="",
+        help="review.user.login; an overseer COMMENTED review dispatches (#2174)",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -464,10 +553,17 @@ def main() -> int:
         )
         return 2
 
-    if not should_dispatch(args.event_action, args.review_state):
+    overseer_login = overseer_login_from_env() if args.reviewer_login else ""
+    if not should_dispatch(
+        args.event_action,
+        args.review_state,
+        args.reviewer_login,
+        overseer_login,
+    ):
         print(
             "rerun_gate_checks: review state COMMENTED — no gate-relevant "
-            "change, nothing to dispatch"
+            f"change, nothing to dispatch (reviewer_login={args.reviewer_login!r}, "
+            f"overseer_login={overseer_login!r})"
         )
         return 0
 
@@ -480,8 +576,7 @@ def main() -> int:
         return 2
 
     print(
-        f"rerun_gate_checks: dispatched {succeeded}/{attempted} gate "
-        f"rerun(s) for PR #{args.pr}"
+        f"rerun_gate_checks: dispatched {succeeded}/{attempted} gate " f"rerun(s) for PR #{args.pr}"
     )
     return 0
 

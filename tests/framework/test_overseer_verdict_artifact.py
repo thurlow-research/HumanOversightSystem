@@ -311,3 +311,76 @@ def test_propose_only_applies_no_needs_ai_label():
     # Absence alone would pass against a bullet that dropped the topic, leaving
     # the old habit to creep back in; pin the explicit instruction.
     assert "Apply no label" in body, "PROPOSE_ONLY bullet no longer says to apply no label (#1557)"
+
+
+# ── #2174: interim sign-off on non-merge dispositions ─────────────────────────
+# TD: docs/v0.7.0/TECHNICAL-DESIGN-2174-overseer-interim-signoff.md §3.7, §6.
+# `bootstrap/pr_review.sh` makes --disposition mandatory for `--app overseer`
+# (D-0): an example without it exits 2 and halts the overseer.
+
+_WRAPPER_INVOCATION = re.compile(r"(submit-verdict|request-reviewer)\s+(--|…)")
+
+
+def test_2174_every_wrapper_invocation_carries_disposition():
+    text = _read(OVERSEER)
+    seen = 0
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for match in _WRAPPER_INVOCATION.finditer(line):
+            # The invocation runs to the end of its backtick span, or the line.
+            tail = line[match.start() :]
+            tail = tail.split("`", 1)[0]
+            seen += 1
+            assert "--disposition" in tail, (
+                f"overseer.md:{lineno} has a {match.group(1)} example with no "
+                f"--disposition — D-0 exits 2 and halts the overseer (#2174): {tail!r}"
+            )
+    assert seen >= 8, f"expected at least 8 wrapper examples in overseer.md, found {seen}"
+
+
+def test_2174_step6_bullets_name_their_disposition_and_action():
+    bullets = _step6_bullets()
+    assert "--disposition AUTO_MERGE" in bullets["AUTO_MERGE"]
+    assert "--disposition HUMAN_REQUIRED" in bullets["HUMAN_REQUIRED (CRITICAL tier)"]
+    assert "--expected-action APPROVE" in bullets["HUMAN_REQUIRED (CRITICAL tier)"]
+    assert "--disposition HUMAN_REQUIRED" in bullets["HUMAN_REQUIRED (other reasons)"]
+    assert "--expected-action" in bullets["HUMAN_REQUIRED (other reasons)"]
+    assert (
+        "#1426 above-ceiling bypass" not in bullets["HUMAN_REQUIRED (CRITICAL tier)"]
+    ), "the CRITICAL bullet still cites the retired #1426 bypass (#2174)"
+
+
+def test_2174_propose_only_requests_human_and_expects_approve():
+    body = _step6_bullets()["PROPOSE_ONLY"]
+    assert "pr_review.sh request-reviewer" in body and "--disposition PROPOSE_ONLY" in body
+    assert "--expected-action APPROVE" in body
+    assert "Expected action `APPROVE`" in body
+    assert "Expected action `NO ACTION`" not in body
+
+
+def test_2174_calibration_failure_refusal_text_is_gone():
+    text = _read(OVERSEER)
+    assert "that refusal is the expected, correct outcome" not in text
+    assert "do not add trigger conditions of your own" not in text
+    assert "scoped to above-ceiling/CRITICAL/protected-surface only" not in text
+
+
+def test_2174_dirty_names_disposition_and_bounce_does_not():
+    text = _read(OVERSEER)
+    dirty = [ln for ln in text.splitlines() if "DIRTY" in ln and "--disposition" in ln]
+    assert any(
+        "--disposition HUMAN_REQUIRED" in ln for ln in dirty
+    ), "no DIRTY instruction names `--disposition HUMAN_REQUIRED` (#2174 AM-5)"
+    for ln in text.splitlines():
+        if "record_pr_bounce" in ln:
+            assert (
+                "--disposition" not in ln
+            ), f"a worker bounce is not a non-merge disposition (AM-5): {ln!r}"
+
+
+def test_2174_expected_action_is_always_a_github_act():
+    text = " ".join(_read(OVERSEER).split())
+    assert "Every expected action names a GitHub act the human performs on the PR" in text
+    assert "never names a file, a script, or a shell step" in text
+    assert "approving the PR overrides the overseer's hold" in text
+    assert "resolving the overseer's open review threads on the PR is part of that override" in text
+    assert "- PROPOSE_ONLY → `APPROVE`" in _read(OVERSEER)

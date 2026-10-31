@@ -12,10 +12,18 @@
 # carries no content, so the argv shape is fixed end to end):
 #   bash bootstrap/pr_review.sh submit-verdict    --app <worker|overseer|human> --pr <N> \
 #                                                 --event <approve|comment> --tier <SAFE|LOW|MEDIUM|HIGH|CRITICAL> \
-#                                                 --body-file <path> [--repo <owner/repo>]
+#                                                 --body-file <path> [--repo <owner/repo>] \
+#                                                 [--disposition <AUTO_MERGE|HUMAN_REQUIRED|PROPOSE_ONLY>] \
+#                                                 [--expected-action <APPROVE|REQUEST_CHANGES|DECIDE|DO_NOT_MERGE|NO_ACTION|OTHER>]
 #   bash bootstrap/pr_review.sh request-reviewer  --app <worker|overseer|human> --pr <N> \
 #                                                 --tier <SAFE|LOW|MEDIUM|HIGH|CRITICAL> \
-#                                                 [--reviewer <login>] [--repo <owner/repo>]
+#                                                 [--reviewer <login>] [--repo <owner/repo>] \
+#                                                 [--disposition <HUMAN_REQUIRED|PROPOSE_ONLY>]
+#
+# --disposition is REQUIRED for --app overseer on both subcommands and refused
+# for the other apps (#2174); --expected-action is required with a
+# HUMAN_REQUIRED or PROPOSE_ONLY disposition. This script passes argv through
+# and never parses either flag (pr_review_cli.py owns them).
 #
 # --app accepts both `--app overseer` and `--app=overseer` forms.
 #
