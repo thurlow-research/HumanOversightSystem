@@ -138,8 +138,9 @@ step (`compute_tier_for_pr`), which can fail closed.
 
 **Transition.** The gate runs from base, so it applies to every open PR as soon as this merges. An
 above-ceiling PR that already has an unmarked overseer comment and a human approval turns red until the
-overseer's next cycle. That cycle re-posts the verdict, because G4 cannot match: the effective body now
-includes the marker. This is a one-cycle delay, not an admin bypass. It must be stated in the PR body.
+overseer's next cycle. That cycle re-posts the verdict, because G4 does not apply to marked verdicts
+(§3.4) and G6 finds no marked sign-off as the latest verdict. This is a one-cycle delay, not an admin
+bypass. It must be stated in the PR body.
 
 ### D3. Summoning the human: `--disposition` widens the reviewer trigger only for non-merge outcomes
 
@@ -203,6 +204,11 @@ An eligible human approval is a review that meets all of these:
   the project's oversight humans", not "does this person own these paths". The path-owner question
   is `require-human-approval` and `require_code_owner_reviews`. If `.github/CODEOWNERS` is absent,
   the set is just `HUMAN_REVIEWER`. If the set is empty, the gate exits 2 (misconfigured).
+- **[§12 round 3]** it is that login's **latest decision** on the head. Per login, take the reviews
+  on the head in state `APPROVED`, `CHANGES_REQUESTED` or `DISMISSED` (`COMMENTED` and `PENDING` do
+  not change a decision), ordered by `(submitted_at, id)` with a missing `submitted_at` sorting
+  earliest. The login counts only if the latest of these is `APPROVED`. A later `CHANGES_REQUESTED`
+  withdraws the approval, and a later `DISMISSED` does not bring back an earlier one (fail closed).
 
 **Why not any collaborator (the draft's rule).** The ruling says the overseer requests "the human
 CODEOWNER" and the merge then waits "only on the human's approval". Under an any-collaborator rule,
@@ -299,7 +305,8 @@ record schemas are in §3.5.
    reasoning as the #994 precedent). **[ARCH-R1]** If the designated human set (D6) is empty, exit 2
    in the same way. Both are checked only here, so a misconfiguration surfaces only when it matters.
 6. **Find eligible human approvals**, `eligible_human_approvals_on_head(reviews, bot_accounts, designated, head_sha)`,
-   which is pure and applies D6. If the list is non-empty, the gate passes (exit 0) with the message
+   which is pure and applies D6, including its latest-decision rule **[§12 round 3]**: a designated
+   human whose latest decision on the head is not `APPROVED` is not counted. If the list is non-empty, the gate passes (exit 0) with the message
    `✔ require-overseer-approval: <overseer> signed off commit <sha12> (interim, disposition=<D>) and <humans> approved it — gate satisfied.`
    Otherwise it fails with M3.
 7. **Remove** `overseer_posted_any_review` and the #1426 branch (D2). `require_tier_ceiling.compute_tier_for_pr`
@@ -316,7 +323,8 @@ record schemas are in §3.5.
   check (#621)."*
 - **M2 (the latest verdict is not a sign-off):** *"The overseer's latest review of commit `<sha12>` is
   not a sign-off. Open that review on the PR's Conversation tab for the action it asks of you."*
-- **M3 (signed off, no eligible human approval on the head):** *"The overseer has signed off its side
+- **M3 (signed off, no eligible human approval on the head; a designated human whose latest decision
+  on the head is not `APPROVED` does not count, D6):** *"The overseer has signed off its side
   of commit `<sha12>`, and this merge now waits only on a human. Approve the PR on GitHub (Files changed
   → Review changes → Approve). This check re-runs automatically when you approve."* **[ARCH-R1]**
   The message must also name the logins in the designated set (D6) and say that approvals from
@@ -349,10 +357,17 @@ noted otherwise:
 **Effective body.** For HUMAN_REQUIRED and PROPOSE_ONLY **with `--event comment`** **[ARCH-R1]**,
 the effective body is
 `body.rstrip("\n") + "\n\n" + <visible sentence for the action, D1> + "\n\n" + render_interim_marker(...) + "\n"`.
-The effective body is what G4, G6, the POST and `_find_matching_review` all compare and send. Bodies
+The effective body is what G6, the POST and `_find_matching_review` compare and send. Bodies
 for AUTO_MERGE and for HUMAN_REQUIRED `approve` are unchanged.
 
-**G6** runs after G4 and before the POST, under the conditions in D5. When it skips, the payload has
+**G4 applies only to unmarked `comment` verdicts [§12 round 3].** Its historical byte-identical
+`COMMENTED` match is skipped whenever the marker is appended. The gate reads only the overseer's latest
+verdict on the head, so a later verdict revokes an older sign-off; a byte-identical older sign-off must
+not suppress a re-sign-off after such a revocation. For marked verdicts G6 alone dedups.
+
+**G6** runs after the G4 position and before the POST, under the conditions in D5: it skips only if
+the overseer's latest verdict on the head is a valid interim sign-off with the same expected action.
+When it skips, the payload has
 `skipped: true`, `skip_reason: "interim_signoff_on_head"` and the existing review's
 `id`/`state`/`url`. The skip exits 0 and writes no audit record.
 
@@ -817,3 +832,15 @@ says. Only the rerun dispatcher's predicate changed, and it is not a required ch
 | CODEOWNERS read error | If CODEOWNERS cannot be read while the gate resolves the designated human set (D6), the gate exits 2 (fail closed). It is never treated as an empty set of owners. | `require_overseer_approval.py::codeowners_individual_owners` |
 | Audit-write failure | In addition to the `not_verified` entry and `audit_record: null` (§3.5), the CLI prints one stderr line, `pr_review_cli: audit write failed: <scrubbed>`. Exit 0 is unchanged. | `pr_review_cli.py` |
 | Reliability SHOULD_FIX-1 | Deferred to #2202. Not addressed in this PR. | — |
+
+### Round 3: cross-vendor second review (2026-10-31)
+
+Both fixes come from codex findings in the second review and are recorded in the step register
+(`.claudetmp/signoffs/step2174-register.md`, 2026-10-31 entries). Both are stricter than the approved
+design. Neither changes an interface, a message, an exit code or an audit record. §3.5 idempotency
+still holds through G6.
+
+| Item | Change | Where |
+|---|---|---|
+| codex CWE-841 (d0f2ae5d7) | G4's historical byte-identical `COMMENTED` dedup now applies only to unmarked `comment` verdicts. For marked interim sign-offs G6 alone dedups, against the overseer's latest verdict on the head: skip only if that verdict is a valid interim sign-off with the same expected action. Reason: the gate reads only the latest verdict, so a later verdict revokes an older sign-off, and a historical identical body must not suppress the re-sign-off. D2's transition note and §3.4 are amended. | `pr_review_cli.py` G4 |
+| codex CWE-863 (2b1a44f4d; on this branch the change is part of f35854f6f) | `eligible_human_approvals_on_head` counts a designated human only if that login's latest review on the head among `APPROVED`, `CHANGES_REQUESTED` and `DISMISSED`, ordered by `(submitted_at, id)`, is `APPROVED`. A later `CHANGES_REQUESTED` withdraws the approval, and a later `DISMISSED` does not bring back an earlier one. D6, §3.2 step 6 and §3.3 M3 are amended. | `require_overseer_approval.py::eligible_human_approvals_on_head` |
