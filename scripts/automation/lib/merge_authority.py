@@ -31,9 +31,12 @@ from typing import Optional, Sequence, Union
 
 from scripts.automation.lib.github import (
     GitHubError,
+    _required_contexts_from_rules,
     _run_gh,
     get_branch_protection,
+    get_ruleset,
     get_ruleset_required_checks,
+    list_branch_rules,
     list_check_runs_for_ref,
     post_comment,
 )
@@ -190,7 +193,12 @@ DEFAULT_OVERSEER_HANDLE = "hos-overseer-hos[bot]"  # GitHub App; updated from PA
 
 
 def _dep_ceiling_check_present(owner: str, repo: str) -> bool:
-    """Stub — returns False until the #152 follow-up status check ships."""
+    """Stub — returns False until the #152 follow-up status check ships.
+
+    Unchanged by #2213: the human-approval merge path uses
+    ``verify_merge_gate_live``; switching this stub to it is ESC-1b and needs
+    its own issue.
+    """
     return False
 
 
@@ -1042,6 +1050,147 @@ class RequiredChecksResult:
     summary: Optional[str] = None
 
 
+def _latest_check_runs_by_name(runs: Sequence[dict]) -> dict[str, dict]:
+    """Latest check run per name: the highest integer ``id`` wins (list order
+    is not guaranteed). Non-dict runs and runs without a name are skipped; a
+    run with a missing or non-int id (a bool is not an int) loses to any run
+    that has one."""
+    latest_by_name: dict[str, dict] = {}
+
+    def _run_id(r: dict) -> int:
+        rid = r.get("id")
+        return rid if isinstance(rid, int) and not isinstance(rid, bool) else -1
+
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        name = run.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        current = latest_by_name.get(name)
+        if current is None or _run_id(run) > _run_id(current):
+            latest_by_name[name] = run
+    return latest_by_name
+
+
+@dataclass
+class LiveGateResult(GateDetectionResult):
+    """GateDetectionResult plus the evidence the human-approval merge path
+    needs (#2213 TD-D7): the required contexts and the qualifying ruleset ids."""
+
+    required_contexts: tuple[str, ...] = ()
+    ruleset_ids: tuple[int, ...] = ()
+    evidence: dict = field(default_factory=dict)
+
+
+def verify_merge_gate_live(
+    owner: str,
+    repo: str,
+    branch: str,
+    *,
+    tier_ceiling_check_name: str,
+) -> LiveGateResult:
+    """
+    Verify, from the live repository ruleset, that a server-side gate the
+    caller cannot bypass protects ``branch`` (#2213 AD-5, TD-D7/TD-D8).
+
+    Never raises. Each failure returns ``autonomous_capable=False`` with a
+    named reason. Every required property (each meta context, the approving
+    review count, stale-review dismissal) must be supplied by at least one
+    rule whose ruleset is ``active`` and reports ``current_user_can_bypass ==
+    "never"`` for the calling token. Classic branch protection is never
+    consulted (AF-1).
+    """
+
+    def _fail(reason: str, evidence: Optional[dict] = None) -> LiveGateResult:
+        return LiveGateResult(
+            autonomous_capable=False, reason=reason, evidence=dict(evidence or {})
+        )
+
+    try:
+        rules = list_branch_rules(owner, repo, branch)
+    except GitHubError as exc:
+        return _fail(f"rules read failed: {exc}")
+
+    contexts = _required_contexts_from_rules(rules)
+    meta = (_META_GATE_CHECKS - {"require-tier-ceiling"}) | {tier_ceiling_check_name}
+    for name in sorted(meta):
+        if name not in contexts:
+            return _fail(f"required context missing: {name}")
+
+    def _ruleset_id(rule: dict) -> Optional[int]:
+        rid = rule.get("ruleset_id")
+        return rid if isinstance(rid, int) and not isinstance(rid, bool) else None
+
+    def _supplies(rule: object, context: str) -> bool:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            return False
+        return context in _required_contexts_from_rules([rule])
+
+    def _qualifying_pr_rule(rule: object) -> bool:
+        if not isinstance(rule, dict) or rule.get("type") != "pull_request":
+            return False
+        params = rule.get("parameters")
+        if not isinstance(params, dict):
+            return False
+        count = params.get("required_approving_review_count")
+        return (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 1
+            and params.get("dismiss_stale_reviews_on_push") is True
+        )
+
+    pr_rules = [r for r in rules if _qualifying_pr_rule(r)]
+    if not pr_rules:
+        return _fail("no pull_request rule with >=1 approval and stale-review dismissal")
+
+    evidence: dict = {}
+    qualified: dict[int, bool] = {}
+
+    def _ruleset_qualifies(rule: dict) -> bool:
+        rid = _ruleset_id(rule)
+        if rid is None:
+            return False
+        if rid not in qualified:
+            try:
+                rs = get_ruleset(owner, repo, rid)
+            except GitHubError as exc:
+                evidence[rid] = {"error": str(exc)}
+                qualified[rid] = False
+            else:
+                if isinstance(rs, dict):
+                    evidence[rid] = {
+                        "enforcement": rs.get("enforcement"),
+                        "current_user_can_bypass": rs.get("current_user_can_bypass"),
+                    }
+                    qualified[rid] = (
+                        rs.get("enforcement") == "active"
+                        and rs.get("current_user_can_bypass") == "never"
+                    )
+                else:
+                    evidence[rid] = {"error": "ruleset not readable"}
+                    qualified[rid] = False
+        return qualified[rid]
+
+    properties: list[tuple[str, list[dict]]] = [
+        (name, [r for r in rules if _supplies(r, name)]) for name in sorted(meta)
+    ]
+    properties.append(("pull_request", pr_rules))
+    for prop, suppliers in properties:
+        if not any(_ruleset_qualifies(r) for r in suppliers):
+            return _fail(f"ruleset bypassable or unverifiable for: {prop}", evidence)
+
+    ids = sorted(rid for rid, ok in qualified.items() if ok)
+    return LiveGateResult(
+        autonomous_capable=True,
+        reason="ruleset gate verified (#2213 AD-5)",
+        required_contexts=tuple(contexts),
+        ruleset_ids=tuple(ids),
+        evidence=evidence,
+    )
+
+
 def check_required_content_checks(
     owner: str,
     repo: str,
@@ -1111,23 +1260,7 @@ def check_required_content_checks(
         return RequiredChecksResult(bounce_required=False)
 
     runs = list_check_runs_for_ref(owner, repo, head_sha)
-    latest_by_name: dict[str, dict] = {}
-
-    def _run_id(r: dict) -> int:
-        rid = r.get("id")
-        return rid if isinstance(rid, int) and not isinstance(rid, bool) else -1
-
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        name = run.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        # List order is not guaranteed; the highest id is the latest run. A
-        # run with a missing or non-int id loses to any run that has one.
-        current = latest_by_name.get(name)
-        if current is None or _run_id(run) > _run_id(current):
-            latest_by_name[name] = run
+    latest_by_name = _latest_check_runs_by_name(runs)
 
     failing = []
     for name in content_contexts:

@@ -21,6 +21,8 @@
 #   bash bootstrap/merge_authority.sh protected-surface  --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh security-surface   --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh codeowners         --app <worker|overseer|human> --pr <N> [--repo <o/r>]
+#   bash bootstrap/merge_authority.sh approval-merge     --app <worker|overseer|human> --pr <N> [--repo <o/r>]
+#   bash bootstrap/merge_authority.sh merge-provenance   --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #
 # --app accepts both `--app overseer` and `--app=overseer` forms.
 #
@@ -44,7 +46,7 @@
 # re-derivation of a field — adding an envelope field is a change to that
 # module only, never to this one.
 #
-# Requires: bootstrap/get_app_token.sh (minted only for the six subcommands
+# Requires: bootstrap/get_app_token.sh (minted only for the eight subcommands
 # that read from GitHub — register and bounce-count are local-only and never
 # mint), python3, curl (token revocation).
 
@@ -82,7 +84,7 @@ unset _prev_arg _arg
 
 MINT_TOKEN=false
 case "$SUBCOMMAND" in
-    gate|human-approval|hold-directive|protected-surface|security-surface|codeowners)
+    gate|human-approval|hold-directive|protected-surface|security-surface|codeowners|approval-merge|merge-provenance)
         case "$APP_ROLE" in
             worker|overseer|human) MINT_TOKEN=true ;;
         esac

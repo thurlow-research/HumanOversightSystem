@@ -6,6 +6,7 @@ The GitHub Search API is NOT exposed here — it is eventually-consistent
 and rate-limited (~30/min) and MUST NOT be used on any correctness path.
 """
 
+import base64
 import json
 import os
 import re
@@ -403,6 +404,52 @@ def get_branch_protection(
 _RULES_MAX_PAGES = 10
 
 
+def list_branch_rules(owner: str, repo: str, branch: str) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/rules/branches/{branch} (all pages).
+
+    Returns every rule object that applies to the branch (each carries its
+    ``type``, ``parameters`` and ``ruleset_id``). GitHubError propagates,
+    including on a non-list payload and when more than _RULES_MAX_PAGES full
+    pages come back (#2213: a truncated rule list is the fail-open direction).
+    """
+    all_rules: list[dict[str, Any]] = []
+    for page in range(1, _RULES_MAX_PAGES + 1):
+        batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
+        rules = [] if batch is None else batch
+        if not isinstance(rules, list):
+            raise GitHubError(
+                f"unexpected rules payload for {owner}/{repo}@{branch}: "
+                f"expected list, got {type(rules).__name__}"
+            )
+        all_rules.extend(rules)
+        if len(rules) < 100:
+            return all_rules
+    raise GitHubError(f"rules for {owner}/{repo}@{branch} exceeded {_RULES_MAX_PAGES} pages")
+
+
+def _required_contexts_from_rules(rules: Any) -> list[str]:
+    """
+    Pure: the de-duplicated required status-check contexts (first-seen order)
+    from every ``required_status_checks`` rule in ``rules``; malformed
+    elements are ignored (#2213 TD-D17, extracted from
+    get_ruleset_required_checks).
+    """
+    contexts: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        params = rule.get("parameters")
+        checks = params.get("required_status_checks") if isinstance(params, dict) else None
+        if not isinstance(checks, list):
+            continue
+        for check in checks:
+            context = check.get("context") if isinstance(check, dict) else None
+            if isinstance(context, str) and context and context not in contexts:
+                contexts.append(context)
+    return contexts
+
+
 def get_ruleset_required_checks(
     owner: str,
     repo: str,
@@ -419,29 +466,140 @@ def get_ruleset_required_checks(
     check_required_content_checks. GitHubError propagates to the caller,
     including when more than _RULES_MAX_PAGES full pages come back.
     """
-    contexts: list[str] = []
-    for page in range(1, _RULES_MAX_PAGES + 1):
-        batch = _run_gh([f"/repos/{owner}/{repo}/rules/branches/{branch}?per_page=100&page={page}"])
-        rules = [] if batch is None else batch
-        if not isinstance(rules, list):
+    return _required_contexts_from_rules(list_branch_rules(owner, repo, branch))
+
+
+def get_ruleset(owner: str, repo: str, ruleset_id: int) -> Optional[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/rulesets/{ruleset_id} (#2213 AD-5).
+
+    Returns the ruleset object (``enforcement``, ``current_user_can_bypass``)
+    or None on a 404. Raises GitHubError on a non-dict payload.
+    """
+    result = _run_gh([f"/repos/{owner}/{repo}/rulesets/{ruleset_id}"])
+    if result is not None and not isinstance(result, dict):
+        raise GitHubError(
+            f"unexpected ruleset payload for {owner}/{repo} #{ruleset_id}: "
+            f"expected object, got {type(result).__name__}"
+        )
+    return result
+
+
+_EVENTS_MAX_PAGES = 10
+
+
+def list_issue_events(owner: str, repo: str, issue_number: int) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/issues/{number}/events (bounded pagination; #2213 AD-2).
+
+    Unlike the other list readers this one raises GitHubError when the page
+    cap is hit, on a non-list payload, and on a 404 for page 1: the caller
+    asks "who applied the latest label", and a truncated or missing list
+    would answer that wrongly (the fail-open direction).
+    """
+    events: list[dict[str, Any]] = []
+    for page in range(1, _EVENTS_MAX_PAGES + 1):
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/issues/{issue_number}/events?per_page=100&page={page}"]
+        )
+        if batch is None:
+            if page == 1:
+                raise GitHubError(f"issue events for {owner}/{repo}#{issue_number} not found", 404)
+            batch = []
+        if not isinstance(batch, list):
             raise GitHubError(
-                f"unexpected rules payload for {owner}/{repo}@{branch}: "
-                f"expected list, got {type(rules).__name__}"
+                f"unexpected events payload for {owner}/{repo}#{issue_number}: "
+                f"expected list, got {type(batch).__name__}"
             )
-        for rule in rules:
-            if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
-                continue
-            params = rule.get("parameters")
-            checks = params.get("required_status_checks") if isinstance(params, dict) else None
-            if not isinstance(checks, list):
-                continue
-            for check in checks:
-                context = check.get("context") if isinstance(check, dict) else None
-                if isinstance(context, str) and context and context not in contexts:
-                    contexts.append(context)
-        if len(rules) < 100:
-            return contexts
-    raise GitHubError(f"rules for {owner}/{repo}@{branch} exceeded {_RULES_MAX_PAGES} pages")
+        events.extend(batch)
+        if len(batch) < 100:
+            return events
+    raise GitHubError(
+        f"events for {owner}/{repo}#{issue_number} exceeded {_EVENTS_MAX_PAGES} pages"
+    )
+
+
+_THREADS_MAX_PAGES = 10
+_REVIEW_THREADS_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!,$cursor:String){"
+    "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+    "reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor} "
+    "nodes{id isResolved isOutdated comments(first:1){nodes{author{login}}}}}}}}"
+)
+
+
+def list_review_threads(owner: str, repo: str, pr_number: int) -> list[dict[str, Any]]:
+    """
+    GraphQL: every review thread on a PR (id, isResolved, isOutdated, first
+    comment author), bounded to _THREADS_MAX_PAGES pages (#2213 AD-2).
+
+    Raises GitHubError on a GraphQL ``errors`` key, a null ``pullRequest``, a
+    missing ``pageInfo``, and when ``hasNextPage`` is still true after the
+    page cap: an incomplete thread list could hide an unresolved thread.
+    """
+    nodes: list[dict[str, Any]] = []
+    cursor: Optional[str] = None
+    for _ in range(_THREADS_MAX_PAGES):
+        args = [
+            "graphql",
+            "-f",
+            f"query={_REVIEW_THREADS_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={repo}",
+            "-F",
+            f"number={pr_number}",
+        ]
+        if cursor:
+            args += ["-f", f"cursor={cursor}"]
+        result = _run_gh(args)
+        if not isinstance(result, dict):
+            raise GitHubError("review threads: GraphQL returned no usable response")
+        if result.get("errors"):
+            raise GitHubError("review threads: GraphQL returned errors")
+        data = result.get("data")
+        repository = data.get("repository") if isinstance(data, dict) else None
+        pull = repository.get("pullRequest") if isinstance(repository, dict) else None
+        if not isinstance(pull, dict):
+            raise GitHubError(f"review threads: pull request {owner}/{repo}#{pr_number} not found")
+        threads = pull.get("reviewThreads")
+        page_info = threads.get("pageInfo") if isinstance(threads, dict) else None
+        page_nodes = threads.get("nodes") if isinstance(threads, dict) else None
+        if not isinstance(page_info, dict) or not isinstance(page_nodes, list):
+            raise GitHubError("review threads: malformed reviewThreads payload")
+        nodes.extend(n for n in page_nodes if isinstance(n, dict))
+        if not page_info.get("hasNextPage"):
+            return nodes
+        cursor = page_info.get("endCursor")
+        if not isinstance(cursor, str) or not cursor:
+            raise GitHubError("review threads: hasNextPage without an endCursor")
+    raise GitHubError(
+        f"review threads for {owner}/{repo}#{pr_number} exceeded {_THREADS_MAX_PAGES} pages"
+    )
+
+
+def get_file_text(owner: str, repo: str, path: str, ref: str) -> Optional[str]:
+    """
+    GET /repos/{owner}/{repo}/contents/{path}?ref={ref}, decoded as UTF-8 (#2213 AF-9).
+
+    Returns None on a 404. Raises GitHubError if the response is not a file
+    object with base64 encoding or if the content does not decode.
+    """
+    result = _run_gh([f"/repos/{owner}/{repo}/contents/{path}?ref={quote(ref, safe='')}"])
+    if result is None:
+        return None
+    if (
+        not isinstance(result, dict)
+        or result.get("type") != "file"
+        or result.get("encoding") != "base64"
+        or not isinstance(result.get("content"), str)
+    ):
+        raise GitHubError(f"unexpected contents payload for {owner}/{repo}:{path}")
+    try:
+        return base64.b64decode(result["content"], validate=False).decode("utf-8")
+    except ValueError as exc:  # includes UnicodeDecodeError and binascii.Error
+        raise GitHubError(f"could not decode {owner}/{repo}:{path}: {exc}") from exc
 
 
 def get_repo(owner: str, repo: str) -> Optional[dict[str, Any]]:
@@ -725,3 +883,33 @@ def add_issue_label(owner: str, repo: str, issue_number: int, label: str) -> Non
 def remove_issue_label(owner: str, repo: str, issue_number: int, label: str) -> None:
     """DELETE one label from an issue; a 404 (already removed) is success."""
     _run_gh([f"/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}", "--method", "DELETE"])
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def merge_pull(owner: str, repo: str, pr_number: int, sha: str) -> dict[str, Any]:
+    """
+    PUT /repos/{owner}/{repo}/pulls/{pr_number}/merge (#2213).
+
+    The merge method is fixed to squash and is deliberately not a parameter,
+    so nothing can widen it. ``sha`` pins the merge to the exact head that was
+    approved: if the head moved, GitHub answers 409. Called with retries=0
+    (same reasoning as submit_pull_review): a write that may have reached
+    GitHub is re-read by the caller, never blindly re-sent.
+
+    Raises ValueError (no call made) unless ``sha`` is a 40-char lowercase hex
+    SHA, and GitHubError on a null response.
+    """
+    if not isinstance(sha, str) or not _SHA_RE.match(sha):
+        raise ValueError(f"merge_pull: sha must be a 40-char lowercase hex SHA, got: {sha!r}")
+    result = _run_gh(
+        [f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", "--method", "PUT"],
+        retries=0,
+        stdin_json={"merge_method": "squash", "sha": sha},
+    )
+    if result is None:
+        # No status: an empty 2xx body is not a definite refusal, so callers
+        # must treat it as ambiguous and re-read the PR.
+        raise GitHubError("merge_pull: GitHub returned no response for PUT")
+    return result
