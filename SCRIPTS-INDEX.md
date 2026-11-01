@@ -37,6 +37,7 @@ excluded.
 - `bootstrap/hos_setup_partner.sh` — guided per-project HOS credential setup
 - `bootstrap/invoke_agent.sh` — L3 wrapper for the deterministic agent-invocation primitive (#1643 slice W1).
 - `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority read-only primitive surface (#1357 slice 1).
+- `bootstrap/overseer_merge.sh` — L3 wrapper for the merge-on-human-approval primitive (#2213, ADR-2213 AD-6).
 - `bootstrap/post_comment.sh` — canonical wrapper for posting a GitHub issue/PR comment under a HOS bot identity (#1155)
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
 - `bootstrap/pr_review.sh` — L3 wrapper for the PR-review verdict primitive (#1657)
@@ -71,12 +72,14 @@ excluded.
 - `scripts/automation/dimension_sweep_cli.py` — L2 measurement runner (ADR-1643 AD-13, W6; TD Amendment G, docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md §G.1-§G.12).
 - `scripts/automation/in_progress.py` — Make the autonomous worker's current pick visible (#2157).
 - `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
+- `scripts/automation/overseer_merge_cli.py` — L2 mutating primitive: merge a PR on a designated human's approval (#2213, slice S1a; ADR-2213 AD-6, TD-2213 §4.5).
 - `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).
 - `scripts/automation/readopt.py` — mechanics for re-adopting stalled local worker branches (#2126).
 
 ## scripts/automation/lib/
 
+- `scripts/automation/lib/approval_merge.py` — merge on a designated human's approval (#2213, slice S1a).
 - `scripts/automation/lib/breakers.py` — Circuit breakers and safety nets for the HOS automation loop (T13, §11).
 - `scripts/automation/lib/budget.py` — Per-task token estimation and per-window budget gate for the HOS automation loop.
 - `scripts/automation/lib/claim.py` — Claim-then-verify with UUIDv4 instance-id and heartbeat (T8, §7, ADR-2 backstop).

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -37,7 +38,12 @@ _REPO_ROOT_STR = str(_DEFAULT_REPO_ROOT)
 if _REPO_ROOT_STR not in sys.path:
     sys.path.insert(0, _REPO_ROOT_STR)
 
-from scripts.automation.lib import github, merge_authority, merge_config  # noqa: E402
+from scripts.automation.lib import (  # noqa: E402
+    approval_merge,
+    github,
+    merge_authority,
+    merge_config,
+)
 
 SCHEMA_VERSION = 1
 
@@ -50,6 +56,8 @@ SUBCOMMANDS = (
     "protected-surface",
     "security-surface",
     "codeowners",
+    "approval-merge",
+    "merge-provenance",
 )
 
 # Subcommands that fetch from GitHub — mirrored by bootstrap/merge_authority.sh
@@ -62,6 +70,8 @@ NETWORK_SUBCOMMANDS = frozenset(
         "protected-surface",
         "security-surface",
         "codeowners",
+        "approval-merge",
+        "merge-provenance",
     }
 )
 
@@ -191,6 +201,8 @@ def _build_parser() -> _EnvelopeArgumentParser:
         "protected-surface",
         "security-surface",
         "codeowners",
+        "approval-merge",
+        "merge-provenance",
     ):
         pr_p = subparsers.add_parser(name, parents=[common], add_help=False)
         pr_p.add_argument("--pr", type=_pr_type, required=True)
@@ -726,6 +738,110 @@ def _cmd_codeowners(args: argparse.Namespace, ctx: _Context) -> _Outcome:
     return _Outcome(payload=payload, exit_code=0, not_verified=not_verified, repo=repo, pr=args.pr)
 
 
+# ---------------------------------------------------------------------------
+# approval-merge / merge-provenance (#2213) — read-only; neither ever exits 3
+# ---------------------------------------------------------------------------
+
+
+def _cmd_approval_merge(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    """Would the overseer merge this PR on a designated human's approval?
+
+    Informational only, never an authorization (TD-D19): the mutating command
+    recomputes the decision itself. `current_user_can_bypass` describes the
+    caller, so `gate_evaluated_as` names whose answer the gate field is, and
+    R12's audit half reads this clone's audit log only (#1803).
+    """
+    resolved = _resolve_repo_or_fail(args, ctx)
+    if isinstance(resolved, _Outcome):
+        return resolved
+    repo, owner, repo_name = resolved
+
+    from scripts.automation.pr_review_cli import _scrub_secrets
+
+    snapshot = None
+    try:
+        snapshot = approval_merge.fetch_snapshot(
+            owner,
+            repo_name,
+            args.pr,
+            ctx.config,
+            repo_root=ctx.repo_root,
+            now=datetime.now(timezone.utc),
+        )
+        decision = approval_merge.decide_merge_on_human_approval(snapshot, ctx.config)
+    except approval_merge.SnapshotReadError as exc:
+        decision = approval_merge.read_error_decision(exc, scrub=_scrub_secrets)
+
+    gate = snapshot.gate if snapshot is not None else None
+    payload = {
+        "decision": decision.to_dict(),
+        "would_merge": decision.outcome is approval_merge.ApprovalMergeOutcome.MERGE,
+        "gate_evaluated_as": os.environ.get("HOS_BOT_LOGIN") or None,
+        "gate": (
+            None
+            if gate is None
+            else {
+                "autonomous_capable": gate.autonomous_capable,
+                "reason": gate.reason,
+                "ruleset_ids": list(gate.ruleset_ids),
+                "evidence": gate.evidence,
+            }
+        ),
+    }
+    return _Outcome(payload=payload, exit_code=0, repo=repo, pr=args.pr)
+
+
+def _cmd_merge_provenance(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    """Classify an already-merged PR: did the overseer merge it on a recorded
+    human-approval authorization (AD-9)?"""
+    resolved = _resolve_repo_or_fail(args, ctx)
+    if isinstance(resolved, _Outcome):
+        return resolved
+    repo, owner, repo_name = resolved
+
+    from scripts.automation.pr_review_cli import _scrub_exc
+
+    try:
+        pull = github.get_pull(owner, repo_name, args.pr)
+    except github.GitHubError as exc:
+        return _Outcome(
+            payload={},
+            exit_code=1,
+            error=f"pull request read failed: {_scrub_exc(exc)}",
+            repo=repo,
+        )
+    if not isinstance(pull, dict):
+        return _Outcome(payload={}, exit_code=1, error=f"PR #{args.pr} not found", repo=repo)
+    try:
+        events = approval_merge.read_audit_events(ctx.repo_root, args.pr)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return _Outcome(
+            payload={}, exit_code=1, error=f"audit read failed: {_scrub_exc(exc)}", repo=repo
+        )
+
+    head = (pull.get("head") or {}).get("sha")
+    payload = {
+        "classification": "not_merged",
+        "merged_by": None,
+        "head_sha": head,
+        "merge_commit_sha": pull.get("merge_commit_sha"),
+        "authorized_record_present": False,
+        "completion_record_present": False,
+    }
+    if pull.get("merged") is True:
+        merged_by = (pull.get("merged_by") or {}).get("login") or ""
+        result = approval_merge.classify_bot_merge(
+            args.pr, str(head), merged_by, events, ctx.config.overseer_handle
+        )
+        payload.update(
+            classification=result.classification.value,
+            merged_by=merged_by or None,
+            authorized_record_present=result.authorized_record is not None,
+            completion_record_present=result.completion_record_present,
+        )
+    return _Outcome(payload=payload, exit_code=0, repo=repo, pr=args.pr)
+
+
 _HANDLERS = {
     "gate": _cmd_gate,
     "register": _cmd_register,
@@ -735,6 +851,8 @@ _HANDLERS = {
     "protected-surface": _cmd_protected_surface,
     "security-surface": _cmd_security_surface,
     "codeowners": _cmd_codeowners,
+    "approval-merge": _cmd_approval_merge,
+    "merge-provenance": _cmd_merge_provenance,
 }
 
 
