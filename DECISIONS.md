@@ -1363,8 +1363,11 @@ markers, not reasons.
 **What `needs-human` means on a PR (AD-11).** Once the overseer applies it, it means "the
 overseer is waiting for you", and the merge proceeds over it. It is no longer a hold. A
 `needs-human` that anyone else applied still blocks. A human holds a PR with `hos-halt`, a #902
-comment, `CHANGES_REQUESTED`, or by not approving. The human-proxy relays a hold with `hos-halt`
-or by applying the label, never with a comment alone. `docs/LABELS.md` records this.
+comment, `CHANGES_REQUESTED`, or by not approving. The human-proxy relays a hold with `hos-halt`,
+never with a comment alone. Applying the label holds only when it creates a new `labeled`
+event by someone other than the overseer: GitHub emits no event when the label is already
+present, so re-applying the overseer's own label is a silent no-op (security review of S1b).
+`docs/LABELS.md` records this.
 
 **Recorded so a later reader does not reopen them.** The ADR-2213 follow-up "add the new
 command to the overseer allowlist" needs no change: cron sessions run under
