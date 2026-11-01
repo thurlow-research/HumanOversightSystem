@@ -556,7 +556,9 @@ def _disposition_identity_refusal(
 
 _SIGNOFF_SENTENCE_APPROVE = (
     "Overseer interim sign-off (#2174): this review does not approve the PR. "
-    "The merge now waits only on a designated human's approval of commit `{sha12}`."
+    "The merge now waits only on a designated human's approval of commit `{sha12}`; "
+    "the overseer merges it on its next cycle after that approval, once checks are "
+    "green and every review thread is resolved."
 )
 _SIGNOFF_SENTENCE_OTHER = (
     "Overseer interim sign-off (#2174): this review does not approve the PR, and "
