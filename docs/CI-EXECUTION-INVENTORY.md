@@ -111,9 +111,10 @@ verified that a committed `phase1-<HASH>.stamp` existed) per the #2053 human
 ruling (Option A). It is deliberately **not** a required status check: it is
 not in `scripts/framework/setup_branch_protection.sh`'s contexts or
 `hos_required_contexts.txt`. It is HOS-internal and not shipped to consumers.
-`check_agents_static.sh` no longer writes the phase1 stamp. The remaining stamp
-artifacts (`all-phases`/phase 2-4 stamps and their writers) are retired in
-follow-up slices of #2053.
+No script writes into `scripts/framework/validation-stamps/` any more (#2053): `check_agents_static.sh`,
+`validate_agents.sh`, `validate_docs.sh`, `validate_spec_compliance.sh` and
+`run_framework_validation.sh` all dropped their stamp writers. The remaining
+committed stamp files are inert and are deleted in a follow-up slice.
 
 ## Governance/approval workflows — out of scope for this inventory
 

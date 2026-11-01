@@ -473,11 +473,6 @@ if [[ "$VERDICT" == "approve" ]]; then
     echo "  PASS — converged (zero NEW blocking findings; ${BLOCKING:-0} total, all ledgered)"
     echo "════════════════════════════════════════════"
     rm -f "$PASS_COUNT_FILE"   # converged — reset for the next change set
-    STAMP_DIR="scripts/framework/validation-stamps"
-    mkdir -p "$STAMP_DIR"
-    CONTENT_HASH=$(find "$AGENTS_DIR" -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
-    printf "validated_at: %s\nhash: %s\nphase: 2-agents\nresult: pass\n" \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CONTENT_HASH" > "$STAMP_DIR/phase2-${CONTENT_HASH}.stamp"
     exit 0
 elif [[ "$PASS_NUM" -ge "$EXTERNAL_REVIEW_MAX_PASSES" ]]; then
     echo "════════════════════════════════════════════"

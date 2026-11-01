@@ -66,15 +66,8 @@ echo ""
 
 if $STATIC_ONLY; then
     echo "  --static-only: skipping AI review"
-    STAMP_DIR="$SCRIPT_DIR/validation-stamps"
-    mkdir -p "$STAMP_DIR"
-    _CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
-    printf "validated_at: %s\nhash: %s\nphases: 1-static\nskipped: 2-agents 3-docs 4-spec-compliance\nresult: pass\n" \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_CONTENT_HASH" > "$STAMP_DIR/all-phases-${_CONTENT_HASH}.stamp"
     echo ""
     echo "  PASS — static checks clean"
-    echo "  Stamp written: $STAMP_DIR/all-phases-${_CONTENT_HASH}.stamp"
-    echo "  Note: AI phases skipped — stamp records skipped phases."
     exit 0
 fi
 
@@ -195,27 +188,4 @@ echo ""
 echo "══════════════════════════════════════════════════"
 echo "  All framework checks passed — clear to commit."
 echo "══════════════════════════════════════════════════"
-
-# Write the combined stamp — only written when ALL non-skipped phases pass.
-STAMP_DIR="$SCRIPT_DIR/validation-stamps"
-mkdir -p "$STAMP_DIR"
-_CONTENT_HASH=$(find .claude/agents -name "*.md" | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
-PHASES_RUN="1-static"
-$STATIC_ONLY || PHASES_RUN="$PHASES_RUN 2-agents"
-( ! $STATIC_ONLY && ! $SKIP_DOCS )       && PHASES_RUN="$PHASES_RUN 3-docs"
-( ! $STATIC_ONLY && ! $SKIP_COMPLIANCE ) && PHASES_RUN="$PHASES_RUN 4-spec-compliance"
-printf "validated_at: %s\nhash: %s\nphases: %s\nskipped: %s\nresult: pass\n" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$_CONTENT_HASH" \
-    "$PHASES_RUN" \
-    "$(
-        skipped=""
-        $STATIC_ONLY     && skipped="${skipped}2-agents 3-docs 4-spec-compliance"
-        $SKIP_DOCS       && skipped="${skipped}3-docs "
-        $SKIP_COMPLIANCE && skipped="${skipped}4-spec-compliance "
-        echo "${skipped% }"
-    )" \
-    > "$STAMP_DIR/all-phases-${_CONTENT_HASH}.stamp"
-echo "  Stamp written: $STAMP_DIR/all-phases-${_CONTENT_HASH}.stamp"
-echo "  Commit the stamp file along with your changes before pushing."
 exit 0

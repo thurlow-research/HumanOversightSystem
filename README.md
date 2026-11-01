@@ -198,7 +198,7 @@ Run all phases before committing:
 bash scripts/framework/run_framework_validation.sh
 ```
 
-CI's `agent-static-check` workflow runs `check_agents_static.sh` (phase 1) directly on each PR; it is not a required check. The AI phases run locally only. The remaining validation stamp files are retired in follow-up slices of #2053.
+CI's `agent-static-check` workflow runs `check_agents_static.sh` (phase 1) directly on each PR; it is not a required check. The AI phases run locally only. No script writes into `scripts/framework/validation-stamps/` any more (#2053); the remaining committed stamp files there are inert and are deleted in a follow-up slice.
 
 ---
 

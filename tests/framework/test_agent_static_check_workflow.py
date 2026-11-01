@@ -56,6 +56,22 @@ def test_clean_static_run_writes_no_stamp(tmp_path):
     assert not list(tmp_path.rglob("*.stamp"))
 
 
+def test_no_script_writes_validation_stamps():
+    # #2053 slice 2: every stamp writer is gone. Static text inspection of each
+    # former writer; the committed stamp files themselves are removed later.
+    for name in (
+        "check_agents_static.sh",
+        "validate_agents.sh",
+        "validate_docs.sh",
+        "validate_spec_compliance.sh",
+        "run_framework_validation.sh",
+    ):
+        text = (ROOT / "scripts" / "framework" / name).read_text(encoding="utf-8")
+        assert "validation-stamps" not in text, name
+        assert "STAMP_DIR" not in text, name
+        assert '.stamp"' not in text, name
+
+
 def test_job_name_matches_the_name_overseer_relies_on():
     # overseer.md step 2a matches the check run by this display name, not the job
     # id. A rename would make the check look absent to the overseer.
