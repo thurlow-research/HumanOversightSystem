@@ -47,9 +47,9 @@ def _overseer_what_you_do() -> str:
 
 
 def test_overseer_what_you_do_contains_literal_merge_command():
-    assert MERGE_CMD in _overseer_what_you_do(), (
-        "overseer.md '### What you do' must carry the literal on-human-approval command"
-    )
+    assert (
+        MERGE_CMD in _overseer_what_you_do()
+    ), "overseer.md '### What you do' must carry the literal on-human-approval command"
 
 
 def test_overseer_step_1a_runs_before_review_work():
@@ -64,7 +64,7 @@ def test_overseer_step_1a_runs_before_review_work():
 
 def test_overseer_step_1a_names_all_outcomes_and_defer_posts_nothing():
     section = _overseer_what_you_do()
-    step_1a = section[section.find("\n1a. "): section.find("\n2. ")]
+    step_1a = section[section.find("\n1a. ") : section.find("\n2. ")]
     for outcome in ("MERGED", "DEFER", "NOT_ELIGIBLE", "UNDETERMINABLE"):
         assert f"`{outcome}`" in step_1a, f"step 1a must name outcome {outcome}"
     defer_line = next(line for line in step_1a.splitlines() if "`DEFER`" in line)
@@ -79,9 +79,9 @@ def test_cron_prompt_runs_merge_command_before_check_pr_reviewed():
     assert MERGE_CMD in text, "cron prompt must carry the literal on-human-approval command"
     reviewed = text.find("bash scripts/oversight/check_pr_reviewed.sh")
     assert reviewed != -1, "check_pr_reviewed.sh command missing from cron prompt"
-    assert text.find(MERGE_CMD) < reviewed, (
-        "merge-on-approval must run before the idempotency precheck"
-    )
+    assert (
+        text.find(MERGE_CMD) < reviewed
+    ), "merge-on-approval must run before the idempotency precheck"
 
 
 # c. retired rule -------------------------------------------------------------
@@ -126,9 +126,7 @@ def test_contract_lists_every_approval_merge_event():
     contract = _read(CONTRACT)
     for name in ("EVENT_AUTHORIZED", "EVENT_MERGED", "EVENT_FAILED", "EVENT_BASE_MISMATCH"):
         event = getattr(approval_merge, name)
-        assert f"| `{event}` |" in contract, (
-            f"contract §6a has no table row for {name} ({event!r})"
-        )
+        assert f"| `{event}` |" in contract, f"contract §6a has no table row for {name} ({event!r})"
 
 
 # g. LABELS.md needs-human meaning --------------------------------------------
