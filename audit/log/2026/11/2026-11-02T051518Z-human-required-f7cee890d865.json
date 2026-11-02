@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"human-required","head_sha":"1e8f51a35ff217d0e2bc9bd42740f175f29df4de","pr":2240,"reason_category":"GATE_UNSATISFIED","review_id":5732350637,"summary":"protected surface bootstrap/** (CODEOWNERS ScottThurlow); human approval on current head required","tier":"HIGH"}
