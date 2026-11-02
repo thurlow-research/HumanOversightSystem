@@ -54,20 +54,22 @@ fi
 # shellcheck source=scripts/oversight/lib/audit_log.sh
 source "$SCRIPT_DIR/lib/audit_log.sh"
 
-audit_read_stream "$ROOT" | PR="$PR" HEAD_SHA="$HEAD_SHA" python3 -c '
+# The event vocabulary is shared with the writer (write_pr_review_event.sh,
+# #1699): lib/review_events.py is the canonical source, including the legacy
+# aliases historic records carry. Python runs isolated (-I) with the repo root
+# inserted explicitly, so the caller's cwd/PYTHONPATH cannot shadow the trusted
+# package (CWE-426); cwd is unchanged, so [root] semantics hold.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+audit_read_stream "$ROOT" | PR="$PR" HEAD_SHA="$HEAD_SHA" HOS_REPO_ROOT="$REPO_ROOT" python3 -I -c '
 import json
 import os
 import sys
 
+sys.path.insert(0, os.environ["HOS_REPO_ROOT"])
+from scripts.oversight.lib.review_events import REVIEWED_EVENTS
+
 pr = int(os.environ["PR"])
 head_sha = os.environ["HEAD_SHA"]
-
-# Event types that record a completed Step 1 disposition for a PR at a
-# specific head SHA (#1524): "pr-review" and "human-required" are the two
-# review dispositions overseer.md ever appends; "idempotent-skip" is the
-# already-correctly-working precheck output a later cycle logs when it
-# re-confirms the same head SHA carries no new information.
-REVIEWED_EVENTS = {"pr-review", "human-required", "idempotent-skip"}
 
 match = None
 for line in sys.stdin:

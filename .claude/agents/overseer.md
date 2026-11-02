@@ -678,6 +678,27 @@ every cycle; the wrapper is the only dedup authority (already_requested /
 already_reviewed_head / G3 / G4 / G6). A re-run on an unchanged head posts and
 requests nothing.
 
+**Writing the review audit event (#1699).** Each disposition has exactly one
+audit event:
+- **AUTO_MERGE** and **PROPOSE_ONLY** write `pr-review` with
+  `bash scripts/oversight/write_pr_review_event.sh --pr <n> --head-sha <sha> --event pr-review --decision <AUTO_MERGE|PROPOSE_ONLY> --tier <TIER>`.
+  The write goes after `submit-verdict` reports `posted` or `skipped`. On
+  AUTO_MERGE it goes before the merge. PROPOSE_ONLY applies no label (#1557), so
+  this write is its last act. A non-zero exit halts, as above: do not merge, and
+  do not treat the disposition as recorded.
+- **HUMAN_REQUIRED** writes `human-required` via `audit_write_event` with the
+  SPEC-378 fields (§ Halt-on-failure ordering below).
+- **A bounce** writes `pr-bounced` via `record_pr_bounce()`.
+- **No new information.** When a later cycle confirms that a head SHA it already
+  reviewed carries nothing new, write
+  `bash scripts/oversight/write_pr_review_event.sh --pr <n> --head-sha <sha> --event idempotent-skip --decision <the prior disposition> --reason <why>`.
+
+Never hand-compose `pr-review` or `idempotent-skip` records. The idempotency
+precheck (`check_pr_reviewed.sh`) matches only the writer's vocabulary. A
+hand-typed variant such as `pr-reviewed` was accepted on write and silently
+ignored on read. The writer refuses `human-required`, legacy aliases and any
+unknown name with exit 2.
+
 ---
 
 ## Executive summary (issue #1099, extended to every PR comment by #1268)
