@@ -1334,3 +1334,47 @@ execution inventory, this file and the regenerated `SCRIPTS-INDEX.md`. Surfaces 
 approval) and a security gate's verdict path. Deliberately unchanged: `run_gates.sh`,
 `setup_branch_protection.sh`, `static_analysis.py`, `AUTO_CHECKABLE_GATES`, and
 `docs/LABELS.md`.
+
+## 2026-11-01 — The overseer merges on a designated human's approval; the human no longer presses Merge (#2213 S1b)
+
+**Decision.** When a designated human approves a PR's current head, the overseer merges it on
+its next cycle. The human's approval is the whole human act; there is no merge click and no
+admin bypass. S1a (PR #2234) shipped the decision and the merge command, `bootstrap/overseer_merge.sh
+on-human-approval`, with nothing calling them. S1b wires them in: `overseer.md` step 1a and the
+cron prompt's Step 1 run that command first for every actionable PR, and the loop-start
+precheck asks `merge_authority.sh merge-provenance` before treating a bot merge as a violation.
+
+**Why one command, run first.** The previous rule, step 6's HUMAN_REQUIRED (CRITICAL tier)
+item (3), told the agent to "merge immediately" once the human approved. That was an
+instruction, not a check: nothing re-read the head, the labels, the hold comments, the threads
+or the live gate at the moment of the merge, and nothing recorded why the bot merged, so the
+next cycle's precheck filed the merge as a process-gap. Item (3) is deleted. The command
+recomputes every rule (ADR-2213 AD-3) in the same invocation that merges, pins the head SHA,
+and writes a write-ahead audit record. Running it before the review chain means an approved,
+unchanged head that is waiting on checks returns `DEFER` and gets no new verdict every cycle
+(AF-5).
+
+**The expected action stays `APPROVE`.** After a human approval on the head, and after a failed
+merge on that head, the overseer's verdict keeps `APPROVE`. Switching to `OTHER` to ask the
+human to remove the label would remove the marked sign-off that rule 7 needs, and the PR could
+then never merge. The overseer's own label and its own pending reviewer request are derived
+markers, not reasons.
+
+**What `needs-human` means on a PR (AD-11).** Once the overseer applies it, it means "the
+overseer is waiting for you", and the merge proceeds over it. It is no longer a hold. A
+`needs-human` that anyone else applied still blocks. A human holds a PR with `hos-halt`, a #902
+comment, `CHANGES_REQUESTED`, or by not approving. The human-proxy relays a hold with `hos-halt`,
+never with a comment alone. Applying the label holds only when it creates a new `labeled`
+event by someone other than the overseer: GitHub emits no event when the label is already
+present, so re-applying the overseer's own label is a silent no-op (security review of S1b).
+`docs/LABELS.md` records this.
+
+**Recorded so a later reader does not reopen them.** The ADR-2213 follow-up "add the new
+command to the overseer allowlist" needs no change: cron sessions run under
+`bypassPermissions` with no `--allowedTools` (`bin/hos-cron`), so there is no per-command
+allowlist to extend. The binding S1b merge precondition from TD-2213 §10 item 6 is not met by
+this change itself: before it merges, one `merge_authority.sh approval-merge --app overseer`
+run on an open PR must show `gate_evaluated_as` equal to the overseer login,
+`gate.autonomous_capable true` and `current_user_can_bypass "never"` for every id in
+`gate.evidence`. The worker cannot produce that run, because it needs the overseer's token.
+S1b merges under the old flow: the human merges it.

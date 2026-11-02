@@ -33,7 +33,7 @@ for pr in $(gh api "repos/thurlow-research/HumanOversightSystem/pulls?state=clos
     --jq '"#\(.number) merged_by=\(.merged_by.login // "null") type=\(.merged_by.type // "?") \(.merged_at)"'
 done
 ```
-For each PR merged in the last 2 hours: if `merged_by` is a bot (type=Bot) → file `process-gap` issue. If human → log `human-authorized-merge` to audit and continue. Do NOT file issues for human merges.
+For each PR merged in the last 2 hours: if `merged_by` is a bot (type=Bot) → first run `bash bootstrap/merge_authority.sh merge-provenance --app overseer --pr <n>` (#2213; never suppress stderr). If its `classification` is `authorized_on_human_approval`, that was your own merge on a designated human's approval: log it and file nothing (`overseer.md` §Loop-start precheck). Otherwise (`unauthorized`, any other value, or a non-zero exit) → file `process-gap` issue. If human → log `human-authorized-merge` to audit and continue. Do NOT file issues for human merges.
 
 **Idempotency (#849, no-idempotency class) — keyed to PR#.** A merged PR stays in this rolling 2-hour window across several cycles. Before filing a `process-gap` issue or appending a `pr-merged-without-review` audit line, run the precheck in `overseer.md` §What you do (between-cycle): query open `needs-ai` issues for a title containing `PR #<n> merged by bot`, and (source `scripts/oversight/lib/audit_log.sh`) run `audit_read_stream | grep -F '"event":"pr-merged-without-review"' | grep -F "\"pr\":<n>"` (never suppress stderr). Skip the file/append if either already exists. Never re-file or re-append for the same PR#.
 
@@ -51,7 +51,13 @@ If an open `release-request` issue with neither a `release-authorized` nor a `ne
 
 The `hos-cron` launcher has already pre-filtered open PRs — only actionable (non-conflicting, non-draft) PR numbers are listed in the `HOS_ACTIONABLE_PRS` preamble injected above this prompt. Do not re-fetch the full PR list or check `mergeable` yourself. Additional PR details are in the "Open bot PRs" section of the Pre-computed cycle context block at the bottom of this prompt.
 
-**Idempotency precheck (#1524, no-idempotency class) — literal first command for each PR, before `gh pr view`/diff/anything else.** Four incidents (#1288/#1286/#1280, #1306, #1512, #1523) produced a duplicate PR comment because the ad hoc check each cycle reinvented grepped the retired file `audit/oversight-log.jsonl` (gone since #888 P5) and silently matched nothing. For each PR number in the preamble list, fetch its current head SHA (`gh api repos/{o}/{r}/pulls/<n> --jq .head.sha`) and run:
+**Merge on a designated human's approval (#2213) — literal first command for each PR, before anything else:**
+```bash
+bash bootstrap/overseer_merge.sh on-human-approval --app overseer --pr <n>
+```
+Never suppress its stderr. Act on `outcome` in its JSON (`overseer.md` §What you do step 1a): `MERGED` → done with this PR; `DEFER` → skip this PR this cycle, post nothing and run no review; `NOT_ELIGIBLE` or `UNDETERMINABLE` → continue below unchanged; a non-zero exit → report it and skip this PR this cycle, and never retry the merge any other way.
+
+**Idempotency precheck (#1524, no-idempotency class) — literal next command for each PR not settled above, before `gh pr view`/diff/anything else.** Four incidents (#1288/#1286/#1280, #1306, #1512, #1523) produced a duplicate PR comment because the ad hoc check each cycle reinvented grepped the retired file `audit/oversight-log.jsonl` (gone since #888 P5) and silently matched nothing. For each PR number in the preamble list, fetch its current head SHA (`gh api repos/{o}/{r}/pulls/<n> --jq .head.sha`) and run:
 ```bash
 bash scripts/oversight/check_pr_reviewed.sh <pr#> <head_sha>
 ```

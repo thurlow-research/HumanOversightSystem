@@ -1994,6 +1994,8 @@ def test_w_hr_3_approve_action_gets_waits_only_sentence(h):
     assert result.returncode == 0, result.stdout + result.stderr
     body = _posted_body(h)
     assert "waits only on a designated human's approval of commit `cccccccccccc`" in body
+    # AD-8 (#2213): the sentence tells the reader the overseer does the merge.
+    assert "the overseer merges it on its next cycle after that approval" in body
 
 
 def test_w_po_1_propose_only_guards(h):
