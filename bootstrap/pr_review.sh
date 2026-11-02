@@ -169,11 +169,16 @@ if [[ "$SUBCOMMAND" == "submit-verdict" && -n "$BODY_FILE" && -r "$BODY_FILE" ]]
 fi
 
 # ── Mint (only for a recognised network invocation) and register revocation ─
-# Token revocation is a forced side effect of this script exiting, regardless
-# of whether a token was ever actually minted (TOKEN_FILE / GH_TOKEN unset is
-# a no-op below) and regardless of the child's exit code.
+# Revocation of a token THIS script minted is a forced side effect of exiting,
+# regardless of the child's exit code. A GH_TOKEN inherited from the caller
+# (e.g. the cron cycle's own installation token) is not ours to revoke: on a
+# non-minting invocation or a failed mint it would otherwise be killed
+# mid-cycle (#2117). _MINT_ATTEMPTED (set once the mint path starts) gates
+# the revoke call below.
 TOKEN_FILE=""
 _HOS_PR_REVIEW_REVOKED=0
+_MINT_ATTEMPTED=0
+_GH_CONFIG_TMP=""
 
 revoke_token() {
     # Idempotency guard (SHOULD_FIX 6, #1657 PR-1 review round 4): both the
@@ -188,16 +193,23 @@ revoke_token() {
     if [[ -n "$TOKEN_FILE" ]]; then
         rm -f "$TOKEN_FILE"
     fi
+    if [[ -n "$_GH_CONFIG_TMP" ]]; then
+        rm -rf "$_GH_CONFIG_TMP"
+    fi
     # bootstrap/revoke_app_token.sh (#1191) — never inline the DELETE curl
     # here: it has no timeout (a network stall inside this EXIT trap would
     # block process exit indefinitely, after pr_review_cli.py already
     # succeeded and printed its envelope, burning a whole unattended cron
-    # cycle — MUST_FIX B, #1657 PR-1 review round 2) and it would pass
-    # GH_TOKEN as curl argv, exposing it via /proc/<pid>/cmdline. It reads
+    # cycle — MUST_FIX B, #1657 PR-1 review round 2); revoke_app_token.sh
+    # bounds the call with --connect-timeout/--max-time. It reads
     # GH_TOKEN from the inherited environment, is idempotent on an absent
     # token, and always exits 0 (fail-open with a warning — the token
-    # expires naturally within the hour either way).
-    bash "$SCRIPT_DIR/revoke_app_token.sh"
+    # expires naturally within the hour either way). Only called once the
+    # mint path has started (#2117): it revokes whatever GH_TOKEN it
+    # inherits, and an inherited one belongs to the caller.
+    if [[ "$_MINT_ATTEMPTED" == "1" ]]; then
+        bash "$SCRIPT_DIR/revoke_app_token.sh"
+    fi
 }
 
 # A cron-imposed SIGTERM (or an operator SIGINT) kills this script without
@@ -220,18 +232,25 @@ trap '_on_signal INT' INT
 trap '_on_signal TERM' TERM
 
 if $MINT_TOKEN; then
+    # Scrub inherited credentials before the mint (#2117; same binding fix as
+    # TD-1520-S1 §7.1 step 3a): a failed mint must never proceed under the
+    # caller's identity. Non-minting invocations skip this and keep the
+    # inherited environment, which the CLI then sees untouched. The scrub also
+    # clears an ambient HOS_PR_REVIEW_TOKEN_MINT_FAILED so a stale value
+    # cannot pick the wrong error wording (#1657 PR-1 review round 3, NIT).
+    unset GH_TOKEN GITHUB_TOKEN HOS_BOT_LOGIN HOS_EXPECTED_BOT_LOGIN HOS_PR_REVIEW_TOKEN_MINT_FAILED
+    # Set before the mint, not after it: a signal landing between the mint
+    # and a later assignment (or a `source` failing partway under set -e)
+    # would otherwise skip revoking a live token. After the scrub above any
+    # GH_TOKEN can only be one this script minted, and on a failed mint it
+    # stays empty, where revoke_app_token.sh is a documented no-op ("No
+    # GH_TOKEN set — nothing to revoke", exit 0). Gating on "the mint path
+    # ran" closes the window without ever touching an inherited token.
+    _MINT_ATTEMPTED=1
     TOKEN_FILE="$(mktemp)"
     if bash "$SCRIPT_DIR/get_app_token.sh" --app "$APP_ROLE" > "$TOKEN_FILE"; then
         # shellcheck source=/dev/null
         source "$TOKEN_FILE"
-        # A successful mint is structurally unreachable from the read this
-        # guards (gated behind `if not bot_login:`, so a genuine mint
-        # success never reaches it) — this is cosmetic, but an ambient
-        # HOS_PR_REVIEW_TOKEN_MINT_FAILED=1 inherited from elsewhere in the
-        # environment, combined with an unrelated HOS_BOT_LOGIN-unset
-        # condition, would otherwise pick the wrong error wording (#1657
-        # PR-1 review round 3, NIT).
-        unset HOS_PR_REVIEW_TOKEN_MINT_FAILED
     else
         # A mint failure is an operational condition, not something bash
         # decides the outcome of (ARCH-3a). Proceed without a token:
@@ -246,7 +265,16 @@ if $MINT_TOKEN; then
         # failure that would very likely succeed on the next cron cycle
         # (SHOULD_FIX F, #1657 PR-1 review round 2).
         export HOS_PR_REVIEW_TOKEN_MINT_FAILED=1
-        echo "pr_review.sh: warning: failed to mint ${APP_ROLE} token — proceeding without one" >&2
+        # Warn first: under set -e a mktemp failure below would otherwise abort
+        # before the operator learns the mint failed.
+        echo "pr_review.sh: warning: failed to mint ${APP_ROLE} token — proceeding without credentials (inherited identity scrubbed)" >&2
+        # Neutralise gh's fallback to the host's stored login
+        # (~/.config/gh/hosts.yml): after the scrub above and a failed mint
+        # that would silently run under an unintended identity (#2117). An
+        # empty GH_CONFIG_DIR leaves gh with no stored auth, so the fetch
+        # fails and the CLI alone emits the exit-1 envelope.
+        _GH_CONFIG_TMP="$(mktemp -d)"
+        export GH_CONFIG_DIR="$_GH_CONFIG_TMP"
     fi
     rm -f "$TOKEN_FILE"
     TOKEN_FILE=""
