@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"idempotent-skip","head_sha":"4003140e1126970336c8fcfee40a2f940446a991","pr":2238,"summary":"#1215 skip: HUMAN_REQUIRED verdict (review 5731439070, 02:13Z) already posted on this head; no new commits, comments, or reviews since. needs-human present; CODEOWNERS reviewer ScottThurlow already requested."}
