@@ -168,6 +168,7 @@ excluded.
 - `scripts/oversight/suspension_manager.py` — manage contract/gate-suspension.md.
 - `scripts/oversight/token_tracker.py` — track and report external CLI token usage across oversight runs.
 - `scripts/oversight/validation_logic.py` — dedup fingerprinting + verdict aggregation for the cross-vendor validation scripts (SPEC-334 / Issue #334).
+- `scripts/oversight/write_pr_review_event.sh` — canonical writer for PR-review audit events (#1699).
 
 ## scripts/oversight/gates/
 
@@ -194,6 +195,7 @@ excluded.
 - `scripts/oversight/lib/detect_stack.sh` — repo-marker tool detection + fail-hard preflight (D1, ADR-032).
 - `scripts/oversight/lib/git_depth.py` — shared shallow-clone detector (#1759, Ruling I / TD-D15).
 - `scripts/oversight/lib/resolve_node_tool.sh` — discover-only consumer JS toolchain resolver (D2, ADR-032).
+- `scripts/oversight/lib/review_events.py` — the single PR-review event vocabulary (#1699).
 - `scripts/oversight/lib/step_range.sh` — shared step commit-range helper (SPEC-220 BC-220-5).
 - `scripts/oversight/lib/vendor_invoke.sh` — one bash launch primitive for agy/codex (ADR-1683 D-1/D-2).
 

@@ -250,6 +250,17 @@ see `docs/OVERSIGHT-RUNBOOK.md`. For configuring this layer (the
 `OVERSEER_CEILING` override, the active-milestone/build-plan config, and the
 `HOS_BOT_LOGIN` identity guard), see `docs/CUSTOMIZATION.md`.
 
+The overseer records each PR disposition as exactly one audit event. `AUTO_MERGE`
+and `PROPOSE_ONLY` write `pr-review`, and an unchanged head SHA writes
+`idempotent-skip`; both go through `scripts/oversight/write_pr_review_event.sh`,
+which refuses unknown names. `HUMAN_REQUIRED` writes `human-required` via
+`audit_write_event` with the SPEC-378 fields, and a bounce writes `pr-bounced`.
+The PR-review idempotency precheck `scripts/oversight/check_pr_reviewed.sh` (#1524)
+reads the same vocabulary from `scripts/oversight/lib/review_events.py`, including
+the read-only legacy spellings `pr-reviewed` and `pr-review-skipped-idempotent`. It
+is corroborating evidence only; the comment-based duplicate-verdict precheck stays
+authoritative.
+
 ---
 
 ## Agents
