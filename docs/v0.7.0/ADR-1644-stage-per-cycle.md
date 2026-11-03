@@ -303,9 +303,12 @@ are new reason tokens and the ordering key.
   with reason `stage-malformed`. A `stage:tracking` label means excluded with `tracking-parent`.
 - **Native blockers.**
   - `issue_dependencies_summary.blocked_by > 0`: excluded, `blocked-by-open-issue`.
-  - `total_blocked_by > blocked_by`: excluded, `blocker-closed-unverified`, **until T3.3** lands the paid
-    satisfaction check. Before T3.3, a closed blocker never unblocks. The probe found no edges in use
-    today, so this costs nothing now.
+  - `total_blocked_by > blocked_by`: excluded, `blocker-closed-unverified`, **unless the paid satisfaction
+    check passes** (AD-C14 ESC-3(a); **T3.3-thin, #2173, pulled into v0.7.0**): every blocker closed as
+    `completed`, by a merge onto the default branch or by an individual human CODEOWNER. The check runs in
+    the walk, costs budget, and is DEGRADED (never a pass) when it cannot finish. It stands alone without
+    T3.2: it needs no stage labels and only refines this D2b exclusion. A blocker from another repository
+    is never satisfied.
   - The summary is **missing or malformed**: the record is **unevaluated**, which gives `complete=no` and
     DEGRADED when nothing else is emitted. It is never "not blocked".
 - **Parents.** `sub_issues_summary.total > 0` without `stage:tracking` means excluded with
@@ -899,7 +902,8 @@ both sides.
 | **T3.1** | Stage registry and labels | AD-C1 and AD-C17: `contract/stages/core.yaml`, load checks, provisioning script, conformance test, `docs/LABELS.md` rows. | ADR-1643 **W5** (SEAM-1), #1520 design (ESC-5) | Designed with #1520. |
 | **T3.2** | Stage checks in the selector, plus the pre-check skeleton | AD-C4's stage parse and in-flight ordering; AD-C5 steps 1, 2 and 4; AD-C3 steps 3 and 4. T-NS6. | T3.1 | Keeps the S2 exit and budget contract exactly. |
 | **T3.3a** | #1352 slice (ESC-5) | AD-C14 canonical scripts for sub-issue links and `blocked_by` edges. | nothing | Pulled into v0.7.0. |
-| **T3.3** | Edge satisfaction | AD-C14 ESC-3 satisfaction (the paid check), cycles and dangling edges, edge ⊇ block. | T3.2, T3.3a | |
+| **T3.3-thin** | Closed-blocker satisfaction check only (#2173) | AD-C14 ESC-3(a): a closed `completed` blocker satisfied by merge or CODEOWNER unblocks its dependent. No stage machinery. | nothing | Pulled into v0.7.0. |
+| **T3.3** | Edge satisfaction (remainder) | Cycles and dangling edges, edge ⊇ block (the satisfaction check shipped as T3.3-thin; a blocker from another repository is never satisfied). | T3.2, T3.3a | |
 | **T3.4** | Records, caps and epochs | AD-C7 and AD-C8. Record format and trust, record-first order, reconciling done-but-unrecorded, REQ-C2(g), resume and reset grants. | ADR-1643 W2, T3.1 | |
 | **T3.5** | Stuck detection | AD-C9. **Its own TD section and an adversarial review.** | T3.4 | |
 | **T3.6** | Escalation and worker confirmation | AD-C10 (without the question-issue half) and AD-C11 worker side. | T3.5; #1718 fixed or size-guarded | |

@@ -78,11 +78,18 @@ needs-ai`, after removing it first if it is already present, since a
 re-applied label produces no new event to verify).
 
 Native GitHub issue dependencies and sub-issues gate selection (ADR-1644
-AD-C4). An issue with any blocking dependency (`blocked by`), open or
-closed, is not selected. An issue that has sub-issues is not selected.
-Neither costs a request, because both are read from the list record. If the
-host does not return these summaries, selection reports DEGRADED (exit 3)
-rather than assume "not blocked". On such a host (for example, a GitHub
+AD-C4). An issue with an OPEN blocking dependency (`blocked by`) is not
+selected, and neither is an issue that has sub-issues; both cost no request,
+because both are read from the list record. An issue whose blockers are all
+CLOSED is not excluded for free: the paid satisfaction check (#2173, thin
+T3.3) runs when the walk reaches it. A closed blocker is satisfied iff it
+closed as `completed` AND the closure is attributable to a merge onto
+origin/main or to an individual human CODEOWNER; otherwise the issue stays
+excluded `blocker-closed-unverified`. The check's requests count against the
+budget, and running out of budget is DEGRADED, never a pass. A blocker from
+another repository is never satisfied. If the host does
+not return these summaries, selection reports DEGRADED (exit 3) rather than
+assume "not blocked". On such a host (for example, a GitHub
 Enterprise Server version without issue dependencies), this happens **on
 every run**, and no new issue work is selected until the host returns them.
 An issue that has sub-issues stays unselected even after all of them close.
@@ -100,13 +107,14 @@ import urllib.parse
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Collection, Optional, Sequence
 
 from scripts.framework.requester_trust import (
     COLLABORATOR_PAGE_BOUND,
     RequesterVerdict,
     codeowners_humans,
     fetch_collaborators,
+    is_bot_reviewer,
     load_bot_accounts,
     load_trusted_apps,
     load_trusted_requesters,
@@ -126,6 +134,7 @@ EXCLUDED_LABELS = ("needs-human",)  # the ADR-1604 AD-5 exclusion landing site
 PARKED_LABEL = "parked"
 LIST_PAGE_BOUND = 5  # 500 records (AM-22 / AF-8)
 EVENTS_PAGE_BOUND = 10  # 1000 events (AM-5)
+BLOCKER_PAGE_BOUND = 1  # 100 blockers of one issue (#2173); more is unevaluated
 
 # AD-C4's native-blocker / parent exclusions, in precedence order. The
 # literals are ADR-binding.
@@ -451,8 +460,10 @@ def _label_names(record: dict) -> set:
 
 @dataclass(frozen=True)
 class _NativeVerdict:
-    outcome: str  # "clear" | "excluded" | "unreadable"
-    reason: str  # excluded: a NATIVE_EXCLUSION_REASONS literal (or PARKED_LABEL); unreadable: the limb; clear: ""
+    outcome: str  # "clear" | "excluded" | "unreadable" | "check"
+    # excluded: a NATIVE_EXCLUSION_REASONS literal (or PARKED_LABEL); unreadable: the limb;
+    # check: the literal the record gets if the paid closed-blocker check fails; clear: ""
+    reason: str
 
 
 @dataclass
@@ -460,6 +471,7 @@ class _FreeFilterResult:
     kept: list  # survived D1, D2 and D2b, in input order: ranked and walked
     unreadable: list  # [(number, limb)] in input order: unevaluated, never walked
     excluded: list  # [(number, reason)] in input order: dropped, reported
+    closed_blocker_check: set = field(default_factory=set)  # numbers in `kept` owing the paid check
 
 
 def _nonneg_int(container: Any, key: str) -> Optional[int]:
@@ -497,23 +509,22 @@ def _native_verdict(record: dict) -> _NativeVerdict:
     """D2b's pure predicate (ADR-1644 AD-C4). Reads exactly two keys of a list
     record. The rule order is part of the contract: an exclusion wins over an
     unreadable limb (excluding is always safe), so DEGRADED is kept for records
-    whose selectability is genuinely unknown. For a readable dependency summary
-    0 <= blocked_by <= total_blocked_by, so R1 or R2 holds iff
-    total_blocked_by > 0 whichever count GitHub uses for "open"."""
+    whose selectability is genuinely unknown. An open blocker or a parent is
+    free and final. Closed blockers alone (0 open, total_blocked_by > 0) are
+    NOT final: they yield "check", owing the paid satisfaction check (#2173)
+    in the walk -- and only once both summaries are readable."""
     deps = _dependency_counts(record)
     subs = _sub_issue_total(record)
-    if deps is not None:
-        blocked_by, total_blocked_by = deps
-        if blocked_by > 0:
-            return _NativeVerdict("excluded", NATIVE_EXCLUSION_REASONS[0])
-        if total_blocked_by > blocked_by:
-            return _NativeVerdict("excluded", NATIVE_EXCLUSION_REASONS[1])
+    if deps is not None and deps[0] > 0:
+        return _NativeVerdict("excluded", NATIVE_EXCLUSION_REASONS[0])
     if subs is not None and subs > 0:
         return _NativeVerdict("excluded", NATIVE_EXCLUSION_REASONS[2])
     if deps is None or subs is None:
         if deps is None and subs is None:
             return _NativeVerdict("unreadable", "both")
         return _NativeVerdict("unreadable", "dependencies" if deps is None else "sub-issues")
+    if deps[1] > deps[0]:
+        return _NativeVerdict("check", NATIVE_EXCLUSION_REASONS[1])
     return _NativeVerdict("clear", "")
 
 
@@ -541,6 +552,9 @@ def _apply_free_filters(raw_records: list) -> _FreeFilterResult:
             result.excluded.append((record.get("number"), verdict.reason))
         elif verdict.outcome == "unreadable":
             result.unreadable.append((record.get("number"), verdict.reason))
+        elif verdict.outcome == "check":
+            result.kept.append(record)
+            result.closed_blocker_check.add(record.get("number"))
         else:
             result.kept.append(record)
     return result
@@ -681,11 +695,178 @@ class _WalkResult:
     gated_reasons: Counter = field(default_factory=Counter)
     gated_issue_numbers: list = field(default_factory=list)
     query_failed_issues: list = field(default_factory=list)
+    closed_blocker_failed: set = field(default_factory=set)  # subset of query_failed_issues
     unevaluated_sufficient: int = 0
     unevaluated_cost_ceiling: int = 0
     cost_ceiling_named_issue: Optional[int] = None
     stopped: bool = False
     warn_lines: list = field(default_factory=list)
+    excluded: list = field(default_factory=list)  # [(number, reason)]: closed-blocker check failed
+
+
+# ---------------------------------------------------------------------------
+# The closed-blocker satisfaction check (#2173, thin T3.3; ADR-1644 AD-C14 ESC-3(a))
+# ---------------------------------------------------------------------------
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_DEFAULT_BRANCH_REF = "refs/remotes/origin/main"  # same ref _started_stages uses
+
+
+def _is_default_branch_ancestor(repo_root: str, sha: Any) -> Optional[bool]:
+    """Tri-state, free (local git): True iff `sha` is an ancestor of origin/main,
+    False iff it is not (or is malformed: not attributable), None (UNKNOWN) when
+    git cannot answer -- unknown object, missing ref, timeout. `merge-base A B`
+    prints A exactly when A is an ancestor of B; exit 0/1 are answers, any other
+    exit (128: unknown object / missing ref) is a `_GitFailure`. (`_git` returns
+    stdout only, so this is `merge-base`, not `merge-base --is-ancestor`.)"""
+    if not isinstance(sha, str) or not _SHA_RE.match(sha.lower()):
+        return False
+    try:
+        out = _git(repo_root, "merge-base", sha.lower(), _DEFAULT_BRANCH_REF, ok_codes=(0, 1))
+    except _GitFailure:
+        return None
+    return out.strip() == sha.lower()
+
+
+_UNKNOWN = "unknown"  # blocker_closure_satisfied: undetermined (git could not answer)
+_FAILED = object()  # per-walk cache marker: this blocker's evidence could not be fetched/decided
+
+
+def blocker_closure_satisfied(
+    events: Any,
+    codeowners_set: set,
+    bot_accounts: set,
+    is_ancestor: Callable[[str], Optional[bool]],
+) -> Optional[str]:
+    """Whether a blocker's closure satisfies a `blocked_by` edge, over an
+    ALREADY-FETCHED events list (no network inside the predicate). Returns
+    "merge", "codeowner", None (unsatisfied) or `_UNKNOWN` (the ancestry
+    question could not be answered and the CODEOWNER path does not satisfy:
+    undetermined, never a pass and never an exclusion). The caller has already required
+    state=closed and state_reason=completed. Judged on the LAST `closed` event
+    (an issue can be reopened and closed again). Merge attribution: that
+    event's non-null `commit_id`, else a `referenced` event's `commit_id` with
+    the identical `created_at` (GitHub's form for a closing-keyword PR merge);
+    the commit must be an ancestor of the default branch. Otherwise the
+    closer must be an individual human CODEOWNER, not a bot."""
+    if not isinstance(events, list):
+        return None
+    closed = [e for e in events if isinstance(e, dict) and e.get("event") == "closed"]
+    if not closed:
+        return None
+    last = closed[-1]
+    shas: list = []
+    if last.get("commit_id"):
+        shas.append(last["commit_id"])
+    elif last.get("created_at"):
+        shas.extend(
+            e["commit_id"]
+            for e in events
+            if isinstance(e, dict)
+            and e.get("event") == "referenced"
+            and e.get("commit_id")
+            and e.get("created_at") == last["created_at"]
+        )
+    ancestry = [is_ancestor(sha) for sha in shas]
+    if any(a is True for a in ancestry):
+        return "merge"
+    actor = last.get("actor")
+    actor = actor if isinstance(actor, dict) else {}
+    login = actor.get("login") or ""
+    if (
+        login
+        and not is_bot_reviewer(login, actor.get("type", ""), bot_accounts)
+        and login.lower() in codeowners_set
+    ):
+        return "codeowner"
+    return _UNKNOWN if any(a is None for a in ancestry) else None
+
+
+def _same_repo(repository_url: Any, repo: str) -> bool:
+    """True iff a blocker's `repository_url` ends in exactly `/repos/{repo}`
+    (case-insensitive; host-agnostic so GHES works). `blocked_by` can return
+    issues of OTHER repositories, whose events this check must never judge by
+    bare issue number. Missing or malformed is False."""
+    if not isinstance(repository_url, str):
+        return False
+    return repository_url.lower().rstrip("/").endswith(f"/repos/{repo.lower()}") and (
+        repository_url.lower().rstrip("/").count("/repos/") == 1
+    )
+
+
+@dataclass
+class _ClosedBlockerCheck:
+    state: str  # "SATISFIED" | "UNSATISFIED" | "FAILED" | "REFUSED"
+    satisfied_by: list = field(default_factory=list)  # [(blocker number, "merge"|"codeowner")]
+    fetched: bool = False  # at least one request was spent on this record
+
+
+def _check_closed_blockers(
+    cand: "_Candidate",
+    repo: str,
+    repo_root: str,
+    codeowners: set,
+    bots: set,
+    budget: _Budget,
+    verdicts: dict,
+) -> _ClosedBlockerCheck:
+    """The paid check: every request counts against `budget`. REFUSED / FAILED /
+    a truncated fetch are never a pass and never an exclusion. `verdicts`
+    caches determined per-blocker answers so a blocker shared by several
+    dependents is paid for once."""
+    spent_before = budget.spent
+
+    def _result(state: str, by: Optional[list] = None) -> _ClosedBlockerCheck:
+        return _ClosedBlockerCheck(state, by or [], budget.spent > spent_before)
+
+    def _blockers_endpoint(page: int) -> str:
+        return f"repos/{repo}/issues/{cand.number}/dependencies/blocked_by?per_page=100&page={page}"
+
+    listed = _fetch_pages(_blockers_endpoint, BLOCKER_PAGE_BOUND, budget)
+    if listed.state in ("FAILED", "REFUSED"):
+        return _result(listed.state)
+    blockers = [b for b in listed.records if isinstance(b, dict)]
+    # Decide the free rejections first: an unsatisfiable blocker settles the
+    # record as excluded without paying for any events.
+    for blocker in blockers:
+        if (
+            not _same_repo(blocker.get("repository_url"), repo)
+            or blocker.get("state") != "closed"
+            or blocker.get("state_reason") != "completed"
+        ):
+            return _result("UNSATISFIED")
+    if listed.state == "BOUND-REACHED" or not blockers:
+        return _result("FAILED")  # cannot see every blocker / nothing to judge: unevaluated
+    by: list = []
+    for blocker in blockers:
+        number = blocker.get("number")
+        if verdicts.get(number) is _FAILED:
+            return _result("FAILED")  # already failed this walk: no re-fetch
+        if number not in verdicts:
+
+            def _events_endpoint(page: int, num: Any = number) -> str:
+                return f"repos/{repo}/issues/{num}/events?per_page=100&page={page}"
+
+            fetched = _fetch_pages(_events_endpoint, EVENTS_PAGE_BOUND, budget)
+            if fetched.state == "REFUSED":
+                return _result("REFUSED")
+            if fetched.state != "COMPLETE":
+                # FAILED, or BOUND-REACHED (the last `closed` event may lie beyond the bound).
+                verdicts[number] = _FAILED
+                return _result("FAILED")
+            verdict = blocker_closure_satisfied(
+                fetched.records,
+                codeowners,
+                bots,
+                lambda sha: _is_default_branch_ancestor(repo_root, sha),
+            )
+            verdicts[number] = _FAILED if verdict == _UNKNOWN else verdict
+            if verdict == _UNKNOWN:
+                return _result("FAILED")
+        if verdicts[number] is None:
+            return _result("UNSATISFIED")
+        by.append((number, verdicts[number]))
+    return _result("SATISFIED", by)
 
 
 def _walk(
@@ -696,8 +877,12 @@ def _walk(
     bots: set,
     budget: _Budget,
     max_candidates: int,
+    closed_blocker_check: frozenset = frozenset(),
+    repo_root: Optional[str] = None,
 ) -> _WalkResult:
     result = _WalkResult()
+    repo_root = repo_root if repo_root is not None else str(_REPO_ROOT)
+    blocker_verdicts: dict = {}
     i = 0
     n = len(walk_order)
     while i < n:
@@ -706,6 +891,32 @@ def _walk(
             result.unevaluated_sufficient += n - i
             result.stopped = True
             return result
+        if cand.number in closed_blocker_check:
+            # Paid, and BEFORE the trust test: an unsatisfied record is excluded,
+            # never counted as gated (#2173).
+            check = _check_closed_blockers(
+                cand, repo, repo_root, codeowners, bots, budget, blocker_verdicts
+            )
+            if check.state == "REFUSED":
+                # Same cost-ceiling tail as D5's refused events fetch.
+                if check.fetched:
+                    result.cost_ceiling_named_issue = cand.number
+                result.unevaluated_cost_ceiling += n - i
+                result.stopped = True
+                return result
+            if check.state == "FAILED":
+                result.query_failed_issues.append(cand.number)
+                result.closed_blocker_failed.add(cand.number)
+                i += 1
+                continue
+            if check.state == "UNSATISFIED":
+                result.excluded.append((cand.number, NATIVE_EXCLUSION_REASONS[1]))
+                i += 1
+                continue
+            for blocker, how in check.satisfied_by:
+                result.warn_lines.append(
+                    f"blocker-satisfied issue=#{cand.number} blocker=#{blocker} by={how}"
+                )
         if cand.verdict.trusted:
             result.eligible.append(cand)
             i += 1
@@ -791,6 +1002,7 @@ def _report_and_exit(
     ceiling_refused_at_list: bool = False,
     edge_summary_unreadable: Sequence[tuple] = (),  # [(number, limb)]
     excluded: Sequence[tuple] = (),  # [(number, reason)]
+    closed_blocker_failed: Collection[int] = (),  # subset of query_failed_issues
 ) -> int:
     gated_count = sum(gated_reasons.values())
     evaluated = len(eligible) + gated_count
@@ -830,7 +1042,8 @@ def _report_and_exit(
             f"unevaluated:{UNEVALUATED_EDGE_SUMMARY}={len(edge_summary_unreadable)}",
         )
     for issue in query_failed_issues:
-        _emit(f"WARN unevaluated:query-failed issue=#{issue}")
+        suffix = " check=closed-blocker" if issue in closed_blocker_failed else ""
+        _emit(f"WARN unevaluated:query-failed issue=#{issue}{suffix}")
     for issue, limb in edge_summary_unreadable[:_EXCLUDED_LIST_BOUND]:
         _emit(f"WARN unevaluated:{UNEVALUATED_EDGE_SUMMARY} issue=#{issue} limb={limb}")
     unreadable_more = len(edge_summary_unreadable) - _EXCLUDED_LIST_BOUND
@@ -879,8 +1092,8 @@ def _report_and_exit(
         for issue in closed_unverified[:_EXCLUDED_LIST_BOUND]:
             _emit(
                 f"WARN blocker-closed-unverified issue=#{issue} —",
-                "a closed blocker does not unblock until the T3.3 satisfaction",
-                "check exists; a CODEOWNER may remove the dependency edge if",
+                "no closed blocker is satisfied by a merge to the default branch or",
+                "a CODEOWNER close; a CODEOWNER may remove the dependency edge if",
                 "the blocker is satisfied",
             )
 
@@ -1032,7 +1245,14 @@ def main(argv: Optional[list] = None) -> int:
         bots=config.bots,
         budget=budget,
         max_candidates=effective_max_candidates,
+        closed_blocker_check=frozenset(filtered.closed_blocker_check),
+        repo_root=repo_root,
     )
+    # Closed-blocker exclusions decided in the walk were counted in `scanned`
+    # (they were kept for the walk); like D2b exclusions they are reported as
+    # excluded and not counted in scanned, so the counting identities hold.
+    all_excluded = [*filtered.excluded, *walk_result.excluded]
+    scanned -= len(walk_result.excluded)
 
     emit_order = sorted(walk_result.eligible, key=lambda c: (c.stage, c.rank, c.number))
     for c in emit_order:
@@ -1062,7 +1282,8 @@ def main(argv: Optional[list] = None) -> int:
         api_requests=budget.spent,
         walk_warn_lines=walk_result.warn_lines,
         edge_summary_unreadable=filtered.unreadable,
-        excluded=filtered.excluded,
+        excluded=all_excluded,
+        closed_blocker_failed=walk_result.closed_blocker_failed,
     )
 
 
