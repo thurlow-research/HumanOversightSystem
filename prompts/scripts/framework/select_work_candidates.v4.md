@@ -96,3 +96,20 @@ None; a git failure is UNKNOWN, not "not an ancestor"). UNKNOWN with no CODEOWNE
 FAILED (unevaluated:query-failed), never UNSATISFIED. A per-walk FAILED marker stops a shared blocker's events
 fetch being repeated per dependent. The query-failed WARN for a closed-blocker-check failure carries
 ` check=closed-blocker`; the D5 events-authorization line is unchanged.
+
+Round 4 (second-review CWE-863 + malformed records): the same-second `referenced`-event fallback is
+deleted (it was forgeable: any commit that mentions `#N` and later reaches main, plus a same-second close,
+counted as a merge; and it never fired on real merges, where the `closed` event has no commit). Merge
+attribution is now GitHub's recorded cause. Order, cheapest first: (1) the last `closed` event's non-null
+`commit_id` that is an ancestor of origin/main; (2) a human, non-bot CODEOWNER closer; (3) otherwise ONE
+GraphQL read of `ClosedEvent.closer` (`_run_graphql`, a literal query, variables as separate `gh`
+arguments, counted against the request budget, injected into the pure predicate as a callable): a PR that
+is merged, based on the default branch (named from the same constant as `_DEFAULT_BRANCH_REF`), in THIS
+repo, whose merge commit is an ancestor of origin/main; or a Commit closer that is such an ancestor. The
+node's `createdAt` must equal the REST closed event's `created_at`, else UNKNOWN. A closer of null, any
+failed field, or a non-ancestor is UNSATISFIED; any transport/shape failure or ancestry UNKNOWN is FAILED
+(unevaluated); the budget stop at the lookup is REFUSED. No actor check on path 3: the closer is the cause,
+so a bot merger is legitimate. Probed live (#1666, #2194, bot-merged #1532, manual #2196, commit-closed
+#1236). Separately, a `blocked_by` record that is not a dict, or whose `number` is not a positive non-bool
+int, makes the whole record FAILED before any free rejection or events fetch (previously non-dict records
+were silently dropped, which could yield SATISFIED on a list that was not fully readable).

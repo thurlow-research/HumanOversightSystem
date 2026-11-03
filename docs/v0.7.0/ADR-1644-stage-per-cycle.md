@@ -656,6 +656,7 @@ until #1542 can withhold the App credential from the session.
   a verified CODEOWNER closure.
   - Merge attribution is the `closed` event carrying a commit or PR reference on the default branch; its
     exact form is `technical-design`'s to probe. The CODEOWNER alternative uses the actor test.
+    Attribution is GitHub's recorded cause: the `closed` event's `commit_id`, or GraphQL `ClosedEvent.closer` being a PR merged into the default branch (or a default-branch commit). Timestamp or `referenced`-event coincidence is never attribution (#2173 ruling).
   - `not_planned`, a duplicate closure, or a closure by an unattributable actor means **unsatisfied** and
     is reported. It never unblocks.
   - Question issues follow AD-C10's stricter rule.

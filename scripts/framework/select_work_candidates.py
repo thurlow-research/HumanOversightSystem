@@ -99,6 +99,7 @@ To make it selectable, close it or remove its sub-issue links.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -728,58 +729,188 @@ def _is_default_branch_ancestor(repo_root: str, sha: Any) -> Optional[bool]:
     return out.strip() == sha.lower()
 
 
-_UNKNOWN = "unknown"  # blocker_closure_satisfied: undetermined (git could not answer)
+_UNKNOWN = "unknown"  # blocker_closure_satisfied: undetermined (git/GraphQL could not answer)
 _FAILED = object()  # per-walk cache marker: this blocker's evidence could not be fetched/decided
+
+# One default-branch name, derived from the single ref constant above (no second
+# literal): the GraphQL closer's `baseRefName` must equal it.
+_DEFAULT_BRANCH_NAME = _DEFAULT_BRANCH_REF.rsplit("/", 1)[-1]
+
+# The closer lookup (#2173 ruling, C0-probed 2026-11-03). A module-level literal:
+# owner, name and number reach `gh` ONLY as separate variable arguments, never
+# interpolated into this text.
+_CLOSER_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!){"
+    "repository(owner:$owner,name:$name){"
+    "issue(number:$number){"
+    "timelineItems(itemTypes:[CLOSED_EVENT], last:1){"
+    "nodes{ ... on ClosedEvent{ createdAt stateReason "
+    "closer{ __typename "
+    "... on PullRequest{ number merged mergedAt baseRefName "
+    "baseRepository{ nameWithOwner } mergeCommit{ oid } } "
+    "... on Commit{ oid } } } } } } }"
+)
+
+
+class _BudgetRefused(Exception):
+    """The request ceiling stopped the closer lookup: the record is REFUSED
+    (degraded), never UNKNOWN and never a determined "no"."""
+
+
+def _run_graphql(owner: str, name: str, number: int) -> Any:
+    """Issue exactly ONE `gh api graphql` call and return the parsed JSON.
+    `owner` and `name` go as raw-string variables (`-f`: no `@file` or type
+    coercion), `number` as a typed `Int` (`-F`); the query is never built from
+    them."""
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={_CLOSER_QUERY}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+                "-F",
+                f"number={number}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GH_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _GhFailure(str(exc)) from exc
+    if result.returncode != 0:
+        raise _GhFailure(result.stderr.strip())
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise _GhFailure(str(exc)) from exc
+
+
+def _fetch_closer_node(repo: str, number: int, budget: _Budget) -> Optional[dict]:
+    """The last `ClosedEvent` node of issue `number`, or None (UNKNOWN) on any
+    transport/shape failure. Exactly one request: the stop test runs first
+    (`_BudgetRefused`), the counter increments after the call, success or not.
+    UNKNOWN covers: non-zero exit, timeout, non-JSON, a non-empty `errors`, a
+    missing/non-dict `data.repository.issue`, `nodes` not a one-item list."""
+    owner, sep, name = repo.partition("/")
+    if not sep or not owner or not name:
+        return None
+    if budget.refuse():
+        raise _BudgetRefused
+    try:
+        payload = _run_graphql(owner, name, number)
+    except _GhFailure:
+        budget.record()
+        return None
+    budget.record()
+    if not isinstance(payload, dict) or payload.get("errors"):
+        return None
+    data = payload.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    issue = repository.get("issue") if isinstance(repository, dict) else None
+    items = issue.get("timelineItems") if isinstance(issue, dict) else None
+    nodes = items.get("nodes") if isinstance(items, dict) else None
+    if not isinstance(nodes, list) or len(nodes) != 1 or not isinstance(nodes[0], dict):
+        return None
+    return nodes[0]
+
+
+def _closer_attribution(
+    node: dict, rest_closed_at: Any, repo: str, is_ancestor: Callable[[str], Optional[bool]]
+) -> Optional[str]:
+    """Merge attribution from GitHub's recorded cause, `ClosedEvent.closer`:
+    "merge", None (determined: not a default-branch merge) or `_UNKNOWN`.
+    The node must be the very closure the REST events show (equal `createdAt`);
+    a mismatch is a race with a reopen/re-close, so undetermined. No actor
+    check: the closer is the cause, and a bot merger is legitimate."""
+    if not rest_closed_at or node.get("createdAt") != rest_closed_at:
+        return _UNKNOWN
+    closer = node.get("closer")
+    if closer is None:
+        return None
+    if not isinstance(closer, dict):
+        return _UNKNOWN
+    typename = closer.get("__typename")
+    if typename == "PullRequest":
+        base_repo = closer.get("baseRepository")
+        base_repo = base_repo if isinstance(base_repo, dict) else {}
+        name_with_owner = base_repo.get("nameWithOwner")
+        merge_commit = closer.get("mergeCommit")
+        sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+        if (
+            closer.get("merged") is not True
+            or closer.get("baseRefName") != _DEFAULT_BRANCH_NAME
+            or not isinstance(name_with_owner, str)
+            or name_with_owner.lower() != repo.lower()
+        ):
+            return None
+    elif typename == "Commit":
+        sha = closer.get("oid")
+    else:
+        return None
+    answer = is_ancestor(sha) if isinstance(sha, str) else False
+    if answer is None:
+        return _UNKNOWN
+    return "merge" if answer else None
 
 
 def blocker_closure_satisfied(
     events: Any,
     codeowners_set: set,
-    bot_accounts: set,
+    bots: set,
     is_ancestor: Callable[[str], Optional[bool]],
+    closer_lookup: Callable[[], Optional[dict]],
+    repo: str,
 ) -> Optional[str]:
     """Whether a blocker's closure satisfies a `blocked_by` edge, over an
-    ALREADY-FETCHED events list (no network inside the predicate). Returns
-    "merge", "codeowner", None (unsatisfied) or `_UNKNOWN` (the ancestry
-    question could not be answered and the CODEOWNER path does not satisfy:
-    undetermined, never a pass and never an exclusion). The caller has already required
-    state=closed and state_reason=completed. Judged on the LAST `closed` event
-    (an issue can be reopened and closed again). Merge attribution: that
-    event's non-null `commit_id`, else a `referenced` event's `commit_id` with
-    the identical `created_at` (GitHub's form for a closing-keyword PR merge);
-    the commit must be an ancestor of the default branch. Otherwise the
-    closer must be an individual human CODEOWNER, not a bot."""
+    ALREADY-FETCHED events list (no network inside the predicate: the one paid
+    lookup is the injected `closer_lookup`). Returns "merge", "codeowner", None
+    (unsatisfied) or `_UNKNOWN` (undetermined, never a pass and never an
+    exclusion). The caller has already required state=closed and
+    state_reason=completed. Judged on the LAST `closed` event (an issue can be
+    reopened and closed again). Cheapest evidence first:
+      1. that event's non-null `commit_id` (GitHub's recorded cause: a closing
+         keyword in a commit pushed to the default branch) that is an ancestor
+         of the default branch -> "merge"; with a commit present the closure
+         is decided on it alone;
+      2. the closer is an individual human CODEOWNER, not a bot -> "codeowner";
+      3. otherwise (no commit on the event) ONE `closer_lookup()` of GraphQL
+         `ClosedEvent.closer`: a PR merged into the default branch of THIS
+         repo whose merge commit is an ancestor of it, or such a commit -> "merge".
+    A matching timestamp or a `referenced` event is never attribution. The
+    lookup returns the node dict or None (UNKNOWN); it may raise
+    `_BudgetRefused`, which the caller maps to REFUSED."""
     if not isinstance(events, list):
         return None
     closed = [e for e in events if isinstance(e, dict) and e.get("event") == "closed"]
     if not closed:
         return None
     last = closed[-1]
-    shas: list = []
-    if last.get("commit_id"):
-        shas.append(last["commit_id"])
-    elif last.get("created_at"):
-        shas.extend(
-            e["commit_id"]
-            for e in events
-            if isinstance(e, dict)
-            and e.get("event") == "referenced"
-            and e.get("commit_id")
-            and e.get("created_at") == last["created_at"]
-        )
-    ancestry = [is_ancestor(sha) for sha in shas]
-    if any(a is True for a in ancestry):
+    commit = last.get("commit_id")
+    ancestry = is_ancestor(commit) if commit else False
+    if ancestry is True:
         return "merge"
     actor = last.get("actor")
     actor = actor if isinstance(actor, dict) else {}
     login = actor.get("login") or ""
     if (
         login
-        and not is_bot_reviewer(login, actor.get("type", ""), bot_accounts)
+        and not is_bot_reviewer(login, actor.get("type", ""), bots)
         and login.lower() in codeowners_set
     ):
         return "codeowner"
-    return _UNKNOWN if any(a is None for a in ancestry) else None
+    if commit:
+        return _UNKNOWN if ancestry is None else None
+    node = closer_lookup()
+    if node is None:
+        return _UNKNOWN
+    return _closer_attribution(node, last.get("created_at"), repo, is_ancestor)
 
 
 def _same_repo(repository_url: Any, repo: str) -> bool:
@@ -825,7 +956,18 @@ def _check_closed_blockers(
     listed = _fetch_pages(_blockers_endpoint, BLOCKER_PAGE_BOUND, budget)
     if listed.state in ("FAILED", "REFUSED"):
         return _result(listed.state)
-    blockers = [b for b in listed.records if isinstance(b, dict)]
+    blockers = listed.records
+    # Validate before anything else: a record we cannot read is never dropped
+    # (that would judge a list we cannot fully see), and an unvalidated `number`
+    # must not reach the events path or the cache key. `bool` is an `int`.
+    if any(
+        not isinstance(b, dict)
+        or not isinstance(b.get("number"), int)
+        or isinstance(b.get("number"), bool)
+        or b["number"] <= 0
+        for b in blockers
+    ):
+        return _result("FAILED")
     # Decide the free rejections first: an unsatisfiable blocker settles the
     # record as excluded without paying for any events.
     for blocker in blockers:
@@ -854,12 +996,17 @@ def _check_closed_blockers(
                 # FAILED, or BOUND-REACHED (the last `closed` event may lie beyond the bound).
                 verdicts[number] = _FAILED
                 return _result("FAILED")
-            verdict = blocker_closure_satisfied(
-                fetched.records,
-                codeowners,
-                bots,
-                lambda sha: _is_default_branch_ancestor(repo_root, sha),
-            )
+            try:
+                verdict = blocker_closure_satisfied(
+                    fetched.records,
+                    codeowners,
+                    bots,
+                    lambda sha: _is_default_branch_ancestor(repo_root, sha),
+                    functools.partial(_fetch_closer_node, repo, number, budget),
+                    repo,
+                )
+            except _BudgetRefused:
+                return _result("REFUSED")
             verdicts[number] = _FAILED if verdict == _UNKNOWN else verdict
             if verdict == _UNKNOWN:
                 return _result("FAILED")
