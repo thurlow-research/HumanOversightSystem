@@ -867,6 +867,7 @@ def blocker_closure_satisfied(
     is_ancestor: Callable[[str], Optional[bool]],
     closer_lookup: Callable[[], Optional[dict]],
     repo: str,
+    closed_at: str,
 ) -> Optional[str]:
     """Whether a blocker's closure satisfies a `blocked_by` edge, over an
     ALREADY-FETCHED events list (no network inside the predicate: the one paid
@@ -874,7 +875,10 @@ def blocker_closure_satisfied(
     (unsatisfied) or `_UNKNOWN` (undetermined, never a pass and never an
     exclusion). The caller has already required state=closed and
     state_reason=completed. Judged on the LAST `closed` event (an issue can be
-    reopened and closed again). Cheapest evidence first:
+    reopened and closed again). `closed_at` is the closure the `blocked_by`
+    listing reported: the last `closed` event must be that closure (equal
+    `created_at`), else the evidence is for a different closure and the answer
+    is `_UNKNOWN`. Cheapest evidence first:
       1. that event's non-null `commit_id` (GitHub's recorded cause: a closing
          keyword in a commit pushed to the default branch) that is an ancestor
          of the default branch -> "merge"; with a commit present the closure
@@ -892,6 +896,8 @@ def blocker_closure_satisfied(
     if not closed:
         return None
     last = closed[-1]
+    if last.get("created_at") != closed_at:
+        return _UNKNOWN  # the events describe a different closure than the one listed
     commit = last.get("commit_id")
     ancestry = is_ancestor(commit) if commit else False
     if ancestry is True:
@@ -943,8 +949,8 @@ def _check_closed_blockers(
 ) -> _ClosedBlockerCheck:
     """The paid check: every request counts against `budget`. REFUSED / FAILED /
     a truncated fetch are never a pass and never an exclusion. `verdicts`
-    caches determined per-blocker answers so a blocker shared by several
-    dependents is paid for once."""
+    caches determined answers per (blocker number, closed_at) so a closure shared
+    by several dependents is paid for once and a re-closed blocker is re-judged."""
     spent_before = budget.spent
 
     def _result(state: str, by: Optional[list] = None) -> _ClosedBlockerCheck:
@@ -977,14 +983,20 @@ def _check_closed_blockers(
             or blocker.get("state_reason") != "completed"
         ):
             return _result("UNSATISFIED")
+    # The closure being judged is identified by `closed_at`; without it a cached
+    # verdict could not be tied to one closure (reopen + re-close mid-walk).
+    if any(not isinstance(b.get("closed_at"), str) or not b["closed_at"] for b in blockers):
+        return _result("FAILED")
     if listed.state == "BOUND-REACHED" or not blockers:
         return _result("FAILED")  # cannot see every blocker / nothing to judge: unevaluated
     by: list = []
     for blocker in blockers:
         number = blocker.get("number")
-        if verdicts.get(number) is _FAILED:
+        closed_at = blocker["closed_at"]
+        key = (number, closed_at)  # one verdict per CLOSURE, not per issue number
+        if verdicts.get(key) is _FAILED:
             return _result("FAILED")  # already failed this walk: no re-fetch
-        if number not in verdicts:
+        if key not in verdicts:
 
             def _events_endpoint(page: int, num: Any = number) -> str:
                 return f"repos/{repo}/issues/{num}/events?per_page=100&page={page}"
@@ -994,7 +1006,7 @@ def _check_closed_blockers(
                 return _result("REFUSED")
             if fetched.state != "COMPLETE":
                 # FAILED, or BOUND-REACHED (the last `closed` event may lie beyond the bound).
-                verdicts[number] = _FAILED
+                verdicts[key] = _FAILED
                 return _result("FAILED")
             try:
                 verdict = blocker_closure_satisfied(
@@ -1004,15 +1016,16 @@ def _check_closed_blockers(
                     lambda sha: _is_default_branch_ancestor(repo_root, sha),
                     functools.partial(_fetch_closer_node, repo, number, budget),
                     repo,
+                    closed_at,
                 )
             except _BudgetRefused:
                 return _result("REFUSED")
-            verdicts[number] = _FAILED if verdict == _UNKNOWN else verdict
+            verdicts[key] = _FAILED if verdict == _UNKNOWN else verdict
             if verdict == _UNKNOWN:
                 return _result("FAILED")
-        if verdicts[number] is None:
+        if verdicts[key] is None:
             return _result("UNSATISFIED")
-        by.append((number, verdicts[number]))
+        by.append((number, verdicts[key]))
     return _result("SATISFIED", by)
 
 

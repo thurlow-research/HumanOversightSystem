@@ -113,3 +113,10 @@ so a bot merger is legitimate. Probed live (#1666, #2194, bot-merged #1532, manu
 #1236). Separately, a `blocked_by` record that is not a dict, or whose `number` is not a positive non-bool
 int, makes the whole record FAILED before any free rejection or events fetch (previously non-dict records
 were silently dropped, which could yield SATISFIED on a list that was not fully readable).
+
+Round 4 addendum (second review, MEDIUM): the per-walk verdict cache, including the FAILED marker, is keyed on
+`(blocker number, closed_at)` with `closed_at` taken from the `blocked_by` listing record, so a blocker that is
+reopened and re-closed during one run is re-judged on its own evidence instead of inheriting an earlier closure's
+verdict. A closed blocker whose listing `closed_at` is not a non-empty string is FAILED before any events fetch.
+The predicate also takes `closed_at` (no network added) and answers UNKNOWN (FAILED) unless the last REST
+`closed` event's `created_at` equals it, so the evidence is always for the closure that was listed.
