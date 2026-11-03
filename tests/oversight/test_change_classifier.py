@@ -177,6 +177,38 @@ def test_other_state_alternatives_still_flagged_in_internal_tooling(line):
     assert "new-user-facing-state" in _state_sigs("scripts/automation/foo.py", line)
 
 
+def test_choices_only_line_then_real_state_line_still_flagged():
+    # The one-per-file `break` must follow only a real match: an exempted choices=-only
+    # line must not stop the scan before a later real state line (#2201).
+    sigs = _state_sigs("scripts/automation/foo.py", _ARG, 'STATUS_OPEN = "open"')
+    assert "new-user-facing-state" in sigs
+
+
+def test_exemption_blanking_does_not_fabricate_a_match():
+    # Blanking choices= must leave a separator: joining the neighbours ("STATUS_" + "A")
+    # would manufacture a STATUS_[A-Z] hit that is not in the source line.
+    assert "new-user-facing-state" not in _state_sigs(
+        "scripts/automation/foo.py", "STATUS_choices=A"
+    )
+
+
+@pytest.mark.parametrize("path", ["binx/app.py", "scriptsx/app.py", "bootstrapper/app.py"])
+def test_internal_tooling_prefix_requires_directory_boundary(path):
+    # `bin`/`scripts`/`bootstrap` must be whole top-level directory names (#2201).
+    assert "new-user-facing-state" in _state_sigs(path, _ARG)
+
+
+def test_choices_word_without_equals_is_not_state():
+    # The choices alternative needs `=`; prose or a bare name must not match anywhere.
+    assert "new-user-facing-state" not in _state_sigs("app/models.py", "# the choices of colour")
+
+
+def test_choices_with_spaced_equals_exempt_in_tooling_but_flagged_in_app():
+    line = '    parser.add_argument("--x", choices = ["a"])'
+    assert "new-user-facing-state" not in _state_sigs("scripts/x.py", line)
+    assert "new-user-facing-state" in _state_sigs("app/x.py", line)
+
+
 def test_2174_replay_pr_review_cli_no_state_signal():
     lines = [
         '    parser.add_argument("--disposition", choices=_VERDICT_DISPOSITIONS, required=True)',
