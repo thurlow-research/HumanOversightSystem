@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"c678215dc60d4b80641b5a0799c41af9a98aad10","pr":2243,"reason":"overseer verdict 5759541392 (action=APPROVE sign-off) already on this head after ScottThurlow approval; no new commits or human activity since; step 1a NOT_ELIGIBLE rule 11 (6 unresolved threads); submit-verdict G6-skipped"}
