@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 
@@ -82,6 +82,21 @@ def _issue(
     return record
 
 
+def _blocker(
+    number: int,
+    reason: Optional[str] = "completed",
+    state: str = "closed",
+    closed_at: Any = "2026-10-25T23:43:49Z",
+) -> dict:
+    return {
+        "number": number,
+        "closed_at": closed_at,
+        "repository_url": "https://api.github.com/repos/owner/repo",
+        "state": state,
+        "state_reason": reason,
+    }
+
+
 def _labeled_event(actor: str) -> dict:
     return {
         "event": "labeled",
@@ -96,9 +111,17 @@ class GhStub:
         self.issue_pages: dict[int, list] = {}
         self.events_pages: dict[int, dict[int, list]] = {}
         self.events_fail_pages: dict[int, set[int]] = {}
+        self.blockers: dict[int, list] = {}  # dependent number -> blocker issue objects
+        self.blockers_fail: set[int] = set()
 
     def __call__(self, endpoint: str):
         self.calls.append(endpoint)
+        m = re.search(r"issues/(\d+)/dependencies/blocked_by\?.*page=(\d+)", endpoint)
+        if m:
+            dependent = int(m.group(1))
+            if dependent in self.blockers_fail:
+                raise swc._GhFailure("simulated transport failure")
+            return self.blockers.get(dependent, []) if int(m.group(2)) == 1 else []
         m = re.search(r"issues/(\d+)/events\?.*page=(\d+)", endpoint)
         if m:
             issue_num, page = int(m.group(1)), int(m.group(2))
@@ -181,15 +204,20 @@ class TestNativeExclusion:
         assert "complete=yes" in joined
         assert "scanned=1 " in joined
 
-    def test_nb2_closed_blocker_is_excluded_as_unverified(self, gate_repo, stub, capsys):
+    def test_nb2_unsatisfied_closed_blocker_is_excluded_as_unverified(
+        self, gate_repo, stub, capsys
+    ):
+        """#2173: was 'a closed blocker is always excluded'; now it is excluded
+        only when the paid satisfaction check fails (here: not_planned)."""
         stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21)]
+        stub.blockers[20] = [_blocker(900, "not_planned")]
         rc, out, err = run_gate(capsys)
         assert _numbers(out) == [21]
         assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
         assert (
-            PREFIX + "WARN blocker-closed-unverified issue=#20 — a closed blocker does not "
-            "unblock until the T3.3 satisfaction check exists; a CODEOWNER may remove the "
-            "dependency edge if the blocker is satisfied"
+            PREFIX + "WARN blocker-closed-unverified issue=#20 — no closed blocker is "
+            "satisfied by a merge to the default branch or a CODEOWNER close; a CODEOWNER "
+            "may remove the dependency edge if the blocker is satisfied"
         ) in err
 
     @pytest.mark.parametrize(
@@ -328,17 +356,19 @@ class TestNativeExclusion:
     @pytest.mark.parametrize(
         ("blocked", "total"), [(b, t) for t in range(0, 4) for b in range(0, t + 1)]
     )
-    def test_nb10_excluded_iff_any_blocking_edge_whichever_count_means_open(self, blocked, total):
+    def test_nb10_open_blocker_is_final_closed_only_owes_the_paid_check(self, blocked, total):
         verdict = swc._native_verdict(
             {
                 "issue_dependencies_summary": {"blocked_by": blocked, "total_blocked_by": total},
                 "sub_issues_summary": {"total": 0},
             }
         )
-        assert (verdict.outcome == "excluded") == (total > 0)
-        if total > 0:
-            expected = "blocked-by-open-issue" if blocked > 0 else "blocker-closed-unverified"
-            assert verdict.reason == expected
+        if blocked > 0:
+            assert verdict == swc._NativeVerdict("excluded", "blocked-by-open-issue")
+        elif total > 0:
+            assert verdict == swc._NativeVerdict("check", "blocker-closed-unverified")
+        else:
+            assert verdict == swc._NativeVerdict("clear", "")
 
     def test_nb11_pr_records_with_null_summaries_are_not_misread(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [*_pr_records(2), _issue(1)]
@@ -458,6 +488,7 @@ class TestContractPreserved:
             _issue(2, subs={"total": 3}),
             _issue(3, deps=_CLOSED_BLOCKER),
         ]
+        stub.blockers[3] = [_blocker(900, "not_planned")]
         rc, out, err = run_gate(capsys)
         assert out == []
         assert rc == 0
@@ -502,6 +533,7 @@ class TestContractPreserved:
             _issue(3, deps=_BLOCKED),
             _issue(4, deps=_CLOSED_BLOCKER),
         ]
+        stub.blockers[4] = [_blocker(900, "not_planned")]
         rc, out, err = run_gate(capsys)
 
         def index(prefix: str) -> int:
@@ -736,13 +768,22 @@ class TestZeroAddedRequests:
         path = Path(swc.__file__)
         tree = ast.parse(path.read_text())
 
-        forbidden = ("/dependencies", "/sub_issues", "/timeline", "parent_issue", "graphql")
+        forbidden = ("/sub_issues", "/timeline", "parent_issue", "graphql")
+        functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        # #2173 ruling: `_run_graphql` is the ONE sanctioned GraphQL transport (the
+        # closer lookup); the word "graphql" may appear nowhere outside it.
+        gql_fn = functions["_run_graphql"]
+        gql_span = range(gql_fn.lineno, gql_fn.end_lineno + 1)
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 for needle in forbidden:
+                    if needle == "graphql" and node.lineno in gql_span:
+                        continue
                     assert needle not in node.value, (needle, node.value[:60])
+                # #2173: the closed-blocker check is the ONE sanctioned dependencies read.
+                if "/dependencies" in node.value:
+                    assert "/dependencies/blocked_by?" in node.value, node.value[:60]
 
-        functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
         run_gh = functions["_run_gh"]
         # `_git` (#2155's started signal) shells out to LOCAL git only -- zero
         # API requests -- so it is the one other sanctioned subprocess site.
@@ -750,12 +791,13 @@ class TestZeroAddedRequests:
         span = [
             *range(run_gh.lineno, run_gh.end_lineno + 1),
             *range(git_fn.lineno, git_fn.end_lineno + 1),
+            *gql_span,
         ]
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id == "subprocess":
                 assert (
                     node.lineno in span
-                ), f"subprocess referenced outside _run_gh/_git: {node.lineno}"
+                ), f"subprocess referenced outside _run_gh/_git/_run_graphql: {node.lineno}"
 
         for name in ("_native_verdict", "_dependency_counts", "_sub_issue_total"):
             for node in ast.walk(functions[name]):
@@ -783,3 +825,861 @@ class TestZeroAddedRequests:
                 imported.add(node.module)
                 imported.update(f"{node.module}.{a.name}" for a in node.names)
         assert not (imported & banned), imported & banned
+
+
+# ---------------------------------------------------------------------------
+# T-CB: the paid closed-blocker satisfaction check (#2173, thin T3.3)
+# ---------------------------------------------------------------------------
+
+_MERGE_SHA = "7ada70a3ee" + "0" * 30
+_T_CLOSE = "2026-10-25T23:43:49Z"
+_CODEOWNER = {"login": "ScottThurlow", "type": "User"}
+_BOT = {"login": "hos-worker-hos[bot]", "type": "Bot"}
+
+
+def _closed_event(actor=_CODEOWNER, commit_id=None, at=_T_CLOSE) -> dict:
+    return {"event": "closed", "actor": actor, "commit_id": commit_id, "created_at": at}
+
+
+def _referenced_event(commit_id=_MERGE_SHA, at=_T_CLOSE) -> dict:
+    return {"event": "referenced", "actor": _BOT, "commit_id": commit_id, "created_at": at}
+
+
+def _always(_sha) -> bool:
+    return True
+
+
+def _never(_sha) -> bool:
+    return False
+
+
+def _pr_closer(
+    merged=True, base="main", repo="owner/repo", sha=_MERGE_SHA, typename="PullRequest"
+) -> dict:
+    return {
+        "__typename": typename,
+        "number": 7,
+        "merged": merged,
+        "mergedAt": "2026-10-25T23:43:46Z",
+        "baseRefName": base,
+        "baseRepository": {"nameWithOwner": repo},
+        "mergeCommit": {"oid": sha},
+    }
+
+
+def _node(closer, at=_T_CLOSE) -> dict:
+    return {"createdAt": at, "stateReason": "COMPLETED", "closer": closer}
+
+
+class _Lookup:
+    """A fake closer lookup recording how often the predicate called it."""
+
+    def __init__(self, node):
+        self.node = node
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.node
+
+
+CODEOWNERS = {"scottthurlow"}
+BOTS = {"hos-worker-hos[bot]"}
+REPO = "owner/repo"
+
+
+def _satisfied(events, is_ancestor, lookup, closed_at=_T_CLOSE):
+    return swc.blocker_closure_satisfied(
+        events, CODEOWNERS, BOTS, is_ancestor, lookup, REPO, closed_at
+    )
+
+
+class TestSatisfactionPredicate:
+    def test_bot_merged_pr_closer_is_merge(self):
+        lookup = _Lookup(_node(_pr_closer()))
+        assert _satisfied([_closed_event(_BOT)], _always, lookup) == "merge"
+        assert lookup.calls == 1
+
+    def test_same_second_referenced_commit_is_never_attribution(self):
+        """The codex CWE-863 scenario: a manual close (closer null) with a
+        coincident same-second `referenced` ancestor commit."""
+        stranger = {"login": "issue-author", "type": "User"}
+        events = [_closed_event(stranger), _referenced_event()]
+        assert _satisfied(events, _always, _Lookup(_node(None))) is None
+
+    @pytest.mark.parametrize(
+        "closer",
+        [
+            _pr_closer(merged=False),
+            _pr_closer(base="release"),
+            _pr_closer(repo="other/fork"),
+            {"__typename": "Issue", "number": 3},
+            None,
+        ],
+    )
+    def test_closer_failing_any_condition_is_unsatisfied(self, closer):
+        assert _satisfied([_closed_event(_BOT)], _always, _Lookup(_node(closer))) is None
+
+    def test_repo_comparison_is_case_insensitive(self):
+        lookup = _Lookup(_node(_pr_closer(repo="Owner/Repo")))
+        assert _satisfied([_closed_event(_BOT)], _always, lookup) == "merge"
+
+    def test_merge_commit_not_ancestor_is_unsatisfied_unknown_is_unknown(self):
+        events = [_closed_event(_BOT)]
+        lookup = _Lookup(_node(_pr_closer()))
+        assert _satisfied(events, _never, lookup) is None
+        assert _satisfied(events, lambda _s: None, lookup) == swc._UNKNOWN
+
+    def test_closer_commit_ancestor_and_not(self):
+        lookup = _Lookup(_node({"__typename": "Commit", "oid": _MERGE_SHA}))
+        events = [_closed_event(_BOT)]
+        assert _satisfied(events, _always, lookup) == "merge"
+        assert _satisfied(events, _never, lookup) is None
+
+    def test_node_created_at_must_match_the_rest_closed_event(self):
+        lookup = _Lookup(_node(_pr_closer(), at="2026-10-25T23:43:50Z"))
+        assert _satisfied([_closed_event(_BOT)], _always, lookup) == swc._UNKNOWN
+
+    def test_failed_lookup_is_unknown(self):
+        assert _satisfied([_closed_event(_BOT)], _always, _Lookup(None)) == swc._UNKNOWN
+
+    def test_codeowner_closer_never_calls_the_lookup(self):
+        lookup = _Lookup(None)
+        assert _satisfied([_closed_event(_CODEOWNER)], _never, lookup) == "codeowner"
+        assert lookup.calls == 0
+
+    def test_failed_lookup_with_codeowner_closer_is_still_codeowner(self):
+        assert _satisfied([_closed_event(_CODEOWNER)], _never, _Lookup(None)) == "codeowner"
+
+    def test_commit_id_on_the_closed_event_is_merge_with_no_lookup(self):
+        seen = []
+        lookup = _Lookup(None)
+        events = [_closed_event(_BOT, commit_id=_MERGE_SHA)]
+        got = _satisfied(events, lambda sha: seen.append(sha) or True, lookup)
+        assert got == "merge"
+        assert seen == [_MERGE_SHA]
+        assert lookup.calls == 0
+
+    def test_commit_id_not_ancestor_is_decided_without_lookup(self):
+        lookup = _Lookup(_node(_pr_closer()))
+        events = [_closed_event(_BOT, commit_id=_MERGE_SHA)]
+        assert _satisfied(events, _never, lookup) is None
+        assert _satisfied(events, lambda _s: None, lookup) == swc._UNKNOWN
+        assert lookup.calls == 0
+
+    def test_budget_refusal_propagates_from_the_lookup(self):
+        def _refused():
+            raise swc._BudgetRefused
+
+        with pytest.raises(swc._BudgetRefused):
+            _satisfied([_closed_event(_BOT)], _always, _refused)
+
+    @pytest.mark.parametrize(
+        "actor",
+        [
+            {"login": "random-person", "type": "User"},
+            {"login": "hos-worker-hos[bot]", "type": "Bot"},
+            {"login": "scottthurlow", "type": "Bot"},  # a bot-typed account is never a human
+            {},
+        ],
+    )
+    def test_unverified_closer_with_null_closer_is_unsatisfied(self, actor):
+        assert _satisfied([_closed_event(actor)], _never, _Lookup(_node(None))) is None
+
+    def test_uses_the_last_closed_event(self):
+        events = [_closed_event(_CODEOWNER, at="2026-01-01T00:00:00Z"), _closed_event(_BOT)]
+        assert _satisfied(events, _never, _Lookup(_node(None))) is None
+
+    @pytest.mark.parametrize("events", [None, {}, "x", [], [{"event": "reopened"}], ["junk"]])
+    def test_no_closed_event_is_unsatisfied(self, events):
+        assert _satisfied(events, _always, _Lookup(None)) is None
+
+    def test_listing_closure_must_be_the_last_closed_event(self):
+        """Evidence for a different closure than the listed one is UNKNOWN, even
+        for a CODEOWNER closer or a commit-bearing closed event."""
+        for event in (_closed_event(_CODEOWNER), _closed_event(_BOT, commit_id=_MERGE_SHA)):
+            lookup = _Lookup(_node(_pr_closer()))
+            got = _satisfied([event], _always, lookup, closed_at="2026-10-25T23:59:59Z")
+            assert got == swc._UNKNOWN
+            assert lookup.calls == 0
+
+    @pytest.mark.parametrize(
+        ("listed", "event", "judged"),
+        [
+            ("2026-11-03T16:49:03Z", "2026-11-03T16:49:04Z", True),  # #1666's real 1s skew
+            ("2026-11-03T16:49:04Z", "2026-11-03T16:49:04Z", True),  # 0s
+            ("2026-11-03T16:49:02Z", "2026-11-03T16:49:04Z", True),  # 2s: the bound
+            ("2026-11-03T16:49:01Z", "2026-11-03T16:49:04Z", False),  # 3s
+            ("2026-11-03T16:49:05Z", "2026-11-03T16:49:04Z", False),  # event 1s EARLIER
+            ("not-a-time", "2026-11-03T16:49:04Z", False),
+            ("2026-11-03T16:49:03Z", "garbage", False),
+            ("2026-11-03T16:49:03+00:00", "2026-11-03T16:49:04Z", False),
+        ],
+    )
+    def test_closure_binding_is_a_bounded_skew(self, listed, event, judged):
+        got = _satisfied([_closed_event(_CODEOWNER, at=event)], _never, _Lookup(None), listed)
+        assert got == ("codeowner" if judged else swc._UNKNOWN)
+
+    def test_reopened_after_the_last_closed_event_is_unknown(self):
+        events = [_closed_event(_CODEOWNER), {"event": "reopened"}]
+        assert _satisfied(events, _never, _Lookup(None)) == swc._UNKNOWN
+        before = [{"event": "reopened"}, _closed_event(_CODEOWNER)]
+        assert _satisfied(before, _never, _Lookup(None)) == "codeowner"
+
+
+class TestCloserTransport:
+    def _ok(self, nodes):
+        return {"data": {"repository": {"issue": {"timelineItems": {"nodes": nodes}}}}}
+
+    def test_query_is_a_literal_and_variables_reach_gh_only_as_arguments(self, monkeypatch):
+        import subprocess
+
+        captured = {}
+
+        def _run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, '{"data": null}', "")
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+        swc._run_graphql("owner", "repo", 1666)
+        argv = captured["argv"]
+        assert argv[:3] == ["gh", "api", "graphql"]
+        assert f"query={swc._CLOSER_QUERY}" in argv
+        assert "1666" not in swc._CLOSER_QUERY
+        assert "$owner" in swc._CLOSER_QUERY and "$number" in swc._CLOSER_QUERY
+        assert argv.count("-f") + argv.count("-F") == 4
+        assert "number=1666" in argv and "owner=owner" in argv and "name=repo" in argv
+        assert argv[argv.index("number=1666") - 1] == "-F"
+        assert "{" not in "".join(a for a in argv if a.startswith(("owner=", "name=", "number=")))
+
+    def test_one_request_per_lookup_counted_on_success_and_failure(self, monkeypatch):
+        budget = swc._Budget(10)
+        monkeypatch.setattr(swc, "_run_graphql", lambda *a: self._ok([{"x": 1}]))
+        assert swc._fetch_closer_node("o/r", 5, budget) == {"x": 1}
+        assert budget.spent == 1
+
+        def _boom(*a):
+            raise swc._GhFailure("exit 1")
+
+        monkeypatch.setattr(swc, "_run_graphql", _boom)
+        assert swc._fetch_closer_node("o/r", 5, budget) is None
+        assert budget.spent == 2
+
+    def test_refused_when_ceiling_reached_and_nothing_is_spent(self, monkeypatch):
+        budget = swc._Budget(1)
+        budget.record()
+        monkeypatch.setattr(
+            swc, "_run_graphql", lambda *a: (_ for _ in ()).throw(AssertionError("called"))
+        )
+        with pytest.raises(swc._BudgetRefused):
+            swc._fetch_closer_node("o/r", 5, budget)
+        assert budget.spent == 1
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            "x",
+            {"errors": [{"message": "boom"}], "data": None},
+            {"data": None},
+            {"data": {"repository": None}},
+            {"data": {"repository": {"issue": None}}},
+            {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}},
+            {"data": {"repository": {"issue": {"timelineItems": {"nodes": [{}, {}]}}}}},
+            {"data": {"repository": {"issue": {"timelineItems": {"nodes": ["x"]}}}}},
+        ],
+    )
+    def test_wrong_shape_or_errors_is_unknown(self, monkeypatch, payload):
+        monkeypatch.setattr(swc, "_run_graphql", lambda *a: payload)
+        assert swc._fetch_closer_node("o/r", 5, swc._Budget(10)) is None
+
+    @pytest.mark.parametrize("repo", ["", "owner", "/name", "owner/"])
+    def test_malformed_repo_spends_nothing(self, repo):
+        budget = swc._Budget(10)
+        assert swc._fetch_closer_node(repo, 5, budget) is None
+        assert budget.spent == 0
+
+    def test_default_branch_name_derives_from_the_ref_constant(self):
+        assert swc._DEFAULT_BRANCH_REF.endswith("/" + swc._DEFAULT_BRANCH_NAME)
+
+
+class TestAncestry:
+    def test_malformed_sha_never_reaches_git(self, monkeypatch):
+        monkeypatch.setattr(
+            swc, "_git", lambda *a, **k: (_ for _ in ()).throw(AssertionError("git called"))
+        )
+        for bad in (None, "", "abc", "--upload-pack=x", "g" * 40, "a" * 41, 7):
+            assert swc._is_default_branch_ancestor("/x", bad) is False
+
+    def test_ancestor_yes_no_and_git_failure(self, monkeypatch):
+        sha = "a" * 40
+        monkeypatch.setattr(swc, "_git", lambda *a, **k: sha + "\n")
+        assert swc._is_default_branch_ancestor("/x", sha) is True
+        monkeypatch.setattr(swc, "_git", lambda *a, **k: "b" * 40 + "\n")
+        assert swc._is_default_branch_ancestor("/x", sha) is False
+        monkeypatch.setattr(swc, "_git", lambda *a, **k: "")
+        assert swc._is_default_branch_ancestor("/x", sha) is False
+
+        def _unknown(*a, **k):
+            raise swc._GitFailure("exit 128: unknown object")
+
+        monkeypatch.setattr(swc, "_git", _unknown)
+        assert swc._is_default_branch_ancestor("/x", sha) is None
+
+        def _boom(*a, **k):
+            raise swc._GitFailure("unknown object")
+
+        monkeypatch.setattr(swc, "_git", _boom)
+        assert swc._is_default_branch_ancestor("/x", sha) is None
+
+
+class TestClosedBlockerWalk:
+    @pytest.fixture(autouse=True)
+    def _ancestry(self, monkeypatch):
+        self.on_main = {_MERGE_SHA}
+        monkeypatch.setattr(swc, "_is_default_branch_ancestor", lambda _r, sha: sha in self.on_main)
+
+    @pytest.fixture(autouse=True)
+    def _graphql(self, monkeypatch):
+        self.gql_calls = []
+        self.gql_at = _T_CLOSE
+        self.closers = {}  # blocker number -> closer dict | None | "FAIL"
+
+        def _fake(owner, name, number):
+            self.gql_calls.append((owner, name, number))
+            closer = self.closers.get(number)
+            if closer == "FAIL":
+                raise swc._GhFailure("simulated")
+            return {
+                "data": {
+                    "repository": {
+                        "issue": {"timelineItems": {"nodes": [_node(closer, at=self.gql_at)]}}
+                    }
+                }
+            }
+
+        monkeypatch.setattr(swc, "_run_graphql", _fake)
+
+    def _events(self, stub, blocker, *events):
+        stub.events_pages[blocker] = {1: list(events)}
+
+    def test_bot_merged_pr_closer_unblocks(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_BOT))
+        self.closers[900] = _pr_closer()
+        rc, out, err = run_gate(capsys)
+        assert (rc, _numbers(out)) == (0, [20])
+        assert PREFIX + "blocker-satisfied issue=#20 blocker=#900 by=merge" in err
+        assert "EXCLUDED" not in " ".join(err)
+        assert "complete=yes" in " ".join(err)
+        assert _fields(err)["api_requests"] == 4  # list + blockers + events + closer
+        assert self.gql_calls == [("owner", "repo", 900)]
+
+    def test_codex_scenario_same_second_reference_with_manual_close_is_excluded(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        author = {"login": "issue-author", "type": "User"}
+        self._events(stub, 900, _closed_event(author), _referenced_event())
+        self.closers[900] = None
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+
+    def test_codeowner_close_and_commit_id_spend_no_closer_request(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.blockers[21] = [_blocker(901)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        self._events(stub, 901, _closed_event(_BOT, commit_id=_MERGE_SHA))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20, 21]
+        assert self.gql_calls == []
+
+    def test_same_blocker_reclosed_mid_walk_is_rejudged_on_its_own_evidence(
+        self, gate_repo, stub, capsys, monkeypatch
+    ):
+        t1, t2 = "2026-10-25T23:43:49Z", "2026-10-25T23:50:00Z"
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        # the walk takes #21 first: it sees the authorized closure, then #20 the re-closure
+        stub.blockers[21] = [_blocker(900, closed_at=t1)]
+        stub.blockers[20] = [_blocker(900, closed_at=t2)]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at=t1))
+        self.closers[900] = None
+        self.gql_at = t2
+        real = stub.__call__
+
+        def _reclose(endpoint):
+            got = real(endpoint)
+            if "issues/900/events" in endpoint:  # the issue is reopened and re-closed
+                stub.events_pages[900] = {1: [_closed_event(_BOT, at=t2)]}
+            return got
+
+        monkeypatch.setattr(swc, "_run_gh", _reclose)
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+        assert sum("issues/900/events" in c for c in stub.calls) == 2
+
+    def test_reopened_after_closed_is_failed(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER), {"event": "reopened"})
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+
+    def test_real_one_second_skew_is_judged_normally(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900, closed_at="2026-11-03T16:49:03Z")]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at="2026-11-03T16:49:04Z"))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+
+    def test_failed_closure_key_is_not_refetched_for_a_second_dependent(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        for n in (20, 21):
+            stub.blockers[n] = [_blocker(900, closed_at="2026-10-25T23:43:49Z")]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at="2026-10-25T23:50:00Z"))
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert sum("issues/900/events" in c for c in stub.calls) == 1
+        assert _fields(err)["unevaluated:query-failed"] == 2
+
+    def test_same_number_and_closed_at_is_paid_for_once(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.blockers[21] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20, 21]
+        assert sum("issues/900/events" in c for c in stub.calls) == 1
+
+    def test_listing_closed_at_not_matching_last_closed_event_is_failed(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900, closed_at="2026-10-25T23:43:49Z")]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at="2026-10-25T23:40:00Z"))
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+    @pytest.mark.parametrize("closed_at", [None, "", 5, ["x"]])
+    def test_missing_or_non_string_closed_at_is_failed_with_no_events_fetch(
+        self, gate_repo, stub, capsys, closed_at
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900, closed_at=closed_at)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+        assert not any("/events" in c for c in stub.calls)
+
+    def test_failed_closer_lookup_is_unevaluated_not_excluded(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_BOT))
+        self.closers[900] = "FAIL"
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+    def test_budget_exhausted_at_the_closer_lookup_is_refused(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_BOT))
+        self.closers[900] = _pr_closer()
+        # ceiling 3: list + blockers + events spent; the closer request is refused
+        rc, out, err = run_gate(capsys, "--max-api-requests", "3")
+        assert (out, rc) == ([], 3)
+        joined = " ".join(err)
+        assert "EXCLUDED" not in joined
+        assert self.gql_calls == []
+        assert _fields(err)["api_requests"] == 3
+        assert _fields(err)["unevaluated:cost-ceiling"] == 1
+        assert PREFIX + "unevaluated:cost-ceiling issue=#20" in err
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "junk",
+            None,
+            [],
+            {"number": True},
+            {"number": 0},
+            {"number": -3},
+            {"number": "12"},
+            {"number": None},
+            {},
+        ],
+    )
+    def test_malformed_blocker_record_fails_closed_with_no_events_fetch(
+        self, gate_repo, stub, capsys, bad
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        good = _blocker(900)
+        stub.blockers[20] = [good, bad]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+        assert "EXCLUDED" not in " ".join(err)
+        assert not any("/events" in c for c in stub.calls)
+
+    def test_malformed_record_next_to_an_open_blocker_is_failed_not_unsatisfied(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900, state="open"), "junk"]
+        rc, out, err = run_gate(capsys)
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+    def test_commit_id_on_closed_event_unblocks(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_BOT, commit_id=_MERGE_SHA))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+
+    def test_codeowner_close_unblocks(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+        assert PREFIX + "blocker-satisfied issue=#20 blocker=#900 by=codeowner" in err
+
+    @pytest.mark.parametrize("reason", ["not_planned", "duplicate", None, "reopened"])
+    def test_non_completed_closure_is_excluded_without_events_cost(
+        self, gate_repo, stub, capsys, reason
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21)]
+        stub.blockers[20] = [_blocker(900, reason)]
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+        assert not any("/events" in c for c in stub.calls)
+        f = _fields(err)
+        assert f["scanned"] == 1 and f["scanned"] == f["evaluated"] + f["unevaluated"]
+
+    @pytest.mark.parametrize("actor", [_BOT, {"login": "stranger", "type": "User"}])
+    def test_completed_by_unverified_actor_without_merge_is_excluded(
+        self, gate_repo, stub, capsys, actor
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(actor))
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert rc == 0
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+        assert "complete=yes" in " ".join(err)
+        assert "blocker-satisfied" not in " ".join(err)
+
+    def test_merge_commit_off_main_is_excluded_unless_codeowner(self, gate_repo, stub, capsys):
+        self.on_main = set()
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.blockers[21] = [_blocker(901)]
+        self._events(stub, 900, _closed_event(_BOT))
+        self._events(stub, 901, _closed_event(_CODEOWNER))
+        self.closers[900] = _pr_closer()
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+
+    @pytest.mark.parametrize(
+        "repository_url",
+        [
+            "https://api.github.com/repos/other/repo",
+            "https://api.github.com/repos/owner/repo-evil",
+            "https://api.github.com/repos/x/repos/owner/repo",
+            "",
+            None,
+            7,
+            "MISSING",
+        ],
+    )
+    def test_foreign_or_unknown_repo_blocker_is_never_satisfied(
+        self, gate_repo, stub, capsys, repository_url
+    ):
+        """A foreign closed-completed blocker whose number collides with a
+        locally satisfied issue must not be judged on THIS repo's events."""
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21)]
+        blocker = _blocker(57)
+        if repository_url == "MISSING":
+            del blocker["repository_url"]
+        else:
+            blocker["repository_url"] = repository_url
+        stub.blockers[20] = [blocker]
+        self._events(stub, 57, _closed_event(_CODEOWNER))  # local #57 WOULD satisfy
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+        assert not any("/events" in c for c in stub.calls)
+
+    def test_repository_url_match_is_case_insensitive_and_host_agnostic(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        blocker = _blocker(900)
+        blocker["repository_url"] = "https://ghe.example.com/api/v3/repos/Owner/Repo"
+        stub.blockers[20] = [blocker]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+
+    def test_open_plus_closed_blocker_stays_open_blocked_with_zero_added_requests(
+        self, gate_repo, stub, capsys
+    ):
+        both = {"blocked_by": 1, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}
+        stub.issue_pages[1] = [_issue(20, deps=both), _issue(21)]
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "EXCLUDED issues: #20(blocked-by-open-issue)" in err
+        assert stub.calls == [_LIST_P1]
+
+    def test_two_closed_blockers_one_unsatisfied_is_excluded(self, gate_repo, stub, capsys):
+        two = {"blocked_by": 0, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}
+        stub.issue_pages[1] = [_issue(20, deps=two)]
+        stub.blockers[20] = [_blocker(900), _blocker(901)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        self._events(stub, 901, _closed_event(_BOT))
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
+
+    def test_two_closed_blockers_both_satisfied_is_selectable(self, gate_repo, stub, capsys):
+        two = {"blocked_by": 0, "blocking": 0, "total_blocked_by": 2, "total_blocking": 0}
+        stub.issue_pages[1] = [_issue(20, deps=two)]
+        stub.blockers[20] = [_blocker(900), _blocker(901)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        self._events(stub, 901, _closed_event(_BOT))
+        self.closers[901] = _pr_closer()
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+
+    def test_shared_blocker_is_paid_for_once(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.blockers[21] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20, 21]
+        assert sum("issues/900/events" in c for c in stub.calls) == 1
+
+    def test_unsatisfied_record_is_excluded_not_gated_and_costs_no_trust_events(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [
+            _issue(
+                20,
+                deps=_CLOSED_BLOCKER,
+                user=_OUTSIDER["user"],
+                user_type=_OUTSIDER["user_type"],
+            )
+        ]
+        stub.blockers[20] = [_blocker(900, "not_planned")]
+        rc, out, err = run_gate(capsys)
+        assert rc == 0
+        assert not any("issues/20/events" in c for c in stub.calls)
+        assert "ALL-CANDIDATES-GATED" not in " ".join(err)
+
+    def test_satisfied_untrusted_record_still_faces_the_trust_gate(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [
+            _issue(
+                20,
+                deps=_CLOSED_BLOCKER,
+                user=_OUTSIDER["user"],
+                user_type=_OUTSIDER["user_type"],
+            )
+        ]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        stub.events_pages[20] = {1: []}
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert PREFIX + "ALL-CANDIDATES-GATED reasons: no-codeowner-actor=1" in err
+
+    def test_budget_exhausted_during_check_is_degraded_not_pass_not_exclusion(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        # ceiling 2: list + blockers fetched, the events fetch is refused
+        rc, out, err = run_gate(capsys, "--max-api-requests", "2")
+        assert out == []
+        assert rc == 3
+        joined = " ".join(err)
+        assert "complete=no" in joined
+        assert "EXCLUDED" not in joined
+        assert _fields(err)["unevaluated:cost-ceiling"] == 1
+        assert PREFIX + "unevaluated:cost-ceiling issue=#20" in err
+        assert _fields(err)["api_requests"] == 2
+
+    def test_budget_exhausted_before_the_check_starts_is_degraded(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        rc, out, err = run_gate(capsys, "--max-api-requests", "1")
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+        assert not any("unevaluated:cost-ceiling issue=" in ln for ln in err)
+
+    def test_failed_blockers_fetch_is_unevaluated_not_pass(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21)]
+        stub.blockers_fail.add(20)
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [21]
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+        assert "complete=no" in " ".join(err)
+
+    def test_failed_events_fetch_is_unevaluated_not_pass(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        stub.events_fail_pages[900] = {1}
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+    def test_unknown_ancestry_is_unevaluated_not_excluded_and_not_cached(
+        self, gate_repo, stub, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(swc, "_is_default_branch_ancestor", lambda _r, _sha: None)
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_BOT))
+        self.closers[900] = _pr_closer()
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
+
+    def test_unknown_ancestry_with_codeowner_closer_is_satisfied(
+        self, gate_repo, stub, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(swc, "_is_default_branch_ancestor", lambda _r, _sha: None)
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+        assert PREFIX + "blocker-satisfied issue=#20 blocker=#900 by=codeowner" in err
+
+    def test_failed_shared_blocker_is_not_refetched_for_later_dependents(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [
+            _issue(20, deps=_CLOSED_BLOCKER),
+            _issue(21, deps=_CLOSED_BLOCKER),
+            _issue(22, deps=_CLOSED_BLOCKER),
+        ]
+        for n in (20, 21, 22):
+            stub.blockers[n] = [_blocker(900)]
+        stub.events_fail_pages[900] = {1}
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert sum("issues/900/events" in c for c in stub.calls) == 1
+        assert _fields(err)["unevaluated:query-failed"] == 3
+        for n in (20, 21, 22):
+            assert PREFIX + f"WARN unevaluated:query-failed issue=#{n} check=closed-blocker" in err
+
+    def test_d5_query_failure_line_format_is_unchanged(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(30, user=_OUTSIDER["user"], user_type=_OUTSIDER["user_type"])]
+        stub.events_fail_pages[30] = {1}
+        rc, out, err = run_gate(capsys)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#30" in err
+
+    def test_no_closed_blocker_means_no_new_requests(self, gate_repo, stub, capsys):
+        _f0(stub)
+        run_gate(capsys)
+        assert not any("/dependencies" in c for c in stub.calls)
+        assert len(stub.calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Unit-test review additions (#2173 CWE-863 revision): failure-path branches
+# ---------------------------------------------------------------------------
+
+
+class TestRunGraphqlFailurePaths:
+    def _patch(self, monkeypatch, result=None, exc=None):
+        import subprocess
+
+        def _run(argv, **kwargs):
+            if exc is not None:
+                raise exc
+            return subprocess.CompletedProcess(argv, *result)
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+
+    def test_nonzero_exit_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, result=(1, "", "boom\n"))
+        with pytest.raises(swc._GhFailure, match="boom"):
+            swc._run_graphql("o", "r", 1)
+
+    def test_non_json_stdout_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, result=(0, "not json", ""))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_oserror_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, exc=OSError("no gh"))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_timeout_raises_gh_failure(self, monkeypatch):
+        import subprocess
+
+        self._patch(monkeypatch, exc=subprocess.TimeoutExpired("gh", 1))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_valid_json_is_returned(self, monkeypatch):
+        self._patch(monkeypatch, result=(0, '{"data": {"a": 1}}', ""))
+        assert swc._run_graphql("o", "r", 1) == {"data": {"a": 1}}
+
+
+class TestCloserAttributionEdges:
+    def test_non_dict_closer_is_unknown(self):
+        assert swc._closer_attribution(_node("junk"), _T_CLOSE, REPO, _always) == swc._UNKNOWN
+
+    def test_missing_rest_closed_at_is_unknown(self):
+        node = _node(_pr_closer())
+        assert swc._closer_attribution(node, None, REPO, _always) == swc._UNKNOWN
+
+    @pytest.mark.parametrize("merge_commit", [None, {}, {"oid": None}, "x"])
+    def test_pr_without_a_merge_commit_oid_is_unsatisfied_not_ancestor_checked(self, merge_commit):
+        closer = _pr_closer()
+        closer["mergeCommit"] = merge_commit
+        calls = []
+        got = swc._closer_attribution(
+            _node(closer), _T_CLOSE, REPO, lambda s: calls.append(s) or True
+        )
+        assert got is None
+        assert calls == []
+
+    def test_pr_without_base_repository_is_unsatisfied(self):
+        closer = _pr_closer()
+        closer["baseRepository"] = None
+        assert swc._closer_attribution(_node(closer), _T_CLOSE, REPO, _always) is None
+
+
+class TestClosedBlockerEmptyList:
+    def test_empty_blocked_by_list_is_failed_unevaluated(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = []
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
