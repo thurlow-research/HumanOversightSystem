@@ -307,6 +307,14 @@ fi
 #       role is dead indefinitely. A lock-age ceiling reclaims regardless of PID
 #       liveness, bounding any standstill — and also frees an in-flight lock
 #       whose holder died before recording its pid.
+#   (c) Reboot staleness (#1666): a reboot between `mkdir` and the pid write
+#       leaves an empty-pid lock that (a) reads as "in-flight" until the (b)
+#       ceiling. The holder stamps `boot_id` (Linux) before `pid`; a contender
+#       reclaims at once when it differs from the current boot (any lock with
+#       a boot_id), or — for a lock with neither boot_id nor pid — when the
+#       lock dir predates the boot time. A lock that carries a pid and no
+#       boot_id (legacy / macOS) is NEVER reclaimed on clock evidence, only by
+#       the PID and ceiling checks. Any unreadable probe skips its fast path.
 _LOCK_DIR="$_HOS_DIR/locks/hos-cron-${ROLE}-${PROJECT}.lock"
 _stat_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 # Ceiling = 2x the session cap, floored at 1h so a disabled (0) or tiny cap can
@@ -315,10 +323,49 @@ _lock_max_secs="${HOS_CRON_MAX_SECONDS:-1800}"
 [[ "$_lock_max_secs" =~ ^[0-9]+$ ]] || _lock_max_secs=1800
 _lock_ceiling=$(( _lock_max_secs * 2 ))
 (( _lock_ceiling >= 3600 )) || _lock_ceiling=3600
+_boot_id_valid() { [[ "$1" =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]]; }
+_cur_boot_id="$({ tr -d '[:space:]' < /proc/sys/kernel/random/boot_id; } 2>/dev/null || true)"
+_boot_id_valid "$_cur_boot_id" || _cur_boot_id=""
+_boot_time() {
+  local _bt="" _n
+  if [[ -r /proc/stat ]]; then
+    _bt="$(grep -E '^btime [0-9]+$' /proc/stat 2>/dev/null || true)"
+    _n="$(printf '%s\n' "$_bt" | grep -c . || true)"
+    [[ "$_n" == "1" ]] && _bt="${_bt#btime }" || _bt=""
+  else
+    _bt="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*sec = \([0-9][0-9]*\).*/\1/p' | head -n 1 || true)"
+  fi
+  [[ "$_bt" =~ ^[0-9]+$ ]] && echo "$_bt" || true
+}
 if ! mkdir "$_LOCK_DIR" 2>/dev/null; then
   _lock_pid="$(cat "$_LOCK_DIR/pid" 2>/dev/null || echo "")"
-  _lock_age=$(( $(date +%s) - $(_stat_mtime "$_LOCK_DIR") ))
-  if (( _lock_age >= _lock_ceiling )); then
+  _lock_mtime="$(_stat_mtime "$_LOCK_DIR")"
+  _lock_age=$(( $(date +%s) - _lock_mtime ))
+  _lock_boot_id="$({ tr -d '[:space:]' < "$_LOCK_DIR/boot_id"; } 2>/dev/null || true)"
+  _boot_id_valid "$_lock_boot_id" || _lock_boot_id=""
+  _boot_reclaim=""
+  if [[ -n "$_lock_boot_id" ]]; then
+    # 0a: lock stamped by a holder; a different boot means that holder is gone.
+    if [[ -z "$_cur_boot_id" ]]; then
+      echo "$LOG_PREFIX current boot_id unreadable — skipping boot_id reclaim check"
+    elif [[ "$_lock_boot_id" != "$_cur_boot_id" ]]; then
+      _boot_reclaim="holder boot_id=$_lock_boot_id differs from current boot_id=$_cur_boot_id"
+    fi
+  elif [[ -z "$_lock_pid" ]]; then
+    # 0b: no boot_id, no pid — holder never finished acquiring. Dead if the
+    # lock dir predates this boot. Only ever applied to a pid-less lock.
+    _btime="$(_boot_time)"
+    if [[ ! "$_lock_mtime" =~ ^[0-9]+$ ]] || (( _lock_mtime <= 0 )) || [[ -z "$_btime" ]]; then
+      echo "$LOG_PREFIX boot time or lock mtime unreadable — skipping boot-time reclaim check"
+    elif (( _lock_mtime < _btime )); then
+      _boot_reclaim="lock created at ${_lock_mtime} predates boot at ${_btime} (pid never recorded)"
+    fi
+  fi
+  if [[ -n "$_boot_reclaim" ]]; then
+    echo "$LOG_PREFIX reclaiming stale lock left before a reboot (#1666: $_boot_reclaim)"
+    rm -rf "$_LOCK_DIR"
+    mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
+  elif (( _lock_age >= _lock_ceiling )); then
     echo "$LOG_PREFIX reclaiming stale lock (age ${_lock_age}s ≥ ${_lock_ceiling}s ceiling, holder pid=${_lock_pid:-unknown})"
     rm -rf "$_LOCK_DIR"
     mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
@@ -334,6 +381,8 @@ if ! mkdir "$_LOCK_DIR" 2>/dev/null; then
     mkdir "$_LOCK_DIR" 2>/dev/null || { echo "$LOG_PREFIX could not acquire lock after reclaim — exiting"; exit 0; }
   fi
 fi
+# boot_id BEFORE pid (#1666): a lock with a pid always already has its boot_id.
+[[ -z "$_cur_boot_id" ]] || echo "$_cur_boot_id" > "$_LOCK_DIR/boot_id"
 echo "$$" > "$_LOCK_DIR/pid"
 # #2157: the worker's hos-in-progress label is cleared at cycle end however the
 # cycle ends (SIGKILL aside — the next cycle's start-clear covers that). Armed only
