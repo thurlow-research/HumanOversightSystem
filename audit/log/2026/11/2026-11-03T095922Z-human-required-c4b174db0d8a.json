@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"human-required","expected_action":"APPROVE","head_sha":"8f4c8eae164ddd3e3dba9440e6dd12bd07c2d55a","pr":2241,"reason_category":"GATE_UNSATISFIED","review_id":5750198121,"summary":"protected surface bin/** requires CODEOWNER human approval on current head","tier":"HIGH"}
