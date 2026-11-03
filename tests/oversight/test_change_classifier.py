@@ -77,6 +77,115 @@ def test_new_state_enum_is_structural():
     assert "new-user-facing-state" in sigs
 
 
+@pytest.mark.parametrize(
+    "path,line",
+    [
+        (
+            "docs/v0.7.0/TECHNICAL-DESIGN-2122-S1-fingerprint-source.md",
+            "Constants and the new state variables:",
+        ),
+        ("docs/design.md", "There is no new state carrier beyond needs-human"),
+        ("app/utils.py", "# There is no new state carrier beyond needs-human"),
+    ],
+)
+def test_prose_new_state_is_not_structural(path, line):
+    # #2201: the bare `new state` prose alternative matched English in design docs.
+    sigs = {s["signal"] for s in cc.detect_structural([("M", path)], {path: [line]})}
+    assert "new-user-facing-state" not in sigs
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["class Status(models.TextChoices):", "class Phase(enum.Enum):"],
+)
+def test_code_shaped_state_still_structural(line):
+    sigs = {
+        s["signal"]
+        for s in cc.detect_structural([("M", "app/models.py")], {"app/models.py": [line]})
+    }
+    assert "new-user-facing-state" in sigs
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "    kind = forms.Select(choices=OPTIONS)",  # choices= only
+        "class Level(models.IntegerChoices):",  # IntegerChoices only
+        "class Mode(TextChoices):",  # bare TextChoices (models.TextChoices alt is subsumed)
+        "    phase = StateField()",  # StateField only
+        "    phase = FSMField(default='new')",  # FSMField only
+        "    @transition(field=phase, source='a', target='b')",  # @transition only
+        "STATUS_ACTIVE = 1",  # STATUS_[A-Z] only
+        "VALID_STATES = ('a', 'b')",  # _STATES\b only
+    ],
+)
+def test_each_state_alternative_independently_structural(line):
+    # Each probe matches exactly one alternative, so dropping any one is killed (#2201).
+    sigs = {
+        s["signal"]
+        for s in cc.detect_structural([("M", "app/models.py")], {"app/models.py": [line]})
+    }
+    assert "new-user-facing-state" in sigs
+
+
+@pytest.mark.parametrize("line", ["x = _STATESMAN", "status_active = 1"])
+def test_state_token_boundaries_are_respected(line):
+    # `_STATES\b` and case-sensitive `STATUS_[A-Z]` must not match near-misses.
+    sigs = {
+        s["signal"]
+        for s in cc.detect_structural([("M", "app/models.py")], {"app/models.py": [line]})
+    }
+    assert "new-user-facing-state" not in sigs
+
+
+_ARG = '    parser.add_argument("--x", choices=["a", "b"])'
+
+
+def _state_sigs(path, *lines):
+    return {s["signal"] for s in cc.detect_structural([("M", path)], {path: list(lines)})}
+
+
+@pytest.mark.parametrize(
+    "path", ["scripts/automation/foo.py", "bootstrap/x.py", "bin/x.py", "scripts/x.sh"]
+)
+def test_argparse_choices_in_internal_tooling_not_state(path):
+    # #2201 ruling: every member of the path set is exempt.
+    assert "new-user-facing-state" not in _state_sigs(path, _ARG)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["app/models.py", "src/app.py", "app/scripts/x.py", "src/bin/x.py", "tools/bootstrap/x.py"],
+)
+def test_choices_outside_internal_tooling_still_state(path):
+    # Anchored at repo root: nested scripts/bin dirs are application code.
+    assert "new-user-facing-state" in _state_sigs(path, _ARG)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "class S(enum.Enum):",
+        "STATUS_OPEN = 1",
+        "class S(TextChoices):",
+        "VALID_STATES = ()",
+        "    x = FSMField()",
+        '    p.add_argument("--x", choices=STATUS_CHOICES)',  # choices= AND STATUS_ on one line
+    ],
+)
+def test_other_state_alternatives_still_flagged_in_internal_tooling(line):
+    assert "new-user-facing-state" in _state_sigs("scripts/automation/foo.py", line)
+
+
+def test_2174_replay_pr_review_cli_no_state_signal():
+    lines = [
+        '    parser.add_argument("--disposition", choices=_VERDICT_DISPOSITIONS, required=True)',
+        '    parser.add_argument("--disposition", choices=_VERDICT_DISPOSITIONS, default=None,',
+    ]
+    path = "scripts/automation/pr_review_cli.py"
+    assert _state_sigs(path, *lines) == set()
+
+
 def test_benign_change_has_no_structural_signal():
     ns = [("M", "app/utils.py")]
     added = {"app/utils.py": ["    return x + 1  # fix off-by-one"]}

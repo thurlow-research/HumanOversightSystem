@@ -93,6 +93,10 @@ DOMAIN_RULES: dict[str, tuple[str | None, str | None]] = {
 # permission state, new completion criterion, new step in a user flow,
 # previously uninstrumented component, new external dependency") as a
 # deterministic, independently-checkable set.
+# The `choices=` alternative of `new-user-facing-state`, named so the signature and the
+# internal-tooling exemption (INTERNAL_TOOLING_EXEMPT below) share ONE copy (#2201).
+_CHOICES_ALT = r"choices\s*="
+
 ADDED_LINE_SIGNATURES: list[tuple[str, str]] = [
     (
         "new-permission-or-auth-state",
@@ -106,9 +110,13 @@ ADDED_LINE_SIGNATURES: list[tuple[str, str]] = [
         r"router\.(get|post|put|delete|patch)|\bRoute\(|createBrowserRouter|<Route\b)",
     ),
     (
+        # No bare `new\s+state\b` prose alternative: it matched English text in
+        # Markdown design docs ("the new state variables", "no new state carrier")
+        # and raised false Condition-10 escalations (#2201, same class as
+        # #2031/#117); only code-shaped state tokens are listed.
         "new-user-facing-state",
-        r"(choices\s*=|TextChoices|IntegerChoices|models\.TextChoices|StateField|FSMField|"
-        r"@transition|STATUS_[A-Z]|_STATES\b|enum\.Enum|new\s+state\b)",
+        rf"({_CHOICES_ALT}|TextChoices|IntegerChoices|models\.TextChoices|StateField|FSMField|"
+        r"@transition|STATUS_[A-Z]|_STATES\b|enum\.Enum)",
     ),
     (
         # A telemetry retrofit instruments a previously-uninstrumented component
@@ -159,6 +167,16 @@ TEMPLATE_FILE = re.compile(r"(templates/.*\.html$|\.(jsx|tsx|vue|svelte)$)")
 # dependency-manifest and new-template signals still apply everywhere (a real
 # dep added to oversight requirements.txt IS structural).
 FRAMEWORK_TOOLING = re.compile(r"(^|/)scripts/(oversight|framework)/.*\.py$")
+
+# HOS internal tooling at the repo root (#2201): an argparse `choices=` there is a CLI
+# option, not end-user state. Anchored at `^` so app/scripts/ and src/bin/ stay in scope.
+# Existing path sets were not reused: protected_surfaces.txt omits scripts/automation/
+# (the #2174 case); framework_consumer_files.txt is the consumer ship-set and omits
+# internal tooling; FRAMEWORK_TOOLING is narrower and exempts every signature.
+INTERNAL_TOOLING = re.compile(r"^(scripts|bootstrap|bin)/")
+# signature name -> alternative that does not count in INTERNAL_TOOLING paths. Only that
+# alternative is ignored; every other alternative on the same line still matches.
+INTERNAL_TOOLING_EXEMPT = {"new-user-facing-state": re.compile(_CHOICES_ALT)}
 
 # ── Structural-modification detection (SPEC-121) ─────────────────────────────
 # Tracked design/spec documents and the keyword sets that make one of their
@@ -478,8 +496,9 @@ def detect_structural(name_status, added) -> list[dict]:
         for f, lines in added.items():
             if FRAMEWORK_TOOLING.search(f):
                 continue
+            exempt = INTERNAL_TOOLING_EXEMPT.get(name) if INTERNAL_TOOLING.search(f) else None
             for ln in lines:
-                if crx.search(ln):
+                if crx.search(exempt.sub(" ", ln) if exempt else ln):
                     signals.append({"signal": name, "file": f, "evidence": ln.strip()[:120]})
                     break  # one per file per signal is enough to force structural
 
