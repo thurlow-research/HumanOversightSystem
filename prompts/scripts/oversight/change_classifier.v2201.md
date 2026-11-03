@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | **Generated file** | `scripts/oversight/change_classifier.py` (+ `tests/oversight/test_change_classifier.py`) |
-| **Description** | #2201: drop bare `new\s+state\b` prose alternative from new-user-facing-state signature |
+| **Description** | #2201: drop bare `new\s+state\b` prose alternative from new-user-facing-state signature; 2026-11-03 scope addition: path-scoped `choices=` exemption for repo-root `scripts/`, `bootstrap/`, `bin/` (human ruling 2026-10-30) |
 | **Date** | 2026-10-30 |
 | **Model** | claude-opus-5-5[1m] |
 | **Risk level** | MEDIUM (coder self-declared LOW; validator composite 0.3584 → MEDIUM; module feeds Condition-10 gating) |
@@ -45,6 +45,7 @@ Commit: one commit, the two files only, one contiguous trailer block, no closing
 ## Refinement History
 
 - v1 (4715b3311): removed `|new\s+state\b` from the regex, added a comment and 5 parametrized tests (3 negatives, 2 positives).
+- v2 (2026-11-03 scope addition, human ruling 2026-10-30): added `INTERNAL_TOOLING` (`^(scripts|bootstrap|bin)/`) and a shared `_CHOICES_ALT` constant; `choices=` alone no longer raises `new-user-facing-state` in those repo-root paths (other alternatives unchanged; nested paths like `app/scripts/` still flagged). Tests cover exempt/non-exempt paths, other alternatives, and the #2174 replay.
 
 Accepted residual: a code change that introduces new user-facing state only through a construct
 none of the remaining code-shaped tokens covers (e.g. a plain string constant) is no longer caught
