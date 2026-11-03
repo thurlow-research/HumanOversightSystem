@@ -107,6 +107,7 @@ import sys
 import urllib.parse
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Collection, Optional, Sequence
 
@@ -860,6 +861,33 @@ def _closer_attribution(
     return "merge" if answer else None
 
 
+# GitHub stamps the issue's `closed_at` and the `closed` timeline event up to a
+# second apart (live probe 2026-11-03: #1666, #2194, #1236, #2117 differ by 1s;
+# #1532, #2196, #2147 are equal; the event is never earlier). Exact equality
+# would FAIL most real closures, so the binding allows a small bounded skew.
+_CLOSURE_SKEW_SECONDS = 2
+
+
+def _utc_seconds(stamp: Any) -> Optional[float]:
+    """Epoch seconds of a UTC ISO-8601 `...Z` timestamp, or None if unparseable."""
+    if not isinstance(stamp, str):
+        return None
+    try:
+        parsed = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _closure_bound(event_at: Any, closed_at: Any) -> bool:
+    """True iff the `closed` event is the listed closure: 0 <= event - closed_at
+    <= `_CLOSURE_SKEW_SECONDS`. Unparseable either side or outside the window is False."""
+    event_s, listed_s = _utc_seconds(event_at), _utc_seconds(closed_at)
+    if event_s is None or listed_s is None:
+        return False
+    return 0 <= event_s - listed_s <= _CLOSURE_SKEW_SECONDS
+
+
 def blocker_closure_satisfied(
     events: Any,
     codeowners_set: set,
@@ -896,8 +924,13 @@ def blocker_closure_satisfied(
     if not closed:
         return None
     last = closed[-1]
-    if last.get("created_at") != closed_at:
+    if not _closure_bound(last.get("created_at"), closed_at):
         return _UNKNOWN  # the events describe a different closure than the one listed
+    if any(
+        isinstance(e, dict) and e.get("event") == "reopened"
+        for e in events[events.index(last) + 1 :]
+    ):
+        return _UNKNOWN  # reopened after that closure: it is not the current one
     commit = last.get("commit_id")
     ancestry = is_ancestor(commit) if commit else False
     if ancestry is True:

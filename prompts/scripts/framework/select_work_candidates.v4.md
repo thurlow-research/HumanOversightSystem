@@ -119,4 +119,11 @@ Round 4 addendum (second review, MEDIUM): the per-walk verdict cache, including 
 reopened and re-closed during one run is re-judged on its own evidence instead of inheriting an earlier closure's
 verdict. A closed blocker whose listing `closed_at` is not a non-empty string is FAILED before any events fetch.
 The predicate also takes `closed_at` (no network added) and answers UNKNOWN (FAILED) unless the last REST
-`closed` event's `created_at` equals it, so the evidence is always for the closure that was listed.
+`closed` event's `created_at` matches it (see addendum 2 for the skew), so the evidence is always for the closure that was listed.
+
+Round 4 addendum 2 (live probe): GitHub stamps an issue's `closed_at` and its `closed` timeline event up to
+1s apart (#1666, #2194, #1236, #2117 differ by 1s; #1532, #2196, #2147 are equal; the event is never earlier), so
+the closure binding is a bounded skew, not equality: the last `closed` event's `created_at` must be 0..2s
+(`_CLOSURE_SKEW_SECONDS`) after the listing's `closed_at`, both parsed as UTC `...Z`; unparseable, earlier or
+wider is UNKNOWN (FAILED). A `reopened` event after the last `closed` event is also UNKNOWN. The GraphQL
+closer `createdAt` vs REST closed `created_at` check stays an exact match (probed equal).

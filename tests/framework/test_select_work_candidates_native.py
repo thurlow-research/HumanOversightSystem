@@ -1003,6 +1003,29 @@ class TestSatisfactionPredicate:
             assert got == swc._UNKNOWN
             assert lookup.calls == 0
 
+    @pytest.mark.parametrize(
+        ("listed", "event", "judged"),
+        [
+            ("2026-11-03T16:49:03Z", "2026-11-03T16:49:04Z", True),  # #1666's real 1s skew
+            ("2026-11-03T16:49:04Z", "2026-11-03T16:49:04Z", True),  # 0s
+            ("2026-11-03T16:49:02Z", "2026-11-03T16:49:04Z", True),  # 2s: the bound
+            ("2026-11-03T16:49:01Z", "2026-11-03T16:49:04Z", False),  # 3s
+            ("2026-11-03T16:49:05Z", "2026-11-03T16:49:04Z", False),  # event 1s EARLIER
+            ("not-a-time", "2026-11-03T16:49:04Z", False),
+            ("2026-11-03T16:49:03Z", "garbage", False),
+            ("2026-11-03T16:49:03+00:00", "2026-11-03T16:49:04Z", False),
+        ],
+    )
+    def test_closure_binding_is_a_bounded_skew(self, listed, event, judged):
+        got = _satisfied([_closed_event(_CODEOWNER, at=event)], _never, _Lookup(None), listed)
+        assert got == ("codeowner" if judged else swc._UNKNOWN)
+
+    def test_reopened_after_the_last_closed_event_is_unknown(self):
+        events = [_closed_event(_CODEOWNER), {"event": "reopened"}]
+        assert _satisfied(events, _never, _Lookup(None)) == swc._UNKNOWN
+        before = [{"event": "reopened"}, _closed_event(_CODEOWNER)]
+        assert _satisfied(before, _never, _Lookup(None)) == "codeowner"
+
 
 class TestCloserTransport:
     def _ok(self, nodes):
@@ -1199,6 +1222,33 @@ class TestClosedBlockerWalk:
         assert _numbers(out) == [21]
         assert PREFIX + "EXCLUDED issues: #20(blocker-closed-unverified)" in err
         assert sum("issues/900/events" in c for c in stub.calls) == 2
+
+    def test_reopened_after_closed_is_failed(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900)]
+        self._events(stub, 900, _closed_event(_CODEOWNER), {"event": "reopened"})
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert "EXCLUDED" not in " ".join(err)
+
+    def test_real_one_second_skew_is_judged_normally(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = [_blocker(900, closed_at="2026-11-03T16:49:03Z")]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at="2026-11-03T16:49:04Z"))
+        rc, out, err = run_gate(capsys)
+        assert _numbers(out) == [20]
+
+    def test_failed_closure_key_is_not_refetched_for_a_second_dependent(
+        self, gate_repo, stub, capsys
+    ):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
+        for n in (20, 21):
+            stub.blockers[n] = [_blocker(900, closed_at="2026-10-25T23:43:49Z")]
+        self._events(stub, 900, _closed_event(_CODEOWNER, at="2026-10-25T23:50:00Z"))
+        rc, out, err = run_gate(capsys)
+        assert (out, rc) == ([], 3)
+        assert sum("issues/900/events" in c for c in stub.calls) == 1
+        assert _fields(err)["unevaluated:query-failed"] == 2
 
     def test_same_number_and_closed_at_is_paid_for_once(self, gate_repo, stub, capsys):
         stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER), _issue(21, deps=_CLOSED_BLOCKER)]
