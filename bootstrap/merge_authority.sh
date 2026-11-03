@@ -48,7 +48,8 @@
 #
 # Requires: bootstrap/get_app_token.sh (minted only for the eight subcommands
 # that read from GitHub — register and bounce-count are local-only and never
-# mint), python3, curl (token revocation).
+# mint), bootstrap/revoke_app_token.sh (revokes only a token this script
+# minted), python3.
 
 set -euo pipefail
 
@@ -92,25 +93,71 @@ case "$SUBCOMMAND" in
 esac
 
 # ── Mint (only for a recognised network invocation) and register revocation ─
-# Token revocation is a forced side effect of this script exiting, regardless
-# of whether a token was ever actually minted (TOKEN_FILE / GH_TOKEN unset is
-# a no-op below) and regardless of the child's exit code (TW.6).
+# Revocation of a token THIS script minted is a forced side effect of exiting,
+# regardless of the child's exit code (TW.6). A GH_TOKEN inherited from the
+# caller (e.g. the cron cycle's own installation token) is not ours to
+# revoke: on a non-minting invocation (register / bounce-count / unknown
+# --app) or a failed mint it would otherwise be killed mid-cycle (#2117).
+# _MINT_ATTEMPTED (set once the mint path starts) gates the revoke call.
 TOKEN_FILE=""
+_MINT_ATTEMPTED=0
+_GH_CONFIG_TMP=""
+_MERGE_AUTHORITY_REVOKED=0
 
 revoke_token() {
+    # Idempotency guard: the signal trap below and the EXIT trap that follows
+    # it can both reach this function for the same process, and this keeps
+    # the revoke firing exactly once.
+    if [[ "$_MERGE_AUTHORITY_REVOKED" == "1" ]]; then
+        return
+    fi
+    _MERGE_AUTHORITY_REVOKED=1
     if [[ -n "$TOKEN_FILE" ]]; then
         rm -f "$TOKEN_FILE"
     fi
-    if [[ -n "${GH_TOKEN:-}" ]]; then
-        curl -sf -X DELETE -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/installation/token >/dev/null 2>&1 \
-            || echo "merge_authority.sh: warning: failed to revoke installation token (it will expire naturally within 1 hour)" >&2
+    if [[ -n "$_GH_CONFIG_TMP" ]]; then
+        rm -rf "$_GH_CONFIG_TMP"
+    fi
+    # bootstrap/revoke_app_token.sh (#1191) — never inline the DELETE curl
+    # here: it has no timeout, so a network stall inside this EXIT trap would
+    # block process exit indefinitely. revoke_app_token.sh bounds the call
+    # with --connect-timeout/--max-time, is idempotent, and is fail-open with
+    # a warning (the token expires naturally within the hour either way).
+    if [[ "$_MINT_ATTEMPTED" == "1" ]]; then
+        bash "$SCRIPT_DIR/revoke_app_token.sh"
     fi
 }
+
+# A cron-imposed SIGTERM (or an operator SIGINT) kills this script without
+# running an EXIT trap, which would leave the minted installation token live
+# until its natural expiry. Route INT/TERM through revoke_token, then
+# re-raise the signal against the default disposition (after clearing our own
+# traps, so the re-raise cannot re-enter this handler) so the parent still
+# observes the conventional 128+signal exit status. Mirrors pr_review.sh.
+_on_signal() {
+    local sig="$1"
+    revoke_token
+    trap - EXIT INT TERM
+    kill -s "$sig" "$$"
+}
 trap revoke_token EXIT
+trap '_on_signal INT' INT
+trap '_on_signal TERM' TERM
 
 if $MINT_TOKEN; then
+    # Scrub inherited credentials before the mint (#2117; same binding fix as
+    # TD-1520-S1 §7.1 step 3a): a failed mint must never proceed under the
+    # caller's identity. Non-minting invocations skip this and keep the
+    # inherited environment, which the CLI then sees untouched.
+    unset GH_TOKEN GITHUB_TOKEN HOS_BOT_LOGIN HOS_EXPECTED_BOT_LOGIN
+    # Set before the mint, not after it: a signal landing between the mint
+    # and a later assignment (or a `source` failing partway under set -e)
+    # would otherwise skip revoking a live token. After the scrub above any
+    # GH_TOKEN can only be one this script minted, and on a failed mint it
+    # stays empty, where revoke_app_token.sh is a documented no-op ("No
+    # GH_TOKEN set — nothing to revoke", exit 0). Gating on "the mint path
+    # ran" closes the window without ever touching an inherited token.
+    _MINT_ATTEMPTED=1
     TOKEN_FILE="$(mktemp)"
     if bash "$SCRIPT_DIR/get_app_token.sh" --app "$APP_ROLE" > "$TOKEN_FILE"; then
         # shellcheck source=/dev/null
@@ -123,7 +170,16 @@ if $MINT_TOKEN; then
         # the cause — the "auth failure escaping a required fetch" row of
         # §3.3's exit-code table — so AD-2 rule 2's "stdout is exactly one
         # JSON object, always" still holds on this path.
-        echo "merge_authority.sh: warning: failed to mint ${APP_ROLE} token — proceeding without one" >&2
+        # Warn first: under set -e a mktemp failure below would otherwise abort
+        # before the operator learns the mint failed.
+        echo "merge_authority.sh: warning: failed to mint ${APP_ROLE} token — proceeding without credentials (inherited identity scrubbed)" >&2
+        # Neutralise gh's fallback to the host's stored login
+        # (~/.config/gh/hosts.yml): after the scrub above and a failed mint
+        # that would silently run under an unintended identity (#2117). An
+        # empty GH_CONFIG_DIR leaves gh with no stored auth, so the fetch
+        # fails and the CLI alone emits the exit-1 envelope.
+        _GH_CONFIG_TMP="$(mktemp -d)"
+        export GH_CONFIG_DIR="$_GH_CONFIG_TMP"
     fi
     rm -f "$TOKEN_FILE"
     TOKEN_FILE=""

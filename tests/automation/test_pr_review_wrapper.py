@@ -41,6 +41,7 @@ DEFAULT_HEAD_SHA = "c" * 40  # real SHAs are 40 hex; the #2174 marker binds to o
 DEFAULT_AUTHOR = "hos-worker-hos[bot]"
 DEFAULT_BOT_LOGIN = "fake-overseer-bot[bot]"
 DEFAULT_HUMAN_REVIEWER = "hos-default-human"
+INHERITED_TOKEN = "inherited-token-must-survive"
 
 GET_APP_TOKEN_STUB = f"""#!/usr/bin/env bash
 echo "GET_APP_TOKEN_CALLED_WITH:$*" >> "$CAPTURE_FILE"
@@ -51,6 +52,10 @@ printf "export HOS_BOT_LOGIN='{DEFAULT_BOT_LOGIN}'\\n"
 
 GIT_STUB = """#!/usr/bin/env bash
 echo "GIT_CALLED_WITH:$*" >> "$CAPTURE_FILE"
+echo "GIT_GH_CONFIG_DIR:${GH_CONFIG_DIR:-<unset>}" >> "$CAPTURE_FILE"
+if [[ -n "${GH_CONFIG_DIR:-}" && -d "$GH_CONFIG_DIR" ]]; then
+    echo "GIT_GH_CONFIG_DIR_ENTRIES:$(ls -A "$GH_CONFIG_DIR" | wc -l)" >> "$CAPTURE_FILE"
+fi
 args=("$@")
 n=${#args[@]}
 is_get_url_origin=0
@@ -72,6 +77,7 @@ exit 0
 # non-zero exit on API errors, which _run_gh relies on).
 GH_STUB = r"""#!/usr/bin/env bash
 echo "GH_CALLED_WITH:$*" >> "$CAPTURE_FILE"
+echo "GH_TOKEN_SEEN:${GH_TOKEN:-}" >> "$CAPTURE_FILE"
 # Only used by the SIGTERM-mid-flight test below — a deliberate stall so the
 # test has a reliable window to deliver the signal while pr_review_cli.py is
 # genuinely in flight. 0 (no sleep) for every other test.
@@ -1237,12 +1243,12 @@ def test_w16a_token_mint_failure_realistic_no_override_exits_1(h):
     assert "CURL_CALLED_WITH:-s -o /dev/null" not in cap
 
 
-def test_w16b_token_mint_failure_with_bot_login_forced_warns_and_proceeds(h):
-    # HOS_BOT_LOGIN is normally exported by get_app_token.sh's own stdout
-    # (GET_APP_TOKEN_STUB), which a failed mint never reaches — supply it
-    # directly so this test isolates the mint-failure/proceed behavior from
-    # the "HOS_BOT_LOGIN unset" failure mode W16a covers. Not the realistic
-    # scenario — see the section note above.
+def test_w16b_failed_mint_does_not_leak_inherited_identity(h):
+    """#2117: a failed mint must never proceed under an identity inherited
+    from the caller. The wrapper scrubs HOS_BOT_LOGIN / GH_TOKEN before the
+    mint, so a forced HOS_BOT_LOGIN no longer survives the failure: the result
+    is the same exit 1 as W16a, and nothing is revoked (the inherited token is
+    the caller's)."""
     result = h.run(
         [
             "submit-verdict",
@@ -1257,21 +1263,99 @@ def test_w16b_token_mint_failure_with_bot_login_forced_warns_and_proceeds(h):
             "--body-file",
             str(h.body_file),
         ],
-        env_overrides={"FAIL_TOKEN_MINT": "1", "HOS_BOT_LOGIN": DEFAULT_BOT_LOGIN},
+        env_overrides={
+            "FAIL_TOKEN_MINT": "1",
+            "HOS_BOT_LOGIN": DEFAULT_BOT_LOGIN,
+            "GH_TOKEN": INHERITED_TOKEN,
+        },
     )
-    # (b) the exit code is pr_review_cli.py's own (0 here — the fixture gh
-    # stub does not gate on auth), never a bash-forced code from the mint
-    # step itself.
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "failed to mint" in result.stderr
-    # (a) exactly one JSON envelope on stdout
     record = _parse_stdout_json(result)
     assert _ENVELOPE_KEYS <= record.keys()
     cap = h.capture()
     assert "GET_APP_TOKEN_CALLED_WITH:--app overseer" in cap
-    # (c) revoke_token must not error, and must not attempt the DELETE call,
-    # when GH_TOKEN was never set because the mint failed.
-    assert "CURL_CALLED_WITH:-s -o /dev/null" not in cap
+    assert "CURL_CALLED_WITH" not in cap
+    assert INHERITED_TOKEN not in cap
+
+
+# --------------------------------------------------------------------------- #
+# #2117 — only a token this wrapper minted is revoked; an inherited GH_TOKEN
+# belongs to the caller (e.g. the cron cycle's own installation token).
+# --------------------------------------------------------------------------- #
+
+
+def _comment_args(h, app):
+    return [
+        "submit-verdict",
+        "--app",
+        app,
+        "--pr",
+        "42",
+        "--event",
+        "comment",
+        "--tier",
+        "LOW",
+        "--body-file",
+        str(h.body_file),
+    ]
+
+
+def test_inherited_token_not_revoked_or_used_on_failed_mint(h):
+    result = h.run(
+        _comment_args(h, "overseer"),
+        env_overrides={"FAIL_TOKEN_MINT": "1", "GH_TOKEN": INHERITED_TOKEN},
+    )
+    assert result.returncode == 1, result.stderr
+    cap = h.capture()
+    assert "CURL_CALLED_WITH" not in cap
+    assert INHERITED_TOKEN not in cap
+
+
+def test_inherited_token_not_revoked_on_non_minting_app(h):
+    # An --app outside worker|overseer|human never mints; whatever happens in
+    # the CLI, the caller's token must not be revoked on exit.
+    h.run(_comment_args(h, "bogus"), env_overrides={"GH_TOKEN": INHERITED_TOKEN})
+    cap = h.capture()
+    # argparse rejects the unknown --app before any gh/git call, so the
+    # inherited token never reaches a stub that could record it here;
+    # merge_authority's tests cover the "CLI sees it untouched" side.
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert "CURL_CALLED_WITH" not in cap
+
+
+def test_successful_mint_revokes_exactly_the_minted_token(h):
+    result = h.run(
+        _comment_args(h, "overseer"),
+        env_overrides={"GH_TOKEN": INHERITED_TOKEN},
+    )
+    assert result.returncode == 0, result.stderr
+    cap = h.capture()
+    revoke_calls = [
+        line
+        for line in cap.splitlines()
+        if line.startswith("CURL_CALLED_WITH") and "installation/token" in line
+    ]
+    assert len(revoke_calls) == 1, cap
+    assert "Authorization: token fake-token-overseer" in revoke_calls[0]
+    assert INHERITED_TOKEN not in cap
+    assert "GH_TOKEN_SEEN:fake-token-overseer" in cap
+    assert "GIT_GH_CONFIG_DIR:<unset>" in cap
+
+
+def test_failed_mint_gives_gh_an_empty_config_dir_removed_on_exit(h):
+    """#2117: after the scrub and a failed mint, gh must not fall back to the
+    host's stored login. The CLI sees GH_CONFIG_DIR pointing at an empty dir,
+    which the wrapper removes on exit."""
+    result = h.run(_comment_args(h, "overseer"), env_overrides={"FAIL_TOKEN_MINT": "1"})
+    assert result.returncode == 1, result.stderr
+    cap = h.capture()
+    dirs = {
+        line.split(":", 1)[1] for line in cap.splitlines() if line.startswith("GIT_GH_CONFIG_DIR:")
+    }
+    assert len(dirs) == 1 and "<unset>" not in dirs, cap
+    assert "GIT_GH_CONFIG_DIR_ENTRIES:0" in cap
+    assert not Path(dirs.pop()).exists()
 
 
 # --------------------------------------------------------------------------- #
