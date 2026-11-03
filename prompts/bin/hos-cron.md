@@ -2,69 +2,61 @@
 
 | Field | Value |
 |---|---|
-| **Generated file** | `bin/hos-cron` |
-| **Description** | Correct #1265 framing: nested hos-cron processes are a benign ps/bash pipeline-subshell artifact, not a lock failure |
-| **Date** | 2026-09-12 |
-| **Model** | claude-sonnet-5 |
-| **Risk level** | MEDIUM |
+| **Generated file** | `bin/hos-cron` (also `tests/automation/test_hos_cron.py`) |
+| **Description** | #1666: reclaim the overlap lock left by a holder that died across a reboot, using a `boot_id` stamp plus a boot-time check only for pid-less locks |
+| **Date** | 2026-10-13 |
+| **Model** | claude-opus-5-5 |
+| **Risk level** | HIGH (raised from MEDIUM by risk-assessor) |
 | **Human review status** | ⬜ Pending |
 
 ---
 
 ## Prompt
 
-Investigation summary handed to the `coder` agent (autonomous worker session, picking up #1265 from the v0.7.0 candidate list):
+The autonomous worker session took #1666 from the v0.7.0 candidate list. It got a binding architect ruling (summarised under Constraints below), then gave the `coder` agent this prompt (abridged — the path and branch boilerplate is dropped):
 
 ```
-Issue #1265 reported two same-role hos-cron processes for (worker, hos) alive
-at once, one nested as a child of the other. I (the worker session)
-reproduced this LIVE on the host during my own cron cycle: `ps -eo
-pid,ppid,pgid,sid,lstart,cmd` showed my own top-level `bash bin/hos-cron
---role worker --project hos` process with a CHILD bearing the IDENTICAL
-command line, itself parenting `timeout 1800 claude --print ...` -> `claude
---print ...` (me). I then wrote a minimal isolated /tmp reproduction using a
-two-function bash pipeline (`f1 | f2`) and confirmed via `ps` that the
-right-hand side of a pipe running a shell FUNCTION (not an external binary)
-is forked without execve(), so it retains the parent script's exact argv in
-ps/pstree output.
+Problem: bin/hos-cron (overlap lock, ~lines 294-338) — after a reboot
+interrupts lock acquisition (mkdir done, pid never written), every cron fire
+exits "another hos-cron ... run is acquiring the lock" until the age ceiling
+(now 6h).
 
-Root cause: bin/hos-cron's `_build_prompt | _run_claude` pipeline puts
-`_run_claude` (a shell function) on the right of `|`. This is the same
-mechanism, not a lock failure — the overlap lock is acquired once, earlier
-in the script, and never re-acquired by the pipeline subshell.
+The binding design is in .claudetmp/1666/architect-ruling.md — read it and
+implement EXACTLY that (boot_id written before pid; steps 0a/0b before the
+age-ceiling check; _stat_mtime positive-integer guard; fail-safe skips; Linux
+/proc/stat btime + macOS `sysctl -n kern.boottime` sec= parsing; NO env
+override; no clock-based reclaim for any lock that has a pid). Update the
+comment block above the lock (the (a)/(b) list) to describe the new (c)
+reboot-staleness path and cite #1666. Keep the diff minimal.
 
-Implement:
-1. A comment in bin/hos-cron above the `_build_prompt | _run_claude`
-   invocation explaining this mechanism, referencing #1265.
-2. In tests/automation/test_hos_cron.py: correct the existing
-   TestOverlapLock test's comment (it currently claims to reproduce #1265's
-   observation via real independent-process contention, which it does not —
-   that test covers a different, real thing: genuine #1002-style lock
-   racing). Add a NEW test that pins the actual #1265 shape via /proc
-   inspection (PPID + byte-identical cmdline match) using the existing
-   started/release blocking-claude-stub pattern.
-3. A DECISIONS.md entry recording the finding, both verification methods,
-   and the corrected test attribution.
-
-Constraints: documentation/test-only, no behavior change to bin/hos-cron's
-logic; do not touch .claude/agents/**; run TestOverlapLock repeatedly to
-confirm no flakiness.
+Tests: add the six cases from the ruling to tests/automation/test_hos_cron.py
+in the existing "Overlap lock" section, using the existing `cron` fixture.
+Linux-only cases should skip cleanly when /proc/sys/kernel/random/boot_id or
+/proc/stat are absent. Then run the lock tests, the full inner loop, and
+`bash -n bin/hos-cron`.
 ```
-
-Full multi-paragraph technical detail (bash pipeline fork semantics, exact process trees observed, exact file/line targets) was given verbatim in the actual agent dispatch — condensed here for artifact brevity; the working tree diff is the ground truth for what was actually implemented.
 
 ## Constraints Specified
 
-- Documentation/comment and test-only change — no behavior change to `bin/hos-cron`'s lock acquisition, pipeline structure, or any other logic.
-- Do not touch `.claude/agents/**`.
-- New test must reuse the existing `cron`/`tmp_path` fixtures and `_write_exec` helper, and must not leak a hung subprocess on assertion failure (matching the sibling test's `finally` cleanup pattern).
-- Verify no flakiness: run the new test and its class repeatedly before reporting done.
+These come from the architect ruling, which is binding:
+- The holder writes `boot_id` (Linux `/proc/sys/kernel/random/boot_id`) before `pid`. If it can't be read, no empty file is written.
+- Step 0a: if the lock has a `boot_id` and it differs from the current one, reclaim. If it matches, fall through to the existing checks.
+- Step 0b: only for a lock with no `boot_id` and an empty pid, reclaim when the lock dir's mtime is earlier than the boot time, with a margin of 0.
+- A lock that has a pid but no `boot_id` is never reclaimed on clock evidence. A clock step after boot would otherwise let a live lock be reclaimed.
+- If any probe can't be read, its fast path is skipped. `_stat_mtime` returning `0` must not count as "predates boot".
+- No environment override for boot time or `boot_id`.
 
 ## Refinement History
 
-v1 (coder's first pass): added the `bin/hos-cron` comment, corrected the existing test's comment, added the new `/proc`-inspection test, and the `DECISIONS.md` entry. Passed all tests, but code review (`code-reviewer` agent) found the `DECISIONS.md` entry's claim that three pre-existing `#1265` citations in the branch-reaper section (lines ~1271, 1308, 1346) were "a different concern... tied to #1002" was inaccurate — those comments actually still cited `#1265` itself as proof that "two same-role cron processes can overlap," directly contradicting this change's own headline finding.
+v1 (coder): implemented the ruling and added tests for ruling cases 1–6. The inner loop passed.
 
-vFinal (top-level worker session, post-review): re-pointed all three branch-reaper citations from `#1265` to `#1002` (the real mechanism — a stale-lock reclaim can genuinely leave two same-role processes alive, unlike #1265's benign pipeline-subshell artifact), corrected the `DECISIONS.md` scope paragraph to match, and tightened one test comment (the `argv` shown in the new test's docstring is absolute-path, not the shorthand `bash bin/hos-cron --role worker --project hos` used for readability elsewhere).
+vFinal (coder, after code review): `code-reviewer` APPROVED with four SHOULD_FIX items, all applied:
+- Wrapped the `boot_id` reads as `{ tr …; } 2>/dev/null`. A failed `<` redirect printed to stderr even with `2>/dev/null`.
+- The lock-side `boot_id` is now validated, and an invalid value counts as no `boot_id`.
+- Renamed a test whose name claimed it checked write order, which it doesn't.
+- Added tests for two cases: a pid-less lock carrying the current `boot_id` must not take step 0b, and a pid-bearing lock with an invalid `boot_id` must not be reclaimed.
+
+Left for a follow-up, not this change: the existing check-then-act race between `rm -rf` and `mkdir`, which all three reclaim paths share.
 
 ## Human Review Notes
 
@@ -74,7 +66,7 @@ vFinal (top-level worker session, post-review): re-pointed all three branch-reap
      - Findings: [what was caught, what was confirmed correct]
      - Status: APPROVED / APPROVED WITH CHANGES / REJECTED
 -->
-Internal `code-reviewer` agent pass: CHANGES_REQUESTED (the branch-reaper mis-citation above), fixed before this commit. Pending human/overseer review as usual for this pipeline.
+Internal `code-reviewer` pass: APPROVED with the SHOULD_FIX items above, all applied. Pending human/overseer review (bin/** is a protected surface).
 
 ---
 
@@ -82,6 +74,6 @@ Internal `code-reviewer` agent pass: CHANGES_REQUESTED (the branch-reaper mis-ci
 
 To verify this prompt still produces equivalent output in a new session:
 1. Open a fresh Claude Code session
-2. Paste the prompt above verbatim
+2. Paste the prompt above verbatim, along with the architect ruling
 3. Compare key logic paths against `bin/hos-cron`
 4. Note any drift in a new version artifact (`hos-cron.v1.md`)

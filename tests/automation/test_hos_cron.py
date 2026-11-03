@@ -1350,6 +1350,157 @@ class TestOverlapLock:
         assert "ceiling" in r.stdout
         assert cron.claude_ran(), "after the age-ceiling reclaim the cycle should proceed"
 
+    # ── Reboot staleness (#1666) ─────────────────────────────────────────────
+    # Ceiling raised well past any lock age here so only the boot-based fast
+    # paths (never the age ceiling) can explain a reclaim.
+    _HUGE_CEILING = {"HOS_CRON_MAX_SECONDS": str(10**9)}
+
+    @staticmethod
+    def _real_boot_id() -> str:
+        try:
+            return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            pytest.skip("no /proc boot_id on this platform")
+
+    @staticmethod
+    def _real_btime() -> int:
+        try:
+            for line in Path("/proc/stat").read_text().splitlines():
+                if line.startswith("btime "):
+                    return int(line.split()[1])
+        except OSError:
+            pass
+        pytest.skip("no /proc/stat btime on this platform")
+
+    def test_empty_pid_lock_predating_boot_is_reclaimed(self, cron):
+        self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        os.utime(cron.lock_dir, (1, 1))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "#1666" in r.stdout
+        assert "ceiling" not in r.stdout
+        assert cron.claude_ran(), "after the boot-time reclaim the cycle should proceed"
+
+    def test_fresh_empty_pid_lock_still_backs_off_1666(self, cron):
+        cron.lock_dir.mkdir(parents=True)
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "acquiring the lock" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_live_pid_with_different_boot_id_is_reclaimed(self, cron):
+        self._real_boot_id()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "boot_id").write_text("00000000-0000-0000-0000-000000000000\n")
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "#1666" in r.stdout
+        assert "00000000-0000-0000-0000-000000000000" in r.stdout
+        assert cron.claude_ran()
+
+    def test_live_pid_same_boot_id_old_mtime_not_reclaimed(self, cron):
+        boot_id = self._real_boot_id()
+        btime = self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "boot_id").write_text(boot_id + "\n")
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        os.utime(cron.lock_dir, (btime - 60, btime - 60))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "holds the lock" in r.stdout
+        assert not cron.claude_ran(), "no clock-based reclaim for a lock with a pid"
+
+    def test_pidless_lock_with_real_boot_id_not_reclaimed_on_clock(self, cron):
+        boot_id = self._real_boot_id()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "boot_id").write_text(boot_id + "\n")
+        os.utime(cron.lock_dir, (1, 1))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "acquiring the lock" in r.stdout
+        assert "reclaiming" not in r.stdout
+        assert cron.lock_dir.exists()
+        assert not cron.claude_ran()
+
+    def test_live_pid_with_invalid_boot_id_not_reclaimed(self, cron):
+        self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "boot_id").write_text("not/valid!\n")
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        os.utime(cron.lock_dir, (1, 1))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "holds the lock" in r.stdout
+        assert "reclaiming" not in r.stdout
+        assert not cron.claude_ran()
+
+    def test_pidless_lock_with_mtime_equal_to_btime_not_reclaimed(self, cron):
+        btime = self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        os.utime(cron.lock_dir, (btime, btime))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "acquiring the lock" in r.stdout
+        assert "#1666" not in r.stdout
+        assert not cron.claude_ran()
+
+    def test_pidless_lock_with_unreadable_mtime_not_reclaimed(self, cron):
+        self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        os.utime(cron.lock_dir, (1, 1))
+        # bindir is first on the launcher's pinned PATH; a failing `stat` makes
+        # _stat_mtime fall back to 0, which the 0b guard must treat as unreadable.
+        stub = cron.bindir / "stat"
+        stub.write_text("#!/bin/sh\nexit 1\n")
+        stub.chmod(0o755)
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "boot time or lock mtime unreadable" in r.stdout
+        assert "#1666" not in r.stdout
+        assert "acquiring the lock" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_live_pid_with_short_non_uuid_boot_id_not_reclaimed(self, cron):
+        self._real_boot_id()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "boot_id").write_text("0\n")
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "holds the lock" in r.stdout
+        assert "reclaiming" not in r.stdout
+        assert not cron.claude_ran()
+
+    def test_live_pid_without_boot_id_never_reclaimed_on_clock(self, cron):
+        btime = self._real_btime()
+        cron.lock_dir.mkdir(parents=True)
+        (cron.lock_dir / "pid").write_text(f"{os.getpid()}\n")
+        os.utime(cron.lock_dir, (btime - 60, btime - 60))
+        r = cron.run(env_overrides=self._HUGE_CEILING)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "holds the lock" in r.stdout
+        assert not cron.claude_ran()
+
+    def test_acquired_lock_records_boot_id(self, cron):
+        boot_id = self._real_boot_id()
+        # get_app_token (stub) runs mid-cycle; point its capture at boot_id too
+        # by reading the lock dir from a wrapper around the existing stub.
+        stub = cron.repo / "bootstrap" / "get_app_token.sh"
+        seen = cron.token_capture.parent / "boot_id_seen.log"
+        stub.write_text(
+            stub.read_text().replace(
+                "#!/usr/bin/env bash\n",
+                "#!/usr/bin/env bash\n"
+                f'cat "$HOS_STATE_DIR/locks/hos-cron-worker-hos.lock/boot_id" > "{seen}" 2>/dev/null || true\n',
+                1,
+            )
+        )
+        r = cron.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert seen.read_text().strip() == boot_id
+
     def test_real_concurrent_invocations_only_one_proceeds(self, cron, tmp_path):
         # This test verifies genuine independent-process contention against the
         # SAME lock is handled correctly: two separately-launched hos-cron
