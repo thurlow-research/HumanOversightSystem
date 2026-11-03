@@ -1475,3 +1475,81 @@ class TestClosedBlockerWalk:
         run_gate(capsys)
         assert not any("/dependencies" in c for c in stub.calls)
         assert len(stub.calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Unit-test review additions (#2173 CWE-863 revision): failure-path branches
+# ---------------------------------------------------------------------------
+
+
+class TestRunGraphqlFailurePaths:
+    def _patch(self, monkeypatch, result=None, exc=None):
+        import subprocess
+
+        def _run(argv, **kwargs):
+            if exc is not None:
+                raise exc
+            return subprocess.CompletedProcess(argv, *result)
+
+        monkeypatch.setattr(swc.subprocess, "run", _run)
+
+    def test_nonzero_exit_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, result=(1, "", "boom\n"))
+        with pytest.raises(swc._GhFailure, match="boom"):
+            swc._run_graphql("o", "r", 1)
+
+    def test_non_json_stdout_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, result=(0, "not json", ""))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_oserror_raises_gh_failure(self, monkeypatch):
+        self._patch(monkeypatch, exc=OSError("no gh"))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_timeout_raises_gh_failure(self, monkeypatch):
+        import subprocess
+
+        self._patch(monkeypatch, exc=subprocess.TimeoutExpired("gh", 1))
+        with pytest.raises(swc._GhFailure):
+            swc._run_graphql("o", "r", 1)
+
+    def test_valid_json_is_returned(self, monkeypatch):
+        self._patch(monkeypatch, result=(0, '{"data": {"a": 1}}', ""))
+        assert swc._run_graphql("o", "r", 1) == {"data": {"a": 1}}
+
+
+class TestCloserAttributionEdges:
+    def test_non_dict_closer_is_unknown(self):
+        assert swc._closer_attribution(_node("junk"), _T_CLOSE, REPO, _always) == swc._UNKNOWN
+
+    def test_missing_rest_closed_at_is_unknown(self):
+        node = _node(_pr_closer())
+        assert swc._closer_attribution(node, None, REPO, _always) == swc._UNKNOWN
+
+    @pytest.mark.parametrize("merge_commit", [None, {}, {"oid": None}, "x"])
+    def test_pr_without_a_merge_commit_oid_is_unsatisfied_not_ancestor_checked(self, merge_commit):
+        closer = _pr_closer()
+        closer["mergeCommit"] = merge_commit
+        calls = []
+        got = swc._closer_attribution(
+            _node(closer), _T_CLOSE, REPO, lambda s: calls.append(s) or True
+        )
+        assert got is None
+        assert calls == []
+
+    def test_pr_without_base_repository_is_unsatisfied(self):
+        closer = _pr_closer()
+        closer["baseRepository"] = None
+        assert swc._closer_attribution(_node(closer), _T_CLOSE, REPO, _always) is None
+
+
+class TestClosedBlockerEmptyList:
+    def test_empty_blocked_by_list_is_failed_unevaluated(self, gate_repo, stub, capsys):
+        stub.issue_pages[1] = [_issue(20, deps=_CLOSED_BLOCKER)]
+        stub.blockers[20] = []
+        rc, out, err = run_gate(capsys)
+        assert out == []
+        assert "EXCLUDED" not in " ".join(err)
+        assert PREFIX + "WARN unevaluated:query-failed issue=#20 check=closed-blocker" in err
