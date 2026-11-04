@@ -169,6 +169,7 @@ These are experiences referenced by the observations that do **not** yet have a 
 | `issue-vs-pr-thread-routing.md` | oversight-mechanism | "Would a human file a GitHub issue for this?" correctly routes findings between issues (project-level) and PR threads (inner-loop). |
 | `jidoka-reactive-pipeline.md` | oversight-mechanism | Make-style dependency tracking + Jidoka: auto-re-run steps when inputs change, but stop for the human only on a NEW finding. |
 | `llm-reviewer-can-mask-deterministic-scanner-failures.md` | oversight-mechanism | An LLM synthesis layer can mask a deterministic scanner failure with a plausible "this is fine" summary |
+| `llms-belong-inside-deterministic-orchestration.md` | oversight-mechanism | Naming a technique in a prompt is not applying it: LLM output "looks correct but fails mathematically". Orchestrate the LLM inside deterministic structure (navigation, combinatorics, write-path checks). External: Trong et al., IEEE Access 2026. |
 | `maintenance-class-changes-carry-higher-agentic-risk-than-generation.md` | oversight-mechanism | Maintenance-Class Changes Carry Higher Agentic Risk Than Generation |
 | `more-context-makes-llm-review-worse-not-better.md` | oversight-mechanism | More context makes LLM code review worse, not better — the large-context assumption is empirically disconfirmed |
 | `nondeterministic-review-gate-converges-on-zero-new.md` | oversight-mechanism | An LLM reviewer converges on "zero-NEW" (all dispositioned), never "zero findings"; that is its definition of "pass." |
@@ -216,7 +217,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 
 ## Not yet mapped to an observation
 
-60 of 101 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
+61 of 102 findings are not cited under any observation above. Most postdate the observation draft. Mapping them is Scott's synthesis call; listed here so the gap is visible.
 
 - `a-confidently-wrong-error-message-costs-more-than-no-message.md`
 - `a-decision-records-intent-not-enforcement.md`
@@ -259,6 +260,7 @@ Rows added on 2026-10-20 use the finding's own title as the description. 10 find
 - `issue-vs-pr-thread-routing.md`
 - `jidoka-reactive-pipeline.md`
 - `llm-reviewer-can-mask-deterministic-scanner-failures.md`
+- `llms-belong-inside-deterministic-orchestration.md` (candidate: O3, since the cheap independent check gets skipped unless forced, or O4)
 - `maintenance-class-changes-carry-higher-agentic-risk-than-generation.md`
 - `more-context-makes-llm-review-worse-not-better.md`
 - `post-pr-behavior-gap-in-agent-specs.md`
