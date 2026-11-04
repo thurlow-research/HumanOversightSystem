@@ -454,6 +454,24 @@ def test_comments_filter_failure_fails_with_no_stdout(h, flag, render):
     assert "unparseable records" in result.stderr
 
 
+REVOKE_CALL = "CURL_CALLED_WITH:-sf --connect-timeout 10 --max-time 30 -X DELETE"
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+@pytest.mark.parametrize("failing_page", [1, 2])
+def test_comments_page_read_failure_fails_closed(h, flag, render, failing_page):
+    if failing_page == 1:
+        env = {"GH_FAIL_COMMENTS": "1"}
+    else:
+        # Page 1 is full, so the walk requests page 2, which the fake does not have.
+        env = _write_pages(h, [[_comment(i) for i in range(100)]])
+    result = h.run(["--app", "worker", flag, "201"], env)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert f"failed to read comments for issue #201 (page {failing_page})" in result.stderr
+    assert REVOKE_CALL in h.capture()
+
+
 def test_comments_text_format_single_page_unchanged(h):
     result = h.run(["--app", "worker", "--comments", "201"])
     assert result.stdout == (
