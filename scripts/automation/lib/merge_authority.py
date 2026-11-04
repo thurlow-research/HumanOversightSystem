@@ -1659,6 +1659,11 @@ def _parse_decision(raw: object, index: int) -> Optional[Decision]:
     return Decision(question.strip(), tuple(parsed)) if valid else None
 
 
+# Characters that could break out of a markdown link or inject markup/mentions
+# when the URL is interpolated into a bounce comment (CWE-116).
+_URL_UNSAFE_CHARS = frozenset("()[]<>@!`")
+
+
 def _same_repo_url(value: object, repo_slug: str, index: int, field_name: str) -> str:
     prefix = f"https://github.com/{repo_slug.lower()}/"
     if (
@@ -1669,6 +1674,7 @@ def _same_repo_url(value: object, repo_slug: str, index: int, field_name: str) -
         or ".." in value.split("#", 1)[0].split("?", 1)[0].split("/")
         or "%2e" in value.lower()
         or "\\" in value
+        or any(c in value for c in _URL_UNSAFE_CHARS)
     ):
         _schema_fail(
             index, field_name, f"must be a same-repo URL under {prefix} with no '..' segments"
@@ -2101,7 +2107,8 @@ _TRUNCATED_DETAIL_CHARS = 200
 def _neutralize(text: str) -> str:
     """Defang mentions and image/link markdown in LLM-supplied text (CWE-74/116)."""
     return (
-        text.replace("<", "&lt;")
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
         .replace("@", "@\u200b")
         .replace("![", "!\\[")
         .replace("](", "]\\(")
@@ -2536,9 +2543,15 @@ _REPAIR_FINALIZE = "repair-finalize"
 def route_pr(inputs: RouteInputs) -> RouteResult:
     """Pure precedence list (TD §3.8): first match wins. No I/O, no clock."""
     i = inputs
-    withdrawn_keys = {p.key for p in i.prior_on_head if p.finding_id in i.withdrawn_on_head}
+    # Match by identity, the same notion rule 6c uses, so a withdrawn finding
+    # re-emitted under a different slug is still treated as withdrawn.
+    withdrawn_identities = {
+        p.identity for p in i.prior_on_head if p.finding_id in i.withdrawn_on_head
+    }
     code_open = tuple(f for f in i.findings if f.origin == "code")
-    rejections = tuple(f for f in i.findings if not f.is_decision and f.key not in withdrawn_keys)
+    rejections = tuple(
+        f for f in i.findings if not f.is_decision and f.identity not in withdrawn_identities
+    )
     decisions = tuple(f for f in i.findings if f.is_decision)
     # A PR's own pending escalation is handled by rule 2; blocking on it would
     # deadlock the approval that resolves it (AR1-C2). PATH_HOLD and

@@ -191,7 +191,9 @@ def _build_parser() -> _EnvelopeArgumentParser:
     argparse's own sys.exit(0) help path, keeping main() the sole exit-code
     author.
     """
-    parser = _EnvelopeArgumentParser(prog="merge_authority_cli.py", add_help=False, allow_abbrev=False)
+    parser = _EnvelopeArgumentParser(
+        prog="merge_authority_cli.py", add_help=False, allow_abbrev=False
+    )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     common = _EnvelopeArgumentParser(add_help=False, allow_abbrev=False)
@@ -201,10 +203,14 @@ def _build_parser() -> _EnvelopeArgumentParser:
     gate_p = subparsers.add_parser("gate", parents=[common], add_help=False, allow_abbrev=False)
     gate_p.add_argument("--branch", default=None)
 
-    register_p = subparsers.add_parser("register", parents=[common], add_help=False, allow_abbrev=False)
+    register_p = subparsers.add_parser(
+        "register", parents=[common], add_help=False, allow_abbrev=False
+    )
     register_p.add_argument("--step", type=_step_type, required=True)
 
-    bounce_p = subparsers.add_parser("bounce-count", parents=[common], add_help=False, allow_abbrev=False)
+    bounce_p = subparsers.add_parser(
+        "bounce-count", parents=[common], add_help=False, allow_abbrev=False
+    )
     bounce_p.add_argument("--cid", type=_cid_type, required=True)
 
     for name in (
@@ -1163,6 +1169,12 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
         ) from exc
     if len(findings_bytes) > merge_authority.FINDINGS_FILE_MAX_BYTES:
         raise _Fail("findings_file_invalid", "findings file is oversize", "deterministic")
+    # Parse before any GitHub call so a malformed file fails on every PR,
+    # including the non-worker early return below.
+    try:
+        findings_raw = merge_authority.parse_findings_bytes(findings_bytes)
+    except merge_authority.FindingsFileError as exc:
+        raise _Fail("findings_file_invalid", str(exc), "deterministic") from exc
 
     pr = _fetch_open_pr(owner, repo_name, args.pr)
     head_sha = pr["head"]["sha"]
@@ -1222,13 +1234,11 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
     run_names = [r["name"] for r in check_runs if isinstance(r, dict) and r.get("name")]
     try:
         llm_findings, reasons = merge_authority.canonicalize_findings_ex(
-            merge_authority.parse_findings_bytes(findings_bytes),
+            findings_raw,
             changed_paths=changed,
             head_check_runs=run_names,
             repo_slug=repo,
         )
-    except merge_authority.FindingsFileError as exc:
-        raise _Fail("findings_file_invalid", str(exc), "deterministic") from exc
     except merge_authority.FindingsSchemaError as exc:
         raise _Fail("findings_schema", f"findings_schema: {exc}", "deterministic") from exc
 

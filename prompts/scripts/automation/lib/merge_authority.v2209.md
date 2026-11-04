@@ -75,3 +75,9 @@ The reviewers' remaining items are S1b obligations in TD §6.3.
     - **(a)** `allow_abbrev=False` on the top-level parser and every subparser in `merge_authority_cli.py`, so `--ap` is a usage error (exit 2) and agrees with the bash wrapper. Tests cover a read subcommand and `route`.
     - **(c)** `classify_github_error` classifies `ListTruncatedError` as deterministic (TD §3.16). The four CLI call-site special-cases stay as defence in depth. Unit test added.
     - **(d)** `bootstrap/merge_authority.sh` header: exit 3 reads `3 - route only: ruling-required (unreachable until S1b)` (TD §3.18).
+
+11. **Second-review fixes** (2026-11-04, `claude-sonnet-5-5` coder):
+    - **source_url link safety (agy medium, security L2, CWE-116):** `_same_repo_url` now rejects `( ) [ ] < > @ ! \`` so a URL cannot break out of the bounce comment's link. `_neutralize` escapes `&` first (security L1), so `&#64;name` cannot render as a mention. `#N` is not escaped.
+    - **withdrawn by identity (agy medium, prompt-fidelity F8):** `route_pr` drops withdrawn rejections by `identity`, matching rule 6c. TD §3.8 names ids in `withdrawn_on_head` but not the bridge to a finding, so identity was chosen. Inert in S1a (`withdrawn_on_head` is stubbed).
+    - **early findings-file parse (agy low):** `_route` parses the findings file before any GitHub call, so a malformed file gives `findings_file_invalid` on non-worker PRs too.
+    - **gate fixes:** black formatting and a `set[str]` annotation in `test_merge_authority_wrapper.py`.

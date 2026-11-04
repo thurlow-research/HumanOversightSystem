@@ -1037,6 +1037,22 @@ def test_t_cli_5_non_worker_pr_is_legacy_and_fetches_nothing_more(world, monkeyp
     assert (rc, record["bounced"], record["reason"]) == (0, False, "non-worker-pr")
 
 
+def test_malformed_findings_file_fails_even_for_non_worker_pr_without_network(
+    world, monkeypatch, capsys
+):
+    world.pr["user"] = {"login": "scott", "type": "User"}
+    world.findings.write_text("{not json")
+
+    def boom(*a, **k):
+        raise AssertionError("network call before the findings file was parsed")
+
+    for name in ("get_pull", "list_pull_files", "list_check_runs_for_ref"):
+        monkeypatch.setattr(gh, name, boom)
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc != 0
+    assert record["error_code"] == "findings_file_invalid"
+
+
 def test_t_cli_6_route_never_proceeds_in_s1a(world, capsys):
     rc, record = _run_mut(world, "route", capsys)
     assert rc == 0, record

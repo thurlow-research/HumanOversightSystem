@@ -261,7 +261,7 @@ def _wrapper_mint_arms() -> set:
     text = MERGE_AUTHORITY_SH.read_text()
     block = text.split("MINT_TOKEN=false", 1)[1].split("esac\n", 3)
     body = "".join(block[:3])
-    arms = set()
+    arms: set[str] = set()
     for m in re.finditer(r"^\s{4}([a-z|-]+)\)\s*$", body, re.M):
         arms.update(m.group(1).split("|"))
     return arms
@@ -271,7 +271,7 @@ def test_wrapper_mint_arms_equal_cli_network_subcommands():
     from scripts.automation import merge_authority_cli as cli
 
     arms = _wrapper_mint_arms()
-    assert arms == set(cli.NETWORK_SUBCOMMANDS), (arms ^ set(cli.NETWORK_SUBCOMMANDS))
+    assert arms == set(cli.NETWORK_SUBCOMMANDS), arms ^ set(cli.NETWORK_SUBCOMMANDS)
 
 
 @pytest.mark.parametrize("sub", ["register", "bounce-count"])

@@ -1398,3 +1398,31 @@ def test_t_replay_pr_2207_bounces_and_never_goes_to_the_human(replay, capsys):
     assert rc2 == 0
     assert (record2["disposition"], record2["rule"]) == ("NOOP", "6c")
     assert len(posts) == 1
+
+
+@pytest.mark.parametrize("ch", list("()[]<>@!`"))
+def test_same_repo_url_rejects_markdown_breakout_characters(ch):
+    base = "https://github.com/owner/repo/pull/3"
+    for url in (f"{base}?x={ch}", f"{base}#a{ch}b"):
+        with pytest.raises(ma.FindingsSchemaError):
+            ma._same_repo_url(url, "owner/repo", 0, "source_url")
+
+
+def test_neutralize_escapes_ampersand_so_entity_mentions_do_not_render():
+    out = ma._neutralize("&#64;name &amp;")
+    assert out == "&amp;#64;name &amp;amp;"
+
+
+def test_withdrawn_finding_reemitted_under_new_slug_is_not_a_rejection():
+    old = llm("old-slug")
+    reemitted = llm("new-slug")  # same (cls, path) identity, different key
+    assert old.identity == reemitted.identity and old.key != reemitted.key
+    r = route_pr(
+        inputs(
+            findings=(reemitted,),
+            prior_on_head=(prior_of(old, "F1"),),
+            withdrawn_on_head=frozenset({"F1"}),
+        )
+    )
+    assert r.open_findings == ()
+    assert verdict(r)[:2] == (D.PROCEED, "8")
