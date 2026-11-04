@@ -63,6 +63,10 @@
 # existing caller may be migrated to this mode here (ADR-1340 AD-9 row 12 /
 # architect ruling C1) — that is a separate, later change (#1340 FU-5).
 #
+# --comments and --comments-json walk every page (100 per page, oldest first) and
+# print only once the walk is complete. An issue with more than 1000 comments
+# exits 1 with NOTHING on stdout rather than a list missing its newest comments.
+#
 # REST only (GITHUB API — REST only rule in bootstrap/worker-cron-prompt.md):
 # no `gh issue list`, no `gh pr view --json`. The REST issues endpoints return
 # both issues and PRs, so every listing mode here filters out PRs
@@ -228,6 +232,32 @@ resolve_milestone_id() {
     printf '%s' "$matches" | cut -f1
 }
 
+# read_all_comments <N> <jq-filter>: walk every page of issue N's comments (oldest
+# first, as the API returns them) and set COMMENTS_OUT to the filter's `jq -r` output.
+# Nothing is printed here: the caller prints only after the full walk, so a failure
+# or a >1000-comment issue yields no partial (newest-dropped) list.
+read_all_comments() {
+    local number="$1" filter="$2" page=1 finished=0 page_json page_out
+    COMMENTS_OUT=""
+    while (( page <= 10 )); do
+        page_json="$(gh api "repos/${REPO_SLUG}/issues/${number}/comments?per_page=100&page=${page}")" \
+            || fail "failed to read comments for issue #${number} (page ${page})"
+        jq -e 'type == "array"' >/dev/null 2>&1 <<<"$page_json" \
+            || fail "comments for issue #${number} page ${page} is not a JSON array"
+        # The trailing "x" keeps $(...) from stripping the output's final newlines.
+        page_out="$(jq -r "$filter" <<<"$page_json" && printf x)" \
+            || fail "comments for issue #${number} page ${page} has unparseable records"
+        COMMENTS_OUT+="${page_out%x}"
+        if (( $(jq 'length' <<<"$page_json") < 100 )); then
+            finished=1
+            break
+        fi
+        page=$((page + 1))
+    done
+    [[ "$finished" -eq 1 ]] \
+        || fail "issue #${number} has more than 1000 comments — refusing to print a truncated list"
+}
+
 ISSUE_LINE_FILTER='"#\(.number) milestone=\(if .milestone then .milestone.title else "NONE" end) state=\(.state) labels=\(.labels | map(.name) | join(",")) \(.title)"'
 # Edge-mode line filter: the --list line, with a cross-repo reference qualified. Kept
 # separate so ISSUE_LINE_FILTER (shared by --issue/--list/--search) stays frozen.
@@ -284,17 +314,15 @@ elif [[ -n "$COMMENTS_NUMBER" ]]; then
     case "$COMMENTS_NUMBER" in
         ''|*[!0-9]*) fail "--comments must be a positive integer, got: $COMMENTS_NUMBER" ;;
     esac
-    gh api "repos/${REPO_SLUG}/issues/${COMMENTS_NUMBER}/comments?per_page=100" --jq \
-        '.[] | "--- \(.user.login) @ \(.created_at) ---\n\(.body)\n"' \
-        || fail "failed to read comments for issue #${COMMENTS_NUMBER}"
+    read_all_comments "$COMMENTS_NUMBER" '.[] | "--- \(.user.login) @ \(.created_at) ---\n\(.body)\n"'
+    printf '%s' "$COMMENTS_OUT"
 
 elif [[ -n "$COMMENTS_JSON_NUMBER" ]]; then
     case "$COMMENTS_JSON_NUMBER" in
         ''|*[!0-9]*) fail "--comments-json must be a positive integer, got: $COMMENTS_JSON_NUMBER" ;;
     esac
-    gh api "repos/${REPO_SLUG}/issues/${COMMENTS_JSON_NUMBER}/comments?per_page=100" --jq \
-        '.[] | {user: .user.login, created_at: .created_at, body: .body} | tojson' \
-        || fail "failed to read comments for issue #${COMMENTS_JSON_NUMBER}"
+    read_all_comments "$COMMENTS_JSON_NUMBER" '.[] | {user: .user.login, created_at: .created_at, body: .body} | tojson'
+    printf '%s' "$COMMENTS_OUT"
 
 elif [[ "$ASSIGNABLE_USERS" -eq 1 ]]; then
     gh api "repos/${REPO_SLUG}/assignees?per_page=100" --jq '.[].login' \
