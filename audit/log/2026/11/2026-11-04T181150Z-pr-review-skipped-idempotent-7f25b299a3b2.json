@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"dfa1ad1b3addb5d457cfc11a47e800638c7ca7aa","pr":2247,"reason":"overseer verdict 5773196713 (HUMAN_REQUIRED, expected_action=APPROVE, protected surface bootstrap/query_issues.sh) already on this head; no new commits or human activity since; needs-human label in place; step 1a NOT_ELIGIBLE rule 6"}
