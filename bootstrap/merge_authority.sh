@@ -34,7 +34,7 @@
 #   0 — the question was answered (whatever the answer)
 #   1 — operational failure (auth, API error, malformed data, missing config)
 #   2 — usage error (unknown subcommand/flag, missing required flag, ...)
-#   3 — reserved (S1b)
+#   3 - route only: ruling-required (unreachable until S1b)
 #
 # stdout is exactly one JSON object, always — it is merge_authority_cli.py's,
 # passed through byte-for-byte. Never suppress this script's stderr (#1523).

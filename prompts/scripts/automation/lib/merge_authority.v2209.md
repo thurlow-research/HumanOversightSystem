@@ -6,7 +6,7 @@
 - **Model:** claude-opus-5-5[1m] (worker, autonomous cycle worker-hos-261031042001-2375947)
 - **Date:** 2026-10-31
 - **Risk tier:** HIGH (protected surface: `merge_authority.py`, `bootstrap/**`, `contract/**`)
-- **Human review status:** pending (CODEOWNER at merge; ESC-3, ARCH-ESC-1, ESC-2 rulings gate the merge)
+- **Human review status:** the human ruled 1A 2A 3A 4C 5A on #2209 (ScottThurlow, 2026-10-31T18:02Z); 1A ruled all three Condition 10 matches false positives. CODEOWNER review still applies at merge.
 
 ## Prompt (as dispatched to `coder`)
 
@@ -67,3 +67,11 @@ The coder subagent ran on `claude-sonnet-5-5`; the worker session, which dispatc
    - **CWE-362 (filed as #2227):** the bounce read-then-write is not serialized. #2227 must land before S2.
 
 The reviewers' remaining items are S1b obligations in TD §6.3.
+
+10. **Re-adoption and review hardening** (2026-11-04, `claude-sonnet-5-5` coder; worker session `claude-opus-5-5[1m]`):
+    - **Re-adoption:** the work was re-adopted onto `worker-2209-s1a-route-bounce-261104055001-27768`.
+    - **Merge with origin/main:** a union with #2213 (approval-merge, merge-provenance) and #2117/#1659 (revoke-only-minted).
+    - **github.py:** the duplicate `list_issue_events` collapsed to the S1a version, replacing #2213's version and `_EVENTS_MAX_PAGES`. Behaviour is preserved for `approval_merge.py`.
+    - **(a)** `allow_abbrev=False` on the top-level parser and every subparser in `merge_authority_cli.py`, so `--ap` is a usage error (exit 2) and agrees with the bash wrapper. Tests cover a read subcommand and `route`.
+    - **(c)** `classify_github_error` classifies `ListTruncatedError` as deterministic (TD §3.16). The four CLI call-site special-cases stay as defence in depth. Unit test added.
+    - **(d)** `bootstrap/merge_authority.sh` header: exit 3 reads `3 - route only: ruling-required (unreachable until S1b)` (TD §3.18).

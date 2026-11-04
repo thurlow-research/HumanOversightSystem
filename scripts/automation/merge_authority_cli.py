@@ -191,20 +191,20 @@ def _build_parser() -> _EnvelopeArgumentParser:
     argparse's own sys.exit(0) help path, keeping main() the sole exit-code
     author.
     """
-    parser = _EnvelopeArgumentParser(prog="merge_authority_cli.py", add_help=False)
+    parser = _EnvelopeArgumentParser(prog="merge_authority_cli.py", add_help=False, allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
-    common = _EnvelopeArgumentParser(add_help=False)
+    common = _EnvelopeArgumentParser(add_help=False, allow_abbrev=False)
     common.add_argument("--app", required=True, choices=("worker", "overseer", "human"))
     common.add_argument("--repo", type=_repo_type, default=None)
 
-    gate_p = subparsers.add_parser("gate", parents=[common], add_help=False)
+    gate_p = subparsers.add_parser("gate", parents=[common], add_help=False, allow_abbrev=False)
     gate_p.add_argument("--branch", default=None)
 
-    register_p = subparsers.add_parser("register", parents=[common], add_help=False)
+    register_p = subparsers.add_parser("register", parents=[common], add_help=False, allow_abbrev=False)
     register_p.add_argument("--step", type=_step_type, required=True)
 
-    bounce_p = subparsers.add_parser("bounce-count", parents=[common], add_help=False)
+    bounce_p = subparsers.add_parser("bounce-count", parents=[common], add_help=False, allow_abbrev=False)
     bounce_p.add_argument("--cid", type=_cid_type, required=True)
 
     for name in (
@@ -216,19 +216,19 @@ def _build_parser() -> _EnvelopeArgumentParser:
         "approval-merge",
         "merge-provenance",
     ):
-        pr_p = subparsers.add_parser(name, parents=[common], add_help=False)
+        pr_p = subparsers.add_parser(name, parents=[common], add_help=False, allow_abbrev=False)
         pr_p.add_argument("--pr", type=_pr_type, required=True)
 
     # route / bounce write, so --app accepts only the overseer (TD-D8) and
     # --step is a subject selector, the same as `register --step` (TD-D7).
-    mutation = _EnvelopeArgumentParser(add_help=False)
+    mutation = _EnvelopeArgumentParser(add_help=False, allow_abbrev=False)
     mutation.add_argument("--app", required=True, choices=("overseer",))
     mutation.add_argument("--repo", type=_repo_type, default=None)
     mutation.add_argument("--pr", type=_pr_type, required=True)
     mutation.add_argument("--step", type=_step_type, required=True)
-    route_p = subparsers.add_parser("route", parents=[mutation], add_help=False)
+    route_p = subparsers.add_parser("route", parents=[mutation], add_help=False, allow_abbrev=False)
     route_p.add_argument("--findings-file", required=True)
-    subparsers.add_parser("bounce", parents=[mutation], add_help=False)
+    subparsers.add_parser("bounce", parents=[mutation], add_help=False, allow_abbrev=False)
 
     return parser
 

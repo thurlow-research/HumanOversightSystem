@@ -142,6 +142,19 @@ def test_t1_2_unknown_flag_exits_2(repo_root, capsys):
     assert record["error"] is not None
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["gate", "--ap", "overseer"],
+        ["route", "--ap", "overseer", "--pr", "1", "--step", "issue-1", "--findings-file", "f"],
+    ],
+)
+def test_t1_2_abbreviated_flag_exits_2(argv, repo_root, capsys):
+    rc = cli.main(argv, repo_root=str(repo_root))
+    assert rc == 2
+    assert _record(capsys)["error"] is not None
+
+
 def test_t1_2_unknown_subcommand_exits_2(repo_root, capsys):
     rc = cli.main(["not-a-subcommand", "--app", "overseer"], repo_root=str(repo_root))
     assert rc == 2
@@ -1615,6 +1628,12 @@ def test_t_cli_9_classify_github_error():
     assert c(gh.GitHubError("missing", status_code=404)) == "deterministic"
     assert c(gh.GitHubError("unprocessable", status_code=422)) == "deterministic"
     assert c(gh.GitHubError("forbidden", status_code=403)) == "deterministic"
+
+
+def test_t_cli_9_list_truncated_error_is_deterministic():
+    exc = gh.ListTruncatedError("list truncated")
+    assert getattr(exc, "status_code", None) is None
+    assert merge_authority.classify_github_error(exc) == "deterministic"
 
 
 def test_t_cli_4_head_pin_writes_nothing(world, monkeypatch, capsys):

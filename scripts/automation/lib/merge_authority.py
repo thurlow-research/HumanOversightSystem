@@ -35,6 +35,7 @@ from typing import Callable, Collection, Iterable, NamedTuple, NoReturn, Optiona
 from scripts.automation.lib import github as _github
 from scripts.automation.lib.github import (
     GitHubError,
+    ListTruncatedError,
     RateLimitError,
     _required_contexts_from_rules,
     _run_gh,
@@ -1574,6 +1575,8 @@ def classify_github_error(exc: GitHubError) -> str:
     """'transient' (worth a retry next cycle) or 'deterministic' (needs a fix)."""
     if isinstance(exc, RateLimitError):
         return "transient"
+    if isinstance(exc, ListTruncatedError):
+        return "deterministic"
     status = getattr(exc, "status_code", None)
     if status is None or status >= 500:
         return "transient"
