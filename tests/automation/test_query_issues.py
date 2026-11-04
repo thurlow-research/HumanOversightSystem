@@ -8,6 +8,7 @@ filter for real (via the actual installed `jq`), so the filtering behaviour
 under test is genuine, not a canned string.
 """
 
+import json
 import os
 import shutil
 import stat
@@ -82,6 +83,11 @@ case "$PATH_ARG" in
         ;;
     */issues/*/comments\?*)
         [[ "${GH_FAIL_COMMENTS:-}" == "1" ]] && exit 1
+        if [[ -n "${COMMENT_PAGES_FILE:-}" ]]; then
+            PAGE_NO="$(printf '%s' "$PATH_ARG" | sed -E 's/.*page=([0-9]+)$/\1/')"
+            jq -e -c ".[$((PAGE_NO - 1))] // empty" "$COMMENT_PAGES_FILE" || exit 1
+            exit 0
+        fi
         emit '[{"user":{"login":"octocat"},"created_at":"2026-08-01T00:00:00Z","body":"first comment"},'\
 '{"user":{"login":"monalisa"},"created_at":"2026-08-02T00:00:00Z","body":"second comment"}]'
         ;;
@@ -372,6 +378,112 @@ def test_comments_lists_each_comment(h):
     assert "monalisa" in result.stdout
     assert "first comment" in result.stdout
     assert "second comment" in result.stdout
+
+
+def _comment(i):
+    return {
+        "user": {"login": f"u{i}"},
+        "created_at": f"2026-01-01T00:00:{i % 60:02d}Z",
+        "body": f"body {i}",
+    }
+
+
+def _write_pages(h, pages):
+    f = h.tmp / "pages.json"
+    f.write_text(json.dumps(pages))
+    return {"COMMENT_PAGES_FILE": str(f)}
+
+
+def _text(i):
+    return f"--- u{i} @ 2026-01-01T00:00:{i % 60:02d}Z ---\nbody {i}\n\n"
+
+
+def _json(i):
+    return (
+        json.dumps(
+            {"user": f"u{i}", "created_at": f"2026-01-01T00:00:{i % 60:02d}Z", "body": f"body {i}"},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+
+
+COMMENT_MODES = [("--comments", _text), ("--comments-json", _json)]
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+def test_comments_paginates_two_pages_in_order(h, flag, render):
+    pages = [[_comment(i) for i in range(100)], [_comment(i) for i in range(100, 150)]]
+    result = h.run(["--app", "worker", flag, "201"], _write_pages(h, pages))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "".join(render(i) for i in range(150))
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+def test_comments_exactly_100_then_empty_page(h, flag, render):
+    pages = [[_comment(i) for i in range(100)], []]
+    result = h.run(["--app", "worker", flag, "201"], _write_pages(h, pages))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "".join(render(i) for i in range(100))
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+def test_comments_ten_full_pages_refuse_to_print(h, flag, render):
+    pages = [[_comment(i) for i in range(100)] for _ in range(10)]
+    result = h.run(["--app", "worker", flag, "201"], _write_pages(h, pages))
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "refusing to print a truncated list" in result.stderr
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+def test_comments_non_array_page_fails_with_no_stdout(h, flag, render):
+    pages = [[_comment(i) for i in range(100)], {"message": "oops"}]
+    result = h.run(["--app", "worker", flag, "201"], _write_pages(h, pages))
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "not a JSON array" in result.stderr
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+def test_comments_filter_failure_fails_with_no_stdout(h, flag, render):
+    pages = [[_comment(0), 5]]
+    result = h.run(["--app", "worker", flag, "201"], _write_pages(h, pages))
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "unparseable records" in result.stderr
+
+
+REVOKE_CALL = "CURL_CALLED_WITH:-sf --connect-timeout 10 --max-time 30 -X DELETE"
+
+
+@pytest.mark.parametrize("flag,render", COMMENT_MODES)
+@pytest.mark.parametrize("failing_page", [1, 2])
+def test_comments_page_read_failure_fails_closed(h, flag, render, failing_page):
+    if failing_page == 1:
+        env = {"GH_FAIL_COMMENTS": "1"}
+    else:
+        # Page 1 is full, so the walk requests page 2, which the fake does not have.
+        env = _write_pages(h, [[_comment(i) for i in range(100)]])
+    result = h.run(["--app", "worker", flag, "201"], env)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert f"failed to read comments for issue #201 (page {failing_page})" in result.stderr
+    assert REVOKE_CALL in h.capture()
+
+
+def test_comments_text_format_single_page_unchanged(h):
+    result = h.run(["--app", "worker", "--comments", "201"])
+    assert result.stdout == (
+        "--- octocat @ 2026-08-01T00:00:00Z ---\nfirst comment\n\n"
+        "--- monalisa @ 2026-08-02T00:00:00Z ---\nsecond comment\n\n"
+    )
+
+
+def test_comments_text_preserves_body_trailing_newlines(h):
+    pages = [[{"user": {"login": "a"}, "created_at": "t", "body": "x\n\n"}]]
+    result = h.run(["--app", "worker", "--comments", "201"], _write_pages(h, pages))
+    assert result.stdout == "--- a @ t ---\nx\n\n\n\n"
 
 
 def test_assignable_users_lists_logins(h):
