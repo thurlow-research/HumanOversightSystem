@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","event":"pr-review-skipped-idempotent","head_sha":"a803b8a1690c4a2e018b4f01c2dfedabf0785793","pr":2250,"reason":"§1215: own DECIDE verdict (review 5777601662) already posted at this head; no new commits, reviews, or comments since; needs-human present","repo":"thurlow-research/HumanOversightSystem"}
