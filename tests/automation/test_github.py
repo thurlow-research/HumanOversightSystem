@@ -726,3 +726,38 @@ class TestRemintMemo:
         with _patch_run([_make_result(401), _mint_result(), _make_result(200, {})]):
             _run_gh(["/repos/o/r"], backoff_base=0)
         assert github_module._last_remint_failure is None
+
+
+# ── #2209 S1a x #2213: list_issue_events as approval_merge sees it ──────────
+
+
+def test_list_issue_events_accepts_max_pages_kwarg_used_by_approval_merge():
+    from scripts.automation.lib import merge_authority
+
+    page = [{"id": i} for i in range(100)]
+    with patch.object(github_module, "_run_gh", return_value=page) as run:
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_issue_events(
+                "o", "r", 7, max_pages=merge_authority._ISSUE_EVENTS_MAX_PAGES
+            )
+    assert run.call_count == merge_authority._ISSUE_EVENTS_MAX_PAGES
+
+
+def test_list_truncated_error_is_a_github_error_but_caught_first():
+    assert issubclass(github_module.ListTruncatedError, GitHubError)
+    with patch.object(github_module, "_run_gh", return_value={"not": "list"}):
+        with pytest.raises(github_module.ListTruncatedError):
+            github_module.list_issue_events("o", "r", 7)
+
+
+def test_list_issue_events_returns_short_final_page_complete():
+    full = [{"id": i} for i in range(100)]
+    with patch.object(github_module, "_run_gh", side_effect=[full, [{"id": 100}]]):
+        got = github_module.list_issue_events("o", "r", 7)
+    assert len(got) == 101
+
+
+def test_list_issue_events_empty_later_page_is_end_of_list():
+    full = [{"id": i} for i in range(100)]
+    with patch.object(github_module, "_run_gh", side_effect=[full, None]):
+        assert len(github_module.list_issue_events("o", "r", 7)) == 100

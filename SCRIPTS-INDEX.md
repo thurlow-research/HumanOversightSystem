@@ -36,7 +36,7 @@ excluded.
 - `bootstrap/hos_repo_sync.sh` — fetch + fast-forward the current repo's default branch, but only if enough time has passed since the last sync.
 - `bootstrap/hos_setup_partner.sh` — guided per-project HOS credential setup
 - `bootstrap/invoke_agent.sh` — L3 wrapper for the deterministic agent-invocation primitive (#1643 slice W1).
-- `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority read-only primitive surface (#1357 slice 1).
+- `bootstrap/merge_authority.sh` — L3 wrapper for the merge-authority primitive surface: read-only queries (#1357) plus the overseer's route and bounce (#2209).
 - `bootstrap/overseer_merge.sh` — L3 wrapper for the merge-on-human-approval primitive (#2213, ADR-2213 AD-6).
 - `bootstrap/post_comment.sh` — canonical wrapper for posting a GitHub issue/PR comment under a HOS bot identity (#1155)
 - `bootstrap/post_review_thread.sh` — canonical wrapper for posting a resolvable PR review thread under a HOS bot identity (#1207)
@@ -71,7 +71,7 @@ excluded.
 - `scripts/automation/dimension_registry_cli.py` — L2 CLI over lib/dimension_registry.py (ADR-1643 TD §7.10 as amended by Amendment C §C.2.7).
 - `scripts/automation/dimension_sweep_cli.py` — L2 measurement runner (ADR-1643 AD-13, W6; TD Amendment G, docs/v0.7.0/TECHNICAL-DESIGN-1643-invocation-primitive.md §G.1-§G.12).
 - `scripts/automation/in_progress.py` — Make the autonomous worker's current pick visible (#2157).
-- `scripts/automation/merge_authority_cli.py` — L2 read-only primitives over merge_authority.py (#1357 slice 1).
+- `scripts/automation/merge_authority_cli.py` — L2 primitives over merge_authority.py: read-only queries (#1357) plus the overseer's route and bounce (#2209).
 - `scripts/automation/overseer_merge_cli.py` — L2 mutating primitive: merge a PR on a designated human's approval (#2213, slice S1a; ADR-2213 AD-6, TD-2213 §4.5).
 - `scripts/automation/pr_review_cli.py` — L2 PR-review write primitive (#1657).
 - `scripts/automation/pre_pr_stale_check.py` — CLI wrapper for the pre-PR stale-commit guard (#850).

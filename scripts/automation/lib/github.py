@@ -30,6 +30,11 @@ class RateLimitError(GitHubError):
     """Raised when the rate limit is hit and retry budget is exhausted."""
 
 
+class ListTruncatedError(GitHubError):
+    """A paginated read returned a malformed page or exceeded its page cap, so
+    the list cannot be returned as complete (#2209)."""
+
+
 # Bounded wall-clock budget for a single `gh api` subprocess call (MUST_FIX
 # C, #1657 PR-1 review round 2). Without this, `gh` stalling on DNS, TLS, or
 # a proxy blocks the calling process forever — every read AND write this
@@ -383,6 +388,87 @@ def list_check_runs_for_ref(
     return runs
 
 
+def list_check_suites_for_ref(
+    owner: str,
+    repo: str,
+    ref: str,
+    *,
+    max_pages: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/commits/{ref}/check-suites (all pages).
+
+    Returns the concatenated ``check_suites`` lists. A page that is not a
+    dict with a list ``check_suites``, or more than ``max_pages`` full pages,
+    raises ListTruncatedError: a truncated list is never returned as complete (#2209).
+    """
+    suites: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/commits/{ref}/check-suites" f"?per_page=100&page={page}"]
+        )
+        page_suites = batch.get("check_suites") if isinstance(batch, dict) else None
+        if not isinstance(page_suites, list):
+            raise ListTruncatedError(
+                f"unexpected check-suites payload for {owner}/{repo}@{ref}: "
+                "expected a dict with a list 'check_suites'"
+            )
+        suites.extend(page_suites)
+        if len(page_suites) < 100:
+            return suites
+    raise ListTruncatedError(f"check-suites for {owner}/{repo}@{ref} exceeded {max_pages} pages")
+
+
+def list_issue_events(
+    owner: str,
+    repo: str,
+    number: int,
+    *,
+    max_pages: int = 10,
+) -> list[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/issues/{number}/events (all pages, oldest first).
+
+    A non-list page, or more than ``max_pages`` full pages, raises GitHubError
+    rather than returning a truncated list (#2209).
+    """
+    events: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        batch = _run_gh(
+            [f"/repos/{owner}/{repo}/issues/{number}/events" f"?per_page=100&page={page}"]
+        )
+        if batch is None:
+            if page == 1:
+                raise GitHubError(
+                    f"issue events for {owner}/{repo}#{number} not found (404 or empty body)",
+                    status_code=404,
+                )
+            batch = []
+        page_events = batch
+        if not isinstance(page_events, list):
+            raise ListTruncatedError(
+                f"unexpected issue-events payload for {owner}/{repo}#{number}: "
+                f"expected list, got {type(page_events).__name__}"
+            )
+        events.extend(page_events)
+        if len(page_events) < 100:
+            return events
+    raise ListTruncatedError(f"events for {owner}/{repo}#{number} exceeded {max_pages} pages")
+
+
+def get_contents(owner: str, repo: str, path: str, *, ref: str) -> Optional[dict[str, Any]]:
+    """
+    GET /repos/{owner}/{repo}/contents/{path}?ref={ref}
+
+    None on 404. A list payload (a directory) raises GitHubError. Decoding the
+    base64 ``content`` is the caller's job (#2209).
+    """
+    result = _run_gh([f"/repos/{owner}/{repo}/contents/{quote(path)}?ref={quote(ref, safe='')}"])
+    if isinstance(result, list):
+        raise GitHubError(f"contents of {owner}/{repo}:{path}@{ref} is a directory, not a file")
+    return result
+
+
 def get_branch_protection(
     owner: str,
     repo: str,
@@ -483,40 +569,6 @@ def get_ruleset(owner: str, repo: str, ruleset_id: int) -> Optional[dict[str, An
             f"expected object, got {type(result).__name__}"
         )
     return result
-
-
-_EVENTS_MAX_PAGES = 10
-
-
-def list_issue_events(owner: str, repo: str, issue_number: int) -> list[dict[str, Any]]:
-    """
-    GET /repos/{owner}/{repo}/issues/{number}/events (bounded pagination; #2213 AD-2).
-
-    Unlike the other list readers this one raises GitHubError when the page
-    cap is hit, on a non-list payload, and on a 404 for page 1: the caller
-    asks "who applied the latest label", and a truncated or missing list
-    would answer that wrongly (the fail-open direction).
-    """
-    events: list[dict[str, Any]] = []
-    for page in range(1, _EVENTS_MAX_PAGES + 1):
-        batch = _run_gh(
-            [f"/repos/{owner}/{repo}/issues/{issue_number}/events?per_page=100&page={page}"]
-        )
-        if batch is None:
-            if page == 1:
-                raise GitHubError(f"issue events for {owner}/{repo}#{issue_number} not found", 404)
-            batch = []
-        if not isinstance(batch, list):
-            raise GitHubError(
-                f"unexpected events payload for {owner}/{repo}#{issue_number}: "
-                f"expected list, got {type(batch).__name__}"
-            )
-        events.extend(batch)
-        if len(batch) < 100:
-            return events
-    raise GitHubError(
-        f"events for {owner}/{repo}#{issue_number} exceeded {_EVENTS_MAX_PAGES} pages"
-    )
 
 
 _THREADS_MAX_PAGES = 10

@@ -238,3 +238,87 @@ def test_stdout_and_exit_code_pass_through_unchanged(h, exit_code):
         "stub": True,
         "argv": ["gate", "--app", "overseer", "--repo", "o/r"],
     }
+
+
+# ── #2209 S1a x #2213 union: mint policy pinned against the CLI ─────────────
+
+_NETWORK_SUBCOMMANDS = (
+    "gate",
+    "human-approval",
+    "hold-directive",
+    "protected-surface",
+    "security-surface",
+    "codeowners",
+    "approval-merge",
+    "merge-provenance",
+)
+
+
+def _wrapper_mint_arms() -> set:
+    """Subcommand tokens named in the wrapper's mint `case` arms."""
+    import re
+
+    text = MERGE_AUTHORITY_SH.read_text()
+    block = text.split("MINT_TOKEN=false", 1)[1].split("esac\n", 3)
+    body = "".join(block[:3])
+    arms: set[str] = set()
+    for m in re.finditer(r"^\s{4}([a-z|-]+)\)\s*$", body, re.M):
+        arms.update(m.group(1).split("|"))
+    return arms
+
+
+def test_wrapper_mint_arms_equal_cli_network_subcommands():
+    from scripts.automation import merge_authority_cli as cli
+
+    arms = _wrapper_mint_arms()
+    assert arms == set(cli.NETWORK_SUBCOMMANDS), arms ^ set(cli.NETWORK_SUBCOMMANDS)
+
+
+@pytest.mark.parametrize("sub", ["register", "bounce-count"])
+def test_local_only_subcommands_never_mint(h, sub):
+    h.run([sub, "--app", "overseer"])
+    assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()
+
+
+@pytest.mark.parametrize("sub", _NETWORK_SUBCOMMANDS)
+@pytest.mark.parametrize("role", ["worker", "overseer", "human"])
+def test_read_subcommands_mint_for_every_known_role(h, sub, role):
+    h.run([sub, "--app", role])
+    assert f"GET_APP_TOKEN_CALLED_WITH:--app {role}" in h.capture()
+
+
+@pytest.mark.parametrize("sub", ["route", "bounce"])
+def test_mutation_subcommands_mint_only_for_overseer(h, sub):
+    h.run([sub, "--app", "overseer"])
+    assert "GET_APP_TOKEN_CALLED_WITH:--app overseer" in h.capture()
+
+
+@pytest.mark.parametrize("sub", ["route", "bounce"])
+@pytest.mark.parametrize("role", ["worker", "human", "bogus"])
+def test_mutation_subcommands_do_not_mint_for_other_roles(h, sub, role):
+    h.run([sub, "--app", role])
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH" not in cap
+    assert h.revoke_calls() == []
+
+
+@pytest.mark.parametrize("sub", ["route", "bounce", "gate"])
+def test_equals_form_app_mints_like_space_form(h, sub):
+    h.run([sub, "--app=overseer"])
+    cap = h.capture()
+    assert "GET_APP_TOKEN_CALLED_WITH:--app overseer" in cap
+    assert len(h.revoke_calls()) == 1, cap
+
+
+def test_equals_form_non_overseer_mutation_does_not_mint(h):
+    h.run(["route", "--app=worker"])
+    assert "GET_APP_TOKEN_CALLED_WITH" not in h.capture()
+
+
+def test_repeated_app_last_value_wins_for_minting(h):
+    h.run(["route", "--app", "worker", "--app", "overseer"])
+    assert "GET_APP_TOKEN_CALLED_WITH:--app overseer" in h.capture()
+    (h.tmp / "second").mkdir()
+    h2 = Harness(h.tmp / "second")
+    h2.run(["route", "--app", "overseer", "--app=worker"])
+    assert "GET_APP_TOKEN_CALLED_WITH" not in h2.capture()
