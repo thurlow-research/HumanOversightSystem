@@ -231,6 +231,56 @@ def test_collection_integrity_ignores_diff_flag(tmp_path):
     assert with_diff.stdout == baseline.stdout
 
 
+# ── #2097 — git-sourced option-shaped names are refused, not forwarded ──────
+
+
+def _commit_file(cwd: Path, name: str) -> None:
+    (cwd / name).write_text("x = 1\n")
+    _git(cwd, "add", "--", name)
+    _git(cwd, "commit", "-q", "-m", "add")
+
+
+@pytest.mark.parametrize(
+    "name", ["--output=x.py", "--baseline=x.py", "-x.py", "-", "--", "-\u00e9.py"]
+)
+def test_diff_dash_named_file_is_refused(tmp_path, name):
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, name)
+    res = _run("security_scan", tmp_path, "--diff", "HEAD~1")
+    assert res.returncode == 3, res.stderr
+    assert "GATE PASS" not in res.stdout
+    assert f"'{name}' begins with '-'" in res.stderr
+
+
+@pytest.mark.parametrize("name", ["--output=x.py", "--skip=B101"])
+def test_staged_dash_named_file_is_refused(tmp_path, name):
+    _init_repo(tmp_path)
+    (tmp_path / name).write_text("x = 1\n")
+    _git(tmp_path, "add", "--", name)
+    res = _run("security_scan", tmp_path, "--staged")
+    assert res.returncode == 3, res.stderr
+    assert "GATE PASS" not in res.stdout
+    assert "begins with '-'" in res.stderr
+
+
+def test_nested_dash_named_file_is_not_refused(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "sub").mkdir()
+    _commit_file(tmp_path, "sub/-x.py")
+    res = _run("security_scan", tmp_path, "--diff", "HEAD~1")
+    assert "begins with '-'" not in res.stderr
+    assert res.returncode != 3, res.stderr
+
+
+def test_non_ascii_name_is_resolved_and_forwarded(tmp_path):
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "\u00e9.py")
+    res = _run("security_scan", tmp_path, "--diff", "HEAD~1")
+    assert "changeset = 1 file(s)" in res.stdout, res.stdout + res.stderr
+    assert "NOT CHECKED" not in res.stdout
+    assert "begins with '-'" not in res.stderr
+
+
 # ── TC-G9 — dependency_audit.sh ignores its argv, except --empty-changeset ──
 #
 # dependency_audit.sh is repo-scoped (TD-1): dependency posture is a property of
