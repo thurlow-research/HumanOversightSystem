@@ -2543,15 +2543,9 @@ _REPAIR_FINALIZE = "repair-finalize"
 def route_pr(inputs: RouteInputs) -> RouteResult:
     """Pure precedence list (TD §3.8): first match wins. No I/O, no clock."""
     i = inputs
-    # Match by identity, the same notion rule 6c uses, so a withdrawn finding
-    # re-emitted under a different slug is still treated as withdrawn.
-    withdrawn_identities = {
-        p.identity for p in i.prior_on_head if p.finding_id in i.withdrawn_on_head
-    }
+    withdrawn_keys = {p.key for p in i.prior_on_head if p.finding_id in i.withdrawn_on_head}
     code_open = tuple(f for f in i.findings if f.origin == "code")
-    rejections = tuple(
-        f for f in i.findings if not f.is_decision and f.identity not in withdrawn_identities
-    )
+    rejections = tuple(f for f in i.findings if not f.is_decision and f.key not in withdrawn_keys)
     decisions = tuple(f for f in i.findings if f.is_decision)
     # A PR's own pending escalation is handled by rule 2; blocking on it would
     # deadlock the approval that resolves it (AR1-C2). PATH_HOLD and

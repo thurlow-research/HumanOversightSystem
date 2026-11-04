@@ -1413,16 +1413,15 @@ def test_neutralize_escapes_ampersand_so_entity_mentions_do_not_render():
     assert out == "&amp;#64;name &amp;amp;"
 
 
-def test_withdrawn_finding_reemitted_under_new_slug_is_not_a_rejection():
-    old = llm("old-slug")
-    reemitted = llm("new-slug")  # same (cls, path) identity, different key
-    assert old.identity == reemitted.identity and old.key != reemitted.key
+def test_withdrawing_one_finding_does_not_drop_a_same_class_same_path_sibling():
+    f1 = llm("first")
+    f2 = llm("second")  # same (cls, path) identity, different key (TD R-7)
+    assert f1.identity == f2.identity and f1.key != f2.key
     r = route_pr(
         inputs(
-            findings=(reemitted,),
-            prior_on_head=(prior_of(old, "F1"),),
+            findings=(f1, f2),
+            prior_on_head=(prior_of(f1, "F1"),),
             withdrawn_on_head=frozenset({"F1"}),
         )
     )
-    assert r.open_findings == ()
-    assert verdict(r)[:2] == (D.PROCEED, "8")
+    assert r.open_findings == (f2,)
