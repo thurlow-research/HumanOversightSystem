@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-merge_authority_cli.py — L2 read-only primitives over merge_authority.py (#1357 slice 1).
+merge_authority_cli.py — L2 primitives over merge_authority.py: read-only queries (#1357)
+plus the overseer's route and bounce (#2209).
 
 Fetches what each L1 function needs, calls it, and serializes the result as a
 single JSON record. This module decides nothing itself — every boolean in
@@ -26,10 +27,11 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 # Import bootstrap (§2): insert this CLI's own repo root at sys.path[0] before
 # importing scripts.automation.lib.* so imports resolve regardless of cwd.
@@ -56,9 +58,15 @@ SUBCOMMANDS = (
     "protected-surface",
     "security-surface",
     "codeowners",
+    "route",
+    "bounce",
     "approval-merge",
     "merge-provenance",
 )
+
+# The two subcommands that write (a comment, an audit event, a label, the
+# draft state) — overseer-only, #2209 TD-D8. Every other subcommand is read-only.
+MUTATION_SUBCOMMANDS = frozenset({"route", "bounce"})
 
 # Subcommands that fetch from GitHub — mirrored by bootstrap/merge_authority.sh
 # (§7.3), which mints a token only for these.
@@ -70,6 +78,8 @@ NETWORK_SUBCOMMANDS = frozenset(
         "protected-surface",
         "security-surface",
         "codeowners",
+        "route",
+        "bounce",
         "approval-merge",
         "merge-provenance",
     }
@@ -165,6 +175,8 @@ class _EnvelopeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> NoReturn:
         record = _envelope(error=f"usage: {message}")
+        if self.prog.split()[-1] in MUTATION_SUBCOMMANDS:
+            record["error_class"] = None
         print(json.dumps(record))
         self.print_usage(sys.stderr)
         print(f"{self.prog}: error: {message}", file=sys.stderr)
@@ -206,6 +218,17 @@ def _build_parser() -> _EnvelopeArgumentParser:
     ):
         pr_p = subparsers.add_parser(name, parents=[common], add_help=False)
         pr_p.add_argument("--pr", type=_pr_type, required=True)
+
+    # route / bounce write, so --app accepts only the overseer (TD-D8) and
+    # --step is a subject selector, the same as `register --step` (TD-D7).
+    mutation = _EnvelopeArgumentParser(add_help=False)
+    mutation.add_argument("--app", required=True, choices=("overseer",))
+    mutation.add_argument("--repo", type=_repo_type, default=None)
+    mutation.add_argument("--pr", type=_pr_type, required=True)
+    mutation.add_argument("--step", type=_step_type, required=True)
+    route_p = subparsers.add_parser("route", parents=[mutation], add_help=False)
+    route_p.add_argument("--findings-file", required=True)
+    subparsers.add_parser("bounce", parents=[mutation], add_help=False)
 
     return parser
 
@@ -739,6 +762,785 @@ def _cmd_codeowners(args: argparse.Namespace, ctx: _Context) -> _Outcome:
 
 
 # ---------------------------------------------------------------------------
+# route / bounce (#2209 S1a) — overseer-only mutation subcommands
+# ---------------------------------------------------------------------------
+
+# S1a never collects the validator artifact, so collectors are never complete and
+# route cannot return PROCEED (TD-D4). S1b replaces this constant with the real
+# collector result.
+_COLLECTORS_COMPLETE_S1A = False
+_NOT_VERIFIED_COLLECTORS = "collectors_complete=false: validator-artifact collector lands in S1b"
+_NOT_VERIFIED_S1B = "s1b inputs stubbed: path blocks, disputes, veto window not evaluated"
+_S1B_STUBBED_INPUTS = [
+    "blocks",
+    "pending_rulings",
+    "upheld_unescalated",
+    "withdrawn_on_head",
+    "veto",
+]
+
+_PAYLOAD_KEYS = {
+    "route": (
+        "step",
+        "cid",
+        "cid_source",
+        "head_sha",
+        "base_sha",
+        "worker_authored",
+        "disposition",
+        "rule",
+        "trigger",
+        "reasons",
+        "findings",
+        "open_finding_keys",
+        "overruled_keys",
+        "actions",
+        "bounce",
+        "epoch_start",
+        "epoch_bounce_count",
+        "bounce_cap",
+        "reviewer",
+        "reviewer_act",
+        "escalation",
+        "hold_directive",
+        "effective_head_time",
+        "collectors",
+        "s1b_inputs_stubbed",
+        "error_code",
+        "error_class",
+    ),
+    "bounce": (
+        "step",
+        "cid",
+        "cid_source",
+        "head_sha",
+        "bounced",
+        "reason",
+        "at_cap",
+        "findings",
+        "bounce",
+        "epoch_start",
+        "epoch_bounce_count",
+        "bounce_cap",
+        "collectors",
+        "error_code",
+        "error_class",
+    ),
+}
+
+
+class _Fail(Exception):
+    """An exit-1 condition: a closed error_code, its class, and any extra payload."""
+
+    def __init__(self, code: str, message: str, klass: str, extra: dict | None = None):
+        super().__init__(message, code, klass, extra)
+        self.code = code
+        self.klass = klass
+        self.extra = extra or {}
+
+
+def _gh_call(fn, *args, **kwargs):
+    """Call a github.py read; any GitHubError becomes a classified _Fail."""
+    try:
+        return fn(*args, **kwargs)
+    except github.GitHubError as exc:
+        raise _Fail(
+            "github_read_failed",
+            f"{fn.__name__} failed: {exc}",
+            merge_authority.classify_github_error(exc),
+        ) from exc
+
+
+def _nfc_paths(files: list[dict]) -> list[str]:
+    return [unicodedata.normalize("NFC", f["filename"]) for f in files if f.get("filename")]
+
+
+def _run_mutation(handler, args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    """Run a route/bounce handler; turn a _Fail into the exit-1 outcome with
+    error_code and error_class (AR1-C6). Exit 0 carries error_class null."""
+    state: dict = {"repo": None, "pr": args.pr}
+    try:
+        outcome = handler(args, ctx, state)
+    except _Fail as fail:
+        return _Outcome(
+            payload={"error_code": fail.code, "error_class": fail.klass, **fail.extra},
+            exit_code=1,
+            error=fail.args[0],
+            repo=state["repo"],
+            pr=args.pr,
+        )
+    outcome.payload.setdefault("error_code", None)
+    outcome.payload.setdefault("error_class", None)
+    return outcome
+
+
+def _preflight(args: argparse.Namespace, ctx: _Context, state: dict) -> tuple[str, str, str]:
+    """TD-D8: the acting identity must be the overseer, before any fetch."""
+    login = os.environ.get("HOS_BOT_LOGIN", "").strip()
+    if login.lower() != ctx.config.overseer_handle.lower():
+        raise _Fail(
+            "acting_identity_not_overseer",
+            "HOS_BOT_LOGIN is unset or is not the configured overseer identity",
+            "deterministic",
+        )
+    resolved = _resolve_repo_or_fail(args, ctx)
+    if isinstance(resolved, _Outcome):
+        raise _Fail("repo_unresolved", resolved.error or "repo unresolved", "deterministic")
+    state["repo"] = resolved[0]
+    return resolved
+
+
+def _fetch_open_pr(owner: str, repo_name: str, number: int) -> dict:
+    pr = _gh_call(github.get_pull, owner, repo_name, number)
+    if pr is None or not (pr.get("head") or {}).get("sha"):
+        raise _Fail(
+            "pr_not_found", f"PR #{number} not found or has no usable head.sha", "deterministic"
+        )
+    if pr.get("state") != "open":
+        raise _Fail("pr_not_open", f"PR #{number} is not open", "deterministic")
+    return pr
+
+
+def _resolve_cid(pr: dict, owner: str, repo_name: str, ctx: _Context, not_verified: list[str]):
+    resolution = merge_authority.bounce_cid(
+        pr,
+        worker_login=ctx.config.worker_handle,
+        issue_lookup=lambda n: _gh_call(github.get_issue, owner, repo_name, n),
+    )
+    if resolution.source == "pr-fallback":
+        note = f"cid: {resolution.cid} fallback ({resolution.warn})"
+        not_verified.append(note)
+        print(f"WARN: {note}", file=sys.stderr)
+    return resolution
+
+
+def _is_worker_authored(pr: dict, ctx: _Context) -> bool:
+    user = pr.get("user") or {}
+    return (
+        str(user.get("login", "")).lower() == ctx.config.worker_handle.lower()
+        and user.get("type") == "Bot"
+    )
+
+
+def _changed_paths(owner: str, repo_name: str, pr: dict) -> list[str]:
+    files = _gh_call(github.list_pull_files, owner, repo_name, pr["number"])
+    if len(files) >= _GITHUB_FILES_CAP:
+        raise _Fail(
+            "changed_files_truncated",
+            f"PR has {len(files)} changed files; GitHub caps the list at {_GITHUB_FILES_CAP}",
+            "deterministic",
+        )
+    if len(files) != pr.get("changed_files"):
+        raise _Fail(
+            "changed_files_mismatch",
+            f"listed {len(files)} files but the PR reports {pr.get('changed_files')!r}",
+            "transient",
+        )
+    return _nfc_paths(files)
+
+
+_GITHUB_FILES_CAP = 3000
+
+
+def _epoch(
+    owner: str, repo_name: str, pr: dict, cid: str, ctx: _Context, not_verified: list[str]
+) -> tuple[Optional[str], int]:
+    """TD §3.5: sibling closures, epoch_start and the epoch-relative count."""
+    root = str(ctx.repo_root)
+    try:
+        bounces = merge_authority.bounce_events(cid, repo_root=root)
+        escalations = merge_authority.escalation_records(cid, repo_root=root)
+    except ValueError as exc:
+        raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
+    siblings = sorted(
+        {n for n in (e.get("pr") for e in bounces) if isinstance(n, int)}
+        | {e.pr for e in escalations if e.pr}
+    )
+    siblings = [n for n in siblings if n != pr["number"]]
+    if len(siblings) > merge_authority._EPOCH_MAX_SIBLING_PRS:
+        raise _Fail(
+            "epoch_siblings_exceeded",
+            f"{len(siblings)} sibling PRs for {cid} exceeds {merge_authority._EPOCH_MAX_SIBLING_PRS}",
+            "deterministic",
+        )
+    closures: list[merge_authority.PrClosure] = []
+    for number in siblings:
+        sibling = _gh_call(github.get_pull, owner, repo_name, number)
+        if sibling is None:
+            raise _Fail("epoch_sibling_missing", f"sibling PR #{number} not found", "deterministic")
+        if sibling.get("merged_at"):
+            merger = sibling.get("merged_by") or {}
+            if not merger.get("login"):
+                raise _Fail(
+                    "epoch_sibling_missing",
+                    f"merged sibling PR #{number} has no merged_by login",
+                    "deterministic",
+                )
+            closures.append(
+                merge_authority.PrClosure(
+                    number,
+                    "merged",
+                    sibling["merged_at"],
+                    str(merger.get("login", "")),
+                    str(merger.get("type", "")),
+                )
+            )
+        elif sibling.get("state") == "closed":
+            try:
+                events = github.list_issue_events(
+                    owner, repo_name, number, max_pages=merge_authority._ISSUE_EVENTS_MAX_PAGES
+                )
+            except github.ListTruncatedError as exc:
+                raise _Fail("issue_events_truncated", str(exc), "deterministic") from exc
+            except github.GitHubError as exc:
+                raise _Fail(
+                    "github_read_failed",
+                    f"list_issue_events failed: {exc}",
+                    merge_authority.classify_github_error(exc),
+                ) from exc
+            closed = [e for e in events if e.get("event") == "closed" and e.get("created_at")]
+            if not closed:
+                # A wrong epoch can only be fixed by a human looking, so fail closed.
+                raise _Fail(
+                    "epoch_sibling_missing",
+                    f"closed sibling PR #{number} has no closed event",
+                    "deterministic",
+                )
+            last = max(
+                closed,
+                key=lambda e: (
+                    merge_authority._parse_iso(e["created_at"])
+                    or datetime.min.replace(tzinfo=timezone.utc),
+                    e.get("id") or 0,
+                ),
+            )
+            actor = last.get("actor") or {}
+            if not actor.get("login"):
+                raise _Fail(
+                    "epoch_sibling_missing",
+                    f"closed sibling PR #{number} has a closed event with no actor login",
+                    "deterministic",
+                )
+            closures.append(
+                merge_authority.PrClosure(
+                    number,
+                    "closed",
+                    last["created_at"],
+                    str(actor.get("login", "")),
+                    str(actor.get("type", "")),
+                )
+            )
+    start = merge_authority.epoch_start(
+        this_pr_created_at=str(pr.get("created_at") or ""),
+        escalations=escalations,
+        sibling_closures=closures,
+        worker_login=ctx.config.worker_handle,
+    )
+    try:
+        count = merge_authority.bounce_count(cid, repo_root=root, since=start)
+    except ValueError as exc:
+        raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
+    return start, count
+
+
+def _prior_on_head(cid: str, head_sha: str, ctx: _Context):
+    try:
+        return merge_authority.bounced_on_head(cid, head_sha, repo_root=str(ctx.repo_root))
+    except ValueError as exc:
+        raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
+
+
+def _pin_head(owner: str, repo_name: str, number: int, head_sha: str) -> None:
+    again = _gh_call(github.get_pull, owner, repo_name, number)
+    if again is None:
+        raise _Fail("pr_not_found", f"PR #{number} disappeared during the run", "deterministic")
+    if (again.get("head") or {}).get("sha") != head_sha:
+        raise _Fail(
+            "head_moved", "the PR head changed during the run; nothing was written", "transient"
+        )
+
+
+def _finding_row(f: merge_authority.Finding, ids: Optional[dict] = None) -> dict:
+    row = {"key": f.key, "class": f.cls, "origin": f.origin, "path": f.path, "summary": f.summary}
+    if ids and f.key in ids:
+        row["id"] = ids[f.key]
+    return row
+
+
+def _bounce_payload(result: merge_authority.BounceResult) -> dict:
+    return {
+        "comment_url": result.comment_url,
+        "audit_relpath": result.audit_relpath,
+        "bounce_number": result.bounce_number,
+        "finding_ids": list(result.finding_ids),
+        "skipped": result.skipped,
+        "finalize_errors": list(result.finalize_errors),
+        "finalize_repaired": list(result.finalize_repaired),
+    }
+
+
+def _repair_read_fail(exc: merge_authority.RepairReadError) -> _Fail:
+    if isinstance(exc.__cause__, github.ListTruncatedError):
+        return _Fail("issue_events_truncated", str(exc), "deterministic")
+    return _Fail("github_read_failed", str(exc), merge_authority.classify_github_error(exc))
+
+
+def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> list[str]:
+    try:
+        return merge_authority.repair_bounce_finalize(
+            owner,
+            repo_name,
+            number,
+            cid=cid,
+            head_sha=head_sha,
+            repo_root=str(ctx.repo_root),
+            errors=errors,
+        )
+    except merge_authority.RepairReadError as exc:
+        raise _repair_read_fail(exc) from exc
+    except ValueError as exc:
+        raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
+
+
+def _write_bounce(
+    owner: str, repo_name: str, pr: dict, cid: str, ctx: _Context, to_bounce, epoch: Optional[str]
+) -> merge_authority.BounceResult:
+    """Call record_pr_bounce and classify its failures (TD §3.16)."""
+    try:
+        return merge_authority.record_pr_bounce(
+            owner,
+            repo_name,
+            pr["number"],
+            cid=cid,
+            reason_category=merge_authority.derive_reason_category(f.cls for f in to_bounce),
+            summary=merge_authority.bounce_summary(len(to_bounce), pr["head"]["sha"]),
+            repo_root=str(ctx.repo_root),
+            head_sha=pr["head"]["sha"],
+            findings=list(to_bounce),
+            epoch_since=epoch,
+        )
+    except merge_authority.RepairReadError as exc:
+        raise _repair_read_fail(exc) from exc
+    except github.GitHubError as exc:
+        raise _Fail(
+            "bounce_comment_failed",
+            f"bounce comment failed: {exc}",
+            merge_authority.classify_github_error(exc),
+            {"comment_posted": False},
+        ) from exc
+    except merge_authority.BounceAuditWriteError as exc:
+        raise _Fail(
+            "bounce_audit_write_failed", str(exc), "deterministic", {"comment_posted": True}
+        ) from exc
+    except ValueError as exc:  # only reached before the comment is posted
+        raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
+    except Exception as exc:
+        raise _Fail(
+            "bounce_unexpected_error",
+            f"unexpected {exc.__class__.__name__} while bouncing; post state unknown",
+            "deterministic",
+            {"comment_posted": None},
+        ) from exc
+
+
+def _cmd_route(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    return _run_mutation(_route, args, ctx)
+
+
+def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
+    repo, owner, repo_name = _preflight(args, ctx, state)
+    root = str(ctx.repo_root)
+    not_verified = [_NOT_VERIFIED_COLLECTORS, _NOT_VERIFIED_S1B]
+
+    try:
+        with open(args.findings_file, "rb") as fh:
+            findings_bytes = fh.read(merge_authority.FINDINGS_FILE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise _Fail(
+            "findings_file_invalid",
+            f"cannot read findings file: {exc.__class__.__name__}",
+            "deterministic",
+        ) from exc
+    if len(findings_bytes) > merge_authority.FINDINGS_FILE_MAX_BYTES:
+        raise _Fail("findings_file_invalid", "findings file is oversize", "deterministic")
+
+    pr = _fetch_open_pr(owner, repo_name, args.pr)
+    head_sha = pr["head"]["sha"]
+    base_sha = (pr.get("base") or {}).get("sha")
+    if not base_sha:
+        raise _Fail("pr_not_found", f"PR #{args.pr} has no usable base.sha", "deterministic")
+    resolution = _resolve_cid(pr, owner, repo_name, ctx, not_verified)
+    cid = resolution.cid
+    worker_authored = _is_worker_authored(pr, ctx)
+
+    base_payload = {
+        "step": args.step,
+        "cid": cid,
+        "cid_source": resolution.source,
+        "head_sha": head_sha,
+        "base_sha": base_sha,
+        "worker_authored": worker_authored,
+        "bounce_cap": merge_authority.BOUNCE_CAP,
+        "s1b_inputs_stubbed": list(_S1B_STUBBED_INPUTS),
+    }
+
+    if not worker_authored:
+        decided = merge_authority.route_pr(
+            merge_authority.RouteInputs(
+                pr=args.pr,
+                worker_authored=False,
+                head_sha=head_sha,
+                findings=(),
+                collectors_complete=_COLLECTORS_COMPLETE_S1A,
+                hold_on_head=False,
+                prior_on_head=(),
+                epoch_bounce_count=0,
+            )
+        )
+        payload = _route_payload(
+            base_payload,
+            decided,
+            findings=(),
+            ids=None,
+            bounce=None,
+            epoch=None,
+            epoch_count=0,
+            reviewer=None,
+            reviewer_act=None,
+            escalation=None,
+            hold=None,
+            eff=None,
+            evidence={},
+            reasons=list(decided.reasons),
+        )
+        return _Outcome(
+            payload=payload, exit_code=0, not_verified=not_verified, repo=repo, pr=args.pr
+        )
+
+    changed = _changed_paths(owner, repo_name, pr)
+    check_runs = _gh_call(github.list_check_runs_for_ref, owner, repo_name, head_sha)
+    run_names = [r["name"] for r in check_runs if isinstance(r, dict) and r.get("name")]
+    try:
+        llm_findings, reasons = merge_authority.canonicalize_findings_ex(
+            merge_authority.parse_findings_bytes(findings_bytes),
+            changed_paths=changed,
+            head_check_runs=run_names,
+            repo_slug=repo,
+        )
+    except merge_authority.FindingsFileError as exc:
+        raise _Fail("findings_file_invalid", str(exc), "deterministic") from exc
+    except merge_authority.FindingsSchemaError as exc:
+        raise _Fail("findings_schema", f"findings_schema: {exc}", "deterministic") from exc
+
+    code_findings, evidence = _collect(owner, repo_name, args, pr, changed, ctx)
+    if evidence.get("required_checks_degraded"):
+        not_verified.append("required-checks read degraded; collectors treated as incomplete")
+
+    prior = _prior_on_head(cid, head_sha, ctx)
+    epoch, epoch_count = _epoch(owner, repo_name, pr, cid, ctx, not_verified)
+
+    try:
+        text = merge_authority.fetch_codeowners_text(owner, repo_name, base_sha)
+    except merge_authority.CodeownersUnreadableError as exc:
+        raise _Fail("codeowners_unreadable", str(exc), "deterministic") from exc
+    except github.GitHubError as exc:
+        raise _Fail(
+            "github_read_failed",
+            f"get_contents failed: {exc}",
+            merge_authority.classify_github_error(exc),
+        ) from exc
+    resolved = merge_authority.resolve_reviewer_from_text(
+        text,
+        changed,
+        bot_accounts=ctx.config.bot_accounts,
+        human_reviewer=ctx.config.human_reviewer,
+    )
+    try:
+        merge_authority.check_resolution_consistent(resolved, text)
+    except merge_authority.CodeownersDriftError as exc:
+        raise _Fail("codeowners_resolution_drift", str(exc), "deterministic") from exc
+
+    reviews = _gh_call(github.list_pull_reviews, owner, repo_name, args.pr)
+    escalations = [
+        e for e in merge_authority.escalation_records(cid, repo_root=root) if e.head_sha == head_sha
+    ]
+    escalation = max(
+        escalations,
+        key=lambda e: merge_authority._parse_iso(e.created_at)
+        or datetime.min.replace(tzinfo=timezone.utc),
+        default=None,
+    )
+    label_events: list = []
+    if escalation is not None:
+        try:
+            label_events = github.list_issue_events(
+                owner, repo_name, args.pr, max_pages=merge_authority._ISSUE_EVENTS_MAX_PAGES
+            )
+        except github.ListTruncatedError as exc:
+            raise _Fail("issue_events_truncated", str(exc), "deterministic") from exc
+        except github.GitHubError as exc:
+            raise _Fail(
+                "github_read_failed",
+                f"list_issue_events failed: {exc}",
+                merge_authority.classify_github_error(exc),
+            ) from exc
+    bots = ctx.config.bot_accounts
+    reviewer_act = merge_authority.latest_reviewer_act(
+        reviews, [], resolved.login, head_sha, None, bot_accounts=bots
+    )
+    escalation_act = (
+        merge_authority.latest_reviewer_act(
+            reviews,
+            label_events,
+            resolved.login,
+            head_sha,
+            escalation.created_at,
+            bot_accounts=bots,
+        )
+        if escalation is not None
+        else None
+    )
+
+    comments = _gh_call(github.list_issue_comments, owner, repo_name, args.pr)
+    commit = _gh_call(github.get_commit, owner, repo_name, head_sha)
+    committed = ((commit or {}).get("commit") or {}).get("committer", {}).get("date")
+    try:
+        suites = github.list_check_suites_for_ref(
+            owner, repo_name, head_sha, max_pages=merge_authority._ISSUE_EVENTS_MAX_PAGES
+        )
+    except github.GitHubError as exc:
+        raise _Fail(
+            "github_read_failed",
+            f"list_check_suites_for_ref failed: {exc}",
+            (
+                "deterministic"
+                if isinstance(exc, github.ListTruncatedError)
+                else merge_authority.classify_github_error(exc)
+            ),
+        ) from exc
+    eff = merge_authority.effective_head_time(committed, suites, head_sha=head_sha)
+    directive = None
+    for login in dict.fromkeys(
+        name.lower() for name in (ctx.config.human_reviewer, resolved.login)
+    ):
+        directive = merge_authority.detect_human_hold_directive(comments, login, eff)
+        if directive is not None:
+            break
+
+    all_findings = tuple(code_findings) + tuple(llm_findings)
+    decided = merge_authority.route_pr(
+        merge_authority.RouteInputs(
+            pr=args.pr,
+            worker_authored=True,
+            head_sha=head_sha,
+            findings=all_findings,
+            collectors_complete=_COLLECTORS_COMPLETE_S1A,
+            hold_on_head=directive is not None,
+            prior_on_head=prior,
+            epoch_bounce_count=epoch_count,
+            reviewer_act_on_head=reviewer_act,
+            escalation=escalation,
+            escalation_act=escalation_act,
+        )
+    )
+
+    _pin_head(owner, repo_name, args.pr, head_sha)
+
+    bounce = None
+    ids = None
+    if decided.disposition is merge_authority.Disposition.BOUNCE:
+        written = _write_bounce(owner, repo_name, pr, cid, ctx, decided.to_bounce, epoch)
+        bounce = _bounce_payload(written)
+        ids = dict(zip((f.key for f in decided.to_bounce), written.finding_ids))
+        for err in written.finalize_errors:
+            not_verified.append(f"bounce finalize: {err}")
+    elif (
+        decided.disposition is merge_authority.Disposition.NOOP
+        and "repair-finalize" in decided.actions
+    ):
+        repair_errors: list[str] = []
+        repaired = _repair_finalize(owner, repo_name, args.pr, cid, head_sha, ctx, repair_errors)
+        bounce = {"skipped": True, "finalize_repaired": repaired, "finalize_errors": repair_errors}
+        for err in repair_errors:
+            not_verified.append(f"bounce finalize: {err}")
+
+    payload = _route_payload(
+        base_payload,
+        decided,
+        findings=all_findings,
+        ids=ids,
+        bounce=bounce,
+        epoch=epoch,
+        epoch_count=epoch_count,
+        reviewer={"login": resolved.login, "source": resolved.source, "note": resolved.note},
+        reviewer_act=(
+            {"kind": reviewer_act.kind, "source_id": reviewer_act.source_id, "at": reviewer_act.at}
+            if reviewer_act
+            else None
+        ),
+        escalation=(
+            {"trigger": escalation.trigger, "created_at": escalation.created_at}
+            if escalation
+            else None
+        ),
+        hold=(
+            {"comment_url": directive.get("html_url"), "created_at": directive.get("created_at")}
+            if directive
+            else None
+        ),
+        eff=eff,
+        evidence=evidence,
+        reasons=list(decided.reasons) + list(reasons),
+    )
+    return _Outcome(payload=payload, exit_code=0, not_verified=not_verified, repo=repo, pr=args.pr)
+
+
+def _collect(owner, repo_name, args, pr, changed, ctx):
+    try:
+        return merge_authority.collect_code_findings(
+            owner,
+            repo_name,
+            step=args.step,
+            head_sha=pr["head"]["sha"],
+            pr=pr,
+            changed_paths=changed,
+            repo_root=str(ctx.repo_root),
+            default_branch=(pr.get("base") or {}).get("ref") or "main",
+        )
+    except github.GitHubError as exc:
+        raise _Fail(
+            "github_read_failed",
+            f"required-checks read failed: {exc}",
+            merge_authority.classify_github_error(exc),
+        ) from exc
+
+
+def _route_payload(
+    base: dict,
+    decided,
+    *,
+    findings,
+    ids,
+    bounce,
+    epoch,
+    epoch_count,
+    reviewer,
+    reviewer_act,
+    escalation,
+    hold,
+    eff,
+    evidence,
+    reasons,
+) -> dict:
+    return {
+        **base,
+        "disposition": decided.disposition.value,
+        "rule": decided.rule,
+        "trigger": decided.trigger,
+        "reasons": reasons,
+        "findings": [_finding_row(f, ids) for f in findings],
+        "open_finding_keys": [f.key for f in decided.open_findings],
+        "overruled_keys": list(decided.overruled_keys),
+        "actions": list(decided.actions),
+        "bounce": bounce,
+        "epoch_start": epoch,
+        "epoch_bounce_count": epoch_count,
+        "reviewer": reviewer,
+        "reviewer_act": reviewer_act,
+        "escalation": escalation,
+        "hold_directive": hold,
+        "effective_head_time": eff,
+        "collectors": {
+            "register": evidence.get("register"),
+            "required_checks": evidence.get("required_checks"),
+            "size": evidence.get("size"),
+            "validator_artifact": "not-implemented-s1a",
+        },
+    }
+
+
+def _cmd_bounce(args: argparse.Namespace, ctx: _Context) -> _Outcome:
+    return _run_mutation(_bounce, args, ctx)
+
+
+def _bounce(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
+    repo, owner, repo_name = _preflight(args, ctx, state)
+    not_verified: list[str] = []
+    pr = _fetch_open_pr(owner, repo_name, args.pr)
+    head_sha = pr["head"]["sha"]
+    resolution = _resolve_cid(pr, owner, repo_name, ctx, not_verified)
+    cid = resolution.cid
+
+    def done(
+        bounced,
+        reason,
+        *,
+        findings=(),
+        ids=None,
+        bounce=None,
+        epoch=None,
+        count=0,
+        at_cap=False,
+        evidence=None,
+    ) -> _Outcome:
+        evidence = evidence or {}
+        payload = {
+            "step": args.step,
+            "cid": cid,
+            "cid_source": resolution.source,
+            "head_sha": head_sha,
+            "bounced": bounced,
+            "reason": reason,
+            "at_cap": at_cap,
+            "findings": [_finding_row(f, ids) for f in findings],
+            "bounce": bounce,
+            "epoch_start": epoch,
+            "epoch_bounce_count": count,
+            "bounce_cap": merge_authority.BOUNCE_CAP,
+            "collectors": {
+                "register": evidence.get("register"),
+                "required_checks": evidence.get("required_checks"),
+                "size": evidence.get("size"),
+                "validator_artifact": "not-implemented-s1a",
+            },
+        }
+        return _Outcome(
+            payload=payload, exit_code=0, not_verified=not_verified, repo=repo, pr=args.pr
+        )
+
+    if not _is_worker_authored(pr, ctx):
+        return done(False, "non-worker-pr")
+
+    changed = _changed_paths(owner, repo_name, pr)
+    findings, evidence = _collect(owner, repo_name, args, pr, changed, ctx)
+    if evidence.get("required_checks_degraded"):
+        not_verified.append(
+            "required-checks read degraded; the required-checks collector saw nothing"
+        )
+    prior = _prior_on_head(cid, head_sha, ctx)
+    epoch, count = _epoch(owner, repo_name, pr, cid, ctx, not_verified)
+    common = dict(findings=findings, epoch=epoch, count=count, evidence=evidence)
+
+    if not findings:
+        return done(False, "clean", **common)
+    prior_identities = {p.identity for p in prior}
+    new = [f for f in findings if f.identity not in prior_identities]
+    if new and count >= merge_authority.BOUNCE_CAP:
+        return done(False, "at-cap", at_cap=True, **common)
+
+    _pin_head(owner, repo_name, args.pr, head_sha)
+    # With nothing new, record_pr_bounce skips (and repairs an unfinished finalize).
+    to_write = new or findings
+    written = _write_bounce(owner, repo_name, pr, cid, ctx, to_write, epoch)
+    for err in written.finalize_errors:
+        not_verified.append(f"bounce finalize: {err}")
+    ids = dict(zip((f.key for f in to_write), written.finding_ids))
+    if written.skipped:
+        return done(False, "same-head", bounce=_bounce_payload(written), **common)
+    return done(True, "bounced", ids=ids, bounce=_bounce_payload(written), **common)
+
+
+# ---------------------------------------------------------------------------
 # approval-merge / merge-provenance (#2213) — read-only; neither ever exits 3
 # ---------------------------------------------------------------------------
 
@@ -851,6 +1653,8 @@ _HANDLERS = {
     "protected-surface": _cmd_protected_surface,
     "security-surface": _cmd_security_surface,
     "codeowners": _cmd_codeowners,
+    "route": _cmd_route,
+    "bounce": _cmd_bounce,
     "approval-merge": _cmd_approval_merge,
     "merge-provenance": _cmd_merge_provenance,
 }
@@ -888,6 +1692,9 @@ def main(argv: list[str] | None = None, *, repo_root: str | Path | None = None) 
             app_role=args.app,
             error=str(exc),
         )
+        if subcommand in MUTATION_SUBCOMMANDS:
+            record["error_code"] = "config_unresolved"
+            record["error_class"] = "deterministic"
         print(json.dumps(record))
         return 1
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bootstrap/merge_authority.sh — L3 wrapper for the merge-authority
-# read-only primitive surface (#1357 slice 1).
+# bootstrap/merge_authority.sh — L3 wrapper for the merge-authority primitive
+# surface: read-only queries (#1357) plus the overseer's route and bounce (#2209).
 #
 # Across the entire recoverable audit history the merge-authority matrix has
 # never been invoked — an agent whose only capability is issuing shell
@@ -21,6 +21,8 @@
 #   bash bootstrap/merge_authority.sh protected-surface  --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh security-surface   --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh codeowners         --app <worker|overseer|human> --pr <N> [--repo <o/r>]
+#   bash bootstrap/merge_authority.sh route              --app overseer --pr <N> --step <N> --findings-file <path> [--repo <o/r>]
+#   bash bootstrap/merge_authority.sh bounce             --app overseer --pr <N> --step <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh approval-merge     --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #   bash bootstrap/merge_authority.sh merge-provenance   --app <worker|overseer|human> --pr <N> [--repo <o/r>]
 #
@@ -32,21 +34,21 @@
 #   0 — the question was answered (whatever the answer)
 #   1 — operational failure (auth, API error, malformed data, missing config)
 #   2 — usage error (unknown subcommand/flag, missing required flag, ...)
-#   3 — never produced by this surface; reserved for the mutation wrappers a
-#       later slice adds
+#   3 — reserved (S1b)
 #
 # stdout is exactly one JSON object, always — it is merge_authority_cli.py's,
 # passed through byte-for-byte. Never suppress this script's stderr (#1523).
 #
-# Read-only: this script performs no GitHub write, applies no label, posts no
-# comment, and can merge nothing.
+# Every subcommand except route and bounce is read-only. route and bounce write
+# (a comment, an audit event, a label, the draft state), only with
+# `--app overseer`, and neither can merge anything.
 #
 # The record schema is owned by merge_authority_cli.py alone (#1357 ARCH-3a).
 # This script must never grow a JSON literal, a printf/echo to stdout, or any
 # re-derivation of a field — adding an envelope field is a change to that
 # module only, never to this one.
 #
-# Requires: bootstrap/get_app_token.sh (minted only for the eight subcommands
+# Requires: bootstrap/get_app_token.sh (minted only for the ten subcommands
 # that read from GitHub — register and bounce-count are local-only and never
 # mint), bootstrap/revoke_app_token.sh (revokes only a token this script
 # minted), python3.
@@ -89,6 +91,13 @@ case "$SUBCOMMAND" in
         case "$APP_ROLE" in
             worker|overseer|human) MINT_TOKEN=true ;;
         esac
+        ;;
+    route|bounce)
+        # Mutation subcommands: only the overseer mints. Any other role mints
+        # nothing and merge_authority_cli.py rejects it with exit 2.
+        if [[ "$APP_ROLE" == "overseer" ]]; then
+            MINT_TOKEN=true
+        fi
         ;;
 esac
 

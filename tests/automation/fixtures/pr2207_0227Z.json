@@ -1,0 +1,409 @@
+{
+  "_provenance": {
+    "check_runs": "github.list_check_runs_for_ref(head), trimmed",
+    "check_suites": "github.list_check_suites_for_ref(head), trimmed",
+    "codeowners_base_text": "git show a05c7e363:.github/CODEOWNERS, verbatim",
+    "files": "github.list_pull_files(2207), filenames only",
+    "findings_file": "the overseer's 02:27Z record summary (audit/log/2026/10/2026-10-29T022742Z-human-required-dd40aafac48b.json in the Overseer clone)",
+    "issue_2171": "github.get_issue(2171), trimmed",
+    "note": "Captured live on 2026-10-31 from PR #2207's 02:27Z cycle. The real head and base SHAs have prefixes d33c93ba7 / a05c7e363; the full SHAs were replaced with low-entropy synthetic values to keep secret_scan clean.",
+    "pr": "github.get_pull(2207), trimmed",
+    "register_result": "assumed clean at 02:27Z",
+    "required_checks_result": "assumed not failing at 02:27Z",
+    "reviews_comments": "empty: the human CHANGES_REQUESTED (04:20Z) and relay (04:24Z) came after 02:27Z"
+  },
+  "audit_events": [],
+  "check_runs": [
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "failure",
+      "id": 123261105931,
+      "name": "require-overseer-approval",
+      "started_at": "2026-10-29T04:21:05Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123261103178,
+      "name": "require-tier-ceiling",
+      "started_at": "2026-10-29T04:21:05Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "failure",
+      "id": 123261099364,
+      "name": "require-human-approval",
+      "started_at": "2026-10-29T04:21:04Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123261045259,
+      "name": "rerun-gate-checks",
+      "started_at": "2026-10-29T04:20:53Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123226540966,
+      "name": "rerun-gate-checks",
+      "started_at": "2026-10-29T02:27:44Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123226491196,
+      "name": "rerun-gate-checks",
+      "started_at": "2026-10-29T02:27:35Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217535092,
+      "name": "rerun-gate-checks",
+      "started_at": "2026-10-29T01:59:51Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217489283,
+      "name": "oversight-validator-shell",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217489258,
+      "name": "oversight-validator-migration",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217489204,
+      "name": "oversight-validator-js",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217489137,
+      "name": "oversight-validator-python",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488998,
+      "name": "oversight-validator-diff-size",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488896,
+      "name": "oversight-gate-repo-scoped",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488765,
+      "name": "oversight-gate-template-refs",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488758,
+      "name": "oversight-gate-bash-check",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488738,
+      "name": "oversight-gate-secret-scan",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488648,
+      "name": "oversight-gate-portability",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488634,
+      "name": "oversight-agents-static",
+      "started_at": "2026-10-29T01:59:41Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488613,
+      "name": "oversight-gate-type-check",
+      "started_at": "2026-10-29T01:59:41Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488570,
+      "name": "Agent static checks",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488500,
+      "name": "oversight-gate-lint",
+      "started_at": "2026-10-29T01:59:42Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "failure",
+      "id": 123217488446,
+      "name": "shellcheck",
+      "started_at": "2026-10-29T01:59:41Z"
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "conclusion": "success",
+      "id": 123217488321,
+      "name": "tests",
+      "started_at": "2026-10-29T01:59:41Z"
+    }
+  ],
+  "check_suites": [
+    {
+      "app": {
+        "slug": "thurlow-research-claude"
+      },
+      "created_at": "2026-10-29T01:59:36Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603311030
+    },
+    {
+      "app": {
+        "slug": "scottthurlow-claude"
+      },
+      "created_at": "2026-10-29T01:59:36Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603311330
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603321854
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603321900
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322029
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322089
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322102
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322150
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322318
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:39Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603322397
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T01:59:48Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110603360225
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T02:27:32Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110610662305
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T02:27:38Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110610686554
+    },
+    {
+      "app": {
+        "slug": "github-actions"
+      },
+      "created_at": "2026-10-29T04:20:50Z",
+      "head_sha": "d33c93ba70000000000000000000000000000000",
+      "id": 110639405098
+    }
+  ],
+  "codeowners_base_text": "# CODEOWNERS \u2014 GENERATED from scripts/framework/protected_surfaces.txt\n# Do not edit by hand: run scripts/framework/gen_codeowners.sh to regenerate.\n#\n# Every protected surface (AGENT-IDENTITY.md \u00a79) requires an approval from a\n# HUMAN code owner. The machine accounts are deliberately NOT listed here, so a\n# bot approval cannot satisfy CODEOWNERS. Enable enforcement in branch\n# protection: 'Require review from Code Owners' (see docs/MACHINE-ACCOUNTS-SETUP.md).\n#\n# Owner: @ScottThurlow\n\n/.claude/agents/                           @ScottThurlow\n/contract/                                 @ScottThurlow\n/AGENTS.md                                 @ScottThurlow\n/CLAUDE.md                                 @ScottThurlow\n/templates/CLAUDE.human.md                 @ScottThurlow\n/docs/AGENTS.md                            @ScottThurlow\n/docs/AGENT-IDENTITY.md                    @ScottThurlow\n/METHODOLOGY.md                            @ScottThurlow\n/docs/FABERIX-ROLES.md                     @ScottThurlow\n/docs/CROSS-REPO-CONDUCT.md                @ScottThurlow\n/bin/                                      @ScottThurlow\n/bootstrap/                                @ScottThurlow\n/scripts/framework/                        @ScottThurlow\n/scripts/oversight/gates/                  @ScottThurlow\n/scripts/oversight/run_validators.sh       @ScottThurlow\n/scripts/oversight/validators/schema.py    @ScottThurlow\n/scripts/oversight/secret_scan_logic.py    @ScottThurlow\n/scripts/oversight/security_scan_logic.py  @ScottThurlow\n/scripts/oversight/mcp_approved_list.json  @ScottThurlow\n/scripts/oversight/mcp_policy_logic.py     @ScottThurlow\n/.github/CODEOWNERS                        @ScottThurlow\n/.github/workflows/                        @ScottThurlow\n/PROJECT/hos-coordination.yaml             @ScottThurlow\n/PROJECT/hos-halt                          @ScottThurlow\n/docs/releases/                            @ScottThurlow\n/.hos-release                              @ScottThurlow\n",
+  "comments": [],
+  "files": [
+    {
+      "filename": "bin/hos-cron",
+      "status": "modified"
+    },
+    {
+      "filename": "docs/CRON-SETUP.md",
+      "status": "modified"
+    },
+    {
+      "filename": "prompts/bin/hos-cron.v2171.md",
+      "status": "added"
+    },
+    {
+      "filename": "tests/automation/test_hos_cron.py",
+      "status": "modified"
+    }
+  ],
+  "findings_file": {
+    "findings": [
+      {
+        "check_run": "shellcheck",
+        "class": "CHECK",
+        "detail": "The next source of $_rt below already carries the directive; add the same one.",
+        "path": "bin/hos-cron",
+        "rule": "SC1090",
+        "summary": "New shellcheck SC1090 at bin/hos-cron:1039: the identity-probe source \"$_rt\" lacks a # shellcheck source=/dev/null directive"
+      }
+    ]
+  },
+  "issue_2171": {
+    "number": 2171,
+    "state": "open"
+  },
+  "pr": {
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "thurlow-research/HumanOversightSystem"
+      },
+      "sha": "a05c7e3630000000000000000000000000000000"
+    },
+    "changed_files": 4,
+    "commits": 2,
+    "created_at": "2026-10-29T01:59:35Z",
+    "draft": false,
+    "head": {
+      "ref": "worker-2171-cycle-token-refresh-261029013501-1137814",
+      "repo": {
+        "full_name": "thurlow-research/HumanOversightSystem"
+      },
+      "sha": "d33c93ba70000000000000000000000000000000"
+    },
+    "number": 2207,
+    "state": "open",
+    "user": {
+      "login": "hos-worker-hos[bot]",
+      "type": "Bot"
+    }
+  },
+  "register_result": {
+    "bounce_required": false
+  },
+  "required_checks_result": {
+    "bounce_required": false,
+    "failures": []
+  },
+  "reviews": []
+}

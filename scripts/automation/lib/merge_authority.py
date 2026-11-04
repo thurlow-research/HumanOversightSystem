@@ -18,22 +18,28 @@ Matrix (R9.1 — authoritative):
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import importlib.util
 import json
 import logging
+import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional, Sequence, Union
+from typing import Callable, Collection, Iterable, NamedTuple, NoReturn, Optional, Sequence, Union
 
+from scripts.automation.lib import github as _github
 from scripts.automation.lib.github import (
     GitHubError,
+    RateLimitError,
     _required_contexts_from_rules,
     _run_gh,
     get_branch_protection,
+    get_contents,
     get_ruleset,
     get_ruleset_required_checks,
     list_branch_rules,
@@ -852,7 +858,17 @@ def route_embargo(
 _BOUNCE_REGISTER_REQUIRED_FIELDS = ("Status", "Agent", "Artifact", "Iterations")
 _BOUNCE_ENTRY_HEADER_RE = re.compile(r"^##\s+(?P<role>[^|#]+?)\s*(?:\|.*)?$")
 _BOUNCE_REASON_CATEGORIES = frozenset(
-    {"REGISTER_GAP", "COMPLIANCE_FAILURE", "SPEC_AMBIGUITY", "OTHER"}
+    {
+        "REGISTER_GAP",
+        "COMPLIANCE_FAILURE",
+        "SPEC_AMBIGUITY",
+        "OTHER",
+        "CHECK_FAILURE",
+        "MERITS_FINDING",
+        "SCOPE_SIZE",
+        "REVIEW_FINDING",
+        "MIXED",
+    }
 )
 
 # The bounce cap before human escalation (overseer.md step 4a). Named here so
@@ -1307,7 +1323,33 @@ def _load_audit_log():
 _AUDIT_LOG = _load_audit_log()
 
 
-def bounce_count(cid: str, *, repo_root: str = ".") -> int:
+def bounce_events(cid: str, *, repo_root: str = ".") -> list[dict]:
+    """Every `pr-bounced` audit event for `cid`, in chronological order.
+
+    A malformed record raises ValueError (from `read_stream`); an absent
+    audit/log/ yields an empty list (#2209 §3.5).
+    """
+    events: list[dict] = []
+    for raw in _AUDIT_LOG.read_stream(repo_root):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "pr-bounced"
+            and event.get("cid") == cid
+        ):
+            events.append(event)
+    return events
+
+
+def _bounce_event_time(event: dict) -> Optional[datetime]:
+    """GitHub's comment time when recorded, else the audit timestamp."""
+    return _parse_iso(event.get("comment_created_at") or event.get("timestamp"))
+
+
+def bounce_count(cid: str, *, repo_root: str = ".", since: Optional[str] = None) -> int:
     """Count prior `pr-bounced` audit events for this correlation id.
 
     The audit trail (audit/log/) is append-only and already the source of
@@ -1315,31 +1357,727 @@ def bounce_count(cid: str, *, repo_root: str = ".") -> int:
     this derives the count from it rather than maintaining separate state.
     Shared by step 4a (register-completeness) and step 4c (required
     content checks) — "the existing bounce_count(cid) counter" both cite.
+
+    With `since` (#2209 epoch), only events whose time is strictly later are
+    counted. An event whose time cannot be parsed is counted: an unparseable
+    time pushes toward the cap and an earlier escalation, never toward a merge.
     """
+    since_dt = _parse_iso(since) if since is not None else None
     count = 0
+    for event in bounce_events(cid, repo_root=repo_root):
+        if since_dt is not None:
+            when = _bounce_event_time(event)
+            if when is not None and when <= since_dt:
+                continue
+        count += 1
+    return count
+
+
+# ---------------------------------------------------------------------------
+# Rejection routing (#2209 S1a)
+# ---------------------------------------------------------------------------
+
+# ARCH-ESC-1 (A): the bounce epoch also restarts at each escalation. Setting
+# this to False is the whole of ARCH-ESC-1 option (B).
+EPOCH_RESETS_AT_ESCALATION = True
+
+FINDING_CLASSES = (
+    "PROCEDURAL",
+    "REQUIRED_CHECK",
+    "CHECK",
+    "MERITS",
+    "SCOPE",
+    "REVIEW_FINDING",
+)
+LLM_FINDING_CLASSES = frozenset({"CHECK", "MERITS", "SCOPE", "REVIEW_FINDING"})
+ESCALATION_TRIGGERS = ("upheld-dispute", "bounce-cap", "reviewer-conflict", "decision")
+
+# Mirror .claude/agents/overseer.md:328-329 (15 files / 10 commits soft limits,
+# 25-file hard ceiling).
+SIZE_SOFT_FILES = 15
+SIZE_SOFT_COMMITS = 10
+SIZE_HARD_FILES = 25
+
+FINDINGS_FILE_MAX_BYTES = 262144
+FINDINGS_MAX = 50
+_EPOCH_MAX_SIBLING_PRS = 50
+_ISSUE_EVENTS_MAX_PAGES = 10
+
+# Legacy `failures=` tokens as check_register_completeness and
+# check_required_content_checks emit them (AR1-C3).
+_LEGACY_PROCEDURAL_PREFIXES = (
+    "register-missing",
+    "register-missing-role:",
+    "register-missing-fields:",
+    "register-unresolved-escalation:",
+)
+_LEGACY_REQUIRED_CHECK_PREFIX = "check-failing:"
+
+_SLUG_RE = re.compile(r"^[a-z0-9-]{3,40}$")
+_RULE_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
+_REVIEWER_RE = re.compile(r"^[a-z0-9-]{2,40}$")
+_DECISION_LABEL_RE = re.compile(r"^[A-Za-z0-9-]{1,20}$")
+_LINE_NO_RE = re.compile(r":\d+$")
+_WORKER_REF_RE = re.compile(r"^worker-(\d+)-")
+_FINDING_ID_RE = re.compile(r"^[0-9a-f]{12}-F(\d+)$")
+_OPTION_LINE_RE = re.compile(r"^Option:\s*(?P<l>[A-Za-z0-9-]{1,20})\s*$", re.MULTILINE)
+_LEGACY_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+_ENTRY_KEYS = frozenset(
+    {
+        "class",
+        "summary",
+        "detail",
+        "path",
+        "slug",
+        "check_run",
+        "rule",
+        "source_url",
+        "decision",
+        "conflicts_with",
+    }
+)
+
+
+class Option(NamedTuple):
+    label: str
+    text: str
+
+
+@dataclass(frozen=True)
+class Decision:
+    question: str
+    options: tuple[Option, ...]
+
+
+@dataclass(frozen=True)
+class Conflict:
+    reviewer: str
+    ref: str
+
+
+@dataclass(frozen=True)
+class Finding:
+    cls: str
+    key: str
+    identity: tuple
+    origin: str  # "code" | "llm"
+    path: Optional[str]
+    summary: str
+    detail: str = ""
+    source_url: Optional[str] = None
+    decision: Optional[Decision] = None
+    conflicts_with: Optional[Conflict] = None
+
+    @property
+    def is_decision(self) -> bool:
+        return self.decision is not None
+
+
+@dataclass(frozen=True)
+class PriorFinding:
+    finding_id: str
+    cls: str
+    key: str
+    identity: tuple
+    origin: str
+
+
+@dataclass(frozen=True)
+class ReviewerAct:
+    kind: str  # APPROVED | CHANGES_REQUESTED | DISMISSED | NEEDS_AI_LABEL
+    source_id: int
+    at: str
+    option_label: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class EscalationRecord:
+    pr: int
+    head_sha: str
+    trigger: str
+    created_at: str
+    option_labels: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrClosure:
+    pr: int
+    kind: str  # "merged" | "closed"
+    at: str
+    actor_login: str
+    actor_type: str
+
+
+@dataclass(frozen=True)
+class Block:
+    kind: str  # PATH_HOLD | UNKNOWN_SCOPE | PATH_PENDING_ESCALATION
+    source_pr: int
+    ref: str
+
+
+class VetoState(Enum):
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    NEEDS_START = "NEEDS_START"
+    OPEN = "OPEN"
+    LAPSED = "LAPSED"
+
+
+class Disposition(Enum):
+    LEGACY = "LEGACY"
+    PROCEED = "PROCEED"
+    BOUNCE = "BOUNCE"
+    NOOP = "NOOP"
+    ESCALATE = "ESCALATE"
+    HOLD = "HOLD"
+    HOLD_VETO = "HOLD_VETO"
+    HUMAN_SENDBACK = "HUMAN_SENDBACK"
+    RULING_REQUIRED = "RULING_REQUIRED"
+
+
+@dataclass(frozen=True)
+class CidResolution:
+    cid: str
+    source: str  # "issue" | "pr-fallback"
+    issue: Optional[int]
+    warn: Optional[str]
+
+
+@dataclass(frozen=True)
+class ReviewerResolution:
+    login: str
+    source: str  # "codeowners" | "machine-accounts.env"
+    team_owners: tuple[str, ...]
+    note: Optional[str]
+
+
+class FindingsSchemaError(ValueError):
+    """The findings file (or one entry of it) is refused."""
+
+
+class FindingsFileError(FindingsSchemaError):
+    """The findings file is missing, oversize or not JSON (CLI: findings_file_invalid)."""
+
+
+class CodeownersUnreadableError(GitHubError):
+    """A CODEOWNERS payload at the base ref exists but cannot be used."""
+
+
+class BounceAuditWriteError(Exception):
+    """The audit event could not be written AFTER the bounce comment was posted."""
+
+
+class CodeownersDriftError(Exception):
+    """step 6's resolver and the humans-set parser disagree."""
+
+
+def classify_github_error(exc: GitHubError) -> str:
+    """'transient' (worth a retry next cycle) or 'deterministic' (needs a fix)."""
+    if isinstance(exc, RateLimitError):
+        return "transient"
+    status = getattr(exc, "status_code", None)
+    if status is None or status >= 500:
+        return "transient"
+    return "deterministic"
+
+
+# --- finding identity, keys and the findings file ---------------------------
+
+
+def _nfc(value: str) -> str:
+    return unicodedata.normalize("NFC", value)
+
+
+def finding_identity(
+    cls: str, key: str, origin: str, path: Optional[str], check_run: Optional[str] = None
+) -> tuple:
+    """TD-D2: the same-head identity tuple, by origin and class."""
+    if origin == "code":
+        return (cls, key)
+    if cls == "CHECK":
+        return ("CHECK", check_run, path or "-")
+    return (cls, path or "-")
+
+
+def load_findings_file(path: Union[str, Path]) -> object:
+    """Read and JSON-parse the findings file. FindingsFileError on any failure."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise FindingsFileError(f"cannot read findings file: {exc.__class__.__name__}") from exc
+    return parse_findings_bytes(data)
+
+
+def parse_findings_bytes(data: bytes) -> object:
+    if len(data) > FINDINGS_FILE_MAX_BYTES:
+        raise FindingsFileError(f"findings file exceeds {FINDINGS_FILE_MAX_BYTES} bytes")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise FindingsFileError(
+            f"findings file is not UTF-8 JSON: {exc.__class__.__name__}"
+        ) from exc
+
+
+def _schema_fail(index: int, field_name: str, message: str) -> NoReturn:
+    raise FindingsSchemaError(f"findings[{index}].{field_name}: {message}")
+
+
+def _parse_decision(raw: object, index: int) -> Optional[Decision]:
+    """A structurally valid decision object -> Decision, or None when the
+    decision is malformed (AD-1: dropped by code, the finding stays a rejection).
+    A decision that is not even the right JSON shape is a schema error."""
+    if not isinstance(raw, dict) or set(raw) - {"question", "options"}:
+        _schema_fail(index, "decision", "must be an object with only question and options")
+    question, options = raw.get("question"), raw.get("options")
+    if not isinstance(question, str) or not isinstance(options, list):
+        _schema_fail(index, "decision", "question must be a string and options a list")
+    parsed: list[Option] = []
+    for j, opt in enumerate(options):
+        if (
+            not isinstance(opt, dict)
+            or set(opt) != {"label", "text"}
+            or not isinstance(opt["label"], str)
+            or not isinstance(opt["text"], str)
+        ):
+            _schema_fail(
+                index, f"decision.options[{j}]", "must be an object {label, text} of strings"
+            )
+        parsed.append(Option(opt["label"].strip(), opt["text"].strip()))
+    labels = [o.label for o in parsed]
+    texts = [o.text for o in parsed]
+    valid = (
+        bool(question.strip())
+        and len(parsed) >= 2
+        and len(set(labels)) == len(labels)
+        and len(set(texts)) == len(texts)
+        and all(_DECISION_LABEL_RE.match(label) for label in labels)
+        and all(texts)
+    )
+    return Decision(question.strip(), tuple(parsed)) if valid else None
+
+
+def _same_repo_url(value: object, repo_slug: str, index: int, field_name: str) -> str:
+    prefix = f"https://github.com/{repo_slug.lower()}/"
+    if (
+        not isinstance(value, str)
+        or len(value) > 500
+        or re.search(r"\s", value)
+        or not value.lower().startswith(prefix)
+        or ".." in value.split("#", 1)[0].split("?", 1)[0].split("/")
+        or "%2e" in value.lower()
+        or "\\" in value
+    ):
+        _schema_fail(
+            index, field_name, f"must be a same-repo URL under {prefix} with no '..' segments"
+        )
+    return value
+
+
+def canonicalize_findings_ex(
+    raw: object,
+    *,
+    changed_paths: Sequence[str],
+    head_check_runs: Sequence[str],
+    repo_slug: str,
+) -> tuple[tuple[Finding, ...], tuple[str, ...]]:
+    """canonicalize_findings plus the closed reason tokens it recorded."""
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"findings"}
+        or not isinstance(raw["findings"], list)
+    ):
+        raise FindingsSchemaError('top level must be exactly {"findings": [...]}')
+    entries = raw["findings"]
+    if len(entries) > FINDINGS_MAX:
+        raise FindingsSchemaError(f"more than {FINDINGS_MAX} findings")
+
+    changed = {_nfc(p) for p in changed_paths}
+    check_runs = set(head_check_runs)
+    reasons: list[str] = []
+    out: list[Finding] = []
+    seen: set[str] = set()
+
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            _schema_fail(i, "entry", "must be an object")
+        unknown = sorted(set(entry) - _ENTRY_KEYS)
+        if unknown:
+            _schema_fail(i, unknown[0], "unknown key (key, origin and id are computed by the CLI)")
+
+        cls = entry.get("class")
+        if cls in ("PROCEDURAL", "REQUIRED_CHECK"):
+            _schema_fail(i, "class", "class reserved for code collectors")
+        if cls not in LLM_FINDING_CLASSES:
+            _schema_fail(i, "class", f"must be one of {sorted(LLM_FINDING_CLASSES)}")
+
+        summary = entry.get("summary")
+        if (
+            not isinstance(summary, str)
+            or not 1 <= len(summary) <= 200
+            or "\n" in summary
+            or "\r" in summary
+            or summary.lstrip().startswith("/hos")
+        ):
+            _schema_fail(i, "summary", "must be 1-200 characters, one line, not starting with /hos")
+        detail = entry.get("detail", "")
+        if not isinstance(detail, str) or len(detail) > 2000:
+            _schema_fail(i, "detail", "must be a string of at most 2000 characters")
+
+        path = entry.get("path")
+        if path is not None:
+            if not isinstance(path, str):
+                _schema_fail(i, "path", "must be a string or null")
+            path = _nfc(path)
+            if path.startswith("./"):
+                path = path[2:]
+            if _LINE_NO_RE.search(path):
+                _schema_fail(i, "path", "no line numbers in a path")
+            if path not in changed:
+                _schema_fail(i, "path", "is not a file changed by this PR")
+
+        slug = entry.get("slug")
+        check_run = entry.get("check_run")
+        rule = entry.get("rule")
+        if cls == "CHECK":
+            if slug is not None:
+                _schema_fail(i, "slug", "not allowed on a CHECK finding")
+            if not isinstance(check_run, str) or check_run not in check_runs:
+                _schema_fail(i, "check_run", "must equal a check-run name on the head")
+            if rule is None:
+                rule = "-"
+            elif not isinstance(rule, str) or not _RULE_RE.match(rule):
+                _schema_fail(i, "rule", f"must match {_RULE_RE.pattern}")
+            key = f"check:{check_run}:{rule}:{path or '-'}"
+        else:
+            if check_run is not None or rule is not None:
+                _schema_fail(
+                    i, "check_run" if check_run is not None else "rule", "CHECK findings only"
+                )
+            if not isinstance(slug, str) or not _SLUG_RE.match(slug):
+                _schema_fail(i, "slug", f"required, must match {_SLUG_RE.pattern}")
+            key = f"{cls}:{path or '-'}:{slug}"
+
+        source_url = entry.get("source_url")
+        if source_url is not None:
+            source_url = _same_repo_url(source_url, repo_slug, i, "source_url")
+
+        decision = None
+        if entry.get("decision") is not None:
+            decision = _parse_decision(entry["decision"], i)
+            if decision is None:
+                reasons.append(f"decision-malformed:{i}")
+
+        conflict = None
+        raw_conflict = entry.get("conflicts_with")
+        if raw_conflict is not None:
+            if (
+                not isinstance(raw_conflict, dict)
+                or set(raw_conflict) != {"reviewer", "ref"}
+                or not isinstance(raw_conflict["reviewer"], str)
+                or not _REVIEWER_RE.match(raw_conflict["reviewer"])
+            ):
+                _schema_fail(
+                    i, "conflicts_with", "must be {reviewer, ref} with a valid reviewer name"
+                )
+            conflict = Conflict(
+                raw_conflict["reviewer"],
+                _same_repo_url(raw_conflict["ref"], repo_slug, i, "conflicts_with.ref"),
+            )
+
+        if key in seen:
+            reasons.append(f"duplicate-key:{i}")
+            continue
+        seen.add(key)
+        out.append(
+            Finding(
+                cls=cls,
+                key=key,
+                identity=finding_identity(cls, key, "llm", path, check_run),
+                origin="llm",
+                path=path,
+                summary=summary,
+                detail=detail,
+                source_url=source_url,
+                decision=decision,
+                conflicts_with=conflict,
+            )
+        )
+    return tuple(out), tuple(reasons)
+
+
+def canonicalize_findings(
+    raw: object,
+    *,
+    changed_paths: Sequence[str],
+    head_check_runs: Sequence[str],
+    repo_slug: str,
+) -> tuple[Finding, ...]:
+    """Validate the parsed findings file and build canonical Findings (TD §3.3).
+
+    Raises FindingsSchemaError naming the offending index and field. The CLI
+    alone builds `key`; a `key`, `origin` or `id` in the file is refused.
+    """
+    findings, _ = canonicalize_findings_ex(
+        raw, changed_paths=changed_paths, head_check_runs=head_check_runs, repo_slug=repo_slug
+    )
+    return findings
+
+
+# --- the correlation id -----------------------------------------------------
+
+
+def bounce_cid(
+    pr: dict,
+    *,
+    worker_login: str,
+    issue_lookup: Callable[[int], Optional[dict]],
+) -> CidResolution:
+    """`issue-<N>` when the PR is a worker PR for a real issue, else `pr-<n>`.
+
+    A GitHubError from `issue_lookup` propagates: falling back to `pr-<n>` on
+    a transient failure would hand out a fresh bounce budget (AF-1). Only a
+    None result (404 or empty body) counts as "not found". No PR text is parsed.
+    """
+    number = pr.get("number")
+    fallback = f"pr-{number}"
+    user = pr.get("user") or {}
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+
+    def _fallback(warn: str) -> CidResolution:
+        return CidResolution(cid=fallback, source="pr-fallback", issue=None, warn=warn)
+
+    if (
+        str(user.get("login", "")).lower() != worker_login.lower()
+        or str(user.get("type", "")) != "Bot"
+    ):
+        return _fallback("not-worker-author")
+    match = _WORKER_REF_RE.match(str(head.get("ref") or ""))
+    if not match or str(int(match.group(1))) != match.group(1) or int(match.group(1)) == 0:
+        return _fallback("ref-not-worker-format")
+    head_repo = str((head.get("repo") or {}).get("full_name") or "").lower()
+    base_repo = str((base.get("repo") or {}).get("full_name") or "").lower()
+    if not head_repo or head_repo != base_repo:
+        return _fallback("fork-head")
+    issue_number = int(match.group(1))
+    issue = issue_lookup(issue_number)
+    if not isinstance(issue, dict):
+        return _fallback("issue-not-found")
+    if "pull_request" in issue:
+        return _fallback("number-is-a-pr")
+    return CidResolution(cid=f"issue-{issue_number}", source="issue", issue=issue_number, warn=None)
+
+
+# --- the epoch --------------------------------------------------------------
+
+
+def escalation_records(cid: str, *, repo_root: str = ".") -> list[EscalationRecord]:
+    """`human-required` events carrying this cid and a known trigger.
+
+    Legacy events (no cid or trigger, AF-4) are ignored. Nothing writes the
+    new form in S1a: `record-escalation` is S1b.
+    """
+    records: list[EscalationRecord] = []
     for raw in _AUDIT_LOG.read_stream(repo_root):
         try:
             event = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        if event.get("event") == "pr-bounced" and event.get("cid") == cid:
-            count += 1
-    return count
+        if (
+            not isinstance(event, dict)
+            or event.get("event") != "human-required"
+            or not event.get("cid")
+            or event.get("cid") != cid
+            or event.get("trigger") not in ESCALATION_TRIGGERS
+        ):
+            continue
+        labels = event.get("options")
+        pr_number = event.get("pr")
+        records.append(
+            EscalationRecord(
+                pr=pr_number if isinstance(pr_number, int) else 0,
+                head_sha=str(event.get("head_sha") or ""),
+                trigger=event["trigger"],
+                created_at=str(event.get("escalation_created_at") or event.get("timestamp") or ""),
+                option_labels=tuple(str(x) for x in labels) if isinstance(labels, list) else (),
+            )
+        )
+    return records
+
+
+def epoch_start(
+    *,
+    this_pr_created_at: str,
+    escalations: Sequence[EscalationRecord],
+    sibling_closures: Sequence[PrClosure],
+    worker_login: str,
+) -> Optional[str]:
+    """The latest epoch boundary, or None for the whole history (TD §3.5).
+
+    A boundary is an escalation (when EPOCH_RESETS_AT_ESCALATION) or a sibling
+    PR closed or merged by a non-worker before this PR opened.
+    """
+    candidates: list[tuple[datetime, str]] = []
+    if EPOCH_RESETS_AT_ESCALATION:
+        for esc in escalations:
+            when = _parse_iso(esc.created_at)
+            if when is not None:
+                candidates.append((when, esc.created_at))
+    opened = _parse_iso(this_pr_created_at)
+    if opened is not None:
+        for closure in sibling_closures:
+            when = _parse_iso(closure.at)
+            if (
+                when is not None
+                and when < opened
+                and closure.actor_login.lower() != worker_login.lower()
+            ):
+                candidates.append((when, closure.at))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: c[0])[1]
+
+
+# --- same-head dedup --------------------------------------------------------
+
+
+def legacy_token_finding(token: str) -> tuple[str, str, tuple]:
+    """Map a legacy `failures=` token to (cls, key, identity) (AR1-C3).
+
+    Register and required-check tokens map to exactly the key and identity the
+    code collectors produce for them, so a legacy bounce followed by a
+    findings-path bounce on the same head is a repeat, not a second bounce.
+    """
+    if token == _LEGACY_PROCEDURAL_PREFIXES[0] or token.startswith(_LEGACY_PROCEDURAL_PREFIXES[1:]):
+        key = f"PROCEDURAL:{token}"
+        return "PROCEDURAL", key, ("PROCEDURAL", key)
+    if token.startswith(_LEGACY_REQUIRED_CHECK_PREFIX):
+        key = f"REQUIRED_CHECK:{token}"
+        return "REQUIRED_CHECK", key, ("REQUIRED_CHECK", key)
+    return "LEGACY", token, ("LEGACY", token)
+
+
+def _prior_identity(entry: dict) -> tuple:
+    cls, key, origin = entry.get("class"), str(entry.get("key")), entry.get("origin")
+    path = entry.get("path")
+    check_run = None
+    if cls == "CHECK" and origin == "llm" and key.startswith("check:"):
+        # key = check:<run>:<rule>:<path|->; rule has no ':' so the split is exact.
+        body = key[len("check:") :]
+        suffix = f":{path or '-'}"
+        if body.endswith(suffix):
+            head_part = body[: -len(suffix)]
+            check_run = head_part.rsplit(":", 1)[0] if ":" in head_part else None
+        if check_run is None:
+            return ("CHECK", key)
+    return finding_identity(str(cls), key, str(origin), path, check_run)
+
+
+def bounced_on_head(cid: str, head_sha: str, *, repo_root: str = ".") -> tuple[PriorFinding, ...]:
+    """Every finding already bounced on (cid, head_sha), legacy events included."""
+    prior: list[PriorFinding] = []
+    for event in bounce_events(cid, repo_root=repo_root):
+        if event.get("head_sha") != head_sha:
+            continue
+        findings = event.get("findings")
+        if isinstance(findings, list):
+            for entry in findings:
+                if not isinstance(entry, dict):
+                    continue
+                prior.append(
+                    PriorFinding(
+                        finding_id=str(entry.get("id") or ""),
+                        cls=str(entry.get("class")),
+                        key=str(entry.get("key")),
+                        identity=_prior_identity(entry),
+                        origin=str(entry.get("origin")),
+                    )
+                )
+            continue
+        for token in event.get("failures") or []:
+            cls, key, identity = legacy_token_finding(str(token))
+            prior.append(
+                PriorFinding(
+                    finding_id="",
+                    cls=cls,
+                    key=key,
+                    identity=identity,
+                    origin="legacy" if cls == "LEGACY" else "code",
+                )
+            )
+    return tuple(prior)
+
+
+def next_finding_index(prior: Sequence[PriorFinding]) -> int:
+    """1 + the highest k over ids shaped `<head12>-F<k>`, else 1."""
+    highest = 0
+    for p in prior:
+        match = _FINDING_ID_RE.match(p.finding_id)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+# --- the bounce comment -----------------------------------------------------
+
+_CLASS_REASON_CATEGORY = {
+    "PROCEDURAL": "REGISTER_GAP",
+    "REQUIRED_CHECK": "COMPLIANCE_FAILURE",
+    "CHECK": "CHECK_FAILURE",
+    "MERITS": "MERITS_FINDING",
+    "SCOPE": "SCOPE_SIZE",
+    "REVIEW_FINDING": "REVIEW_FINDING",
+}
+
+
+def derive_reason_category(classes: Iterable[str]) -> str:
+    unique = set(classes)
+    if len(unique) == 1:
+        return _CLASS_REASON_CATEGORY[next(iter(unique))]
+    return "MIXED"
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _legacy_gloss(token: str) -> str:
+    if token == "register-missing":
+        return "Sign-off register is missing"
+    if token.startswith("register-missing-role:"):
+        return f"Required sign-off missing: {token.partition(':')[2]}"
+    if token.startswith("register-missing-fields:"):
+        role, _, fields = token.partition(":")[2].partition(":")
+        return f"Sign-off {role} is missing field(s) {fields}"
+    if token.startswith("register-unresolved-escalation:"):
+        return f"Sign-off {token.partition(':')[2]} is ESCALATED with no Human_resolution"
+    if token.startswith(_LEGACY_REQUIRED_CHECK_PREFIX):
+        return f"Required check {token[len(_LEGACY_REQUIRED_CHECK_PREFIX):]} is failing"
+    return token
 
 
 def _bounce_comment_body(
-    failures: list[str], reason_category: str, summary: str, bounce_number: int
+    failures: list[str],
+    reason_category: str,
+    summary: str,
+    bounce_number: int,
+    *,
+    head_sha: Optional[str] = None,
 ) -> str:
+    """The legacy rendering (AD-4): the findings heading and section, no
+    dispute text, for callers that still pass `failures=`."""
+    head12 = (head_sha or "unknown")[:12]
     lines = [
-        "## PR bounced back for procedural completeness",
+        f"## PR bounced to the worker: {len(failures)} finding(s) on {head12}",
         "",
-        "This PR was returned to the worker before the merge-authority matrix "
-        "was applied — it does not satisfy the sign-off register's completeness "
-        "requirements (overseer.md step 4a).",
-        "",
-        "**Failing check(s):**",
+        "### Specific failures",
     ]
-    lines += [f"- {f}" for f in failures]
+    for k, failure in enumerate(failures, 1):
+        failure = _one_line(str(failure))
+        if _LEGACY_ID_RE.match(failure):
+            lines.append(f"- [{failure}] {_legacy_gloss(failure)}")
+        else:
+            lines.append(f"- [item-{k}] {failure}")
     lines += [
         "",
         f"**Reason category:** {reason_category}",
@@ -1349,6 +2087,95 @@ def _bounce_comment_body(
         f"(cap: {BOUNCE_CAP} before human escalation)._",
     ]
     return "\n".join(lines) + "\n"
+
+
+# GitHub rejects comments over 65,536 characters (422), which would stall a PR
+# on a deterministic bounce_comment_failed every cycle. Stay well below it.
+BOUNCE_BODY_MAX_CHARS = 60000
+_TRUNCATED_DETAIL_CHARS = 200
+
+
+def _neutralize(text: str) -> str:
+    """Defang mentions and image/link markdown in LLM-supplied text (CWE-74/116)."""
+    return (
+        text.replace("<", "&lt;")
+        .replace("@", "@\u200b")
+        .replace("![", "!\\[")
+        .replace("](", "]\\(")
+    )
+
+
+def _bounce_comment_body_findings(
+    findings_with_ids: Sequence[tuple[str, Finding]],
+    reason_category: str,
+    summary: str,
+    bounce_number: int,
+    *,
+    cid: str,
+    head_sha: str,
+) -> str:
+    """The findings rendering (AD-4): one `[id] (CLASS)` line per finding and
+    the dispute instruction the worker re-entry text parses.
+
+    The body is capped at BOUNCE_BODY_MAX_CHARS: per-finding detail is truncated
+    first, then findings are listed by id and summary only, with an explicit
+    truncation line. The audit event always keeps every finding.
+    """
+    total = len(findings_with_ids)
+
+    def render(rows: list[str], note: Optional[str]) -> str:
+        lines = [
+            f"## PR bounced to the worker: {total} finding(s) on {head_sha[:12]}",
+            "",
+            "### Specific failures",
+            *rows,
+        ]
+        if note:
+            lines.append(note)
+        lines += [
+            "",
+            "### How to respond",
+            "Fix each finding, or dispute one: post a comment whose first line is "
+            "`/hos dispute <finding-id>`, followed by your reason.",
+            "",
+            f"**Reason category:** {reason_category}",
+            f"**Summary:** {summary}",
+            "",
+            f"_Bounce #{bounce_number} for {cid} (cap: {BOUNCE_CAP} before human escalation)._",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def row(finding_id: str, f: Finding, detail_chars: Optional[int]) -> str:
+        text = f"- [{finding_id}] ({f.cls}) {_neutralize(_one_line(f.summary))}"
+        if detail_chars != 0:
+            detail = _neutralize(_one_line(f.detail))
+            if detail_chars is not None and len(detail) > detail_chars:
+                detail = detail[:detail_chars] + "..."
+            if detail:
+                text += f". {detail}"
+            if f.source_url:
+                text += f" ({f.source_url})"
+        return text
+
+    body = render([row(fid, f, None) for fid, f in findings_with_ids], None)
+    if len(body) <= BOUNCE_BODY_MAX_CHARS:
+        return body
+    body = render([row(fid, f, _TRUNCATED_DETAIL_CHARS) for fid, f in findings_with_ids], None)
+    if len(body) <= BOUNCE_BODY_MAX_CHARS:
+        return body
+    rows = [row(fid, f, 0) for fid, f in findings_with_ids]
+    for kept in range(len(rows), -1, -1):
+        dropped = len(rows) - kept
+        note = f"- {dropped} findings truncated; see audit event" if dropped else None
+        body = render(rows[:kept], note)
+        if len(body) <= BOUNCE_BODY_MAX_CHARS:
+            return body
+    return body
+
+
+def bounce_summary(count: int, head_sha: str) -> str:
+    """Templated summary — never LLM text."""
+    return f"{count} finding(s) on {head_sha[:12]} must be fixed or disputed before this PR can proceed."
 
 
 def _convert_pr_to_draft(owner: str, repo: str, pr_number: int) -> None:
@@ -1387,6 +2214,128 @@ class BounceResult:
     audit_relpath: str
     bounce_number: int
     finalize_errors: list[str] = field(default_factory=list)
+    skipped: bool = False
+    finding_ids: list[str] = field(default_factory=list)
+    finalize_repaired: list[str] = field(default_factory=list)
+
+
+def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
+    _run_gh(
+        [f"/repos/{owner}/{repo}/issues/{pr_number}/labels", "--method", "POST"],
+        stdin_json={"labels": [label]},
+    )
+
+
+class RepairReadError(GitHubError):
+    """A server-side read made by repair_bounce_finalize failed or was truncated.
+    The original error is `__cause__`. Raised before any write (TD-D9)."""
+
+
+def _latest_bounce_time(cid: str, head_sha: str, repo_root: str) -> Optional[datetime]:
+    """T (TD-D9): comment_created_at of the latest pr-bounced event for
+    (cid, head_sha); a legacy event without it falls back to its timestamp."""
+    times = [
+        t
+        for t in (
+            _bounce_event_time(e)
+            for e in bounce_events(cid, repo_root=repo_root)
+            if e.get("head_sha") == head_sha
+        )
+        if t is not None
+    ]
+    return max(times) if times else None
+
+
+def _deliberate_after(
+    events: Sequence[dict], since: Optional[datetime], label: str
+) -> tuple[bool, bool]:
+    """(ready_for_review after `since`, `label` removed after `since`), by any actor.
+
+    An event whose time cannot be parsed counts as after: it cannot be shown to
+    precede the bounce, and undoing a human's act is worse than leaving a gap.
+    """
+    ready = unlabeled = False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("event")
+        is_ready = kind == "ready_for_review"
+        is_unlabeled = kind == "unlabeled" and (event.get("label") or {}).get("name") == label
+        if not (is_ready or is_unlabeled):
+            continue
+        when = _parse_iso(event.get("created_at"))
+        if since is None or when is None or when > since:
+            ready = ready or is_ready
+            unlabeled = unlabeled or is_unlabeled
+    return ready, unlabeled
+
+
+def repair_bounce_finalize(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    *,
+    cid: str,
+    head_sha: str,
+    repo_root: str = ".",
+    label: str = "needs-ai",
+    errors: Optional[list[str]] = None,
+) -> list[str]:
+    """TD-D9: finish a label or draft step that failed after a bounce.
+
+    Returns the repairs made ("label", "draft"). A failed or truncated PR or
+    issue-events READ raises RepairReadError before any write. A label or draft
+    WRITE failure is best-effort: it is appended to `errors` (when given).
+    """
+    try:
+        pr = _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
+    except GitHubError as exc:
+        raise RepairReadError(
+            f"repair read of PR #{pr_number} failed: {exc}", exc.status_code
+        ) from exc
+    if not isinstance(pr, dict):
+        raise RepairReadError(f"repair read of PR #{pr_number} found nothing", 404)
+    is_draft = bool(pr.get("draft"))
+    has_label = any(
+        isinstance(item, dict) and item.get("name") == label for item in pr.get("labels") or []
+    )
+    if is_draft and has_label:
+        return []
+
+    # Any repair needs server-side evidence that the state is not deliberate.
+    try:
+        events = _github.list_issue_events(
+            owner, repo, pr_number, max_pages=_ISSUE_EVENTS_MAX_PAGES
+        )
+    except GitHubError as exc:
+        raise RepairReadError(
+            f"repair read of events for PR #{pr_number} failed: {exc}", exc.status_code
+        ) from exc
+    ready, unlabeled = _deliberate_after(
+        events, _latest_bounce_time(cid, head_sha, repo_root), label
+    )
+    if not is_draft and not has_label:
+        # Both missing: either deliberate act suppresses both repairs.
+        want_label = want_draft = not (ready or unlabeled)
+    else:
+        want_label = not has_label and not unlabeled
+        want_draft = not is_draft and not ready
+
+    repaired: list[str] = []
+    sink = errors if errors is not None else []
+    if want_label:
+        try:
+            _add_label(owner, repo, pr_number, label)
+            repaired.append("label")
+        except GitHubError as exc:
+            sink.append(f"label failed: {exc}")
+    if want_draft:
+        try:
+            _convert_pr_to_draft(owner, repo, pr_number)
+            repaired.append("draft")
+        except GitHubError as exc:
+            sink.append(f"convert-to-draft failed: {exc}")
+    return repaired
 
 
 def record_pr_bounce(
@@ -1397,30 +2346,90 @@ def record_pr_bounce(
     cid: str,
     reason_category: str,
     summary: str,
-    failures: list[str],
+    failures: Sequence[str] = (),
     label: str = "needs-ai",
     repo_root: str = ".",
+    head_sha: Optional[str] = None,
+    findings: Optional[Sequence[Finding]] = None,
+    epoch_since: Optional[str] = None,
 ) -> BounceResult:
     """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
 
-    (1) post the bounce comment, (2) confirmed via post_comment's read-back,
-    (3) append the `pr-bounced` audit event, (4) finalize — label, convert to
-    draft. Steps 1-3 raise on failure (GitHubError / audit-write
-    error) and halt before any finalize action runs, per overseer.md's
-    "Halt-on-failure ordering for non-merge dispositions" — a bounce must
-    never be finalized without a confirmed comment and a committed audit
-    entry. Finalize sub-steps (4) are independent and best-effort: a failure
-    there is recorded in `finalize_errors` rather than rolled back, since the
-    audit event (the durable record) has already been written.
+    (1) validate, (2) resolve the head (TD-D5) before posting anything,
+    (3) skip a repeat of keys already bounced on this head (TD-D9 repairs an
+    unfinished finalize), (4) post the bounce comment, (5) confirmed via
+    post_comment's read-back, (6) append the `pr-bounced` audit event,
+    (7) finalize — label, convert to draft. Steps 2-6 raise on failure
+    (GitHubError / audit-write error) and halt before any finalize action
+    runs, per overseer.md's "Halt-on-failure ordering for non-merge
+    dispositions" — a bounce must never be finalized without a confirmed
+    comment and a committed audit entry. Finalize sub-steps (7) are
+    independent and best-effort: a failure there is recorded in
+    `finalize_errors` rather than rolled back, since the audit event (the
+    durable record) has already been written.
     """
     if reason_category not in _BOUNCE_REASON_CATEGORIES:
         raise ValueError(
             f"reason_category must be one of {sorted(_BOUNCE_REASON_CATEGORIES)}, "
             f"got {reason_category!r}"
         )
+    if findings is not None:
+        if failures:
+            raise ValueError("findings and failures are mutually exclusive")
+        if head_sha is None:
+            raise ValueError("findings requires head_sha")
 
-    bounce_number = bounce_count(cid, repo_root=repo_root) + 1
-    body = _bounce_comment_body(list(failures), reason_category, summary, bounce_number)
+    if head_sha is None:
+        pr_obj = _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
+        head_sha = (
+            ((pr_obj or {}).get("head") or {}).get("sha") if isinstance(pr_obj, dict) else None
+        )
+        if not head_sha:
+            raise GitHubError(f"could not resolve head.sha for PR #{pr_number}")
+
+    if findings is not None:
+        new_keys = [f.key for f in findings]
+    else:
+        new_keys = [legacy_token_finding(str(t))[1] for t in failures]
+    prior = bounced_on_head(cid, head_sha, repo_root=repo_root)
+    if new_keys and set(new_keys) <= {p.key for p in prior}:
+        repair_errors: list[str] = []
+        repaired = repair_bounce_finalize(
+            owner,
+            repo,
+            pr_number,
+            cid=cid,
+            head_sha=head_sha,
+            repo_root=repo_root,
+            label=label,
+            errors=repair_errors,
+        )
+        return BounceResult(
+            comment_url=None,
+            audit_relpath="",
+            bounce_number=bounce_count(cid, repo_root=repo_root, since=epoch_since),
+            finalize_errors=repair_errors,
+            skipped=True,
+            finalize_repaired=repaired,
+        )
+
+    bounce_number = bounce_count(cid, repo_root=repo_root, since=epoch_since) + 1
+    finding_ids: list[str] = []
+    if findings is not None:
+        start = next_finding_index(prior)
+        finding_ids = [f"{head_sha[:12]}-F{start + k}" for k in range(len(findings))]
+        body = _bounce_comment_body_findings(
+            list(zip(finding_ids, findings)),
+            reason_category,
+            summary,
+            bounce_number,
+            cid=cid,
+            head_sha=head_sha,
+        )
+    else:
+        body = _bounce_comment_body(
+            [str(t) for t in failures], reason_category, summary, bounce_number, head_sha=head_sha
+        )
 
     comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
 
@@ -1429,22 +2438,32 @@ def record_pr_bounce(
         "pr": pr_number,
         "cid": cid,
         "bounce_number": bounce_number,
-        "failures": list(failures),
+        "failures": new_keys if findings is not None else list(failures),
         "assigned_to": None,
         "repo": f"{owner}/{repo}",
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reason_category": reason_category,
         "summary": summary,
         "comment_posted": True,
+        "head_sha": head_sha,
+        "comment_id": comment.get("id"),
+        "comment_created_at": comment.get("created_at"),
+        "actor": os.environ.get("HOS_BOT_LOGIN") or None,
     }
-    audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)  # raises on hash collision
+    if findings is not None:
+        event["findings"] = [
+            {"id": fid, "class": f.cls, "key": f.key, "origin": f.origin, "path": f.path}
+            for fid, f in zip(finding_ids, findings)
+        ]
+        event["epoch_start"] = epoch_since
+    try:
+        audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)
+    except Exception as exc:  # the comment is already posted: say so explicitly
+        raise BounceAuditWriteError(f"audit write failed after posting: {exc}") from exc
 
     finalize_errors: list[str] = []
     try:
-        _run_gh(
-            [f"/repos/{owner}/{repo}/issues/{pr_number}/labels", "--method", "POST"],
-            stdin_json={"labels": [label]},
-        )
+        _add_label(owner, repo, pr_number, label)
     except GitHubError as exc:
         finalize_errors.append(f"label failed: {exc}")
 
@@ -1465,4 +2484,498 @@ def record_pr_bounce(
         audit_relpath=audit_relpath,
         bounce_number=bounce_number,
         finalize_errors=finalize_errors,
+        finding_ids=finding_ids,
     )
+
+
+# --- the routing decision ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RouteInputs:
+    """Everything route_pr decides from. There is deliberately no tier,
+    surface, security or CODEOWNERS-ownership field (REQ-2, by construction)."""
+
+    pr: int
+    worker_authored: bool
+    head_sha: str
+    findings: tuple[Finding, ...]
+    collectors_complete: bool
+    hold_on_head: bool
+    prior_on_head: tuple[PriorFinding, ...]
+    epoch_bounce_count: int
+    reviewer_act_on_head: Optional[ReviewerAct] = None
+    escalation: Optional[EscalationRecord] = None
+    escalation_act: Optional[ReviewerAct] = None
+    blocks: tuple[Block, ...] = ()
+    pending_rulings: tuple[str, ...] = ()
+    upheld_unescalated: tuple[str, ...] = ()
+    withdrawn_on_head: frozenset[str] = frozenset()
+    veto: VetoState = VetoState.NOT_APPLICABLE
+
+
+@dataclass(frozen=True)
+class RouteResult:
+    disposition: Disposition
+    rule: str
+    trigger: Optional[str] = None
+    to_bounce: tuple[Finding, ...] = ()
+    open_findings: tuple[Finding, ...] = ()
+    overruled_keys: tuple[str, ...] = ()
+    actions: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+
+_START_VETO = "start-veto-window"
+_REPAIR_FINALIZE = "repair-finalize"
+
+
+def route_pr(inputs: RouteInputs) -> RouteResult:
+    """Pure precedence list (TD §3.8): first match wins. No I/O, no clock."""
+    i = inputs
+    withdrawn_keys = {p.key for p in i.prior_on_head if p.finding_id in i.withdrawn_on_head}
+    code_open = tuple(f for f in i.findings if f.origin == "code")
+    rejections = tuple(f for f in i.findings if not f.is_decision and f.key not in withdrawn_keys)
+    decisions = tuple(f for f in i.findings if f.is_decision)
+    # A PR's own pending escalation is handled by rule 2; blocking on it would
+    # deadlock the approval that resolves it (AR1-C2). PATH_HOLD and
+    # UNKNOWN_SCOPE are never filtered by source.
+    pending_blocks = tuple(
+        b for b in i.blocks if b.kind == "PATH_PENDING_ESCALATION" and b.source_pr != i.pr
+    )
+    veto_action = (_START_VETO,) if i.veto is VetoState.NEEDS_START else ()
+
+    def result(
+        disposition: Disposition,
+        rule: str,
+        reason: Optional[str] = None,
+        *,
+        trigger: Optional[str] = None,
+        to_bounce: tuple[Finding, ...] = (),
+        overruled: tuple[str, ...] = (),
+        actions: tuple[str, ...] = (),
+    ) -> RouteResult:
+        return RouteResult(
+            disposition=disposition,
+            rule=rule,
+            trigger=trigger,
+            to_bounce=to_bounce,
+            open_findings=rejections,
+            overruled_keys=overruled,
+            actions=actions,
+            reasons=(reason,) if reason else (),
+        )
+
+    # Rule 1 — ESC-3 (A): non-worker PRs stay on the legacy path.
+    if not i.worker_authored:
+        return result(Disposition.LEGACY, "1", "non-worker-pr")
+    if any(b.kind in ("PATH_HOLD", "UNKNOWN_SCOPE") for b in i.blocks):
+        return result(Disposition.LEGACY, "1", "path-hold")
+    if i.hold_on_head:
+        return result(Disposition.LEGACY, "1", "hold-902")
+
+    # Rule 2 — an escalated head waits on the resolved reviewer's act.
+    esc = i.escalation
+    if esc is not None:
+        act = i.escalation_act
+        trig = esc.trigger
+        if act is None:
+            return result(
+                Disposition.HOLD, "2a", "awaiting-reviewer", trigger=trig, actions=veto_action
+            )
+        if act.kind == "DISMISSED":
+            return result(
+                Disposition.HOLD, "2b", "approval-revoked", trigger=trig, actions=veto_action
+            )
+        if act.kind in ("CHANGES_REQUESTED", "NEEDS_AI_LABEL"):
+            return result(Disposition.HUMAN_SENDBACK, "2c", trigger=trig, actions=veto_action)
+        if code_open:
+            return result(
+                Disposition.HOLD, "2d", "code-findings-open", trigger=trig, actions=veto_action
+            )
+        if not i.collectors_complete:
+            return result(
+                Disposition.HOLD, "2e", "collectors-incomplete", trigger=trig, actions=veto_action
+            )
+        if trig == "decision" and act.option_label not in esc.option_labels:
+            return result(
+                Disposition.HOLD, "2f", "decision-option-missing", trigger=trig, actions=veto_action
+            )
+        if i.pending_rulings:
+            return result(Disposition.RULING_REQUIRED, "2k", trigger=trig, actions=veto_action)
+        if i.upheld_unescalated:
+            return result(Disposition.ESCALATE, "2l", trigger="upheld-dispute", actions=veto_action)
+        if i.veto is VetoState.NEEDS_START:
+            return result(Disposition.HOLD_VETO, "2g", trigger=trig, actions=veto_action)
+        if i.veto is VetoState.OPEN:
+            return result(Disposition.HOLD_VETO, "2h", trigger=trig)
+        if pending_blocks:
+            return result(Disposition.HOLD, "2i", "path-pending-escalation", trigger=trig)
+        return result(
+            Disposition.PROCEED,
+            "2j",
+            trigger=trig,
+            overruled=tuple(f.key for f in i.findings if f.origin == "llm"),
+        )
+
+    # Rule 3
+    if i.pending_rulings:
+        return result(Disposition.RULING_REQUIRED, "3")
+
+    # Rule 4 — an unstarted veto window is started, then treated as open.
+    actions: tuple[str, ...] = ()
+    veto = i.veto
+    if veto is VetoState.NEEDS_START:
+        actions = (_START_VETO,)
+        veto = VetoState.OPEN
+
+    # Rule 5
+    if i.upheld_unescalated:
+        return result(Disposition.ESCALATE, "5", trigger="upheld-dispute", actions=actions)
+
+    # Rule 6
+    if rejections:
+        if i.reviewer_act_on_head is not None and i.reviewer_act_on_head.kind == "APPROVED":
+            # ESC-2 (C): an approval on this head plus a rejection is a conflict.
+            return result(Disposition.ESCALATE, "6a", trigger="reviewer-conflict", actions=actions)
+        if any(f.conflicts_with is not None for f in rejections):
+            return result(Disposition.ESCALATE, "6b", trigger="reviewer-conflict", actions=actions)
+        prior_identities = {p.identity for p in i.prior_on_head}
+        if all(f.identity in prior_identities for f in rejections):
+            return result(
+                Disposition.NOOP, "6c", "no-new-keys", actions=(*actions, _REPAIR_FINALIZE)
+            )
+        if i.epoch_bounce_count >= BOUNCE_CAP:
+            return result(Disposition.ESCALATE, "6d", trigger="bounce-cap", actions=actions)
+        return result(
+            Disposition.BOUNCE,
+            "6e",
+            to_bounce=tuple(f for f in rejections if f.identity not in prior_identities),
+            actions=actions,
+        )
+
+    # Rule 7
+    if decisions:
+        return result(Disposition.ESCALATE, "7", trigger="decision", actions=actions)
+
+    # Rule 8
+    if veto is VetoState.OPEN:
+        return result(Disposition.HOLD_VETO, "8", actions=actions)
+    if pending_blocks:
+        return result(Disposition.HOLD, "8", "path-pending-escalation", actions=actions)
+    if not i.collectors_complete:
+        return result(Disposition.HOLD, "8", "collectors-incomplete", actions=actions)
+    return result(Disposition.PROCEED, "8", actions=actions)
+
+
+# --- the reviewer's act -----------------------------------------------------
+
+
+def _is_bot_reviewer(login: str, user_type: str, bot_accounts: Collection[str]) -> bool:
+    path = Path(__file__).resolve().parents[2] / "framework" / "require_human_approval.py"
+    spec = importlib.util.spec_from_file_location("hos_require_human_approval", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.is_bot_reviewer(login, user_type, set(bot_accounts))
+
+
+_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+def latest_reviewer_act(
+    reviews: Sequence[dict],
+    label_events: Sequence[dict],
+    reviewer: str,
+    head_sha: str,
+    since: Optional[str],
+    *,
+    bot_accounts: Collection[str],
+) -> Optional[ReviewerAct]:
+    """The resolved reviewer's latest act on `head_sha`, after `since` (AD-5a)."""
+    since_dt = _parse_iso(since) if since is not None else None
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    reviewer_l = reviewer.lower()
+    candidates: list[tuple[datetime, int, ReviewerAct]] = []
+
+    for review in reviews:
+        user = review.get("user") or {}
+        login = str(user.get("login", ""))
+        if login.lower() != reviewer_l or _is_bot_reviewer(
+            login, str(user.get("type", "")), bot_accounts
+        ):
+            continue
+        state = str(review.get("state", "")).upper()
+        if review.get("commit_id") != head_sha or state not in _REVIEW_STATES:
+            continue
+        when = _parse_iso(review.get("submitted_at"))
+        if since is not None and (when is None or since_dt is None or when <= since_dt):
+            continue
+        option = None
+        if state == "APPROVED":
+            match = _OPTION_LINE_RE.search(review.get("body") or "")
+            option = match.group("l") if match else None
+        rid = review.get("id")
+        rid = rid if isinstance(rid, int) else 0
+        candidates.append(
+            (
+                when or epoch,
+                rid,
+                ReviewerAct(state, rid, str(review.get("submitted_at") or ""), option),
+            )
+        )
+
+    if since is not None:
+        for event in label_events:
+            if (
+                event.get("event") != "labeled"
+                or (event.get("label") or {}).get("name") != "needs-ai"
+            ):
+                continue
+            actor = event.get("actor") or {}
+            login = str(actor.get("login", ""))
+            if login.lower() != reviewer_l or _is_bot_reviewer(
+                login, str(actor.get("type", "")), bot_accounts
+            ):
+                continue
+            when = _parse_iso(event.get("created_at"))
+            if when is None or since_dt is None or when <= since_dt:
+                continue
+            eid = event.get("id")
+            eid = eid if isinstance(eid, int) else 0
+            candidates.append(
+                (when, eid, ReviewerAct("NEEDS_AI_LABEL", eid, str(event.get("created_at")), None))
+            )
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: (c[0], c[1]))[2]
+
+
+# --- CODEOWNERS at the base ref, and the #902 head time ---------------------
+
+_codeowners_module = None
+
+
+def _codeowners():
+    """scripts/oversight/codeowners.py, loaded by path and cached (it is not an
+    importable package — same idiom as merge_authority_cli._load_codeowners_module)."""
+    global _codeowners_module
+    if _codeowners_module is None:
+        path = Path(__file__).resolve().parents[2] / "oversight" / "codeowners.py"
+        spec = importlib.util.spec_from_file_location("hos_oversight_codeowners", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _codeowners_module = mod
+    return _codeowners_module
+
+
+def fetch_codeowners_text(owner: str, repo: str, ref: str) -> Optional[str]:
+    """CODEOWNERS text at `ref` (the PR's BASE sha), or None when absent.
+
+    Tries the same three locations, in the same order, as
+    codeowners.load_codeowners. A payload that exists but cannot be decoded
+    raises CodeownersUnreadableError; a GitHubError propagates.
+    """
+    for relpath in _codeowners().CODEOWNERS_LOCATIONS:
+        payload = get_contents(owner, repo, relpath, ref=ref)
+        if payload is None:
+            continue
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("encoding") != "base64" or not content:
+            raise CodeownersUnreadableError(
+                f"CODEOWNERS at {relpath}@{ref[:12]} has no usable content"
+            )
+        try:
+            return base64.b64decode(content).decode("utf-8")
+        except ValueError as exc:  # UnicodeDecodeError is a ValueError
+            raise CodeownersUnreadableError(
+                f"CODEOWNERS at {relpath}@{ref[:12]} could not be decoded"
+            ) from exc
+    return None
+
+
+def _codeowners_humans_from_text(text: Optional[str]) -> set[str]:
+    """Byte-equivalent to requester_trust.codeowners_humans over `text`."""
+    humans: set[str] = set()
+    if text is None:
+        return humans
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for owner in line.split()[1:]:
+            owner = owner.lstrip("@")
+            if "/" in owner:
+                continue
+            humans.add(owner.lower())
+    return humans
+
+
+def resolve_reviewer_from_text(
+    text: Optional[str],
+    changed_files: Sequence[str],
+    *,
+    bot_accounts: Collection[str],
+    human_reviewer: str,
+) -> ReviewerResolution:
+    """codeowners.resolve_human_reviewer's algorithm, on already-fetched text."""
+    if text is None:
+        return ReviewerResolution(human_reviewer, "machine-accounts.env", (), "no CODEOWNERS file")
+    co = _codeowners()
+    entries = co.parse_codeowners(text)
+    accumulated: list[str] = []
+    seen: set[str] = set()
+    for f in sorted(changed_files):
+        for owner in sorted(co.get_owners_for_path(entries, f)):
+            if owner not in seen:
+                seen.add(owner)
+                accumulated.append(owner)
+    bots = set(bot_accounts)
+    teams: list[str] = []
+    emails: list[str] = []
+    bot_owners: list[str] = []
+    users: list[str] = []
+    for owner in accumulated:
+        if co._is_team(owner):
+            teams.append(owner)
+        elif co._owner_is_email(owner):
+            emails.append(owner)
+        elif co._owner_is_bot(owner, bots):
+            bot_owners.append(owner)
+        else:
+            users.append(owner)
+    if users:
+        login = users[0]
+        return ReviewerResolution(
+            login[1:] if login.startswith("@") else login, "codeowners", tuple(teams), None
+        )
+    if teams:
+        note = f"CODEOWNERS owner is a team ({teams[0]}); team review requests are not made"
+    elif bot_owners and not emails:
+        note = "bot-only CODEOWNERS entry"
+    elif emails:
+        note = "CODEOWNERS owners are e-mail addresses; not requestable"
+    else:
+        note = "no CODEOWNERS entry matched the changed files"
+    return ReviewerResolution(human_reviewer, "machine-accounts.env", tuple(teams), note)
+
+
+def check_resolution_consistent(resolution: ReviewerResolution, text: Optional[str]) -> None:
+    """Drift guard (TD-D3): a codeowners-sourced login must be in the humans set."""
+    if (
+        resolution.source == "codeowners"
+        and resolution.login.lower() not in _codeowners_humans_from_text(text)
+    ):
+        raise CodeownersDriftError(
+            f"resolved reviewer {resolution.login!r} is not in the CODEOWNERS humans set"
+        )
+
+
+def effective_head_time(
+    committer_date: Optional[str], check_suites: Sequence[dict], *, head_sha: str
+) -> Optional[str]:
+    """The head's time, bounded by a server-set fact (TD-D6, F8).
+
+    The committer date is pusher-controlled, so it is capped at the earliest
+    `created_at` of a `github-actions` check suite on this head. A committer
+    date is never trusted alone: with no such suite the result is None, so
+    every matching hold directive counts (the library's fail-safe).
+    """
+    bounds: list[tuple[datetime, str]] = []
+    for suite in check_suites:
+        if (
+            isinstance(suite, dict)
+            and (suite.get("app") or {}).get("slug") == "github-actions"
+            and suite.get("head_sha") == head_sha
+        ):
+            when = _parse_iso(suite.get("created_at"))
+            if when is not None:
+                bounds.append((when, suite["created_at"]))
+    if not bounds:
+        return None
+    bound = min(bounds, key=lambda b: b[0])
+    committed = _parse_iso(committer_date)
+    if committed is not None and committed < bound[0]:
+        return committer_date
+    return bound[1]
+
+
+# --- the code collectors ----------------------------------------------------
+
+
+def _code_finding(cls: str, check_id: str, summary: str) -> Finding:
+    key = f"{cls}:{check_id}"
+    return Finding(
+        cls=cls, key=key, identity=(cls, key), origin="code", path=None, summary=summary, detail=""
+    )
+
+
+def collect_code_findings(
+    owner: str,
+    repo: str,
+    *,
+    step: Union[str, int],
+    head_sha: str,
+    pr: dict,
+    changed_paths: Sequence[str],
+    repo_root: str,
+    default_branch: str,
+) -> tuple[tuple[Finding, ...], dict]:
+    """Deterministic findings the CLI collects itself (AD-5): register,
+    required checks and size. The validator artifact collector is S1b."""
+    findings: list[Finding] = []
+
+    register = check_register_completeness(step, repo_root=repo_root)
+    for failure in register.failures:
+        findings.append(_code_finding("PROCEDURAL", failure, f"{_legacy_gloss(failure)}."))
+
+    required = check_required_content_checks(owner, repo, head_sha, default_branch=default_branch)
+    for failure in required.failures:
+        findings.append(_code_finding("REQUIRED_CHECK", failure, f"{_legacy_gloss(failure)}."))
+    degraded = not required.bounce_required and (required.summary or "").startswith(
+        "required-checks gate skipped"
+    )
+
+    file_count = len(changed_paths)
+    commits = pr.get("commits")
+    if file_count > SIZE_HARD_FILES:
+        findings.append(
+            _code_finding(
+                "SCOPE",
+                "size-hard-ceiling",
+                f"Changed files {file_count} exceed the {SIZE_HARD_FILES}-file hard ceiling; split the PR.",
+            )
+        )
+    elif file_count > SIZE_SOFT_FILES:
+        findings.append(
+            _code_finding(
+                "SCOPE",
+                "size-soft-files",
+                f"Changed files {file_count} exceed the {SIZE_SOFT_FILES}-file limit; split the PR.",
+            )
+        )
+    if isinstance(commits, int) and commits > SIZE_SOFT_COMMITS:
+        findings.append(
+            _code_finding(
+                "SCOPE",
+                "size-soft-commits",
+                f"Commits {commits} exceed the {SIZE_SOFT_COMMITS}-commit limit; split the PR.",
+            )
+        )
+
+    evidence = {
+        "register": {
+            "bounce_required": register.bounce_required,
+            "failures": list(register.failures),
+        },
+        "required_checks": {
+            "bounce_required": required.bounce_required,
+            "failures": list(required.failures),
+            "degraded": degraded,
+        },
+        "size": {"changed_files": file_count, "commits": commits},
+        "required_checks_degraded": degraded,
+    }
+    return tuple(findings), evidence
