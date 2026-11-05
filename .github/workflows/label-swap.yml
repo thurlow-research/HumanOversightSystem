@@ -90,6 +90,7 @@ jobs:
                 gh issue comment "$ISSUE_NUMBER" --body "$BODY"
               else
                 gh issue edit "$ISSUE_NUMBER" --remove-label "needs-human" --add-label "wontfix" 2>/dev/null || true
+                python3 scripts/framework/next_actor.py reconcile-item --repo "$GITHUB_REPOSITORY" --number "$ISSUE_NUMBER" --ours 'github-actions[bot]' || echo "::warning::next_actor reconcile-item exited $?; assignment not updated"
                 gh issue close "$ISSUE_NUMBER" 2>/dev/null || true
                 gh issue comment "$ISSUE_NUMBER" --body \
                   "🚫 /decline — issue closed as \`wontfix\` (authorized by @${COMMENTER})."
@@ -107,6 +108,7 @@ jobs:
               fi
 
               gh issue edit "$ISSUE_NUMBER" --remove-label "needs-ai" --add-label "needs-human" 2>/dev/null || true
+              python3 scripts/framework/next_actor.py reconcile-item --repo "$GITHUB_REPOSITORY" --number "$ISSUE_NUMBER" --ours 'github-actions[bot]' || echo "::warning::next_actor reconcile-item exited $?; assignment not updated"
               gh issue comment "$ISSUE_NUMBER" --body \
                 "🔁 /handoff — \`needs-ai\` → \`needs-human\` (escalated by @${COMMENTER})."
               ;;
