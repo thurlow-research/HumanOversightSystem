@@ -242,6 +242,57 @@ def test_nothing_parses_detail():
         assert not re.search(r"(startswith|re\.\w+)\(.*\bdetail\b", line), (name, line)
 
 
+def test_show_last_raw_is_read_only():
+    """#2229 S2: the diagnostic never creates, writes or loads settings."""
+    tree = ast.parse(LIB.read_text())
+    func = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_cmd_show_last_raw"
+    )
+    allowed = {
+        "Path",
+        "open",
+        "fstat",
+        "S_ISREG",
+        "fdopen",
+        "close",
+        "read",
+        "partition",
+        "decode",
+        "fullmatch",
+        "groups",
+        "print",
+        "write",
+        "join",
+        "rstrip",
+        "append",
+        "extend",
+        "str",
+        "int",
+        "ascii_fold",
+        "_flatten",
+        "_utc_iso",
+        "_parse_lines",
+        "_terminal_safe",
+        "classify_read",
+        "ReadOutcome",
+    }
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        assert name in allowed, name
+        if name == "open":
+            assert isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "os"
+        if name == "fdopen":
+            assert len(node.args) == 2 and getattr(node.args[1], "value", None) == "rb"
+    flags = {n.attr for n in ast.walk(func) if isinstance(n, ast.Attribute) and n.attr[:2] == "O_"}
+    assert "O_RDONLY" in flags
+    assert not flags & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND", "O_EXCL"}, flags
+
+
 # ───────────────────────── #1944 S2: the hos-cron gate (TD 9.2, S2-ST1..ST10) ─────────────────────────
 
 HOS_CRON = ROOT / "bin" / "hos-cron"

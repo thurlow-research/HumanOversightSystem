@@ -197,6 +197,12 @@ _MARKER_RE = re.compile(
     re.ASCII | re.MULTILINE,
 )
 _ANY_USED_RE = re.compile(r"[0-9]+% used", re.ASCII)
+_LAST_RAW_HEADER_RE = re.compile(
+    r"# hos-usage-poll last-raw run_epoch=([0-9]{1,12}) read=(exited|timeout|spawn_failed|none)"
+    r" rc=(-?[0-9]{1,6}|-) stream=(stdout|stderr|none) bytes=([0-9]{1,12})",
+    re.ASCII,
+)
+LAST_RAW_HEADER_ALLOWANCE_BYTES = 256
 _CURRENT_LINE_RE = re.compile(r"^\s*Current\b", re.ASCII | re.IGNORECASE)
 _LIMIT_LIKE_RE = re.compile(
     r"[0-9]\s*%|percent|\bsession\b|\b(?:5|five)[- ]?(?:hours?|hrs?|h)\b",
@@ -2078,6 +2084,86 @@ def _cmd_last_raw(args: argparse.Namespace) -> int:
     return 0
 
 
+def _terminal_safe(text: str) -> str:
+    """Untrusted terminal input: no escape sequences, no control characters but \n and \t."""
+    text = _ANSI_CSI_RE.sub("", _ANSI_OSC_RE.sub("", text))
+    text = "".join(ch for ch in text if ch in "\n\t" or not _CONTROL_RE.match(ch))
+    return ascii_fold(text)
+
+
+def _parse_lines(cls: Classification) -> List[str]:
+    lines = ["parse: outcome=%s reason=%s" % (cls.outcome, cls.reason or "-")]
+    parsed = cls.parsed
+    if parsed is not None:
+        lines.append("session_limit=%s" % parsed.session_limit)
+        if parsed.session_pct is not None:
+            lines.append("session_pct=%d" % parsed.session_pct)
+        if parsed.weekly_all_pct is not None:
+            lines.append("weekly_all_pct=%d" % parsed.weekly_all_pct)
+        for model in parsed.models:
+            lines.append("model %s=%d" % (model.slug, model.pct))
+    if cls.outcome == "failure" and cls.detail:
+        lines.append("detail: " + _cap(ascii_fold(_flatten(cls.detail)), REASON_CAP_CHARS))
+    return lines
+
+
+def _cmd_show_last_raw(args: argparse.Namespace) -> int:
+    """Read-only: print the last raw reading and how the parser classifies it (#2229 item 4)."""
+    path = Path(args.state_dir) / "usage-pause" / LAST_RAW_NAME
+    shown = ascii_fold(_flatten(str(path)))
+    try:
+        # O_NONBLOCK: a FIFO with no writer must not hang the diagnostic; O_NOFOLLOW: no symlinks.
+        fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                print(
+                    "usage_pause show-last-raw: %s is not a regular file" % shown, file=sys.stderr
+                )
+                os.close(fd)
+                return EXIT_FAIL
+        except OSError:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read(INPUT_CAP_BYTES + LAST_RAW_HEADER_ALLOWANCE_BYTES)
+    except OSError as exc:
+        print(
+            "usage_pause show-last-raw: cannot read %s: %s"
+            % (shown, ascii_fold(_flatten(str(exc)))),
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
+    first, _sep, body = data.partition(b"\n")
+    match = _LAST_RAW_HEADER_RE.fullmatch(first.decode("utf-8", errors="replace"))
+    out = ["last_raw: " + shown]
+    cls: Optional[Classification] = None
+    if match is None:
+        out.append("header: invalid")
+        out.append("parse: header_invalid")
+    else:
+        epoch, read, rc_text, stream, nbytes = match.groups()
+        out.append(
+            "header: run_epoch=%s (%s) read=%s rc=%s stream=%s bytes=%s"
+            % (epoch, _utc_iso(int(epoch)), read, rc_text, stream, nbytes)
+        )
+        if stream == "stdout" and read == "exited":
+            rc = None if rc_text == "-" else int(rc_text)
+            # last-raw holds no stderr for a stdout stream: outcome/reason match poll-record,
+            # but a transport-failure detail may differ.
+            cls = classify_read(ReadOutcome(read, rc, None), body, b"")
+            out.extend(_parse_lines(cls))
+        else:
+            out.append("parse: not_classified (stream=%s read=%s)" % (stream, read))
+    if cls is not None and cls.envelope is not None and cls.envelope.result_text is not None:
+        out.append("--- result text ---")
+        out.append(cls.envelope.result_text)
+    else:
+        out.append("--- raw body ---")
+        out.append(body.decode("utf-8", errors="replace"))
+    sys.stdout.write(_terminal_safe("\n".join(out)).rstrip("\n") + "\n")
+    return 0
+
+
 def _cmd_remote_cmd(_args: argparse.Namespace) -> int:
     command = expected_remote_cmd(load_settings(default_conf_path()))
     if command is None:
@@ -2142,6 +2228,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stderr")
     p.add_argument("--run-epoch", type=int, required=True)
     p.set_defaults(func=_cmd_last_raw)
+    p = sub.add_parser("show-last-raw")
+    p.add_argument("--state-dir", required=True)
+    p.set_defaults(func=_cmd_show_last_raw)
     sub.add_parser("remote-cmd").set_defaults(func=_cmd_remote_cmd)
     p = sub.add_parser("check")
     p.add_argument("--state-dir", required=True)
