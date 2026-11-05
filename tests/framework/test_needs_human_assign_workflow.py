@@ -112,25 +112,27 @@ def _branch_slice(text: str, start_marker: str, end_marker: str) -> str:
 
 
 def test_label_swap_calls_module_in_decline_and_handoff_best_effort():
-    text = LABEL_SWAP_YML.read_text(encoding="utf-8")
+    lines = LABEL_SWAP_YML.read_text(encoding="utf-8").splitlines()
     cases = [
-        (
-            '--remove-label "needs-human" --add-label "wontfix"',
-            "gh issue close",
-        ),
-        (
-            '--remove-label "needs-ai" --add-label "needs-human"',
-            "gh issue comment",
-        ),
+        ('--remove-label "needs-human" --add-label "wontfix"', "/decline"),
+        ('--remove-label "needs-ai" --add-label "needs-human"', "/handoff"),
     ]
-    for edit, following in cases:
-        segment = _branch_slice(text, edit, following)
-        lines = [ln.strip() for ln in segment.splitlines()]
-        glue = [ln for ln in lines[1:] if ln.startswith("python3 scripts/framework/next_actor.py")]
-        assert len(glue) == 1
-        assert glue[0].startswith(GLUE_PREFIX)
-        assert '|| echo "::warning::' in glue[0]
+    for edit, branch in cases:
+        idx = [i for i, ln in enumerate(lines) if "gh issue edit" in ln and edit in ln]
+        assert len(idx) == 1, branch
+        glue = lines[idx[0] + 1].strip()
+        assert glue.startswith(GLUE_PREFIX), branch
+        assert glue.endswith(
+            '|| echo "::warning::next_actor reconcile-item exited $?; assignment not updated"'
+        )
+        assert glue.count("||") == 1
+    text = "\n".join(lines)
     assert text.count("next_actor.py") == 2
+    decline_at = text.index("/approve|/decline)")
+    handoff_at = text.index("/handoff)\n")
+    first, second = (i for i, ln in enumerate(lines) if "next_actor.py" in ln)
+    offsets = [sum(len(x) + 1 for x in lines[:i]) for i in (first, second)]
+    assert decline_at < offsets[0] < handoff_at < offsets[1]
 
 
 def test_label_swap_permissions_unchanged():

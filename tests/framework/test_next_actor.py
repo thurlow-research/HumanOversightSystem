@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -446,6 +447,45 @@ def test_cli_usage_exit2(gh, root, argv):
         na.main(argv)
     assert exc.value.code == 2
     assert gh.calls == []
+
+
+def test_assign_without_ours_works(gh, root, capsys):
+    ready(gh, issue(), issue(assignees=[L]))
+    gh.queue("POST", ASSIGNEES, (201, {}))
+    assert na.main(["assign", "--repo", REPO, "--number", str(N)]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "assigned"
+
+
+@pytest.mark.parametrize("op", ["unassign", "reconcile-item"])
+def test_other_subcommands_require_ours(gh, root, op):
+    with pytest.raises(SystemExit) as exc:
+        na.main([op, "--repo", REPO, "--number", str(N)])
+    assert exc.value.code == 2
+    assert gh.calls == []
+
+
+def test_run_by_file_path_from_other_cwd(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "bogus-subcommand"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert proc.returncode == 2
+    assert "ImportError" not in proc.stderr
+    assert "ModuleNotFoundError" not in proc.stderr
+    assert "invalid choice" in proc.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_malformed_event_id_is_read_failure_no_write(gh):
+    bad = events_for({"login": "github-actions[bot]"}, eid="not-a-number")
+    gh.queue("GET", ISSUE, issue(labels=(), assignees=[L]))
+    gh.queue("GET", events_path(), (200, [bad]))
+    assert na.unassign(REPO, N, L, OURS) == ("unassign-skip:events-read-failed", 1)
+    assert gh.writes() == []
 
 
 def test_cli_prints_exactly_one_json_line(gh, root, capsys):

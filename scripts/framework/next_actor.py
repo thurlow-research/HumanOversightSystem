@@ -10,8 +10,10 @@ and `scripts/framework/requester_trust.py` for config parsing.
 Usage (from the checkout root):
 
     python3 scripts/framework/next_actor.py reconcile-item --repo O/R --number N --ours LOGIN[,LOGIN...]
-    python3 scripts/framework/next_actor.py assign         --repo O/R --number N --ours LOGIN
-    python3 scripts/framework/next_actor.py unassign       --repo O/R --number N --ours LOGIN
+    python3 scripts/framework/next_actor.py assign         --repo O/R --number N [--ours LOGIN]
+    python3 scripts/framework/next_actor.py unassign       --repo O/R --number N --ours LOGIN[,LOGIN...]
+
+`assign` accepts `--ours` and ignores it; the other two subcommands require it.
 
 Exit codes: 0 done / skipped / refused by design, 1 transient read failure,
 2 usage error, 3 configuration refusal, 4 write failed or read-back did not
@@ -169,7 +171,11 @@ def classify_ours(repo: str, number: int, login: str, ours: Any) -> tuple[bool, 
             created = event.get("created_at")
             if not created:
                 continue
-            key = (str(created), int(event.get("id") or 0))
+            try:
+                event_id = int(event.get("id") or 0)
+            except (TypeError, ValueError):
+                return False, "events-read-failed"
+            key = (str(created), event_id)
             if latest is None or key > latest:
                 latest = key
                 latest_assigner = event.get("assigner")
@@ -295,11 +301,14 @@ def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", required=True, type=_repo_arg)
     common.add_argument("--number", required=True, type=_number_arg)
-    common.add_argument("--ours", required=True, type=_ours_arg)
     parser = argparse.ArgumentParser(prog="next_actor.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="op", required=True)
     for name in ("reconcile-item", "assign", "unassign"):
-        sub.add_parser(name, parents=[common])
+        p = sub.add_parser(name, parents=[common])
+        if name == "assign":
+            p.add_argument("--ours", type=_ours_arg, default=frozenset())
+        else:
+            p.add_argument("--ours", required=True, type=_ours_arg)
     return parser
 
 
