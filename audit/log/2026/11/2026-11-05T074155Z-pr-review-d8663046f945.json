@@ -1,0 +1,1 @@
+{"actor":"hos-overseer-hos[bot]","disposition":"HUMAN_REQUIRED","event":"pr-review","expected_action":"APPROVE","head_sha":"a803b8a1690c4a2e018b4f01c2dfedabf0785793","note":"Re-posted verdict DECIDE->APPROVE after human rulings (Option A) and human approval of head; unblocks step-1a rule 7","pr":2250,"review_id":5781375017,"tier":"HIGH"}
