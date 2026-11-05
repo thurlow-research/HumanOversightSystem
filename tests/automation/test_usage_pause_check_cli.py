@@ -275,3 +275,116 @@ def test_check_crash_stderr_is_ascii_and_capped(world, monkeypatch, capsys):
     assert up.main(["check", "--state-dir", str(world.state)]) == 70
     err = capsys.readouterr().err.rstrip("\n")
     assert err.isascii() and len(err) <= 200 and "caf?" in err
+
+
+# ───────────── #2229: no 5-hour session limit on the plan ─────────────
+
+NO_SESSION_TEXT = (
+    "You are currently using your subscription to power your Claude Code usage\n\n"
+    "Current week (all models): 7% used · resets Nov 6, 11:59pm (UTC)\n"
+    "Current week (Fable): 0% used · resets Nov 7, 12am (UTC)\n\n"
+    "What's contributing to your limits usage?\n"
+)
+
+
+def _write_poller_reading(w, text: str, now: int) -> Path:
+    """The real poller path: text -> parse -> classification -> build_reading -> render."""
+    parsed = up.parse_usage(text)
+    cls = up.Classification("success", None, None, 0, None, parsed)
+    fields = up.build_reading(
+        run_epoch=now,
+        classification=cls,
+        diagnostics=None,
+        previous=None,
+        settings=up.SettingsResult(dict(up.DEFAULTS), "valid", None, None),
+    )
+    path = w.state / "usage-pause" / "reading"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(up.render_reading(fields), encoding="utf-8")
+    return path
+
+
+def test_no_session_text_never_yields_a_read_failure_deadlock(world):
+    """Acceptance: a plan with no session line must run, not pause forever on missing_session."""
+    now = int(time.time())
+    _write_poller_reading(world, NO_SESSION_TEXT, now)
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"]) == ("run", "ok")
+    assert got["session"] == "-" and got["weekly"] == "7"
+    assert got["reason"].startswith(
+        "session unlimited, weekly_all 7% < 90, weekly_model:Fable 0% < 90 (reading age "
+    )
+
+
+def test_no_session_weekly_over_threshold_pauses(world):
+    text = NO_SESSION_TEXT.replace("7% used", "95% used")
+    _write_poller_reading(world, text, int(time.time()))
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"]) == ("pause", "limit")
+    assert got["reason"] == "weekly_all 95% >= 90"
+
+
+def test_no_session_model_over_threshold_pauses(world):
+    text = NO_SESSION_TEXT.replace("(Fable): 0% used", "(Fable): 93% used")
+    _write_poller_reading(world, text, int(time.time()))
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"]) == ("pause", "limit")
+    assert got["reason"] == "weekly_model:Fable 93% >= 90"
+
+
+def test_session_line_present_unchanged_run_and_pause(world):
+    now = int(time.time())
+    _write_poller_reading(world, "Current session: 10% used\n" + NO_SESSION_TEXT, now)
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"], got["session"]) == ("run", "ok", "10")
+    assert got["reason"].startswith("session 10% < 90, weekly_all 7% < 90")
+    _write_poller_reading(world, "Current session: 95% used\n" + NO_SESSION_TEXT, now)
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"], got["reason"]) == ("pause", "limit", "session 95% >= 90")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Current session (5h): 12% used",
+        "Current 5-hour window: 12% used",
+        "Current session: unlimited",
+    ],
+)
+def test_reworded_session_line_is_read_failure_governed_by_fail_mode(world, line):
+    parsed = up.parse_usage(line + "\n" + NO_SESSION_TEXT)
+    assert not parsed.ok and parsed.reason == "missing_session"
+    cls = up.Classification("failure", parsed.reason, None, 0, None, parsed)
+    for mode, want in (("closed", ("pause", "read_failed")), ("open", ("run", "failopen"))):
+        fields = up.build_reading(
+            run_epoch=int(time.time()),
+            classification=cls,
+            diagnostics=None,
+            previous=None,
+            settings=up.SettingsResult(dict(up.DEFAULTS), "valid", None, None),
+        )
+        reading = up.ReadingRead("ok", dict(fields))
+        settings = up.SettingsResult(dict(up.DEFAULTS, fail_mode=mode), "valid", None, None)
+        d = up.evaluate_cycle(reading, settings, time.time(), poller_artifacts_present=True)
+        assert (d.decision, d.klass) == want
+        assert d.reason == "read_failed:missing_session"
+
+
+def test_no_session_limit_with_numeric_session_pct_is_unreadable(world):
+    write_reading(world.state, session_limit="none", session_pct=5)
+    got = fields_of(verdict(world))
+    assert (got["decision"], got["class"], got["reason"]) == (
+        "pause",
+        "reading_unusable",
+        "reading_unreadable",
+    )
+
+
+def test_legacy_reading_without_session_or_limit_is_unreadable(world):
+    write_reading(world.state, session_pct=None)
+    assert fields_of(verdict(world))["reason"] == "reading_unreadable"
+
+
+def test_unknown_session_limit_value_is_unreadable(world):
+    write_reading(world.state, session_limit="unlimited", session_pct=None)
+    assert fields_of(verdict(world))["reason"] == "reading_unreadable"

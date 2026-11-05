@@ -15,7 +15,7 @@ asserted by sha256 in the tests.
 | `empty-session-envelope-legacy-text.json` | Synthetic (TD 1.9.4): `"result"` = the PR #1450 text |
 | `ac1-real-shape-envelope.json` | Envelope whose `result` is D-1 lines 1-5 with session 4, all models 29, Fable 6 (AC-1); no breakdown |
 | `envelope-session-only.json` | Capture 2 with the `Current week (all models)` line removed |
-| `envelope-weekly-only.json` | Capture 2 with the `Current session` line removed |
+| `envelope-weekly-only.json` | Capture 2 with the `Current session` line removed; a valid no-session-limit reading since #2229 |
 | `envelope-no-model.json` | Capture 2 with the `Current week (Fable)` line removed |
 | `envelope-two-models.json` | Capture 2 plus `Current week (Opus): 7% used · resets Oct 10, 12am (UTC)` after the Fable line |
 | `envelope-not-json.txt` | Plain text, not JSON |
