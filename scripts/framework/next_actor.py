@@ -306,7 +306,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _emit(op: str, repo: str, number: int, login: str | None, outcome: str, code: int) -> int:
     print(
         json.dumps(
-            {"op": op, "repo": repo, "number": number, "login": login, "outcome": outcome, "exit": code},
+            {
+                "op": op,
+                "repo": repo,
+                "number": number,
+                "login": login,
+                "outcome": outcome,
+                "exit": code,
+            },
             separators=(",", ":"),
         )
     )

@@ -79,7 +79,9 @@ def ready(gh, *issue_responses):
 
 
 def run_cli(*extra):
-    return na.main(["assign", "--repo", REPO, "--number", str(N), "--ours", "github-actions[bot]", *extra])
+    return na.main(
+        ["assign", "--repo", REPO, "--number", str(N), "--ours", "github-actions[bot]", *extra]
+    )
 
 
 def test_refuse_config_absent(gh, root):
@@ -236,7 +238,12 @@ OURS_EVENT = events_for({"login": "github-actions[bot]"})
 
 
 def test_unassign_ours_deletes_only_L(gh):
-    gh.queue("GET", ISSUE, issue(labels=(), assignees=[L, "other"]), issue(labels=(), assignees=["other"]))
+    gh.queue(
+        "GET",
+        ISSUE,
+        issue(labels=(), assignees=[L, "other"]),
+        issue(labels=(), assignees=["other"]),
+    )
     gh.queue("GET", events_path(), (200, [OURS_EVENT]))
     gh.queue("DELETE", ASSIGNEES, (200, {}))
     assert na.unassign(REPO, N, L, OURS) == ("unassigned", 0)
@@ -260,7 +267,12 @@ def test_unassign_skip_not_assigned(gh):
 
 
 def test_unassign_proceeds_when_closed(gh):
-    gh.queue("GET", ISSUE, issue(labels=(), assignees=[L], state="closed"), issue(labels=(), state="closed"))
+    gh.queue(
+        "GET",
+        ISSUE,
+        issue(labels=(), assignees=[L], state="closed"),
+        issue(labels=(), state="closed"),
+    )
     gh.queue("GET", events_path(), (200, [OURS_EVENT]))
     gh.queue("DELETE", ASSIGNEES, (200, {}))
     assert na.unassign(REPO, N, L, OURS) == ("unassigned", 0)
@@ -295,7 +307,10 @@ def classify(gh, events):
         ([events_for({"login": "ScottThurlow"})], (False, "assigner-not-ours")),
         ([events_for({"login": "hos-worker-hos[bot]"})], (False, "assigner-not-ours")),
         ([events_for(None)], (False, "assigner-null")),
-        ([{k: v for k, v in events_for(None).items() if k != "assigner"}], (False, "assigner-null")),
+        (
+            [{k: v for k, v in events_for(None).items() if k != "assigner"}],
+            (False, "assigner-null"),
+        ),
         (
             [events_for({"login": "ScottThurlow"}, actor={"login": "github-actions[bot]"})],
             (False, "assigner-not-ours"),
@@ -317,15 +332,28 @@ def classify(gh, events):
         (
             [
                 events_for({"login": "github-actions[bot]"}, created="2026-01-01T00:00:00Z", eid=1),
-                events_for({"login": "ScottThurlow"}, assignee="someone", created="2026-01-02T00:00:00Z", eid=2),
+                events_for(
+                    {"login": "ScottThurlow"},
+                    assignee="someone",
+                    created="2026-01-02T00:00:00Z",
+                    eid=2,
+                ),
             ],
             (True, "ours"),
         ),
         ([], (False, "no-assigned-event")),
     ],
     ids=[
-        "ours", "human", "other-bot", "null", "key-absent", "actor-ignored",
-        "newer-human", "newer-ours", "other-assignee-ignored", "none",
+        "ours",
+        "human",
+        "other-bot",
+        "null",
+        "key-absent",
+        "actor-ignored",
+        "newer-human",
+        "newer-ours",
+        "other-assignee-ignored",
+        "none",
     ],
 )
 def test_classify_ours(gh, events, expected):
@@ -360,7 +388,13 @@ def test_reconcile_open_labelled_assigns(gh):
 
 
 def test_reconcile_label_absent_unassigns(gh):
-    gh.queue("GET", ISSUE, issue(labels=(), assignees=[L]), issue(labels=(), assignees=[L]), issue(labels=()))
+    gh.queue(
+        "GET",
+        ISSUE,
+        issue(labels=(), assignees=[L]),
+        issue(labels=(), assignees=[L]),
+        issue(labels=()),
+    )
     gh.queue("GET", events_path(), (200, [OURS_EVENT]))
     gh.queue("DELETE", ASSIGNEES, (200, {}))
     assert na.reconcile_item(REPO, N, L, OURS) == ("unassigned", 0)
@@ -422,7 +456,12 @@ def test_cli_prints_exactly_one_json_line(gh, root, capsys):
     lines = out.out.splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0]) == {
-        "op": "assign", "repo": REPO, "number": N, "login": L, "outcome": "assigned", "exit": 0,
+        "op": "assign",
+        "repo": REPO,
+        "number": N,
+        "login": L,
+        "outcome": "assigned",
+        "exit": 0,
     }
     assert out.err == ""
 
@@ -445,7 +484,14 @@ def test_gh_argv_post_uses_input_stdin(monkeypatch):
     body = {"assignees": [L]}
     assert na._gh("POST", "repos/o/r/issues/1/assignees", body) == (201, {})
     assert seen["argv"] == [
-        "gh", "api", "--include", "--method", "POST", "repos/o/r/issues/1/assignees", "--input", "-",
+        "gh",
+        "api",
+        "--include",
+        "--method",
+        "POST",
+        "repos/o/r/issues/1/assignees",
+        "--input",
+        "-",
     ]
     assert seen["kwargs"]["input"] == json.dumps(body)
 
@@ -453,7 +499,7 @@ def test_gh_argv_post_uses_input_stdin(monkeypatch):
 def test_gh_parses_status_crlf_and_lf(monkeypatch):
     _fake_run(monkeypatch, 'HTTP/2.0 200 OK\r\nX: y\r\n\r\n{"a": 1}')
     assert na._gh("GET", "p") == (200, {"a": 1})
-    _fake_run(monkeypatch, 'HTTP/1.1 204 No Content\nX: y\n\n')
+    _fake_run(monkeypatch, "HTTP/1.1 204 No Content\nX: y\n\n")
     assert na._gh("GET", "p") == (204, None)
 
 
@@ -470,7 +516,8 @@ TREE = ast.parse(SOURCE)
 
 def test_single_subprocess_call_site():
     calls = [
-        n for n in ast.walk(TREE)
+        n
+        for n in ast.walk(TREE)
         if isinstance(n, ast.Call) and ast.unparse(n.func) == "subprocess.run"
     ]
     assert len(calls) == 1
