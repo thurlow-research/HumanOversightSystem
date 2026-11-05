@@ -14,7 +14,7 @@
 ## Prompt
 
 ```
-Autonomous worker cycle, no human present. Repo: /home/scott/Code/HumanOversightSystem/Worker,
+Autonomous worker cycle, no human present. Repo: <worker-clone-root>,
 branch worker-2224-needs-human-assign-261105215001-2050340 is checked out.
 Do NOT run git checkout, git stash, git commit, or switch branches; do not file issues or
 change labels; do not edit .claude/agents/**.
@@ -40,6 +40,11 @@ Requirements beyond the TD's text:
 - Regenerate SCRIPTS-INDEX.md with scripts/framework/gen_scripts_index.sh.
 - Emit the CORE self-flag (RISK / CONFIDENCE / BLAST RADIUS) at the end.
 ```
+
+The literal prompt named the Worker clone's absolute path; it is recorded here as
+`<worker-clone-root>` so the artifact carries no machine-specific path (portability gate).
+Two later fix rounds (code-review/prompt-fidelity round 1, reliability round 2) are
+recorded in the branch's commit messages and the TD errata section.
 
 ## Constraints Specified
 
