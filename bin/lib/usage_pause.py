@@ -2135,6 +2135,8 @@ def _cmd_show_last_raw(args: argparse.Namespace) -> int:
         )
         if stream == "stdout" and read == "exited":
             rc = None if rc_text == "-" else int(rc_text)
+            # last-raw holds no stderr for a stdout stream: outcome/reason match poll-record,
+            # but a transport-failure detail may differ.
             cls = classify_read(ReadOutcome(read, rc, None), body, b"")
             out.extend(_parse_lines(cls))
         else:

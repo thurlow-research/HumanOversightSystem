@@ -68,6 +68,8 @@ End your reply with the AGENTS.md self-flag block (RISK / CONFIDENCE / BLAST RAD
 
 v1 (prompt above): first coder pass.
 
+v2: code-review follow-up. The static read-only test now uses an allowlist of call names in `_cmd_show_last_raw` (non-literal open mode fails the assertion), and a comment notes that stderr is absent from last-raw so a transport-failure detail may differ from poll-record.
+
 ## Human Review Notes
 
 <!-- After human review, record findings here:

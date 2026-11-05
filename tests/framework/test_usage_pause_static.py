@@ -250,16 +250,38 @@ def test_show_last_raw_is_read_only():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_cmd_show_last_raw"
     )
-    names = set()
+    allowed = {
+        "Path",
+        "open",
+        "read",
+        "partition",
+        "decode",
+        "fullmatch",
+        "groups",
+        "print",
+        "write",
+        "join",
+        "rstrip",
+        "append",
+        "extend",
+        "str",
+        "int",
+        "ascii_fold",
+        "_flatten",
+        "_utc_iso",
+        "_parse_lines",
+        "_terminal_safe",
+        "classify_read",
+        "ReadOutcome",
+    }
     for node in ast.walk(func):
-        if isinstance(node, ast.Call):
-            f = node.func
-            names.add(f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", ""))
-    forbidden = {"makedirs", "mkdir", "write_atomic", "load_settings", "write_text", "write_bytes"}
-    assert not names & forbidden, names & forbidden
-    for node in ast.walk(func):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "open":
-            assert len(node.args) == 2 and node.args[1].value == "rb"
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        assert name in allowed, name
+        if name == "open":
+            assert len(node.args) == 2 and getattr(node.args[1], "value", None) == "rb"
 
 
 # ───────────────────────── #1944 S2: the hos-cron gate (TD 9.2, S2-ST1..ST10) ─────────────────────────
