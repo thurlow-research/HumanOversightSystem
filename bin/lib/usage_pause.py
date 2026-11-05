@@ -199,8 +199,12 @@ _MARKER_RE = re.compile(
 _ANY_USED_RE = re.compile(r"[0-9]+% used", re.ASCII)
 _CURRENT_LINE_RE = re.compile(r"^\s*Current\b", re.ASCII | re.IGNORECASE)
 _LIMIT_LIKE_RE = re.compile(
-    r"[0-9]\s*%|percent|\bsession\b|\b(?:5|five)[- ]?(?:hour|hr|h)\b", re.ASCII | re.IGNORECASE
+    r"[0-9]\s*%|percent|\bsession\b|\b(?:5|five)[- ]?(?:hours?|hrs?|h)\b",
+    re.ASCII | re.IGNORECASE,
 )
+# A limit/reached word counts only beside a digit, so prose such as "your limits usage?" is ignored.
+_LIMIT_WORD_RE = re.compile(r"\blimits?\b|\breached\b", re.ASCII | re.IGNORECASE)
+_DIGIT_RE = re.compile(r"[0-9]", re.ASCII)
 _EMPTY_USAGE_RE = re.compile(r"Usage:\s+0 input", re.ASCII)
 _EMPTY_COST_MARKER = "Total cost:"
 _WINDOW_HEADER_RE = re.compile(
@@ -690,6 +694,8 @@ def _has_unrecognised_limit_line(text: str) -> bool:
             continue
         if _LIMIT_LIKE_RE.search(line) is not None or _CURRENT_LINE_RE.match(line) is not None:
             return True
+        if _LIMIT_WORD_RE.search(line) is not None and _DIGIT_RE.search(line) is not None:
+            return True
     return False
 
 
@@ -701,6 +707,7 @@ def parse_usage(text: str) -> ParseResult:
     weekly_pct = _int_group(weekly)
     session_resets = _resets(_last_match(_SESSION_RESETS_RE, text))
     weekly_resets = _resets(_last_match(_WEEKLY_ALL_RESETS_RE, text))
+    # A present session line skips the guard: that path is unchanged from before #2229.
     no_session_limit = (
         session_pct is None and weekly_pct is not None and not _has_unrecognised_limit_line(text)
     )

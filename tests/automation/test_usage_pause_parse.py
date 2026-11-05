@@ -573,6 +573,10 @@ def test_no_session_success_fields_write_session_limit_none_only():
         "Current session: 12 % used",
         "5-hour limit: 12%",
         "Current 5h window: 12 percent",
+        "Limit: 5 hours, 12 used",
+        "Limit: five hours, 12 used",
+        "Limit: 5 hrs, 12 used",
+        "Usage limit reached, resets 5pm",
         "Session usage: 40% used",
         # Deliberate: a tips-style line with "session" and "%" is not a limit line, but the guard
         # is deny-by-default, so it fails closed. A false positive is the safe direction.
@@ -587,3 +591,18 @@ def test_unrecognised_limit_like_line_fails_closed(line):
 def test_prose_and_window_blocks_do_not_trip_the_guard():
     text = NO_SESSION_TEXT + "Some tips prose with no limit words.\n"
     assert up.parse_usage(text).ok
+
+
+def test_limit_word_without_digit_is_prose_not_a_limit_line():
+    assert up.parse_usage(NO_SESSION_TEXT + "Learn more about your limits\n").ok
+    # Accepted residual: a reworded limit line with no digit, no percent and no session/5-hour
+    # token cannot be told from prose, so it fails open.
+    assert up.parse_usage(NO_SESSION_TEXT + "Rate limit hit\n").ok
+
+
+def test_five_hour_per_model_week_line_is_enforced_as_weekly_model():
+    # Deliberate and conservative: _MODEL_RE accepts this as a per-model weekly line, so it is
+    # enforced against the weekly model threshold (an over-threshold value still pauses).
+    text = "Current week (all models): 7% used\nCurrent week (5-hour): 95% used\n"
+    p = up.parse_usage(text)
+    assert p.ok and [(m.name, m.pct) for m in p.models] == [("5-hour", 95)]
