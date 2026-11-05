@@ -6,7 +6,7 @@
 | **Description** | Absent /usage session line means no 5-hour limit, not a read failure (#2229) |
 | **Date** | 2026-11-05 |
 | **Model** | claude-opus-5-5[1m] |
-| **Risk level** | HIGH (coder-declared; validators composite MEDIUM 0.4252; pending risk-assessor) |
+| **Risk level** | HIGH (coder-declared; risk-assessor validated HIGH; validators composite MEDIUM) |
 | **Human review status** | ⬜ Pending |
 
 ---
@@ -79,7 +79,11 @@ Report: commit SHA(s), files changed, test results (counts), and your AGENTS.md 
 
 ## Refinement History
 
-vFinal: single coder pass. Post-coder, the worker ran `black` on `bin/lib/usage_pause.py` (lint_check gate formatting only, no logic change) and folded it into the commit.
+v1 (prompt above): first coder pass. The guard against reworded session lines fired only on `Current session ...` or `% used`. The worker then ran `black` on `bin/lib/usage_pause.py` (lint_check gate formatting only, no logic change) and folded it into the commit.
+
+v2 (risk-assessor finding: the guard failed open on a reworded line without those tokens): the worker sent this follow-up instruction, summarised. Make the guard allowlist-first. A line is recognised if it matches `_SESSION_PCT_RE`, `_MODEL_RE`, the window-block regexes or `_MARKER_RE`. Any other line fails closed (`missing_session`) if it contains a percentage or the word "percent", starts with "Current", or mentions a session or a 5-hour form. Add tests for `Current session: 12 % used`, `5-hour limit: 12%`, `Current 5h window: 12 percent`, `Session usage: 40% used` and a tips-style line. Coder deviation, accepted by prompt-fidelity: the session match is the singular `\bsession\b`, because the real `/usage` text contains "local sessions on this machine".
+
+v3 (code-review round 1): the 5-hour form also accepts plurals (`hours?|hrs?`). An unrecognised line containing `limit(s)` or `reached` plus a digit fails closed. The digit requirement keeps tips prose such as "What's contributing to your limits usage?" valid. A test documents that `Current week (5-hour)` is enforced as a weekly per-model limit. A test comment records that `Rate limit hit` (no digit) staying fail-open is an accepted residual.
 
 ## Human Review Notes
 
