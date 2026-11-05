@@ -142,3 +142,75 @@ def test_ansi_in_envelope_result_text(tmp_path):
     proc = run(tmp_path)
     assert "\x1b" not in proc.stdout
     assert "é" not in proc.stdout
+
+
+def test_stdout_stream_nonzero_rc_is_classified(tmp_path):
+    body = envelope(WEEKLY)
+    write_raw(tmp_path, HEADER % ("exited", "1", "stdout", len(body)), body)
+    proc = run(tmp_path)
+    assert proc.returncode == 0
+    assert "rc=1 stream=stdout" in proc.stdout
+    assert "parse: outcome=" in proc.stdout
+    assert "not_classified" not in proc.stdout
+
+
+def test_stdout_stream_without_rc_is_classified(tmp_path):
+    body = envelope(WEEKLY)
+    write_raw(tmp_path, HEADER % ("exited", "-", "stdout", len(body)), body)
+    proc = run(tmp_path)
+    assert "rc=- stream=stdout" in proc.stdout
+    assert "parse: outcome=" in proc.stdout
+    assert "not_classified" not in proc.stdout
+
+
+def test_stdout_stream_with_timeout_read_not_classified(tmp_path):
+    body = envelope(WEEKLY)
+    write_raw(tmp_path, HEADER % ("timeout", "-", "stdout", len(body)), body)
+    proc = run(tmp_path)
+    assert proc.returncode == 0
+    assert "parse: not_classified (stream=stdout read=timeout)" in proc.stdout
+    assert "--- raw body ---" in proc.stdout
+    assert "outcome=" not in proc.stdout
+
+
+def test_exited_stderr_stream_never_shows_result_text(tmp_path):
+    write_raw(tmp_path, HEADER % ("exited", "0", "stderr", 5), envelope(WEEKLY))
+    proc = run(tmp_path)
+    assert "--- result text ---" not in proc.stdout
+    assert "--- raw body ---" in proc.stdout
+
+
+def test_envelope_result_text_replaces_raw_json_body(tmp_path):
+    stdout_raw(tmp_path, envelope(WEEKLY))
+    proc = run(tmp_path)
+    assert '{"result"' not in proc.stdout
+    assert "Current week (all models): 12% used" in proc.stdout
+
+
+def test_non_envelope_stdout_body_falls_back_to_raw_body(tmp_path):
+    stdout_raw(tmp_path, b"not json at all\n")
+    proc = run(tmp_path)
+    assert proc.returncode == 0
+    assert "--- raw body ---" in proc.stdout
+    assert "not json at all" in proc.stdout
+    assert "--- result text ---" not in proc.stdout
+
+
+def test_read_is_capped(tmp_path):
+    head = b"KEEP-MARKER\n"
+    tail = b"DROP-MARKER"
+    pad = b"x" * (up.INPUT_CAP_BYTES + 256)
+    write_raw(tmp_path, "garbage\n", head + pad + tail)
+    proc = run(tmp_path)
+    assert proc.returncode == 0
+    assert "KEEP-MARKER" in proc.stdout
+    assert "DROP-MARKER" not in proc.stdout
+    assert len(proc.stdout) < up.INPUT_CAP_BYTES + 1024
+
+
+def test_control_characters_stripped_but_tab_and_newline_kept(tmp_path):
+    write_raw(tmp_path, "garbage\n", b"a\tb\nc\x00d\x7fe\x1b]0;title\x07f\n")
+    proc = run(tmp_path)
+    assert "a\tb\nc" in proc.stdout
+    assert "\x00" not in proc.stdout and "\x7f" not in proc.stdout
+    assert "title" not in proc.stdout
