@@ -217,7 +217,9 @@ _CONTEXT_RE = re.compile(r"^\s*([0-9]{1,3})% of your usage was at >150k context\
 _LONG_SESSION_RE = re.compile(
     r"^\s*([0-9]{1,3})% of your usage came from sessions active for 8\+ hours\s*$", re.ASCII
 )
-_TOP_RE = re.compile(r"^\s*Top subagents: (.+?)\s*$", re.ASCII)
+# Greedy `(.*\S)` captures what the lazy `(.+?)\s*$` did, without its quadratic backtracking on a
+# long interior whitespace run (CWE-1333, #2229).
+_TOP_RE = re.compile(r"^\s*Top subagents: (.*\S)\s*$", re.ASCII)
 _TOP_MORE_RE = re.compile(r"\+([0-9]{1,12}) more", re.ASCII)
 _TOP_ITEM_RE = re.compile(r"(\S(?:.*\S)?) ([0-9]{1,3})%", re.ASCII)
 _PUB_RE = re.compile(r"(\S+) (\S+)(?: .*)?")

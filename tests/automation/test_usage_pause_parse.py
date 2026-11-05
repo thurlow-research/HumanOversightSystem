@@ -606,3 +606,17 @@ def test_five_hour_per_model_week_line_is_enforced_as_weekly_model():
     text = "Current week (all models): 7% used\nCurrent week (5-hour): 95% used\n"
     p = up.parse_usage(text)
     assert p.ok and [(m.name, m.pct) for m in p.models] == [("5-hour", 95)]
+
+
+def test_pathological_top_subagents_line_is_linear():
+    # CWE-1333: the old lazy `(.+?)\s*$` was quadratic on a long interior whitespace run.
+    line = "Top subagents: a" + " " * 65_000 + "b\n"
+    start = time.monotonic()
+    assert up.parse_usage(NO_SESSION_TEXT + line).ok
+    assert time.monotonic() - start < 2
+
+
+def test_top_subagents_capture_unchanged_by_linear_pattern():
+    m = up._TOP_RE.match("  Top subagents: coder 13%, architect 3%, +1 more   ")
+    assert m is not None and m.group(1) == "coder 13%, architect 3%, +1 more"
+    assert up._TOP_RE.match("Top subagents:  ") is None

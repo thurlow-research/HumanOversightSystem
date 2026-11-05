@@ -257,6 +257,8 @@ reset) the cron log is the up-to-date record; the audit branch catches up on res
 | `unparseable` | no recognisable usage text | `cat last-raw`: the `/usage` text changed shape |
 | `crashed` | the poller itself failed; `detail` names the step | read `poll.last.log`; run `python3 bin/lib/usage_pause.py poll-params` by hand |
 
+**No-session-limit readings and mixed versions.** A plan with no 5-hour limit is recognisable in the poll log and the pause reason by `session unlimited` (the gate verdict line carries `session_pct=-`). A poller that writes `session_limit=none` paired with an older installed `hos-cron` gate copy pauses every cycle (it shows as `reading_unreadable`), because the older gate requires a session value. Upgrade `bin/hos-cron` and `bin/lib/usage_pause.py` together. `--check` item 8 only verifies that each scheduled copy carries the gate sentinel and a `lib/usage_pause.py`; it does not detect version drift between them.
+
 ---
 
 ## 3. Project registry
