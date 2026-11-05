@@ -359,6 +359,22 @@ def test_step_resolves_range_from_synthetic_events(tmp_path):
     assert block["FILE"] == ["changed.py"]
 
 
+def test_step_dash_named_file_is_refused(tmp_path):
+    _init_repo(tmp_path)
+    base_sha = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    (tmp_path / "--output=x.py").write_text("x\n")
+    _git(tmp_path, "add", "--", "--output=x.py")
+    _git(tmp_path, "commit", "-q", "-m", "step 2 commit")
+    head_sha = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    _write_step_event(tmp_path, 1, base_sha)
+    _write_step_event(tmp_path, 2, head_sha)
+
+    res = _run(tmp_path, "--step", "2", resolve_only=False)
+    assert res.returncode == 3, res.stderr
+    assert "begins with '-'" in res.stderr
+    assert "GATE PASS" not in res.stdout
+
+
 def test_step_uses_fixture_root_not_the_hos_repo(tmp_path):
     """TD-VF-10 guard: get_step_range must be passed the fixture's own
     toplevel, not the HOS repo containing lib/audit_log.py. The fixture's

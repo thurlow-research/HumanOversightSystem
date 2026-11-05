@@ -493,9 +493,11 @@ def test_security_scan_explicit_option_like_name_fails_closed(tmp_path):
     assert "GATE PASS" not in res.stdout
 
 
-def test_security_scan_git_sourced_option_like_name_follows_double_dash(tmp_path):
-    # TC-S16 / SEC-M2 — names that come from git (--diff/--step/--staged) are
-    # not checked for a leading `-`, so `--` before the file list is load-bearing.
+def test_security_scan_git_sourced_option_like_name_is_refused(tmp_path):
+    # TC-S16 / SEC-M2 + #2097 (R-6 closed) — names that come from git
+    # (--diff/--step/--staged) that begin with `-` are refused by changeset.sh
+    # (exit 3) before any tool runs. `--` before the file list remains
+    # defence-in-depth (still pinned by TC-S17's argv check).
     work = tmp_path / "work"
     _init_repo(work)
     (work / "base.py").write_text("x = 1\n")
@@ -507,14 +509,11 @@ def test_security_scan_git_sourced_option_like_name_follows_double_dash(tmp_path
     record = tmp_path / "argv.record"
     stub = _write_stub(tmp_path, _sb9_body(record))
     res = _run(_SECURITY, work, "--diff", "HEAD~1", bandit_bin=str(stub))
-    assert res.returncode == 0, res.stdout + res.stderr
-    argv = _recorded_argv(record)
-    assert "--" in argv
-    sep = argv.index("--")
-    assert argv[:sep][:2] == ["-f", "json"]
-    assert all(a != "--baseline=x.py" for a in argv[:sep])
-    assert argv[sep + 1 :] == ["--baseline=x.py"]
-    assert "OK: no HIGH severity findings (1 file(s) scanned, 0 unscannable)" in res.stdout
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert not record.exists()
+    assert "begins with '-'" in res.stderr
+    assert "OK:" not in res.stdout
+    assert "GATE PASS" not in res.stdout
 
 
 def test_security_scan_non_ascii_python_name_is_scanned_not_skipped(tmp_path):

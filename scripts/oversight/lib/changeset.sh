@@ -173,13 +173,25 @@ _hcs_classify_missing() {
 
 # _hcs_apply_rex <label> <ref-or-empty> <candidate ...>
 # The existence filter (§4.4 R-EX), shared by explicit/diff/step/staged.
+# Fails closed (exit 3) on any candidate that begins with '-' (#2097).
 _hcs_apply_rex() {
     local label="$1" ref="$2"; shift 2
     local candidates=("$@")
     HOS_CHANGESET_RAW_COUNT=${#candidates[@]}
     HOS_CHANGESET_FILES=()
 
+    # A git-sourced name (diff/step/staged) can legally begin with '-' and
+    # would be parsed as an option by the tools the gates forward it to (e.g.
+    # bandit --output=/dev/null turns a scan into a false PASS). The argv loop
+    # already rejects such tokens; refuse them here for every selector (#2097).
     local missing=() c
+    for c in ${candidates[@]+"${candidates[@]}"}; do
+        if [[ "$c" == -* ]]; then
+            _hcs_fatal "$label" 3 "changeset path '${c}' begins with '-' — refusing to forward an option-shaped name to tools"
+            return 1
+        fi
+    done
+
     for c in ${candidates[@]+"${candidates[@]}"}; do
         if [[ -e "$c" ]]; then
             HOS_CHANGESET_FILES+=("$c")
@@ -219,30 +231,33 @@ _hcs_resolve_via_diff() {
     local label="$1" classify_ref="$2"; shift 2
     local diff_args=("$@")
 
-    local stderr_file
+    # -z: NUL-delimited, never C-quoted. Without it core.quotepath renders a
+    # non-ASCII name as "-\303\251.py" — the leading quote hides a leading '-'
+    # from the option-shape check and the quoted literal is not on disk (#2097).
+    local stderr_file out_file
     stderr_file="$(mktemp)"
-    local unfiltered_out rc=0
-    unfiltered_out="$(git diff --name-only "${diff_args[@]}" -- 2>"$stderr_file")" || rc=$?
+    out_file="$(mktemp)"
+    local rc=0
+    git diff -z --name-only "${diff_args[@]}" -- >"$out_file" 2>"$stderr_file" || rc=$?
     if [[ $rc -ne 0 ]]; then
         local gstderr
         gstderr="$(cat "$stderr_file" 2>/dev/null)"
-        rm -f "$stderr_file"
+        rm -f "$stderr_file" "$out_file"
         _hcs_fatal "$label" 3 "cannot resolve '${diff_args[*]}': ${gstderr}"
         return 1
     fi
-    rm -f "$stderr_file"
 
     local unfiltered_files=() _line
-    while IFS= read -r _line; do
+    while IFS= read -r -d '' _line; do
         [[ -n "$_line" ]] && unfiltered_files+=("$_line")
-    done <<< "$unfiltered_out"
+    done <"$out_file"
 
-    local candidates_out
-    candidates_out="$(git diff --name-only --diff-filter=ACMRT "${diff_args[@]}" -- 2>/dev/null || true)"
+    git diff -z --name-only --diff-filter=ACMRT "${diff_args[@]}" -- >"$out_file" 2>/dev/null || true
     local candidates=()
-    while IFS= read -r _line; do
+    while IFS= read -r -d '' _line; do
         [[ -n "$_line" ]] && candidates+=("$_line")
-    done <<< "$candidates_out"
+    done <"$out_file"
+    rm -f "$stderr_file" "$out_file"
 
     HOS_CHANGESET_DELETED=$(( ${#unfiltered_files[@]} - ${#candidates[@]} ))
 
@@ -272,7 +287,8 @@ and explicit paths cannot be combined with each other.
 
 Exit codes: 0 = ran (or nothing to check); 1 = a blocking finding;
 2 = usage error (nothing ran); 3 = the changeset could not be resolved
-(nothing ran).
+(nothing ran) — including a changeset naming a path that begins with '-',
+which is refused rather than forwarded to tools.
 USAGE
 }
 
