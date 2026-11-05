@@ -122,10 +122,6 @@ def test_missing_weekly():
     assert parse_fixture("envelope-session-only.json")[1].reason == "missing_weekly"
 
 
-def test_missing_session():
-    assert parse_fixture("envelope-weekly-only.json")[1].reason == "missing_session"
-
-
 def test_unparseable_nonempty_result():
     assert up.parse_usage("hello there\nno numbers").reason == "unparseable"
     assert up.parse_usage("Current week (Fable): 3% used").reason == "unparseable"
@@ -515,3 +511,112 @@ def test_model_line_without_resets_has_none():
     text = "Current session: 5% used\nCurrent week (all models): 6% used\nCurrent week (Fable): 7% used\n"
     parsed = up.parse_usage(text)
     assert parsed.ok and [(m.name, m.resets) for m in parsed.models] == [("Fable", None)]
+
+
+# ───────────── #2229: an absent session line means no 5-hour limit ─────────────
+
+NO_SESSION_TEXT = (
+    "You are currently using your subscription to power your Claude Code usage\n\n"
+    "Current week (all models): 7% used · resets Nov 6, 11:59pm (UTC)\n"
+    "Current week (Fable): 0% used · resets Nov 7, 12am (UTC)\n\n"
+    "What's contributing to your limits usage?\n"
+)
+
+
+def test_no_session_line_parses_as_no_session_limit():
+    p = up.parse_usage(NO_SESSION_TEXT)
+    assert p.ok and p.reason is None
+    assert p.session_limit == "none" and p.session_pct is None
+    assert (p.weekly_all_pct, [(m.name, m.pct) for m in p.models]) == (7, [("Fable", 0)])
+
+
+def test_session_line_present_keeps_session_limit_present():
+    p = up.parse_usage("Current session: 1% used\nCurrent week (all models): 3% used")
+    assert p.ok and p.session_limit == "present" and p.session_pct == 1
+
+
+def test_weekly_only_fixture_is_now_a_valid_no_session_reading():
+    p = parse_fixture("envelope-weekly-only.json")[1]
+    assert p.ok and p.session_limit == "none"
+    assert len(p.windows) == 2  # window blocks do not trip the unrecognised-line check
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Current session (5h): 12% used",
+        "Current 5-hour window: 12% used",
+        "Current session: unlimited",
+        "current session: 12 percent",
+    ],
+)
+def test_reworded_session_line_is_missing_session(line):
+    p = up.parse_usage(line + "\nCurrent week (all models): 3% used")
+    assert not p.ok and p.reason == "missing_session"
+
+
+def test_no_weekly_line_still_fails():
+    assert up.parse_usage("Current week (Fable): 3% used").reason == "unparseable"
+    assert up.parse_usage("Current session: 3% used").reason == "missing_weekly"
+
+
+def test_no_session_success_fields_write_session_limit_none_only():
+    fields = dict(up._success_fields(up.parse_usage(NO_SESSION_TEXT)))
+    assert fields["session_limit"] == "none"
+    assert "session_pct" not in fields and "session_resets" not in fields
+    assert fields["weekly_all_pct"] == "7"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Current session: 12 % used",
+        "5-hour limit: 12%",
+        "Current 5h window: 12 percent",
+        "Limit: 5 hours, 12 used",
+        "Limit: five hours, 12 used",
+        "Limit: 5 hrs, 12 used",
+        "Usage limit reached, resets 5pm",
+        "Session usage: 40% used",
+        # Deliberate: a tips-style line with "session" and "%" is not a limit line, but the guard
+        # is deny-by-default, so it fails closed. A false positive is the safe direction.
+        "Tip: end your session early to save up to 10% of your limit",
+    ],
+)
+def test_unrecognised_limit_like_line_fails_closed(line):
+    p = up.parse_usage(NO_SESSION_TEXT + line + "\n")
+    assert not p.ok and p.reason == "missing_session"
+
+
+def test_prose_and_window_blocks_do_not_trip_the_guard():
+    text = NO_SESSION_TEXT + "Some tips prose with no limit words.\n"
+    assert up.parse_usage(text).ok
+
+
+def test_limit_word_without_digit_is_prose_not_a_limit_line():
+    assert up.parse_usage(NO_SESSION_TEXT + "Learn more about your limits\n").ok
+    # Accepted residual: a reworded limit line with no digit, no percent and no session/5-hour
+    # token cannot be told from prose, so it fails open.
+    assert up.parse_usage(NO_SESSION_TEXT + "Rate limit hit\n").ok
+
+
+def test_five_hour_per_model_week_line_is_enforced_as_weekly_model():
+    # Deliberate and conservative: _MODEL_RE accepts this as a per-model weekly line, so it is
+    # enforced against the weekly model threshold (an over-threshold value still pauses).
+    text = "Current week (all models): 7% used\nCurrent week (5-hour): 95% used\n"
+    p = up.parse_usage(text)
+    assert p.ok and [(m.name, m.pct) for m in p.models] == [("5-hour", 95)]
+
+
+def test_pathological_top_subagents_line_is_linear():
+    # CWE-1333: the old lazy `(.+?)\s*$` was quadratic on a long interior whitespace run.
+    line = "Top subagents: a" + " " * 65_000 + "b\n"
+    start = time.monotonic()
+    assert up.parse_usage(NO_SESSION_TEXT + line).ok
+    assert time.monotonic() - start < 2
+
+
+def test_top_subagents_capture_unchanged_by_linear_pattern():
+    m = up._TOP_RE.match("  Top subagents: coder 13%, architect 3%, +1 more   ")
+    assert m is not None and m.group(1) == "coder 13%, architect 3%, +1 more"
+    assert up._TOP_RE.match("Top subagents:  ") is None

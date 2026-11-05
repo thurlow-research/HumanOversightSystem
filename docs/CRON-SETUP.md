@@ -253,9 +253,11 @@ reset) the cron log is the up-to-date record; the audit branch catches up on res
 | `spawn_failed` | `ssh` could not be started | check `ssh` is installed and on the poller's `PATH` |
 | `envelope_invalid` | stdout was not the expected JSON envelope | `cat last-raw`; usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
 | `empty_session` | the read succeeded but showed no usage | the forced command may be running under an API-key or expired login: re-run `claude` login as the key's user |
-| `missing_session` / `missing_weekly` | one of the two required limits was absent | `cat last-raw`: the `/usage` text changed shape |
+| `missing_session` / `missing_weekly` | `missing_weekly`: the weekly all-models line was absent or unparseable. `missing_session`: a session or limit line was present in a form the parser does not understand (for example a reworded 5-hour line). An **absent** session line is not a failure: a plan with no 5-hour limit prints none, so the session check is skipped (the reading carries `session_limit=none` and the reason reads `session unlimited, ...`) and only the weekly limits decide | `cat last-raw`: the `/usage` text changed shape |
 | `unparseable` | no recognisable usage text | `cat last-raw`: the `/usage` text changed shape |
 | `crashed` | the poller itself failed; `detail` names the step | read `poll.last.log`; run `python3 bin/lib/usage_pause.py poll-params` by hand |
+
+**No-session-limit readings and mixed versions.** A plan with no 5-hour limit is recognisable in the poll log and the pause reason by `session unlimited` (the gate verdict line carries `session_pct=-`). A poller that writes `session_limit=none` paired with an older installed `hos-cron` gate copy pauses every cycle (it shows as `reading_unreadable`), because the older gate requires a session value. Upgrade `bin/hos-cron` and `bin/lib/usage_pause.py` together. `--check` item 8 only verifies that each scheduled copy carries the gate sentinel and a `lib/usage_pause.py`; it does not detect version drift between them.
 
 ---
 

@@ -73,6 +73,8 @@ DEFAULTS: Mapping[str, object] = {
 # ── END SETTINGS DEFAULTS AND BOUNDS ──
 
 SCHEMA_VERSION = 1
+SESSION_LIMIT_NONE = "none"
+SESSION_LIMIT_PRESENT = "present"
 READ_FAILURE_REASONS: FrozenSet[str] = frozenset(
     {
         "ssh_failed",
@@ -195,6 +197,14 @@ _MARKER_RE = re.compile(
     re.ASCII | re.MULTILINE,
 )
 _ANY_USED_RE = re.compile(r"[0-9]+% used", re.ASCII)
+_CURRENT_LINE_RE = re.compile(r"^\s*Current\b", re.ASCII | re.IGNORECASE)
+_LIMIT_LIKE_RE = re.compile(
+    r"[0-9]\s*%|percent|\bsession\b|\b(?:5|five)[- ]?(?:hours?|hrs?|h)\b",
+    re.ASCII | re.IGNORECASE,
+)
+# A limit/reached word counts only beside a digit, so prose such as "your limits usage?" is ignored.
+_LIMIT_WORD_RE = re.compile(r"\blimits?\b|\breached\b", re.ASCII | re.IGNORECASE)
+_DIGIT_RE = re.compile(r"[0-9]", re.ASCII)
 _EMPTY_USAGE_RE = re.compile(r"Usage:\s+0 input", re.ASCII)
 _EMPTY_COST_MARKER = "Total cost:"
 _WINDOW_HEADER_RE = re.compile(
@@ -207,7 +217,9 @@ _CONTEXT_RE = re.compile(r"^\s*([0-9]{1,3})% of your usage was at >150k context\
 _LONG_SESSION_RE = re.compile(
     r"^\s*([0-9]{1,3})% of your usage came from sessions active for 8\+ hours\s*$", re.ASCII
 )
-_TOP_RE = re.compile(r"^\s*Top subagents: (.+?)\s*$", re.ASCII)
+# Greedy `(.*\S)` captures what the lazy `(.+?)\s*$` did, without its quadratic backtracking on a
+# long interior whitespace run (CWE-1333, #2229).
+_TOP_RE = re.compile(r"^\s*Top subagents: (.*\S)\s*$", re.ASCII)
 _TOP_MORE_RE = re.compile(r"\+([0-9]{1,12}) more", re.ASCII)
 _TOP_ITEM_RE = re.compile(r"(\S(?:.*\S)?) ([0-9]{1,3})%", re.ASCII)
 _PUB_RE = re.compile(r"(\S+) (\S+)(?: .*)?")
@@ -267,6 +279,8 @@ class ParseResult:
     models: Tuple[ModelWeekly, ...]
     windows: Tuple[WindowBreakdown, ...]
     subscription_marker: bool
+    # "none": the plan prints no session limit at all (#2229); "present": a session line was read.
+    session_limit: str = SESSION_LIMIT_PRESENT
 
 
 @dataclass(frozen=True)
@@ -651,6 +665,42 @@ def _int_group(match: Optional["re.Match[str]"]) -> Optional[int]:
     return int(match.group(1)) if match is not None else None
 
 
+def _is_recognised_line(line: str) -> bool:
+    """A line of a known /usage form: a session or weekly limit, a window block line, the marker."""
+    stripped = line.strip()
+    return any(
+        pattern.match(stripped) is not None
+        for pattern in (
+            _SESSION_PCT_RE,
+            _MODEL_RE,
+            _WINDOW_HEADER_RE,
+            _HEAVY_RE,
+            _CONTEXT_RE,
+            _LONG_SESSION_RE,
+            _TOP_RE,
+            _MARKER_RE,
+        )
+    )
+
+
+def _has_unrecognised_limit_line(text: str) -> bool:
+    """Deny by default (#2229): any line of no known form that looks like a limit line.
+
+    A reworded session/5-hour line must stay a read failure, never a silently skipped check.
+    Limit-like means a percentage, the word percent, a leading `Current`, or the singular word
+    session / a 5-hour form (plural "sessions" is window-block prose and is not matched). A
+    false positive fails closed, which is the safe direction.
+    """
+    for line in text.splitlines():
+        if not line.strip() or _is_recognised_line(line):
+            continue
+        if _LIMIT_LIKE_RE.search(line) is not None or _CURRENT_LINE_RE.match(line) is not None:
+            return True
+        if _LIMIT_WORD_RE.search(line) is not None and _DIGIT_RE.search(line) is not None:
+            return True
+    return False
+
+
 def parse_usage(text: str) -> ParseResult:
     session = _last_match(_SESSION_PCT_RE, text)
     weekly = _last_match(_WEEKLY_ALL_PCT_RE, text)
@@ -659,7 +709,11 @@ def parse_usage(text: str) -> ParseResult:
     weekly_pct = _int_group(weekly)
     session_resets = _resets(_last_match(_SESSION_RESETS_RE, text))
     weekly_resets = _resets(_last_match(_WEEKLY_ALL_RESETS_RE, text))
-    if session_pct is not None and weekly_pct is not None:
+    # A present session line skips the guard: that path is unchanged from before #2229.
+    no_session_limit = (
+        session_pct is None and weekly_pct is not None and not _has_unrecognised_limit_line(text)
+    )
+    if (session_pct is not None or no_session_limit) and weekly_pct is not None:
         try:
             models = _extract_models(text)
         except Exception:  # noqa: BLE001
@@ -678,6 +732,7 @@ def parse_usage(text: str) -> ParseResult:
             models,
             windows,
             marker,
+            SESSION_LIMIT_NONE if no_session_limit else SESSION_LIMIT_PRESENT,
         )
     if _ANY_USED_RE.search(text) is None and (
         text.strip() == "" or _EMPTY_COST_MARKER in text or _EMPTY_USAGE_RE.search(text)
@@ -1072,14 +1127,28 @@ def _evaluate(
         token = reason if reason in READ_FAILURE_REASONS else "unknown"
         return _unusable(settings, "read_failed:" + token, "read_failed", session, weekly, age)
     models = _model_entries(fields)
-    if session is None or weekly is None or models is None:
+    session_limit = fields.get("session_limit")
+    no_session_limit = session_limit == SESSION_LIMIT_NONE
+    if session_limit not in (None, SESSION_LIMIT_NONE, SESSION_LIMIT_PRESENT):
+        return _unusable(settings, "reading_unreadable", "reading_unusable", None, weekly, age)
+    if no_session_limit:
+        # The decision keys off session_limit=none; a numeric session_pct beside it is inconsistent.
+        if "session_pct" in fields:
+            return _unusable(settings, "reading_unreadable", "reading_unusable", None, weekly, age)
+    elif session is None:
         return _unusable(settings, "reading_unreadable", "reading_unusable", session, weekly, age)
+    if weekly is None or models is None:
+        return _unusable(settings, "reading_unreadable", "reading_unusable", session, weekly, age)
+    session_limits: Tuple[Tuple[str, int, int], ...] = ()
+    if session is not None and not no_session_limit:
+        session_limits = (("session", session, int(str(settings.values["session_threshold"]))),)
     limits = (
-        ("session", session, int(str(settings.values["session_threshold"]))),
-        ("weekly_all", weekly, int(str(settings.values["weekly_threshold"]))),
-    ) + tuple(
-        ("weekly_model:" + name, pct, int(str(settings.values["weekly_model_threshold"])))
-        for name, pct in models
+        session_limits
+        + (("weekly_all", weekly, int(str(settings.values["weekly_threshold"]))),)
+        + tuple(
+            ("weekly_model:" + name, pct, int(str(settings.values["weekly_model_threshold"])))
+            for name, pct in models
+        )
     )
     over = ["%s %d%% >= %d" % item for item in limits if item[1] >= item[2]]
     if over:
@@ -1088,6 +1157,8 @@ def _evaluate(
             "pause", "limit", reason, session, weekly, age, fail_mode, settings.status, False
         )
     summary = ", ".join("%s %d%% < %d" % item for item in limits)
+    if no_session_limit:
+        summary = "session unlimited, " + summary
     reason = _cap("%s (reading age %ds)" % (summary, max(age, 0)), REASON_CAP_CHARS)
     return Decision("run", "ok", reason, session, weekly, age, fail_mode, settings.status, False)
 
@@ -1167,8 +1238,11 @@ def build_reading(
 
 def _success_fields(parsed: ParseResult) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
-    out.append(("session_pct", str(parsed.session_pct)))
-    out.append(("session_resets", parsed.session_resets or ""))
+    if parsed.session_limit == SESSION_LIMIT_NONE:
+        out.append(("session_limit", SESSION_LIMIT_NONE))
+    else:
+        out.append(("session_pct", str(parsed.session_pct)))
+        out.append(("session_resets", parsed.session_resets or ""))
     out.append(("weekly_all_pct", str(parsed.weekly_all_pct)))
     out.append(("weekly_all_resets", parsed.weekly_all_resets or ""))
     for model in parsed.models:
@@ -1529,10 +1603,9 @@ def _run_text(argv: Sequence[str]) -> Optional["subprocess.CompletedProcess[str]
 def _success_summary(cls: Classification) -> str:
     parsed = cls.parsed
     assert parsed is not None and cls.envelope is not None
-    text = "SUCCESS session=%d weekly_all=%d" % (
-        parsed.session_pct or 0,
-        parsed.weekly_all_pct or 0,
-    )
+    unlimited = parsed.session_limit == SESSION_LIMIT_NONE
+    session = "unlimited" if unlimited else "%d" % (parsed.session_pct or 0)
+    text = "SUCCESS session=%s weekly_all=%d" % (session, parsed.weekly_all_pct or 0)
     for model in parsed.models:
         text += " %s=%d" % (model.slug, model.pct)
     cost = cls.envelope.cost_usd
@@ -1960,8 +2033,11 @@ def _cmd_poll_record(args: argparse.Namespace) -> int:
     parts = ["[hos-usage-poll] %s outcome=%s" % (view["run_at"], view["outcome"])]
     if "reason" in view:
         parts.append("reason=%s" % view["reason"])
-    if "session_pct" in view:
-        parts.append("session=%s weekly_all=%s" % (view["session_pct"], view["weekly_all_pct"]))
+    if "session_pct" in view or view.get("session_limit") == SESSION_LIMIT_NONE:
+        parts.append(
+            "session=%s weekly_all=%s"
+            % (view.get("session_pct", "unlimited"), view["weekly_all_pct"])
+        )
     if "cost_usd" in view or "read_tokens" in view:
         parts.append(
             "cost=%s tokens=%s" % (view.get("cost_usd", "-"), view.get("read_tokens", "-"))
