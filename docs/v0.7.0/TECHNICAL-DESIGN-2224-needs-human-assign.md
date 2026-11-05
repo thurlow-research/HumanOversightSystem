@@ -51,7 +51,7 @@ Any violation, or an unknown or missing subcommand, gives **exit 2** (argparse's
   | Ends in `[bot]` (case-insensitive) | `…:bot-suffix` |
   | `lower()` in `load_bot_accounts(repo_root)` | `…:bot-account` |
 
-  The CLI's `repo_root` is `Path(__file__).resolve().parents[2]`, which is the trusted checkout.
+  The CLI's `repo_root` is `Path(__file__).resolve().parents[2]`, which is the trusted checkout. `HUMAN_REVIEWER` is read from that file only; no environment variable or CLI flag may override it (the environment may only widen `BOT_ACCOUNTS`, per `load_bot_accounts`' union rule).
 - `check_assignable(repo, L)`: `GET repos/{repo}/assignees/{L}`.
   - 204: proceed.
   - 404: `ConfigRefusal("next-actor-unresolved:not-assignable")`, exit 3.
