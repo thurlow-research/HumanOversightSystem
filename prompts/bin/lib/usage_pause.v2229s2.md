@@ -70,6 +70,8 @@ v1 (prompt above): first coder pass.
 
 v2: code-review follow-up. The static read-only test now uses an allowlist of call names in `_cmd_show_last_raw` (non-literal open mode fails the assertion), and a comment notes that stderr is absent from last-raw so a transport-failure detail may differ from poll-record.
 
+v3: security-review follow-up. `show-last-raw` opens last-raw with `os.open(O_RDONLY|O_NONBLOCK|O_NOFOLLOW)`, requires a regular file via `os.fstat`/`S_ISREG`, and reads from the fd, so a FIFO or device cannot hang it and a symlink is refused. The static guard now asserts the os.open flags are read-only; tests cover FIFO and symlink.
+
 ## Human Review Notes
 
 <!-- After human review, record findings here:

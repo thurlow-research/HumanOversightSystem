@@ -2110,19 +2110,32 @@ def _parse_lines(cls: Classification) -> List[str]:
 def _cmd_show_last_raw(args: argparse.Namespace) -> int:
     """Read-only: print the last raw reading and how the parser classifies it (#2229 item 4)."""
     path = Path(args.state_dir) / "usage-pause" / LAST_RAW_NAME
+    shown = ascii_fold(_flatten(str(path)))
     try:
-        with open(path, "rb") as fh:
+        # O_NONBLOCK: a FIFO with no writer must not hang the diagnostic; O_NOFOLLOW: no symlinks.
+        fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                print(
+                    "usage_pause show-last-raw: %s is not a regular file" % shown, file=sys.stderr
+                )
+                os.close(fd)
+                return EXIT_FAIL
+        except OSError:
+            os.close(fd)
+            raise
+        with os.fdopen(fd, "rb") as fh:
             data = fh.read(INPUT_CAP_BYTES + LAST_RAW_HEADER_ALLOWANCE_BYTES)
     except OSError as exc:
         print(
             "usage_pause show-last-raw: cannot read %s: %s"
-            % (ascii_fold(_flatten(str(path))), ascii_fold(_flatten(str(exc)))),
+            % (shown, ascii_fold(_flatten(str(exc)))),
             file=sys.stderr,
         )
         return EXIT_FAIL
     first, _sep, body = data.partition(b"\n")
     match = _LAST_RAW_HEADER_RE.fullmatch(first.decode("utf-8", errors="replace"))
-    out = ["last_raw: " + ascii_fold(_flatten(str(path)))]
+    out = ["last_raw: " + shown]
     cls: Optional[Classification] = None
     if match is None:
         out.append("header: invalid")

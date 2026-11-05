@@ -253,6 +253,10 @@ def test_show_last_raw_is_read_only():
     allowed = {
         "Path",
         "open",
+        "fstat",
+        "S_ISREG",
+        "fdopen",
+        "close",
         "read",
         "partition",
         "decode",
@@ -281,7 +285,12 @@ def test_show_last_raw_is_read_only():
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
         assert name in allowed, name
         if name == "open":
+            assert isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "os"
+        if name == "fdopen":
             assert len(node.args) == 2 and getattr(node.args[1], "value", None) == "rb"
+    flags = {n.attr for n in ast.walk(func) if isinstance(n, ast.Attribute) and n.attr[:2] == "O_"}
+    assert "O_RDONLY" in flags
+    assert not flags & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND", "O_EXCL"}, flags
 
 
 # ───────────────────────── #1944 S2: the hos-cron gate (TD 9.2, S2-ST1..ST10) ─────────────────────────

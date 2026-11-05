@@ -214,3 +214,32 @@ def test_control_characters_stripped_but_tab_and_newline_kept(tmp_path):
     assert "a\tb\nc" in proc.stdout
     assert "\x00" not in proc.stdout and "\x7f" not in proc.stdout
     assert "title" not in proc.stdout
+
+
+def test_fifo_last_raw_fails_promptly_without_hanging(tmp_path):
+    path = tmp_path / "usage-pause" / "last-raw"
+    path.parent.mkdir(parents=True)
+    os.mkfifo(path)
+    proc = subprocess.run(
+        [sys.executable, str(LIB), "show-last-raw", "--state-dir", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+    )
+    assert proc.returncode == up.EXIT_FAIL
+    assert "is not a regular file" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_symlinked_last_raw_is_refused(tmp_path):
+    target = tmp_path / "elsewhere"
+    target.write_bytes(HEADER.encode() % (b"none", b"-", b"none", 0))
+    path = tmp_path / "usage-pause" / "last-raw"
+    path.parent.mkdir(parents=True)
+    path.symlink_to(target)
+    proc = run(tmp_path)
+    assert proc.returncode == up.EXIT_FAIL
+    assert "usage_pause show-last-raw:" in proc.stderr
+    assert proc.stdout == ""
