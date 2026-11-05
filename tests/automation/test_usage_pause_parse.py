@@ -565,3 +565,25 @@ def test_no_session_success_fields_write_session_limit_none_only():
     assert fields["session_limit"] == "none"
     assert "session_pct" not in fields and "session_resets" not in fields
     assert fields["weekly_all_pct"] == "7"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Current session: 12 % used",
+        "5-hour limit: 12%",
+        "Current 5h window: 12 percent",
+        "Session usage: 40% used",
+        # Deliberate: a tips-style line with "session" and "%" is not a limit line, but the guard
+        # is deny-by-default, so it fails closed. A false positive is the safe direction.
+        "Tip: end your session early to save up to 10% of your limit",
+    ],
+)
+def test_unrecognised_limit_like_line_fails_closed(line):
+    p = up.parse_usage(NO_SESSION_TEXT + line + "\n")
+    assert not p.ok and p.reason == "missing_session"
+
+
+def test_prose_and_window_blocks_do_not_trip_the_guard():
+    text = NO_SESSION_TEXT + "Some tips prose with no limit words.\n"
+    assert up.parse_usage(text).ok

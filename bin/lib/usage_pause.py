@@ -197,7 +197,10 @@ _MARKER_RE = re.compile(
     re.ASCII | re.MULTILINE,
 )
 _ANY_USED_RE = re.compile(r"[0-9]+% used", re.ASCII)
-_SESSION_LINE_RE = re.compile(r"^\s*Current session\b", re.ASCII | re.IGNORECASE)
+_CURRENT_LINE_RE = re.compile(r"^\s*Current\b", re.ASCII | re.IGNORECASE)
+_LIMIT_LIKE_RE = re.compile(
+    r"[0-9]\s*%|percent|\bsession\b|\b(?:5|five)[- ]?(?:hour|hr|h)\b", re.ASCII | re.IGNORECASE
+)
 _EMPTY_USAGE_RE = re.compile(r"Usage:\s+0 input", re.ASCII)
 _EMPTY_COST_MARKER = "Total cost:"
 _WINDOW_HEADER_RE = re.compile(
@@ -656,15 +659,36 @@ def _int_group(match: Optional["re.Match[str]"]) -> Optional[int]:
     return int(match.group(1)) if match is not None else None
 
 
+def _is_recognised_line(line: str) -> bool:
+    """A line of a known /usage form: a session or weekly limit, a window block line, the marker."""
+    stripped = line.strip()
+    return any(
+        pattern.match(stripped) is not None
+        for pattern in (
+            _SESSION_PCT_RE,
+            _MODEL_RE,
+            _WINDOW_HEADER_RE,
+            _HEAVY_RE,
+            _CONTEXT_RE,
+            _LONG_SESSION_RE,
+            _TOP_RE,
+            _MARKER_RE,
+        )
+    )
+
+
 def _has_unrecognised_limit_line(text: str) -> bool:
-    """A reworded session/5-hour line: a `% used` line that is neither a session nor a weekly
-    line, or a `Current session` line the session pattern does not understand (#2229)."""
+    """Deny by default (#2229): any line of no known form that looks like a limit line.
+
+    A reworded session/5-hour line must stay a read failure, never a silently skipped check.
+    Limit-like means a percentage, the word percent, a leading `Current`, or the singular word
+    session / a 5-hour form (plural "sessions" is window-block prose and is not matched). A
+    false positive fails closed, which is the safe direction.
+    """
     for line in text.splitlines():
-        if _SESSION_PCT_RE.search(line) is not None:
+        if not line.strip() or _is_recognised_line(line):
             continue
-        if _SESSION_LINE_RE.match(line) is not None:
-            return True
-        if _ANY_USED_RE.search(line) is not None and _MODEL_RE.search(line) is None:
+        if _LIMIT_LIKE_RE.search(line) is not None or _CURRENT_LINE_RE.match(line) is not None:
             return True
     return False
 
