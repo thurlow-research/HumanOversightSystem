@@ -223,7 +223,7 @@ gap is visible in the audit trail.
 ### 2a.10 Reading the state
 
 - `cat ~/.hos/usage-pause/reading`: raw values; `poll_*` keys are the poller's own view.
-- `cat ~/.hos/usage-pause/last-raw`: the latest raw output, for parse-failure debugging.
+- `python3 <clone>/bin/lib/usage_pause.py show-last-raw --state-dir ~/.hos`: the latest raw output and how the parser classifies it, for parse-failure debugging (read-only; `cat ~/.hos/usage-pause/last-raw` shows the raw file).
 - `cat ~/.hos/usage-pause/poll.last.log`: the last poll's output.
 
 - `grep -E 'PAUSED-USAGE|USAGE-OK|USAGE-UNCHECKED' /tmp/hos-<role>-<project>.log`: exactly one
@@ -248,13 +248,13 @@ reset) the cron log is the up-to-date record; the audit branch catches up on res
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| `ssh_failed` | ssh exited 255, or the key file is missing | `--check` items 1 to 3; `cat ~/.hos/usage-pause/last-raw` for the ssh error (host key, key mode, `authorized_keys`) |
+| `ssh_failed` | ssh exited 255, or the key file is missing | `--check` items 1 to 3; `show-last-raw` (or `cat ~/.hos/usage-pause/last-raw`) for the ssh error (host key, key mode, `authorized_keys`) |
 | `timeout` | the read did not finish. `timeout_side=remote` (`remote_exit=124`): the remote `timeout` fired; `remote_exit=137`: the remote `timeout` had to KILL, **or** something else sent SIGKILL (for example the OOM killer), which is ambiguous. `timeout_side=local`: the poller's own kill fired (ssh hung, a slow connect, or the remote wrapper missing; check `--check` item 2). `detail` is free text for humans. The poll log shows `ABORT read timed out ...`; the next poll retries, nothing retries within a poll | run `claude` by hand; check load; raise `read_timeout_seconds` within its bounds (then regenerate the `authorized_keys` line) |
 | `spawn_failed` | `ssh` could not be started | check `ssh` is installed and on the poller's `PATH` |
-| `envelope_invalid` | stdout was not the expected JSON envelope | `cat last-raw`; usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
+| `envelope_invalid` | stdout was not the expected JSON envelope | `show-last-raw` (or `cat last-raw`); usually the forced command is missing or wrong: `--check` item 2, regenerate the line |
 | `empty_session` | the read succeeded but showed no usage | the forced command may be running under an API-key or expired login: re-run `claude` login as the key's user |
-| `missing_session` / `missing_weekly` | `missing_weekly`: the weekly all-models line was absent or unparseable. `missing_session`: a session or limit line was present in a form the parser does not understand (for example a reworded 5-hour line). An **absent** session line is not a failure: a plan with no 5-hour limit prints none, so the session check is skipped (the reading carries `session_limit=none` and the reason reads `session unlimited, ...`) and only the weekly limits decide | `cat last-raw`: the `/usage` text changed shape |
-| `unparseable` | no recognisable usage text | `cat last-raw`: the `/usage` text changed shape |
+| `missing_session` / `missing_weekly` | `missing_weekly`: the weekly all-models line was absent or unparseable. `missing_session`: a session or limit line was present in a form the parser does not understand (for example a reworded 5-hour line). An **absent** session line is not a failure: a plan with no 5-hour limit prints none, so the session check is skipped (the reading carries `session_limit=none` and the reason reads `session unlimited, ...`) and only the weekly limits decide | `show-last-raw` (or `cat last-raw`): the `/usage` text changed shape |
+| `unparseable` | no recognisable usage text | `show-last-raw` (or `cat last-raw`): the `/usage` text changed shape |
 | `crashed` | the poller itself failed; `detail` names the step | read `poll.last.log`; run `python3 bin/lib/usage_pause.py poll-params` by hand |
 
 **No-session-limit readings and mixed versions.** A plan with no 5-hour limit is recognisable in the poll log and the pause reason by `session unlimited` (the gate verdict line carries `session_pct=-`). A poller that writes `session_limit=none` paired with an older installed `hos-cron` gate copy pauses every cycle (it shows as `reading_unreadable`), because the older gate requires a session value. Upgrade `bin/hos-cron` and `bin/lib/usage_pause.py` together. `--check` item 8 only verifies that each scheduled copy carries the gate sentinel and a `lib/usage_pause.py`; it does not detect version drift between them.
@@ -512,7 +512,7 @@ Every one of these is a failure we have actually hit:
 | `[PAUSED-USAGE] poller_not_installed`, `reading_missing` or `reading_stale` | no reading, or the poller stopped | `bin/hos-usage-poll --check`, `crontab -l`, `cat ~/.hos/usage-pause/poll.last.log` (section 2a). |
 | `[PAUSED-USAGE] settings_invalid:<key>` | `~/.config/hos/usage-pause.conf` is invalid | Fix the named key; every cycle pauses until you do, whatever `fail_mode` says. |
 | `[PAUSED-USAGE] check_error (rc=N; fail_mode ignored)` | the gate's helper failed or is missing | Run `python3 <bin>/lib/usage_pause.py check --state-dir ~/.hos` by hand; check that `lib/usage_pause.py` sits beside the scheduled `hos-cron`. |
-| `[PAUSED-USAGE] read_failed:envelope_invalid` | the poller's read returned no JSON envelope | `cat ~/.hos/usage-pause/last-raw`; check the forced command (`--check` item 2). |
+| `[PAUSED-USAGE] read_failed:envelope_invalid` | the poller's read returned no JSON envelope | `show-last-raw` as in the runbook (or `cat ~/.hos/usage-pause/last-raw`); check the forced command (`--check` item 2). |
 
 **Debugging cron-only failures** ("works in terminal, not in cron"): it is almost
 always the thin environment. Temporarily add a one-shot cron line to capture cron's

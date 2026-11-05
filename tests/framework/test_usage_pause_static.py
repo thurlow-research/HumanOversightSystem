@@ -242,6 +242,26 @@ def test_nothing_parses_detail():
         assert not re.search(r"(startswith|re\.\w+)\(.*\bdetail\b", line), (name, line)
 
 
+def test_show_last_raw_is_read_only():
+    """#2229 S2: the diagnostic never creates, writes or loads settings."""
+    tree = ast.parse(LIB.read_text())
+    func = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_cmd_show_last_raw"
+    )
+    names = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            f = node.func
+            names.add(f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", ""))
+    forbidden = {"makedirs", "mkdir", "write_atomic", "load_settings", "write_text", "write_bytes"}
+    assert not names & forbidden, names & forbidden
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "open":
+            assert len(node.args) == 2 and node.args[1].value == "rb"
+
+
 # ───────────────────────── #1944 S2: the hos-cron gate (TD 9.2, S2-ST1..ST10) ─────────────────────────
 
 HOS_CRON = ROOT / "bin" / "hos-cron"
