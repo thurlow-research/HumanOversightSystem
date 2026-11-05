@@ -171,9 +171,8 @@ def classify_ours(repo: str, number: int, login: str, ours: Any) -> tuple[bool, 
             created = event.get("created_at")
             if not created:
                 continue
-            try:
-                event_id = int(event.get("id") or 0)
-            except (TypeError, ValueError):
+            event_id = event.get("id")
+            if not isinstance(event_id, int) or isinstance(event_id, bool):
                 return False, "events-read-failed"
             key = (str(created), event_id)
             if latest is None or key > latest:

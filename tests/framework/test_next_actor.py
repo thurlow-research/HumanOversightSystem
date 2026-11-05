@@ -480,8 +480,17 @@ def test_run_by_file_path_from_other_cwd(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_malformed_event_id_is_read_failure_no_write(gh):
-    bad = events_for({"login": "github-actions[bot]"}, eid="not-a-number")
+@pytest.mark.parametrize(
+    "bad_id",
+    ["missing", None, "", "12", True, 1.5],
+    ids=["missing", "none", "empty-string", "numeric-string", "bool", "float"],
+)
+def test_malformed_event_id_is_read_failure_no_write(gh, bad_id):
+    bad = events_for({"login": "github-actions[bot]"})
+    if bad_id == "missing":
+        del bad["id"]
+    else:
+        bad["id"] = bad_id
     gh.queue("GET", ISSUE, issue(labels=(), assignees=[L]))
     gh.queue("GET", events_path(), (200, [bad]))
     assert na.unassign(REPO, N, L, OURS) == ("unassign-skip:events-read-failed", 1)
