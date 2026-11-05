@@ -53,7 +53,9 @@ def test_permissions_exact_and_no_job_permissions():
 
 def test_concurrency_group_and_no_cancel():
     assert DATA["concurrency"] == {
-        "group": f"needs-human-assign-{NUMBER_EXPR}",
+        "group": (
+            f"needs-human-assign-{NUMBER_EXPR}" "-${{ github.event.label.name || 'needs-human' }}"
+        ),
         "cancel-in-progress": False,
     }
 

@@ -22,7 +22,8 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: needs-human-assign-${{ github.event.issue.number || github.event.pull_request.number }}
+  # The label name is in the key so a pending needs-human run is never replaced by a skipped run for another label.
+  group: needs-human-assign-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.label.name || 'needs-human' }}
   cancel-in-progress: false
 
 jobs:

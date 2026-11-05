@@ -47,9 +47,11 @@ Any violation, or an unknown or missing subcommand, gives **exit 2** (argparse's
   |---|---|
   | `machine_accounts_file_absent` | `next-actor-unresolved:config-absent` |
   | `HUMAN_REVIEWER` missing or empty after `.strip()` | `…:unset` |
-  | Not matching `^[A-Za-z0-9](?:[A-Za-z0-9]\|-(?=[A-Za-z0-9])){0,38}$` | `…:bad-login` |
   | Ends in `[bot]` (case-insensitive) | `…:bot-suffix` |
+  | Not matching `^[A-Za-z0-9](?:[A-Za-z0-9]\|-(?=[A-Za-z0-9])){0,38}$` | `…:bad-login` |
   | `lower()` in `load_bot_accounts(repo_root)` | `…:bot-account` |
+
+  The checks run in table order. `bot-suffix` must come before `bad-login`, because the login pattern rejects `[` and `]`; in the opposite order, `bot-suffix` could never be reached.
 
   The CLI's `repo_root` is `Path(__file__).resolve().parents[2]`, which is the trusted checkout. `HUMAN_REVIEWER` is read from that file only; no environment variable or CLI flag may override it (the environment may only widen `BOT_ACCOUNTS`, per `load_bot_accounts`' union rule).
 - `check_assignable(repo, L)`: `GET repos/{repo}/assignees/{L}`.
@@ -108,7 +110,7 @@ Any violation, or an unknown or missing subcommand, gives **exit 2** (argparse's
 2. Each page must return status 200 with a list payload. Anything else is a read failure.
 3. A page with fewer than 100 items ends the history (COMPLETE).
 4. If page 10 is full, the result is BOUND-REACHED, which gives not ours with reason `events-incomplete` (exit 0, no write).
-5. Candidates are events with `event == "assigned"` and `(assignee or {}).get("login","").lower() == L.lower()`. The latest is the one with the greatest `(created_at, id)`. Events missing `created_at` are ignored.
+5. Candidates are events with `event == "assigned"` and `(assignee or {}).get("login","").lower() == L.lower()`. The latest is the one with the greatest `(created_at, id)`. Events missing `created_at` are ignored. A candidate whose `id` is not an integer is a read failure (`events-read-failed`, exit 1, no write), not a skipped event.
 6. Ours iff the latest candidate's `assigner` is a dict with a non-empty `login` whose `lower()` is in `ours`. `actor` is **never read**.
 7. Reasons: `no-assigned-event`, `assigner-null`, `assigner-not-ours`, `events-incomplete`. The `--ours` set for this slice is exactly `github-actions[bot]`.
 8. Coder obligation (finding #348): after merge, confirm the live `assigner.login` string on the first workflow-made `assigned` event, and record it in the PR or on #2224. If the string differs, the failure is "never unassigns", which is fail-safe.
@@ -118,7 +120,7 @@ Any violation, or an unknown or missing subcommand, gives **exit 2** (argparse's
 |---|---|
 | `on` | `issues: {types: [opened, labeled, unlabeled]}` and `pull_request_target: {types: [opened, labeled, unlabeled]}`. No other trigger and no `branches` filter. |
 | top-level `permissions` | `contents: read`, `issues: write`, `pull-requests: write`, nothing else, and no job-level `permissions`. `pull-requests: write` is **kept**: the ADR's drop condition needs a live test that cannot run before merge (R3). Dropping it later is a follow-up. |
-| `concurrency` | `group: needs-human-assign-${{ github.event.issue.number \|\| github.event.pull_request.number }}`, `cancel-in-progress: false` |
+| `concurrency` | `group: needs-human-assign-${{ github.event.issue.number \|\| github.event.pull_request.number }}-${{ github.event.label.name \|\| 'needs-human' }}`, `cancel-in-progress: false`. The label-name suffix stops a non-`needs-human` label event (whose job is skipped by `if:`) from replacing a pending `needs-human` run in the same group. |
 | job `needs-human-assign` | `runs-on: ubuntu-latest`, `timeout-minutes: 5` |
 | job `if:` | `((github.event.action == 'labeled' \|\| github.event.action == 'unlabeled') && github.event.label.name == 'needs-human') \|\| (github.event.action == 'opened' && (contains(github.event.issue.labels.*.name, 'needs-human') \|\| contains(github.event.pull_request.labels.*.name, 'needs-human')))` |
 | step 1 | `uses: actions/checkout@v4` with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false`. **No sparse checkout:** the import needs `scripts/__init__.py`, and cone mode would omit it. |
@@ -221,3 +223,16 @@ RISK: HIGH. Protected surfaces (`.github/workflows/**`, `scripts/framework/**`):
 
 ## Human Review Required
 Protected-surface approval at merge, which is already required. Mandatory reviewers: `security-reviewer`, `code-reviewer`, `reliability-reviewer`.
+
+## Errata (review round, 2026-11-05)
+Change class: clarifying. These close gaps found in review; the code on this branch already implements them.
+
+1. **§2 `concurrency` group.** The key is now `needs-human-assign-<item number>-<label name, default 'needs-human'>`. With a group keyed only per item, a non-`needs-human` label event could replace a pending `needs-human` run, because a workflow-level group admits only one pending run (reliability-reviewer).
+2. **§1.3 `resolve_login` refusal order.** The `bot-suffix` check now comes before the login-pattern (`bad-login`) check. In the opposite order `bot-suffix` was unreachable, since the pattern already rejects `[bot]`.
+3. **§1.5 `classify_ours`.** A non-integer `id` on a candidate event is `events-read-failed` (exit 1, no write).
+
+Known follow-ups (not in scope for this slice):
+- `assign()` does not re-check at read-back that `needs-human` is still present. A race with the `label-swap` glue can leave a stale assignee.
+- The HTTP status that `_gh` returns is not carried into the outcome, so `assign-failed:write` is ambiguous about its cause.
+- `actions/checkout@v4` is pinned by tag, not by commit SHA.
+- `label-swap` has no job timeout around the glue line.

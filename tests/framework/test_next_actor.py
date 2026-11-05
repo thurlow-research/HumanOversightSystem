@@ -595,3 +595,58 @@ def test_config_via_requester_trust_only():
     assert na._parse_env_file is _parse_env_file
     assert na.load_bot_accounts is load_bot_accounts
     assert 'partition("=")' not in SOURCE and 'split("=")' not in SOURCE
+
+
+# --- mutation-driven additions (unit-test round 1) -------------------------
+
+
+def test_classify_event_without_created_at_is_ignored(gh):
+    event = events_for({"login": "github-actions[bot]"})
+    del event["created_at"]
+    assert classify(gh, [event]) == (False, "no-assigned-event")
+
+
+@pytest.mark.parametrize("assigner", [{}, {"login": ""}, {"login": None}])
+def test_classify_assigner_without_login_is_null(gh, assigner):
+    assert classify(gh, [events_for(assigner)]) == (False, "assigner-null")
+
+
+def test_classify_assigner_login_compared_case_insensitively(gh):
+    assert classify(gh, [events_for({"login": "GitHub-Actions[BOT]"})]) == (True, "ours")
+
+
+def test_post_write_release_request_not_assigned_is_noop_no_delete(gh):
+    ready(gh, issue(), issue(labels=("needs-human", "release-request")))
+    gh.queue("POST", ASSIGNEES, (201, {}))
+    assert na.assign(REPO, N, L) == ("ng3b-race-noop", 0)
+    assert [c[0] for c in gh.writes()] == ["POST"]
+
+
+def test_post_write_undo_delete_failed_even_if_reread_shows_removed(gh):
+    racing = issue(labels=("needs-human", "release-request"), assignees=[L])
+    ready(gh, issue(), racing, issue(labels=("needs-human", "release-request")))
+    gh.queue("POST", ASSIGNEES, (201, {}))
+    gh.queue("DELETE", ASSIGNEES, (500, {}))
+    assert na.assign(REPO, N, L) == ("ng3b-race-undo-failed", 4)
+
+
+def test_post_write_undo_final_reread_failure_is_undo_failed(gh):
+    racing = issue(labels=("needs-human", "release-request"), assignees=[L])
+    ready(gh, issue(), racing, (500, None))
+    gh.queue("POST", ASSIGNEES, (201, {}))
+    gh.queue("DELETE", ASSIGNEES, (200, {}))
+    assert na.assign(REPO, N, L) == ("ng3b-race-undo-failed", 4)
+
+
+def test_classify_latest_by_created_at_before_event_id(gh):
+    older_high_id = events_for({"login": "ScottThurlow"}, created="2026-01-01T00:00:00Z", eid=99)
+    newer_low_id = events_for(
+        {"login": "github-actions[bot]"}, created="2026-01-02T00:00:00Z", eid=1
+    )
+    assert classify(gh, [older_high_id, newer_low_id]) == (True, "ours")
+
+
+def test_classify_same_timestamp_higher_event_id_wins(gh):
+    ours = events_for({"login": "github-actions[bot]"}, created="2026-01-01T00:00:00Z", eid=1)
+    human = events_for({"login": "ScottThurlow"}, created="2026-01-01T00:00:00Z", eid=2)
+    assert classify(gh, [human, ours]) == (False, "assigner-not-ours")
