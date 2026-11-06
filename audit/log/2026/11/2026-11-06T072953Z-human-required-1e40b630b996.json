@@ -1,0 +1,1 @@
+{"cid":"2245","event":"human-required","head_sha":"e9618f9247474b5510d092ccf4ce674eac87ca5c","pr":2261,"reason_category":"ESCALATION","summary":"Evaluator CONDITIONAL_PROCEED with 6 acknowledgement items on head e9618f92; no protected/security/CODEOWNERS surface, all required content checks pass, no bounce; recommend APPROVE.","tier":"MEDIUM"}
