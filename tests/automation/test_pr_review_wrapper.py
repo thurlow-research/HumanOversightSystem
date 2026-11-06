@@ -2082,6 +2082,51 @@ def test_w_hr_3_approve_action_gets_waits_only_sentence(h):
     assert "the overseer merges it on its next cycle after that approval" in body
 
 
+@pytest.mark.parametrize(
+    "action", ["APPROVE", "REQUEST_CHANGES", "DECIDE", "DO_NOT_MERGE", "OTHER"]
+)
+def test_2245_sentence_matches_expected_action(h, action):
+    _body(h, action.replace("_", " "))
+    disposition = "PROPOSE_ONLY" if action == "APPROVE" else "HUMAN_REQUIRED"
+    result = _verdict(h, disposition, action)
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _posted_body(h)
+    assert body.count(MARKER_PREFIX) == 1
+    against = action in ("REQUEST_CHANGES", "DO_NOT_MERGE")
+    assert ("recommends against merging" in body) is against
+    if action == "DECIDE":
+        assert "the decision is yours" in body
+        assert "against" not in body
+        assert "overrides this recommendation" not in body
+    if action == "OTHER":
+        assert "against" not in body
+        assert "what the overseer asks of you is stated above" in body
+
+
+@pytest.mark.parametrize(
+    "action", ["APPROVE", "REQUEST_CHANGES", "DECIDE", "DO_NOT_MERGE", "OTHER"]
+)
+def test_2245_posted_body_contains_exactly_the_mapped_sentence(h, action):
+    _body(h, action.replace("_", " "))
+    disposition = "PROPOSE_ONLY" if action == "APPROVE" else "HUMAN_REQUIRED"
+    result = _verdict(h, disposition, action)
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _posted_body(h)
+    sha12 = HEAD40[:12]
+    expected = cli._SIGNOFF_SENTENCES[action].format(sha12=sha12)
+    assert body.count(expected) == 1
+    for other in set(cli._SIGNOFF_SENTENCES.values()) - {cli._SIGNOFF_SENTENCES[action]}:
+        assert other.format(sha12=sha12) not in body
+
+
+def test_2245_unknown_action_raises_and_all_actions_have_templates():
+    with pytest.raises(KeyError):
+        cli._with_interim_signoff("b", "HUMAN_REQUIRED", "BOGUS", HEAD40)
+    for action in cli._EXPECTED_ACTIONS:
+        if action != "NO_ACTION":
+            assert action in cli._SIGNOFF_SENTENCES
+
+
 def test_w_po_1_propose_only_guards(h):
     _body(h, "NO ACTION")
     result = _verdict(h, "PROPOSE_ONLY", "NO_ACTION")
