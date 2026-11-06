@@ -43,6 +43,15 @@ from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 
+REASON_PREFIX = "HOS_VENV_FAILURE_REASON="
+REFUSED = "mcp_policy_preinstall_refused"
+CANNOT_CHECK = "mcp_policy_preinstall_cannot_check"
+
+
+def reason_line(reason: str) -> str:
+    return REASON_PREFIX + reason
+
+
 HOS_CRON = Path(__file__).parent.parent.parent / "bin" / "hos-cron"
 
 EXPECTED_BOT = "hos-worker-hos[bot]"
@@ -434,10 +443,15 @@ class CronEnv:
             'exit "$_exit"\n',
         )
         # ensure_venv.sh stub: exit 0 by default (healthy venv); override with
-        # HOS_TEST_ENSURE_VENV_EXIT to simulate a broken venv.
+        # HOS_TEST_ENSURE_VENV_EXIT to simulate a broken venv. HOS_TEST_ENSURE_VENV_STDERR
+        # is written to stderr first (#2220: refusal text + HOS_VENV_FAILURE_REASON= line).
         _write_exec(
             self.repo / "scripts" / "oversight" / "ensure_venv.sh",
-            "#!/usr/bin/env bash\n" 'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
+            "#!/usr/bin/env bash\n"
+            '[[ -n "${HOS_TEST_ENSURE_VENV_RECORD:-}" ]]'
+            ' && readlink "/proc/$$/fd/2" >> "$HOS_TEST_ENSURE_VENV_RECORD"\n'
+            '[[ -n "${HOS_TEST_ENSURE_VENV_STDERR:-}" ]] && printf "%b\\n" "$HOS_TEST_ENSURE_VENV_STDERR" >&2\n'
+            'exit "${HOS_TEST_ENSURE_VENV_EXIT:-0}"\n',
         )
         # fake oversight venv — satisfies the pre-jitter dependency check
         _write_exec(
@@ -2821,6 +2835,95 @@ class TestValidateEnv:
         assert "oversight-venv" not in r.stdout
         assert "✓ environment validated" in r.stdout
 
+    # ── #2220: the refusal reason reaches the cron log and the audit record ──
+    _REFUSAL = {
+        "HOS_TEST_ENSURE_VENV_EXIT": "1",
+        "HOS_TEST_ENSURE_VENV_STDERR": ("VIOLATION: unapproved mcp\\n" + reason_line(REFUSED)),
+    }
+
+    def test_refusal_text_reaches_cron_log_and_audit_detail(self, cron):
+        cron.install_cycle_log()
+        r = cron.run(env_overrides=self._REFUSAL)
+        assert r.returncode == 0, r.stdout + r.stderr  # still fail-open
+        assert "oversight-venv broken or missing" in r.stdout
+        assert "VIOLATION: unapproved mcp" in r.stdout
+        (rec,) = cron.audit_records("cycle-env-warn")
+        assert rec["reason"] == "oversight_venv_unavailable"
+        assert rec["detail"] == REFUSED
+
+    def test_no_reason_line_audits_detail_unknown(self, cron):
+        cron.install_cycle_log()
+        r = cron.run(env_overrides={"HOS_TEST_ENSURE_VENV_EXIT": "1"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        (rec,) = cron.audit_records("cycle-env-warn")
+        assert rec["reason"] == "oversight_venv_unavailable"
+        assert rec["detail"] == "unknown"
+
+    def test_bad_reason_chars_audit_detail_unknown(self, cron):
+        cron.install_cycle_log()
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": reason_line("Bad;1"),
+        }
+        cron.run(env_overrides=env)
+        (rec,) = cron.audit_records("cycle-env-warn")
+        assert rec["detail"] == "unknown"
+
+    def test_cannot_check_reason_propagates(self, cron):
+        cron.install_cycle_log()
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": reason_line(CANNOT_CHECK),
+        }
+        cron.run(env_overrides=env)
+        (rec,) = cron.audit_records("cycle-env-warn")
+        assert rec["detail"] == CANNOT_CHECK
+
+    def test_last_reason_line_wins(self, cron):
+        cron.install_cycle_log()
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": (
+                reason_line("first_reason") + "\\n" + reason_line("second_reason")
+            ),
+        }
+        cron.run(env_overrides=env)
+        (rec,) = cron.audit_records("cycle-env-warn")
+        assert rec["detail"] == "second_reason"
+
+    def test_log_tail_is_limited_to_last_10_lines(self, cron):
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": "\\n".join(f"errline{i:02d}" for i in range(1, 16)),
+        }
+        r = cron.run(env_overrides=env)
+        assert "errline05" not in r.stdout
+        for i in range(6, 16):
+            assert f"ensure_venv: errline{i:02d}" in r.stdout
+
+    def test_control_chars_are_stripped_from_logged_tail(self, cron):
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": "bad\\033[31mred\\033[0m\\rtail",
+        }
+        r = cron.run(env_overrides=env)
+        assert "ensure_venv: bad[31mred[0mtail" in r.stdout
+        assert "\x1b" not in r.stdout
+        assert "\r" not in r.stdout
+
+    @pytest.mark.parametrize("exit_code", ["0", "1"])
+    def test_no_mktemp_leftovers_after_validate_env(self, cron, tmp_path, exit_code):
+        record = tmp_path / "ev_record.txt"
+        cron.run(
+            env_overrides={
+                "HOS_TEST_ENSURE_VENV_EXIT": exit_code,
+                "HOS_TEST_ENSURE_VENV_RECORD": str(record),
+            }
+        )
+        paths = [Path(x) for x in record.read_text().split()]
+        assert paths
+        assert not any(x.exists() for x in paths)
+
 
 # ─────────────────────── Pre-jitter dependency check ─────────────────────────
 class TestPreJitterDepsCheck:
@@ -2843,6 +2946,52 @@ class TestPreJitterDepsCheck:
         assert r.returncode == 78, r.stdout + r.stderr
         assert "ensure_venv.sh failed to build" in r.stdout
         assert not cron.claude_ran()
+
+    def test_build_failure_shows_stderr_and_audits_detail(self, cron):
+        """#2220: refusal stderr stays visible; audit keeps reason= and adds detail=."""
+        cron.install_cycle_log()
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        r = cron.run(env_overrides=TestValidateEnv._REFUSAL)
+        assert r.returncode == 78, r.stdout + r.stderr
+        assert "VIOLATION: unapproved mcp" in r.stdout + r.stderr
+        (rec,) = cron.audit_records("cycle-preflight-fail")
+        assert rec["reason"] == "oversight_venv_build_failed"
+        assert rec["detail"] == REFUSED
+
+    def test_build_success_reemits_stderr_without_preflight_fail_audit(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        r = cron.run(env_overrides={"HOS_TEST_ENSURE_VENV_STDERR": "warn-from-ensure-venv"})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "warn-from-ensure-venv" in r.stdout + r.stderr
+        assert cron.audit_records("cycle-preflight-fail") == []
+
+    @pytest.mark.parametrize("exit_code", ["0", "1"])
+    def test_no_mktemp_leftovers_after_preflight(self, cron, tmp_path, exit_code):
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        record = tmp_path / "ev_record.txt"
+        cron.run(
+            env_overrides={
+                "HOS_TEST_ENSURE_VENV_EXIT": exit_code,
+                "HOS_TEST_ENSURE_VENV_RECORD": str(record),
+            }
+        )
+        paths = [Path(x) for x in record.read_text().split()]
+        assert paths
+        assert not any(x.exists() for x in paths)
+
+    def test_build_failure_bad_reason_chars_not_propagated(self, cron):
+        cron.install_cycle_log()
+        (cron.repo / "scripts" / "oversight" / ".venv" / "bin" / "python").unlink()
+        env = {
+            "HOS_TEST_ENSURE_VENV_EXIT": "1",
+            "HOS_TEST_ENSURE_VENV_STDERR": reason_line("BAD-1"),
+        }
+        r = cron.run(env_overrides=env)
+        assert r.returncode == 78, r.stdout + r.stderr
+        (rec,) = cron.audit_records("cycle-preflight-fail")
+        assert rec["reason"] == "oversight_venv_build_failed"
+        assert rec["detail"] == "unknown"
 
     def test_missing_pytest_self_heals_via_ensure_venv(self, cron):
         """pytest missing from venv → build via ensure_venv.sh, then proceed (#953)."""

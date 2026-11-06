@@ -32,6 +32,15 @@ from tests.tmp_hygiene import child_env
 
 BASH = shutil.which("bash") or "/bin/bash"
 
+REASON_PREFIX = "HOS_VENV_FAILURE_REASON="
+REFUSED = "mcp_policy_preinstall_refused"
+CANNOT_CHECK = "mcp_policy_preinstall_cannot_check"
+
+
+def reason_line(reason: str) -> str:
+    return REASON_PREFIX + reason
+
+
 ENSURE_VENV_SH = Path(__file__).parent.parent.parent / "scripts" / "oversight" / "ensure_venv.sh"
 
 
@@ -112,7 +121,8 @@ class EnsureVenvEnv:
             # precede the pip-logging fallback. Logs to its own file, never the pip log.
             'if [[ "$*" == *mcp_policy_logic.py* ]]; then\n'
             '  printf "%s\\n" "$*" >> "${HOS_TEST_POLICY_CALL_LOG:-/dev/null}"\n'
-            '  [[ "${HOS_TEST_POLICY_EXIT:-0}" == "1" ]] && echo "VIOLATION: test"\n'
+            '  [[ "${HOS_TEST_POLICY_EXIT:-0}" == "1" && -z "${HOS_TEST_POLICY_NO_VIOLATION:-}" ]]'
+            ' && echo "VIOLATION: test"\n'
             '  exit "${HOS_TEST_POLICY_EXIT:-0}"\n'
             "fi\n"
             # python3 -c "import ..." smoke test
@@ -186,8 +196,11 @@ class EnsureVenvEnv:
             "HOS_TEST_PIP_CALL_LOG": str(self.pip_call_log),
             "HOS_TEST_POLICY_CALL_LOG": str(self.policy_call_log),
         }
-        if env_overrides:
-            env.update(env_overrides)
+        for key, value in (env_overrides or {}).items():
+            if value is None:  # None unsets the variable
+                env.pop(key, None)
+            else:
+                env[key] = value
         args = [BASH, str(self.script)]
         if quiet:
             args.append("--quiet")
@@ -405,6 +418,202 @@ class TestMcpPreinstallCheck:
         assert len(venv_env.policy_calls()) == 1
         assert not venv_env.venv.exists()
         assert not venv_env.marker_exists()
+
+    # ── #2220: machine-readable reason line + violation-only negative cache ──
+    def _cache_files(self, venv_env):
+        return list(venv_env.marker_dir.glob("mcp-policy-refused-*"))
+
+    def test_violation_emits_refused_reason_line(self, venv_env):
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode == 1
+        assert reason_line(REFUSED) in r.stderr.splitlines()
+
+    @pytest.mark.parametrize("code", ["2", "127"])
+    def test_cannot_check_emits_cannot_check_reason_line(self, venv_env, code):
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": code})
+        assert reason_line(CANNOT_CHECK) in r.stderr.splitlines()
+
+    @pytest.mark.parametrize("missing", ["mcp_policy_logic.py", "mcp_approved_list.json"])
+    def test_missing_guard_file_emits_cannot_check_reason_line(self, venv_env, missing):
+        (venv_env.script_dir / missing).unlink()
+        r = venv_env.run()
+        assert reason_line(CANNOT_CHECK) in r.stderr.splitlines()
+
+    def test_violation_writes_negative_cache(self, venv_env):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        (cache,) = self._cache_files(venv_env)
+        assert len(cache.read_text().strip()) == 64
+
+    def test_cached_refusal_skips_checker_and_venv_creation(self, venv_env):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert len(venv_env.policy_calls()) == 1
+        sentinel = venv_env.venv / "keep.txt"
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text("x")  # rm -rf / python3 -m venv would clobber this
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode == 1
+        assert len(venv_env.policy_calls()) == 1, "checker must not run on a cache hit"
+        assert sentinel.exists(), "venv creation must be skipped on a cache hit"
+        assert "cached from a previous check" in r.stderr
+        assert reason_line(REFUSED) in r.stderr.splitlines()
+
+    @pytest.mark.parametrize(
+        "changed", ["requirements.txt", "mcp_approved_list.json", "mcp_policy_logic.py"]
+    )
+    def test_changed_input_invalidates_cache(self, venv_env, changed):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        with open(venv_env.script_dir / changed, "a") as fh:
+            fh.write("\n# changed\n")
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode == 1
+        assert len(venv_env.policy_calls()) == 2
+
+    def test_cannot_check_does_not_write_cache(self, venv_env):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "2"})
+        assert self._cache_files(venv_env) == []
+
+    def test_successful_check_removes_stale_cache(self, venv_env):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        (cache,) = self._cache_files(venv_env)
+        cache.write_text("stale-key\n")  # differs from the current key: real check runs
+        r = venv_env.run()
+        assert r.returncode == 0, r.stderr
+        assert self._cache_files(venv_env) == []
+
+    def test_cache_write_failure_is_tolerated(self, venv_env):
+        (venv_env.home / ".hos").write_text("not a directory")  # mkdir -p will fail
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode == 1
+        assert reason_line(REFUSED) in r.stderr.splitlines()
+        assert self._cache_files(venv_env) == []
+
+    def test_mktemp_failure_keeps_earlier_captured_stderr(self, venv_env, tmp_path):
+        shim = tmp_path / "shim_bin"
+        _write_exec(shim / "mktemp", "#!/bin/sh\nexit 1\n")
+        captured = tmp_path / "captured_stderr.txt"
+        env = child_env(
+            {
+                "HOME": str(venv_env.home),
+                "PATH": f"{shim}:{venv_env.stub_bin}:/usr/bin:/bin",
+                "HOS_TEST_POLICY_CALL_LOG": str(venv_env.policy_call_log),
+                "HOS_TEST_POLICY_EXIT": "1",
+            }
+        )
+        with open(captured, "w") as fh:  # stderr is a plain file, as in hos-cron's capture
+            r = subprocess.run(
+                [
+                    BASH,
+                    "-c",
+                    f'echo seeded-before-check >&2; exec "{BASH}" "{venv_env.script}" --quiet',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=fh,
+                text=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+        text = captured.read_bytes().replace(b"\0", b"").decode()
+        assert r.returncode == 1
+        assert "seeded-before-check" in text
+        assert "VIOLATION: test" in text
+        assert reason_line(CANNOT_CHECK) in text.splitlines()
+        assert self._cache_files(venv_env) == []
+
+    @pytest.mark.parametrize("policy_exit", ["0", "1"])
+    def test_policy_output_temp_file_is_removed(self, venv_env, tmp_path, policy_exit):
+        scratch = tmp_path / "scratch_tmp"
+        scratch.mkdir()
+        venv_env.run(env_overrides={"TMPDIR": str(scratch), "HOS_TEST_POLICY_EXIT": policy_exit})
+        assert len(venv_env.policy_calls()) == 1
+        assert list(scratch.iterdir()) == []
+
+    def test_no_sha256_tool_means_no_cache(self, venv_env, tmp_path):
+        tools = tmp_path / "tools_bin"
+        tools.mkdir()
+        for name in (
+            "bash",
+            "env",
+            "cat",
+            "cut",
+            "grep",
+            "mktemp",
+            "rm",
+            "mkdir",
+            "dirname",
+            "head",
+            "df",
+            "awk",
+            "cp",
+            "chmod",
+            "touch",
+            "tr",
+            "realpath",
+            "readlink",
+            "md5sum",
+            "sed",
+        ):
+            found = shutil.which(name, path="/usr/bin:/bin")
+            if found:
+                (tools / name).symlink_to(found)
+        assert shutil.which("sha256sum", path=str(tools)) is None
+        path = f"{venv_env.stub_bin}:{tools}"
+        for _ in range(2):
+            r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1", "PATH": path})
+            assert r.returncode == 1, r.stderr
+        assert self._cache_files(venv_env) == []
+        assert len(venv_env.policy_calls()) == 2
+
+    def test_missing_guard_file_with_cache_present_is_cannot_check(self, venv_env):
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert self._cache_files(venv_env)
+        (venv_env.script_dir / "mcp_approved_list.json").unlink()
+        r = venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert reason_line(CANNOT_CHECK) in r.stderr.splitlines()
+        assert "cached" not in r.stderr
+
+    def test_home_unset_does_not_abort_and_does_not_cache(self, venv_env):
+        r = venv_env.run(env_overrides={"HOME": None, "HOS_TEST_POLICY_EXIT": "1"})
+        assert r.returncode == 1
+        assert "unbound variable" not in r.stderr
+        assert reason_line(REFUSED) in r.stderr.splitlines()
+        assert self._cache_files(venv_env) == []
+
+    def test_sourced_under_set_eu_with_home_unset_has_no_unbound_variable(self, venv_env):
+        env = {"PATH": f"{venv_env.stub_bin}:/usr/bin:/bin", "HOS_TEST_POLICY_EXIT": "1"}
+        r = subprocess.run(
+            [BASH, "-c", f'set -euo pipefail; source "{venv_env.script}" --quiet'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=child_env(env),
+        )
+        assert r.returncode == 1
+        assert "unbound variable" not in r.stderr
+
+    def test_exit_1_without_violation_line_is_cannot_check_and_not_cached(self, venv_env):
+        r = venv_env.run(
+            env_overrides={"HOS_TEST_POLICY_EXIT": "1", "HOS_TEST_POLICY_NO_VIOLATION": "1"}
+        )
+        assert r.returncode == 1
+        lines = r.stderr.splitlines()
+        assert reason_line(CANNOT_CHECK) in lines
+        assert reason_line(REFUSED) not in lines
+        assert self._cache_files(venv_env) == []
+
+    def test_bytes_shifted_between_files_changes_the_key(self, venv_env):
+        req, lst = (
+            venv_env.script_dir / "requirements.txt",
+            venv_env.script_dir / "mcp_approved_list.json",
+        )
+        req.write_text("AB")
+        lst.write_text("C")
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        req.write_text("A")
+        lst.write_text("BC")  # same concatenated bytes, different split
+        venv_env.run(env_overrides={"HOS_TEST_POLICY_EXIT": "1"})
+        assert len(venv_env.policy_calls()) == 2
 
     def test_acceptance_real_interpreter_refuses_unlisted_mcp(self, tmp_path):
         """Real python3, no stub: an unlisted MCP line is refused before any pip call."""
