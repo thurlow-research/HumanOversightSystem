@@ -1843,6 +1843,40 @@ def test_t_cli_2227_repair_lock_timeout_is_a_transient_failure(world, monkeypatc
     assert (info.value.code, info.value.klass) == ("bounce_lock_timeout", "transient")
 
 
+@pytest.mark.parametrize("name", ["bounce", "route"])
+def test_t_cli_2227_lock_unavailable_is_a_transient_failure(name, world, monkeypatch, capsys):
+    _require_failing_check(monkeypatch)
+    _write_findings(
+        world, [{"class": "MERITS", "summary": "bad", "path": "a.py", "slug": "bad-thing"}]
+    )
+
+    def unavailable(*a, **k):
+        raise merge_authority.BounceLockUnavailable("lock dir read-only")
+
+    monkeypatch.setattr(merge_authority, "record_pr_bounce", unavailable)
+    rc, record = _run_mut(world, name, capsys)
+    assert rc == 1
+    assert (record["error_code"], record["error_class"]) == (
+        "bounce_lock_unavailable",
+        "transient",
+    )
+    assert record["comment_posted"] is False
+    assert world.posts == []
+
+
+def test_t_cli_2227_repair_lock_unavailable_is_a_transient_failure(world, monkeypatch):
+    def unavailable(*a, **k):
+        raise merge_authority.BounceLockUnavailable("lock dir read-only")
+
+    monkeypatch.setattr(merge_authority, "repair_bounce_finalize", unavailable)
+    with pytest.raises(cli._Fail) as info:
+        cli._repair_finalize(
+            "o", "r", 42, "issue-9", _HEAD, types.SimpleNamespace(repo_root=world.root), []
+        )
+    assert (info.value.code, info.value.klass) == ("bounce_lock_unavailable", "transient")
+    assert info.value.extra == {"comment_posted": False}
+
+
 def test_t_cli_2227_ids_follow_the_findings_the_lock_kept(world, monkeypatch, capsys):
     a = {"class": "MERITS", "summary": "first", "path": "a.py", "slug": "first-thing"}
     b = {"class": "MERITS", "summary": "second", "path": "b.py", "slug": "second-thing"}

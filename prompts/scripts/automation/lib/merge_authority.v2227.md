@@ -45,3 +45,4 @@ Rules:
 
 1. Commit 6131d3af7: `record_pr_bounce` returns `finding_keys` so the CLI keys finding ids to the findings the lock kept.
 2. Code-review SHOULD_FIX-1: `_route` now reports a lock-time cap as ESCALATE / rule 6d / trigger `bounce-cap` and a lock-time all-duplicate result as NOOP / rule 6c / reason `no-new-keys`, matching the pre-lock decisions. `to_bounce` is cleared in both. NIT-1: `record_pr_bounce` docstring notes that finalize runs after the lock and is idempotent via repair. Tests added in `test_merge_authority_cli.py`.
+3. Reliability SHOULD_FIX-2: lock-acquisition OSErrors (dir create, open, non-contention flock) become `BounceLockUnavailable`, mapped by the CLI to transient `bounce_lock_unavailable` with `comment_posted: False` on both bounce and repair paths. SHOULD_FIX-1: documented the 60 s lock timeout as a deliberate trade-off; value unchanged. Tests updated and added.

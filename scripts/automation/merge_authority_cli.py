@@ -1098,6 +1098,10 @@ def _lock_timeout_fail(exc: merge_authority.BounceLockTimeout) -> _Fail:
     return _Fail("bounce_lock_timeout", str(exc), "transient", {"comment_posted": False})
 
 
+def _lock_unavailable_fail(exc: merge_authority.BounceLockUnavailable) -> _Fail:
+    return _Fail("bounce_lock_unavailable", str(exc), "transient", {"comment_posted": False})
+
+
 def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> list[str]:
     try:
         return merge_authority.repair_bounce_finalize(
@@ -1113,6 +1117,8 @@ def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> li
         raise _repair_read_fail(exc) from exc
     except merge_authority.BounceLockTimeout as exc:
         raise _lock_timeout_fail(exc) from exc
+    except merge_authority.BounceLockUnavailable as exc:
+        raise _lock_unavailable_fail(exc) from exc
     except ValueError as exc:
         raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
 
@@ -1139,6 +1145,8 @@ def _write_bounce(
         raise _repair_read_fail(exc) from exc
     except merge_authority.BounceLockTimeout as exc:
         raise _lock_timeout_fail(exc) from exc
+    except merge_authority.BounceLockUnavailable as exc:
+        raise _lock_unavailable_fail(exc) from exc
     except github.GitHubError as exc:
         raise _Fail(
             "bounce_comment_failed",

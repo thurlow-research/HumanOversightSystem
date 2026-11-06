@@ -15,6 +15,7 @@ from scripts.automation.lib.github import GitHubError
 from scripts.automation.lib.merge_authority import (
     BOUNCE_CAP,
     BounceLockTimeout,
+    BounceLockUnavailable,
     _bounce_lock,
     bounce_count,
     bounce_events,
@@ -360,7 +361,7 @@ def test_empty_findings_still_respects_cap(tmp_path):
     assert results[0].at_cap is True and bodies == []
 
 
-def test_lock_file_open_oserror_propagates_before_any_write(tmp_path):
+def test_lock_file_open_oserror_becomes_lock_unavailable_before_any_write(tmp_path):
     bodies: list = []
     with (
         patch(f"{MA}.post_comment", side_effect=_post(bodies)),
@@ -369,25 +370,29 @@ def test_lock_file_open_oserror_propagates_before_any_write(tmp_path):
     ):
         results: list = []
         _call(tmp_path, [_f()], results)
-    assert isinstance(results[0], PermissionError)
+    assert isinstance(results[0], BounceLockUnavailable)
+    assert isinstance(results[0].__cause__, PermissionError)
+    assert "bounce-" in str(results[0]) and "13" in str(results[0])
     assert not isinstance(results[0], BounceLockTimeout)
     assert bodies == []
     assert bounce_events("cid-1", repo_root=str(tmp_path)) == []
 
 
-def test_lock_dir_uncreatable_oserror_propagates(tmp_path):
+def test_lock_dir_uncreatable_oserror_becomes_lock_unavailable(tmp_path):
     (tmp_path / ".claudetmp").write_text("a file, not a directory")
-    with pytest.raises(OSError):
+    with pytest.raises(BounceLockUnavailable) as info:
         with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path)):
             pytest.fail("must not enter the critical section")
+    assert isinstance(info.value.__cause__, OSError)
 
 
-def test_flock_oserror_other_than_contention_closes_fd_and_propagates(tmp_path):
+def test_flock_oserror_other_than_contention_closes_fd_and_is_lock_unavailable(tmp_path):
     before = len(os.listdir("/proc/self/fd"))
     with patch(f"{MA}.fcntl.flock", side_effect=OSError(errno.ENOLCK, "no locks")):
-        with pytest.raises(OSError) as info:
+        with pytest.raises(BounceLockUnavailable) as info:
             with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path)):
                 pytest.fail("must not enter the critical section")
+    assert isinstance(info.value.__cause__, OSError)
     assert not isinstance(info.value, BounceLockTimeout)
     assert len(os.listdir("/proc/self/fd")) == before
 

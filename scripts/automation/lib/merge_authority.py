@@ -2242,12 +2242,21 @@ def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
     )
 
 
+# Deliberate trade-off: a holder's worst-case GitHub retry budget (post_comment plus its
+# read-back, 30 s per gh call with 3 retries) can exceed this. A waiter that times out
+# fails transiently with nothing written and retries next cycle; dedup inside the lock
+# then makes that retry safe. Waiting longer would only stall the cycle behind a slow holder.
 BOUNCE_LOCK_TIMEOUT_SECONDS = 60.0
 _BOUNCE_LOCK_POLL_SECONDS = 0.1
 
 
 class BounceLockTimeout(RuntimeError):
     """The per-(repo, cid) bounce lock was not acquired in time. Raised before any write."""
+
+
+class BounceLockUnavailable(RuntimeError):
+    """The bounce lock file could not be created or locked (OSError is `__cause__`).
+    Raised before any write."""
 
 
 @contextlib.contextmanager
@@ -2268,8 +2277,14 @@ def _bounce_lock(
     """
     digest = hashlib.sha256(f"{owner}/{repo}\0{cid}".encode("utf-8")).hexdigest()[:24]
     lock_dir = Path(repo_root) / ".claudetmp" / "locks"
-    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(lock_dir / f"bounce-{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    lock_path = lock_dir / f"bounce-{digest}.lock"
+    try:
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise BounceLockUnavailable(
+            f"bounce lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
+        ) from exc
     try:
         deadline = time.monotonic() + timeout
         while True:
@@ -2282,6 +2297,10 @@ def _bounce_lock(
                         f"bounce lock for {cid} not acquired within {timeout:g}s"
                     ) from None
                 time.sleep(_BOUNCE_LOCK_POLL_SECONDS)
+            except OSError as exc:
+                raise BounceLockUnavailable(
+                    f"bounce lock {lock_path} unavailable (errno {exc.errno}): {exc.strerror}"
+                ) from exc
         yield
     finally:
         os.close(fd)  # closing the fd releases the flock
