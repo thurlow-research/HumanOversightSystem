@@ -19,12 +19,16 @@ Matrix (R9.1 — authoritative):
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import fnmatch
+import hashlib
 import importlib.util
 import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -2227,6 +2231,7 @@ class BounceResult:
     skipped: bool = False
     finding_ids: list[str] = field(default_factory=list)
     finalize_repaired: list[str] = field(default_factory=list)
+    at_cap: bool = False
 
 
 def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
@@ -2234,6 +2239,51 @@ def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
         [f"/repos/{owner}/{repo}/issues/{pr_number}/labels", "--method", "POST"],
         stdin_json={"labels": [label]},
     )
+
+
+BOUNCE_LOCK_TIMEOUT_SECONDS = 60.0
+_BOUNCE_LOCK_POLL_SECONDS = 0.1
+
+
+class BounceLockTimeout(RuntimeError):
+    """The per-(repo, cid) bounce lock was not acquired in time. Raised before any write."""
+
+
+@contextlib.contextmanager
+def _bounce_lock(
+    owner: str,
+    repo: str,
+    cid: str,
+    *,
+    repo_root: str = ".",
+    timeout: float = BOUNCE_LOCK_TIMEOUT_SECONDS,
+):
+    """Serialize the bounce critical section for one (repo, cid) under `repo_root` (#2227).
+
+    A kernel flock, not a PID file: the kernel drops it when the holder dies, so
+    a crash cannot leave a stale lock, and no PID liveness check is needed
+    (those fail across sandbox PID namespaces, #1616). The file is never
+    deleted: unlinking a flock file races with a waiter holding the old inode.
+    """
+    digest = hashlib.sha256(f"{owner}/{repo}\0{cid}".encode("utf-8")).hexdigest()[:24]
+    lock_dir = Path(repo_root) / ".claudetmp" / "locks"
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(lock_dir / f"bounce-{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise BounceLockTimeout(
+                        f"bounce lock for {cid} not acquired within {timeout:g}s"
+                    ) from None
+                time.sleep(_BOUNCE_LOCK_POLL_SECONDS)
+        yield
+    finally:
+        os.close(fd)  # closing the fd releases the flock
 
 
 class RepairReadError(GitHubError):
@@ -2296,7 +2346,33 @@ def repair_bounce_finalize(
     Returns the repairs made ("label", "draft"). A failed or truncated PR or
     issue-events READ raises RepairReadError before any write. A label or draft
     WRITE failure is best-effort: it is appended to `errors` (when given).
+    Runs under the bounce lock (#2227); BounceLockTimeout is raised before any write.
     """
+    with _bounce_lock(owner, repo, cid, repo_root=repo_root):
+        return _repair_bounce_finalize_unlocked(
+            owner,
+            repo,
+            pr_number,
+            cid=cid,
+            head_sha=head_sha,
+            repo_root=repo_root,
+            label=label,
+            errors=errors,
+        )
+
+
+def _repair_bounce_finalize_unlocked(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    *,
+    cid: str,
+    head_sha: str,
+    repo_root: str,
+    label: str,
+    errors: Optional[list[str]],
+) -> list[str]:
+    """repair_bounce_finalize's body; the caller must hold the bounce lock."""
     try:
         pr = _run_gh([f"/repos/{owner}/{repo}/pulls/{pr_number}"])
     except GitHubError as exc:
@@ -2362,6 +2438,7 @@ def record_pr_bounce(
     head_sha: Optional[str] = None,
     findings: Optional[Sequence[Finding]] = None,
     epoch_since: Optional[str] = None,
+    cap: Optional[int] = None,
 ) -> BounceResult:
     """Bounce a PR back to the worker (SPEC-378 R3.3 halt-on-failure ordering).
 
@@ -2377,6 +2454,12 @@ def record_pr_bounce(
     independent and best-effort: a failure there is recorded in
     `finalize_errors` rather than rolled back, since the audit event (the
     durable record) has already been written.
+
+    Steps 3-6 (read prior events, dedup, cap check, post, append) run under a
+    per-(repo, cid) flock (#2227), so concurrent callers cannot double-post or
+    burn two bounces for one rejection. With `cap` given, a lock-time count at
+    or above it posts and writes nothing and returns skipped=True, at_cap=True.
+    BounceLockTimeout is raised before any write.
     """
     if reason_category not in _BOUNCE_REASON_CATEGORIES:
         raise ValueError(
@@ -2397,79 +2480,98 @@ def record_pr_bounce(
         if not head_sha:
             raise GitHubError(f"could not resolve head.sha for PR #{pr_number}")
 
-    if findings is not None:
-        new_keys = [f.key for f in findings]
-    else:
-        new_keys = [legacy_token_finding(str(t))[1] for t in failures]
-    prior = bounced_on_head(cid, head_sha, repo_root=repo_root)
-    if new_keys and set(new_keys) <= {p.key for p in prior}:
-        repair_errors: list[str] = []
-        repaired = repair_bounce_finalize(
-            owner,
-            repo,
-            pr_number,
-            cid=cid,
-            head_sha=head_sha,
-            repo_root=repo_root,
-            label=label,
-            errors=repair_errors,
-        )
-        return BounceResult(
-            comment_url=None,
-            audit_relpath="",
-            bounce_number=bounce_count(cid, repo_root=repo_root, since=epoch_since),
-            finalize_errors=repair_errors,
-            skipped=True,
-            finalize_repaired=repaired,
-        )
+    with _bounce_lock(owner, repo, cid, repo_root=repo_root):
+        prior = bounced_on_head(cid, head_sha, repo_root=repo_root)
+        if findings is not None:
+            prior_identities = {p.identity for p in prior}
+            fresh = [f for f in findings if f.identity not in prior_identities]
+            nothing_new = bool(findings) and not fresh
+            new_keys = [f.key for f in fresh]
+        else:
+            fresh = []
+            new_keys = [legacy_token_finding(str(t))[1] for t in failures]
+            nothing_new = bool(new_keys) and set(new_keys) <= {p.key for p in prior}
+        if nothing_new:
+            repair_errors: list[str] = []
+            repaired = _repair_bounce_finalize_unlocked(
+                owner,
+                repo,
+                pr_number,
+                cid=cid,
+                head_sha=head_sha,
+                repo_root=repo_root,
+                label=label,
+                errors=repair_errors,
+            )
+            return BounceResult(
+                comment_url=None,
+                audit_relpath="",
+                bounce_number=bounce_count(cid, repo_root=repo_root, since=epoch_since),
+                finalize_errors=repair_errors,
+                skipped=True,
+                finalize_repaired=repaired,
+            )
 
-    bounce_number = bounce_count(cid, repo_root=repo_root, since=epoch_since) + 1
-    finding_ids: list[str] = []
-    if findings is not None:
-        start = next_finding_index(prior)
-        finding_ids = [f"{head_sha[:12]}-F{start + k}" for k in range(len(findings))]
-        body = _bounce_comment_body_findings(
-            list(zip(finding_ids, findings)),
-            reason_category,
-            summary,
-            bounce_number,
-            cid=cid,
-            head_sha=head_sha,
-        )
-    else:
-        body = _bounce_comment_body(
-            [str(t) for t in failures], reason_category, summary, bounce_number, head_sha=head_sha
-        )
+        prior_count = bounce_count(cid, repo_root=repo_root, since=epoch_since)
+        if cap is not None and prior_count >= cap:
+            return BounceResult(
+                comment_url=None,
+                audit_relpath="",
+                bounce_number=prior_count,
+                skipped=True,
+                at_cap=True,
+            )
+        bounce_number = prior_count + 1
+        finding_ids: list[str] = []
+        if findings is not None:
+            start = next_finding_index(prior)
+            finding_ids = [f"{head_sha[:12]}-F{start + k}" for k in range(len(fresh))]
+            body = _bounce_comment_body_findings(
+                list(zip(finding_ids, fresh)),
+                reason_category,
+                summary,
+                bounce_number,
+                cid=cid,
+                head_sha=head_sha,
+            )
+        else:
+            body = _bounce_comment_body(
+                [str(t) for t in failures],
+                reason_category,
+                summary,
+                bounce_number,
+                head_sha=head_sha,
+            )
 
-    comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
+        comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
 
-    event = {
-        "event": "pr-bounced",
-        "pr": pr_number,
-        "cid": cid,
-        "bounce_number": bounce_number,
-        "failures": new_keys if findings is not None else list(failures),
-        "assigned_to": None,
-        "repo": f"{owner}/{repo}",
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "reason_category": reason_category,
-        "summary": summary,
-        "comment_posted": True,
-        "head_sha": head_sha,
-        "comment_id": comment.get("id"),
-        "comment_created_at": comment.get("created_at"),
-        "actor": os.environ.get("HOS_BOT_LOGIN") or None,
-    }
-    if findings is not None:
-        event["findings"] = [
-            {"id": fid, "class": f.cls, "key": f.key, "origin": f.origin, "path": f.path}
-            for fid, f in zip(finding_ids, findings)
-        ]
-        event["epoch_start"] = epoch_since
-    try:
-        audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)
-    except Exception as exc:  # the comment is already posted: say so explicitly
-        raise BounceAuditWriteError(f"audit write failed after posting: {exc}") from exc
+        event = {
+            "event": "pr-bounced",
+            "pr": pr_number,
+            "cid": cid,
+            "bounce_number": bounce_number,
+            "failures": new_keys if findings is not None else list(failures),
+            "assigned_to": None,
+            "repo": f"{owner}/{repo}",
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reason_category": reason_category,
+            "summary": summary,
+            "comment_posted": True,
+            "head_sha": head_sha,
+            "comment_id": comment.get("id"),
+            "comment_created_at": comment.get("created_at"),
+            "actor": os.environ.get("HOS_BOT_LOGIN") or None,
+        }
+        if findings is not None:
+            event["findings"] = [
+                {"id": fid, "class": f.cls, "key": f.key, "origin": f.origin, "path": f.path}
+                for fid, f in zip(finding_ids, fresh)
+            ]
+            event["epoch_start"] = epoch_since
+        try:
+            audit_relpath = _AUDIT_LOG.write_event(event, root=repo_root)
+        except Exception as exc:  # the comment is already posted: say so explicitly
+            raise BounceAuditWriteError(f"audit write failed after posting: {exc}") from exc
 
     finalize_errors: list[str] = []
     try:

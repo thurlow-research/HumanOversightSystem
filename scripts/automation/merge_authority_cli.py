@@ -1080,6 +1080,7 @@ def _bounce_payload(result: merge_authority.BounceResult) -> dict:
         "bounce_number": result.bounce_number,
         "finding_ids": list(result.finding_ids),
         "skipped": result.skipped,
+        "at_cap": result.at_cap,
         "finalize_errors": list(result.finalize_errors),
         "finalize_repaired": list(result.finalize_repaired),
     }
@@ -1089,6 +1090,10 @@ def _repair_read_fail(exc: merge_authority.RepairReadError) -> _Fail:
     if isinstance(exc.__cause__, github.ListTruncatedError):
         return _Fail("issue_events_truncated", str(exc), "deterministic")
     return _Fail("github_read_failed", str(exc), merge_authority.classify_github_error(exc))
+
+
+def _lock_timeout_fail(exc: merge_authority.BounceLockTimeout) -> _Fail:
+    return _Fail("bounce_lock_timeout", str(exc), "transient", {"comment_posted": False})
 
 
 def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> list[str]:
@@ -1104,6 +1109,8 @@ def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> li
         )
     except merge_authority.RepairReadError as exc:
         raise _repair_read_fail(exc) from exc
+    except merge_authority.BounceLockTimeout as exc:
+        raise _lock_timeout_fail(exc) from exc
     except ValueError as exc:
         raise _Fail("audit_unreadable", f"audit log unreadable: {exc}", "deterministic") from exc
 
@@ -1124,9 +1131,12 @@ def _write_bounce(
             head_sha=pr["head"]["sha"],
             findings=list(to_bounce),
             epoch_since=epoch,
+            cap=merge_authority.BOUNCE_CAP,
         )
     except merge_authority.RepairReadError as exc:
         raise _repair_read_fail(exc) from exc
+    except merge_authority.BounceLockTimeout as exc:
+        raise _lock_timeout_fail(exc) from exc
     except github.GitHubError as exc:
         raise _Fail(
             "bounce_comment_failed",
@@ -1362,6 +1372,11 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
         written = _write_bounce(owner, repo_name, pr, cid, ctx, decided.to_bounce, epoch)
         bounce = _bounce_payload(written)
         ids = dict(zip((f.key for f in decided.to_bounce), written.finding_ids))
+        if written.at_cap:
+            reasons = (
+                *reasons,
+                "the bounce cap was reached under the bounce lock; nothing was posted or written",
+            )
         for err in written.finalize_errors:
             not_verified.append(f"bounce finalize: {err}")
     elif (
@@ -1545,6 +1560,8 @@ def _bounce(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
     for err in written.finalize_errors:
         not_verified.append(f"bounce finalize: {err}")
     ids = dict(zip((f.key for f in to_write), written.finding_ids))
+    if written.at_cap:
+        return done(False, "at-cap", at_cap=True, bounce=_bounce_payload(written), **common)
     if written.skipped:
         return done(False, "same-head", bounce=_bounce_payload(written), **common)
     return done(True, "bounced", ids=ids, bounce=_bounce_payload(written), **common)

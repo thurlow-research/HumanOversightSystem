@@ -11,6 +11,7 @@ tests already use — never a subprocess, never real `gh`.
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -1763,3 +1764,80 @@ def test_t_cli_10_events_read_failure_is_exit_1_and_writes_nothing(
     rc, record = _run_mut(world, "route", capsys)
     assert (rc, record["error_code"]) == (1, code)
     assert not any(c.endswith("/labels") for c in calls) and drafts == []
+
+
+# --- #2227: the lock-time cap and lock timeout reach the CLI ---------------------
+
+
+def _require_failing_check(monkeypatch):
+    monkeypatch.setattr(
+        merge_authority,
+        "check_required_content_checks",
+        lambda *a, **k: merge_authority.RequiredChecksResult(
+            bounce_required=True,
+            failures=["check-failing:tests"],
+            reason_category="COMPLIANCE_FAILURE",
+        ),
+    )
+
+
+def test_t_cli_2227_bounce_maps_lock_time_at_cap(world, monkeypatch, capsys):
+    _require_failing_check(monkeypatch)
+    seen = {}
+
+    def refuse(*a, **k):
+        seen.update(k)
+        return merge_authority.BounceResult(
+            comment_url=None, audit_relpath="", bounce_number=2, skipped=True, at_cap=True
+        )
+
+    monkeypatch.setattr(merge_authority, "record_pr_bounce", refuse)
+    rc, record = _run_mut(world, "bounce", capsys)
+    assert (rc, record["bounced"], record["reason"], record["at_cap"]) == (0, False, "at-cap", True)
+    assert record["bounce"]["at_cap"] is True
+    assert seen["cap"] == merge_authority.BOUNCE_CAP
+
+
+def test_t_cli_2227_route_reports_lock_time_at_cap(world, monkeypatch, capsys):
+    _write_findings(
+        world, [{"class": "MERITS", "summary": "bad", "path": "a.py", "slug": "bad-thing"}]
+    )
+    monkeypatch.setattr(
+        merge_authority,
+        "record_pr_bounce",
+        lambda *a, **k: merge_authority.BounceResult(
+            comment_url=None, audit_relpath="", bounce_number=2, skipped=True, at_cap=True
+        ),
+    )
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and record["bounce"]["at_cap"] is True
+    assert any("cap was reached under the bounce lock" in r for r in record["reasons"])
+
+
+@pytest.mark.parametrize("name", ["bounce", "route"])
+def test_t_cli_2227_lock_timeout_is_a_transient_failure(name, world, monkeypatch, capsys):
+    _require_failing_check(monkeypatch)
+    _write_findings(
+        world, [{"class": "MERITS", "summary": "bad", "path": "a.py", "slug": "bad-thing"}]
+    )
+
+    def timeout(*a, **k):
+        raise merge_authority.BounceLockTimeout("held")
+
+    monkeypatch.setattr(merge_authority, "record_pr_bounce", timeout)
+    rc, record = _run_mut(world, name, capsys)
+    assert rc == 1
+    assert (record["error_code"], record["error_class"]) == ("bounce_lock_timeout", "transient")
+    assert world.posts == []
+
+
+def test_t_cli_2227_repair_lock_timeout_is_a_transient_failure(world, monkeypatch, capsys):
+    def timeout(*a, **k):
+        raise merge_authority.BounceLockTimeout("held")
+
+    monkeypatch.setattr(merge_authority, "repair_bounce_finalize", timeout)
+    with pytest.raises(cli._Fail) as info:
+        cli._repair_finalize(
+            "o", "r", 42, "issue-9", _HEAD, types.SimpleNamespace(repo_root=world.root), []
+        )
+    assert (info.value.code, info.value.klass) == ("bounce_lock_timeout", "transient")
