@@ -560,20 +560,42 @@ _SIGNOFF_SENTENCE_APPROVE = (
     "the overseer merges it on its next cycle after that approval, once checks are "
     "green and every review thread is resolved."
 )
-_SIGNOFF_SENTENCE_OTHER = (
+_SIGNOFF_SENTENCE_AGAINST = (
     "Overseer interim sign-off (#2174): this review does not approve the PR, and "
     "the overseer recommends against merging it as it stands (see above). The "
     "overseer's required check no longer blocks. A designated human who approves "
     "commit `{sha12}`, after resolving the overseer's open review threads, "
     "overrides this recommendation and makes the PR mergeable."
 )
+_SIGNOFF_SENTENCE_DECIDE = (
+    "Overseer interim sign-off (#2174): this review does not approve the PR. "
+    "The overseer's recommendation is stated above, and the decision is yours. "
+    "The overseer's required check no longer blocks. A designated human who "
+    "approves commit `{sha12}`, after resolving the overseer's open review "
+    "threads, makes the PR mergeable."
+)
+_SIGNOFF_SENTENCE_NEUTRAL = (
+    "Overseer interim sign-off (#2174): this review does not approve the PR; "
+    "what the overseer asks of you is stated above. The overseer's required "
+    "check no longer blocks. A designated human who approves commit `{sha12}`, "
+    "after resolving the overseer's open review threads, makes the PR mergeable."
+)
+# Explicit per-action table (#2245): an action with no entry raises KeyError
+# rather than falling back to a sentence that could contradict the review.
+_SIGNOFF_SENTENCES = {
+    "APPROVE": _SIGNOFF_SENTENCE_APPROVE,
+    "REQUEST_CHANGES": _SIGNOFF_SENTENCE_AGAINST,
+    "DO_NOT_MERGE": _SIGNOFF_SENTENCE_AGAINST,
+    "DECIDE": _SIGNOFF_SENTENCE_DECIDE,
+    "OTHER": _SIGNOFF_SENTENCE_NEUTRAL,
+}
 
 
 def _with_interim_signoff(body: str, disposition: str, action: str, head_sha: str) -> str:
     """Effective body for a non-merge `comment` verdict: the agent's body, the
     action-dependent visible sentence, then the machine-readable marker."""
     roa = _load_require_overseer_approval()
-    template = _SIGNOFF_SENTENCE_APPROVE if action == "APPROVE" else _SIGNOFF_SENTENCE_OTHER
+    template = _SIGNOFF_SENTENCES[action]
     sentence = template.format(sha12=head_sha[:12])
     marker = roa.render_interim_marker(disposition, action, head_sha)
     return body.rstrip("\n") + "\n\n" + sentence + "\n\n" + marker + "\n"

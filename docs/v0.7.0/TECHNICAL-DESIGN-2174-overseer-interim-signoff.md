@@ -87,11 +87,20 @@ approve the PR" inside an `APPROVED` review would be false.
    `--expected-action` value, so the agent never writes it:
    - `APPROVE`: *"Overseer interim sign-off (#2174): this review does not approve the PR. The merge
      now waits only on a designated human's approval of commit `<sha12>`."*
-   - `REQUEST_CHANGES`, `DO_NOT_MERGE`, `DECIDE` and `OTHER`: *"Overseer interim sign-off (#2174):
-     this review does not approve the PR, and the overseer recommends against merging it as it
-     stands (see above). The overseer's required check no longer blocks. A designated human who
-     approves commit `<sha12>`, after resolving the overseer's open review threads, overrides this
-     recommendation and makes the PR mergeable."*
+   - `REQUEST_CHANGES` and `DO_NOT_MERGE`: *"... this review does not approve the PR, and the
+     overseer recommends against merging it as it stands (see above). The overseer's required check
+     no longer blocks. A designated human who approves commit `<sha12>`, after resolving the
+     overseer's open review threads, overrides this recommendation and makes the PR mergeable."*
+   - `DECIDE`: *"... this review does not approve the PR. The overseer's recommendation is stated
+     above, and the decision is yours. The overseer's required check no longer blocks. A designated
+     human who approves commit `<sha12>`, after resolving the overseer's open review threads, makes
+     the PR mergeable."* It states no recommendation of its own: the review above does.
+   - `OTHER`: neutral, *"... what the overseer asks of you is stated above. ..."*, then the same
+     closing as `DECIDE`.
+   - Per #2245, the sentence is chosen from an explicit action-to-template table in
+     `pr_review_cli.py`. An action with no entry raises instead of falling back to another
+     sentence, because the earlier fallback printed "recommends against merging" on a `DECIDE`
+     verdict whose review recommended approval (PR #2244).
 2. A machine-readable marker line, bound to the head (grammar in §3.1).
 
 The review's own `commit_id` already binds it to the head. `require_overseer_approval.py` then passes
