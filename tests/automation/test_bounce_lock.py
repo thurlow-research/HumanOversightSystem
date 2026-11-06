@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import threading
@@ -17,7 +18,9 @@ from scripts.automation.lib.merge_authority import (
     _bounce_lock,
     bounce_count,
     bounce_events,
+    RepairReadError,
     record_pr_bounce,
+    repair_bounce_finalize,
 )
 from tests.automation.test_bounce_gate import HEAD, MA, OWNER, REPO, _f, _gh_stub, _post
 
@@ -203,3 +206,274 @@ def test_in_lock_dedup_numbers_and_keys_only_the_fresh_findings(tmp_path):
     assert result.finding_keys == [b.key]
     assert result.finding_ids == [f"{HEAD[:12]}-F2"]
     assert f"{HEAD[:12]}-F2" in bodies[1] and f"{HEAD[:12]}-F1" not in bodies[1]
+
+
+def _quick_lock(timeout=0.2):
+    real = _bounce_lock
+
+    def quick(*a, **k):
+        k["timeout"] = timeout
+        return real(*a, **k)
+
+    return quick
+
+
+def test_repair_bounce_finalize_times_out_before_any_read_or_write(tmp_path):
+    calls: list = []
+    with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path)):
+        with (
+            patch(f"{MA}._run_gh", side_effect=_gh_stub(calls=calls)),
+            patch(f"{MA}._add_label") as add_label,
+            patch(f"{MA}._convert_pr_to_draft") as to_draft,
+            patch(f"{MA}._bounce_lock", side_effect=_quick_lock()),
+        ):
+            with pytest.raises(BounceLockTimeout):
+                repair_bounce_finalize(
+                    OWNER, REPO, 123, cid="cid-1", head_sha=HEAD, repo_root=str(tmp_path)
+                )
+    assert calls == []
+    add_label.assert_not_called()
+    to_draft.assert_not_called()
+
+
+def test_repair_bounce_finalize_holds_the_lock_while_it_runs(tmp_path):
+    seen: list = []
+
+    def probe(args, *a, **k):
+        # While repair runs, another acquirer must time out.
+        try:
+            with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path), timeout=0.2):
+                seen.append("acquired")
+        except BounceLockTimeout:
+            seen.append("blocked")
+        return {"draft": True, "labels": [{"name": "needs-ai"}]}
+
+    with patch(f"{MA}._run_gh", side_effect=probe):
+        assert (
+            repair_bounce_finalize(
+                OWNER, REPO, 123, cid="cid-1", head_sha=HEAD, repo_root=str(tmp_path)
+            )
+            == []
+        )
+    assert seen == ["blocked"]
+    with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path), timeout=0.2):
+        pass
+
+
+def _legacy(tmp_path, results, failures, **kw):
+    try:
+        results.append(
+            record_pr_bounce(
+                OWNER,
+                REPO,
+                123,
+                cid="cid-1",
+                reason_category="MERITS_FINDING",
+                summary="s",
+                repo_root=str(tmp_path),
+                head_sha=HEAD,
+                failures=failures,
+                **kw,
+            )
+        )
+    except Exception as exc:
+        results.append(exc)
+
+
+def test_legacy_failures_path_at_cap_posts_and_writes_nothing(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft") as to_draft,
+    ):
+        first: list = []
+        _legacy(tmp_path, first, ["tok-a"])
+        assert first[0].skipped is False
+        del bodies[:]
+        second: list = []
+        _legacy(tmp_path, second, ["tok-b"], cap=1)
+    result = second[0]
+    assert result.skipped and result.at_cap
+    assert result.comment_url is None and result.bounce_number == 1
+    assert bodies == []
+    assert len(bounce_events("cid-1", repo_root=str(tmp_path))) == 1
+    assert to_draft.call_count == 1  # only the first bounce finalized
+
+
+def test_legacy_failures_path_below_cap_still_posts(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        results: list = []
+        _legacy(tmp_path, results, ["tok-a"], cap=1)
+    assert results[0].at_cap is False and results[0].bounce_number == 1
+    assert len(bodies) == 1
+
+
+def test_legacy_repeat_failures_are_skipped_not_at_cap_even_when_cap_reached(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _legacy(tmp_path, [], ["tok-a"])
+        second: list = []
+        _legacy(tmp_path, second, ["tok-a"], cap=1)
+    assert second[0].skipped is True and second[0].at_cap is False
+    assert len(bodies) == 1
+
+
+def test_empty_findings_is_not_treated_as_a_repeat(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        results: list = []
+        _call(tmp_path, [], results)
+    result = results[0]
+    assert not isinstance(result, Exception), result
+    assert result.skipped is False
+    assert result.finding_ids == [] and result.finding_keys == []
+    assert len(bodies) == 1
+    events = bounce_events("cid-1", repo_root=str(tmp_path))
+    assert len(events) == 1 and events[0]["failures"] == [] and events[0]["findings"] == []
+
+
+def test_empty_findings_still_respects_cap(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _call(tmp_path, [_f()], [])
+        del bodies[:]
+        results: list = []
+        _call(tmp_path, [], results, cap=1)
+    assert results[0].at_cap is True and bodies == []
+
+
+def test_lock_file_open_oserror_propagates_before_any_write(tmp_path):
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}.os.open", side_effect=PermissionError(13, "denied")),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+    assert isinstance(results[0], PermissionError)
+    assert not isinstance(results[0], BounceLockTimeout)
+    assert bodies == []
+    assert bounce_events("cid-1", repo_root=str(tmp_path)) == []
+
+
+def test_lock_dir_uncreatable_oserror_propagates(tmp_path):
+    (tmp_path / ".claudetmp").write_text("a file, not a directory")
+    with pytest.raises(OSError):
+        with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path)):
+            pytest.fail("must not enter the critical section")
+
+
+def test_flock_oserror_other_than_contention_closes_fd_and_propagates(tmp_path):
+    before = len(os.listdir("/proc/self/fd"))
+    with patch(f"{MA}.fcntl.flock", side_effect=OSError(errno.ENOLCK, "no locks")):
+        with pytest.raises(OSError) as info:
+            with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path)):
+                pytest.fail("must not enter the critical section")
+    assert not isinstance(info.value, BounceLockTimeout)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_repair_read_failures_raise_before_any_write_under_the_lock(tmp_path):
+    with (
+        patch(f"{MA}._run_gh", side_effect=GitHubError("down", status_code=502)),
+        patch(f"{MA}._add_label") as add_label,
+    ):
+        with pytest.raises(RepairReadError):
+            repair_bounce_finalize(
+                OWNER, REPO, 123, cid="cid-1", head_sha=HEAD, repo_root=str(tmp_path)
+            )
+    with patch(f"{MA}._run_gh", return_value=None), patch(f"{MA}._add_label") as add_label:
+        with pytest.raises(RepairReadError):
+            repair_bounce_finalize(
+                OWNER, REPO, 123, cid="cid-1", head_sha=HEAD, repo_root=str(tmp_path)
+            )
+    add_label.assert_not_called()
+    with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path), timeout=0.2):
+        pass
+
+
+def test_repair_write_failures_are_collected_not_raised(tmp_path):
+    errors: list = []
+    with (
+        patch(f"{MA}._run_gh", return_value={"draft": False, "labels": []}),
+        patch(f"{MA}._github.list_issue_events", return_value=[]),
+        patch(f"{MA}._add_label", side_effect=GitHubError("l", status_code=500)),
+        patch(f"{MA}._convert_pr_to_draft", side_effect=GitHubError("d", status_code=500)),
+    ):
+        repaired = repair_bounce_finalize(
+            OWNER, REPO, 123, cid="cid-1", head_sha=HEAD, repo_root=str(tmp_path), errors=errors
+        )
+    assert repaired == []
+    assert len(errors) == 2 and errors[0].startswith("label failed")
+    assert errors[1].startswith("convert-to-draft failed")
+
+
+def test_repeat_bounce_repairs_unfinished_finalize_under_one_lock(tmp_path):
+    bodies: list = []
+    findings = [_f()]
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub(draft=True, labels=("needs-ai",))),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        _call(tmp_path, findings, [])
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub(draft=False, labels=())),
+        patch(f"{MA}._github.list_issue_events", return_value=[]),
+        patch(f"{MA}._add_label") as add_label,
+        patch(f"{MA}._convert_pr_to_draft") as to_draft,
+    ):
+        results: list = []
+        _call(tmp_path, findings, results)
+    assert results[0].skipped and not results[0].at_cap
+    assert sorted(results[0].finalize_repaired) == ["draft", "label"]
+    add_label.assert_called_once()
+    to_draft.assert_called_once()
+    assert len(bodies) == 1
+
+
+def test_finalize_failures_after_the_lock_are_recorded_not_raised(tmp_path):
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post([])),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._add_label", side_effect=GitHubError("l", status_code=500)),
+        patch(f"{MA}._convert_pr_to_draft", side_effect=GitHubError("d", status_code=500)),
+    ):
+        results: list = []
+        _call(tmp_path, [_f()], results)
+        # the lock was already released when finalize ran
+        with _bounce_lock(OWNER, REPO, "cid-1", repo_root=str(tmp_path), timeout=0.2):
+            pass
+    assert len(results[0].finalize_errors) == 2
+    assert len(bounce_events("cid-1", repo_root=str(tmp_path))) == 1
+
+
+def test_findings_with_failures_or_without_head_are_rejected(tmp_path):
+    kw = dict(cid="cid-1", reason_category="MERITS_FINDING", summary="s", repo_root=str(tmp_path))
+    with pytest.raises(ValueError):
+        record_pr_bounce(OWNER, REPO, 1, findings=[_f()], failures=["x"], head_sha=HEAD, **kw)
+    with pytest.raises(ValueError):
+        record_pr_bounce(OWNER, REPO, 1, findings=[_f()], **kw)
+    with pytest.raises(ValueError):
+        record_pr_bounce(OWNER, REPO, 1, **{**kw, "reason_category": "BOGUS"})
+    assert not (tmp_path / ".claudetmp" / "locks").exists()
