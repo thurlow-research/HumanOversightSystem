@@ -14,6 +14,7 @@ Usage (from bash in cron/LOOP context):
 Events:
   cycle-start          logged by bin/hos-cron (shell-level)
   cycle-preflight-fail logged by bin/hos-cron (shell-level)
+  cycle-env-warn       logged by bin/hos-cron (shell-level); reason=<str> detail=<str> (#2220)
   cycle-tmp-root-fallback logged by bin/hos-cron (shell-level); reason=<str>
   cycle-tmp-reap       logged by bin/hos-cron (shell-level) when the low-space trigger
                        reaps or fails; rc=<N> probe=<line|-> summary=<line|->

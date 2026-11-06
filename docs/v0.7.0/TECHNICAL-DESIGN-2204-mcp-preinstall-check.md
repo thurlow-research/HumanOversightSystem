@@ -223,3 +223,24 @@ unless the first header line of file #1 changes. If it does, run `regen_all.sh`.
 - Do not change how the consumer root requirements are installed, and do not pre-check
   them (D3).
 - Do not file issues or change labels (D7 is reported back to the worker).
+
+## Follow-up (#2220)
+Four decisions recorded after the slice shipped, so a refusal is diagnosable and cheap:
+1. **Reason line, not exit codes.** `ensure_venv.sh` keeps exit 1 (sourcers depend on it) and
+   prints one stable stderr line, `HOS_VENV_FAILURE_REASON=mcp_policy_preinstall_refused`
+   (checker exit 1) or `mcp_policy_preinstall_cannot_check` (any other non-zero, or a missing
+   guard file).
+2. **Cron surfaces the tail plus a detail audit.** `bin/hos-cron` `_validate_env` captures
+   stderr instead of discarding it, logs the last 10 lines, and (when a reason is parsed,
+   whitelisted to `[a-z_]+`) emits `cycle-env-warn reason=oversight_venv_unavailable
+   detail=<reason>`. `_pre_jitter_deps_check` keeps `reason=oversight_venv_build_failed` and
+   adds `detail=<reason>`. `_validate_env` stays fail-open.
+3. **Violation-only negative cache.** A checker exit 1 is deterministic, so it is cached in
+   `~/.hos/setup-validation/mcp-policy-refused-<repo hash>`, keyed on a sha256 of
+   `requirements.txt` + `mcp_approved_list.json` + `mcp_policy_logic.py`. A hit skips the
+   venv rebuild and still refuses. "Cannot check" may be transient and is never cached. A
+   successful check deletes the file. The cache can only cause a refusal, never an approval.
+4. **Smoke-rebuild trade documented.** The smoke-test-failure rebuild removes the venv before
+   the policy check, so a refusal there loses a venv that failed its smoke test only
+   transiently. This is a deliberate fail-closed trade; recovery is a CODEOWNER-approved fix
+   to the list or requirements.

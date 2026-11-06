@@ -891,6 +891,18 @@ RESTORE_EOF
   return 0
 }
 
+# ── ensure_venv.sh refusal reason (#2220) ─────────────────────────────────────
+# ensure_venv.sh prints one stable `HOS_VENV_FAILURE_REASON=<reason>` stderr line on a
+# policy refusal. Last line wins; the value is whitelisted to [a-z_]+ so nothing
+# attacker-shaped reaches the audit record. Prints nothing when absent or malformed.
+_venv_failure_reason() {
+  local _r
+  _r="$(grep -a '^HOS_VENV_FAILURE_REASON=' "$1" 2>/dev/null | tail -n 1)" || _r=""
+  _r="${_r#HOS_VENV_FAILURE_REASON=}"
+  [[ "$_r" =~ ^[a-z_]+$ ]] && printf '%s' "$_r"
+  return 0
+}
+
 # ── Pre-jitter dependency check (fail-closed, marker-cached) ─────────────────
 # Fail fast before the jitter sleep if the oversight venv or pytest are missing.
 # A 7-day marker file caches a successful check; its key encodes REPO_ROOT so a
@@ -924,11 +936,19 @@ _pre_jitter_deps_check() {
   # fails. Bare existence-check-then-FATAL here would shadow that auto-repair (#953).
   if [[ ! -x "$_venv_dir/bin/python" || ! -x "$_venv_dir/bin/pytest" ]]; then
     echo "$LOG_PREFIX oversight venv missing/incomplete at $_venv_dir — building via ensure_venv.sh"
-    if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet; then
+    local _ev_err _ev_reason
+    _ev_err="$(mktemp 2>/dev/null)" || _ev_err="/dev/null"
+    # stderr stays visible (re-emitted) while also being captured for the reason line.
+    if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet 2> "$_ev_err"; then
+      cat "$_ev_err" >&2
+      _ev_reason="$(_venv_failure_reason "$_ev_err")"
+      [[ "$_ev_err" == /dev/null ]] || rm -f "$_ev_err"
       echo "$LOG_PREFIX FATAL: ensure_venv.sh failed to build oversight venv at $_venv_dir"
-      _audit cycle-preflight-fail reason=oversight_venv_build_failed
+      _audit cycle-preflight-fail reason=oversight_venv_build_failed "detail=${_ev_reason:-unknown}"
       exit 78
     fi
+    cat "$_ev_err" >&2
+    [[ "$_ev_err" == /dev/null ]] || rm -f "$_ev_err"
   fi
 
   touch "$_marker" 2>/dev/null || true
@@ -953,10 +973,20 @@ _validate_env() {
   # Call ensure_venv.sh to verify (and auto-repair) the oversight venv rather than
   # trusting the cached marker alone.  A broken venv (e.g. after a Python upgrade)
   # is detected and rebuilt here so validators can run this cycle.
-  if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet 2>/dev/null; then
+  # stderr is captured (not discarded) so the refusal reason reaches the cron log (#2220).
+  local _ev_err _ev_reason
+  _ev_err="$(mktemp 2>/dev/null)" || _ev_err="/dev/null"
+  if ! bash "$REPO_ROOT/scripts/oversight/ensure_venv.sh" --quiet 2> "$_ev_err"; then
     echo "$LOG_PREFIX ⚠ oversight-venv broken or missing — validators will not run"
+    # Strip CR and control/ANSI bytes: this text is child-process output going into the log.
+    tail -n 10 "$_ev_err" 2>/dev/null | tr -d '\r' | LC_ALL=C sed 's/[^[:print:]\t]//g' | while IFS= read -r _ev_line; do
+      echo "$LOG_PREFIX   ensure_venv: $_ev_line"
+    done
+    _ev_reason="$(_venv_failure_reason "$_ev_err")"
+    _audit cycle-env-warn reason=oversight_venv_unavailable "detail=${_ev_reason:-unknown}"
     missing=1
   fi
+  [[ "$_ev_err" == /dev/null ]] || rm -f "$_ev_err"
   [[ $missing -eq 0 ]] && echo "$LOG_PREFIX ✓ environment validated"
   return 0  # fail-open: don't block on broken/missing venv
 }

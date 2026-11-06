@@ -24,6 +24,18 @@
 # mcp_approved_list.json BEFORE any pip command runs, and refuses to build the venv
 # (fail closed) on a violation or when the check cannot run. The post-install
 # gates/mcp_policy.sh --installed stays the drift control and the only transitive one.
+# A refusal also prints one stable stderr line, HOS_VENV_FAILURE_REASON=<reason>
+# (mcp_policy_preinstall_refused | mcp_policy_preinstall_cannot_check), which bin/hos-cron
+# parses into its log and audit; exit codes are unchanged (sourcers depend on exit 1).
+# A violation (deterministic) is negative-cached in
+# ~/.hos/setup-validation/mcp-policy-refused-<repo hash>, keyed on a hash of
+# requirements.txt + mcp_approved_list.json + mcp_policy_logic.py, so a cron loop does not
+# rebuild a venv just to refuse it again every cycle; "cannot check" is never cached.
+# The smoke-test-failure rebuild path removes the existing venv BEFORE the policy check
+# runs, so if the policy then refuses, a venv that had only transiently failed its smoke
+# test is gone. This is a deliberate fail-closed trade: an unauthorized requirement set
+# must not keep a usable venv. Recovery is to fix the list/requirements via a
+# CODEOWNER-approved PR.
 #
 # Flags (effective only when run as a subprocess — not when sourced):
 #   --quiet   Suppress informational stdout; errors still go to stderr.
@@ -33,6 +45,7 @@ VENV="$_ENSURE_VENV_DIR/.venv"
 VENV_BIN="$VENV/bin"
 OVERSIGHT_PYTHON="$VENV_BIN/python3"
 REPO_ROOT="$(cd "$_ENSURE_VENV_DIR/../.." && pwd)"
+REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
 
 # --quiet suppresses informational stdout; only meaningful when run as a subprocess.
 _ENSURE_VENV_QUIET=false
@@ -43,6 +56,8 @@ GREEN="\033[32m"; CYAN="\033[36m"; RED="\033[31m"; YELLOW="\033[33m"; RESET="\03
 _evenv_info() { $_ENSURE_VENV_QUIET || echo -e "  ${CYAN}→${RESET}  $*"; }
 _evenv_ok()   { $_ENSURE_VENV_QUIET || echo -e "  ${GREEN}✔${RESET}  $*"; }
 _evenv_err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; }
+# One stable machine-readable line per policy refusal; bin/hos-cron parses it (#2220).
+_evenv_reason() { printf 'HOS_VENV_FAILURE_REASON=%s\n' "$1" >&2; }
 warn() { echo -e "  ${YELLOW}⚠${RESET}  $*" >&2; }
 
 # Detect a stale venv: shebangs embed the absolute venv path at creation time.
@@ -117,13 +132,56 @@ _install_project_requirements() {
   return 0
 }
 
+# Negative cache for deterministic MCP policy refusals (#2220). It can only ever cause a
+# refusal, never an approval: a missing, stale or forged cache file just means the real
+# check runs. Every failure here is swallowed — caching is best-effort. The path is built
+# inside _create_venv (HOME may be unset in a `set -u` sourcer); no HOME means no cache.
+
+# sha256 of stdin, first field only. Prints nothing when no sha256 tool exists.
+_evenv_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+# Key over everything the policy verdict depends on. Each file is hashed separately and
+# the key hashes the "name:sha" lines, so bytes moved between files change the key. Prints
+# nothing (caching skipped) when there is no sha256 tool or a file cannot be hashed. Never
+# fails: sourcers may run under set -e / pipefail.
+_evenv_policy_key() {
+  local f h lines=""
+  for f in requirements.txt mcp_approved_list.json mcp_policy_logic.py; do
+    h="$(_evenv_sha256 < "$_ENSURE_VENV_DIR/$f" 2>/dev/null)" || h=""
+    [[ -n "$h" ]] || return 0
+    lines+="$f:$h"$'\n'
+  done
+  printf '%s' "$lines" | _evenv_sha256 || true
+  return 0
+}
+
 _create_venv() {
   _check_disk_space
   # The pre-install MCP policy check (#2204) needs both files; without them it cannot
   # run, so refuse before creating anything (fail closed).
   if [[ ! -f "$_ENSURE_VENV_DIR/mcp_policy_logic.py" || ! -f "$_ENSURE_VENV_DIR/mcp_approved_list.json" ]]; then
     _evenv_err "MCP policy could not be checked — refusing to install (fail closed): mcp_policy_logic.py or mcp_approved_list.json missing from $_ENSURE_VENV_DIR"
+    _evenv_reason mcp_policy_preinstall_cannot_check
     return 1
+  fi
+  local policy_key="" cached_key="" refused_cache=""
+  if [[ -n "${HOME:-}" && -n "${REPO_HASH:-}" ]]; then
+    refused_cache="$HOME/.hos/setup-validation/mcp-policy-refused-${REPO_HASH}"
+    policy_key="$(_evenv_policy_key)" || policy_key=""
+  fi
+  if [[ -n "$policy_key" && -f "$refused_cache" ]]; then
+    cached_key="$(cat "$refused_cache" 2>/dev/null)" || cached_key=""
+    if [[ "$cached_key" == "$policy_key" ]]; then
+      _evenv_err "MCP policy: refusal cached from a previous check of identical inputs (requirements.txt, mcp_approved_list.json, mcp_policy_logic.py unchanged) — not rebuilding the venv. Update scripts/oversight/mcp_approved_list.json via a CODEOWNER-approved PR, or delete $refused_cache to re-check"
+      _evenv_reason mcp_policy_preinstall_refused
+      return 1
+    fi
   fi
   _evenv_info "creating oversight venv at $VENV"
   # Start from nothing: a pre-existing $VENV without bin/python3 skips the stale check, and
@@ -137,19 +195,41 @@ _create_venv() {
   # Authorize before acting: the fresh venv holds only ensurepip's pip, nothing from any
   # requirements file. Explicit rc capture because callers may source us under set -e.
   # VIOLATION lines go to stderr so --quiet / stdout-capturing callers still show them.
-  local policy_rc=0
-  PYTHONSAFEPATH=1 "$VENV_BIN/python3" -I "$_ENSURE_VENV_DIR/mcp_policy_logic.py" \
-    --list "$_ENSURE_VENV_DIR/mcp_approved_list.json" \
-    --requirements "$_ENSURE_VENV_DIR/requirements.txt" >&2 || policy_rc=$?
+  local policy_rc=0 policy_out
+  # Output goes to a temp file, then back to stderr, so a real VIOLATION line can be told
+  # apart from an uncaught Python exception (also exit 1). No temp file: nothing cacheable.
+  policy_out="$(mktemp 2>/dev/null)" || policy_out=""
+  # Without a temp file, duplicate fd 2 (>&2) rather than reopening /dev/stderr by path,
+  # which would truncate a file stderr (e.g. hos-cron's capture) and lose earlier lines.
+  local -a policy_cmd=("$VENV_BIN/python3" -I "$_ENSURE_VENV_DIR/mcp_policy_logic.py"
+    --list "$_ENSURE_VENV_DIR/mcp_approved_list.json"
+    --requirements "$_ENSURE_VENV_DIR/requirements.txt")
+  if [[ -n "$policy_out" ]]; then
+    PYTHONSAFEPATH=1 "${policy_cmd[@]}" >"$policy_out" 2>&1 || policy_rc=$?
+  else
+    PYTHONSAFEPATH=1 "${policy_cmd[@]}" >&2 2>&1 || policy_rc=$?
+  fi
+  local policy_violation=false
+  if [[ -n "$policy_out" ]]; then
+    cat "$policy_out" >&2
+    grep -aq '^VIOLATION: ' "$policy_out" 2>/dev/null && policy_violation=true
+    rm -f "$policy_out"
+  fi
   if (( policy_rc != 0 )); then
-    if (( policy_rc == 1 )); then
+    if (( policy_rc == 1 )) && $policy_violation; then
+      if [[ -n "$policy_key" ]]; then
+        { mkdir -p "$(dirname "$refused_cache")" && printf '%s\n' "$policy_key" > "$refused_cache"; } 2>/dev/null || true
+      fi
+      _evenv_reason mcp_policy_preinstall_refused
       _evenv_err "MCP policy: refusing to install oversight requirements — unapproved MCP software (see above); update scripts/oversight/mcp_approved_list.json via a CODEOWNER-approved PR"
     else
+      _evenv_reason mcp_policy_preinstall_cannot_check
       _evenv_err "MCP policy could not be checked — refusing to install (fail closed)"
     fi
     rm -rf "$VENV"
     return 1
   fi
+  [[ -z "$refused_cache" ]] || rm -f "$refused_cache" 2>/dev/null || true
   _evenv_info "installing oversight dependencies (this runs once) ..."
   # Check pip's exit code — a failed install (e.g. ENOSPC on a full disk) must
   # NOT be reported as "ready" and silently leave a broken venv behind (#954).
@@ -203,7 +283,6 @@ export VENV VENV_BIN OVERSIGHT_PYTHON
 # Drop marker file only after a successful smoke test — the marker is a cache
 # hint, not a trust anchor.  A broken venv leaves the marker absent until the
 # smoke test passes again.
-REPO_HASH=$(echo -n "$REPO_ROOT" | md5sum 2>/dev/null | cut -d' ' -f1)
 mkdir -p ~/.hos/setup-validation 2>/dev/null || true
 touch ~/.hos/setup-validation/oversight-venv-${REPO_HASH} 2>/dev/null || true
 
