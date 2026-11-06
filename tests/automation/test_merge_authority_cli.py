@@ -1841,3 +1841,25 @@ def test_t_cli_2227_repair_lock_timeout_is_a_transient_failure(world, monkeypatc
             "o", "r", 42, "issue-9", _HEAD, types.SimpleNamespace(repo_root=world.root), []
         )
     assert (info.value.code, info.value.klass) == ("bounce_lock_timeout", "transient")
+
+
+def test_t_cli_2227_ids_follow_the_findings_the_lock_kept(world, monkeypatch, capsys):
+    a = {"class": "MERITS", "summary": "first", "path": "a.py", "slug": "first-thing"}
+    b = {"class": "MERITS", "summary": "second", "path": "b.py", "slug": "second-thing"}
+    world.files = [{"filename": "a.py"}, {"filename": "b.py"}]
+    world.pr["changed_files"] = 2
+    _write_findings(world, [a])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0 and len(world.posts) == 1
+    # Hide the prior bounce from the CLI's pre-lock view only, as a race would.
+    monkeypatch.setattr(cli, "_prior_on_head", lambda *args, **kw: ())
+    _write_findings(world, [a, b])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0, (record.get("error_code"), record.get("error"))
+    assert record["disposition"] == "BOUNCE"
+    by_path = {row["path"]: row for row in record["findings"]}
+    assert len(world.posts) == 2
+    assert record["bounce"]["finding_ids"] == [f"{_HEAD[:12]}-F2"]
+    assert by_path["b.py"]["id"] == f"{_HEAD[:12]}-F2"
+    assert "id" not in by_path["a.py"]
+    assert record["bounce"]["finding_keys"] == [by_path["b.py"]["key"]]

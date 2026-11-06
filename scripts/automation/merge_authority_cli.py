@@ -1079,6 +1079,7 @@ def _bounce_payload(result: merge_authority.BounceResult) -> dict:
         "audit_relpath": result.audit_relpath,
         "bounce_number": result.bounce_number,
         "finding_ids": list(result.finding_ids),
+        "finding_keys": list(result.finding_keys),
         "skipped": result.skipped,
         "at_cap": result.at_cap,
         "finalize_errors": list(result.finalize_errors),
@@ -1371,7 +1372,7 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
     if decided.disposition is merge_authority.Disposition.BOUNCE:
         written = _write_bounce(owner, repo_name, pr, cid, ctx, decided.to_bounce, epoch)
         bounce = _bounce_payload(written)
-        ids = dict(zip((f.key for f in decided.to_bounce), written.finding_ids))
+        ids = dict(zip(written.finding_keys, written.finding_ids))
         if written.at_cap:
             reasons = (
                 *reasons,
@@ -1559,7 +1560,7 @@ def _bounce(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
     written = _write_bounce(owner, repo_name, pr, cid, ctx, to_write, epoch)
     for err in written.finalize_errors:
         not_verified.append(f"bounce finalize: {err}")
-    ids = dict(zip((f.key for f in to_write), written.finding_ids))
+    ids = dict(zip(written.finding_keys, written.finding_ids))
     if written.at_cap:
         return done(False, "at-cap", at_cap=True, bounce=_bounce_payload(written), **common)
     if written.skipped:

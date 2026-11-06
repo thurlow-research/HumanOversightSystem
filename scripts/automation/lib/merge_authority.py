@@ -2232,6 +2232,7 @@ class BounceResult:
     finding_ids: list[str] = field(default_factory=list)
     finalize_repaired: list[str] = field(default_factory=list)
     at_cap: bool = False
+    finding_keys: list[str] = field(default_factory=list)
 
 
 def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
@@ -2597,6 +2598,7 @@ def record_pr_bounce(
         bounce_number=bounce_number,
         finalize_errors=finalize_errors,
         finding_ids=finding_ids,
+        finding_keys=[f.key for f in fresh],
     )
 
 

@@ -183,3 +183,23 @@ def test_cap_none_keeps_existing_behavior(tmp_path):
             tmp_path, [_f(key="MERITS:a.py:a", path="a.py")], [_f(key="MERITS:b.py:b", path="b.py")]
         )
     assert len(bodies) == 2 and not any(r.at_cap for r in results)
+
+
+def test_in_lock_dedup_numbers_and_keys_only_the_fresh_findings(tmp_path):
+    bodies: list = []
+    a = _f(key="MERITS:a.py:a", path="a.py")
+    b = _f(key="MERITS:b.py:b", path="b.py")
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+    ):
+        first: list = []
+        _call(tmp_path, [a], first)
+        second: list = []
+        _call(tmp_path, [a, b], second)
+    result = second[0]
+    assert len(bodies) == 2
+    assert result.finding_keys == [b.key]
+    assert result.finding_ids == [f"{HEAD[:12]}-F2"]
+    assert f"{HEAD[:12]}-F2" in bodies[1] and f"{HEAD[:12]}-F1" not in bodies[1]
