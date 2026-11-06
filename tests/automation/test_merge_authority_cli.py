@@ -1863,3 +1863,42 @@ def test_t_cli_2227_ids_follow_the_findings_the_lock_kept(world, monkeypatch, ca
     assert by_path["b.py"]["id"] == f"{_HEAD[:12]}-F2"
     assert "id" not in by_path["a.py"]
     assert record["bounce"]["finding_keys"] == [by_path["b.py"]["key"]]
+
+
+def test_t_cli_2227_lock_time_cap_routes_as_6d(world, monkeypatch, capsys):
+    a = {"class": "MERITS", "summary": "first", "path": "a.py", "slug": "first-thing"}
+    b = {"class": "MERITS", "summary": "second", "path": "b.py", "slug": "second-thing"}
+    world.files = [{"filename": "a.py"}, {"filename": "b.py"}]
+    world.pr["changed_files"] = 2
+    _write_findings(world, [a])
+    rc, _ = _run_mut(world, "route", capsys)
+    assert rc == 0 and len(world.posts) == 1
+    # Hide the prior bounce and the epoch count from the pre-lock view only, and
+    # lower the cap so the lock-time re-read finds it reached.
+    monkeypatch.setattr(cli, "_prior_on_head", lambda *args, **kw: ())
+    monkeypatch.setattr(cli, "_epoch", lambda *args, **kw: (None, 0))
+    monkeypatch.setattr(cli.merge_authority, "BOUNCE_CAP", 1)
+    _write_findings(world, [a, b])
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0, (record.get("error_code"), record.get("error"))
+    assert (record["disposition"], record["rule"], record["trigger"]) == (
+        "ESCALATE",
+        "6d",
+        "bounce-cap",
+    )
+    assert len(world.posts) == 1
+    assert record["bounce"]["at_cap"] is True
+    assert any("bounce cap was reached" in r for r in record["reasons"])
+
+
+def test_t_cli_2227_lock_time_all_duplicates_route_as_6c(world, monkeypatch, capsys):
+    a = {"class": "MERITS", "summary": "first", "path": "a.py", "slug": "first-thing"}
+    _write_findings(world, [a])
+    rc, _ = _run_mut(world, "route", capsys)
+    assert rc == 0 and len(world.posts) == 1
+    monkeypatch.setattr(cli, "_prior_on_head", lambda *args, **kw: ())
+    rc, record = _run_mut(world, "route", capsys)
+    assert rc == 0, (record.get("error_code"), record.get("error"))
+    assert (record["disposition"], record["rule"]) == ("NOOP", "6c")
+    assert "no-new-keys" in record["reasons"]
+    assert len(world.posts) == 1

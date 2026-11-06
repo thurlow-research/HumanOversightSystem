@@ -1,7 +1,7 @@
 # Prompt artifact — #2227 (serialize the bounce critical section)
 
 - **Issue:** #2227 (CWE-362 found by the codex second review of #2209 S1a)
-- **Source files:** `scripts/automation/lib/merge_authority.py`, `scripts/automation/merge_authority_cli.py`, `tests/automation/test_bounce_gate.py`, `tests/automation/test_merge_authority_cli.py`
+- **Source files:** `scripts/automation/lib/merge_authority.py`, `scripts/automation/merge_authority_cli.py`, `tests/automation/test_bounce_gate.py`, `tests/automation/test_bounce_lock.py`, `tests/automation/test_merge_authority_cli.py`
 - **Design:** the issue's "Required" list; the #2209 S1a design `docs/v0.7.0/TECHNICAL-DESIGN-2209-s1-route-bounce.md` (§3.16 error classes) stays the contract for everything else
 - **Model:** claude-opus-5-5[1m] (worker, autonomous cycle worker-hos-261106202002-3749041)
 - **Date:** 2026-11-06
@@ -43,4 +43,5 @@ Rules:
 
 ## Refinement iterations
 
-(appended after review rounds)
+1. Commit 6131d3af7: `record_pr_bounce` returns `finding_keys` so the CLI keys finding ids to the findings the lock kept.
+2. Code-review SHOULD_FIX-1: `_route` now reports a lock-time cap as ESCALATE / rule 6d / trigger `bounce-cap` and a lock-time all-duplicate result as NOOP / rule 6c / reason `no-new-keys`, matching the pre-lock decisions. `to_bounce` is cleared in both. NIT-1: `record_pr_bounce` docstring notes that finalize runs after the lock and is idempotent via repair. Tests added in `test_merge_authority_cli.py`.

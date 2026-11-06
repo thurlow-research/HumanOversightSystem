@@ -2460,7 +2460,8 @@ def record_pr_bounce(
     per-(repo, cid) flock (#2227), so concurrent callers cannot double-post or
     burn two bounces for one rejection. With `cap` given, a lock-time count at
     or above it posts and writes nothing and returns skipped=True, at_cap=True.
-    BounceLockTimeout is raised before any write.
+    BounceLockTimeout is raised before any write. The label/draft finalize steps
+    run after the lock is released and are idempotent via repair.
     """
     if reason_category not in _BOUNCE_REASON_CATEGORIES:
         raise ValueError(

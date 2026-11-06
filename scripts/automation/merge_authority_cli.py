@@ -22,6 +22,7 @@ repo root, mirroring commit_onto_base.sh:114-118).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.util
 import json
 import os
@@ -1374,9 +1375,26 @@ def _route(args: argparse.Namespace, ctx: _Context, state: dict) -> _Outcome:
         bounce = _bounce_payload(written)
         ids = dict(zip(written.finding_keys, written.finding_ids))
         if written.at_cap:
-            reasons = (
-                *reasons,
-                "the bounce cap was reached under the bounce lock; nothing was posted or written",
+            # Report the lock-time outcome as route_pr's rule 6d would have.
+            decided = dataclasses.replace(
+                decided,
+                disposition=merge_authority.Disposition.ESCALATE,
+                rule="6d",
+                trigger="bounce-cap",
+                to_bounce=(),
+                reasons=(
+                    *decided.reasons,
+                    "the bounce cap was reached under the bounce lock; nothing was posted or written",
+                ),
+            )
+        elif written.skipped:
+            # Every finding was already bounced on this head: route_pr's rule 6c.
+            decided = dataclasses.replace(
+                decided,
+                disposition=merge_authority.Disposition.NOOP,
+                rule="6c",
+                to_bounce=(),
+                reasons=(*decided.reasons, "no-new-keys"),
             )
         for err in written.finalize_errors:
             not_verified.append(f"bounce finalize: {err}")
