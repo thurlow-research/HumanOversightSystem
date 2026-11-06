@@ -16,10 +16,10 @@ from scripts.automation.lib.merge_authority import (
     BOUNCE_CAP,
     BounceLockTimeout,
     BounceLockUnavailable,
+    RepairReadError,
     _bounce_lock,
     bounce_count,
     bounce_events,
-    RepairReadError,
     record_pr_bounce,
     repair_bounce_finalize,
 )
