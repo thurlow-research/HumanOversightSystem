@@ -1,0 +1,46 @@
+name: Assign HUMAN_REVIEWER on needs-human
+
+# Assigns HUMAN_REVIEWER when `needs-human` is applied to an issue or PR, and
+# removes that assignment when the label goes (#2224, ADR-2224). Notification
+# only: nothing reads the assignment as authorization.
+#
+# SECURITY: this job runs on `pull_request_target` with a write token, so it
+# must never execute or check out PR-authored code. It runs trusted
+# default-branch code only (the checkout below is pinned to the default
+# branch), it reads item state solely through the API, and no event text
+# reaches a shell: the only event-derived values arrive through `env:`.
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # The label name is in the key so a pending needs-human run is never replaced by a skipped run for another label.
+  group: needs-human-assign-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.event.label.name || 'needs-human' }}
+  cancel-in-progress: false
+
+jobs:
+  needs-human-assign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name == 'needs-human') || (github.event.action == 'opened' && (contains(github.event.issue.labels.*.name, 'needs-human') || contains(github.event.pull_request.labels.*.name, 'needs-human')))
+    steps:
+      - name: Checkout (TRUSTED default branch)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Reconcile assignment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ITEM_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: python3 scripts/framework/next_actor.py reconcile-item --repo "$REPO" --number "$ITEM_NUMBER" --ours 'github-actions[bot]'
