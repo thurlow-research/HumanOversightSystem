@@ -338,12 +338,17 @@ def list_issue_comments(
     owner: str,
     repo: str,
     issue_number: int,
+    *,
+    max_pages: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """
     GET /repos/{owner}/{repo}/issues/{number}/comments (all pages).
 
     Returns a list of comment objects ordered oldest-first.
     Paginates automatically — uses REST-by-id, never Search.
+
+    With ``max_pages``, a non-list page (including None) or a non-empty page beyond ``max_pages``
+    raises ListTruncatedError rather than returning a partial list (#2263).
     """
     comments: list[dict[str, Any]] = []
     page = 1
@@ -351,8 +356,19 @@ def list_issue_comments(
         batch = _run_gh(
             [f"/repos/{owner}/{repo}/issues/{issue_number}/comments" f"?per_page=100&page={page}"]
         )
+        if max_pages is not None and not isinstance(batch, list):
+            # None is a 404 or an empty body (an empty thread is a "[]" body, a list):
+            # a partial read could hide a comment, so fail closed.
+            raise ListTruncatedError(
+                f"unexpected comments payload for {owner}/{repo}#{issue_number}: "
+                f"expected list, got {type(batch).__name__}"
+            )
         if not batch:
             break
+        if max_pages is not None and page > max_pages:
+            raise ListTruncatedError(
+                f"comments for {owner}/{repo}#{issue_number} exceeded {max_pages} pages"
+            )
         comments.extend(batch)
         if len(batch) < 100:
             break

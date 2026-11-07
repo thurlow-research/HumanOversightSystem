@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import errno
 import fcntl
 import fnmatch
 import hashlib
@@ -34,7 +35,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Collection, Iterable, NamedTuple, NoReturn, Optional, Sequence, Union
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Iterable,
+    NamedTuple,
+    NoReturn,
+    Optional,
+    Sequence,
+    Union,
+)
 
 from scripts.automation.lib import github as _github
 from scripts.automation.lib.github import (
@@ -2069,6 +2080,56 @@ def _legacy_gloss(token: str) -> str:
     return token
 
 
+_BOUNCE_MARKER_PREFIX = "<!-- hos-bounce v=1 id="
+_BOUNCE_COMMENTS_MAX_PAGES = 10
+
+
+def _bounce_marker(cid: str, head_sha: str, new_keys: Sequence[str], bounce_number: int) -> str:
+    """The hidden, deterministic line that identifies one bounce comment (#2263).
+
+    One digest over (cid, head, bounce number, sorted keys) keeps caller-supplied text out of
+    the comment, so no cid or key can close the HTML comment early.
+    """
+    material = "\0".join([cid, head_sha, str(bounce_number), *sorted(new_keys)])
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    return f"{_BOUNCE_MARKER_PREFIX}{digest} -->"
+
+
+def _find_posted_bounce(
+    owner: str, repo: str, pr_number: int, marker: str, recorded_ids: Collection[str]
+) -> Optional[dict[str, Any]]:
+    """An orphan comment by the current bot carrying exactly `marker` (oldest first), else None.
+
+    A comment whose id a recorded `pr-bounced` event already references is never
+    an orphan: only a comment posted but not recorded may be adopted.
+
+    Reads every comment page, bounded; a failed or truncated read raises
+    GitHubError so the caller halts before posting on an unknown state. Without
+    HOS_BOT_LOGIN nothing is read or adopted: any commenter can type the marker,
+    and adopting theirs would suppress a real bounce.
+    """
+    login = os.environ.get("HOS_BOT_LOGIN")
+    if not login:
+        logger.warning(
+            "record_pr_bounce: HOS_BOT_LOGIN unset; not looking for an already-posted "
+            "bounce comment on PR #%s (a retry after an audit-write failure may re-post)",
+            pr_number,
+        )
+        return None
+    comments = _github.list_issue_comments(
+        owner, repo, pr_number, max_pages=_BOUNCE_COMMENTS_MAX_PAGES
+    )
+    for comment in comments:
+        if (
+            isinstance(comment, dict)
+            and str(comment.get("id")) not in recorded_ids
+            and (comment.get("user") or {}).get("login") == login
+            and marker in str(comment.get("body") or "").splitlines()
+        ):
+            return comment
+    return None
+
+
 def _bounce_comment_body(
     failures: list[str],
     reason_category: str,
@@ -2076,6 +2137,7 @@ def _bounce_comment_body(
     bounce_number: int,
     *,
     head_sha: Optional[str] = None,
+    marker: Optional[str] = None,
 ) -> str:
     """The legacy rendering (AD-4): the findings heading and section, no
     dispute text, for callers that still pass `failures=`."""
@@ -2099,6 +2161,8 @@ def _bounce_comment_body(
         f"_Bounce #{bounce_number} for this correlation id "
         f"(cap: {BOUNCE_CAP} before human escalation)._",
     ]
+    if marker:
+        lines.append(marker)
     return "\n".join(lines) + "\n"
 
 
@@ -2127,6 +2191,7 @@ def _bounce_comment_body_findings(
     *,
     cid: str,
     head_sha: str,
+    marker: Optional[str] = None,
 ) -> str:
     """The findings rendering (AD-4): one `[id] (CLASS)` line per finding and
     the dispute instruction the worker re-entry text parses.
@@ -2157,6 +2222,8 @@ def _bounce_comment_body_findings(
             "",
             f"_Bounce #{bounce_number} for {cid} (cap: {BOUNCE_CAP} before human escalation)._",
         ]
+        if marker:
+            lines.append(marker)
         return "\n".join(lines) + "\n"
 
     def row(finding_id: str, f: Finding, detail_chars: Optional[int]) -> str:
@@ -2233,6 +2300,7 @@ class BounceResult:
     finalize_repaired: list[str] = field(default_factory=list)
     at_cap: bool = False
     finding_keys: list[str] = field(default_factory=list)
+    adopted: bool = False
 
 
 def _add_label(owner: str, repo: str, pr_number: int, label: str) -> None:
@@ -2254,9 +2322,29 @@ class BounceLockTimeout(RuntimeError):
     """The per-(repo, cid) bounce lock was not acquired in time. Raised before any write."""
 
 
+# errnos that clear on their own (interrupts, contention, resource exhaustion). Any other
+# errno, or none, is persistent: it fails closed toward escalation rather than retrying
+# every cycle in silence (#2263).
+_TRANSIENT_LOCK_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("EINTR", "EAGAIN", "EWOULDBLOCK", "ENOLCK", "EMFILE", "ENFILE", "ENOSPC", "EDQUOT")
+    if hasattr(errno, name)
+)
+
+
 class BounceLockUnavailable(RuntimeError):
     """The bounce lock file could not be created or locked (OSError is `__cause__`).
     Raised before any write."""
+
+    @property
+    def errno(self) -> Optional[int]:
+        cause = self.__cause__
+        return cause.errno if isinstance(cause, OSError) else None
+
+    @property
+    def classification(self) -> str:
+        """ "transient" only for a known self-clearing errno; otherwise "deterministic"."""
+        return "transient" if self.errno in _TRANSIENT_LOCK_ERRNOS else "deterministic"
 
 
 @contextlib.contextmanager
@@ -2464,7 +2552,10 @@ def record_pr_bounce(
 
     (1) validate, (2) resolve the head (TD-D5) before posting anything,
     (3) skip a repeat of keys already bounced on this head (TD-D9 repairs an
-    unfinished finalize), (4) post the bounce comment, (5) confirmed via
+    unfinished finalize), (4) post the bounce comment, unless this bot's comment
+    with the same hidden marker is already on the PR (an earlier attempt whose
+    audit write failed, #2263): that one is adopted, and a failed or truncated
+    comment read raises before posting, (5) confirmed via
     post_comment's read-back, (6) append the `pr-bounced` audit event,
     (7) finalize — label, convert to draft. Steps 2-6 raise on failure
     (GitHubError / audit-write error) and halt before any finalize action
@@ -2543,6 +2634,7 @@ def record_pr_bounce(
                 at_cap=True,
             )
         bounce_number = prior_count + 1
+        marker = _bounce_marker(cid, head_sha, new_keys, bounce_number)
         finding_ids: list[str] = []
         if findings is not None:
             start = next_finding_index(prior)
@@ -2554,6 +2646,7 @@ def record_pr_bounce(
                 bounce_number,
                 cid=cid,
                 head_sha=head_sha,
+                marker=marker,
             )
         else:
             body = _bounce_comment_body(
@@ -2562,9 +2655,29 @@ def record_pr_bounce(
                 summary,
                 bounce_number,
                 head_sha=head_sha,
+                marker=marker,
             )
 
-        comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
+        # A prior attempt may have posted and then failed its audit write. No event
+        # exists, so prior_count is unchanged and that comment's bounce number equals
+        # this one's: adopt it rather than post (and count) a second time.
+        recorded_ids = {
+            str(e.get("comment_id"))
+            for e in bounce_events(cid, repo_root=repo_root)
+            if e.get("comment_id") is not None
+        }
+        orphan = _find_posted_bounce(owner, repo, pr_number, marker, recorded_ids)
+        adopted = orphan is not None
+        if orphan is not None:
+            comment = orphan
+            logger.info(
+                "record_pr_bounce: adopted already-posted bounce comment %s on PR #%s "
+                "(an earlier attempt's audit write failed)",
+                comment.get("id"),
+                pr_number,
+            )
+        else:
+            comment = post_comment(owner, repo, pr_number, body)  # raises GitHubError on failure
 
         event = {
             "event": "pr-bounced",
@@ -2583,6 +2696,8 @@ def record_pr_bounce(
             "comment_created_at": comment.get("created_at"),
             "actor": os.environ.get("HOS_BOT_LOGIN") or None,
         }
+        if adopted:
+            event["adopted"] = True
         if findings is not None:
             event["findings"] = [
                 {"id": fid, "class": f.cls, "key": f.key, "origin": f.origin, "path": f.path}
@@ -2619,6 +2734,7 @@ def record_pr_bounce(
         finalize_errors=finalize_errors,
         finding_ids=finding_ids,
         finding_keys=[f.key for f in fresh],
+        adopted=adopted,
     )
 
 

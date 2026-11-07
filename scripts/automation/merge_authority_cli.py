@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
 import importlib.util
 import json
 import os
@@ -1083,6 +1084,7 @@ def _bounce_payload(result: merge_authority.BounceResult) -> dict:
         "finding_keys": list(result.finding_keys),
         "skipped": result.skipped,
         "at_cap": result.at_cap,
+        "adopted": result.adopted,
         "finalize_errors": list(result.finalize_errors),
         "finalize_repaired": list(result.finalize_repaired),
     }
@@ -1099,7 +1101,12 @@ def _lock_timeout_fail(exc: merge_authority.BounceLockTimeout) -> _Fail:
 
 
 def _lock_unavailable_fail(exc: merge_authority.BounceLockUnavailable) -> _Fail:
-    return _Fail("bounce_lock_unavailable", str(exc), "transient", {"comment_posted": False})
+    code = exc.errno
+    extra: dict = {"comment_posted": False, "errno": code}
+    name = errno.errorcode.get(code) if code is not None else None
+    if name:
+        extra["errno_name"] = name
+    return _Fail("bounce_lock_unavailable", str(exc), exc.classification, extra)
 
 
 def _repair_finalize(owner, repo_name, number, cid, head_sha, ctx, errors) -> list[str]:

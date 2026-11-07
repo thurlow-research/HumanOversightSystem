@@ -226,6 +226,14 @@ HEAD2 = "b" * 40
 MA = "scripts.automation.lib.merge_authority"
 
 
+@pytest.fixture(autouse=True)
+def _no_live_comment_read(monkeypatch):
+    """`record_pr_bounce` reads the PR's comments (`_find_posted_bounce`) whenever
+    HOS_BOT_LOGIN is set. Default that read to "nothing already posted" so no test
+    here ever reaches GitHub; a test's own `patch(...)` still overrides this."""
+    monkeypatch.setattr(f"{MA}._github.list_issue_comments", lambda *a, **k: [], raising=True)
+
+
 def _gh_stub(heads=(HEAD,), draft=True, labels=("needs-ai",), calls=None):
     """A `_run_gh` stand-in: the PR read returns the next head in `heads` (the
     last one repeats), everything else returns an empty dict."""
