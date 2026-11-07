@@ -785,3 +785,10 @@ def test_list_issue_events_empty_later_page_is_end_of_list():
     full = [{"id": i} for i in range(100)]
     with patch.object(github_module, "_run_gh", side_effect=[full, None]):
         assert len(github_module.list_issue_events("o", "r", 7)) == 100
+
+
+class TestListIssueCommentsUnbounded:
+    def test_non_list_payload_without_max_pages_is_not_rejected(self):
+        # unbounded callers are not subject to the #2263 payload check
+        with patch("scripts.automation.lib.github._run_gh", side_effect=[{"message": "x"}]):
+            assert list_issue_comments("o", "r", 1) == ["message"]

@@ -493,7 +493,18 @@ def _unavailable(code):
     return exc
 
 
-@pytest.mark.parametrize("code", [errno.EINTR, errno.EAGAIN, errno.ENOLCK, errno.EMFILE])
+@pytest.mark.parametrize(
+    "code",
+    [
+        errno.EINTR,
+        errno.EAGAIN,
+        errno.ENOLCK,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    ],
+)
 def test_lock_unavailable_transient_errnos(code):
     assert _unavailable(code).classification == "transient"
     assert _unavailable(code).errno == code
@@ -717,3 +728,88 @@ def test_adoption_with_a_prior_recorded_bounce_records_bounce_number_two(tmp_pat
     )
     assert [e["bounce_number"] for e in events] == [1, 2]
     assert events[1]["comment_id"] == 601
+
+
+def test_marker_depends_on_cid_and_head():
+    from scripts.automation.lib.merge_authority import _bounce_marker
+
+    base = _bounce_marker("cid-1", HEAD, ["a"], 1)
+    assert base != _bounce_marker("cid-2", HEAD, ["a"], 1)
+    assert base != _bounce_marker("cid-1", "f" * 40, ["a"], 1)
+    # one full 128-bit digest, never a truncation to a short prefix
+    digest = base.removeprefix("<!-- hos-bounce v=1 id=").removesuffix(" -->")
+    assert len(digest) == 32 and int(digest, 16) >= 0
+
+
+def test_find_posted_bounce_matches_whole_line_only(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    embedded = _comment(1, f"quoted: {marker} trailing\n")
+    exact = _comment(2, f"text\n{marker}\n")
+    with patch(f"{MA}._github.list_issue_comments", return_value=[embedded]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is None
+    with patch(f"{MA}._github.list_issue_comments", return_value=[embedded, exact]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is exact
+
+
+def test_find_posted_bounce_excludes_recorded_ids_and_picks_oldest_orphan(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    recorded = _comment(5, marker + "\n")
+    first = _comment(6, marker + "\n")
+    second = _comment(7, marker + "\n")
+    with patch(f"{MA}._github.list_issue_comments", return_value=[recorded, first, second]):
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, {"5"}) is first
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, {"5", "6", "7"}) is None
+
+
+def test_find_posted_bounce_without_login_reads_nothing_even_for_userless_comment(monkeypatch):
+    from scripts.automation.lib.merge_authority import _find_posted_bounce
+
+    monkeypatch.delenv("HOS_BOT_LOGIN", raising=False)
+    marker = "<!-- hos-bounce v=1 id=abc -->"
+    userless = {"id": 3, "body": marker + "\n", "user": None}
+    with patch(f"{MA}._github.list_issue_comments", return_value=[userless]) as read:
+        assert _find_posted_bounce(OWNER, REPO, 1, marker, set()) is None
+    read.assert_not_called()
+
+
+def test_find_posted_bounce_reads_with_the_bounded_page_cap(monkeypatch):
+    from scripts.automation.lib import merge_authority as ma
+
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    with patch(f"{MA}._github.list_issue_comments", return_value=[]) as read:
+        ma._find_posted_bounce(OWNER, REPO, 9, "m", set())
+    assert ma._BOUNCE_COMMENTS_MAX_PAGES == 10
+    assert read.call_args.kwargs == {"max_pages": 10}
+    assert read.call_args.args == (OWNER, REPO, 9)
+
+
+def test_legacy_failures_path_also_posts_the_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOS_BOT_LOGIN", BOT)
+    bodies: list = []
+    with (
+        patch(f"{MA}.post_comment", side_effect=_post(bodies)),
+        patch(f"{MA}._run_gh", side_effect=_gh_stub()),
+        patch(f"{MA}._convert_pr_to_draft"),
+        patch(f"{MA}._github.list_issue_comments", return_value=[]),
+    ):
+        record_pr_bounce(
+            OWNER,
+            REPO,
+            123,
+            cid="cid-1",
+            reason_category="MERITS_FINDING",
+            summary="s",
+            failures=["register-missing"],
+            repo_root=str(tmp_path),
+            head_sha=HEAD,
+        )
+    assert len(bodies) == 1
+    lines = bodies[0].splitlines()
+    assert any(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines)
+    assert sum(ln.startswith("<!-- hos-bounce v=1 id=") for ln in lines) == 1
