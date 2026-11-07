@@ -1,0 +1,1 @@
+{"decision":"HUMAN_REQUIRED","event":"idempotent-skip","head_sha":"279d545ecf8b598b39d513f544bd275cc135870b","pr":2278,"reason":"1215 precheck: overseer verdict 5815048094 and needs-human already in place at this head; no new commits or human input since","timestamp":"2026-11-07T21:26:33Z"}
