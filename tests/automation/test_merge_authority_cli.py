@@ -10,6 +10,7 @@ tests already use — never a subprocess, never real `gh`.
 
 from __future__ import annotations
 
+import errno
 import json
 import types
 from pathlib import Path
@@ -95,7 +96,7 @@ def mocked_github(monkeypatch):
         "get_commit",
         lambda o, r, ref: {"commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}},
     )
-    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n: [])
+    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n, **k: [])
     monkeypatch.setattr(gh, "get_repo", lambda o, r: {"default_branch": "main"})
     monkeypatch.setattr(
         gh,
@@ -928,7 +929,7 @@ def world(repo_root, tmp_path, monkeypatch):
     monkeypatch.setattr(gh, "list_check_runs_for_ref", lambda o, r, ref: [{"name": "tests"}])
     monkeypatch.setattr(gh, "list_check_suites_for_ref", lambda o, r, ref, **k: [])
     monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: [])
-    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n: [])
+    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n, **k: [])
     monkeypatch.setattr(gh, "list_issue_events", lambda o, r, n, **k: [])
     monkeypatch.setattr(
         gh, "get_commit", lambda o, r, ref: {"commit": {"committer": {"date": None}}}
@@ -1843,6 +1844,12 @@ def test_t_cli_2227_repair_lock_timeout_is_a_transient_failure(world, monkeypatc
     assert (info.value.code, info.value.klass) == ("bounce_lock_timeout", "transient")
 
 
+def _lock_unavailable_exc():
+    exc = merge_authority.BounceLockUnavailable("lock table full")
+    exc.__cause__ = OSError(errno.ENOLCK, "no locks")
+    return exc
+
+
 @pytest.mark.parametrize("name", ["bounce", "route"])
 def test_t_cli_2227_lock_unavailable_is_a_transient_failure(name, world, monkeypatch, capsys):
     _require_failing_check(monkeypatch)
@@ -1851,7 +1858,7 @@ def test_t_cli_2227_lock_unavailable_is_a_transient_failure(name, world, monkeyp
     )
 
     def unavailable(*a, **k):
-        raise merge_authority.BounceLockUnavailable("lock dir read-only")
+        raise _lock_unavailable_exc()
 
     monkeypatch.setattr(merge_authority, "record_pr_bounce", unavailable)
     rc, record = _run_mut(world, name, capsys)
@@ -1866,7 +1873,7 @@ def test_t_cli_2227_lock_unavailable_is_a_transient_failure(name, world, monkeyp
 
 def test_t_cli_2227_repair_lock_unavailable_is_a_transient_failure(world, monkeypatch):
     def unavailable(*a, **k):
-        raise merge_authority.BounceLockUnavailable("lock dir read-only")
+        raise _lock_unavailable_exc()
 
     monkeypatch.setattr(merge_authority, "repair_bounce_finalize", unavailable)
     with pytest.raises(cli._Fail) as info:
@@ -1874,7 +1881,11 @@ def test_t_cli_2227_repair_lock_unavailable_is_a_transient_failure(world, monkey
             "o", "r", 42, "issue-9", _HEAD, types.SimpleNamespace(repo_root=world.root), []
         )
     assert (info.value.code, info.value.klass) == ("bounce_lock_unavailable", "transient")
-    assert info.value.extra == {"comment_posted": False}
+    assert info.value.extra == {
+        "comment_posted": False,
+        "errno": errno.ENOLCK,
+        "errno_name": "ENOLCK",
+    }
 
 
 def test_t_cli_2227_ids_follow_the_findings_the_lock_kept(world, monkeypatch, capsys):
@@ -1936,3 +1947,15 @@ def test_t_cli_2227_lock_time_all_duplicates_route_as_6c(world, monkeypatch, cap
     assert (record["disposition"], record["rule"]) == ("NOOP", "6c")
     assert "no-new-keys" in record["reasons"]
     assert len(world.posts) == 1
+
+
+@pytest.mark.parametrize(
+    "code, klass, name",
+    [(errno.ENOLCK, "transient", "ENOLCK"), (errno.EACCES, "deterministic", "EACCES")],
+)
+def test_t_cli_2263_lock_unavailable_classified_by_errno(code, klass, name):
+    exc = merge_authority.BounceLockUnavailable("x")
+    exc.__cause__ = OSError(code, "boom")
+    fail = cli._lock_unavailable_fail(exc)
+    assert (fail.code, fail.klass) == ("bounce_lock_unavailable", klass)
+    assert fail.extra == {"comment_posted": False, "errno": code, "errno_name": name}

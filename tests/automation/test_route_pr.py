@@ -1329,7 +1329,7 @@ def replay(tmp_path, monkeypatch):
     monkeypatch.setattr(gh, "list_check_suites_for_ref", lambda o, r, ref, **k: fx["check_suites"])
     monkeypatch.setattr(gh, "list_pull_reviews", lambda o, r, n: fx["reviews"])
     monkeypatch.setattr(gh, "list_issue_events", lambda o, r, n, **k: [])
-    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n: fx["comments"])
+    monkeypatch.setattr(gh, "list_issue_comments", lambda o, r, n, **k: fx["comments"])
     monkeypatch.setattr(
         gh, "get_commit", lambda o, r, ref: {"commit": {"committer": {"date": pr["created_at"]}}}
     )

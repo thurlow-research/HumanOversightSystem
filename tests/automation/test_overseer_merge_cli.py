@@ -100,7 +100,7 @@ class World:
         rec("get_repo")(lambda o, r: {"default_branch": "main"})
         rec("list_pull_files")(lambda o, r, n: w.files)
         rec("list_pull_reviews")(lambda o, r, n: w.reviews)
-        rec("list_issue_comments")(lambda o, r, n: w.comments)
+        rec("list_issue_comments")(lambda o, r, n, **k: w.comments)
 
         @rec("list_issue_events")
         def _events(o, r, n):
