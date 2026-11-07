@@ -135,11 +135,159 @@ def test_over_100_accepted_unclamped():
     assert parse_fixture("envelope-over-100.json")[1].session_pct == 150
 
 
-def test_last_match_wins():
+def test_duplicate_session_lines_fail_closed():
     p = up.parse_usage(
         "Current session: 1% used\nCurrent session: 2% used\nCurrent week (all models): 3% used"
     )
-    assert p.session_pct == 2
+    assert not p.ok and p.reason == "unparseable"
+    assert p.session_limit != up.SESSION_LIMIT_NONE
+
+
+def test_duplicate_weekly_all_lines_fail_closed():
+    p = up.parse_usage(
+        "Current session: 1% used\nCurrent week (all models): 3% used\n"
+        "Current week (all models): 4% used"
+    )
+    assert not p.ok and p.reason == "unparseable"
+    assert p.session_limit != up.SESSION_LIMIT_NONE
+
+
+def test_duplicate_session_lines_without_session_not_none_path():
+    p = up.parse_usage(
+        "Current session: 1% used\nCurrent session: 2% used\nCurrent week (all models): 3% used\n"
+    )
+    assert not p.ok and p.session_limit != up.SESSION_LIMIT_NONE
+
+
+def test_mid_line_session_substring_in_top_subagents_does_not_override():
+    p = up.parse_usage(
+        "Current session: 95% used \u00b7 resets Oct 3, 2:40am (UTC)\n"
+        "  Top subagents: Current session: 1% used 5%, coder 2%\n"
+        "Current week (all models): 3% used\n"
+    )
+    assert p.ok and p.session_pct == 95
+    assert p.session_resets == "Oct 3, 2:40am (UTC)"
+
+
+@pytest.mark.parametrize("fake", ["  x Current session: 1% used", "see Current session: 1% used"])
+def test_mid_line_session_substring_on_other_line_never_lowers_reading(fake):
+    p = up.parse_usage(
+        "Current session: 95% used\n" + fake + "\nCurrent week (all models): 3% used\n"
+    )
+    assert not p.ok and p.reason == "unparseable"
+
+
+def test_mid_line_weekly_and_model_substrings_do_not_override():
+    p = up.parse_usage(
+        "Current session: 5% used\nCurrent week (all models): 95% used\n"
+        "Current week (Fable): 90% used\n"
+        "  Top subagents: Current week (all models): 1% used, Current week (Fable): 1% used\n"
+    )
+    assert p.ok and p.weekly_all_pct == 95
+    assert [(m.slug, m.pct) for m in p.models] == [("fable", 90)]
+
+
+def test_mid_line_session_substring_without_real_line_gives_no_reading():
+    p = up.parse_usage(
+        "  Top subagents: Current session: 1% used\nCurrent week (all models): 3% used\n"
+    )
+    assert p.session_pct is None
+
+
+@pytest.mark.parametrize("ws", ["\x0b", "\x0c", "\x85", "\u2028", "\xa0"])
+@pytest.mark.parametrize("where", ["lead", "trail", "both"])
+def test_odd_whitespace_session_line_never_fails_open(ws, where):
+    line = (ws if where != "trail" else "") + "Current session: 95% used"
+    line += ws if where != "lead" else ""
+    p = up.parse_usage(line + "\nCurrent week (all models): 3% used\n")
+    assert p.session_limit != up.SESSION_LIMIT_NONE
+    assert not (p.ok and p.session_pct is None)
+    assert not p.ok and p.reason == "missing_session"
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        "Current week (Sonnet only): 1% used",
+        "Current week (Sonnet-only): 1% used",
+        "Current week (sonnet  only): 1% used",
+    ],
+)
+def test_duplicate_model_slug_fails_closed(second):
+    p = up.parse_usage(
+        "Current session: 5% used\nCurrent week (all models): 3% used\n"
+        "Current week (Sonnet only): 95% used\n" + second + "\n"
+    )
+    assert not p.ok and p.reason == "unparseable"
+    assert p.session_limit != up.SESSION_LIMIT_NONE and p.models == ()
+
+
+def test_duplicate_model_slug_without_session_line_not_none_path():
+    p = up.parse_usage(
+        "Current week (all models): 3% used\n"
+        "Current week (Opus): 95% used\nCurrent week (Opus): 1% used\n"
+    )
+    assert not p.ok and p.reason == "unparseable"
+    assert p.session_limit != up.SESSION_LIMIT_NONE
+
+
+@pytest.mark.parametrize("ws", ["\xa0", "\x0b", "\x85", "\u2028"])
+@pytest.mark.parametrize(
+    "bad",
+    ["Current week (Sonnet only): 95% used", "Current week (all models): 95% used"],
+)
+def test_padded_limit_line_with_session_present_fails_closed(ws, bad):
+    p = up.parse_usage(
+        "Current session: 50% used\nCurrent week (all models): 40% used\n" + ws + bad + "\n"
+    )
+    assert not p.ok and p.reason == "unparseable"
+
+
+def test_all_success_fixtures_still_parse_ok():
+    # The complete set of success fixtures in tests/automation/fixtures/usage/.
+    names = [
+        "ac1-real-shape-envelope.json",
+        "capture2-envelope-2026-10-03.json",
+        "capture2-plus-fields.json",
+        "d1-envelope-derived.json",
+        "envelope-ansi-crlf.json",
+        "envelope-breakdown-garbled.json",
+        "envelope-negative-cost.json",
+        "envelope-no-model.json",
+        "envelope-over-100.json",
+        "envelope-third-window.json",
+        "envelope-tokens-partial.json",
+        "envelope-top-bad-item.json",
+        "envelope-two-models.json",
+        "envelope-weekly-only.json",
+        "live-full-envelope-2026-10-03.json",
+    ]
+    for name in names:
+        assert parse_fixture(name)[1].ok, name
+    # #2229: weekly-only (no session line) is the no-session-limit path.
+    assert parse_fixture("envelope-weekly-only.json")[1].session_limit == up.SESSION_LIMIT_NONE
+
+
+@pytest.mark.parametrize("sep", ["\xa0", "\x85", "\u2028", "\u3000", "\u200b", "\ufeff"])
+@pytest.mark.parametrize("where", ["lead", "inner", "both"])
+def test_odd_separator_model_line_fails_closed(sep, where):
+    line = "Current week (Opus): 99% used"
+    if where in ("inner", "both"):
+        line = line.replace("99%", "99" + sep + "%")
+    if where in ("lead", "both"):
+        line = sep + line
+    p = up.parse_usage(
+        "Current session: 5% used\nCurrent week (all models): 3% used\n" + line + "\n"
+    )
+    assert not p.ok and p.reason == "unparseable"
+
+
+def test_resets_come_from_anchored_line():
+    p = up.parse_usage(
+        "Current session: 5% used \u00b7 resets A\n  zz Current session: 1% used \u00b7 resets B\n"
+        "Current week (all models): 3% used \u00b7 resets C\n"
+    )
+    assert p.session_resets == "A" and p.weekly_all_resets == "C"
 
 
 def test_ansi_crlf_stripped():
@@ -174,8 +322,10 @@ def test_breakdown_exception_isolated(monkeypatch):
     monkeypatch.setattr(up, "_parse_window_block", boom)
     _env, p = parse_fixture("capture2-envelope-2026-10-03.json")
     assert p.ok and p.windows == ()
+    # Models gate pauses, so an extraction failure fails the read closed (windows stay isolated).
     monkeypatch.setattr(up, "_extract_models", boom)
-    assert up.parse_usage(parse_fixture("capture2-envelope-2026-10-03.json")[0].result_text).ok
+    p = up.parse_usage(parse_fixture("capture2-envelope-2026-10-03.json")[0].result_text)
+    assert not p.ok and p.reason == "unparseable"
 
 
 def test_duplicate_window_absent():
@@ -343,7 +493,8 @@ def test_overlong_counters_and_model_percent_never_raise():
         base
         + "Current week (Fable): %s%% used\n\nLast 24h · %s requests · 1 sessions\n" % (HUGE, HUGE)
     )
-    assert p.ok and p.models == () and p.windows == ()
+    # An unmatched per-model limit line is now a fail-closed read, not a silently dropped one.
+    assert not p.ok and p.reason == "unparseable"
     top = base + "\nLast 24h · 1 requests · 1 sessions\n  Top subagents: a %s%%, +%s more\n" % (
         HUGE,
         HUGE,

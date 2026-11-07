@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Mapping, NoReturn, Optional, Sequence, Tuple, Union
@@ -185,13 +186,20 @@ _CLAUDE_BIN_RE = re.compile(r"/[A-Za-z0-9._+/-]{1,254}", re.ASCII)
 _ANSI_OSC_RE = re.compile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
 _ANSI_CSI_RE = re.compile("\x1b\\[[0-?]*[ -/]*[@-~]")
 
-_SESSION_PCT_RE = re.compile(r"Current session: ([0-9]{1,3})% used", re.ASCII)
-_SESSION_RESETS_RE = re.compile(r"Current session: [0-9]{1,3}% used · resets (.*)", re.ASCII)
-_WEEKLY_ALL_PCT_RE = re.compile(r"Current week \(all models\): ([0-9]{1,3})% used", re.ASCII)
-_WEEKLY_ALL_RESETS_RE = re.compile(
-    r"Current week \(all models\): [0-9]{1,3}% used · resets (.*)", re.ASCII
+# Whole-line anchored (#2251): /usage echoes agent-influenced text (e.g. subagent names), so a
+# limit-line substring mid-line must never count. Each regex captures pct and reset together.
+_LINE_FLAGS = re.ASCII | re.MULTILINE
+_RESETS_SUFFIX = r"(?: · resets (.*))?[ \t]*$"
+_SESSION_RE = re.compile(
+    r"^[ \t]*Current session: ([0-9]{1,3})% used" + _RESETS_SUFFIX, _LINE_FLAGS
 )
-_MODEL_RE = re.compile(r"Current week \(([^)]+)\): ([0-9]{1,3})% used(?: · resets (.*))?", re.ASCII)
+_WEEKLY_ALL_RE = re.compile(
+    r"^[ \t]*Current week \(all models\): ([0-9]{1,3})% used" + _RESETS_SUFFIX, _LINE_FLAGS
+)
+_MODEL_RE = re.compile(
+    r"^[ \t]*Current week \(([^)\n]+)\): ([0-9]{1,3})% used" + _RESETS_SUFFIX,
+    _LINE_FLAGS,
+)
 _MARKER_RE = re.compile(
     r"^You are currently using your subscription to power your Claude Code usage\s*$",
     re.ASCII | re.MULTILINE,
@@ -553,17 +561,24 @@ def parse_envelope(raw: bytes) -> EnvelopeResult:
 # ───────────────────────────── usage text ─────────────────────────────
 
 
-def _last_match(pattern: "re.Pattern[str]", text: str) -> Optional["re.Match[str]"]:
+def _sole_match(pattern: "re.Pattern[str]", text: str) -> Tuple[Optional["re.Match[str]"], bool]:
+    """(match, ambiguous): more than one anchored line is ambiguous, never first/last-wins."""
     matches = list(pattern.finditer(text))
-    return matches[-1] if matches else None
+    if len(matches) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
 
 
-def _resets(match: Optional["re.Match[str]"], group: int = 1) -> Optional[str]:
-    """The reset text in `group` (the model line carries the model name in group 1, reset in 3)."""
-    if match is None:
+def _resets(match: Optional["re.Match[str]"], group: int = 2) -> Optional[str]:
+    """The reset text in `group` (session and weekly lines carry it in group 2, the model line in 3)."""
+    if match is None or match.group(group) is None:
         return None
     value = _strip_control(match.group(group)).strip()
     return _cap(value, RESETS_CAP_CHARS) or None
+
+
+class _AmbiguousModels(Exception):
+    """Two per-model weekly lines share a slug (#2251): ambiguous, so the whole read fails."""
 
 
 def _extract_models(text: str) -> Tuple[ModelWeekly, ...]:
@@ -576,7 +591,8 @@ def _extract_models(text: str) -> Tuple[ModelWeekly, ...]:
         if not slug:
             continue
         resets = match.group(3)
-        models.pop(slug, None)
+        if slug in models:
+            raise _AmbiguousModels(slug)
         models[slug] = ModelWeekly(
             name,
             slug,
@@ -673,11 +689,13 @@ def _int_group(match: Optional["re.Match[str]"]) -> Optional[int]:
 
 def _is_recognised_line(line: str) -> bool:
     """A line of a known /usage form: a session or weekly limit, a window block line, the marker."""
-    stripped = line.strip()
+    # Strip only the horizontal whitespace the anchored limit-line regexes allow, so this guard can
+    # never call a line recognised that _SESSION_RE / _MODEL_RE rejected (fail-open, #2251).
+    stripped = line.strip(" \t")
     return any(
         pattern.match(stripped) is not None
         for pattern in (
-            _SESSION_PCT_RE,
+            _SESSION_RE,
             _MODEL_RE,
             _WINDOW_HEADER_RE,
             _HEAVY_RE,
@@ -689,6 +707,17 @@ def _is_recognised_line(line: str) -> bool:
     )
 
 
+_SEPARATOR_CATEGORIES = frozenset({"Zs", "Zl", "Zp", "Cc", "Cf"})
+
+
+def _normalise_separators(line: str) -> str:
+    """Replace every whitespace / separator / control / format character with a plain space."""
+    return "".join(
+        " " if ch.isspace() or unicodedata.category(ch) in _SEPARATOR_CATEGORIES else ch
+        for ch in line
+    )
+
+
 def _has_unrecognised_limit_line(text: str) -> bool:
     """Deny by default (#2229): any line of no known form that looks like a limit line.
 
@@ -697,9 +726,14 @@ def _has_unrecognised_limit_line(text: str) -> bool:
     session / a 5-hour form (plural "sessions" is window-block prose and is not matched). A
     false positive fails closed, which is the safe direction.
     """
-    for line in text.splitlines():
+    # Split on \n only, as the MULTILINE regexes do: splitlines() also breaks on \x0b, \x0c, \x85,
+    # U+2028 and so would present a limit line the anchored regexes rejected as a clean fragment.
+    for line in text.split("\n"):
         if not line.strip() or _is_recognised_line(line):
             continue
+        # Recognition above is strict; the limit-like checks see through odd separators so a
+        # line the strict regexes rejected cannot hide behind them (#2251).
+        line = _normalise_separators(line)
         if _LIMIT_LIKE_RE.search(line) is not None or _CURRENT_LINE_RE.match(line) is not None:
             return True
         if _LIMIT_WORD_RE.search(line) is not None and _DIGIT_RE.search(line) is not None:
@@ -708,22 +742,41 @@ def _has_unrecognised_limit_line(text: str) -> bool:
 
 
 def parse_usage(text: str) -> ParseResult:
-    session = _last_match(_SESSION_PCT_RE, text)
-    weekly = _last_match(_WEEKLY_ALL_PCT_RE, text)
+    session, ambiguous = _sole_match(_SESSION_RE, text)
+    weekly, weekly_dup = _sole_match(_WEEKLY_ALL_RE, text)
+    models: Tuple[ModelWeekly, ...] = ()
+    try:
+        models = _extract_models(text)
+    except _AmbiguousModels:
+        ambiguous = True
+    except Exception:  # noqa: BLE001
+        # Per-model percentages gate pauses: an unexpected failure must not drop them silently.
+        ambiguous = True
+    if ambiguous or weekly_dup:
+        # Ambiguous: must not reach the #2229 no-session-limit path with session_pct unset.
+        return ParseResult(False, "unparseable", None, None, None, None, (), (), False)
     marker = _MARKER_RE.search(text) is not None
     session_pct = _int_group(session)
     weekly_pct = _int_group(weekly)
-    session_resets = _resets(_last_match(_SESSION_RESETS_RE, text))
-    weekly_resets = _resets(_last_match(_WEEKLY_ALL_RESETS_RE, text))
-    # A present session line skips the guard: that path is unchanged from before #2229.
-    no_session_limit = (
-        session_pct is None and weekly_pct is not None and not _has_unrecognised_limit_line(text)
-    )
+    session_resets = _resets(session)
+    weekly_resets = _resets(weekly)
+    # The deny-by-default guard runs on every would-be success (#2251): a limit line the anchored
+    # regexes rejected (odd padding) must never be silently dropped, with or without a session line.
+    unrecognised = _has_unrecognised_limit_line(text)
+    no_session_limit = session_pct is None and weekly_pct is not None and not unrecognised
+    if unrecognised and session_pct is not None and weekly_pct is not None:
+        return ParseResult(
+            False,
+            "unparseable",
+            session_pct,
+            session_resets,
+            weekly_pct,
+            weekly_resets,
+            (),
+            (),
+            marker,
+        )
     if (session_pct is not None or no_session_limit) and weekly_pct is not None:
-        try:
-            models = _extract_models(text)
-        except Exception:  # noqa: BLE001
-            models = ()
         try:
             windows = _extract_windows(text)
         except Exception:  # noqa: BLE001
